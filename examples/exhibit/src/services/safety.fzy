@@ -1,8 +1,0 @@
-use cap.mem;
-
-fn guarded_value() -> i32 {
-    requires true
-    let stable: i32 = 5
-    ensures stable == 5
-    return stable
-}

@@ -1,18 +1,7 @@
 use cap.net;
-use cap.time;
 
-fn start_server() -> i32 {
+fn start() -> i32 {
     let conn = net.connect()
     defer close(conn)
-    time.now()
-    timeout(10)
-    cancel()
-    return 1
-}
-
-fn poll_health() -> i32 {
-    let conn = net.connect()
-    defer close(conn)
-    timeout(5)
-    return 1
+    return 0
 }

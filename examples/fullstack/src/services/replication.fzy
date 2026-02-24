@@ -1,18 +1,7 @@
 use cap.net;
-use cap.mem;
 
-fn enqueue() -> i32 {
-    let frame_ptr: *u8 = alloc(64)
-    defer free(frame_ptr)
-    let repl_handle = net.connect()
-    defer close(repl_handle)
-    return 1
-}
-
-fn flush() -> i32 {
-    let stream_handle = net.connect()
-    defer close(stream_handle)
-    timeout(20)
-    cancel()
-    return 1
+fn init() -> i32 {
+    let conn = net.connect()
+    defer close(conn)
+    return 0
 }

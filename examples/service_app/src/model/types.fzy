@@ -1,0 +1,6 @@
+#[repr(C)]
+struct UserRow {}
+
+fn schema_version() -> i32 {
+    return 2
+}

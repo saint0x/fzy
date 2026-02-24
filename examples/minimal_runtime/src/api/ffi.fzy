@@ -1,0 +1,5 @@
+pub extern "C" fn ping_value() -> i32;
+
+fn ping() -> i32 {
+    return 0
+}

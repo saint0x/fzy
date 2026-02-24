@@ -51,6 +51,7 @@ fozzyc test <path> [--det] [--strict-verify] [--safe-profile] [--sched fifo|rand
 # Verify/check/IR
 fozzyc check <path> [--json]
 fozzyc verify <path> [--json]
+fozzyc dx-check <project> [--strict] [--json]
 fozzyc spec-check [--json]
 fozzyc emit-ir <path> [--json]
 fozzyc parity <path> [--seed N] [--json]
@@ -170,88 +171,37 @@ Inspect:
 - `artifacts/demo.trace.scenarios.json`
 - `artifacts/demo.trace.manifest.json`
 
-## Generics v0 Example
+## Example Projects
 
-Project: `examples/generics`
+All shipped examples follow the v0 narrative DX convention:
 
-- Scoped container generics are accepted in v0 surface:
-  - `Vec<T>`
-  - `Option<T>`
-  - `Result<T,E>`
+- `src/main.fzy` is orchestration-only and the `fn main` declaration is last.
+- tests live under `src/tests/*` (no test declarations in `main.fzy`).
+- domain module roots use `mod.fzy`:
+  - `api`, `model`, `services`, `runtime`, `cli`, `tests`
 
-Run parity check:
+Available projects:
 
-```bash
-cargo run -q -p fozzyc -- parity examples/generics --seed 7 --json
-```
+- `examples/minimal_runtime`
+- `examples/service_app`
+- `examples/fullstack`
 
-## Complex Multi-File Exhibition
-
-Project: `examples/exhibit`
-
-- `src/main.fzy` orchestrates a realistic entry flow:
-  - explicit capabilities (`time/rng/fs/net/proc/mem/thread`)
-  - contracts (`requires` / `ensures`)
-  - linear-resource cleanup via `defer close(...)`
-  - `try ... catch ...`, `match`, `spawn`, `checkpoint`, `yield`, timeout/cancel markers
-  - host syscall marker (`syscall.*`) behind extern ABI declarations
-- `src/api/ffi.fzy` exposes `pub extern "C"` exports for header generation
-- `src/api/rpc.fzy` defines unary + streaming RPC methods for schema/stub generation
-- `src/model/types.fzy` uses `#[repr(...)]`, `struct`, and `enum` declarations
-- `src/services/*` and `src/runtime/*` provide additional multi-file function/capability coverage
-
-Run full flow:
+Validate a project:
 
 ```bash
-cargo run -q -p fozzyc -- check examples/exhibit --json
-cargo run -q -p fozzyc -- build examples/exhibit --json
-cargo run -q -p fozzyc -- run examples/exhibit --json
-cargo run -q -p fozzyc -- headers examples/exhibit --json
-cargo run -q -p fozzyc -- rpc gen examples/exhibit --json
-cargo run -q -p fozzyc -- test examples/exhibit --det --strict-verify --sched coverage_guided --seed 23 --record artifacts/exhibit_rich.trace.json --json
-fozzy doctor --deep --scenario artifacts/exhibit_rich.trace.scenarios/all.fozzy.json --runs 5 --seed 23 --json
-fozzy test --det --strict artifacts/exhibit_rich.trace.scenarios/all.fozzy.json --json
-fozzy run artifacts/exhibit_rich.trace.scenarios/all.fozzy.json --det --record artifacts/exhibit_rich.goal.fozzy --json
-fozzy trace verify artifacts/exhibit_rich.goal.fozzy --strict --json
-fozzy replay artifacts/exhibit_rich.goal.fozzy --json
-fozzy ci artifacts/exhibit_rich.goal.fozzy --json
+cargo run -q -p fozzyc -- dx-check examples/fullstack --strict --json
 ```
 
-## Fullstack Example (CLI DB + RPC + FFI)
-
-Project: `examples/fullstack`
-
-- Multi-module CLI-style data service flow with all implemented language/runtime hooks:
-  - capabilities: `time/rng/fs/net/proc/mem/thread`
-  - contracts (`requires` / `ensures`), `try/catch`, `match`, `defer`
-  - structured async/task markers: `spawn`, `checkpoint`, `yield`, `async fn`
-  - RPC declarations + call sites with deadline/cancel markers
-  - C interop exports for header + ABI generation
-  - host syscall marker path (`syscall.*`) for boundary verification
-  - richer service topology:
-    - auth + store + HTTP + replication + metrics modules
-    - runtime worker/scheduler/supervisor task orchestration
-    - deterministic + nondeterministic language-native test blocks
-    - native replay decision stream includes `thread.schedule`, `async.schedule`, `rpc.frame`
-
-Run full flow:
+Run fullstack flow:
 
 ```bash
 cargo run -q -p fozzyc -- check examples/fullstack --json
-cargo run -q -p fozzyc -- build examples/fullstack --json
-cargo run -q -p fozzyc -- run examples/fullstack --json
+cargo run -q -p fozzyc -- build examples/fullstack --backend cranelift --json
+cargo run -q -p fozzyc -- build examples/fullstack --release --backend llvm --json
+cargo run -q -p fozzyc -- run examples/fullstack --backend cranelift --json
+cargo run -q -p fozzyc -- test examples/fullstack --det --seed 41 --backend llvm --json
 cargo run -q -p fozzyc -- headers examples/fullstack --json
-cargo run -q -p fozzyc -- rpc gen examples/fullstack --json
-cargo run -q -p fozzyc -- test examples/fullstack --det --sched coverage_guided --seed 41 --record artifacts/fullstack.trace.json --rich-artifacts --json
-cargo run -q -p fozzyc -- replay artifacts/fullstack.trace.manifest.json --json
-cargo run -q -p fozzyc -- shrink artifacts/fullstack.trace.manifest.json --json
-cargo run -q -p fozzyc -- ci artifacts/fullstack.trace.manifest.json --json
-fozzy doctor --deep --scenario artifacts/fullstack.trace.scenarios/all.fozzy.json --runs 5 --seed 41 --json
-fozzy test --det --strict artifacts/fullstack.trace.scenarios/all.fozzy.json --json
-fozzy run artifacts/fullstack.trace.scenarios/all.fozzy.json --det --record artifacts/fullstack.goal.fozzy --json
-fozzy trace verify artifacts/fullstack.goal.fozzy --strict --json
-fozzy replay artifacts/fullstack.goal.fozzy --json
-fozzy ci artifacts/fullstack.goal.fozzy --json
+cargo run -q -p fozzyc -- abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json
 ```
 
 ## Plan Tracking

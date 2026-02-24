@@ -1,81 +1,27 @@
 {
+  "schemaVersion": "fozzylang.ffi_abi.v0",
+  "package": {"name": "fullstack", "version": "0.1.0"},
   "abiRevision": 1,
+  "panicBoundary": "abort-or-translate",
+  "symbolVersioning": "strict-name-signature-v0",
   "exports": [
     {
       "name": "fs_open",
-      "params": [
-        {
-          "c": "const uint8_t*",
-          "fzy": "*u8",
-          "name": "path"
-        },
-        {
-          "c": "size_t",
-          "fzy": "usize",
-          "name": "len"
-        }
-      ],
-      "return": {
-        "c": "int32_t",
-        "fzy": "i32"
-      },
-      "symbolVersion": 1
+      "symbolVersion": 1,
+      "params": [{"name":"path","fzy":"*u8","c":"const uint8_t*"},{"name":"len","fzy":"usize","c":"size_t"}],
+      "return": {"fzy":"i32","c":"int32_t"}
     },
     {
       "name": "fs_write",
-      "params": [
-        {
-          "c": "int32_t",
-          "fzy": "i32",
-          "name": "fd"
-        },
-        {
-          "c": "const uint8_t*",
-          "fzy": "*u8",
-          "name": "ptr"
-        },
-        {
-          "c": "size_t",
-          "fzy": "usize",
-          "name": "len"
-        }
-      ],
-      "return": {
-        "c": "int32_t",
-        "fzy": "i32"
-      },
-      "symbolVersion": 1
+      "symbolVersion": 1,
+      "params": [{"name":"fd","fzy":"i32","c":"int32_t"},{"name":"ptr","fzy":"*u8","c":"const uint8_t*"},{"name":"len","fzy":"usize","c":"size_t"}],
+      "return": {"fzy":"i32","c":"int32_t"}
     },
     {
       "name": "hash32",
-      "params": [
-        {
-          "c": "const uint8_t*",
-          "fzy": "*u8",
-          "name": "ptr"
-        },
-        {
-          "c": "size_t",
-          "fzy": "usize",
-          "name": "len"
-        }
-      ],
-      "return": {
-        "c": "uint32_t",
-        "fzy": "u32"
-      },
-      "symbolVersion": 1
+      "symbolVersion": 1,
+      "params": [{"name":"ptr","fzy":"*u8","c":"const uint8_t*"},{"name":"len","fzy":"usize","c":"size_t"}],
+      "return": {"fzy":"u32","c":"uint32_t"}
     }
-  ],
-  "layoutPolicy": {
-    "nonReprCUnstable": true,
-    "reprCStableOnly": true
-  },
-  "package": {
-    "name": "fullstack",
-    "version": "0.1.0"
-  },
-  "panicBoundary": "abort-or-translate",
-  "schemaVersion": "fozzylang.ffi_abi.v0",
-  "symbolVersioning": "strict-name-signature-v0"
+  ]
 }

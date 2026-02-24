@@ -1,0 +1,8 @@
+mod ffi;
+mod rpc;
+
+fn touch() -> i32 {
+    ffi.hash32(ptr, 8)
+    rpc.ping(req)
+    return 0
+}

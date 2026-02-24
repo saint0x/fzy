@@ -5,15 +5,3 @@ version = "0.1.0"
 [[target.bin]]
 name = "fullstack"
 path = "src/main.fzy"
-
-[profiles.dev]
-optimize = true
-checks = true
-
-[profiles.release]
-optimize = true
-checks = true
-
-[profiles.verify]
-optimize = false
-checks = true

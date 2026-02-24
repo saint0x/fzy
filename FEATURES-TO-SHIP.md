@@ -30,9 +30,9 @@
 - [x] ✅ P2.2: Deliver minimal LSP set (definition, diagnostics, hover, rename) with workspace smoke tests.
 
 ### 1.3 DX — Rust-Like Entrypoint Conventions
-- [ ] ⬜ DX1: Upgrade `fozzyc init` scaffold to `src/main.fzy` entrypoint + `mod app;` fan-out with module directories.
-- [ ] ⬜ DX2: Add `main.fzy` complexity lint (warn when orchestration boundary is violated).
-- [ ] ⬜ DX3: Publish module layout convention docs for app/model/services/runtime splits.
+- [x] ✅ DX1: Upgraded `fozzyc init` scaffold to convention-first fan-out with module directories + `mod.fzy` roots.
+- [x] ✅ DX2: Added `fozzyc dx-check <project> [--strict]` enforcing main-placement, module-order, mod-root, and test-placement rules.
+- [x] ✅ DX3: Published module layout conventions in `docs/project-conventions-v0.md`.
 
 ---
 

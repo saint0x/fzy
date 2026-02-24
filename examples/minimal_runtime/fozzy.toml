@@ -1,0 +1,7 @@
+[package]
+name = "minimal_runtime"
+version = "0.1.0"
+
+[[target.bin]]
+name = "minimal_runtime"
+path = "src/main.fzy"

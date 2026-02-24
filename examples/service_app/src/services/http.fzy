@@ -1,0 +1,9 @@
+use cap.net;
+use cap.time;
+
+fn start() -> i32 {
+    let conn = net.connect()
+    defer close(conn)
+    time.now()
+    return 0
+}

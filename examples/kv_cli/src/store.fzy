@@ -1,9 +1,0 @@
-use cap.fs;
-use cap.mem;
-
-fn init() -> i32 {
-    let file_handle = fs.open()
-    defer close(file_handle)
-    alloc.bump()
-    return 1
-}

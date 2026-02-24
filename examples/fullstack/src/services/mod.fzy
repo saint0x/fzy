@@ -1,0 +1,14 @@
+mod auth;
+mod store;
+mod replication;
+mod metrics;
+mod http;
+
+fn boot_all() -> i32 {
+    auth.init()
+    store.init()
+    replication.init()
+    metrics.init()
+    http.start()
+    return 0
+}

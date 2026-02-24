@@ -1,0 +1,6 @@
+#[repr(C)]
+struct MinimalRow {}
+
+fn schema_version() -> i32 {
+    return 1
+}

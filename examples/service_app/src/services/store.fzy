@@ -1,0 +1,7 @@
+use cap.fs;
+
+fn init() -> i32 {
+    let db = fs.open()
+    defer close(db)
+    return 0
+}

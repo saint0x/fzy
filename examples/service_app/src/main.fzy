@@ -1,0 +1,28 @@
+use cap.time;
+use cap.rng;
+use cap.fs;
+use cap.net;
+use cap.thread;
+
+mod api;
+mod model;
+mod services;
+mod runtime;
+mod cli;
+mod tests;
+
+fn main() -> i32 {
+    requires true
+
+    model.preflight()
+    cli.boot()
+    services.boot_all()
+    runtime.start()
+    api.touch()
+
+    let seed = try rng.seed() catch 7
+    match seed { 0 => pulse(), _ => pulse() }
+
+    ensures true
+    return 0
+}

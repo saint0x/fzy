@@ -1,7 +1,0 @@
-use cap.thread;
-
-fn main_loop() -> i32 {
-    let retries: i32 = try compute_retry() catch 3
-    match retries { 0 => 1, _ => 2 }
-    return 2
-}

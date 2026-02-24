@@ -1,4 +1,0 @@
-fn main() -> i32 {
-    let conn = net.connect()
-    return 0
-}

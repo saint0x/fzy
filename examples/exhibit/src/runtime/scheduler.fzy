@@ -1,8 +1,0 @@
-use cap.thread;
-use cap.time;
-
-fn schedule_tick() -> i32 {
-    time.now()
-    spawn(task.loop)
-    return 1
-}

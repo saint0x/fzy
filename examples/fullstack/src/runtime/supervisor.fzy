@@ -1,9 +1,6 @@
-use cap.thread;
 use cap.proc;
 
 fn guard() -> i32 {
-    checkpoint()
     process.exec()
-    yield()
     return 0
 }

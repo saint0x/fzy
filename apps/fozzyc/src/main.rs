@@ -109,6 +109,10 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("verify") => Ok(Command::Verify {
             path: arg_path(args, 1)?,
         }),
+        Some("dx-check") => Ok(Command::DxCheck {
+            path: arg_path(args, 1)?,
+            strict: has_flag(args, "--strict"),
+        }),
         Some("spec-check") => Ok(Command::SpecCheck),
         Some("emit-ir") => Ok(Command::EmitIr {
             path: arg_path(args, 1)?,
@@ -233,6 +237,7 @@ commands:\n\
   fmt <path>\n\
   check <path>\n\
   verify <path>\n\
+  dx-check <project> [--strict]\n\
   spec-check\n\
   emit-ir <path>\n\
   parity <path> [--seed N]\n\
@@ -269,7 +274,8 @@ flags:\n\
   --rich-artifacts\n\
   --out <path>\n\
   --out-dir <dir>\n\
-  --baseline <path>"
+  --baseline <path>\n\
+  --strict"
     );
 }
 

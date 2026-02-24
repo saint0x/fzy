@@ -62,6 +62,10 @@ pub enum Command {
     Verify {
         path: PathBuf,
     },
+    DxCheck {
+        path: PathBuf,
+        strict: bool,
+    },
     SpecCheck,
     EmitIr {
         path: PathBuf,
@@ -446,6 +450,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let output = verify_file(&path)?;
             Ok(render_output(format, output))
         }
+        Command::DxCheck { path, strict } => dx_check_command(&path, strict, format),
         Command::SpecCheck => spec_check(format),
         Command::EmitIr { path } => {
             let output = emit_ir(&path)?;
@@ -511,7 +516,12 @@ fn init_project(name: &str) -> Result<()> {
     }
 
     let root = PathBuf::from(name);
-    std::fs::create_dir_all(root.join("src")).context("failed to create project directories")?;
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).context("failed to create project directories")?;
+    for dir in ["api", "model", "services", "runtime", "cli", "tests"] {
+        std::fs::create_dir_all(src.join(dir))
+            .with_context(|| format!("failed creating src/{dir} directory"))?;
+    }
 
     let manifest = format!(
         "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"{}\"\npath = \"src/main.fzy\"\n",
@@ -520,10 +530,90 @@ fn init_project(name: &str) -> Result<()> {
 
     std::fs::write(root.join("fozzy.toml"), &manifest).context("failed to write fozzy.toml")?;
     std::fs::write(
-        root.join("src/main.fzy"),
-        "fn main() -> i32 {\n    return 0\n}\n",
+        src.join("main.fzy"),
+        "use cap.time;\nuse cap.fs;\nuse cap.net;\nuse cap.thread;\n\nmod api;\nmod model;\nmod services;\nmod runtime;\nmod cli;\nmod tests;\n\nfn main() -> i32 {\n    requires true\n\n    model.preflight()\n    cli.boot()\n    services.boot_all()\n    runtime.start()\n    api.touch()\n\n    ensures true\n    return 0\n}\n",
     )
     .context("failed to write src/main.fzy")?;
+    std::fs::write(
+        src.join("api/mod.fzy"),
+        "mod ffi;\nmod rpc;\n\nfn touch() -> i32 {\n    ffi.touch()\n    rpc.touch()\n    return 0\n}\n",
+    )
+    .context("failed to write src/api/mod.fzy")?;
+    std::fs::write(
+        src.join("api/ffi.fzy"),
+        "fn touch() -> i32 {\n    return 0\n}\n",
+    )
+    .context("failed to write src/api/ffi.fzy")?;
+    std::fs::write(
+        src.join("api/rpc.fzy"),
+        "rpc Ping(req: PingReq) -> PingRes;\n\nfn touch() -> i32 {\n    return 0\n}\n",
+    )
+    .context("failed to write src/api/rpc.fzy")?;
+    std::fs::write(
+        src.join("model/mod.fzy"),
+        "mod types;\nmod contracts;\n\nfn preflight() -> i32 {\n    contracts.preflight()\n    types.schema_version()\n    return 0\n}\n",
+    )
+    .context("failed to write src/model/mod.fzy")?;
+    std::fs::write(
+        src.join("model/types.fzy"),
+        "#[repr(C)]\nstruct Row {}\n\nfn schema_version() -> i32 {\n    return 1\n}\n",
+    )
+    .context("failed to write src/model/types.fzy")?;
+    std::fs::write(
+        src.join("model/contracts.fzy"),
+        "fn preflight() -> i32 {\n    requires true\n    ensures true\n    return 0\n}\n",
+    )
+    .context("failed to write src/model/contracts.fzy")?;
+    std::fs::write(
+        src.join("services/mod.fzy"),
+        "mod store;\nmod http;\n\nfn boot_all() -> i32 {\n    store.init()\n    http.start()\n    return 0\n}\n",
+    )
+    .context("failed to write src/services/mod.fzy")?;
+    std::fs::write(
+        src.join("services/store.fzy"),
+        "use cap.fs;\n\nfn init() -> i32 {\n    let handle = fs.open()\n    defer close(handle)\n    return 0\n}\n",
+    )
+    .context("failed to write src/services/store.fzy")?;
+    std::fs::write(
+        src.join("services/http.fzy"),
+        "use cap.net;\n\nfn start() -> i32 {\n    let conn = net.connect()\n    defer close(conn)\n    return 0\n}\n",
+    )
+    .context("failed to write src/services/http.fzy")?;
+    std::fs::write(
+        src.join("runtime/mod.fzy"),
+        "mod scheduler;\nmod worker;\n\nfn start() -> i32 {\n    spawn(worker.run)\n    spawn(scheduler.tick)\n    return 0\n}\n",
+    )
+    .context("failed to write src/runtime/mod.fzy")?;
+    std::fs::write(
+        src.join("runtime/scheduler.fzy"),
+        "use cap.thread;\n\nfn tick() -> i32 {\n    checkpoint()\n    return 0\n}\n",
+    )
+    .context("failed to write src/runtime/scheduler.fzy")?;
+    std::fs::write(
+        src.join("runtime/worker.fzy"),
+        "use cap.thread;\n\nfn run() -> i32 {\n    yield()\n    return 0\n}\n",
+    )
+    .context("failed to write src/runtime/worker.fzy")?;
+    std::fs::write(
+        src.join("cli/mod.fzy"),
+        "mod commands;\n\nfn boot() -> i32 {\n    commands.boot()\n    return 0\n}\n",
+    )
+    .context("failed to write src/cli/mod.fzy")?;
+    std::fs::write(
+        src.join("cli/commands.fzy"),
+        "fn boot() -> i32 {\n    return 0\n}\n",
+    )
+    .context("failed to write src/cli/commands.fzy")?;
+    std::fs::write(
+        src.join("tests/mod.fzy"),
+        "mod smoke;\n",
+    )
+    .context("failed to write src/tests/mod.fzy")?;
+    std::fs::write(
+        src.join("tests/smoke.fzy"),
+        "test \"det_boot\" {}\ntest \"det_flow\" {}\n",
+    )
+    .context("failed to write src/tests/smoke.fzy")?;
 
     Ok(())
 }
@@ -632,6 +722,170 @@ fn spec_doc_path() -> PathBuf {
         }
     }
     PathBuf::from("docs/language-reference-v0.md")
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DxIssue {
+    level: &'static str,
+    file: String,
+    message: String,
+}
+
+fn dx_check_command(path: &Path, strict: bool, format: Format) -> Result<String> {
+    if !path.is_dir() {
+        bail!("dx-check requires a project directory: {}", path.display());
+    }
+    let resolved = resolve_source(path)?;
+    let main_path = path.join("src/main.fzy");
+    ensure_exists(&main_path)?;
+    let main_source = std::fs::read_to_string(&main_path)
+        .with_context(|| format!("failed reading {}", main_path.display()))?;
+    let main_name = main_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("main");
+    let main_ast = parser::parse(&main_source, main_name)
+        .map_err(|diagnostics| anyhow!("failed parsing {}: {} diagnostics", main_path.display(), diagnostics.len()))?;
+    let mut issues = Vec::<DxIssue>::new();
+    let required = vec!["api", "model", "services", "runtime", "cli", "tests"];
+    for module in &required {
+        if !main_ast.modules.iter().any(|decl| decl == module) {
+            issues.push(DxIssue {
+                level: "error",
+                file: main_path.display().to_string(),
+                message: format!("missing `mod {module};` declaration in main.fzy"),
+            });
+        }
+    }
+    let observed = main_ast
+        .modules
+        .iter()
+        .filter_map(|decl| {
+            let root = decl.split("::").next()?.to_string();
+            if required.iter().any(|expected| expected == &root) {
+                Some(root)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if observed != required {
+        issues.push(DxIssue {
+            level: "error",
+            file: main_path.display().to_string(),
+            message: format!(
+                "module declaration order must be `mod api; mod model; mod services; mod runtime; mod cli; mod tests;` (observed: {})",
+                observed.join(", ")
+            ),
+        });
+    }
+    if main_source.lines().any(|line| line.trim_start().starts_with("test \"")) {
+        issues.push(DxIssue {
+            level: "error",
+            file: main_path.display().to_string(),
+            message: "test declarations are forbidden in main.fzy; move tests under src/tests/*".to_string(),
+        });
+    }
+    let main_is_last = matches!(
+        main_ast.items.last(),
+        Some(ast::Item::Function(function)) if function.name == "main"
+    );
+    if !main_is_last {
+        issues.push(DxIssue {
+            level: "error",
+            file: main_path.display().to_string(),
+            message: "fn main must be the last top-level item in main.fzy".to_string(),
+        });
+    }
+    let required_mod_files = vec![
+        path.join("src/api/mod.fzy"),
+        path.join("src/model/mod.fzy"),
+        path.join("src/services/mod.fzy"),
+        path.join("src/runtime/mod.fzy"),
+        path.join("src/cli/mod.fzy"),
+        path.join("src/tests/mod.fzy"),
+    ];
+    for mod_file in required_mod_files {
+        if !mod_file.exists() {
+            issues.push(DxIssue {
+                level: "error",
+                file: mod_file.display().to_string(),
+                message: "missing module entry file (mod.fzy)".to_string(),
+            });
+        }
+    }
+    let pre_orchestration_errors = issues.iter().filter(|issue| issue.level == "error").count();
+    if pre_orchestration_errors == 0 {
+        let combined = parsed_module_source(&resolved.project_root, &resolved.source_path)?;
+        for module in ["api", "model", "services", "runtime", "cli"] {
+            let needle = format!("{module}.");
+            if !combined.contains(&needle) {
+                issues.push(DxIssue {
+                    level: "warning",
+                    file: main_path.display().to_string(),
+                    message: format!(
+                        "module `{module}` appears declared but not orchestrated from main flow"
+                    ),
+                });
+            }
+        }
+    }
+    if strict && issues.iter().any(|issue| issue.level == "warning") {
+        for issue in &mut issues {
+            if issue.level == "warning" {
+                issue.level = "error";
+            }
+        }
+    }
+    let error_count = issues.iter().filter(|issue| issue.level == "error").count();
+    if error_count > 0 {
+        bail!(
+            "dx-check failed for {}: {} issue(s): {}",
+            path.display(),
+            issues.len(),
+            issues
+                .iter()
+                .map(|issue| format!("[{}] {}", issue.level, issue.message))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
+    match format {
+        Format::Text => Ok(format!(
+            "dx-check ok project={} strict={} issues={}",
+            path.display(),
+            strict,
+            issues.len()
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "project": path.display().to_string(),
+            "strict": strict,
+            "issues": issues,
+        })
+        .to_string()),
+    }
+}
+
+fn parsed_module_source(project_root: &Path, source_path: &Path) -> Result<String> {
+    let parsed = parse_program(source_path)?;
+    let mut combined = String::new();
+    for path in parsed.module_paths {
+        let source = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed reading module source: {}", path.display()))?;
+        combined.push_str("// ");
+        combined.push_str(
+            path.strip_prefix(project_root)
+                .unwrap_or(&path)
+                .display()
+                .to_string()
+                .as_str(),
+        );
+        combined.push('\n');
+        combined.push_str(&source);
+        combined.push('\n');
+    }
+    Ok(combined)
 }
 
 fn spec_check(format: Format) -> Result<String> {
@@ -5564,5 +5818,139 @@ mod tests {
         .expect("lsp smoke should succeed");
         assert!(smoke.contains("\"features\""));
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn dx_check_accepts_convention_project() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-dx-ok-{suffix}"));
+        std::fs::create_dir_all(root.join("src/api")).expect("api dir should be created");
+        std::fs::create_dir_all(root.join("src/model")).expect("model dir should be created");
+        std::fs::create_dir_all(root.join("src/services"))
+            .expect("services dir should be created");
+        std::fs::create_dir_all(root.join("src/runtime")).expect("runtime dir should be created");
+        std::fs::create_dir_all(root.join("src/cli")).expect("cli dir should be created");
+        std::fs::create_dir_all(root.join("src/tests")).expect("tests dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"dx_ok\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"dx_ok\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod api;\nmod model;\nmod services;\nmod runtime;\nmod cli;\nmod tests;\n\nfn main() -> i32 {\n    model.preflight()\n    cli.boot()\n    services.boot_all()\n    runtime.start()\n    api.touch()\n    return 0\n}\n",
+        )
+        .expect("main should be written");
+        std::fs::write(
+            root.join("src/api/mod.fzy"),
+            "fn touch() -> i32 {\n    return 0\n}\n",
+        )
+            .expect("api mod should be written");
+        std::fs::write(
+            root.join("src/model/mod.fzy"),
+            "fn preflight() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("model mod should be written");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "fn boot_all() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("services mod should be written");
+        std::fs::write(
+            root.join("src/runtime/mod.fzy"),
+            "fn start() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("runtime mod should be written");
+        std::fs::write(
+            root.join("src/cli/mod.fzy"),
+            "fn boot() -> i32 {\n    return 0\n}\n",
+        )
+            .expect("cli mod should be written");
+        std::fs::write(root.join("src/tests/mod.fzy"), "mod smoke;\n")
+            .expect("tests mod should be written");
+        std::fs::write(root.join("src/tests/smoke.fzy"), "test \"det\" {}\n")
+            .expect("smoke test should be written");
+
+        let output = run(
+            Command::DxCheck {
+                path: root.clone(),
+                strict: true,
+            },
+            Format::Json,
+        )
+        .expect("dx-check should pass");
+        assert!(output.contains("\"ok\":true"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dx_check_rejects_tests_declared_in_main() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-dx-bad-{suffix}"));
+        std::fs::create_dir_all(root.join("src/api")).expect("api dir should be created");
+        std::fs::create_dir_all(root.join("src/model")).expect("model dir should be created");
+        std::fs::create_dir_all(root.join("src/services"))
+            .expect("services dir should be created");
+        std::fs::create_dir_all(root.join("src/runtime")).expect("runtime dir should be created");
+        std::fs::create_dir_all(root.join("src/cli")).expect("cli dir should be created");
+        std::fs::create_dir_all(root.join("src/tests")).expect("tests dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"dx_bad\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"dx_bad\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod api;\nmod model;\nmod services;\nmod runtime;\nmod cli;\nmod tests;\ntest \"bad\" {}\nfn main() -> i32 { return 0 }\n",
+        )
+        .expect("main should be written");
+        std::fs::write(
+            root.join("src/api/mod.fzy"),
+            "fn touch() -> i32 {\n    return 0\n}\n",
+        )
+            .expect("api mod should be written");
+        std::fs::write(
+            root.join("src/model/mod.fzy"),
+            "fn preflight() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("model mod should be written");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "fn boot_all() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("services mod should be written");
+        std::fs::write(
+            root.join("src/runtime/mod.fzy"),
+            "fn start() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("runtime mod should be written");
+        std::fs::write(
+            root.join("src/cli/mod.fzy"),
+            "fn boot() -> i32 {\n    return 0\n}\n",
+        )
+            .expect("cli mod should be written");
+        std::fs::write(root.join("src/tests/mod.fzy"), "mod smoke;\n")
+            .expect("tests mod should be written");
+        std::fs::write(root.join("src/tests/smoke.fzy"), "test \"det\" {}\n")
+            .expect("smoke test should be written");
+
+        let error = run(
+            Command::DxCheck {
+                path: root.clone(),
+                strict: true,
+            },
+            Format::Text,
+        )
+        .expect_err("dx-check should fail");
+        assert!(!error.to_string().trim().is_empty());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

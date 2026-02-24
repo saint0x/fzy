@@ -1,17 +1,9 @@
 use cap.fs;
 use cap.time;
 
-fn record_boot() -> i32 {
-    let metrics_handle = fs.open()
-    defer close(metrics_handle)
+fn init() -> i32 {
+    let metrics = fs.open()
+    defer close(metrics)
     time.now()
-    fs.write()
-    return 1
-}
-
-fn record_write() -> i32 {
-    let metrics_handle = fs.open()
-    defer close(metrics_handle)
-    fs.write()
-    return 1
+    return 0
 }
