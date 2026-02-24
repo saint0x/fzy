@@ -185,6 +185,8 @@ Available projects:
 - `examples/minimal_runtime`
 - `examples/service_app`
 - `examples/fullstack`
+- `examples/robust_cli`
+- `examples/live_server`
 
 Validate a project:
 
@@ -202,6 +204,35 @@ cargo run -q -p fozzyc -- run examples/fullstack --backend cranelift --json
 cargo run -q -p fozzyc -- test examples/fullstack --det --seed 41 --backend llvm --json
 cargo run -q -p fozzyc -- headers examples/fullstack --json
 cargo run -q -p fozzyc -- abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json
+```
+
+Run robust CLI app:
+
+```bash
+cargo run -q -p fozzyc -- dx-check examples/robust_cli --strict --json
+cargo run -q -p fozzyc -- build examples/robust_cli --backend cranelift --json
+cargo run -q -p fozzyc -- run examples/robust_cli --backend llvm --json
+cargo run -q -p fozzyc -- test examples/robust_cli --det --seed 55 --backend cranelift --json
+```
+
+Run live server runtime + verified runtime stats:
+
+```bash
+cargo run -q -p fozzyc -- dx-check examples/live_server --strict --json
+cargo run -q -p fozzyc -- build examples/live_server --backend cranelift --json
+cargo run -q -p fozzyc -- run examples/live_server --backend llvm --json
+cargo run -q -p fozzyc -- test examples/live_server --det --seed 77 --backend cranelift --record artifacts/live_server.stats.trace.json --rich-artifacts --json
+
+# inspect runtime stats artifacts
+cat artifacts/live_server.stats.trace.report.json
+cat artifacts/live_server.stats.trace.timeline.json
+cat artifacts/live_server.stats.trace.explore.json
+```
+
+Host-backed internet probe scenario:
+
+```bash
+fozzy run tests/live.server.internet.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
 ```
 
 ## Plan Tracking

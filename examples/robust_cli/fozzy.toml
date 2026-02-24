@@ -1,0 +1,7 @@
+[package]
+name = "robust_cli"
+version = "0.1.0"
+
+[[target.bin]]
+name = "robust_cli"
+path = "src/main.fzy"

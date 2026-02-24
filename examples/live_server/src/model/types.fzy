@@ -1,0 +1,9 @@
+#[repr(C)]
+struct UserRow {}
+
+#[repr(C)]
+enum HttpState {}
+
+fn schema_version() -> i32 {
+    return 7
+}

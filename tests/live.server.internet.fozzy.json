@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "live-server-internet-smoke",
+  "steps": [
+    { "type": "trace_event", "name": "internet_probe_start" },
+    { "type": "proc_spawn", "cmd": "python3", "args": ["-c", "import urllib.request; print(urllib.request.urlopen('https://example.com', timeout=10).status)"], "expect_exit": 0, "expect_stdout": "200\n" },
+    { "type": "trace_event", "name": "internet_probe_ok" }
+  ]
+}

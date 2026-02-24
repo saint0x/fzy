@@ -1,0 +1,31 @@
+use cap.proc;
+
+fn cmd_init() -> i32 {
+    process.exec()
+    return 0
+}
+
+fn cmd_set() -> i32 {
+    process.exec()
+    return 0
+}
+
+fn cmd_get() -> i32 {
+    process.exec()
+    return 0
+}
+
+fn cmd_list() -> i32 {
+    process.exec()
+    return 0
+}
+
+fn cmd_compact() -> i32 {
+    process.exec()
+    return 0
+}
+
+fn cmd_export() -> i32 {
+    process.exec()
+    return 0
+}

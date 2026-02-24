@@ -1,0 +1,66 @@
+use cap.time;
+use cap.rng;
+use cap.fs;
+use cap.net;
+use cap.proc;
+use cap.mem;
+use cap.thread;
+
+mod api;
+mod model;
+mod services;
+mod runtime;
+mod cli;
+mod tests;
+
+fn main() -> i32 {
+    requires true
+
+    model.preflight()
+    cli.boot()
+    services.boot_all()
+    runtime.start()
+    api.touch()
+
+    let listener = net.connect()
+    defer close(listener)
+
+    let heap: *u8 = alloc(512)
+    defer free(heap)
+
+    let seed: i32 = try rng.seed() catch 303
+    match seed { 0 => pulse(), 1 => pulse(), _ => pulse() }
+
+    services.http.listen_public()
+    services.http.route_health()
+    services.http.route_users()
+    services.sessions.issue_token()
+    services.sessions.validate_token()
+    services.store.read_user()
+    services.store.write_user()
+    services.metrics.record_req()
+    services.metrics.record_err()
+    services.telemetry.log_latency_bucket()
+    services.telemetry.log_perf_snapshot()
+    services.telemetry.flush_runtime_stats()
+    services.replication.push_state()
+
+    checkpoint()
+    yield()
+    spawn(runtime.acceptor.run)
+    spawn(runtime.worker.run)
+    spawn(runtime.scheduler.tick)
+    spawn(runtime.supervisor.guard)
+    spawn(runtime.stats.sample)
+
+    GetUser(req)
+    UpsertUser(req)
+    StreamEvents(req)
+    timeout(30)
+    cancel()
+
+    syscall.sync()
+
+    ensures true
+    return 200
+}

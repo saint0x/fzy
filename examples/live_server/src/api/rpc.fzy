@@ -1,0 +1,12 @@
+rpc GetUser(req: GetUserReq) -> GetUserRes;
+rpc UpsertUser(req: UpsertUserReq) -> UpsertUserRes;
+rpc StreamEvents(stream<WatchReq>) -> stream<WatchEvent>;
+
+fn touch() -> i32 {
+    GetUser(req)
+    UpsertUser(req)
+    StreamEvents(req)
+    timeout(20)
+    cancel()
+    return 0
+}

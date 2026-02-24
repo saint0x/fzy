@@ -1,0 +1,9 @@
+#[repr(C)]
+struct KvRow {}
+
+#[repr(C)]
+struct JournalEntry {}
+
+fn schema_version() -> i32 {
+    return 4
+}

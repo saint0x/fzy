@@ -1,0 +1,17 @@
+mod http;
+mod sessions;
+mod store;
+mod metrics;
+mod replication;
+mod telemetry;
+
+fn boot_all() -> i32 {
+    telemetry.bootstrap_metrics()
+    http.listen_public()
+    sessions.issue_token()
+    store.read_user()
+    metrics.record_req()
+    replication.push_state()
+    telemetry.flush_runtime_stats()
+    return 0
+}

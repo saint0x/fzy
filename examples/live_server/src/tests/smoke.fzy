@@ -1,0 +1,5 @@
+test "det_server_boot" {}
+test "det_http_routes" {}
+test "det_session_flow" {}
+test "det_latency_metrics" {}
+test "chaos_server" nondet {}

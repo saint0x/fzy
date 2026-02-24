@@ -1,0 +1,16 @@
+use cap.fs;
+use cap.time;
+
+fn record_req() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    time.now()
+    return 0
+}
+
+fn record_err() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    time.now()
+    return 0
+}

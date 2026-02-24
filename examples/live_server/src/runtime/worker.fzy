@@ -1,0 +1,6 @@
+use cap.thread;
+
+fn run() -> i32 {
+    yield()
+    return 0
+}

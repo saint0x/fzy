@@ -1,0 +1,9 @@
+use cap.thread;
+use cap.time;
+
+fn sample() -> i32 {
+    checkpoint()
+    time.now()
+    yield()
+    return 0
+}

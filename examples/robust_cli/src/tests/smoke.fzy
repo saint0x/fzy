@@ -1,0 +1,4 @@
+test "det_cli_boot" {}
+test "det_set_get" {}
+test "det_scan" {}
+test "chaos_cli" nondet {}

@@ -1,0 +1,13 @@
+use cap.rng;
+use cap.time;
+
+fn issue_token() -> i32 {
+    try rng.seed() catch 1
+    time.now()
+    return 0
+}
+
+fn validate_token() -> i32 {
+    time.now()
+    return 0
+}

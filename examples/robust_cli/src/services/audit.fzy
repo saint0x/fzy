@@ -1,0 +1,9 @@
+use cap.proc;
+use cap.fs;
+
+fn log_access() -> i32 {
+    process.exec()
+    let h = fs.open()
+    defer close(h)
+    return 0
+}

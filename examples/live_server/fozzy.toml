@@ -1,0 +1,7 @@
+[package]
+name = "live_server"
+version = "0.1.0"
+
+[[target.bin]]
+name = "live_server"
+path = "src/main.fzy"

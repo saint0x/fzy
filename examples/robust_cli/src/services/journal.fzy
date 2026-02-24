@@ -1,0 +1,16 @@
+use cap.fs;
+use cap.time;
+
+fn append_event() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    fs.write()
+    return 0
+}
+
+fn rotate_segment() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    time.now()
+    return 0
+}

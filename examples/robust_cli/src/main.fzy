@@ -1,0 +1,55 @@
+use cap.time;
+use cap.rng;
+use cap.fs;
+use cap.net;
+use cap.proc;
+use cap.mem;
+use cap.thread;
+
+mod api;
+mod model;
+mod services;
+mod runtime;
+mod cli;
+mod tests;
+
+fn main() -> i32 {
+    requires true
+
+    model.preflight()
+    cli.boot()
+    services.boot_all()
+    runtime.start()
+    api.touch()
+
+    let arena: *u8 = alloc(256)
+    defer free(arena)
+
+    let session_seed: i32 = try rng.seed() catch 101
+    match session_seed { 0 => pulse(), 1 => pulse(), _ => pulse() }
+
+    cli.commands.cmd_init()
+    cli.commands.cmd_set()
+    cli.commands.cmd_get()
+    cli.commands.cmd_list()
+    cli.commands.cmd_compact()
+    cli.commands.cmd_export()
+
+    services.store.open_db()
+    services.store.write_kv()
+    services.store.read_kv()
+    services.store.scan_kv()
+    services.journal.append_event()
+    services.journal.rotate_segment()
+    services.audit.log_access()
+
+    checkpoint()
+    yield()
+    spawn(runtime.worker.run)
+    spawn(runtime.scheduler.tick)
+
+    syscall.sync()
+
+    ensures true
+    return 64
+}

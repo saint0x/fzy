@@ -1,0 +1,16 @@
+use cap.fs;
+use cap.mem;
+
+fn read_user() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    fs.read()
+    return 0
+}
+
+fn write_user() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    fs.write()
+    return 0
+}

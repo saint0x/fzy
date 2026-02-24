@@ -1,0 +1,34 @@
+use cap.fs;
+use cap.time;
+use cap.proc;
+
+fn bootstrap_metrics() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    fs.write()
+    time.now()
+    return 0
+}
+
+fn log_latency_bucket() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    time.now()
+    fs.write()
+    return 0
+}
+
+fn log_perf_snapshot() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    process.exec()
+    time.now()
+    return 0
+}
+
+fn flush_runtime_stats() -> i32 {
+    let h = fs.open()
+    defer close(h)
+    fs.write()
+    return 0
+}
