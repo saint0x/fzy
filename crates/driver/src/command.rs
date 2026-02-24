@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
@@ -329,6 +330,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "asyncCheckpointCount": test_plan.async_checkpoint_count,
                     "asyncExecution": test_plan.async_execution,
                     "rpcFrameCount": test_plan.rpc_frame_count,
+                    "rpcValidationErrors": test_plan.rpc_validation_errors,
+                    "threadFindings": test_plan.thread_findings,
                     "discoveredTests": test_plan.discovered_tests,
                     "selectedTests": test_plan.selected_tests,
                     "discoveredTestNames": test_plan.discovered_test_names,
@@ -517,6 +520,8 @@ struct NonScenarioTestPlan {
     async_checkpoint_count: usize,
     async_execution: Vec<u64>,
     rpc_frame_count: usize,
+    rpc_validation_errors: usize,
+    thread_findings: usize,
     coverage_ratio: f64,
     artifacts: Option<NonScenarioTraceArtifacts>,
 }
@@ -555,6 +560,27 @@ struct RpcFrameEvent {
     task_id: u64,
 }
 
+#[derive(Debug, Clone)]
+struct WorkloadShape {
+    async_functions: usize,
+    spawn_markers: usize,
+    yield_markers: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RpcValidationSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+struct RpcValidationFinding {
+    kind: &'static str,
+    severity: RpcValidationSeverity,
+    message: String,
+}
+
 fn run_non_scenario_test_plan(
     path: &Path,
     deterministic: bool,
@@ -587,17 +613,30 @@ fn run_non_scenario_test_plan(
     } else {
         discovered_test_names.clone()
     };
+    let workload = analyze_workload_shape(&parsed.combined_source);
+    let call_sequence = collect_call_sequence(&parsed.module);
+    let rpc_methods = parse_rpc_declarations(&parsed.combined_source).unwrap_or_default();
+    let rpc_method_names = rpc_methods
+        .iter()
+        .map(|method| method.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let rpc_call_count = call_sequence
+        .iter()
+        .filter(|call| rpc_method_names.contains(call.as_str()))
+        .count();
     let async_checkpoint_count = count_async_hooks(&parsed.combined_source);
     let deterministic_test_names = deterministic_test_names
         .into_iter()
         .filter(|name| selected_test_names.iter().any(|selected| selected == name))
         .collect::<Vec<_>>();
     let selected_tests = selected_test_names.len();
-    let task_count = if discovered_tests == 0 {
+    let base_tests = if discovered_tests == 0 {
         1
     } else {
-        deterministic_test_names.len()
+        deterministic_test_names.len().max(1)
     };
+    let task_count =
+        (base_tests + workload.async_functions + workload.spawn_markers + rpc_call_count).max(1);
     let mode = if deterministic {
         ExecMode::Det
     } else {
@@ -648,7 +687,13 @@ fn run_non_scenario_test_plan(
         };
         let mut executor = DeterministicExecutor::new_with_trace_mode(trace_mode);
         for _ in 0..task_count.max(1) {
-            executor.spawn(Box::new(|| {}));
+            executor.spawn(Box::new(|| {
+                let mut acc = 0u64;
+                for i in 0..256u64 {
+                    acc = acc.wrapping_add(i ^ 0x9E37);
+                }
+                std::hint::black_box(acc);
+            }));
         }
         execution_order = executor.run_until_idle_with_scheduler(scheduler, seed.unwrap_or(1));
         events = executor.trace().to_vec();
@@ -664,10 +709,31 @@ fn run_non_scenario_test_plan(
         Vec::new()
     };
     let rpc_frames = if mode == ExecMode::Det {
-        build_rpc_frame_events(&parsed.module, &parsed.combined_source, &execution_order)
+        build_rpc_frame_events(
+            &parsed.combined_source,
+            &call_sequence,
+            &execution_order,
+            &rpc_methods,
+        )
     } else {
         Vec::new()
     };
+    let rpc_validation = validate_rpc_frames(&rpc_frames);
+    if strict
+        && mode == ExecMode::Det
+        && rpc_validation
+            .iter()
+            .any(|finding| matches!(finding.severity, RpcValidationSeverity::Error))
+    {
+        bail!("strict test plan rejected RPC sequence with validation errors");
+    }
+    let thread_findings = thread_health_findings(
+        &events,
+        &execution_order,
+        task_count,
+        &workload,
+        &call_sequence,
+    );
     let artifacts = if mode == ExecMode::Det {
         let detail = if strict || rich_artifacts {
             ArtifactDetail::Rich
@@ -686,8 +752,10 @@ fn run_non_scenario_test_plan(
                     &deterministic_test_names,
                     &async_execution,
                     &rpc_frames,
+                    &rpc_validation,
                     &execution_order,
                     &events,
+                    &thread_findings,
                 )
             })
             .transpose()?
@@ -713,6 +781,11 @@ fn run_non_scenario_test_plan(
         async_checkpoint_count,
         async_execution,
         rpc_frame_count: rpc_frames.len(),
+        rpc_validation_errors: rpc_validation
+            .iter()
+            .filter(|finding| matches!(finding.severity, RpcValidationSeverity::Error))
+            .count(),
+        thread_findings: thread_findings.len(),
         coverage_ratio: if discovered_tests == 0 {
             1.0
         } else {
@@ -732,8 +805,10 @@ fn write_non_scenario_trace_artifacts(
     deterministic_test_names: &[String],
     async_execution: &[u64],
     rpc_frames: &[RpcFrameEvent],
+    rpc_validation: &[RpcValidationFinding],
     execution_order: &[u64],
     events: &[TaskEvent],
+    thread_findings: &[serde_json::Value],
 ) -> Result<NonScenarioTraceArtifacts> {
     if let Some(parent) = trace_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -875,6 +950,11 @@ fn write_non_scenario_trace_artifacts(
                     execution_order,
                 ),
                 findings: rpc_failure_findings(rpc_frames),
+                rpc_validation: rpc_validation
+                    .iter()
+                    .map(rpc_validation_json)
+                    .collect::<Vec<_>>(),
+                thread_findings: thread_findings.to_vec(),
             },
         )
         .with_context(|| format!("failed writing report artifact: {}", report_path.display()))?;
@@ -917,6 +997,7 @@ fn write_non_scenario_trace_artifacts(
                     rpc_frames,
                     async_execution,
                 ),
+                minimal_rpc_repro: minimize_rpc_failure_frames(rpc_frames),
             },
         )
         .with_context(|| format!("failed writing shrink artifact: {}", shrink_path.display()))?;
@@ -1104,6 +1185,10 @@ struct ReportPayload {
     #[serde(rename = "failureClasses")]
     failure_classes: Vec<serde_json::Value>,
     findings: Vec<serde_json::Value>,
+    #[serde(rename = "rpcValidation")]
+    rpc_validation: Vec<serde_json::Value>,
+    #[serde(rename = "threadFindings")]
+    thread_findings: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1127,6 +1212,8 @@ struct ShrinkPayload {
     #[serde(rename = "scenarioPriorities")]
     scenario_priorities: serde_json::Value,
     hints: serde_json::Value,
+    #[serde(rename = "minimalRpcRepro")]
+    minimal_rpc_repro: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1179,20 +1266,106 @@ fn count_async_hooks(source: &str) -> usize {
         .count()
 }
 
+fn analyze_workload_shape(source: &str) -> WorkloadShape {
+    let mut async_functions = 0usize;
+    let mut spawn_markers = 0usize;
+    let mut yield_markers = 0usize;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("async fn ") {
+            async_functions += 1;
+        }
+        if trimmed.contains("spawn(") || trimmed.contains("thread.spawn(") {
+            spawn_markers += 1;
+        }
+        if trimmed.contains("yield(") || trimmed.contains("checkpoint(") {
+            yield_markers += 1;
+        }
+    }
+    WorkloadShape {
+        async_functions,
+        spawn_markers,
+        yield_markers,
+    }
+}
+
 fn build_rpc_frame_events(
-    module: &ast::Module,
-    source: &str,
+    _source: &str,
+    call_sequence: &[String],
     execution_order: &[u64],
+    methods: &[RpcMethod],
 ) -> Vec<RpcFrameEvent> {
     if execution_order.is_empty() {
         return Vec::new();
     }
-    let methods = parse_rpc_declarations(source).unwrap_or_default();
     if methods.is_empty() {
         return Vec::new();
     }
 
     let mut events = Vec::new();
+    let rpc_methods = methods
+        .iter()
+        .map(|method| method.name.as_str())
+        .collect::<BTreeSet<_>>();
+
+    let mut cursor = 0usize;
+    let mut pending = VecDeque::<String>::new();
+    for call in call_sequence {
+        if rpc_methods.contains(call.as_str()) {
+            let task_id = execution_order[cursor % execution_order.len()];
+            cursor += 1;
+            events.push(RpcFrameEvent {
+                kind: "rpc_send",
+                method: call.clone(),
+                task_id,
+            });
+            pending.push_back(call.clone());
+            continue;
+        }
+
+        if (call == "timeout" || call == "deadline") && !pending.is_empty() {
+            let method = pending.pop_front().unwrap_or_default();
+            events.push(RpcFrameEvent {
+                kind: "rpc_deadline",
+                method,
+                task_id: execution_order[cursor % execution_order.len()],
+            });
+            cursor += 1;
+            continue;
+        }
+        if call == "cancel" && !pending.is_empty() {
+            let method = pending.pop_front().unwrap_or_default();
+            events.push(RpcFrameEvent {
+                kind: "rpc_cancel",
+                method,
+                task_id: execution_order[cursor % execution_order.len()],
+            });
+            cursor += 1;
+            continue;
+        }
+        if call == "recv" && !pending.is_empty() {
+            let method = pending.pop_front().unwrap_or_default();
+            events.push(RpcFrameEvent {
+                kind: "rpc_recv",
+                method,
+                task_id: execution_order[cursor % execution_order.len()],
+            });
+            cursor += 1;
+        }
+    }
+    while let Some(method) = pending.pop_front() {
+        events.push(RpcFrameEvent {
+            kind: "rpc_recv",
+            method,
+            task_id: execution_order[cursor % execution_order.len()],
+        });
+        cursor += 1;
+    }
+
+    events
+}
+
+fn collect_call_sequence(module: &ast::Module) -> Vec<String> {
     let mut call_sequence = Vec::new();
     for item in &module.items {
         if let ast::Item::Function(function) = item {
@@ -1201,55 +1374,7 @@ fn build_rpc_frame_events(
             }
         }
     }
-
-    let rpc_methods = methods
-        .iter()
-        .map(|method| method.name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-
-    let mut cursor = 0usize;
-    for call in &call_sequence {
-        if !rpc_methods.contains(call.as_str()) {
-            continue;
-        }
-        let task_id = execution_order[cursor % execution_order.len()];
-        cursor += 1;
-        events.push(RpcFrameEvent {
-            kind: "rpc_send",
-            method: call.clone(),
-            task_id,
-        });
-
-        let task_id = execution_order[cursor % execution_order.len()];
-        cursor += 1;
-        events.push(RpcFrameEvent {
-            kind: "rpc_recv",
-            method: call.clone(),
-            task_id,
-        });
-    }
-
-    let has_deadline_call = call_sequence
-        .iter()
-        .any(|call| call == "timeout" || call == "deadline");
-    if has_deadline_call && !methods.is_empty() {
-        events.push(RpcFrameEvent {
-            kind: "rpc_deadline",
-            method: methods[0].name.clone(),
-            task_id: execution_order[cursor % execution_order.len()],
-        });
-        cursor += 1;
-    }
-    let has_cancel_call = call_sequence.iter().any(|call| call == "cancel");
-    if has_cancel_call && !methods.is_empty() {
-        events.push(RpcFrameEvent {
-            kind: "rpc_cancel",
-            method: methods[0].name.clone(),
-            task_id: execution_order[cursor % execution_order.len()],
-        });
-    }
-
-    events
+    call_sequence
 }
 
 fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
@@ -1303,6 +1428,156 @@ fn rpc_frames_json(frames: &[RpcFrameEvent]) -> Vec<serde_json::Value> {
             })
         })
         .collect()
+}
+
+fn rpc_validation_json(finding: &RpcValidationFinding) -> serde_json::Value {
+    serde_json::json!({
+        "kind": finding.kind,
+        "severity": match finding.severity {
+            RpcValidationSeverity::Info => "info",
+            RpcValidationSeverity::Warning => "warning",
+            RpcValidationSeverity::Error => "error",
+        },
+        "message": finding.message,
+    })
+}
+
+fn validate_rpc_frames(frames: &[RpcFrameEvent]) -> Vec<RpcValidationFinding> {
+    let mut findings = Vec::new();
+    let mut pending = BTreeMap::<String, usize>::new();
+    for frame in frames {
+        match frame.kind {
+            "rpc_send" => {
+                *pending.entry(frame.method.clone()).or_insert(0) += 1;
+            }
+            "rpc_recv" => {
+                let entry = pending.entry(frame.method.clone()).or_insert(0);
+                if *entry == 0 {
+                    findings.push(RpcValidationFinding {
+                        kind: "rpc_recv_without_send",
+                        severity: RpcValidationSeverity::Error,
+                        message: format!(
+                            "received response for `{}` without matching send",
+                            frame.method
+                        ),
+                    });
+                } else {
+                    *entry -= 1;
+                }
+            }
+            "rpc_cancel" | "rpc_deadline" => {
+                let entry = pending.entry(frame.method.clone()).or_insert(0);
+                if *entry == 0 {
+                    findings.push(RpcValidationFinding {
+                        kind: "rpc_terminal_without_inflight",
+                        severity: RpcValidationSeverity::Warning,
+                        message: format!(
+                            "{} observed for `{}` without in-flight request",
+                            frame.kind, frame.method
+                        ),
+                    });
+                } else {
+                    *entry -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    for (method, inflight) in pending {
+        if inflight > 0 {
+            findings.push(RpcValidationFinding {
+                kind: "rpc_inflight_leak",
+                severity: RpcValidationSeverity::Error,
+                message: format!(
+                    "{inflight} in-flight request(s) for `{method}` did not terminate deterministically"
+                ),
+            });
+        }
+    }
+    if findings.is_empty() && !frames.is_empty() {
+        findings.push(RpcValidationFinding {
+            kind: "rpc_sequence_validated",
+            severity: RpcValidationSeverity::Info,
+            message: "RPC send/recv/cancel/deadline sequencing is deterministic".to_string(),
+        });
+    }
+    findings
+}
+
+fn thread_health_findings(
+    events: &[TaskEvent],
+    execution_order: &[u64],
+    expected_tasks: usize,
+    workload: &WorkloadShape,
+    call_sequence: &[String],
+) -> Vec<serde_json::Value> {
+    let mut spawned = BTreeSet::<u64>::new();
+    let mut completed = BTreeSet::<u64>::new();
+    let mut panicked = BTreeSet::<u64>::new();
+    for event in events {
+        match event {
+            TaskEvent::Spawned { task_id, .. } => {
+                spawned.insert(*task_id);
+            }
+            TaskEvent::Completed { task_id } => {
+                completed.insert(*task_id);
+            }
+            TaskEvent::Panicked { task_id, .. } => {
+                panicked.insert(*task_id);
+            }
+            TaskEvent::Started { .. } | TaskEvent::Detached { .. } => {}
+        }
+    }
+    let mut findings = Vec::new();
+    if spawned.len() < expected_tasks {
+        findings.push(serde_json::json!({
+            "kind": "thread_spawn_shortfall",
+            "severity": "warning",
+            "message": format!(
+                "expected at least {expected_tasks} deterministic tasks, observed {}",
+                spawned.len()
+            ),
+        }));
+    }
+    if completed.len() + panicked.len() < spawned.len() {
+        findings.push(serde_json::json!({
+            "kind": "thread_deadlock_suspect",
+            "severity": "error",
+            "message": "spawned tasks missing terminal state (possible deadlock)",
+        }));
+    }
+    if workload.spawn_markers > 0 && workload.yield_markers == 0 {
+        findings.push(serde_json::json!({
+            "kind": "thread_starvation_risk",
+            "severity": "warning",
+            "message": "spawn observed without yield/checkpoint markers; starvation risk under host scheduler",
+        }));
+    }
+    let lock_calls = call_sequence
+        .iter()
+        .filter(|call| call.as_str() == "lock")
+        .count();
+    let unlock_calls = call_sequence
+        .iter()
+        .filter(|call| call.as_str() == "unlock")
+        .count();
+    if lock_calls > unlock_calls {
+        findings.push(serde_json::json!({
+            "kind": "lock_unbalanced",
+            "severity": "warning",
+            "message": "lock/unlock imbalance detected; potential deadlock path",
+            "locks": lock_calls,
+            "unlocks": unlock_calls,
+        }));
+    }
+    if execution_order.is_empty() {
+        findings.push(serde_json::json!({
+            "kind": "no_thread_schedule",
+            "severity": "error",
+            "message": "deterministic execution produced no scheduled tasks",
+        }));
+    }
+    findings
 }
 
 fn rpc_failure_findings(frames: &[RpcFrameEvent]) -> Vec<serde_json::Value> {
@@ -1431,6 +1706,31 @@ fn build_shrink_hints(
         }));
     }
     serde_json::json!(hints)
+}
+
+fn minimize_rpc_failure_frames(frames: &[RpcFrameEvent]) -> serde_json::Value {
+    if frames.is_empty() {
+        return serde_json::json!([]);
+    }
+    let pivot = frames
+        .iter()
+        .find(|frame| frame.kind == "rpc_deadline" || frame.kind == "rpc_cancel")
+        .map(|frame| frame.method.clone());
+    let Some(method) = pivot else {
+        return serde_json::json!(rpc_frames_json(frames));
+    };
+    let minimal = frames
+        .iter()
+        .filter(|frame| frame.method == method)
+        .map(|frame| {
+            serde_json::json!({
+                "event": frame.kind,
+                "method": frame.method,
+                "taskId": frame.task_id,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!(minimal)
 }
 
 fn classify_failure_classes(
@@ -1824,6 +2124,7 @@ fn ensure_goal_trace_from_scenario(
 struct HeaderArtifact {
     path: PathBuf,
     exports: usize,
+    abi_manifest: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -1837,13 +2138,15 @@ struct RpcArtifacts {
 fn render_headers(format: Format, artifact: HeaderArtifact) -> String {
     match format {
         Format::Text => format!(
-            "generated header={} exports={}",
+            "generated header={} exports={} abi_manifest={}",
             artifact.path.display(),
-            artifact.exports
+            artifact.exports,
+            artifact.abi_manifest.display()
         ),
         Format::Json => serde_json::json!({
             "header": artifact.path.display().to_string(),
             "exports": artifact.exports,
+            "abiManifest": artifact.abi_manifest.display().to_string(),
         })
         .to_string(),
     }
@@ -1894,6 +2197,7 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
             _ => None,
         })
         .collect();
+    validate_ffi_contract(&parsed.combined_source, &exports)?;
 
     let header_path = output
         .map(Path::to_path_buf)
@@ -1915,10 +2219,35 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
     let header = render_c_header(package_name, &exports);
     std::fs::write(&header_path, header)
         .with_context(|| format!("failed writing header: {}", header_path.display()))?;
+    let abi_manifest = header_path.with_extension("abi.json");
+    let abi_payload = serde_json::json!({
+        "schemaVersion": "fozzylang.ffi_abi.v0",
+        "package": package_name,
+        "panicBoundary": "abort-or-translate",
+        "exports": exports.iter().map(|function| {
+            serde_json::json!({
+                "name": function.name.as_str(),
+                "params": function.params.iter().map(|param| {
+                    serde_json::json!({
+                        "name": param.name.as_str(),
+                        "fzy": param.ty.as_str(),
+                        "c": to_c_type(&param.ty),
+                    })
+                }).collect::<Vec<_>>(),
+                "return": {
+                    "fzy": function.return_type.as_str(),
+                    "c": to_c_type(&function.return_type),
+                }
+            })
+        }).collect::<Vec<_>>(),
+    });
+    std::fs::write(&abi_manifest, serde_json::to_vec_pretty(&abi_payload)?)
+        .with_context(|| format!("failed writing ffi abi manifest: {}", abi_manifest.display()))?;
 
     Ok(HeaderArtifact {
         path: header_path,
         exports: exports.len(),
+        abi_manifest,
     })
 }
 
@@ -2012,6 +2341,79 @@ fn render_c_header(package_name: &str, exports: &[&ast::Function]) -> String {
     }
     header.push_str("\n#ifdef __cplusplus\n}\n#endif\n\n#endif\n");
     header
+}
+
+fn validate_ffi_contract(source: &str, exports: &[&ast::Function]) -> Result<()> {
+    if exports.is_empty() {
+        return Ok(());
+    }
+    for function in exports {
+        if !is_ffi_stable_type(&function.return_type) {
+            bail!(
+                "extern export `{}` uses unstable return type `{}`",
+                function.name,
+                function.return_type
+            );
+        }
+        for param in &function.params {
+            if !is_ffi_stable_type(&param.ty) {
+                bail!(
+                    "extern export `{}` param `{}` uses unstable type `{}`",
+                    function.name,
+                    param.name,
+                    param.ty
+                );
+            }
+        }
+    }
+    if source.contains("panic(")
+        && !source.contains("#[ffi_panic(abort)]")
+        && !source.contains("#[ffi_panic(error)]")
+    {
+        bail!(
+            "ffi panic contract missing: add `#[ffi_panic(abort)]` or `#[ffi_panic(error)]` to prevent panic crossing C boundary"
+        );
+    }
+    Ok(())
+}
+
+fn is_ffi_stable_type(ty: &str) -> bool {
+    let ty = ty.trim();
+    if ty.is_empty() {
+        return false;
+    }
+    if ty.contains('!') || ty.contains("error") || ty.contains("Result<") {
+        return false;
+    }
+    if ty == "str" || ty.starts_with("[]") || ty.starts_with("slice<") {
+        return false;
+    }
+    if let Some(inner) = ty.strip_prefix("*mut ") {
+        return is_ffi_stable_type(inner);
+    }
+    if let Some(inner) = ty.strip_prefix('*') {
+        return is_ffi_stable_type(inner);
+    }
+    matches!(
+        ty,
+        "void"
+            | "bool"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "isize"
+            | "f32"
+            | "f64"
+            | "char"
+    )
 }
 
 fn to_c_type(ty: &str) -> String {
@@ -2317,11 +2719,15 @@ mod tests {
         )
         .expect("headers command should succeed");
         assert!(output.contains("generated header="));
+        assert!(output.contains("abi_manifest="));
         let header_text = std::fs::read_to_string(&header).expect("header should be created");
         assert!(header_text.contains("int32_t add(int32_t left, int32_t right);"));
+        let abi_path = header.with_extension("abi.json");
+        assert!(abi_path.exists());
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(header);
+        let _ = std::fs::remove_file(abi_path);
     }
 
     #[test]
@@ -2731,12 +3137,13 @@ mod tests {
             Format::Json,
         )
         .expect("test command should succeed");
-        assert!(output.contains("\"rpcFrameCount\":6"));
+        assert!(output.contains("\"rpcFrameCount\":4"));
+        assert!(output.contains("\"rpcValidationErrors\":0"));
 
         let trace_text = std::fs::read_to_string(&trace).expect("trace should be written");
         assert!(trace_text.contains("\"rpcFrames\": ["));
         assert!(trace_text.contains("\"event\": \"rpc_send\""));
-        assert!(trace_text.contains("\"event\": \"rpc_recv\""));
+        assert!(!trace_text.contains("\"event\": \"rpc_recv\""));
         assert!(trace_text.contains("\"event\": \"rpc_deadline\""));
         assert!(trace_text.contains("\"event\": \"rpc_cancel\""));
 
@@ -2756,6 +3163,8 @@ mod tests {
             .expect("report should be readable");
         assert!(report.contains("\"kind\": \"rpc_deadline\""));
         assert!(report.contains("\"kind\": \"rpc_cancel\""));
+        assert!(report.contains("\"rpcValidation\""));
+        assert!(report.contains("\"threadFindings\""));
         assert!(report.contains("\"failureClasses\""));
         assert!(report.contains("\"id\": \"rpc_timeout\""));
         let explore = std::fs::read_to_string(base.join(format!("{stem}.explore.json")))
@@ -2767,6 +3176,7 @@ mod tests {
             .expect("shrink should be readable");
         assert!(shrink.contains("\"schemaVersion\": \"fozzylang.shrink.v0\""));
         assert!(shrink.contains("\"kind\": \"rpc_methods\""));
+        assert!(shrink.contains("\"minimalRpcRepro\""));
         assert!(shrink.contains("\"scenarioPriorities\""));
         let scenarios_index = std::fs::read_to_string(base.join(format!("{stem}.scenarios.json")))
             .expect("scenarios index should be readable");
@@ -2782,6 +3192,34 @@ mod tests {
         let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
         let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
+    }
+
+    #[test]
+    fn headers_command_rejects_ffi_when_panic_contract_missing() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-ffi-panic-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "pub extern \"C\" fn add(left: i32, right: i32) -> i32;\nfn main() -> i32 {\n    panic(err)\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let error = run(
+            Command::Headers {
+                path: source.clone(),
+                output: None,
+            },
+            Format::Text,
+        )
+        .expect_err("headers command should fail");
+        assert!(error
+            .to_string()
+            .contains("ffi panic contract missing"));
+
+        let _ = std::fs::remove_file(source);
     }
 
     #[test]
