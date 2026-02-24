@@ -492,15 +492,16 @@ fn emit_native_artifact_llvm(
     std::fs::write(&ll_path, llvm_ir)
         .with_context(|| format!("failed writing llvm ir: {}", ll_path.display()))?;
 
-    let mut candidates = vec!["clang", "cc", "gcc"];
+    let candidates = linker_candidates();
     let mut last_error = None;
-    for tool in candidates.drain(..) {
-        let mut cmd = Command::new(tool);
+    for tool in candidates {
+        let mut cmd = Command::new(&tool);
         cmd.arg("-x")
             .arg("ir")
             .arg(&ll_path)
             .arg("-o")
             .arg(&bin_path);
+        apply_target_link_flags(&mut cmd);
         let optimize_override = manifest
             .and_then(|manifest| profile_config(manifest, profile))
             .and_then(|config| config.optimize);
@@ -521,6 +522,7 @@ fn emit_native_artifact_llvm(
                 cmd.arg("-O1").arg("-g");
             }
         }
+        apply_extra_linker_args(&mut cmd);
 
         match cmd.output() {
             Ok(output) if output.status.success() => return Ok(bin_path),
@@ -584,11 +586,12 @@ fn emit_native_artifact_c_shim(
     std::fs::write(&c_path, c_source)
         .with_context(|| format!("failed writing c source: {}", c_path.display()))?;
 
-    let mut candidates = vec!["cc", "clang", "gcc"];
+    let candidates = linker_candidates();
     let mut last_error = None;
-    for tool in candidates.drain(..) {
-        let mut cmd = Command::new(tool);
+    for tool in candidates {
+        let mut cmd = Command::new(&tool);
         cmd.arg(&c_path).arg("-o").arg(&bin_path);
+        apply_target_link_flags(&mut cmd);
         let optimize_override = manifest
             .and_then(|manifest| profile_config(manifest, profile))
             .and_then(|config| config.optimize);
@@ -609,6 +612,7 @@ fn emit_native_artifact_c_shim(
                 cmd.arg("-O1").arg("-g");
             }
         }
+        apply_extra_linker_args(&mut cmd);
 
         match cmd.output() {
             Ok(output) if output.status.success() => return Ok(bin_path),
@@ -629,6 +633,51 @@ fn emit_native_artifact_c_shim(
         "failed to compile c_shim native artifact: {}",
         last_error.unwrap_or_else(|| "unknown compiler error".to_string())
     ))
+}
+
+fn linker_candidates() -> Vec<String> {
+    if let Ok(explicit) = std::env::var("FOZZYC_CC") {
+        if !explicit.trim().is_empty() {
+            return vec![explicit];
+        }
+    }
+    let mut candidates = Vec::new();
+    let target = std::env::var("TARGET")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if target.contains("apple-darwin") {
+        candidates.push("clang".to_string());
+        candidates.push("cc".to_string());
+        candidates.push("gcc".to_string());
+    } else if target.contains("linux") {
+        candidates.push("cc".to_string());
+        candidates.push("clang".to_string());
+        candidates.push("gcc".to_string());
+    } else {
+        candidates.push("clang".to_string());
+        candidates.push("cc".to_string());
+        candidates.push("gcc".to_string());
+    }
+    candidates
+}
+
+fn apply_target_link_flags(cmd: &mut Command) {
+    if let Ok(target) = std::env::var("TARGET") {
+        let target = target.trim();
+        if !target.is_empty() {
+            cmd.arg("-target").arg(target);
+        }
+    }
+}
+
+fn apply_extra_linker_args(cmd: &mut Command) {
+    if let Ok(extra) = std::env::var("FOZZYC_LINKER_ARGS") {
+        for arg in extra.split_whitespace() {
+            if !arg.trim().is_empty() {
+                cmd.arg(arg);
+            }
+        }
+    }
 }
 
 fn profile_config(

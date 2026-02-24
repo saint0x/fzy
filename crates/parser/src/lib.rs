@@ -20,6 +20,8 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
         capabilities: Vec::new(),
         inferred_capabilities: Vec::new(),
         host_syscall_sites: 0,
+        unsafe_sites: 0,
+        reference_sites: 0,
     };
     let mut diagnostics = Vec::new();
     let mut inferred = BTreeSet::new();
@@ -52,6 +54,40 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
                             )
                             .with_fix("change return type to a supported v0 type"),
                         );
+                    }
+                    if is_ffi_unstable_type(&return_type) {
+                        diagnostics.push(
+                            line_diagnostic(
+                                line_number + 1,
+                                line.len(),
+                                format!(
+                                    "extern ABI return type `{}` is not stable for C interop",
+                                    return_type
+                                ),
+                                Some("use fixed-size primitives or explicit pointer+length pairs"),
+                            )
+                            .with_fix("replace `str`/slice/error-union types in extern signatures"),
+                        );
+                    }
+                    for param in &params {
+                        if is_ffi_unstable_type(&param.ty) {
+                            diagnostics.push(
+                                line_diagnostic(
+                                    line_number + 1,
+                                    line.len(),
+                                    format!(
+                                        "extern ABI param `{}` uses unstable type `{}`",
+                                        param.name, param.ty
+                                    ),
+                                    Some(
+                                        "use fixed-size primitives or explicit pointer+length pairs",
+                                    ),
+                                )
+                                .with_fix(
+                                    "replace `str`/slice/error-union types in extern signatures",
+                                ),
+                            );
+                        }
                     }
                     module.items.push(ast::Item::Function(ast::Function {
                         name,
@@ -163,6 +199,8 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
 
             infer_capabilities(line, &mut inferred);
             module.host_syscall_sites += count_host_syscalls(line);
+            module.unsafe_sites += count_unsafe_markers(line);
+            module.reference_sites += count_reference_markers(line);
             match parse_statement(line) {
                 Ok(statement) => {
                     if let Some(ast::Item::Function(function)) =
@@ -240,6 +278,8 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
 
         infer_capabilities(line, &mut inferred);
         module.host_syscall_sites += count_host_syscalls(line);
+        module.unsafe_sites += count_unsafe_markers(line);
+        module.reference_sites += count_reference_markers(line);
     }
 
     module.inferred_capabilities = inferred.into_iter().collect();
@@ -656,10 +696,38 @@ fn infer_capabilities(line: &str, inferred: &mut BTreeSet<String>) {
     if line.contains("thread.") || line.contains("std.thread") || line.contains("spawn(") {
         inferred.insert("thread".to_string());
     }
+    if line.contains("await ")
+        || line.contains(".await")
+        || line.contains("yield(")
+        || line.contains("checkpoint(")
+    {
+        inferred.insert("thread".to_string());
+    }
+    if line.contains("timeout(") || line.contains("deadline(") || line.contains("cancel(") {
+        inferred.insert("net".to_string());
+    }
+    if line.contains("syscall.") {
+        inferred.insert("proc".to_string());
+    }
 }
 
 fn count_host_syscalls(line: &str) -> usize {
     line.match_indices("syscall.").count()
+}
+
+fn count_unsafe_markers(line: &str) -> usize {
+    line.match_indices("unsafe ").count()
+}
+
+fn count_reference_markers(line: &str) -> usize {
+    let mut count = 0usize;
+    if line.contains(": &") || line.contains("-> &") {
+        count += 1;
+    }
+    if line.contains("&mut ") {
+        count += 1;
+    }
+    count
 }
 
 fn is_supported_type(ty: &str) -> bool {
@@ -677,6 +745,12 @@ fn is_supported_type(ty: &str) -> bool {
         return is_supported_type(inner);
     }
     if let Some(inner) = ty.strip_prefix('*') {
+        return is_supported_type(inner);
+    }
+    if let Some(inner) = ty.strip_prefix("&mut ") {
+        return is_supported_type(inner);
+    }
+    if let Some(inner) = ty.strip_prefix('&') {
         return is_supported_type(inner);
     }
     if let Some(inner) = ty.strip_prefix("[]") {
@@ -710,6 +784,11 @@ fn is_supported_type(ty: &str) -> bool {
             | "str"
             | "void"
     )
+}
+
+fn is_ffi_unstable_type(ty: &str) -> bool {
+    let ty = ty.trim();
+    ty == "str" || ty.starts_with("[]") || ty.starts_with('[') || ty.contains('!')
 }
 
 #[cfg(test)]

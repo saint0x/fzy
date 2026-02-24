@@ -1,0 +1,19 @@
+use cap.fs;
+use cap.mem;
+
+mod store;
+mod cli;
+
+test "kv_bootstrap" {}
+test "kv_roundtrip" {}
+
+fn main() -> i32 {
+    requires true
+    let db_handle = fs.open()
+    defer close(db_handle)
+    store.init()
+    cli.put()
+    cli.get()
+    ensures true
+    return 0
+}

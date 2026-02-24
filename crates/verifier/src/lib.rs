@@ -65,9 +65,12 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
 
     if policy.safe_profile {
         for disallowed in [
+            capabilities::Capability::Time,
+            capabilities::Capability::Random,
             capabilities::Capability::FileSystem,
             capabilities::Capability::Network,
             capabilities::Capability::Process,
+            capabilities::Capability::Memory,
             capabilities::Capability::Thread,
         ] {
             if module.effects.contains(disallowed) || module.required_effects.contains(disallowed) {
@@ -100,6 +103,31 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         }
     }
 
+    if module.unsafe_sites > 0 {
+        report.diagnostics.push(Diagnostic::new(
+            if policy.safe_profile {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
+            format!(
+                "detected {} explicit unsafe escape marker(s)",
+                module.unsafe_sites
+            ),
+            Some("unsafe escapes must be isolated and are rejected in safe profile".to_string()),
+        ));
+    }
+    if module.reference_sites > 0 && policy.safe_profile {
+        report.diagnostics.push(Diagnostic::new(
+            Severity::Error,
+            format!(
+                "safe profile rejects {} reference-region site(s) without region proof",
+                module.reference_sites
+            ),
+            Some("replace borrowed references with owned values or non-safe profile".to_string()),
+        ));
+    }
+
     for resource in &module.linear_resources {
         let released = module
             .deferred_resources
@@ -118,7 +146,11 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
 
     if module.matches_without_wildcard > 0 {
         report.diagnostics.push(Diagnostic::new(
-            Severity::Warning,
+            if policy.safe_profile {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
             format!(
                 "{} match statement(s) are non-exhaustive in v0 baseline",
                 module.matches_without_wildcard
@@ -192,6 +224,8 @@ mod tests {
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -217,6 +251,8 @@ mod tests {
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -245,6 +281,8 @@ mod tests {
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -271,6 +309,8 @@ mod tests {
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -297,6 +337,8 @@ mod tests {
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -323,6 +365,8 @@ mod tests {
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -352,6 +396,8 @@ mod tests {
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -381,6 +427,8 @@ mod tests {
             entry_requires: vec![Some(false)],
             entry_ensures: vec![Some(false)],
             host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -411,6 +459,8 @@ mod tests {
             entry_requires: vec![],
             entry_ensures: vec![],
             host_syscall_sites: 1,
+            unsafe_sites: 0,
+            reference_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 1,
         };

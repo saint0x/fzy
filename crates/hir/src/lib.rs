@@ -16,6 +16,8 @@ pub struct TypedModule {
     pub entry_requires: Vec<Option<bool>>,
     pub entry_ensures: Vec<Option<bool>>,
     pub host_syscall_sites: usize,
+    pub unsafe_sites: usize,
+    pub reference_sites: usize,
     pub extern_c_abi_functions: usize,
     pub repr_c_layout_items: usize,
 }
@@ -77,6 +79,8 @@ pub fn lower(module: &Module) -> TypedModule {
         entry_requires,
         entry_ensures,
         host_syscall_sites: module.host_syscall_sites,
+        unsafe_sites: module.unsafe_sites,
+        reference_sites: module.reference_sites,
         extern_c_abi_functions,
         repr_c_layout_items,
     }

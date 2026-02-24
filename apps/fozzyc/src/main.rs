@@ -71,6 +71,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             let host_backends = has_flag(args, "--host-backends");
             let scheduler = parse_string_flag(args, "--sched")?;
             let rich_artifacts = has_flag(args, "--rich-artifacts");
+            let filter = parse_string_flag(args, "--filter")?;
             Ok(Command::Test {
                 path,
                 deterministic,
@@ -80,6 +81,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 host_backends,
                 scheduler,
                 rich_artifacts,
+                filter,
             })
         }
         Some("fmt") => Ok(Command::Fmt {
@@ -145,7 +147,7 @@ commands:\n\
   init <name>\n\
   build <path> [--release] [--threads N]\n\
   run <path> [--det] [--strict] [--seed N] [--record path] [--host-backends] [-- <args>]\n\
-  test <path> [--det] [--strict] [--seed N] [--record path] [--host-backends] [--sched policy]\n\
+  test <path> [--det] [--strict] [--seed N] [--record path] [--host-backends] [--sched policy] [--filter substring]\n\
   fmt <path>\n\
   check <path>\n\
   verify <path>\n\
@@ -167,6 +169,7 @@ flags:\n\
   --host-backends\n\
   --threads <u16>\n\
   --sched <fifo|random|coverage_guided>\n\
+  --filter <substring>\n\
   --rich-artifacts\n\
   --out <path>\n\
   --out-dir <dir>"

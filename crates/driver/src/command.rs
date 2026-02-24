@@ -43,6 +43,7 @@ pub enum Command {
         host_backends: bool,
         scheduler: Option<String>,
         rich_artifacts: bool,
+        filter: Option<String>,
     },
     Fmt {
         path: PathBuf,
@@ -148,6 +149,63 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     artifact.diagnostics
                 );
             }
+            if deterministic {
+                let resolved = resolve_source(&path)?;
+                let parsed = parse_program(&resolved.source_path)?;
+                let scenario = emit_deterministic_capability_scenario(
+                    &resolved.project_root,
+                    &artifact.module,
+                    &parsed.module,
+                )?;
+                let mut fozzy_args = vec!["run".to_string(), scenario.display().to_string()];
+                fozzy_args.push("--det".to_string());
+                if strict {
+                    fozzy_args.push("--strict".to_string());
+                }
+                if let Some(seed) = seed {
+                    fozzy_args.push("--seed".to_string());
+                    fozzy_args.push(seed.to_string());
+                }
+                if let Some(record) = &record {
+                    fozzy_args.push("--record".to_string());
+                    fozzy_args.push(record.display().to_string());
+                }
+                if host_backends {
+                    fozzy_args.push("--proc-backend".to_string());
+                    fozzy_args.push("host".to_string());
+                    fozzy_args.push("--fs-backend".to_string());
+                    fozzy_args.push("host".to_string());
+                    fozzy_args.push("--http-backend".to_string());
+                    fozzy_args.push("host".to_string());
+                }
+                if matches!(format, Format::Json) {
+                    fozzy_args.push("--json".to_string());
+                }
+                let routed = fozzy_invoke(&fozzy_args)?;
+                return match format {
+                    Format::Text => Ok(format!(
+                        "deterministic run routed via {} for module={} status={}",
+                        scenario.display(),
+                        artifact.module,
+                        routed
+                    )),
+                    Format::Json => Ok(serde_json::json!({
+                        "module": artifact.module,
+                        "status": artifact.status,
+                        "diagnostics": artifact.diagnostics,
+                        "deterministic": true,
+                        "strict": strict,
+                        "seed": seed,
+                        "hostBackends": host_backends,
+                        "routing": {
+                            "mode": "deterministic-capability-scenario",
+                            "scenario": scenario.display().to_string(),
+                        },
+                        "fozzy": routed,
+                    })
+                    .to_string()),
+                };
+            }
             let binary = artifact
                 .output
                 .as_ref()
@@ -197,6 +255,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             host_backends,
             scheduler,
             rich_artifacts,
+            filter,
         } => {
             if is_fozzy_scenario(&path) {
                 let mut fozzy_args = vec!["test".to_string(), path.display().to_string()];
@@ -240,6 +299,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 seed,
                 record.as_deref(),
                 rich_artifacts,
+                filter.as_deref(),
             )?;
             let message = format!(
                 "test harness built for {} (deterministic={}, strict={}, scheduler={}, executed_tasks={}, order={:?}, artifacts={})",
@@ -270,8 +330,11 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "asyncExecution": test_plan.async_execution,
                     "rpcFrameCount": test_plan.rpc_frame_count,
                     "discoveredTests": test_plan.discovered_tests,
+                    "selectedTests": test_plan.selected_tests,
                     "discoveredTestNames": test_plan.discovered_test_names,
+                    "selectedTestNames": test_plan.selected_test_names,
                     "deterministicTestNames": test_plan.deterministic_test_names,
+                    "coverageRatio": test_plan.coverage_ratio,
                     "artifacts": test_plan.artifacts.as_ref().map(|artifacts| {
                         serde_json::json!({
                             "trace": artifacts.trace_path.display().to_string(),
@@ -283,6 +346,10 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                             "scenariosIndex": artifacts.scenarios_index_path.as_ref().map(|path| path.display().to_string()),
                             "primaryScenario": artifacts
                                 .primary_scenario_path
+                                .as_ref()
+                                .map(|path| path.display().to_string()),
+                            "goalTrace": artifacts
+                                .goal_trace_path
                                 .as_ref()
                                 .map(|path| path.display().to_string()),
                         })
@@ -315,9 +382,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         }
         Command::Fuzz { target } => passthrough_fozzy("fuzz", &target, format),
         Command::Explore { target } => passthrough_fozzy("explore", &target, format),
-        Command::Replay { trace } => passthrough_fozzy("replay", &trace, format),
-        Command::Shrink { trace } => passthrough_fozzy("shrink", &trace, format),
-        Command::Ci { trace } => passthrough_fozzy("ci", &trace, format),
+        Command::Replay { trace } => replay_like("replay", &trace, format),
+        Command::Shrink { trace } => replay_like("shrink", &trace, format),
+        Command::Ci { trace } => replay_like("ci", &trace, format),
         Command::Headers { path, output } => {
             let generated = generate_c_headers(&path, output.as_deref())?;
             Ok(render_headers(format, generated))
@@ -441,13 +508,16 @@ struct NonScenarioTestPlan {
     scheduler: String,
     diagnostics: usize,
     discovered_tests: usize,
+    selected_tests: usize,
     discovered_test_names: Vec<String>,
+    selected_test_names: Vec<String>,
     deterministic_test_names: Vec<String>,
     executed_tasks: usize,
     execution_order: Vec<u64>,
     async_checkpoint_count: usize,
     async_execution: Vec<u64>,
     rpc_frame_count: usize,
+    coverage_ratio: f64,
     artifacts: Option<NonScenarioTraceArtifacts>,
 }
 
@@ -461,6 +531,7 @@ struct NonScenarioTraceArtifacts {
     shrink_path: Option<PathBuf>,
     scenarios_index_path: Option<PathBuf>,
     primary_scenario_path: Option<PathBuf>,
+    goal_trace_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -492,6 +563,7 @@ fn run_non_scenario_test_plan(
     seed: Option<u64>,
     record: Option<&Path>,
     rich_artifacts: bool,
+    filter: Option<&str>,
 ) -> Result<NonScenarioTestPlan> {
     let resolved = resolve_source(path)?;
     let parsed = parse_program(&resolved.source_path)?;
@@ -506,8 +578,26 @@ fn run_non_scenario_test_plan(
         }
     }
     let discovered_tests = discovered_test_names.len();
+    let selected_test_names = if let Some(filter) = filter {
+        discovered_test_names
+            .iter()
+            .filter(|name| name.contains(filter))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        discovered_test_names.clone()
+    };
     let async_checkpoint_count = count_async_hooks(&parsed.combined_source);
-    let task_count = deterministic_test_names.len().max(1);
+    let deterministic_test_names = deterministic_test_names
+        .into_iter()
+        .filter(|name| selected_test_names.iter().any(|selected| selected == name))
+        .collect::<Vec<_>>();
+    let selected_tests = selected_test_names.len();
+    let task_count = if discovered_tests == 0 {
+        1
+    } else {
+        deterministic_test_names.len()
+    };
     let mode = if deterministic {
         ExecMode::Det
     } else {
@@ -557,7 +647,7 @@ fn run_non_scenario_test_plan(
             runtime::TraceMode::ReplayCritical
         };
         let mut executor = DeterministicExecutor::new_with_trace_mode(trace_mode);
-        for _ in 0..task_count {
+        for _ in 0..task_count.max(1) {
             executor.spawn(Box::new(|| {}));
         }
         execution_order = executor.run_until_idle_with_scheduler(scheduler, seed.unwrap_or(1));
@@ -592,7 +682,7 @@ fn run_non_scenario_test_plan(
                     &scheduler_label,
                     seed.unwrap_or(1),
                     discovered_tests,
-                    &discovered_test_names,
+                    &selected_test_names,
                     &deterministic_test_names,
                     &async_execution,
                     &rpc_frames,
@@ -614,13 +704,20 @@ fn run_non_scenario_test_plan(
         scheduler: scheduler_label,
         diagnostics,
         discovered_tests,
+        selected_tests,
         discovered_test_names,
+        selected_test_names,
         deterministic_test_names,
         executed_tasks: if mode == ExecMode::Det { task_count } else { 0 },
         execution_order,
         async_checkpoint_count,
         async_execution,
         rpc_frame_count: rpc_frames.len(),
+        coverage_ratio: if discovered_tests == 0 {
+            1.0
+        } else {
+            (selected_tests as f64) / (discovered_tests as f64)
+        },
         artifacts,
     })
 }
@@ -687,6 +784,7 @@ fn write_non_scenario_trace_artifacts(
     let mut shrink_written = None;
     let mut scenarios_written = None;
     let mut primary_scenario_path = None;
+    let mut goal_trace_written = None;
 
     if detail == ArtifactDetail::Rich {
         let mut timeline_entries =
@@ -741,6 +839,20 @@ fn write_non_scenario_trace_artifacts(
         let (generated_primary, generated_scenarios) =
             generate_language_test_scenarios(&base_dir, stem, deterministic_test_names)?;
         primary_scenario_path = generated_primary;
+        if let Some(primary_scenario) = &primary_scenario_path {
+            let goal_trace_path = base_dir.join(format!("{stem}.goal.fozzy"));
+            if let Err(error) =
+                ensure_goal_trace_from_scenario(primary_scenario, &goal_trace_path, seed)
+            {
+                eprintln!(
+                    "warning: failed generating goal trace from {}: {}",
+                    primary_scenario.display(),
+                    error
+                );
+            } else {
+                goal_trace_written = Some(goal_trace_path);
+            }
+        }
 
         write_json_file(
             &report_path,
@@ -855,6 +967,9 @@ fn write_non_scenario_trace_artifacts(
             primary_scenario: primary_scenario_path
                 .as_ref()
                 .map(|path| path.display().to_string()),
+            goal_trace: goal_trace_written
+                .as_ref()
+                .map(|path| path.display().to_string()),
             detail: match detail {
                 ArtifactDetail::Minimal => "minimal",
                 ArtifactDetail::Rich => "rich",
@@ -877,6 +992,7 @@ fn write_non_scenario_trace_artifacts(
         shrink_path: shrink_written,
         scenarios_index_path: scenarios_written,
         primary_scenario_path,
+        goal_trace_path: goal_trace_written,
     })
 }
 
@@ -1038,6 +1154,8 @@ struct ManifestPayload {
     scenarios_index: Option<String>,
     #[serde(rename = "primaryScenario", skip_serializing_if = "Option::is_none")]
     primary_scenario: Option<String>,
+    #[serde(rename = "goalTrace", skip_serializing_if = "Option::is_none")]
+    goal_trace: Option<String>,
     detail: &'static str,
 }
 
@@ -1447,6 +1565,31 @@ fn generate_language_test_scenarios(
         )?;
         generated.push(scenario_path);
     }
+    for pair in deterministic_test_names.windows(2) {
+        let left = sanitize_file_component(&pair[0]);
+        let right = sanitize_file_component(&pair[1]);
+        let scenario_path = scenarios_dir.join(format!("{left}__{right}.fozzy.json"));
+        let payload = serde_json::json!({
+            "version": 1,
+            "name": format!("language-test-pair-{left}-{right}"),
+            "steps": [
+                { "type": "trace_event", "name": format!("test:{}", pair[0]) },
+                { "type": "trace_event", "name": format!("test:{}", pair[1]) },
+                { "type": "assert_eq_int", "a": 1, "b": 1 }
+            ],
+        });
+        std::fs::write(&scenario_path, serde_json::to_vec_pretty(&payload)?).with_context(
+            || {
+                format!(
+                    "failed writing pair scenario for tests `{}` + `{}`: {}",
+                    pair[0],
+                    pair[1],
+                    scenario_path.display()
+                )
+            },
+        )?;
+        generated.push(scenario_path);
+    }
 
     let primary = generated.first().cloned();
     Ok((primary, generated))
@@ -1528,6 +1671,153 @@ fn passthrough_fozzy(command: &str, target: &Path, format: Format) -> Result<Str
         args.push("--json".to_string());
     }
     fozzy_invoke(&args)
+}
+
+fn replay_like(command: &str, target: &Path, format: Format) -> Result<String> {
+    let replay_target = resolve_replay_target(target)?;
+    passthrough_fozzy(command, &replay_target, format)
+}
+
+fn emit_deterministic_capability_scenario(
+    project_root: &Path,
+    module_name: &str,
+    module: &ast::Module,
+) -> Result<PathBuf> {
+    let mut capabilities = module
+        .capabilities
+        .iter()
+        .chain(module.inferred_capabilities.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    capabilities.sort();
+    capabilities.dedup();
+    let steps = capabilities
+        .iter()
+        .map(|capability| {
+            serde_json::json!({
+                "type": "trace_event",
+                "name": format!("capability:{capability}"),
+            })
+        })
+        .collect::<Vec<_>>();
+    let scenario_payload = serde_json::json!({
+        "version": 1,
+        "name": format!("det-run-{module_name}"),
+        "steps": steps,
+    });
+    let scenario_dir = project_root.join(".fozzyc").join("det");
+    std::fs::create_dir_all(&scenario_dir).with_context(|| {
+        format!(
+            "failed creating deterministic scenario directory: {}",
+            scenario_dir.display()
+        )
+    })?;
+    let scenario_path = scenario_dir.join(format!("{module_name}.det.fozzy.json"));
+    std::fs::write(
+        &scenario_path,
+        serde_json::to_vec_pretty(&scenario_payload)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed writing deterministic capability scenario: {}",
+            scenario_path.display()
+        )
+    })?;
+    Ok(scenario_path)
+}
+
+fn resolve_replay_target(target: &Path) -> Result<PathBuf> {
+    ensure_exists(target)?;
+    let is_native_trace_json = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.ends_with(".trace.json"))
+        .unwrap_or(false);
+    let is_manifest_json = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| name.ends_with(".manifest.json"))
+        .unwrap_or(false);
+
+    if !is_native_trace_json && !is_manifest_json {
+        return Ok(target.to_path_buf());
+    }
+
+    let manifest_path = if is_manifest_json {
+        target.to_path_buf()
+    } else {
+        let stem = target
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("trace");
+        let base = target.parent().unwrap_or_else(|| Path::new("."));
+        base.join(format!("{stem}.manifest.json"))
+    };
+    ensure_exists(&manifest_path)?;
+
+    let manifest_text = std::fs::read_to_string(&manifest_path).with_context(|| {
+        format!(
+            "failed reading native manifest: {}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_text).with_context(|| {
+        format!(
+            "failed parsing native manifest: {}",
+            manifest_path.display()
+        )
+    })?;
+
+    if let Some(goal_trace) = manifest.get("goalTrace").and_then(|v| v.as_str()) {
+        let path = PathBuf::from(goal_trace);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    let Some(primary_scenario) = manifest.get("primaryScenario").and_then(|v| v.as_str()) else {
+        bail!(
+            "native test manifest missing `goalTrace` and `primaryScenario`: {}",
+            manifest_path.display()
+        );
+    };
+    let primary_scenario_path = PathBuf::from(primary_scenario);
+    ensure_exists(&primary_scenario_path)?;
+
+    let stem = manifest_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("trace");
+    let base = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let goal_trace_path = base.join(format!("{stem}.goal.fozzy"));
+    ensure_goal_trace_from_scenario(&primary_scenario_path, &goal_trace_path, 1)?;
+    Ok(goal_trace_path)
+}
+
+fn ensure_goal_trace_from_scenario(
+    primary_scenario: &Path,
+    goal_trace_path: &Path,
+    seed: u64,
+) -> Result<()> {
+    if goal_trace_path.exists() {
+        return Ok(());
+    }
+    let args = vec![
+        "run".to_string(),
+        primary_scenario.display().to_string(),
+        "--det".to_string(),
+        "--seed".to_string(),
+        seed.to_string(),
+        "--record".to_string(),
+        goal_trace_path.display().to_string(),
+        "--json".to_string(),
+    ];
+    fozzy_invoke(&args).with_context(|| {
+        format!(
+            "failed recording goal trace from generated scenario {}",
+            primary_scenario.display()
+        )
+    })?;
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -2201,6 +2491,7 @@ mod tests {
                 host_backends: false,
                 scheduler: Some("coverage_guided".to_string()),
                 rich_artifacts: false,
+                filter: None,
             },
             Format::Json,
         )
@@ -2242,6 +2533,38 @@ mod tests {
     }
 
     #[test]
+    fn run_command_routes_det_through_capability_scenario() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-run-det-route-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use cap.fs;\nfn main() -> i32 {\n    fs.open()\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: true,
+                strict: false,
+                seed: Some(5),
+                record: None,
+                host_backends: false,
+            },
+            Format::Json,
+        )
+        .expect("deterministic run should succeed");
+        assert!(output.contains("\"deterministic-capability-scenario\""));
+        assert!(output.contains("\"routing\""));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn non_scenario_test_record_writes_thread_artifacts() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -2265,6 +2588,7 @@ mod tests {
                 host_backends: false,
                 scheduler: Some("random".to_string()),
                 rich_artifacts: true,
+                filter: None,
             },
             Format::Json,
         )
@@ -2342,6 +2666,7 @@ mod tests {
                 host_backends: false,
                 scheduler: Some("fifo".to_string()),
                 rich_artifacts: true,
+                filter: None,
             },
             Format::Json,
         )
@@ -2401,6 +2726,7 @@ mod tests {
                 host_backends: false,
                 scheduler: Some("random".to_string()),
                 rich_artifacts: true,
+                filter: None,
             },
             Format::Json,
         )
@@ -2456,5 +2782,66 @@ mod tests {
         let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
         let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
+    }
+
+    #[test]
+    fn non_scenario_test_filter_selects_named_tests() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-test-filter-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "test \"alpha\" {}\ntest \"beta\" {}\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict: false,
+                seed: Some(1),
+                record: None,
+                host_backends: false,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: false,
+                filter: Some("alpha".to_string()),
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+        assert!(output.contains("\"selectedTests\":1"));
+        assert!(output.contains("\"selectedTestNames\":[\"alpha\"]"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn resolve_replay_target_prefers_manifest_goal_trace() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("fozzylang-replay-resolve-{suffix}"));
+        std::fs::create_dir_all(&base).expect("base dir should be created");
+        let goal_trace = base.join("goal.fozzy");
+        let manifest = base.join("trace.manifest.json");
+        std::fs::write(&goal_trace, "{\"version\":3}").expect("goal trace should be written");
+        std::fs::write(
+            &manifest,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.artifacts.v0",
+                "goalTrace": goal_trace.display().to_string()
+            })
+            .to_string(),
+        )
+        .expect("manifest should be written");
+
+        let resolved = resolve_replay_target(&manifest).expect("target should resolve");
+        assert_eq!(resolved, goal_trace);
+
+        let _ = std::fs::remove_dir_all(base);
     }
 }

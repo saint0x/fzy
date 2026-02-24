@@ -16,6 +16,8 @@ pub struct FirModule {
     pub entry_requires: Vec<Option<bool>>,
     pub entry_ensures: Vec<Option<bool>>,
     pub host_syscall_sites: usize,
+    pub unsafe_sites: usize,
+    pub reference_sites: usize,
     pub extern_c_abi_functions: usize,
     pub repr_c_layout_items: usize,
 }
@@ -53,6 +55,8 @@ pub fn build(typed: &TypedModule) -> FirModule {
         entry_requires: typed.entry_requires.clone(),
         entry_ensures: typed.entry_ensures.clone(),
         host_syscall_sites: typed.host_syscall_sites,
+        unsafe_sites: typed.unsafe_sites,
+        reference_sites: typed.reference_sites,
         extern_c_abi_functions: typed.extern_c_abi_functions,
         repr_c_layout_items: typed.repr_c_layout_items,
     }

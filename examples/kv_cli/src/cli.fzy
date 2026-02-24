@@ -1,0 +1,11 @@
+use cap.fs;
+
+fn put() -> i32 {
+    fs.write()
+    return 1
+}
+
+fn get() -> i32 {
+    fs.read()
+    return 1
+}
