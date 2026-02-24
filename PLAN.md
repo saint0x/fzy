@@ -93,8 +93,8 @@
 - [x] ✅ Implement a tree-walking interpreter as a fast path to validate language semantics before full native codegen.
 - [x] ✅ Implement instruction selection from typed IR to Cranelift IR for all expression/statement forms.
 - [x] ✅ Implement instruction selection from typed IR to LLVM IR for all expression/statement forms.
-- [ ] ⬜ Add register allocation (or rely on backend RA) for compiled output.
-- [ ] ⬜ Implement function call codegen: argument passing, return values, stack frames, calling conventions.
+- [x] ✅ Add register allocation (or rely on backend RA) for compiled output.
+- [x] ✅ Implement function call codegen: argument passing, return values, stack frames, calling conventions.
 - [x] ✅ Implement struct field access, enum variant construction, and pattern match lowering in codegen.
 
 #### 1.5.5 IR Pipeline Integrity
@@ -283,6 +283,7 @@
 - [x] ✅ Safe-profile memory misuse baseline now includes alloc/free lifecycle imbalance detection (`alloc_sites > free_sites`) with strict-profile rejection, validated by verifier tests and strict test-plan rejection for synthetic leak case.
 - [x] ✅ New fullstack project (`examples/fullstack`) validates end-to-end language/runtime surface: `check`, `build`, native `run`, `headers`, `rpc gen`, deterministic `test --record --rich-artifacts`, native `replay/shrink/ci`, and generated-scenario Fozzy doctor/test/run/trace verify/replay/ci.
 - [x] ✅ Two architecture binaries built for fullstack target: `artifacts/fullstack.main.aarch64-apple-darwin.bin` and `artifacts/fullstack.main.x86_64-apple-darwin.bin` (validated via `file` output).
+- [x] ✅ Strict deterministic native trace lifecycle validated on compiler-native sample (`fozzyc test --det --strict-verify`, `fozzyc run --det --strict-verify --record`, `fozzyc replay`, `fozzyc shrink`, `fozzyc ci`) with passing replay/CI checks.
 
 ### 2.7 Previously Completed Baseline (Retained)
 - [x] ✅ Runtime config + deterministic executor + structured task model + panic trace capture.
