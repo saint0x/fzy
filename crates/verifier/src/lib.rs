@@ -191,9 +191,20 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         ));
     }
 
+    if module.type_errors > 0 {
+        report.diagnostics.push(Diagnostic::new(
+            Severity::Error,
+            format!("type checking failed with {} error(s)", module.type_errors),
+            Some("fix invalid types, unresolved functions, and bad call signatures".to_string()),
+        ));
+    }
+
     if let Some(return_type) = &module.entry_return_type {
-        match return_type.as_str() {
-            "i32" => {
+        match return_type {
+            ast::Type::Int {
+                signed: true,
+                bits: 32,
+            } => {
                 if module.entry_return_const_i32.is_none() {
                     report.diagnostics.push(Diagnostic::new(
                         Severity::Error,
@@ -202,7 +213,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                     ));
                 }
             }
-            "void" => {}
+            ast::Type::Void => {}
             _ => report.diagnostics.push(Diagnostic::new(
                 Severity::Warning,
                 format!("unverified return type in v0: {return_type}"),
@@ -264,6 +275,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify(&module);
         assert_eq!(report.diagnostics.len(), 1);
@@ -295,6 +309,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify(&module);
         assert!(report
@@ -329,6 +346,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify(&module);
         assert!(report
@@ -345,7 +365,10 @@ mod tests {
             required_effects: capabilities::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
-            entry_return_type: Some("i32".to_string()),
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
             entry_return_const_i32: None,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
@@ -361,6 +384,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify(&module);
         assert!(report
@@ -377,7 +403,10 @@ mod tests {
             required_effects: capabilities::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
-            entry_return_type: Some("i32".to_string()),
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
             entry_return_const_i32: Some(0),
             linear_resources: vec!["socket_res".to_string()],
             deferred_resources: Vec::new(),
@@ -393,6 +422,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify(&module);
         assert!(report
@@ -409,7 +441,10 @@ mod tests {
             required_effects: capabilities::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
-            entry_return_type: Some("i32".to_string()),
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
             entry_return_const_i32: Some(0),
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
@@ -425,6 +460,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify(&module);
         assert!(report
@@ -444,7 +482,10 @@ mod tests {
             required_effects: capabilities::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
-            entry_return_type: Some("i32".to_string()),
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
             entry_return_const_i32: Some(0),
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
@@ -460,6 +501,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         assert!(report
@@ -491,7 +535,10 @@ mod tests {
             required_effects: capabilities::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
-            entry_return_type: Some("i32".to_string()),
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
             entry_return_const_i32: Some(0),
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
@@ -507,6 +554,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         for expected in ["time", "rng", "fs", "net", "proc", "mem", "thread"] {
@@ -524,7 +574,10 @@ mod tests {
             required_effects: capabilities::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
-            entry_return_type: Some("i32".to_string()),
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
             entry_return_const_i32: Some(0),
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
@@ -540,6 +593,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify(&module);
         assert!(report
@@ -560,7 +616,10 @@ mod tests {
             required_effects: capabilities::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
-            entry_return_type: Some("i32".to_string()),
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
             entry_return_const_i32: Some(0),
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
@@ -576,6 +635,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 1,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify(&module);
         assert!(report
@@ -592,7 +654,10 @@ mod tests {
             required_effects: capabilities::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
-            entry_return_type: Some("i32".to_string()),
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
             entry_return_const_i32: Some(0),
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
@@ -608,6 +673,9 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            type_errors: 0,
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         assert!(report

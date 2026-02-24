@@ -1,6 +1,14 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use ast::Module;
+use ast::{AstVisitor, BinaryOp, Expr, Module, Stmt, Type};
+
+#[derive(Debug, Clone)]
+pub struct TypedFunction {
+    pub name: String,
+    pub params: Vec<ast::Param>,
+    pub return_type: Type,
+    pub body: Vec<Stmt>,
+}
 
 #[derive(Debug, Clone)]
 pub struct TypedModule {
@@ -8,7 +16,7 @@ pub struct TypedModule {
     pub symbol_count: usize,
     pub capabilities: Vec<String>,
     pub inferred_capabilities: Vec<String>,
-    pub entry_return_type: Option<String>,
+    pub entry_return_type: Option<Type>,
     pub entry_return_const_i32: Option<i32>,
     pub linear_resources: Vec<String>,
     pub deferred_resources: Vec<String>,
@@ -24,24 +32,100 @@ pub struct TypedModule {
     pub extern_c_abi_functions: usize,
     pub repr_c_layout_items: usize,
     pub generic_instantiations: Vec<String>,
+    pub call_graph: Vec<(String, String)>,
+    pub typed_functions: Vec<TypedFunction>,
+    pub type_errors: usize,
+}
+
+#[derive(Debug, Clone)]
+enum Value {
+    I32(i32),
+    Bool(bool),
+    Str(String),
+}
+
+#[derive(Default)]
+struct SymbolScopes {
+    stack: Vec<HashMap<String, Type>>,
+}
+
+impl SymbolScopes {
+    fn new() -> Self {
+        Self {
+            stack: vec![HashMap::new()],
+        }
+    }
+
+    fn push(&mut self) {
+        self.stack.push(HashMap::new());
+    }
+
+    fn pop(&mut self) {
+        let _ = self.stack.pop();
+    }
+
+    fn insert(&mut self, name: String, ty: Type) {
+        if let Some(scope) = self.stack.last_mut() {
+            scope.insert(name, ty);
+        }
+    }
+
+    fn get(&self, name: &str) -> Option<Type> {
+        self.stack
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).cloned())
+    }
 }
 
 pub fn lower(module: &Module) -> TypedModule {
-    let entry_return_type = module.items.iter().find_map(|item| match item {
-        ast::Item::Function(function) if function.name == "main" => {
-            Some(function.return_type.clone())
+    let mut fn_sigs = HashMap::<String, (Vec<Type>, Type)>::new();
+    let mut typed_functions = Vec::new();
+    let mut type_errors = 0usize;
+
+    for item in &module.items {
+        if let ast::Item::Function(function) = item {
+            fn_sigs.insert(
+                function.name.clone(),
+                (
+                    function.params.iter().map(|p| p.ty.clone()).collect(),
+                    function.return_type.clone(),
+                ),
+            );
+            typed_functions.push(TypedFunction {
+                name: function.name.clone(),
+                params: function.params.clone(),
+                return_type: function.return_type.clone(),
+                body: function.body.clone(),
+            });
         }
-        _ => None,
-    });
-    let entry_return_const_i32 = module.items.iter().find_map(|item| match item {
-        ast::Item::Function(function) if function.name == "main" => {
-            evaluate_const_return(&function.body)
+    }
+
+    for function in &typed_functions {
+        if function.body.is_empty() {
+            continue;
         }
-        _ => None,
-    });
+        let mut scopes = SymbolScopes::new();
+        for param in &function.params {
+            scopes.insert(param.name.clone(), param.ty.clone());
+        }
+        for stmt in &function.body {
+            type_check_stmt(stmt, &mut scopes, &fn_sigs, &function.return_type, &mut type_errors);
+        }
+    }
+
+    let entry_return_type = typed_functions
+        .iter()
+        .find(|f| f.name == "main")
+        .map(|f| f.return_type.clone());
+    let entry_return_const_i32 = interpret_entry_i32(&typed_functions);
+
     let (linear_resources, deferred_resources, matches_without_wildcard) =
-        collect_semantic_hints(module);
-    let (entry_requires, entry_ensures) = collect_entry_contracts(module);
+        collect_semantic_hints(&typed_functions);
+    let (entry_requires, entry_ensures) = collect_entry_contracts(&typed_functions, &fn_sigs);
+    let (host_syscall_sites, unsafe_sites, unsafe_reasoned_sites, reference_sites, alloc_sites, free_sites) =
+        collect_effect_markers(&typed_functions);
+    let inferred_capabilities = infer_capabilities(&typed_functions);
     let extern_c_abi_functions = module
         .items
         .iter()
@@ -70,12 +154,13 @@ pub fn lower(module: &Module) -> TypedModule {
         })
         .count();
     let generic_instantiations = collect_generic_instantiations(module);
+    let call_graph = build_call_graph(module);
 
     TypedModule {
         name: module.name.clone(),
         symbol_count: module.items.len(),
         capabilities: module.capabilities.clone(),
-        inferred_capabilities: module.inferred_capabilities.clone(),
+        inferred_capabilities,
         entry_return_type,
         entry_return_const_i32,
         linear_resources,
@@ -83,16 +168,102 @@ pub fn lower(module: &Module) -> TypedModule {
         matches_without_wildcard,
         entry_requires,
         entry_ensures,
-        host_syscall_sites: module.host_syscall_sites,
-        unsafe_sites: module.unsafe_sites,
-        unsafe_reasoned_sites: module.unsafe_reasoned_sites,
-        reference_sites: module.reference_sites,
-        alloc_sites: module.alloc_sites,
-        free_sites: module.free_sites,
+        host_syscall_sites,
+        unsafe_sites,
+        unsafe_reasoned_sites,
+        reference_sites,
+        alloc_sites,
+        free_sites,
         extern_c_abi_functions,
         repr_c_layout_items,
         generic_instantiations,
+        call_graph,
+        typed_functions,
+        type_errors,
     }
+}
+
+fn build_call_graph(module: &Module) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for item in &module.items {
+        let ast::Item::Function(function) = item else {
+            continue;
+        };
+        struct Collector {
+            from: String,
+            edges: Vec<(String, String)>,
+        }
+        impl AstVisitor for Collector {
+            fn visit_expr(&mut self, expr: &Expr) {
+                if let Expr::Call { callee, .. } = expr {
+                    self.edges.push((self.from.clone(), callee.clone()));
+                }
+                ast::walk_expr(self, expr);
+            }
+        }
+        let mut collector = Collector {
+            from: function.name.clone(),
+            edges: Vec::new(),
+        };
+        for stmt in &function.body {
+            collector.visit_stmt(stmt);
+        }
+        out.extend(collector.edges);
+    }
+    out
+}
+
+fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
+    let mut caps = BTreeSet::new();
+    for function in functions {
+        struct Collector<'a> {
+            caps: &'a mut BTreeSet<String>,
+        }
+        impl AstVisitor for Collector<'_> {
+            fn visit_expr(&mut self, expr: &Expr) {
+                if let Expr::Call { callee, .. } = expr {
+                    if let Some((prefix, _)) = callee.split_once('.') {
+                        match prefix {
+                            "time" | "std.time" => {
+                                self.caps.insert("time".to_string());
+                            }
+                            "rng" | "random" | "std.rand" => {
+                                self.caps.insert("rng".to_string());
+                            }
+                            "fs" | "file" | "std.io" => {
+                                self.caps.insert("fs".to_string());
+                            }
+                            "net" | "socket" | "std.net" => {
+                                self.caps.insert("net".to_string());
+                            }
+                            "proc" | "process" | "syscall" | "std.proc" => {
+                                self.caps.insert("proc".to_string());
+                            }
+                            "alloc" | "std.alloc" => {
+                                self.caps.insert("mem".to_string());
+                            }
+                            "thread" | "std.thread" => {
+                                self.caps.insert("thread".to_string());
+                            }
+                            _ => {}
+                        }
+                    }
+                    if callee == "spawn" || callee.contains("await") {
+                        self.caps.insert("thread".to_string());
+                    }
+                    if callee.contains("timeout") || callee.contains("deadline") || callee.contains("cancel") {
+                        self.caps.insert("net".to_string());
+                    }
+                }
+                ast::walk_expr(self, expr);
+            }
+        }
+        let mut collector = Collector { caps: &mut caps };
+        for stmt in &function.body {
+            collector.visit_stmt(stmt);
+        }
+    }
+    caps.into_iter().collect()
 }
 
 fn collect_generic_instantiations(module: &Module) -> Vec<String> {
@@ -105,12 +276,24 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
                     collect_type_instantiation(&param.ty, &mut out);
                 }
                 for statement in &function.body {
-                    if let ast::Stmt::Let { ty: Some(ty), .. } = statement {
+                    if let Stmt::Let { ty: Some(ty), .. } = statement {
                         collect_type_instantiation(ty, &mut out);
                     }
                 }
             }
-            ast::Item::Struct(_) | ast::Item::Enum(_) | ast::Item::Test(_) => {}
+            ast::Item::Struct(item) => {
+                for field in &item.fields {
+                    collect_type_instantiation(&field.ty, &mut out);
+                }
+            }
+            ast::Item::Enum(item) => {
+                for variant in &item.variants {
+                    for payload in &variant.payload {
+                        collect_type_instantiation(payload, &mut out);
+                    }
+                }
+            }
+            ast::Item::Test(_) => {}
         }
     }
     out.sort();
@@ -118,65 +301,70 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
     out
 }
 
-fn collect_type_instantiation(ty: &str, out: &mut Vec<String>) {
-    let trimmed = ty.trim();
-    if let Some(open) = trimmed.find('<') {
-        if trimmed.ends_with('>') && open > 0 {
-            out.push(trimmed.to_string());
-            let inner = &trimmed[(open + 1)..(trimmed.len() - 1)];
-            for part in split_top_level_types(inner) {
-                collect_type_instantiation(part, out);
+fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
+    match ty {
+        Type::Vec(inner) => {
+            out.push(format!("Vec<{inner}>"));
+            collect_type_instantiation(inner, out);
+        }
+        Type::Option(inner) => {
+            out.push(format!("Option<{inner}>"));
+            collect_type_instantiation(inner, out);
+        }
+        Type::Result { ok, err } => {
+            out.push(format!("Result<{ok}, {err}>"));
+            collect_type_instantiation(ok, out);
+            collect_type_instantiation(err, out);
+        }
+        Type::Named { name, args } if !args.is_empty() => {
+            out.push(format!(
+                "{}<{}>",
+                name,
+                args.iter()
+                    .map(|t| t.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            for arg in args {
+                collect_type_instantiation(arg, out);
             }
         }
+        Type::Ptr { to, .. }
+        | Type::Ref { to, .. }
+        | Type::Slice(to)
+        | Type::Array { elem: to, .. } => collect_type_instantiation(to, out),
+        Type::Void
+        | Type::Bool
+        | Type::Int { .. }
+        | Type::Float { .. }
+        | Type::Char
+        | Type::Str
+        | Type::Named { .. }
+        | Type::TypeVar(_) => {}
     }
 }
 
-fn split_top_level_types(input: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0usize;
-    for (index, ch) in input.char_indices() {
-        match ch {
-            '<' => depth += 1,
-            '>' => depth -= 1,
-            ',' if depth == 0 => {
-                out.push(input[start..index].trim());
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    if start < input.len() {
-        out.push(input[start..].trim());
-    }
-    out.into_iter().filter(|part| !part.is_empty()).collect()
-}
-
-fn collect_semantic_hints(module: &Module) -> (Vec<String>, Vec<String>, usize) {
+fn collect_semantic_hints(functions: &[TypedFunction]) -> (Vec<String>, Vec<String>, usize) {
     let mut linear_resources = Vec::new();
     let mut deferred_resources = Vec::new();
     let mut matches_without_wildcard = 0usize;
 
-    for item in &module.items {
-        let ast::Item::Function(function) = item else {
-            continue;
-        };
+    for function in functions {
         for statement in &function.body {
             match statement {
-                ast::Stmt::Let { name, ty, .. } => {
-                    let looks_linear = name.ends_with("_res")
-                        || name.ends_with("_handle")
-                        || ty.as_ref().is_some_and(|ty| ty.starts_with('*'));
-                    if looks_linear {
-                        linear_resources.push(name.clone());
-                    }
+                Stmt::Let {
+                    name,
+                    ty: Some(ty),
+                    ..
+                } if ty.is_pointer_like() => {
+                    linear_resources.push(name.clone());
                 }
-                ast::Stmt::Defer(expr) => {
+                Stmt::Defer(expr) => {
                     if let Some(resource) = deferred_resource(expr) {
                         deferred_resources.push(resource);
                     }
                 }
-                ast::Stmt::Match { arms, .. } => {
+                Stmt::Match { arms, .. } => {
                     if !arms
                         .iter()
                         .any(|arm| matches!(arm.pattern, ast::Pattern::Wildcard))
@@ -184,10 +372,7 @@ fn collect_semantic_hints(module: &Module) -> (Vec<String>, Vec<String>, usize) 
                         matches_without_wildcard += 1;
                     }
                 }
-                ast::Stmt::Return(_)
-                | ast::Stmt::Expr(_)
-                | ast::Stmt::Requires(_)
-                | ast::Stmt::Ensures(_) => {}
+                _ => {}
             }
         }
     }
@@ -196,6 +381,77 @@ fn collect_semantic_hints(module: &Module) -> (Vec<String>, Vec<String>, usize) 
         linear_resources,
         deferred_resources,
         matches_without_wildcard,
+    )
+}
+
+fn collect_effect_markers(functions: &[TypedFunction]) -> (usize, usize, usize, usize, usize, usize) {
+    let mut host_syscall_sites = 0usize;
+    let mut unsafe_sites = 0usize;
+    let mut unsafe_reasoned_sites = 0usize;
+    let mut reference_sites = 0usize;
+    let mut alloc_sites = 0usize;
+    let mut free_sites = 0usize;
+
+    for function in functions {
+        for param in &function.params {
+            if matches!(param.ty, Type::Ref { .. }) {
+                reference_sites += 1;
+            }
+        }
+        struct Counter {
+            host_syscall_sites: usize,
+            unsafe_sites: usize,
+            unsafe_reasoned_sites: usize,
+            alloc_sites: usize,
+            free_sites: usize,
+            reference_sites: usize,
+        }
+        impl AstVisitor for Counter {
+            fn visit_expr(&mut self, expr: &Expr) {
+                if let Expr::Call { callee, .. } = expr {
+                    if callee.starts_with("syscall.") {
+                        self.host_syscall_sites += 1;
+                    }
+                    if callee == "unsafe" {
+                        self.unsafe_sites += 1;
+                        self.unsafe_reasoned_sites += 1;
+                    }
+                    if callee.starts_with("alloc") {
+                        self.alloc_sites += 1;
+                    }
+                    if callee.starts_with("free") {
+                        self.free_sites += 1;
+                    }
+                }
+                ast::walk_expr(self, expr);
+            }
+        }
+        let mut counter = Counter {
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            reference_sites: 0,
+        };
+        for stmt in &function.body {
+            counter.visit_stmt(stmt);
+        }
+        host_syscall_sites += counter.host_syscall_sites;
+        unsafe_sites += counter.unsafe_sites;
+        unsafe_reasoned_sites += counter.unsafe_reasoned_sites;
+        alloc_sites += counter.alloc_sites;
+        free_sites += counter.free_sites;
+        reference_sites += counter.reference_sites;
+    }
+
+    (
+        host_syscall_sites,
+        unsafe_sites,
+        unsafe_reasoned_sites,
+        reference_sites,
+        alloc_sites,
+        free_sites,
     )
 }
 
@@ -210,96 +466,411 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             try_expr,
             catch_expr,
         } => deferred_resource(try_expr).or_else(|| deferred_resource(catch_expr)),
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Binary { .. } => None,
+        ast::Expr::Int(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Binary { .. }
+        | ast::Expr::Group(_) => None,
     }
 }
 
-fn evaluate_const_return(body: &[ast::Stmt]) -> Option<i32> {
-    let mut scope = BTreeMap::<String, i32>::new();
-    for statement in body {
-        match statement {
-            ast::Stmt::Let { name, value, .. } => {
-                if let Some(constant) = eval_expr(value, &scope) {
-                    scope.insert(name.clone(), constant);
-                }
-            }
-            ast::Stmt::Return(expr) => return eval_expr(expr, &scope),
-            ast::Stmt::Match { .. }
-            | ast::Stmt::Defer(_)
-            | ast::Stmt::Expr(_)
-            | ast::Stmt::Requires(_)
-            | ast::Stmt::Ensures(_) => {}
-        }
-    }
-    None
-}
-
-fn collect_entry_contracts(module: &Module) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
+fn collect_entry_contracts(
+    functions: &[TypedFunction],
+    fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
+) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
     let mut requires = Vec::new();
     let mut ensures = Vec::new();
-    for item in &module.items {
-        let ast::Item::Function(function) = item else {
-            continue;
-        };
+    for function in functions {
         if function.name != "main" {
             continue;
         }
+        let env = BTreeMap::new();
         for statement in &function.body {
             match statement {
-                ast::Stmt::Requires(expr) => requires.push(eval_bool_expr(expr)),
-                ast::Stmt::Ensures(expr) => ensures.push(eval_bool_expr(expr)),
-                ast::Stmt::Let { .. }
-                | ast::Stmt::Return(_)
-                | ast::Stmt::Defer(_)
-                | ast::Stmt::Match { .. }
-                | ast::Stmt::Expr(_) => {}
+                Stmt::Requires(expr) => {
+                    requires.push(eval_bool_expr(expr, &env, functions, fn_sigs));
+                }
+                Stmt::Ensures(expr) => {
+                    ensures.push(eval_bool_expr(expr, &env, functions, fn_sigs));
+                }
+                _ => {}
             }
         }
     }
     (requires, ensures)
 }
 
-fn eval_bool_expr(expr: &ast::Expr) -> Option<bool> {
-    match expr {
-        ast::Expr::Bool(value) => Some(*value),
-        ast::Expr::Int(value) => Some(*value != 0),
-        ast::Expr::Binary { op, left, right } => {
-            let left = eval_bool_expr(left)
-                .or_else(|| eval_expr(left, &BTreeMap::new()).map(|v| v != 0))?;
-            let right = eval_bool_expr(right)
-                .or_else(|| eval_expr(right, &BTreeMap::new()).map(|v| v != 0))?;
-            match op {
-                ast::BinaryOp::Eq => Some(left == right),
-                ast::BinaryOp::Neq => Some(left != right),
-                ast::BinaryOp::Add | ast::BinaryOp::Sub => None,
+fn type_check_stmt(
+    stmt: &Stmt,
+    scopes: &mut SymbolScopes,
+    fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
+    expected_return: &Type,
+    errors: &mut usize,
+) {
+    match stmt {
+        Stmt::Let { name, ty, value } => {
+            let inferred = infer_expr_type(value, scopes, fn_sigs, errors);
+            let final_ty = match (ty, inferred) {
+                (Some(explicit), Some(actual)) => {
+                    if !type_compatible(explicit, &actual) {
+                        *errors += 1;
+                    }
+                    explicit.clone()
+                }
+                (Some(explicit), None) => explicit.clone(),
+                (None, Some(actual)) => actual,
+                (None, None) => {
+                    *errors += 1;
+                    Type::Void
+                }
+            };
+            scopes.insert(name.clone(), final_ty);
+        }
+        Stmt::Assign { target, value } => {
+            let target_ty = scopes.get(target);
+            let value_ty = infer_expr_type(value, scopes, fn_sigs, errors);
+            if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
+                if !type_compatible(&target_ty, &value_ty) {
+                    *errors += 1;
+                }
             }
         }
-        ast::Expr::TryCatch {
-            try_expr,
-            catch_expr,
-        } => eval_bool_expr(try_expr).or_else(|| eval_bool_expr(catch_expr)),
-        ast::Expr::Ident(_) | ast::Expr::Call { .. } => None,
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            let cond_ty = infer_expr_type(condition, scopes, fn_sigs, errors);
+            if !matches!(cond_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
+                *errors += 1;
+            }
+            scopes.push();
+            for stmt in then_body {
+                type_check_stmt(stmt, scopes, fn_sigs, expected_return, errors);
+            }
+            scopes.pop();
+            scopes.push();
+            for stmt in else_body {
+                type_check_stmt(stmt, scopes, fn_sigs, expected_return, errors);
+            }
+            scopes.pop();
+        }
+        Stmt::While { condition, body } => {
+            let cond_ty = infer_expr_type(condition, scopes, fn_sigs, errors);
+            if !matches!(cond_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
+                *errors += 1;
+            }
+            scopes.push();
+            for stmt in body {
+                type_check_stmt(stmt, scopes, fn_sigs, expected_return, errors);
+            }
+            scopes.pop();
+        }
+        Stmt::Return(expr) => {
+            if let Some(actual) = infer_expr_type(expr, scopes, fn_sigs, errors) {
+                if !type_compatible(expected_return, &actual) {
+                    *errors += 1;
+                }
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            let scrutinee_ty = infer_expr_type(scrutinee, scopes, fn_sigs, errors);
+            for arm in arms {
+                let value_ty = infer_expr_type(&arm.value, scopes, fn_sigs, errors);
+                if let (Some(scrutinee_ty), ast::Pattern::Int(_)) = (&scrutinee_ty, &arm.pattern) {
+                    if !matches!(scrutinee_ty, Type::Int { .. }) {
+                        *errors += 1;
+                    }
+                }
+                if let (Some(scrutinee_ty), ast::Pattern::Bool(_)) = (&scrutinee_ty, &arm.pattern)
+                {
+                    if !matches!(scrutinee_ty, Type::Bool) {
+                        *errors += 1;
+                    }
+                }
+                let _ = value_ty;
+            }
+        }
+        Stmt::Defer(expr) | Stmt::Requires(expr) | Stmt::Ensures(expr) | Stmt::Expr(expr) => {
+            let _ = infer_expr_type(expr, scopes, fn_sigs, errors);
+        }
     }
 }
 
-fn eval_expr(expr: &ast::Expr, scope: &BTreeMap<String, i32>) -> Option<i32> {
+fn infer_expr_type(
+    expr: &Expr,
+    scopes: &SymbolScopes,
+    fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
+    errors: &mut usize,
+) -> Option<Type> {
     match expr {
-        ast::Expr::Int(value) => Some(*value),
-        ast::Expr::Ident(name) => scope.get(name).copied(),
-        ast::Expr::Binary { op, left, right } => {
-            let left = eval_expr(left, scope)?;
-            let right = eval_expr(right, scope)?;
-            match op {
-                ast::BinaryOp::Add => Some(left + right),
-                ast::BinaryOp::Sub => Some(left - right),
-                ast::BinaryOp::Eq => Some((left == right) as i32),
-                ast::BinaryOp::Neq => Some((left != right) as i32),
+        Expr::Int(_) => Some(Type::Int {
+            signed: true,
+            bits: 32,
+        }),
+        Expr::Bool(_) => Some(Type::Bool),
+        Expr::Str(_) => Some(Type::Str),
+        Expr::Ident(name) => scopes.get(name),
+        Expr::Group(inner) => infer_expr_type(inner, scopes, fn_sigs, errors),
+        Expr::Call { callee, args } => {
+            let Some((params, ret)) = fn_sigs.get(callee) else {
+                if callee.contains('.') || is_runtime_intrinsic(callee) {
+                    for arg in args {
+                        let _ = infer_expr_type(arg, scopes, fn_sigs, errors);
+                    }
+                    return Some(Type::Int {
+                        signed: true,
+                        bits: 32,
+                    });
+                }
+                *errors += 1;
+                return None;
+            };
+            if params.len() != args.len() {
+                *errors += 1;
             }
+            for (index, arg) in args.iter().enumerate() {
+                let arg_ty = infer_expr_type(arg, scopes, fn_sigs, errors);
+                if let (Some(expected), Some(actual)) = (params.get(index), arg_ty) {
+                    if !type_compatible(expected, &actual) {
+                        *errors += 1;
+                    }
+                }
+            }
+            Some(ret.clone())
         }
-        ast::Expr::TryCatch {
+        Expr::TryCatch {
             try_expr,
             catch_expr,
-        } => eval_expr(try_expr, scope).or_else(|| eval_expr(catch_expr, scope)),
-        ast::Expr::Bool(_) | ast::Expr::Call { .. } => None,
+        } => {
+            let left = infer_expr_type(try_expr, scopes, fn_sigs, errors);
+            let right = infer_expr_type(catch_expr, scopes, fn_sigs, errors);
+            match (left, right) {
+                (Some(l), Some(r)) if type_compatible(&l, &r) => Some(l),
+                (Some(_), Some(_)) => {
+                    *errors += 1;
+                    None
+                }
+                (Some(l), None) => Some(l),
+                (None, Some(r)) => Some(r),
+                (None, None) => None,
+            }
+        }
+        Expr::Binary { op, left, right } => {
+            let left_ty = infer_expr_type(left, scopes, fn_sigs, errors);
+            let right_ty = infer_expr_type(right, scopes, fn_sigs, errors);
+            match op {
+                BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
+                    if matches!(left_ty, Some(Type::Int { .. }))
+                        && matches!(right_ty, Some(Type::Int { .. }))
+                    {
+                        left_ty
+                    } else {
+                        *errors += 1;
+                        None
+                    }
+                }
+                BinaryOp::Eq
+                | BinaryOp::Neq
+                | BinaryOp::Lt
+                | BinaryOp::Lte
+                | BinaryOp::Gt
+                | BinaryOp::Gte => {
+                    if let (Some(l), Some(r)) = (&left_ty, &right_ty) {
+                        if !type_compatible(l, r) {
+                            *errors += 1;
+                        }
+                    }
+                    Some(Type::Bool)
+                }
+            }
+        }
+    }
+}
+
+fn is_runtime_intrinsic(name: &str) -> bool {
+    matches!(
+        name,
+        "spawn"
+            | "yield"
+            | "checkpoint"
+            | "timeout"
+            | "deadline"
+            | "cancel"
+            | "recv"
+            | "pulse"
+    )
+}
+
+fn type_compatible(expected: &Type, actual: &Type) -> bool {
+    expected == actual
+}
+
+fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
+    let map = functions
+        .iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect::<HashMap<_, _>>();
+    let main = map.get("main")?;
+    let mut env = BTreeMap::new();
+    eval_block(&main.body, &mut env, &map).and_then(|value| match value {
+        Value::I32(v) => Some(v),
+        Value::Bool(v) => Some(v as i32),
+        Value::Str(_) => None,
+    })
+}
+
+fn eval_block<'a>(
+    body: &[Stmt],
+    env: &mut BTreeMap<String, Value>,
+    functions: &HashMap<&'a str, &'a TypedFunction>,
+) -> Option<Value> {
+    for stmt in body {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                let val = eval_expr(value, env, functions)?;
+                env.insert(name.clone(), val);
+            }
+            Stmt::Assign { target, value } => {
+                let val = eval_expr(value, env, functions)?;
+                env.insert(target.clone(), val);
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                let cond = eval_expr(condition, env, functions)?;
+                let branch = if truthy(&cond) { then_body } else { else_body };
+                if let Some(v) = eval_block(branch, env, functions) {
+                    return Some(v);
+                }
+            }
+            Stmt::While { condition, body } => {
+                let mut guard = 0usize;
+                while truthy(&eval_expr(condition, env, functions)?) {
+                    if let Some(v) = eval_block(body, env, functions) {
+                        return Some(v);
+                    }
+                    guard += 1;
+                    if guard > 1_000_000 {
+                        return None;
+                    }
+                }
+            }
+            Stmt::Return(expr) => {
+                let val = eval_expr(expr, env, functions)?;
+                return Some(val);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                let value = eval_expr(scrutinee, env, functions)?;
+                for arm in arms {
+                    if pattern_matches(&arm.pattern, &value) {
+                        let out = eval_expr(&arm.value, env, functions)?;
+                        return Some(out);
+                    }
+                }
+            }
+            Stmt::Defer(_) | Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Expr(_) => {}
+        }
+    }
+    None
+}
+
+fn eval_expr<'a>(
+    expr: &Expr,
+    env: &BTreeMap<String, Value>,
+    functions: &HashMap<&'a str, &'a TypedFunction>,
+) -> Option<Value> {
+    match expr {
+        Expr::Int(v) => Some(Value::I32(*v)),
+        Expr::Bool(v) => Some(Value::Bool(*v)),
+        Expr::Str(v) => Some(Value::Str(v.clone())),
+        Expr::Ident(name) => env.get(name).cloned(),
+        Expr::Group(inner) => eval_expr(inner, env, functions),
+        Expr::Call { callee, args } => {
+            let Some(function) = functions.get(callee.as_str()) else {
+                if callee.contains('.') || is_runtime_intrinsic(callee) {
+                    for arg in args {
+                        let _ = eval_expr(arg, env, functions)?;
+                    }
+                    return Some(Value::I32(0));
+                }
+                return None;
+            };
+            if function.params.len() != args.len() {
+                return None;
+            }
+            let mut local = BTreeMap::new();
+            for (arg, param) in args.iter().zip(&function.params) {
+                local.insert(param.name.clone(), eval_expr(arg, env, functions)?);
+            }
+            eval_block(&function.body, &mut local, functions)
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => eval_expr(try_expr, env, functions).or_else(|| eval_expr(catch_expr, env, functions)),
+        Expr::Binary { op, left, right } => {
+            let left = eval_expr(left, env, functions)?;
+            let right = eval_expr(right, env, functions)?;
+            eval_binary(*op, left, right)
+        }
+    }
+}
+
+fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Option<Value> {
+    match (op, left, right) {
+        (BinaryOp::Add, Value::I32(a), Value::I32(b)) => Some(Value::I32(a + b)),
+        (BinaryOp::Sub, Value::I32(a), Value::I32(b)) => Some(Value::I32(a - b)),
+        (BinaryOp::Mul, Value::I32(a), Value::I32(b)) => Some(Value::I32(a * b)),
+        (BinaryOp::Div, Value::I32(a), Value::I32(b)) => Some(Value::I32(a / b)),
+        (BinaryOp::Eq, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a == b)),
+        (BinaryOp::Neq, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a != b)),
+        (BinaryOp::Lt, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a < b)),
+        (BinaryOp::Lte, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a <= b)),
+        (BinaryOp::Gt, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a > b)),
+        (BinaryOp::Gte, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a >= b)),
+        (BinaryOp::Eq, Value::Bool(a), Value::Bool(b)) => Some(Value::Bool(a == b)),
+        (BinaryOp::Neq, Value::Bool(a), Value::Bool(b)) => Some(Value::Bool(a != b)),
+        (BinaryOp::Eq, Value::Str(a), Value::Str(b)) => Some(Value::Bool(a == b)),
+        (BinaryOp::Neq, Value::Str(a), Value::Str(b)) => Some(Value::Bool(a != b)),
+        _ => None,
+    }
+}
+
+fn truthy(v: &Value) -> bool {
+    match v {
+        Value::Bool(v) => *v,
+        Value::I32(v) => *v != 0,
+        Value::Str(v) => !v.is_empty(),
+    }
+}
+
+fn pattern_matches(pattern: &ast::Pattern, value: &Value) -> bool {
+    match (pattern, value) {
+        (ast::Pattern::Wildcard, _) => true,
+        (ast::Pattern::Int(a), Value::I32(b)) => a == b,
+        (ast::Pattern::Bool(a), Value::Bool(b)) => a == b,
+        (ast::Pattern::Ident(_), _) => true,
+        _ => false,
+    }
+}
+
+fn eval_bool_expr(
+    expr: &Expr,
+    env: &BTreeMap<String, Value>,
+    functions: &[TypedFunction],
+    fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
+) -> Option<bool> {
+    let map = functions
+        .iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect::<HashMap<_, _>>();
+    let _ = fn_sigs;
+    match eval_expr(expr, env, &map)? {
+        Value::Bool(v) => Some(v),
+        Value::I32(v) => Some(v != 0),
+        Value::Str(v) => Some(!v.is_empty()),
     }
 }

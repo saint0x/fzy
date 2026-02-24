@@ -330,8 +330,6 @@ fn merge_module(root: &mut ast::Module, module: &ast::Module) {
     root.imports.extend(module.imports.iter().cloned());
     root.capabilities
         .extend(module.capabilities.iter().cloned());
-    root.inferred_capabilities
-        .extend(module.inferred_capabilities.iter().cloned());
     root.host_syscall_sites += module.host_syscall_sites;
     root.unsafe_reasoned_sites += module.unsafe_reasoned_sites;
 }

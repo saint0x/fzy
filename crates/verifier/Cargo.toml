@@ -7,3 +7,4 @@ edition.workspace = true
 fir = { path = "../fir" }
 diagnostics = { path = "../diagnostics" }
 capabilities = { path = "../capabilities" }
+ast = { path = "../ast" }

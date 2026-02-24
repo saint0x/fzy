@@ -3151,11 +3151,31 @@ fn collect_call_sequence(module: &ast::Module) -> Vec<String> {
 fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
     match statement {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
         | ast::Stmt::Return(value)
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => collect_call_names_from_expr(value, out),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_call_names_from_expr(condition, out);
+            for stmt in then_body {
+                collect_call_names_from_stmt(stmt, out);
+            }
+            for stmt in else_body {
+                collect_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_call_names_from_expr(condition, out);
+            for stmt in body {
+                collect_call_names_from_stmt(stmt, out);
+            }
+        }
         ast::Stmt::Match { scrutinee, arms } => {
             collect_call_names_from_expr(scrutinee, out);
             for arm in arms {
@@ -3184,7 +3204,8 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
             collect_call_names_from_expr(left, out);
             collect_call_names_from_expr(right, out);
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::Group(inner) => collect_call_names_from_expr(inner, out),
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
     }
 }
 
@@ -4089,12 +4110,9 @@ fn emit_deterministic_capability_scenario(
     module_name: &str,
     module: &ast::Module,
 ) -> Result<PathBuf> {
-    let mut capabilities = module
-        .capabilities
-        .iter()
-        .chain(module.inferred_capabilities.iter())
-        .cloned()
-        .collect::<Vec<_>>();
+    let typed = hir::lower(module);
+    let mut capabilities = module.capabilities.clone();
+    capabilities.extend(typed.inferred_capabilities);
     capabilities.sort();
     capabilities.dedup();
     let steps = capabilities
@@ -4352,12 +4370,12 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
                 "params": function.params.iter().map(|param| {
                     serde_json::json!({
                         "name": param.name.as_str(),
-                        "fzy": param.ty.as_str(),
+                        "fzy": param.ty.to_string(),
                         "c": to_c_type(&param.ty),
                     })
                 }).collect::<Vec<_>>(),
                 "return": {
-                    "fzy": function.return_type.as_str(),
+                    "fzy": function.return_type.to_string(),
                     "c": to_c_type(&function.return_type),
                 }
             })
@@ -4513,74 +4531,81 @@ fn detect_ffi_panic_boundary(source: &str) -> &'static str {
     }
 }
 
-fn is_ffi_stable_type(ty: &str) -> bool {
-    let ty = ty.trim();
-    if ty.is_empty() {
-        return false;
+fn is_ffi_stable_type(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::Void
+        | ast::Type::Bool
+        | ast::Type::Char
+        | ast::Type::Float { .. }
+        | ast::Type::Int { .. } => true,
+        ast::Type::Ptr { to, .. } => is_ffi_stable_type(to),
+        ast::Type::Str
+        | ast::Type::Slice(_)
+        | ast::Type::Result { .. }
+        | ast::Type::Option(_)
+        | ast::Type::Vec(_)
+        | ast::Type::Ref { .. }
+        | ast::Type::Array { .. }
+        | ast::Type::Named { .. }
+        | ast::Type::TypeVar(_) => false,
     }
-    if ty.contains('!') || ty.contains("error") || ty.contains("Result<") {
-        return false;
-    }
-    if ty == "str" || ty.starts_with("[]") || ty.starts_with("slice<") {
-        return false;
-    }
-    if let Some(inner) = ty.strip_prefix("*mut ") {
-        return is_ffi_stable_type(inner);
-    }
-    if let Some(inner) = ty.strip_prefix('*') {
-        return is_ffi_stable_type(inner);
-    }
-    matches!(
-        ty,
-        "void"
-            | "bool"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "u8"
-            | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "usize"
-            | "isize"
-            | "f32"
-            | "f64"
-            | "char"
-    )
 }
 
-fn to_c_type(ty: &str) -> String {
-    let ty = ty.trim();
-    if let Some(inner) = ty.strip_prefix("*mut ") {
-        return format!("{}*", to_c_type(inner));
-    }
-    if let Some(inner) = ty.strip_prefix('*') {
-        return format!("const {}*", to_c_type(inner));
-    }
-    if ty == "str" {
-        return "const char*".to_string();
-    }
+fn to_c_type(ty: &ast::Type) -> String {
     match ty {
-        "void" => "void".to_string(),
-        "bool" => "bool".to_string(),
-        "i8" => "int8_t".to_string(),
-        "i16" => "int16_t".to_string(),
-        "i32" => "int32_t".to_string(),
-        "i64" => "int64_t".to_string(),
-        "i128" => "__int128_t".to_string(),
-        "u8" => "uint8_t".to_string(),
-        "u16" => "uint16_t".to_string(),
-        "u32" => "uint32_t".to_string(),
-        "u64" => "uint64_t".to_string(),
-        "u128" => "__uint128_t".to_string(),
-        "usize" => "size_t".to_string(),
-        "isize" => "ptrdiff_t".to_string(),
-        "f32" => "float".to_string(),
-        "f64" => "double".to_string(),
-        "char" => "uint32_t".to_string(),
+        ast::Type::Ptr { mutable, to } => {
+            if *mutable {
+                format!("{}*", to_c_type(to))
+            } else {
+                format!("const {}*", to_c_type(to))
+            }
+        }
+        ast::Type::Void => "void".to_string(),
+        ast::Type::Bool => "bool".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 8,
+        } => "int8_t".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 16,
+        } => "int16_t".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 32,
+        } => "int32_t".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 64,
+        } => "int64_t".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 128,
+        } => "__int128_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 8,
+        } => "uint8_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 16,
+        } => "uint16_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 32,
+        } => "uint32_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 64,
+        } => "uint64_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 128,
+        } => "__uint128_t".to_string(),
+        ast::Type::Float { bits: 32 } => "float".to_string(),
+        ast::Type::Float { bits: 64 } => "double".to_string(),
+        ast::Type::Char => "uint32_t".to_string(),
+        ast::Type::Str => "const char*".to_string(),
         _ => "void*".to_string(),
     }
 }

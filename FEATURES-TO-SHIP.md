@@ -75,6 +75,20 @@
 - [x] ✅ P3.8 Profiled runtime config (`dev`, `verify`, `release`) with semantic parity guarantees.
 - [x] ✅ P3.8 Service manifest for ports, limits, worker count, and graceful-stop budget.
 
+### 1.5 P1 — Compiler Foundation (Parser, Types, Codegen)
+- [x] ✅ P1.5.1 Replaced line-splitting parser with real lexer/token stream + recursive-descent precedence parser.
+- [x] ✅ P1.5.1 Added parser error recovery with multi-diagnostic reporting per file.
+- [x] ✅ P1.5.1 Added multiline expression support, nested calls, member-call parsing, and structured statement sub-parsers.
+- [x] ✅ P1.5.2 Replaced stringly type system with structured `ast::Type` end-to-end (AST/parser/HIR/FIR/driver/verifier).
+- [x] ✅ P1.5.2 Added scoped symbol tables and real function call signature validation in HIR.
+- [x] ✅ P1.5.2 Added expression type propagation and type-error accounting through lowering.
+- [x] ✅ P1.5.3 Added `if`/`else` and `while` to AST/parser/HIR/FIR.
+- [x] ✅ P1.5.4 Added tree-walking interpreter semantics for typed `main` evaluation (replacing constant-only heuristics).
+- [x] ✅ P1.5.5 Upgraded FIR from metadata bag to typed function IR with basic blocks, control-flow edges, and instruction nodes.
+- [x] ✅ P1.5.5 Added call graph construction and AST visitor/walker for shared analysis traversal.
+- [ ] ⬜ P1.5.next Cranelift/LLVM full instruction selection for all expression/statement forms still pending.
+- [ ] ⬜ P1.5.next Dataflow/liveness and advanced generics/traits specialization still pending.
+
 ---
 
 ## 2) Completed (Verified)
