@@ -208,7 +208,11 @@ pub enum Type {
     Char,
     Str,
     Ptr { mutable: bool, to: Box<Type> },
-    Ref { mutable: bool, to: Box<Type> },
+    Ref {
+        mutable: bool,
+        lifetime: Option<String>,
+        to: Box<Type>,
+    },
     Slice(Box<Type>),
     Array { elem: Box<Type>, len: usize },
     Result { ok: Box<Type>, err: Box<Type> },
@@ -244,11 +248,23 @@ impl std::fmt::Display for Type {
                     write!(f, "*{to}")
                 }
             }
-            Type::Ref { mutable, to } => {
+            Type::Ref {
+                mutable,
+                lifetime,
+                to,
+            } => {
                 if *mutable {
-                    write!(f, "&mut {to}")
+                    if let Some(lifetime) = lifetime {
+                        write!(f, "&'{lifetime} mut {to}")
+                    } else {
+                        write!(f, "&mut {to}")
+                    }
                 } else {
-                    write!(f, "&{to}")
+                    if let Some(lifetime) = lifetime {
+                        write!(f, "&'{lifetime} {to}")
+                    } else {
+                        write!(f, "&{to}")
+                    }
                 }
             }
             Type::Slice(elem) => write!(f, "[]{elem}"),

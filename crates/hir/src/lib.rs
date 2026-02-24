@@ -722,23 +722,54 @@ fn capability_name_from_type(ty: &Type) -> Option<String> {
 fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     for function in functions {
-        let param_refs = function
-            .params
-            .iter()
-            .filter_map(|param| matches!(param.ty, Type::Ref { .. }).then_some(param.name.clone()))
-            .collect::<BTreeSet<_>>();
-        let mut local_refs = BTreeSet::<String>::new();
+        let mut ref_bindings = BTreeMap::<String, Option<String>>::new();
+        for param in &function.params {
+            if let Type::Ref { lifetime, .. } = &param.ty {
+                if lifetime.is_none() {
+                    violations.push(format!(
+                        "function `{}` parameter `{}` is a reference missing explicit lifetime annotation",
+                        function.name, param.name
+                    ));
+                }
+                ref_bindings.insert(param.name.clone(), lifetime.clone());
+            }
+        }
+        let return_lifetime = match &function.return_type {
+            Type::Ref { lifetime, .. } => {
+                if lifetime.is_none() {
+                    violations.push(format!(
+                        "function `{}` return reference is missing explicit lifetime annotation",
+                        function.name
+                    ));
+                }
+                lifetime.clone()
+            }
+            _ => None,
+        };
         for stmt in &function.body {
             if let Stmt::Let {
                 name,
-                ty: Some(Type::Ref { .. }),
+                ty: Some(Type::Ref { lifetime, .. }),
                 ..
             } = stmt
             {
-                local_refs.insert(name.clone());
+                if lifetime.is_none() {
+                    violations.push(format!(
+                        "function `{}` local reference `{}` is missing explicit lifetime annotation",
+                        function.name, name
+                    ));
+                }
+                ref_bindings.insert(name.clone(), lifetime.clone());
             }
             if let Stmt::Return(Expr::Ident(name)) = stmt {
-                if local_refs.contains(name) && !param_refs.contains(name) {
+                if let Some(bound_lifetime) = ref_bindings.get(name) {
+                    if return_lifetime.is_some() && return_lifetime != *bound_lifetime {
+                        violations.push(format!(
+                            "function `{}` returns reference `{}` with mismatched lifetime (expected {:?}, got {:?})",
+                            function.name, name, return_lifetime, bound_lifetime
+                        ));
+                    }
+                } else if return_lifetime.is_some() {
                     violations.push(format!(
                         "function `{}` returns local reference `{}` without valid lifetime region",
                         function.name, name
@@ -2014,8 +2045,9 @@ fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<Strin
         } => matches!(concrete, Type::Ptr { mutable: other_mut, to: other_to } if mutable == other_mut && bind_typevars(template_to, other_to, bindings)),
         Type::Ref {
             mutable,
+            lifetime,
             to: template_to,
-        } => matches!(concrete, Type::Ref { mutable: other_mut, to: other_to } if mutable == other_mut && bind_typevars(template_to, other_to, bindings)),
+        } => matches!(concrete, Type::Ref { mutable: other_mut, lifetime: other_lifetime, to: other_to } if mutable == other_mut && lifetime == other_lifetime && bind_typevars(template_to, other_to, bindings)),
         Type::Slice(inner) => matches!(concrete, Type::Slice(other) if bind_typevars(inner, other, bindings)),
         Type::Array { elem, len } => matches!(concrete, Type::Array { elem: other_elem, len: other_len } if len == other_len && bind_typevars(elem, other_elem, bindings)),
         Type::Result { ok, err } => matches!(concrete, Type::Result { ok: other_ok, err: other_err } if bind_typevars(ok, other_ok, bindings) && bind_typevars(err, other_err, bindings)),
@@ -2035,8 +2067,13 @@ fn substitute_typevars(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
             mutable: *mutable,
             to: Box::new(substitute_typevars(to, bindings)),
         },
-        Type::Ref { mutable, to } => Type::Ref {
+        Type::Ref {
+            mutable,
+            lifetime,
+            to,
+        } => Type::Ref {
             mutable: *mutable,
+            lifetime: lifetime.clone(),
             to: Box::new(substitute_typevars(to, bindings)),
         },
         Type::Slice(inner) => Type::Slice(Box::new(substitute_typevars(inner, bindings))),
@@ -2370,5 +2407,17 @@ mod tests {
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
         assert!(!typed.trait_violations.is_empty());
+    }
+
+    #[test]
+    fn flags_reference_without_lifetime_annotation() {
+        let source = r#"
+            fn borrow(v: &str) -> &str {
+                return v;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.reference_lifetime_violations.is_empty());
     }
 }

@@ -2741,6 +2741,95 @@ impl From<&TaskEvent> for TaskEventRecord {
                 detached: None,
                 message: Some(message.clone()),
             },
+            TaskEvent::PanicRootCause {
+                task_id,
+                cause_task_id,
+            } => Self {
+                event: "panic_root_cause",
+                task_id: *task_id,
+                detached: None,
+                message: cause_task_id.map(|id| format!("cause_task_id={id}")),
+            },
+            TaskEvent::TimedOut {
+                task_id,
+                timeout_ms,
+            } => Self {
+                event: "timed_out",
+                task_id: *task_id,
+                detached: None,
+                message: Some(format!("timeout_ms={timeout_ms}")),
+            },
+            TaskEvent::Cancelled { task_id } => Self {
+                event: "cancelled",
+                task_id: *task_id,
+                detached: None,
+                message: None,
+            },
+            TaskEvent::Backpressure {
+                queue_depth,
+                capacity,
+            } => Self {
+                event: "backpressure",
+                task_id: 0,
+                detached: None,
+                message: Some(format!("queue_depth={queue_depth} capacity={capacity}")),
+            },
+            TaskEvent::JoinWait { waiter, target } => Self {
+                event: "join_wait",
+                task_id: *waiter,
+                detached: None,
+                message: Some(format!("target={target}")),
+            },
+            TaskEvent::JoinCycle { path } => Self {
+                event: "join_cycle",
+                task_id: path.first().copied().unwrap_or_default(),
+                detached: None,
+                message: Some(format!("path={path:?}")),
+            },
+            TaskEvent::Yielded { task_id, reason } => Self {
+                event: "yielded",
+                task_id: *task_id,
+                detached: None,
+                message: Some(reason.clone()),
+            },
+            TaskEvent::IoWait { task_id, key } => Self {
+                event: "io_wait",
+                task_id: *task_id,
+                detached: None,
+                message: Some(key.clone()),
+            },
+            TaskEvent::IoReady { task_id, key } => Self {
+                event: "io_ready",
+                task_id: *task_id,
+                detached: None,
+                message: Some(key.clone()),
+            },
+            TaskEvent::ChannelSend {
+                task_id,
+                channel,
+                bytes,
+                payload_hash,
+            } => Self {
+                event: "channel_send",
+                task_id: *task_id,
+                detached: None,
+                message: Some(format!(
+                    "channel={channel} bytes={bytes} payload_hash={payload_hash}"
+                )),
+            },
+            TaskEvent::ChannelRecv {
+                task_id,
+                channel,
+                bytes,
+                payload_hash,
+            } => Self {
+                event: "channel_recv",
+                task_id: *task_id,
+                detached: None,
+                message: Some(format!(
+                    "channel={channel} bytes={bytes} payload_hash={payload_hash}"
+                )),
+            },
             TaskEvent::Detached { task_id } => Self {
                 event: "detached",
                 task_id: *task_id,
@@ -2988,7 +3077,10 @@ fn derive_runtime_semantic_evidence(
                         .unwrap_or_else(|| "unknown".to_string()),
                 });
             }
-            TaskEvent::Completed { task_id } | TaskEvent::Panicked { task_id, .. } => {
+            TaskEvent::Completed { task_id }
+            | TaskEvent::Panicked { task_id, .. }
+            | TaskEvent::TimedOut { task_id, .. }
+            | TaskEvent::Cancelled { task_id } => {
                 let op = task_ops.get(task_id);
                 runtime_events.push(RuntimeSemanticEvent {
                     task_id: *task_id,
@@ -3001,7 +3093,13 @@ fn derive_runtime_semantic_evidence(
                         .unwrap_or_else(|| "unknown".to_string()),
                 });
             }
-            TaskEvent::Spawned { task_id, .. } | TaskEvent::Detached { task_id } => {
+            TaskEvent::Spawned { task_id, .. }
+            | TaskEvent::Detached { task_id }
+            | TaskEvent::Yielded { task_id, .. }
+            | TaskEvent::IoWait { task_id, .. }
+            | TaskEvent::IoReady { task_id, .. }
+            | TaskEvent::ChannelSend { task_id, .. }
+            | TaskEvent::ChannelRecv { task_id, .. } => {
                 let op = task_ops.get(task_id);
                 runtime_events.push(RuntimeSemanticEvent {
                     task_id: *task_id,
@@ -3014,6 +3112,22 @@ fn derive_runtime_semantic_evidence(
                         .unwrap_or_else(|| "unknown".to_string()),
                 });
             }
+            TaskEvent::JoinWait { waiter, .. } => {
+                let op = task_ops.get(waiter);
+                runtime_events.push(RuntimeSemanticEvent {
+                    task_id: *waiter,
+                    phase: "wait".to_string(),
+                    kind: op
+                        .map(|op| op.kind.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    label: op
+                        .map(|op| op.label.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            }
+            TaskEvent::JoinCycle { .. }
+            | TaskEvent::PanicRootCause { .. }
+            | TaskEvent::Backpressure { .. } => {}
         }
     }
     let mut causal_links = Vec::new();
@@ -3331,7 +3445,23 @@ fn thread_health_findings(
             TaskEvent::Panicked { task_id, .. } => {
                 panicked.insert(*task_id);
             }
-            TaskEvent::Started { .. } | TaskEvent::Detached { .. } => {}
+            TaskEvent::TimedOut { task_id, .. } => {
+                panicked.insert(*task_id);
+            }
+            TaskEvent::Cancelled { task_id } => {
+                completed.insert(*task_id);
+            }
+            TaskEvent::Started { .. }
+            | TaskEvent::Detached { .. }
+            | TaskEvent::PanicRootCause { .. }
+            | TaskEvent::Backpressure { .. }
+            | TaskEvent::JoinWait { .. }
+            | TaskEvent::JoinCycle { .. }
+            | TaskEvent::Yielded { .. }
+            | TaskEvent::IoWait { .. }
+            | TaskEvent::IoReady { .. }
+            | TaskEvent::ChannelSend { .. }
+            | TaskEvent::ChannelRecv { .. } => {}
         }
     }
     let mut findings = Vec::new();

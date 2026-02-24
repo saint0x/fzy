@@ -45,9 +45,17 @@ This document defines the v0 observable semantics contract used by the toolchain
 ## Memory Safety And UB Model
 
 - Safe-profile checks reject unsafe capabilities and unsafe escape sites.
-- Safe-profile rejects unresolved reference-region usage and host-syscall usage.
+- References in safe profile require explicit lifetime/region annotations (`&'name T` / `&'name mut T`) and verifier-valid handoff.
 - Alloc/free imbalance is diagnosed and can be a hard failure in safe profile.
 - v0 does not claim complete alias/lifetime proof coverage for all low-level patterns.
+
+## Ownership Model (v0)
+
+- Heap allocations are single-owner values by default: creating via `alloc(...)` establishes ownership in the current scope.
+- Ownership moves on assignment, argument passing, and return of owning types; use-after-move is verifier-invalid.
+- `free(...)` consumes ownership and invalidates further use in the current flow.
+- `defer free(...)` is the preferred deterministic cleanup path.
+- Borrowed references (`&'a T`, `&'a mut T`) do not transfer ownership and must not outlive the annotated region `'a`.
 
 ## Atomics And Memory Ordering Contract
 

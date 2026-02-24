@@ -38,7 +38,16 @@ impl Clock for HostClock {
     }
 
     fn sleep_millis(&mut self, duration_ms: u64) {
-        std::thread::sleep(Duration::from_millis(duration_ms));
+        if duration_ms == 0 {
+            std::thread::yield_now();
+            return;
+        }
+        let mut remaining = duration_ms;
+        while remaining > 0 {
+            std::thread::sleep(Duration::from_millis(1));
+            std::thread::yield_now();
+            remaining -= 1;
+        }
     }
 }
 

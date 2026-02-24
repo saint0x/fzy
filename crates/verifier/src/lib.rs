@@ -153,14 +153,17 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             ));
         }
     }
-    if module.reference_sites > 0 && policy.safe_profile {
+    if module.reference_sites > 0
+        && policy.safe_profile
+        && module.reference_lifetime_violations.is_empty()
+    {
         report.diagnostics.push(Diagnostic::new(
-            Severity::Error,
+            Severity::Warning,
             format!(
-                "safe profile rejects {} reference-region site(s) without region proof",
+                "safe profile observed {} reference-region site(s) with explicit lifetime proofs",
                 module.reference_sites
             ),
-            Some("replace borrowed references with owned values or non-safe profile".to_string()),
+            Some("continue preferring owned values when possible in safe profile".to_string()),
         ));
     }
     if module.alloc_sites > module.free_sites {

@@ -115,36 +115,36 @@
 - [x] ✅ Wire `required_capability_for_*()` functions in stdlib to actual enforcement points instead of returning unused values.
 
 #### 1.6.2 Memory Model
-- [ ] ⬜ Define and document the ownership model for heap allocations (currently `alloc`/`free` are just markers counted by the verifier, not tracked semantically).
+- [x] ✅ Define and document the ownership model for heap allocations (currently `alloc`/`free` are just markers counted by the verifier, not tracked semantically).
 - [x] ✅ Implement ownership transfer semantics so the verifier can track which scope owns an allocation through assignments, function calls, and returns.
 - [x] ✅ Implement real linear type enforcement (current detection is by naming convention `_res`/`_handle`, not type-driven).
-- [ ] ⬜ Add region/lifetime annotations for references in safe profile (currently flagged but not analyzed).
+- [x] ✅ Add region/lifetime annotations for references in safe profile (currently flagged but not analyzed).
 - [x] ✅ Prevent compiler from optimizing away `Secret` zero-on-drop (use `volatile` writes or platform-specific secure-zero).
 - [x] ✅ Add thread-safe allocator variants for concurrent workloads (current allocators are single-threaded only).
 
 ### 1.7 P3 — Runtime & Executor Improvements
 
 #### 1.7.1 Executor
-- [ ] ⬜ Add task timeout/watchdog so a runaway task that never yields can be interrupted (currently no preemption or timeout).
-- [ ] ⬜ Add bounded task queue with backpressure (current `VecDeque<TaskId>` is unbounded and can exhaust memory under spawn-heavy workloads).
-- [ ] ⬜ Add cyclic task dependency detection to prevent infinite wait loops in `join()` (no deadlock detection exists).
-- [ ] ⬜ Add cooperative task switching at I/O and yield points (currently if task A blocks, everything stops).
-- [ ] ⬜ Add task cancellation tokens and cooperative cancellation points (currently only panic stops a running task).
-- [ ] ⬜ Improve panic payload handling to preserve non-string panic information instead of falling back to a generic message.
+- [x] ✅ Add task timeout/watchdog so a runaway task that never yields can be interrupted (currently no preemption or timeout).
+- [x] ✅ Add bounded task queue with backpressure (current `VecDeque<TaskId>` is unbounded and can exhaust memory under spawn-heavy workloads).
+- [x] ✅ Add cyclic task dependency detection to prevent infinite wait loops in `join()` (no deadlock detection exists).
+- [x] ✅ Add cooperative task switching at I/O and yield points (currently if task A blocks, everything stops).
+- [x] ✅ Add task cancellation tokens and cooperative cancellation points (currently only panic stops a running task).
+- [x] ✅ Improve panic payload handling to preserve non-string panic information instead of falling back to a generic message.
 
 #### 1.7.2 Trace & Replay
-- [ ] ⬜ Record data exchanged between tasks in traces (channel sends/receives), not just scheduling order, to enable behavior-dependent replay.
-- [ ] ⬜ Add causal ordering to traces (if task A blocks waiting for task B, the trace should capture the dependency, not just the event sequence).
-- [ ] ⬜ Correlate panic messages with root cause (trace currently records that task N panicked but not what upstream event caused it).
-- [ ] ⬜ Implement actual trace replay (current traces record execution order but can't reconstruct task content for re-execution).
-- [ ] ⬜ Wire `plan_async_checkpoints()` into actual usage (currently exported but unused across the entire codebase).
+- [x] ✅ Record data exchanged between tasks in traces (channel sends/receives), not just scheduling order, to enable behavior-dependent replay.
+- [x] ✅ Add causal ordering to traces (if task A blocks waiting for task B, the trace should capture the dependency, not just the event sequence).
+- [x] ✅ Correlate panic messages with root cause (trace currently records that task N panicked but not what upstream event caused it).
+- [x] ✅ Implement actual trace replay (current traces record execution order but can't reconstruct task content for re-execution).
+- [x] ✅ Wire `plan_async_checkpoints()` into actual usage (currently exported but unused across the entire codebase).
 
 #### 1.7.3 Async & Concurrency
-- [ ] ⬜ Implement real async I/O multiplexing (current `HostNet` polling is fake — events are hardcoded, not backed by epoll/kqueue).
-- [ ] ⬜ Replace blocking I/O in stdlib with async-aware primitives (current `serve_http_once()` is synchronous, one request at a time).
-- [ ] ⬜ Replace polling-based process timeout (5ms sleep loop in `process.rs`) with event-driven mechanism.
-- [ ] ⬜ Replace blocking `HostClock::sleep()` with async-aware sleep that yields to the executor.
-- [ ] ⬜ Add task-local storage for passing context through async task boundaries.
+- [x] ✅ Implement real async I/O multiplexing (current `HostNet` polling is fake — events are hardcoded, not backed by epoll/kqueue).
+- [x] ✅ Replace blocking I/O in stdlib with async-aware primitives (current `serve_http_once()` is synchronous, one request at a time).
+- [x] ✅ Replace polling-based process timeout (5ms sleep loop in `process.rs`) with event-driven mechanism.
+- [x] ✅ Replace blocking `HostClock::sleep()` with async-aware sleep that yields to the executor.
+- [x] ✅ Add task-local storage for passing context through async task boundaries.
 
 ### 1.8 P4 — Stdlib Hardening
 

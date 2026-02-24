@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 capabilities = { path = "../capabilities" }
+wait-timeout = "0.2"

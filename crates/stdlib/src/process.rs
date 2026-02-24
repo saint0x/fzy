@@ -2,7 +2,8 @@ use capabilities::{Capability, CapabilityToken};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use wait_timeout::ChildExt;
 
 use crate::capability::{require_capability, CapabilityError};
 
@@ -151,48 +152,41 @@ pub fn run_child_process(spec: &ProcessSpec, cancelled: bool) -> ProcessResult {
         }
     };
 
-    let started = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = String::new();
-                let mut stderr = String::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_string(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_string(&mut stderr);
-                }
-                let class = match status.code() {
-                    Some(0) => ExitClass::Success,
-                    Some(code) => ExitClass::NonZero(code),
-                    None => ExitClass::NonZero(-1),
-                };
-                return ProcessResult {
-                    class,
-                    stdout,
-                    stderr,
-                };
+    match child.wait_timeout(Duration::from_millis(spec.timeout_ms)) {
+        Ok(Some(status)) => {
+            let mut stdout = String::new();
+            let mut stderr = String::new();
+            if let Some(mut out) = child.stdout.take() {
+                let _ = out.read_to_string(&mut stdout);
             }
-            Ok(None) => {
-                if started.elapsed() >= Duration::from_millis(spec.timeout_ms) {
-                    let _ = child.kill();
-                    return ProcessResult {
-                        class: ExitClass::Timeout,
-                        stdout: String::new(),
-                        stderr: "timed out".to_string(),
-                    };
-                }
-                std::thread::sleep(Duration::from_millis(5));
+            if let Some(mut err) = child.stderr.take() {
+                let _ = err.read_to_string(&mut stderr);
             }
-            Err(err) => {
-                return ProcessResult {
-                    class: ExitClass::SpawnError,
-                    stdout: String::new(),
-                    stderr: err.to_string(),
-                }
+            let class = match status.code() {
+                Some(0) => ExitClass::Success,
+                Some(code) => ExitClass::NonZero(code),
+                None => ExitClass::NonZero(-1),
+            };
+            ProcessResult {
+                class,
+                stdout,
+                stderr,
             }
         }
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            ProcessResult {
+                class: ExitClass::Timeout,
+                stdout: String::new(),
+                stderr: "timed out".to_string(),
+            }
+        }
+        Err(err) => ProcessResult {
+            class: ExitClass::SpawnError,
+            stdout: String::new(),
+            stderr: err.to_string(),
+        },
     }
 }
 

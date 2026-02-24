@@ -22,6 +22,12 @@
 - Complete data-race freedom proofs for all shared-memory patterns.
 - Exhaustive inter-procedural pointer provenance analysis.
 
+## Reference Lifetime Annotations
+
+- Safe profile requires explicit lifetime names on references (for example, `&'req str` or `&'buf mut u8`).
+- Returning a reference requires matching annotated region proof from an input or another proven binding.
+- Missing annotations or mismatched return lifetimes are verifier violations.
+
 ## Unsafe Reason Syntax
 
 Preferred forms for auditable unsafe reasons:

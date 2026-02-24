@@ -66,6 +66,7 @@ enum TokenKind {
     Arrow,
     FatArrow,
     Amp,
+    Apostrophe,
     Bang,
     Hash,
     Eof,
@@ -883,10 +884,16 @@ impl Parser {
             });
         }
         if self.consume(&TokenKind::Amp) {
+            let lifetime = if self.consume(&TokenKind::Apostrophe) {
+                Some(self.expect_ident("expected lifetime name after `'`")?)
+            } else {
+                None
+            };
             let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
             let inner = self.parse_type()?;
             return Some(Type::Ref {
                 mutable,
+                lifetime,
                 to: Box::new(inner),
             });
         }
@@ -1359,6 +1366,10 @@ impl<'a> Lexer<'a> {
                     self.advance_char();
                     TokenKind::Amp
                 }
+                '\'' => {
+                    self.advance_char();
+                    TokenKind::Apostrophe
+                }
                 '#' => {
                     self.advance_char();
                     TokenKind::Hash
@@ -1582,5 +1593,37 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn parses_reference_lifetime_annotations() {
+        let source = r#"
+            fn borrow(value: &'req str) -> &'req str {
+                return value;
+            }
+        "#;
+        let module = parse(source, "lifetimes").expect("parse should succeed");
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "borrow" => Some(function),
+                _ => None,
+            })
+            .expect("borrow function should exist");
+        assert!(matches!(
+            function.params[0].ty,
+            ast::Type::Ref {
+                lifetime: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            function.return_type,
+            ast::Type::Ref {
+                lifetime: Some(_),
+                ..
+            }
+        ));
     }
 }

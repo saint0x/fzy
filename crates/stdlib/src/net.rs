@@ -239,6 +239,7 @@ pub struct HostNet {
     sockets: BTreeMap<SocketId, (HostSocket, SocketOwnership)>,
     poll_interests: BTreeMap<SocketId, PollInterest>,
     poll_queue: VecDeque<PollerEvent>,
+    ready_accepts: BTreeMap<SocketId, VecDeque<TcpStream>>,
     contexts: BTreeMap<ContextId, RequestContext>,
     decisions: Vec<NetDecision>,
     shutdown: GracefulShutdown,
@@ -251,6 +252,7 @@ impl Default for HostNet {
             sockets: BTreeMap::new(),
             poll_interests: BTreeMap::new(),
             poll_queue: VecDeque::new(),
+            ready_accepts: BTreeMap::new(),
             contexts: BTreeMap::new(),
             decisions: Vec::new(),
             shutdown: GracefulShutdown::default(),
@@ -270,6 +272,48 @@ impl HostNet {
             return Err(NetError::QueueFull);
         }
         self.poll_queue.push_back(event);
+        Ok(())
+    }
+
+    fn scan_poll_interests(&mut self, max_queue_depth: usize) -> Result<(), NetError> {
+        let interests = self.poll_interests.clone();
+        for (socket, interest) in interests {
+            let Some((host_socket, _)) = self.sockets.get_mut(&socket) else {
+                continue;
+            };
+            match (interest, host_socket) {
+                (PollInterest::Readable, HostSocket::Stream(stream)) => {
+                    let mut probe = [0_u8; 1];
+                    match stream.peek(&mut probe) {
+                        Ok(0) => {
+                            self.queue_event(PollerEvent::Closed(socket), max_queue_depth)?;
+                        }
+                        Ok(_) => {
+                            self.queue_event(PollerEvent::Readable(socket), max_queue_depth)?;
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(err) => return Err(NetError::Io(err.to_string())),
+                    }
+                }
+                (PollInterest::Writable, HostSocket::Stream(_stream)) => {
+                    self.queue_event(PollerEvent::Writable(socket), max_queue_depth)?;
+                }
+                (PollInterest::Acceptable, HostSocket::Listener(listener)) => {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            stream
+                                .set_nonblocking(true)
+                                .map_err(|e| NetError::Io(e.to_string()))?;
+                            self.ready_accepts.entry(socket).or_default().push_back(stream);
+                            self.queue_event(PollerEvent::Acceptable(socket), max_queue_depth)?;
+                        }
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(err) => return Err(NetError::Io(err.to_string())),
+                    }
+                }
+                _ => {}
+            }
+        }
         Ok(())
     }
 }
@@ -326,6 +370,25 @@ impl NetBackend for HostNet {
     }
 
     fn accept(&mut self, listener: SocketId) -> Result<Option<SocketId>, NetError> {
+        if let Some(queued) = self
+            .ready_accepts
+            .get_mut(&listener)
+            .and_then(VecDeque::pop_front)
+        {
+            let id = self.new_socket_id();
+            self.sockets.insert(
+                id,
+                (
+                    HostSocket::Stream(queued),
+                    SocketOwnership::ApplicationOwned,
+                ),
+            );
+            self.decisions.push(NetDecision::Accept {
+                listener,
+                connection: id,
+            });
+            return Ok(Some(id));
+        }
         let Some((HostSocket::Listener(sock), _)) = self.sockets.get_mut(&listener) else {
             return Err(NetError::InvalidSocketKind);
         };
@@ -419,21 +482,19 @@ impl NetBackend for HostNet {
         &mut self,
         socket: SocketId,
         interest: PollInterest,
-        max_queue_depth: usize,
+        _max_queue_depth: usize,
     ) -> Result<(), NetError> {
         if !self.sockets.contains_key(&socket) {
             return Err(NetError::NotFound);
         }
         self.poll_interests.insert(socket, interest);
-        let event = match interest {
-            PollInterest::Readable => PollerEvent::Readable(socket),
-            PollInterest::Writable => PollerEvent::Writable(socket),
-            PollInterest::Acceptable => PollerEvent::Acceptable(socket),
-        };
-        self.queue_event(event, max_queue_depth)
+        Ok(())
     }
 
     fn poll_next(&mut self, max_events: usize) -> Result<Vec<PollerEvent>, NetError> {
+        if self.poll_queue.is_empty() {
+            self.scan_poll_interests(max_events.max(1))?;
+        }
         let mut events = Vec::with_capacity(max_events);
         for _ in 0..max_events {
             if let Some(event) = self.poll_queue.pop_front() {
@@ -964,11 +1025,21 @@ pub fn serve_http_once<B: NetBackend, R: HttpRouter>(
     router: &R,
     limits: &HttpServerLimits,
 ) -> Result<usize, NetError> {
+    backend.poll_register(listener, PollInterest::Acceptable, 128)?;
+    let events = backend.poll_next(8)?;
+    if !events
+        .iter()
+        .any(|event| matches!(event, PollerEvent::Acceptable(id) if *id == listener))
+    {
+        return Ok(0);
+    }
     let Some(connection) = backend.accept(listener)? else {
         return Ok(0);
     };
     backend.request_started()?;
 
+    backend.poll_register(connection, PollInterest::Readable, 128)?;
+    let _ = backend.poll_next(8)?;
     let raw = backend.read(connection, limits.max_header_bytes + limits.max_body_bytes)?;
     let request = parse_http_request(&raw, limits)?;
     let mut response = router.route(&request);
@@ -977,6 +1048,8 @@ pub fn serve_http_once<B: NetBackend, R: HttpRouter>(
     }
 
     let serialized = response.to_bytes();
+    backend.poll_register(connection, PollInterest::Writable, 128)?;
+    let _ = backend.poll_next(8)?;
     let wrote = backend.write(connection, &serialized)?;
     if !response.keep_alive {
         backend.close(connection)?;
