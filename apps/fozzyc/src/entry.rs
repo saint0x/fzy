@@ -42,6 +42,11 @@ fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
     if json {
         let payload: serde_json::Value = serde_json::from_str(output).ok()?;
         return match command {
+            Command::Build { .. } => payload
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|status| status == "error")
+                .then_some(1),
             Command::Run { .. } => payload
                 .get("exitCode")
                 .and_then(serde_json::Value::as_i64)

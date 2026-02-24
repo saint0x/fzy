@@ -55,6 +55,7 @@ pub fn compile_file_with_backend(
 ) -> Result<BuildArtifact> {
     let resolved = resolve_source_path(path)?;
     let parsed = parse_program(&resolved.source_path)?;
+    let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let typed = hir::lower(&parsed.module);
     let fir = fir::build(&typed);
     let report = verifier::verify_with_policy(
@@ -69,11 +70,12 @@ pub fn compile_file_with_backend(
         .as_ref()
         .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
         .unwrap_or(true);
-    let has_errors = report
+    let has_verifier_errors = report
         .diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
-    let status = if checks_enabled && has_errors {
+    let has_native_lowerability_errors = !native_lowerability_errors.is_empty();
+    let status = if has_native_lowerability_errors || (checks_enabled && has_verifier_errors) {
         "error"
     } else {
         "ok"
@@ -94,7 +96,7 @@ pub fn compile_file_with_backend(
         module: fir.name,
         profile,
         status,
-        diagnostics: report.diagnostics.len(),
+        diagnostics: report.diagnostics.len() + native_lowerability_errors.len(),
         output,
         dependency_graph_hash: resolved.dependency_graph_hash,
     })
@@ -127,10 +129,11 @@ pub fn verify_file(path: &Path) -> Result<Output> {
             });
         }
     };
+    let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
     let typed = hir::lower(&parsed.module);
     let fir = fir::build(&typed);
     let report = verifier::verify(&fir);
-    let diagnostics = report.diagnostics;
+    diagnostics.extend(report.diagnostics);
 
     Ok(Output {
         module: fir.name,
@@ -165,10 +168,11 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
             });
         }
     };
+    let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
     let typed = hir::lower(&parsed.module);
     let fir = fir::build(&typed);
     let report = verifier::verify(&fir);
-    let diagnostics = report.diagnostics;
+    diagnostics.extend(report.diagnostics);
     let llvm = lower_backend_ir(&fir, BackendKind::Llvm);
     let cranelift = lower_backend_ir(&fir, BackendKind::Cranelift);
 
@@ -1820,7 +1824,10 @@ fn clif_emit_expr(
         }
         ast::Expr::Call { callee, args } => {
             let Some(function_id) = function_ids.get(callee).copied() else {
-                return Ok(builder.ins().iconst(types::I32, 0));
+                return Err(anyhow!(
+                    "native backend cannot lower unresolved call target `{}`",
+                    callee
+                ));
             };
             let func_ref = module.declare_func_in_func(function_id, builder.func);
             let mut values = Vec::with_capacity(args.len());
@@ -1842,6 +1849,131 @@ fn clif_emit_expr(
             }
         }
     })
+}
+
+fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Diagnostic> {
+    let defined_functions = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Function(function) => Some(function.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let mut unresolved = HashSet::<String>::new();
+    for item in &module.items {
+        if let ast::Item::Function(function) = item {
+            for stmt in &function.body {
+                collect_unresolved_calls_from_stmt(stmt, &defined_functions, &mut unresolved);
+            }
+        }
+    }
+    let mut unresolved = unresolved.into_iter().collect::<Vec<_>>();
+    unresolved.sort();
+    unresolved
+        .into_iter()
+        .map(|callee| {
+            diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!("native backend cannot execute unresolved call `{callee}`"),
+                Some(
+                    "run via Fozzy scenario/host backends or provide a real native implementation for this symbol"
+                        .to_string(),
+                ),
+            )
+        })
+        .collect()
+}
+
+fn collect_unresolved_calls_from_stmt(
+    stmt: &ast::Stmt,
+    defined_functions: &HashSet<String>,
+    unresolved: &mut HashSet<String>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::Return(value)
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => {
+            collect_unresolved_calls_from_expr(value, defined_functions, unresolved)
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_unresolved_calls_from_expr(condition, defined_functions, unresolved);
+            for nested in then_body {
+                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+            }
+            for nested in else_body {
+                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_unresolved_calls_from_expr(condition, defined_functions, unresolved);
+            for nested in body {
+                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_unresolved_calls_from_expr(scrutinee, defined_functions, unresolved);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_unresolved_calls_from_expr(guard, defined_functions, unresolved);
+                }
+                collect_unresolved_calls_from_expr(&arm.value, defined_functions, unresolved);
+            }
+        }
+    }
+}
+
+fn collect_unresolved_calls_from_expr(
+    expr: &ast::Expr,
+    defined_functions: &HashSet<String>,
+    unresolved: &mut HashSet<String>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if !defined_functions.contains(callee) {
+                unresolved.insert(callee.clone());
+            }
+            for arg in args {
+                collect_unresolved_calls_from_expr(arg, defined_functions, unresolved);
+            }
+        }
+        ast::Expr::FieldAccess { base, .. } => {
+            collect_unresolved_calls_from_expr(base, defined_functions, unresolved);
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_unresolved_calls_from_expr(value, defined_functions, unresolved);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                collect_unresolved_calls_from_expr(value, defined_functions, unresolved);
+            }
+        }
+        ast::Expr::Group(inner) => {
+            collect_unresolved_calls_from_expr(inner, defined_functions, unresolved);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_unresolved_calls_from_expr(try_expr, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(catch_expr, defined_functions, unresolved);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_unresolved_calls_from_expr(left, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(right, defined_functions, unresolved);
+        }
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+    }
 }
 
 fn linker_candidates() -> Vec<String> {
@@ -1906,7 +2038,7 @@ mod tests {
 
     use super::{
         compile_file, compile_file_with_backend, emit_ir, parse_program, refresh_lockfile,
-        BuildProfile,
+        verify_file, BuildProfile,
     };
 
     #[test]
@@ -1987,8 +2119,8 @@ mod tests {
             .expect("module source should be written");
 
         let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
-        assert_eq!(artifact.status, "ok");
-        assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
+        assert_eq!(artifact.status, "error");
+        assert!(artifact.output.is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2161,8 +2293,8 @@ mod tests {
         .expect("source should be written");
 
         let artifact = compile_file(&root, BuildProfile::Dev).expect("build should run");
-        assert_eq!(artifact.status, "ok");
-        assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
+        assert_eq!(artifact.status, "error");
+        assert!(artifact.output.is_none());
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2287,6 +2419,30 @@ mod tests {
         assert!(root.join(".fz/build/main.ll").exists());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verify_reports_unresolved_native_calls() {
+        let file_name = format!(
+            "fozzylang-native-unresolved-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "use cap.net;\nfn main() -> i32 {\n    let listener = net.bind()\n    net.listen(listener)\n    return 0\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| diag
+            .message
+            .contains("native backend cannot execute unresolved call")));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

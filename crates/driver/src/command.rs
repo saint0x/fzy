@@ -241,29 +241,23 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "--host-backends is unsupported for native `.fzy` runs; use a `.fozzy.json` scenario (or `--det` routing) to execute host-backed checks"
                 );
             }
-
-            let artifact = compile_file_with_backend(
-                &path,
-                if safe_profile {
-                    BuildProfile::Verify
-                } else {
-                    BuildProfile::Dev
-                },
-                backend.as_deref(),
-            )?;
-            if artifact.status != "ok" || artifact.output.is_none() {
-                bail!(
-                    "run aborted: build status={} diagnostics={}",
-                    artifact.status,
-                    artifact.diagnostics
-                );
-            }
             if deterministic {
                 let resolved = resolve_source(&path)?;
                 let parsed = parse_program(&resolved.source_path)?;
+                let typed = hir::lower(&parsed.module);
+                let fir = fir::build(&typed);
+                let verify_report = verifier::verify(&fir);
+                let diagnostics = verify_report.diagnostics.len();
+                let has_errors = verify_report
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+                if has_errors {
+                    bail!("run aborted: deterministic semantics diagnostics={diagnostics}");
+                }
                 let scenario = emit_deterministic_capability_scenario(
                     &resolved.project_root,
-                    &artifact.module,
+                    &fir.name,
                     &parsed.module,
                     &parsed.combined_source,
                     host_backends,
@@ -301,16 +295,16 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     Format::Text => Ok(format!(
                         "run routed via {} for module={} deterministic_requested={} deterministic_applied={} host_backends={} status={}",
                         scenario.display(),
-                        artifact.module,
+                        fir.name,
                         deterministic,
                         deterministic_applied,
                         host_backends,
                         routed
                     )),
                     Format::Json => Ok(serde_json::json!({
-                        "module": artifact.module,
-                        "status": artifact.status,
-                        "diagnostics": artifact.diagnostics,
+                        "module": fir.name,
+                        "status": "ok",
+                        "diagnostics": diagnostics,
                         "deterministicRequested": deterministic,
                         "deterministicApplied": deterministic_applied,
                         "strictVerify": strict_verify,
@@ -330,6 +324,23 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     })
                     .to_string()),
                 };
+            }
+
+            let artifact = compile_file_with_backend(
+                &path,
+                if safe_profile {
+                    BuildProfile::Verify
+                } else {
+                    BuildProfile::Dev
+                },
+                backend.as_deref(),
+            )?;
+            if artifact.status != "ok" || artifact.output.is_none() {
+                bail!(
+                    "run aborted: build status={} diagnostics={}",
+                    artifact.status,
+                    artifact.diagnostics
+                );
             }
             let binary = artifact
                 .output
@@ -4440,7 +4451,7 @@ if not key:
     sys.exit(22)
 
 payload = json.dumps({
-    "model": "claude-3-5-haiku-latest",
+    "model": "claude-sonnet-4-6",
     "max_tokens": 8,
     "messages": [{"role": "user", "content": "ping"}],
 }).encode()
