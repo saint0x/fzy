@@ -149,53 +149,53 @@
 ### 1.8 P4 — Stdlib Hardening
 
 #### 1.8.1 Concurrency Primitives
-- [ ] ⬜ Fix `BoundedChannel` thread safety (send/recv mutate `self.queue` with no synchronization — data race under concurrent access).
-- [ ] ⬜ Add notification callback for `DropOldest`/`DropNewest` overflow policies (currently silently drops data).
-- [ ] ⬜ Add backpressure signaling from channel to sender.
-- [ ] ⬜ Add missing sync primitives: semaphore, barrier, once-cell.
-- [ ] ⬜ Add bounds/eviction policy to `ObjectPool` (currently unbounded, can grow without limit).
-- [ ] ⬜ Zero `BufferPool` buffers on checkout, not just checkin (previous owner's data is currently observable on checkout).
-- [ ] ⬜ Wire `DeterministicHooks` into actual sync primitives for deterministic concurrency testing (currently records events but isn't integrated).
+- [x] ✅ Fix `BoundedChannel` thread safety (send/recv mutate `self.queue` with no synchronization — data race under concurrent access).
+- [x] ✅ Add notification callback for `DropOldest`/`DropNewest` overflow policies (currently silently drops data).
+- [x] ✅ Add backpressure signaling from channel to sender.
+- [x] ✅ Add missing sync primitives: semaphore, barrier, once-cell.
+- [x] ✅ Add bounds/eviction policy to `ObjectPool` (currently unbounded, can grow without limit).
+- [x] ✅ Zero `BufferPool` buffers on checkout, not just checkin (previous owner's data is currently observable on checkout).
+- [x] ✅ Wire `DeterministicHooks` into actual sync primitives for deterministic concurrency testing (currently records events but isn't integrated).
 
 #### 1.8.2 Networking
-- [ ] ⬜ Implement real epoll/kqueue-backed polling in `HostNet` (current `poll_register()` just enqueues hardcoded events).
-- [ ] ⬜ Add HTTP/1.1 chunked transfer encoding support.
-- [ ] ⬜ Add `Expect: 100-continue` support.
-- [ ] ⬜ Add UDP, Unix domain socket, and multicast support (currently TCP only).
-- [ ] ⬜ Add DNS hostname resolution.
-- [ ] ⬜ Add IPv6 support (currently only IPv4 string addresses).
-- [ ] ⬜ Add socket options: `SO_REUSEADDR`, `SO_REUSEPORT`, `TCP_NODELAY`, `SO_KEEPALIVE`.
-- [ ] ⬜ Validate `DeterministicNet` socket operations (bind/connect currently always succeed without address validation or backlog checking).
+- [x] ✅ Implement real epoll/kqueue-backed polling in `HostNet` (current `poll_register()` just enqueues hardcoded events).
+- [x] ✅ Add HTTP/1.1 chunked transfer encoding support.
+- [x] ✅ Add `Expect: 100-continue` support.
+- [x] ✅ Add UDP, Unix domain socket, and multicast support (currently TCP only).
+- [x] ✅ Add DNS hostname resolution.
+- [x] ✅ Add IPv6 support (currently only IPv4 string addresses).
+- [x] ✅ Add socket options: `SO_REUSEADDR`, `SO_REUSEPORT`, `TCP_NODELAY`, `SO_KEEPALIVE`.
+- [x] ✅ Validate `DeterministicNet` socket operations (bind/connect currently always succeed without address validation or backlog checking).
 
 #### 1.8.3 I/O & Storage
-- [ ] ⬜ Add binary and streaming I/O (current `IoBackend` is string-only, no seek, no append mode).
-- [ ] ⬜ Add directory listing, file metadata, file deletion, and permission checks.
-- [ ] ⬜ Add symlink handling and TOCTOU protection for `write_atomic()` (currently doesn't verify parent directory isn't a symlink).
-- [ ] ⬜ Add `BoundedWriter` overflow callback instead of silently dropping data on `QueueFull`.
-- [ ] ⬜ Add `DeterministicDurableFs` error injection to simulate filesystem failures and race conditions.
+- [x] ✅ Add binary and streaming I/O (current `IoBackend` is string-only, no seek, no append mode).
+- [x] ✅ Add directory listing, file metadata, file deletion, and permission checks.
+- [x] ✅ Add symlink handling and TOCTOU protection for `write_atomic()` (currently doesn't verify parent directory isn't a symlink).
+- [x] ✅ Add `BoundedWriter` overflow callback instead of silently dropping data on `QueueFull`.
+- [x] ✅ Add `DeterministicDurableFs` error injection to simulate filesystem failures and race conditions.
 
 #### 1.8.4 Observability
-- [ ] ⬜ Add output sinks for logger (file, network, structured JSON) instead of unbounded in-memory storage (current `Logger.entries` will OOM on long-running services).
-- [ ] ⬜ Add span duration tracking to `Tracer` (currently records span start but not duration).
-- [ ] ⬜ Add percentile calculations (p50, p95, p99) to histogram metrics.
-- [ ] ⬜ Add timestamps to metrics data points.
-- [ ] ⬜ Extend secret redaction patterns to cover `api_key`, `bearer`, `jwt`, `authorization` (currently only matches `secret`, `token`, `password`).
-- [ ] ⬜ Add context/baggage propagation across async task boundaries.
+- [x] ✅ Add output sinks for logger (file, network, structured JSON) instead of unbounded in-memory storage (current `Logger.entries` will OOM on long-running services).
+- [x] ✅ Add span duration tracking to `Tracer` (currently records span start but not duration).
+- [x] ✅ Add percentile calculations (p50, p95, p99) to histogram metrics.
+- [x] ✅ Add timestamps to metrics data points.
+- [x] ✅ Extend secret redaction patterns to cover `api_key`, `bearer`, `jwt`, `authorization` (currently only matches `secret`, `token`, `password`).
+- [x] ✅ Add context/baggage propagation across async task boundaries.
 
 #### 1.8.5 Security & Crypto
-- [ ] ⬜ Add cryptographic primitives: SHA-256/SHA-512, HMAC, AES-GCM.
-- [ ] ⬜ Add CSPRNG backed by `/dev/urandom` or OS equivalent (current `HostRng` seeds from nanosecond timestamp — low entropy).
-- [ ] ⬜ Replace LCG random algorithm with PCG or xoshiro (LCG fails statistical tests).
-- [ ] ⬜ Add distribution support for RNG (uniform range, normal, exponential).
-- [ ] ⬜ Add rate limiting and request throttling primitives.
-- [ ] ⬜ Add persistent audit logging sink (current `CapabilityAudit` records are logged to memory only).
+- [x] ✅ Add cryptographic primitives: SHA-256/SHA-512, HMAC, AES-GCM.
+- [x] ✅ Add CSPRNG backed by `/dev/urandom` or OS equivalent (current `HostRng` seeds from nanosecond timestamp — low entropy).
+- [x] ✅ Replace LCG random algorithm with PCG or xoshiro (LCG fails statistical tests).
+- [x] ✅ Add distribution support for RNG (uniform range, normal, exponential).
+- [x] ✅ Add rate limiting and request throttling primitives.
+- [x] ✅ Add persistent audit logging sink (current `CapabilityAudit` records are logged to memory only).
 
 #### 1.8.6 Process Management
-- [ ] ⬜ Add structured argument passing for subprocess spawning (currently only shell execution via string).
-- [ ] ⬜ Add signal handling (SIGTERM, SIGINT, SIGHUP) beyond basic `kill()`.
-- [ ] ⬜ Add process group management and resource limits (memory, CPU, open files).
-- [ ] ⬜ Add stdin piping to child processes.
-- [ ] ⬜ Add privilege dropping / setuid / setgid support.
+- [x] ✅ Add structured argument passing for subprocess spawning (currently only shell execution via string).
+- [x] ✅ Add signal handling (SIGTERM, SIGINT, SIGHUP) beyond basic `kill()`.
+- [x] ✅ Add process group management and resource limits (memory, CPU, open files).
+- [x] ✅ Add stdin piping to child processes.
+- [x] ✅ Add privilege dropping / setuid / setgid support.
 
 ### 1.9 P5 — Documentation & Developer Experience
 

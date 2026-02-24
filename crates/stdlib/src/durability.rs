@@ -24,6 +24,7 @@ pub enum FsError {
     Io(String),
     LockBusy,
     QueueFull,
+    Injected(String),
 }
 
 #[derive(Debug)]
@@ -109,6 +110,7 @@ impl BoundedReader {
 pub struct BoundedWriter {
     queue: VecDeque<u8>,
     max_buffer: usize,
+    overflow_cb: Option<Box<dyn Fn(usize, usize) + Send + Sync + 'static>>,
 }
 
 impl BoundedWriter {
@@ -116,11 +118,26 @@ impl BoundedWriter {
         Self {
             queue: VecDeque::new(),
             max_buffer,
+            overflow_cb: None,
+        }
+    }
+
+    pub fn with_overflow_callback<F>(max_buffer: usize, callback: F) -> Self
+    where
+        F: Fn(usize, usize) + Send + Sync + 'static,
+    {
+        Self {
+            queue: VecDeque::new(),
+            max_buffer,
+            overflow_cb: Some(Box::new(callback)),
         }
     }
 
     pub fn write_chunk(&mut self, chunk: &[u8]) -> Result<usize, FsError> {
         if self.queue.len() + chunk.len() > self.max_buffer {
+            if let Some(callback) = &self.overflow_cb {
+                callback(self.queue.len() + chunk.len(), self.max_buffer);
+            }
             return Err(FsError::QueueFull);
         }
         self.queue.extend(chunk.iter().copied());
@@ -149,15 +166,38 @@ impl BoundedWriter {
 #[derive(Default)]
 pub struct DeterministicDurableFs {
     files: BTreeMap<String, Vec<u8>>,
+    fail_writes: BTreeMap<String, usize>,
+    fail_reads: BTreeMap<String, usize>,
 }
 
 impl DeterministicDurableFs {
-    pub fn write_atomic(&mut self, path: &str, bytes: &[u8]) {
-        self.files.insert(path.to_string(), bytes.to_vec());
+    pub fn inject_write_failures(&mut self, path: impl Into<String>, remaining: usize) {
+        self.fail_writes.insert(path.into(), remaining);
     }
 
-    pub fn read_all(&self, path: &str) -> Option<Vec<u8>> {
-        self.files.get(path).cloned()
+    pub fn inject_read_failures(&mut self, path: impl Into<String>, remaining: usize) {
+        self.fail_reads.insert(path.into(), remaining);
+    }
+
+    pub fn write_atomic(&mut self, path: &str, bytes: &[u8]) -> Result<(), FsError> {
+        if let Some(remaining) = self.fail_writes.get_mut(path) {
+            if *remaining > 0 {
+                *remaining -= 1;
+                return Err(FsError::Injected(format!("write failure for {path}")));
+            }
+        }
+        self.files.insert(path.to_string(), bytes.to_vec());
+        Ok(())
+    }
+
+    pub fn read_all(&mut self, path: &str) -> Result<Option<Vec<u8>>, FsError> {
+        if let Some(remaining) = self.fail_reads.get_mut(path) {
+            if *remaining > 0 {
+                *remaining -= 1;
+                return Err(FsError::Injected(format!("read failure for {path}")));
+            }
+        }
+        Ok(self.files.get(path).cloned())
     }
 }
 
@@ -203,5 +243,23 @@ mod tests {
         assert_eq!(reader.read_chunk(), b"he");
         assert_eq!(reader.read_chunk(), b"ll");
         assert_eq!(reader.read_chunk(), b"o");
+    }
+
+    #[test]
+    fn deterministic_fs_supports_error_injection() {
+        let mut fs = super::DeterministicDurableFs::default();
+        fs.inject_write_failures("/tmp/fail", 1);
+        assert!(matches!(
+            fs.write_atomic("/tmp/fail", b"x"),
+            Err(FsError::Injected(_))
+        ));
+        fs.write_atomic("/tmp/fail", b"ok")
+            .expect("second write should succeed");
+        fs.inject_read_failures("/tmp/fail", 1);
+        assert!(matches!(
+            fs.read_all("/tmp/fail"),
+            Err(FsError::Injected(_))
+        ));
+        assert_eq!(fs.read_all("/tmp/fail").expect("read").as_deref(), Some(&b"ok"[..]));
     }
 }

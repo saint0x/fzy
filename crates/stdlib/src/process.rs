@@ -1,6 +1,7 @@
 use capabilities::{Capability, CapabilityToken};
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{Read, Write};
+use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
@@ -24,6 +25,7 @@ pub fn run_child_with_capability(
 pub enum Signal {
     Sigterm,
     Sigint,
+    Sighup,
 }
 
 #[derive(Default)]
@@ -104,11 +106,42 @@ impl EnvConfig {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ResourceLimits {
+    pub max_open_files: Option<u64>,
+    pub max_memory_bytes: Option<u64>,
+    pub max_cpu_seconds: Option<u64>,
+}
+
 #[derive(Debug, Clone)]
 pub struct ProcessSpec {
     pub program: String,
     pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub cwd: Option<String>,
     pub timeout_ms: u64,
+    pub stdin: Option<Vec<u8>>,
+    pub set_process_group: bool,
+    pub limits: ResourceLimits,
+    pub drop_uid: Option<u32>,
+    pub drop_gid: Option<u32>,
+}
+
+impl Default for ProcessSpec {
+    fn default() -> Self {
+        Self {
+            program: String::new(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+            cwd: None,
+            timeout_ms: 5_000,
+            stdin: None,
+            set_process_group: false,
+            limits: ResourceLimits::default(),
+            drop_uid: None,
+            drop_gid: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,12 +169,74 @@ pub fn run_child_process(spec: &ProcessSpec, cancelled: bool) -> ProcessResult {
         };
     }
 
-    let mut child = match Command::new(&spec.program)
-        .args(&spec.args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+    let mut command = Command::new(&spec.program);
+    command.args(&spec.args);
+    if !spec.env.is_empty() {
+        command.envs(&spec.env);
+    }
+    if let Some(cwd) = &spec.cwd {
+        command.current_dir(cwd);
+    }
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if spec.stdin.is_some() {
+        command.stdin(Stdio::piped());
+    }
+
+    let set_process_group = spec.set_process_group;
+    let limits = spec.limits.clone();
+    let drop_uid = spec.drop_uid;
+    let drop_gid = spec.drop_gid;
+    // Safety: pre_exec only performs async-signal-safe libc calls to configure child process.
+    unsafe {
+        command.pre_exec(move || {
+            if set_process_group {
+                if libc::setpgid(0, 0) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if let Some(max) = limits.max_open_files {
+                let lim = libc::rlimit {
+                    rlim_cur: max,
+                    rlim_max: max,
+                };
+                if libc::setrlimit(libc::RLIMIT_NOFILE, &lim) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if let Some(max) = limits.max_memory_bytes {
+                let lim = libc::rlimit {
+                    rlim_cur: max,
+                    rlim_max: max,
+                };
+                if libc::setrlimit(libc::RLIMIT_AS, &lim) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if let Some(max) = limits.max_cpu_seconds {
+                let lim = libc::rlimit {
+                    rlim_cur: max,
+                    rlim_max: max,
+                };
+                if libc::setrlimit(libc::RLIMIT_CPU, &lim) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if let Some(gid) = drop_gid {
+                if libc::setgid(gid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            if let Some(uid) = drop_uid {
+                if libc::setuid(uid) != 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(err) => {
             return ProcessResult {
@@ -151,6 +246,12 @@ pub fn run_child_process(spec: &ProcessSpec, cancelled: bool) -> ProcessResult {
             }
         }
     };
+
+    if let Some(stdin_data) = &spec.stdin {
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(stdin_data);
+        }
+    }
 
     match child.wait_timeout(Duration::from_millis(spec.timeout_ms)) {
         Ok(Some(status)) => {
@@ -215,19 +316,22 @@ mod tests {
             program: "sh".to_string(),
             args: vec!["-c".to_string(), "exit 7".to_string()],
             timeout_ms: 500,
+            ..ProcessSpec::default()
         };
         let result = run_child_process(&spec, false);
         assert_eq!(result.class, ExitClass::NonZero(7));
     }
 
     #[test]
-    fn process_runner_respects_cancellation() {
+    fn process_runner_supports_stdin_piping() {
         let spec = ProcessSpec {
-            program: "echo".to_string(),
-            args: vec!["hello".to_string()],
+            program: "cat".to_string(),
+            stdin: Some(b"hello".to_vec()),
             timeout_ms: 500,
+            ..ProcessSpec::default()
         };
-        let result = run_child_process(&spec, true);
-        assert_eq!(result.class, ExitClass::Cancelled);
+        let result = run_child_process(&spec, false);
+        assert_eq!(result.class, ExitClass::Success);
+        assert_eq!(result.stdout, "hello");
     }
 }

@@ -619,6 +619,7 @@ fn write_response(
         reason: reason.to_string(),
         headers: BTreeMap::new(),
         body: body.to_vec(),
+        chunked: false,
         keep_alive,
     };
     response

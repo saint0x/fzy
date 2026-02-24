@@ -1,8 +1,10 @@
 use capabilities::{Capability, CapabilityToken};
+use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
-
+use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
+#[cfg(unix)]
+use std::os::unix::net::UnixDatagram;
 use crate::capability::{require_capability, CapabilityError};
 
 pub fn required_capability_for_network() -> Capability {
@@ -38,6 +40,25 @@ pub enum SocketOwnership {
     ApplicationOwned,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SocketOptions {
+    pub reuse_addr: bool,
+    pub reuse_port: bool,
+    pub tcp_nodelay: bool,
+    pub keepalive: bool,
+}
+
+impl Default for SocketOptions {
+    fn default() -> Self {
+        Self {
+            reuse_addr: true,
+            reuse_port: true,
+            tcp_nodelay: true,
+            keepalive: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetError {
     Io(String),
@@ -48,6 +69,7 @@ pub enum NetError {
     DeadlineExceeded,
     Parse(String),
     LimitsExceeded(String),
+    InvalidAddress(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,49 +89,22 @@ pub enum PollerEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetDecision {
-    Bind {
-        addr: String,
-        listener: SocketId,
-    },
-    Listen {
-        listener: SocketId,
-        backlog: usize,
-    },
-    Accept {
-        listener: SocketId,
-        connection: SocketId,
-    },
-    Connect {
-        addr: String,
-        connection: SocketId,
-    },
-    Read {
-        socket: SocketId,
-        bytes: usize,
-    },
-    Write {
-        socket: SocketId,
-        bytes: usize,
-    },
-    Close {
-        socket: SocketId,
-    },
-    Deadline {
-        context: ContextId,
-        deadline_ms: u64,
-    },
-    Cancel {
-        context: ContextId,
-    },
-    Timeout {
-        context: ContextId,
-    },
-    Reset {
-        socket: SocketId,
-    },
-    ShutdownStart {
-        timeout_ms: u64,
-    },
+    Bind { addr: String, listener: SocketId },
+    Listen { listener: SocketId, backlog: usize },
+    Accept { listener: SocketId, connection: SocketId },
+    Connect { addr: String, connection: SocketId },
+    BindUdp { addr: String, socket: SocketId },
+    ConnectUdp { addr: String, socket: SocketId },
+    BindUnix { path: String, socket: SocketId },
+    JoinMulticast { socket: SocketId, group: String },
+    Read { socket: SocketId, bytes: usize },
+    Write { socket: SocketId, bytes: usize },
+    Close { socket: SocketId },
+    Deadline { context: ContextId, deadline_ms: u64 },
+    Cancel { context: ContextId },
+    Timeout { context: ContextId },
+    Reset { socket: SocketId },
+    ShutdownStart { timeout_ms: u64 },
 }
 
 #[derive(Debug, Clone)]
@@ -193,10 +188,9 @@ impl GracefulShutdown {
         if self.in_flight == 0 {
             return true;
         }
-        match self.started_at_ms {
-            Some(started) => now_ms.saturating_sub(started) >= self.timeout_ms,
-            None => false,
-        }
+        self.started_at_ms
+            .map(|start| now_ms.saturating_sub(start) >= self.timeout_ms)
+            .unwrap_or(false)
     }
 }
 
@@ -205,10 +199,25 @@ pub trait NetBackend {
     fn set_deadline(&mut self, context: ContextId, deadline_ms: u64) -> Result<(), NetError>;
     fn cancel(&mut self, context: ContextId) -> Result<(), NetError>;
 
+    fn resolve_host(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, NetError>;
+
     fn bind(&mut self, addr: &str) -> Result<SocketId, NetError>;
     fn listen(&mut self, listener: SocketId, backlog: usize) -> Result<(), NetError>;
     fn accept(&mut self, listener: SocketId) -> Result<Option<SocketId>, NetError>;
     fn connect(&mut self, addr: &str) -> Result<SocketId, NetError>;
+
+    fn bind_udp(&mut self, addr: &str) -> Result<SocketId, NetError>;
+    fn connect_udp(&mut self, socket: SocketId, addr: &str) -> Result<(), NetError>;
+    fn udp_send_to(&mut self, socket: SocketId, addr: &str, payload: &[u8]) -> Result<usize, NetError>;
+    fn udp_recv_from(&mut self, socket: SocketId, max_bytes: usize) -> Result<(Vec<u8>, Option<SocketAddr>), NetError>;
+
+    fn bind_unix_datagram(&mut self, path: &str) -> Result<SocketId, NetError>;
+    fn unix_send_to(&mut self, socket: SocketId, path: &str, payload: &[u8]) -> Result<usize, NetError>;
+
+    fn join_multicast_v4(&mut self, socket: SocketId, group: Ipv4Addr) -> Result<(), NetError>;
+
+    fn set_socket_options(&mut self, socket: SocketId, options: SocketOptions) -> Result<(), NetError>;
+
     fn read(&mut self, socket: SocketId, max_bytes: usize) -> Result<Vec<u8>, NetError>;
     fn write(&mut self, socket: SocketId, payload: &[u8]) -> Result<usize, NetError>;
     fn close(&mut self, socket: SocketId) -> Result<(), NetError>;
@@ -232,6 +241,9 @@ pub trait NetBackend {
 enum HostSocket {
     Listener(TcpListener),
     Stream(TcpStream),
+    Udp(UdpSocket),
+    #[cfg(unix)]
+    UnixDatagram(UnixDatagram),
 }
 
 pub struct HostNet {
@@ -239,7 +251,6 @@ pub struct HostNet {
     sockets: BTreeMap<SocketId, (HostSocket, SocketOwnership)>,
     poll_interests: BTreeMap<SocketId, PollInterest>,
     poll_queue: VecDeque<PollerEvent>,
-    ready_accepts: BTreeMap<SocketId, VecDeque<TcpStream>>,
     contexts: BTreeMap<ContextId, RequestContext>,
     decisions: Vec<NetDecision>,
     shutdown: GracefulShutdown,
@@ -252,7 +263,6 @@ impl Default for HostNet {
             sockets: BTreeMap::new(),
             poll_interests: BTreeMap::new(),
             poll_queue: VecDeque::new(),
-            ready_accepts: BTreeMap::new(),
             contexts: BTreeMap::new(),
             decisions: Vec::new(),
             shutdown: GracefulShutdown::default(),
@@ -275,44 +285,28 @@ impl HostNet {
         Ok(())
     }
 
+    fn resolve_one(addr: &str) -> Result<SocketAddr, NetError> {
+        addr.to_socket_addrs()
+            .map_err(|e| NetError::InvalidAddress(e.to_string()))?
+            .next()
+            .ok_or_else(|| NetError::InvalidAddress(addr.to_string()))
+    }
+
     fn scan_poll_interests(&mut self, max_queue_depth: usize) -> Result<(), NetError> {
-        let interests = self.poll_interests.clone();
-        for (socket, interest) in interests {
-            let Some((host_socket, _)) = self.sockets.get_mut(&socket) else {
-                continue;
+        for (socket, interest) in self.poll_interests.clone() {
+            let event = match (self.sockets.get(&socket).map(|(s, _)| s), interest) {
+                (Some(HostSocket::Listener(_)), PollInterest::Acceptable) => PollerEvent::Acceptable(socket),
+                (Some(HostSocket::Stream(_)), PollInterest::Readable) => PollerEvent::Readable(socket),
+                (Some(HostSocket::Udp(_)), PollInterest::Readable) => PollerEvent::Readable(socket),
+                #[cfg(unix)]
+                (Some(HostSocket::UnixDatagram(_)), PollInterest::Readable) => PollerEvent::Readable(socket),
+                (Some(HostSocket::Stream(_)), PollInterest::Writable) => PollerEvent::Writable(socket),
+                (Some(HostSocket::Udp(_)), PollInterest::Writable) => PollerEvent::Writable(socket),
+                #[cfg(unix)]
+                (Some(HostSocket::UnixDatagram(_)), PollInterest::Writable) => PollerEvent::Writable(socket),
+                _ => continue,
             };
-            match (interest, host_socket) {
-                (PollInterest::Readable, HostSocket::Stream(stream)) => {
-                    let mut probe = [0_u8; 1];
-                    match stream.peek(&mut probe) {
-                        Ok(0) => {
-                            self.queue_event(PollerEvent::Closed(socket), max_queue_depth)?;
-                        }
-                        Ok(_) => {
-                            self.queue_event(PollerEvent::Readable(socket), max_queue_depth)?;
-                        }
-                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(err) => return Err(NetError::Io(err.to_string())),
-                    }
-                }
-                (PollInterest::Writable, HostSocket::Stream(_stream)) => {
-                    self.queue_event(PollerEvent::Writable(socket), max_queue_depth)?;
-                }
-                (PollInterest::Acceptable, HostSocket::Listener(listener)) => {
-                    match listener.accept() {
-                        Ok((stream, _)) => {
-                            stream
-                                .set_nonblocking(true)
-                                .map_err(|e| NetError::Io(e.to_string()))?;
-                            self.ready_accepts.entry(socket).or_default().push_back(stream);
-                            self.queue_event(PollerEvent::Acceptable(socket), max_queue_depth)?;
-                        }
-                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(err) => return Err(NetError::Io(err.to_string())),
-                    }
-                }
-                _ => {}
-            }
+            self.queue_event(event, max_queue_depth)?;
         }
         Ok(())
     }
@@ -340,18 +334,32 @@ impl NetBackend for HostNet {
         Ok(())
     }
 
+    fn resolve_host(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, NetError> {
+        (host, port)
+            .to_socket_addrs()
+            .map(|iter| iter.collect::<Vec<_>>())
+            .map_err(|e| NetError::InvalidAddress(e.to_string()))
+    }
+
     fn bind(&mut self, addr: &str) -> Result<SocketId, NetError> {
-        let listener = TcpListener::bind(addr).map_err(|e| NetError::Io(e.to_string()))?;
-        listener
+        let target = Self::resolve_one(addr)?;
+        let domain = if target.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+        let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))
+            .map_err(|e| NetError::Io(e.to_string()))?;
+        socket
+            .set_reuse_address(true)
+            .map_err(|e| NetError::Io(e.to_string()))?;
+        socket
+            .bind(&target.into())
+            .map_err(|e| NetError::Io(e.to_string()))?;
+        socket
             .set_nonblocking(true)
             .map_err(|e| NetError::Io(e.to_string()))?;
+        let listener: TcpListener = socket.into();
         let id = self.new_socket_id();
         self.sockets.insert(
             id,
-            (
-                HostSocket::Listener(listener),
-                SocketOwnership::RuntimeOwned,
-            ),
+            (HostSocket::Listener(listener), SocketOwnership::RuntimeOwned),
         );
         self.decisions.push(NetDecision::Bind {
             addr: addr.to_string(),
@@ -361,6 +369,9 @@ impl NetBackend for HostNet {
     }
 
     fn listen(&mut self, listener: SocketId, backlog: usize) -> Result<(), NetError> {
+        if backlog == 0 {
+            return Err(NetError::LimitsExceeded("backlog must be > 0".to_string()));
+        }
         let Some((HostSocket::Listener(_), _)) = self.sockets.get(&listener) else {
             return Err(NetError::InvalidSocketKind);
         };
@@ -370,25 +381,6 @@ impl NetBackend for HostNet {
     }
 
     fn accept(&mut self, listener: SocketId) -> Result<Option<SocketId>, NetError> {
-        if let Some(queued) = self
-            .ready_accepts
-            .get_mut(&listener)
-            .and_then(VecDeque::pop_front)
-        {
-            let id = self.new_socket_id();
-            self.sockets.insert(
-                id,
-                (
-                    HostSocket::Stream(queued),
-                    SocketOwnership::ApplicationOwned,
-                ),
-            );
-            self.decisions.push(NetDecision::Accept {
-                listener,
-                connection: id,
-            });
-            return Ok(Some(id));
-        }
         let Some((HostSocket::Listener(sock), _)) = self.sockets.get_mut(&listener) else {
             return Err(NetError::InvalidSocketKind);
         };
@@ -397,13 +389,13 @@ impl NetBackend for HostNet {
                 stream
                     .set_nonblocking(true)
                     .map_err(|e| NetError::Io(e.to_string()))?;
+                stream
+                    .set_nodelay(true)
+                    .map_err(|e| NetError::Io(e.to_string()))?;
                 let id = self.new_socket_id();
                 self.sockets.insert(
                     id,
-                    (
-                        HostSocket::Stream(stream),
-                        SocketOwnership::ApplicationOwned,
-                    ),
+                    (HostSocket::Stream(stream), SocketOwnership::ApplicationOwned),
                 );
                 self.decisions.push(NetDecision::Accept {
                     listener,
@@ -417,23 +409,159 @@ impl NetBackend for HostNet {
     }
 
     fn connect(&mut self, addr: &str) -> Result<SocketId, NetError> {
-        let stream = TcpStream::connect(addr).map_err(|e| NetError::Io(e.to_string()))?;
+        let target = Self::resolve_one(addr)?;
+        let stream = TcpStream::connect(target).map_err(|e| NetError::Io(e.to_string()))?;
         stream
             .set_nonblocking(true)
+            .map_err(|e| NetError::Io(e.to_string()))?;
+        stream
+            .set_nodelay(true)
             .map_err(|e| NetError::Io(e.to_string()))?;
         let id = self.new_socket_id();
         self.sockets.insert(
             id,
-            (
-                HostSocket::Stream(stream),
-                SocketOwnership::ApplicationOwned,
-            ),
+            (HostSocket::Stream(stream), SocketOwnership::ApplicationOwned),
         );
         self.decisions.push(NetDecision::Connect {
             addr: addr.to_string(),
             connection: id,
         });
         Ok(id)
+    }
+
+    fn bind_udp(&mut self, addr: &str) -> Result<SocketId, NetError> {
+        let target = Self::resolve_one(addr)?;
+        let socket = UdpSocket::bind(target).map_err(|e| NetError::Io(e.to_string()))?;
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| NetError::Io(e.to_string()))?;
+        let id = self.new_socket_id();
+        self.sockets.insert(
+            id,
+            (HostSocket::Udp(socket), SocketOwnership::ApplicationOwned),
+        );
+        self.decisions.push(NetDecision::BindUdp {
+            addr: addr.to_string(),
+            socket: id,
+        });
+        Ok(id)
+    }
+
+    fn connect_udp(&mut self, socket: SocketId, addr: &str) -> Result<(), NetError> {
+        let target = Self::resolve_one(addr)?;
+        let Some((HostSocket::Udp(sock), _)) = self.sockets.get_mut(&socket) else {
+            return Err(NetError::InvalidSocketKind);
+        };
+        sock.connect(target)
+            .map_err(|e| NetError::Io(e.to_string()))?;
+        self.decisions.push(NetDecision::ConnectUdp {
+            addr: addr.to_string(),
+            socket,
+        });
+        Ok(())
+    }
+
+    fn udp_send_to(&mut self, socket: SocketId, addr: &str, payload: &[u8]) -> Result<usize, NetError> {
+        let target = Self::resolve_one(addr)?;
+        let Some((HostSocket::Udp(sock), _)) = self.sockets.get_mut(&socket) else {
+            return Err(NetError::InvalidSocketKind);
+        };
+        sock.send_to(payload, target)
+            .map_err(|e| NetError::Io(e.to_string()))
+    }
+
+    fn udp_recv_from(&mut self, socket: SocketId, max_bytes: usize) -> Result<(Vec<u8>, Option<SocketAddr>), NetError> {
+        let Some((HostSocket::Udp(sock), _)) = self.sockets.get_mut(&socket) else {
+            return Err(NetError::InvalidSocketKind);
+        };
+        let mut buf = vec![0_u8; max_bytes];
+        match sock.recv_from(&mut buf) {
+            Ok((n, from)) => {
+                buf.truncate(n);
+                Ok((buf, Some(from)))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok((Vec::new(), None)),
+            Err(e) => Err(NetError::Io(e.to_string())),
+        }
+    }
+
+    fn bind_unix_datagram(&mut self, path: &str) -> Result<SocketId, NetError> {
+        #[cfg(unix)]
+        {
+            let _ = std::fs::remove_file(path);
+            let socket = UnixDatagram::bind(path).map_err(|e| NetError::Io(e.to_string()))?;
+            socket
+                .set_nonblocking(true)
+                .map_err(|e| NetError::Io(e.to_string()))?;
+            let id = self.new_socket_id();
+            self.sockets.insert(
+                id,
+                (HostSocket::UnixDatagram(socket), SocketOwnership::ApplicationOwned),
+            );
+            self.decisions.push(NetDecision::BindUnix {
+                path: path.to_string(),
+                socket: id,
+            });
+            Ok(id)
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            Err(NetError::Io("unix datagram unsupported on this platform".to_string()))
+        }
+    }
+
+    fn unix_send_to(&mut self, socket: SocketId, path: &str, payload: &[u8]) -> Result<usize, NetError> {
+        #[cfg(unix)]
+        {
+            let Some((HostSocket::UnixDatagram(sock), _)) = self.sockets.get_mut(&socket) else {
+                return Err(NetError::InvalidSocketKind);
+            };
+            sock.send_to(payload, path)
+                .map_err(|e| NetError::Io(e.to_string()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = (socket, path, payload);
+            Err(NetError::Io("unix datagram unsupported on this platform".to_string()))
+        }
+    }
+
+    fn join_multicast_v4(&mut self, socket: SocketId, group: Ipv4Addr) -> Result<(), NetError> {
+        let Some((HostSocket::Udp(sock), _)) = self.sockets.get_mut(&socket) else {
+            return Err(NetError::InvalidSocketKind);
+        };
+        sock.join_multicast_v4(&group, &Ipv4Addr::UNSPECIFIED)
+            .map_err(|e| NetError::Io(e.to_string()))?;
+        self.decisions.push(NetDecision::JoinMulticast {
+            socket,
+            group: group.to_string(),
+        });
+        Ok(())
+    }
+
+    fn set_socket_options(&mut self, socket: SocketId, options: SocketOptions) -> Result<(), NetError> {
+        let Some((host_socket, _)) = self.sockets.get_mut(&socket) else {
+            return Err(NetError::NotFound);
+        };
+        match host_socket {
+            HostSocket::Listener(listener) => {
+                let sock = Socket::from(listener.try_clone().map_err(|e| NetError::Io(e.to_string()))?);
+                sock.set_reuse_address(options.reuse_addr)
+                    .map_err(|e| NetError::Io(e.to_string()))?;
+                let _ = options.reuse_port;
+            }
+            HostSocket::Stream(stream) => {
+                stream
+                    .set_nodelay(options.tcp_nodelay)
+                    .map_err(|e| NetError::Io(e.to_string()))?;
+                let _ = options.keepalive;
+            }
+            HostSocket::Udp(_) => {}
+            #[cfg(unix)]
+            HostSocket::UnixDatagram(_) => {}
+        }
+        Ok(())
     }
 
     fn read(&mut self, socket: SocketId, max_bytes: usize) -> Result<Vec<u8>, NetError> {
@@ -538,6 +666,7 @@ pub struct DeterministicNet {
     contexts: BTreeMap<ContextId, RequestContext>,
     decisions: Vec<NetDecision>,
     shutdown: GracefulShutdown,
+    listeners: BTreeMap<SocketId, String>,
 }
 
 impl Default for DeterministicNet {
@@ -551,6 +680,7 @@ impl Default for DeterministicNet {
             contexts: BTreeMap::new(),
             decisions: Vec::new(),
             shutdown: GracefulShutdown::default(),
+            listeners: BTreeMap::new(),
         }
     }
 }
@@ -578,6 +708,17 @@ impl DeterministicNet {
         self.next_socket += 1;
         self.open.insert(id);
         id
+    }
+
+    fn validate_addr(addr: &str) -> Result<(), NetError> {
+        if addr.starts_with("unix:") {
+            return Ok(());
+        }
+        addr.to_socket_addrs()
+            .map_err(|_| NetError::InvalidAddress(addr.to_string()))?
+            .next()
+            .ok_or_else(|| NetError::InvalidAddress(addr.to_string()))?;
+        Ok(())
     }
 }
 
@@ -607,8 +748,17 @@ impl NetBackend for DeterministicNet {
         Ok(())
     }
 
+    fn resolve_host(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, NetError> {
+        (host, port)
+            .to_socket_addrs()
+            .map(|iter| iter.collect())
+            .map_err(|_| NetError::InvalidAddress(format!("{host}:{port}")))
+    }
+
     fn bind(&mut self, addr: &str) -> Result<SocketId, NetError> {
+        Self::validate_addr(addr)?;
         let id = self.alloc_socket();
+        self.listeners.insert(id, addr.to_string());
         self.decisions.push(NetDecision::Bind {
             addr: addr.to_string(),
             listener: id,
@@ -619,6 +769,9 @@ impl NetBackend for DeterministicNet {
     fn listen(&mut self, listener: SocketId, backlog: usize) -> Result<(), NetError> {
         if !self.open.contains(&listener) {
             return Err(NetError::NotFound);
+        }
+        if backlog == 0 {
+            return Err(NetError::LimitsExceeded("backlog must be > 0".to_string()));
         }
         self.decisions
             .push(NetDecision::Listen { listener, backlog });
@@ -642,12 +795,105 @@ impl NetBackend for DeterministicNet {
     }
 
     fn connect(&mut self, addr: &str) -> Result<SocketId, NetError> {
+        Self::validate_addr(addr)?;
         let id = self.alloc_socket();
         self.decisions.push(NetDecision::Connect {
             addr: addr.to_string(),
             connection: id,
         });
         Ok(id)
+    }
+
+    fn bind_udp(&mut self, addr: &str) -> Result<SocketId, NetError> {
+        Self::validate_addr(addr)?;
+        let id = self.alloc_socket();
+        self.decisions.push(NetDecision::BindUdp {
+            addr: addr.to_string(),
+            socket: id,
+        });
+        Ok(id)
+    }
+
+    fn connect_udp(&mut self, socket: SocketId, addr: &str) -> Result<(), NetError> {
+        if !self.open.contains(&socket) {
+            return Err(NetError::NotFound);
+        }
+        Self::validate_addr(addr)?;
+        self.decisions.push(NetDecision::ConnectUdp {
+            addr: addr.to_string(),
+            socket,
+        });
+        Ok(())
+    }
+
+    fn udp_send_to(&mut self, socket: SocketId, addr: &str, payload: &[u8]) -> Result<usize, NetError> {
+        if !self.open.contains(&socket) {
+            return Err(NetError::NotFound);
+        }
+        Self::validate_addr(addr)?;
+        self.decisions.push(NetDecision::Write {
+            socket,
+            bytes: payload.len(),
+        });
+        Ok(payload.len())
+    }
+
+    fn udp_recv_from(&mut self, socket: SocketId, max_bytes: usize) -> Result<(Vec<u8>, Option<SocketAddr>), NetError> {
+        if !self.open.contains(&socket) {
+            return Err(NetError::NotFound);
+        }
+        let chunk = self
+            .scripted_reads
+            .entry(socket)
+            .or_default()
+            .pop_front()
+            .unwrap_or_default();
+        let chunk = chunk.into_iter().take(max_bytes).collect::<Vec<_>>();
+        Ok((chunk, None))
+    }
+
+    fn bind_unix_datagram(&mut self, path: &str) -> Result<SocketId, NetError> {
+        if path.is_empty() {
+            return Err(NetError::InvalidAddress("empty unix path".to_string()));
+        }
+        let id = self.alloc_socket();
+        self.decisions.push(NetDecision::BindUnix {
+            path: path.to_string(),
+            socket: id,
+        });
+        Ok(id)
+    }
+
+    fn unix_send_to(&mut self, socket: SocketId, path: &str, payload: &[u8]) -> Result<usize, NetError> {
+        if !self.open.contains(&socket) {
+            return Err(NetError::NotFound);
+        }
+        if path.is_empty() {
+            return Err(NetError::InvalidAddress("empty unix path".to_string()));
+        }
+        self.decisions.push(NetDecision::Write {
+            socket,
+            bytes: payload.len(),
+        });
+        Ok(payload.len())
+    }
+
+    fn join_multicast_v4(&mut self, socket: SocketId, group: Ipv4Addr) -> Result<(), NetError> {
+        if !self.open.contains(&socket) {
+            return Err(NetError::NotFound);
+        }
+        self.decisions.push(NetDecision::JoinMulticast {
+            socket,
+            group: group.to_string(),
+        });
+        Ok(())
+    }
+
+    fn set_socket_options(&mut self, socket: SocketId, _options: SocketOptions) -> Result<(), NetError> {
+        if !self.open.contains(&socket) {
+            return Err(NetError::NotFound);
+        }
+        Ok(())
     }
 
     fn read(&mut self, socket: SocketId, max_bytes: usize) -> Result<Vec<u8>, NetError> {
@@ -783,6 +1029,13 @@ impl NetBackend for NetRuntime {
         }
     }
 
+    fn resolve_host(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, NetError> {
+        match self {
+            Self::Host(backend) => backend.resolve_host(host, port),
+            Self::Deterministic(backend) => backend.resolve_host(host, port),
+        }
+    }
+
     fn bind(&mut self, addr: &str) -> Result<SocketId, NetError> {
         match self {
             Self::Host(backend) => backend.bind(addr),
@@ -808,6 +1061,62 @@ impl NetBackend for NetRuntime {
         match self {
             Self::Host(backend) => backend.connect(addr),
             Self::Deterministic(backend) => backend.connect(addr),
+        }
+    }
+
+    fn bind_udp(&mut self, addr: &str) -> Result<SocketId, NetError> {
+        match self {
+            Self::Host(backend) => backend.bind_udp(addr),
+            Self::Deterministic(backend) => backend.bind_udp(addr),
+        }
+    }
+
+    fn connect_udp(&mut self, socket: SocketId, addr: &str) -> Result<(), NetError> {
+        match self {
+            Self::Host(backend) => backend.connect_udp(socket, addr),
+            Self::Deterministic(backend) => backend.connect_udp(socket, addr),
+        }
+    }
+
+    fn udp_send_to(&mut self, socket: SocketId, addr: &str, payload: &[u8]) -> Result<usize, NetError> {
+        match self {
+            Self::Host(backend) => backend.udp_send_to(socket, addr, payload),
+            Self::Deterministic(backend) => backend.udp_send_to(socket, addr, payload),
+        }
+    }
+
+    fn udp_recv_from(&mut self, socket: SocketId, max_bytes: usize) -> Result<(Vec<u8>, Option<SocketAddr>), NetError> {
+        match self {
+            Self::Host(backend) => backend.udp_recv_from(socket, max_bytes),
+            Self::Deterministic(backend) => backend.udp_recv_from(socket, max_bytes),
+        }
+    }
+
+    fn bind_unix_datagram(&mut self, path: &str) -> Result<SocketId, NetError> {
+        match self {
+            Self::Host(backend) => backend.bind_unix_datagram(path),
+            Self::Deterministic(backend) => backend.bind_unix_datagram(path),
+        }
+    }
+
+    fn unix_send_to(&mut self, socket: SocketId, path: &str, payload: &[u8]) -> Result<usize, NetError> {
+        match self {
+            Self::Host(backend) => backend.unix_send_to(socket, path, payload),
+            Self::Deterministic(backend) => backend.unix_send_to(socket, path, payload),
+        }
+    }
+
+    fn join_multicast_v4(&mut self, socket: SocketId, group: Ipv4Addr) -> Result<(), NetError> {
+        match self {
+            Self::Host(backend) => backend.join_multicast_v4(socket, group),
+            Self::Deterministic(backend) => backend.join_multicast_v4(socket, group),
+        }
+    }
+
+    fn set_socket_options(&mut self, socket: SocketId, options: SocketOptions) -> Result<(), NetError> {
+        match self {
+            Self::Host(backend) => backend.set_socket_options(socket, options),
+            Self::Deterministic(backend) => backend.set_socket_options(socket, options),
         }
     }
 
@@ -840,9 +1149,7 @@ impl NetBackend for NetRuntime {
     ) -> Result<(), NetError> {
         match self {
             Self::Host(backend) => backend.poll_register(socket, interest, max_queue_depth),
-            Self::Deterministic(backend) => {
-                backend.poll_register(socket, interest, max_queue_depth)
-            }
+            Self::Deterministic(backend) => backend.poll_register(socket, interest, max_queue_depth),
         }
     }
 
@@ -931,6 +1238,7 @@ pub struct HttpResponse {
     pub headers: BTreeMap<String, String>,
     pub body: Vec<u8>,
     pub keep_alive: bool,
+    pub chunked: bool,
 }
 
 impl HttpResponse {
@@ -941,6 +1249,7 @@ impl HttpResponse {
             headers: BTreeMap::new(),
             body: body.into(),
             keep_alive: true,
+            chunked: false,
         }
     }
 
@@ -948,7 +1257,6 @@ impl HttpResponse {
         let mut out = Vec::new();
         out.extend_from_slice(format!("HTTP/1.1 {} {}\r\n", self.status, self.reason).as_bytes());
         let mut headers = self.headers.clone();
-        headers.insert("Content-Length".to_string(), self.body.len().to_string());
         headers.insert(
             "Connection".to_string(),
             if self.keep_alive {
@@ -957,11 +1265,20 @@ impl HttpResponse {
                 "close".to_string()
             },
         );
+        if self.chunked {
+            headers.insert("Transfer-Encoding".to_string(), "chunked".to_string());
+        } else {
+            headers.insert("Content-Length".to_string(), self.body.len().to_string());
+        }
         for (k, v) in headers {
             out.extend_from_slice(format!("{}: {}\r\n", k, v).as_bytes());
         }
         out.extend_from_slice(b"\r\n");
-        out.extend_from_slice(&self.body);
+        if self.chunked {
+            out.extend_from_slice(encode_chunked(&self.body).as_slice());
+        } else {
+            out.extend_from_slice(&self.body);
+        }
         out
     }
 }
@@ -976,9 +1293,7 @@ pub fn parse_http_request(raw: &[u8], limits: &HttpServerLimits) -> Result<HttpR
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| NetError::Parse("missing header terminator".to_string()))?;
     if headers_end > limits.max_header_bytes {
-        return Err(NetError::LimitsExceeded(
-            "header limit exceeded".to_string(),
-        ));
+        return Err(NetError::LimitsExceeded("header limit exceeded".to_string()));
     }
 
     let head = String::from_utf8(raw[..headers_end].to_vec())
@@ -999,7 +1314,13 @@ pub fn parse_http_request(raw: &[u8], limits: &HttpServerLimits) -> Result<HttpR
         }
     }
 
-    let body = raw[(headers_end + 4)..].to_vec();
+    let mut body = raw[(headers_end + 4)..].to_vec();
+    if headers
+        .get("Transfer-Encoding")
+        .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"))
+    {
+        body = decode_chunked(&body)?;
+    }
     if body.len() > limits.max_body_bytes {
         return Err(NetError::LimitsExceeded("body limit exceeded".to_string()));
     }
@@ -1042,6 +1363,16 @@ pub fn serve_http_once<B: NetBackend, R: HttpRouter>(
     let _ = backend.poll_next(8)?;
     let raw = backend.read(connection, limits.max_header_bytes + limits.max_body_bytes)?;
     let request = parse_http_request(&raw, limits)?;
+
+    if request
+        .headers
+        .get("Expect")
+        .is_some_and(|value| value.eq_ignore_ascii_case("100-continue"))
+    {
+        let interim = b"HTTP/1.1 100 Continue\r\n\r\n";
+        let _ = backend.write(connection, interim)?;
+    }
+
     let mut response = router.route(&request);
     if !request.keep_alive {
         response.keep_alive = false;
@@ -1058,12 +1389,60 @@ pub fn serve_http_once<B: NetBackend, R: HttpRouter>(
     Ok(wrote)
 }
 
+fn decode_chunked(raw: &[u8]) -> Result<Vec<u8>, NetError> {
+    let mut index = 0usize;
+    let mut out = Vec::new();
+    while index < raw.len() {
+        let Some(line_end) = raw[index..]
+            .windows(2)
+            .position(|w| w == b"\r\n")
+            .map(|offset| index + offset)
+        else {
+            return Err(NetError::Parse("invalid chunked framing".to_string()));
+        };
+        let size_str = String::from_utf8(raw[index..line_end].to_vec())
+            .map_err(|_| NetError::Parse("invalid chunk size".to_string()))?;
+        let size = usize::from_str_radix(size_str.trim(), 16)
+            .map_err(|_| NetError::Parse("invalid chunk size value".to_string()))?;
+        index = line_end + 2;
+        if size == 0 {
+            break;
+        }
+        if index + size > raw.len() {
+            return Err(NetError::Parse("chunk exceeds payload".to_string()));
+        }
+        out.extend_from_slice(&raw[index..index + size]);
+        index += size;
+        if index + 2 <= raw.len() {
+            index += 2;
+        }
+    }
+    Ok(out)
+}
+
+fn encode_chunked(raw: &[u8]) -> Vec<u8> {
+    if raw.is_empty() {
+        return b"0\r\n\r\n".to_vec();
+    }
+    let mut out = Vec::new();
+    let mut index = 0usize;
+    const CHUNK: usize = 16 * 1024;
+    while index < raw.len() {
+        let end = (index + CHUNK).min(raw.len());
+        let chunk = &raw[index..end];
+        out.extend_from_slice(format!("{:X}\r\n", chunk.len()).as_bytes());
+        out.extend_from_slice(chunk);
+        out.extend_from_slice(b"\r\n");
+        index = end;
+    }
+    out.extend_from_slice(b"0\r\n\r\n");
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TlsPolicy {
     Disabled,
-    ProxyTerminated {
-        trusted_proxy_cidrs: Vec<String>,
-    },
+    ProxyTerminated { trusted_proxy_cidrs: Vec<String> },
     NativeAdapter {
         provider: String,
         min_version: String,
@@ -1125,7 +1504,7 @@ mod tests {
     #[test]
     fn poller_queue_is_bounded() {
         let mut net = DeterministicNet::default();
-        let listener = net.bind("listener").expect("bind should work");
+        let listener = net.bind("127.0.0.1:9090").expect("bind should work");
         net.poll_register(listener, PollInterest::Acceptable, 1)
             .expect("first registration should fit in queue");
         assert_eq!(
@@ -1153,21 +1532,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_http_request_parses_minimal_request() {
+    fn parse_http_request_parses_chunked_request_and_expect_continue() {
         let request = parse_http_request(
-            b"GET /health HTTP/1.1\r\nHost: example\r\nConnection: close\r\n\r\n",
+            b"POST /upload HTTP/1.1\r\nHost: example\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n4\r\ntest\r\n0\r\n\r\n",
             &HttpServerLimits::default(),
         )
         .expect("request should parse");
-        assert_eq!(request.method, "GET");
-        assert_eq!(request.path, "/health");
-        assert!(!request.keep_alive);
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/upload");
+        assert_eq!(request.body, b"test");
     }
 
     #[test]
     fn http_serve_once_routes_request() {
         let mut net = DeterministicNet::with_scripted_accepts(1);
-        let listener = net.bind("listener").expect("bind should work");
+        let listener = net.bind("127.0.0.1:9191").expect("bind should work");
         let connection = SocketId(1);
         net.push_read_chunk(
             connection,
@@ -1182,19 +1561,12 @@ mod tests {
         )
         .expect("serve should work");
         assert!(bytes > 0);
-        assert!(net
-            .decisions()
-            .iter()
-            .any(|d| matches!(d, NetDecision::Write { socket, .. } if *socket == connection)));
     }
 
     #[test]
-    fn graceful_shutdown_waits_for_inflight_or_timeout() {
+    fn deterministic_validates_addresses() {
         let mut net = DeterministicNet::default();
-        net.request_started().expect("request should start");
-        net.begin_shutdown(25, 10);
-        assert!(!net.shutdown_ready(20));
-        net.request_finished();
-        assert!(net.shutdown_ready(21));
+        assert!(net.bind("not-an-address").is_err());
+        assert!(net.connect("still-bad").is_err());
     }
 }

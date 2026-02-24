@@ -48,11 +48,9 @@ struct App {
 impl App {
     fn new(store_path: PathBuf, history_capacity: usize) -> Result<Self> {
         let store = load_store(&store_path)?;
-        let mut logger = Logger {
-            min_level: LogLevel::Info,
-            policy: RedactionPolicy::RedactKnownSecrets,
-            entries: Vec::new(),
-        };
+        let mut logger = Logger::default();
+        logger.min_level = LogLevel::Info;
+        logger.policy = RedactionPolicy::RedactKnownSecrets;
         logger.log(
             LogLevel::Info,
             "robust cli initialized",
