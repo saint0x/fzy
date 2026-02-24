@@ -104,6 +104,9 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     if module.unsafe_sites > 0 {
+        let missing_reasons = module
+            .unsafe_sites
+            .saturating_sub(module.unsafe_reasoned_sites);
         report.diagnostics.push(Diagnostic::new(
             if policy.safe_profile {
                 Severity::Error
@@ -116,6 +119,20 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             ),
             Some("unsafe escapes must be isolated and are rejected in safe profile".to_string()),
         ));
+        if missing_reasons > 0 {
+            report.diagnostics.push(Diagnostic::new(
+                if policy.safe_profile {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                },
+                format!(
+                    "{} unsafe escape site(s) missing reason string (use `unsafe(\"reason\")`)",
+                    missing_reasons
+                ),
+                Some("add explicit reason string for every unsafe escape".to_string()),
+            ));
+        }
     }
     if module.reference_sites > 0 && policy.safe_profile {
         report.diagnostics.push(Diagnostic::new(
@@ -240,11 +257,13 @@ mod tests {
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify(&module);
         assert_eq!(report.diagnostics.len(), 1);
@@ -269,11 +288,13 @@ mod tests {
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -301,11 +322,13 @@ mod tests {
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -331,11 +354,13 @@ mod tests {
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -361,11 +386,13 @@ mod tests {
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -391,11 +418,13 @@ mod tests {
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -424,11 +453,13 @@ mod tests {
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         assert!(report
@@ -469,11 +500,13 @@ mod tests {
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         for expected in ["time", "rng", "fs", "net", "proc", "mem", "thread"] {
@@ -501,11 +534,13 @@ mod tests {
             entry_ensures: vec![Some(false)],
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -535,11 +570,13 @@ mod tests {
             entry_ensures: vec![],
             host_syscall_sites: 1,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 1,
+            generic_instantiations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -565,11 +602,13 @@ mod tests {
             entry_ensures: vec![],
             host_syscall_sites: 0,
             unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
             reference_sites: 0,
             alloc_sites: 2,
             free_sites: 1,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         assert!(report

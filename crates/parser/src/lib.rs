@@ -21,6 +21,7 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
         inferred_capabilities: Vec::new(),
         host_syscall_sites: 0,
         unsafe_sites: 0,
+        unsafe_reasoned_sites: 0,
         reference_sites: 0,
         alloc_sites: 0,
         free_sites: 0,
@@ -202,6 +203,7 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
             infer_capabilities(line, &mut inferred);
             module.host_syscall_sites += count_host_syscalls(line);
             module.unsafe_sites += count_unsafe_markers(line);
+            module.unsafe_reasoned_sites += count_unsafe_reason_markers(line);
             module.reference_sites += count_reference_markers(line);
             module.alloc_sites += count_alloc_markers(line);
             module.free_sites += count_free_markers(line);
@@ -283,6 +285,7 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
         infer_capabilities(line, &mut inferred);
         module.host_syscall_sites += count_host_syscalls(line);
         module.unsafe_sites += count_unsafe_markers(line);
+        module.unsafe_reasoned_sites += count_unsafe_reason_markers(line);
         module.reference_sites += count_reference_markers(line);
         module.alloc_sites += count_alloc_markers(line);
         module.free_sites += count_free_markers(line);
@@ -725,6 +728,14 @@ fn count_unsafe_markers(line: &str) -> usize {
     line.match_indices("unsafe ").count()
 }
 
+fn count_unsafe_reason_markers(line: &str) -> usize {
+    if line.contains("unsafe(\"") || line.contains("unsafe_reason(\"") {
+        1
+    } else {
+        0
+    }
+}
+
 fn count_reference_markers(line: &str) -> usize {
     let mut count = 0usize;
     if line.contains(": &") || line.contains("-> &") {
@@ -777,6 +788,9 @@ fn is_supported_type(ty: &str) -> bool {
         }
         return false;
     }
+    if let Some((base, args)) = split_generic_type(ty) {
+        return is_supported_generic_type(base, args);
+    }
 
     matches!(
         ty,
@@ -802,7 +816,61 @@ fn is_supported_type(ty: &str) -> bool {
 
 fn is_ffi_unstable_type(ty: &str) -> bool {
     let ty = ty.trim();
-    ty == "str" || ty.starts_with("[]") || ty.starts_with('[') || ty.contains('!')
+    ty == "str" || ty.starts_with("[]") || ty.starts_with('[') || ty.contains('!') || ty.contains('<')
+}
+
+fn split_generic_type(ty: &str) -> Option<(&str, &str)> {
+    let open = ty.find('<')?;
+    if !ty.ends_with('>') || open == 0 {
+        return None;
+    }
+    let base = ty[..open].trim();
+    let args = ty[(open + 1)..(ty.len() - 1)].trim();
+    if base.is_empty() || args.is_empty() {
+        return None;
+    }
+    Some((base, args))
+}
+
+fn is_supported_generic_type(base: &str, args: &str) -> bool {
+    let expected = match base {
+        "Vec" | "Option" => 1usize,
+        "Result" => 2usize,
+        _ => return false,
+    };
+    let args = split_top_level_generic_args(args);
+    if args.len() != expected {
+        return false;
+    }
+    args.iter().all(|arg| is_supported_type_or_generic_param(arg))
+}
+
+fn split_top_level_generic_args(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (index, ch) in input.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(input[start..index].trim().to_string());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < input.len() {
+        out.push(input[start..].trim().to_string());
+    }
+    out.into_iter().filter(|part| !part.is_empty()).collect()
+}
+
+fn is_supported_type_or_generic_param(ty: &str) -> bool {
+    if is_supported_type(ty) {
+        return true;
+    }
+    ty.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 #[cfg(test)]
@@ -978,5 +1046,23 @@ mod tests {
         assert_eq!(function.params.len(), 2);
         assert_eq!(function.params[0].name, "left");
         assert_eq!(function.params[0].ty, "i32");
+    }
+
+    #[test]
+    fn accepts_scoped_generics_v0_types() {
+        let source = r#"
+            fn main() -> i32 {
+                let a: Vec<i32> = data()
+                let b: Option<Result<i32, i32>> = maybe()
+                let c: Result<Vec<u8>, i32> = decode()
+                return 0
+            }
+        "#;
+        let module = parse(source, "generic").expect("parser should accept scoped generics");
+        let main_stmt_count = module.items.iter().find_map(|item| match item {
+            ast::Item::Function(function) if function.name == "main" => Some(function.body.len()),
+            _ => None,
+        });
+        assert_eq!(main_stmt_count, Some(4));
     }
 }

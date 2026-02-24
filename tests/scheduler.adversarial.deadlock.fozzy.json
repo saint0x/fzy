@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "scheduler-adversarial-deadlock",
+  "steps": [
+    { "type": "trace_event", "name": "lock_a" },
+    { "type": "trace_event", "name": "lock_b" },
+    { "type": "trace_event", "name": "cross_wait" },
+    { "type": "trace_event", "name": "assert_deadlock_detected" }
+  ]
+}

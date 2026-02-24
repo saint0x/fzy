@@ -17,11 +17,13 @@ pub struct TypedModule {
     pub entry_ensures: Vec<Option<bool>>,
     pub host_syscall_sites: usize,
     pub unsafe_sites: usize,
+    pub unsafe_reasoned_sites: usize,
     pub reference_sites: usize,
     pub alloc_sites: usize,
     pub free_sites: usize,
     pub extern_c_abi_functions: usize,
     pub repr_c_layout_items: usize,
+    pub generic_instantiations: Vec<String>,
 }
 
 pub fn lower(module: &Module) -> TypedModule {
@@ -67,6 +69,7 @@ pub fn lower(module: &Module) -> TypedModule {
             )
         })
         .count();
+    let generic_instantiations = collect_generic_instantiations(module);
 
     TypedModule {
         name: module.name.clone(),
@@ -82,12 +85,71 @@ pub fn lower(module: &Module) -> TypedModule {
         entry_ensures,
         host_syscall_sites: module.host_syscall_sites,
         unsafe_sites: module.unsafe_sites,
+        unsafe_reasoned_sites: module.unsafe_reasoned_sites,
         reference_sites: module.reference_sites,
         alloc_sites: module.alloc_sites,
         free_sites: module.free_sites,
         extern_c_abi_functions,
         repr_c_layout_items,
+        generic_instantiations,
     }
+}
+
+fn collect_generic_instantiations(module: &Module) -> Vec<String> {
+    let mut out = Vec::new();
+    for item in &module.items {
+        match item {
+            ast::Item::Function(function) => {
+                collect_type_instantiation(&function.return_type, &mut out);
+                for param in &function.params {
+                    collect_type_instantiation(&param.ty, &mut out);
+                }
+                for statement in &function.body {
+                    if let ast::Stmt::Let { ty: Some(ty), .. } = statement {
+                        collect_type_instantiation(ty, &mut out);
+                    }
+                }
+            }
+            ast::Item::Struct(_) | ast::Item::Enum(_) | ast::Item::Test(_) => {}
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn collect_type_instantiation(ty: &str, out: &mut Vec<String>) {
+    let trimmed = ty.trim();
+    if let Some(open) = trimmed.find('<') {
+        if trimmed.ends_with('>') && open > 0 {
+            out.push(trimmed.to_string());
+            let inner = &trimmed[(open + 1)..(trimmed.len() - 1)];
+            for part in split_top_level_types(inner) {
+                collect_type_instantiation(part, out);
+            }
+        }
+    }
+}
+
+fn split_top_level_types(input: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    for (index, ch) in input.char_indices() {
+        match ch {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(input[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < input.len() {
+        out.push(input[start..].trim());
+    }
+    out.into_iter().filter(|part| !part.is_empty()).collect()
 }
 
 fn collect_semantic_hints(module: &Module) -> (Vec<String>, Vec<String>, usize) {

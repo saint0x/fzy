@@ -2,7 +2,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
+use cranelift_codegen::ir::{types, AbiParam, InstBuilder};
+use cranelift_codegen::settings::{self, Configurable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_module::{default_libcall_names, Linkage, Module};
+use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{HashMap, HashSet};
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildProfile {
@@ -18,6 +24,7 @@ pub struct BuildArtifact {
     pub status: &'static str,
     pub diagnostics: usize,
     pub output: Option<PathBuf>,
+    pub dependency_graph_hash: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +44,14 @@ pub struct ParsedProgram {
 }
 
 pub fn compile_file(path: &Path, profile: BuildProfile) -> Result<BuildArtifact> {
+    compile_file_with_backend(path, profile, None)
+}
+
+pub fn compile_file_with_backend(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+) -> Result<BuildArtifact> {
     let resolved = resolve_source_path(path)?;
     let parsed = parse_program(&resolved.source_path)?;
     let typed = hir::lower(&parsed.module);
@@ -68,6 +83,7 @@ pub fn compile_file(path: &Path, profile: BuildProfile) -> Result<BuildArtifact>
             &resolved.project_root,
             profile,
             resolved.manifest.as_ref(),
+            backend_override,
         )?)
     } else {
         None
@@ -79,6 +95,7 @@ pub fn compile_file(path: &Path, profile: BuildProfile) -> Result<BuildArtifact>
         status,
         diagnostics: report.diagnostics.len(),
         output,
+        dependency_graph_hash: resolved.dependency_graph_hash,
     })
 }
 
@@ -316,6 +333,7 @@ fn merge_module(root: &mut ast::Module, module: &ast::Module) {
     root.inferred_capabilities
         .extend(module.inferred_capabilities.iter().cloned());
     root.host_syscall_sites += module.host_syscall_sites;
+    root.unsafe_reasoned_sites += module.unsafe_reasoned_sites;
 }
 
 fn format_module_cycle(stack: &[PathBuf], repeated: &Path) -> String {
@@ -396,6 +414,13 @@ struct ResolvedSource {
     source_path: PathBuf,
     project_root: PathBuf,
     manifest: Option<manifest::Manifest>,
+    dependency_graph_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LockfileMode {
+    ValidateOrCreate,
+    ForceRewrite,
 }
 
 fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
@@ -408,6 +433,7 @@ fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
             source_path: input.to_path_buf(),
             project_root: root,
             manifest: None,
+            dependency_graph_hash: None,
         });
     }
     if !input.is_dir() {
@@ -417,7 +443,8 @@ fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
         ));
     }
 
-    let (manifest, manifest_path) = load_manifest(input)?;
+    let (manifest, manifest_path, dependency_graph_hash) =
+        load_manifest(input, LockfileMode::ValidateOrCreate)?;
 
     let relative = manifest
         .primary_bin_path()
@@ -426,10 +453,14 @@ fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
         source_path: input.join(relative),
         project_root: input.to_path_buf(),
         manifest: Some(manifest),
+        dependency_graph_hash: Some(dependency_graph_hash),
     })
 }
 
-fn load_manifest(dir: &Path) -> Result<(manifest::Manifest, std::path::PathBuf)> {
+fn load_manifest(
+    dir: &Path,
+    lock_mode: LockfileMode,
+) -> Result<(manifest::Manifest, std::path::PathBuf, String)> {
     let primary = dir.join("fozzy.toml");
     let contents = std::fs::read_to_string(&primary)
         .with_context(|| format!("no valid compiler manifest found at {}", primary.display()))?;
@@ -438,7 +469,8 @@ fn load_manifest(dir: &Path) -> Result<(manifest::Manifest, std::path::PathBuf)>
         .validate()
         .map_err(|err| anyhow!("invalid fozzy.toml: {err}"))?;
     validate_dependency_paths(dir, &parsed)?;
-    Ok((parsed, primary))
+    let graph_hash = write_lockfile(dir, &parsed, &contents, lock_mode)?;
+    Ok((parsed, primary, graph_hash))
 }
 
 fn validate_dependency_paths(dir: &Path, manifest: &manifest::Manifest) -> Result<()> {
@@ -456,23 +488,238 @@ fn validate_dependency_paths(dir: &Path, manifest: &manifest::Manifest) -> Resul
     Ok(())
 }
 
+pub fn refresh_lockfile(dir: &Path) -> Result<String> {
+    let (_, _, graph_hash) = load_manifest(dir, LockfileMode::ForceRewrite)?;
+    Ok(graph_hash)
+}
+
+fn write_lockfile(
+    dir: &Path,
+    manifest: &manifest::Manifest,
+    root_manifest_contents: &str,
+    mode: LockfileMode,
+) -> Result<String> {
+    let root_manifest_hash = sha256_hex(root_manifest_contents.as_bytes());
+    let graph = build_dependency_graph(dir, manifest, &root_manifest_hash)?;
+    let graph_bytes = serde_json::to_vec(&graph)?;
+    let graph_hash = sha256_hex(&graph_bytes);
+    let payload = serde_json::json!({
+        "schemaVersion": "fozzylang.lock.v0",
+        "dependencyGraphHash": graph_hash,
+        "graph": graph,
+    });
+    let lock_path = dir.join("fozzy.lock");
+    let should_write = match mode {
+        LockfileMode::ForceRewrite => true,
+        LockfileMode::ValidateOrCreate => {
+            if !lock_path.exists() {
+                true
+            } else {
+                let existing_text = std::fs::read_to_string(&lock_path)
+                    .with_context(|| format!("failed reading lockfile: {}", lock_path.display()))?;
+                let existing_json: serde_json::Value = serde_json::from_str(&existing_text)
+                    .with_context(|| format!("failed parsing lockfile: {}", lock_path.display()))?;
+                let existing_hash = existing_json
+                    .get("dependencyGraphHash")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                let existing_graph = existing_json.get("graph").cloned().unwrap_or_default();
+                let existing_schema = existing_json
+                    .get("schemaVersion")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                if existing_schema == "fozzylang.lock.v0"
+                    && existing_hash == graph_hash
+                    && existing_graph == graph
+                {
+                    false
+                } else {
+                    return Err(anyhow!(
+                        "lockfile drift detected at {}: expected dependencyGraphHash={} (run `fozzyc vendor {}` to refresh)",
+                        lock_path.display(),
+                        graph_hash,
+                        dir.display()
+                    ));
+                }
+            }
+        }
+    };
+    if should_write {
+        std::fs::write(&lock_path, serde_json::to_vec_pretty(&payload)?)
+            .with_context(|| format!("failed writing lockfile: {}", lock_path.display()))?;
+    }
+    Ok(graph_hash)
+}
+
+fn build_dependency_graph(
+    dir: &Path,
+    manifest: &manifest::Manifest,
+    root_manifest_hash: &str,
+) -> Result<serde_json::Value> {
+    let mut dep_entries = Vec::new();
+    for (name, dependency) in &manifest.deps {
+        let manifest::Dependency::Path { path } = dependency;
+        let resolved = dir.join(path);
+        let canonical = resolved.canonicalize().with_context(|| {
+            format!(
+                "failed canonicalizing path dependency `{}` at {}",
+                name,
+                resolved.display()
+            )
+        })?;
+        let dep_manifest_path = canonical.join("fozzy.toml");
+        let dep_manifest_text = std::fs::read_to_string(&dep_manifest_path).with_context(|| {
+            format!(
+                "path dependency `{}` missing manifest at {}",
+                name,
+                dep_manifest_path.display()
+            )
+        })?;
+        let dep_manifest = manifest::load(&dep_manifest_text).with_context(|| {
+            format!(
+                "failed parsing dependency manifest for `{}` at {}",
+                name,
+                dep_manifest_path.display()
+            )
+        })?;
+        dep_manifest.validate().map_err(|err| {
+            anyhow!(
+                "invalid dependency manifest for `{}` at {}: {}",
+                name,
+                dep_manifest_path.display(),
+                err
+            )
+        })?;
+        let dep_source_hash = hash_directory_tree(&canonical)?;
+        dep_entries.push(serde_json::json!({
+            "name": name,
+            "path": normalize_rel_path(path),
+            "canonicalPath": canonical.display().to_string(),
+            "package": {
+                "name": dep_manifest.package.name,
+                "version": dep_manifest.package.version,
+            },
+            "manifestHash": sha256_hex(dep_manifest_text.as_bytes()),
+            "sourceHash": dep_source_hash,
+        }));
+    }
+    Ok(serde_json::json!({
+        "package": {
+            "name": manifest.package.name,
+            "version": manifest.package.version,
+            "manifestHash": root_manifest_hash,
+        },
+        "deps": dep_entries,
+    }))
+}
+
+fn normalize_rel_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn hash_directory_tree(root: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    collect_files_recursive(root, root, &mut files)?;
+    let mut hasher = Sha256::new();
+    for (rel, full) in files {
+        hasher.update(rel.as_bytes());
+        let bytes = std::fs::read(&full)
+            .with_context(|| format!("failed reading dependency file for hashing: {}", full.display()))?;
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    }
+    Ok(hex_encode(hasher.finalize().as_slice()))
+}
+
+fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+    let mut entries = std::fs::read_dir(current)
+        .with_context(|| format!("failed reading dependency directory: {}", current.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("failed iterating dependency directory: {}", current.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let full = entry.path();
+        let rel = full
+            .strip_prefix(root)
+            .with_context(|| format!("failed deriving relative path for {}", full.display()))?;
+        let rel_str = normalize_rel_path(&rel.display().to_string());
+        if should_skip_hash_path(&rel_str) {
+            continue;
+        }
+        if entry
+            .file_type()
+            .with_context(|| format!("failed reading file type for {}", full.display()))?
+            .is_dir()
+        {
+            collect_files_recursive(root, &full, out)?;
+        } else {
+            out.push((rel_str, full));
+        }
+    }
+    Ok(())
+}
+
+fn should_skip_hash_path(rel: &str) -> bool {
+    rel.starts_with(".git/")
+        || rel.starts_with(".fozzyc/")
+        || rel.starts_with("vendor/")
+        || rel.starts_with("target/")
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex_encode(hasher.finalize().as_slice())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+}
+
 fn emit_native_artifact(
     fir: &fir::FirModule,
     project_root: &Path,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
+    backend_override: Option<&str>,
 ) -> Result<PathBuf> {
-    let backend = std::env::var("FOZZYC_NATIVE_BACKEND")
-        .unwrap_or_else(|_| "llvm".to_string())
-        .to_ascii_lowercase();
+    let backend = resolve_native_backend(profile, backend_override)?;
     match backend.as_str() {
         "llvm" => emit_native_artifact_llvm(fir, project_root, profile, manifest),
-        "c_shim" => emit_native_artifact_c_shim(fir, project_root, profile, manifest),
+        "cranelift" => emit_native_artifact_cranelift(fir, project_root, profile, manifest),
         other => Err(anyhow!(
-            "unknown FOZZYC_NATIVE_BACKEND `{}`; expected `llvm` or `c_shim`",
+            "unknown FOZZYC_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
             other
         )),
     }
+}
+
+fn resolve_native_backend(profile: BuildProfile, backend_override: Option<&str>) -> Result<String> {
+    if let Some(explicit) = backend_override {
+        let normalized = explicit.trim().to_ascii_lowercase();
+        return match normalized.as_str() {
+            "llvm" | "cranelift" => Ok(normalized),
+            other => Err(anyhow!(
+                "unknown backend `{}`; expected `llvm` or `cranelift`",
+                other
+            )),
+        };
+    }
+    if let Ok(explicit) = std::env::var("FOZZYC_NATIVE_BACKEND") {
+        let normalized = explicit.trim().to_ascii_lowercase();
+        return match normalized.as_str() {
+            "llvm" | "cranelift" => Ok(normalized),
+            other => Err(anyhow!(
+                "unknown FOZZYC_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
+                other
+            )),
+        };
+    }
+    Ok(match profile {
+        BuildProfile::Release => "llvm".to_string(),
+        BuildProfile::Dev => "cranelift".to_string(),
+        BuildProfile::Verify => "llvm".to_string(),
+    })
 }
 
 fn emit_native_artifact_llvm(
@@ -545,7 +792,7 @@ fn emit_native_artifact_llvm(
     ))
 }
 
-fn emit_native_artifact_c_shim(
+fn emit_native_artifact_cranelift(
     fir: &fir::FirModule,
     project_root: &Path,
     profile: BuildProfile,
@@ -555,63 +802,66 @@ fn emit_native_artifact_c_shim(
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
 
-    let c_path = build_dir.join(format!("{}.c", fir.name));
+    let object_path = build_dir.join(format!("{}.o", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
-    let entry_return = fir.entry_return_const_i32.unwrap_or(0);
-    let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
+    let mut flags_builder = settings::builder();
+    let optimize_override = manifest
+        .and_then(|manifest| profile_config(manifest, profile))
+        .and_then(|config| config.optimize);
+    let opt_level = match (profile, optimize_override) {
+        (_, Some(true)) => "speed",
+        (_, Some(false)) => "none",
+        (BuildProfile::Dev, None) => "none",
+        (BuildProfile::Release, None) => "speed",
+        (BuildProfile::Verify, None) => "speed",
+    };
+    flags_builder
+        .set("opt_level", opt_level)
+        .map_err(|error| anyhow!("failed setting cranelift opt_level={opt_level}: {error}"))?;
+    let flags = settings::Flags::new(flags_builder);
+    let isa_builder = cranelift_native::builder()
+        .map_err(|error| anyhow!("failed constructing cranelift native isa: {error}"))?;
+    let isa = isa_builder
+        .finish(flags)
+        .map_err(|error| anyhow!("failed finalizing cranelift isa: {error}"))?;
 
-    let mut c_source = String::from("#include <stdint.h>\nint main(void) {\n");
-    if enforce_contract_checks {
-        for condition in &fir.entry_requires {
-            let guard = if matches!(condition, Some(false)) {
-                "0"
-            } else {
-                "1"
-            };
-            c_source.push_str(&format!("  if (!({guard})) {{ return 120; }}\n"));
-        }
-    }
-    c_source.push_str(&format!("  int __fozzy_ret = {entry_return};\n"));
-    if enforce_contract_checks {
-        for condition in &fir.entry_ensures {
-            let guard = if matches!(condition, Some(false)) {
-                "0"
-            } else {
-                "1"
-            };
-            c_source.push_str(&format!("  if (!({guard})) {{ return 121; }}\n"));
-        }
-    }
-    c_source.push_str("  return __fozzy_ret;\n}\n");
-    std::fs::write(&c_path, c_source)
-        .with_context(|| format!("failed writing c source: {}", c_path.display()))?;
+    let object_builder = ObjectBuilder::new(isa, fir.name.clone(), default_libcall_names())
+        .map_err(|error| anyhow!("failed creating cranelift object builder: {error}"))?;
+    let mut module = ObjectModule::new(object_builder);
+    let mut context = module.make_context();
+    context.func.signature.returns.push(AbiParam::new(types::I32));
+
+    let function_id = module
+        .declare_function("main", Linkage::Export, &context.func.signature)
+        .map_err(|error| anyhow!("failed declaring cranelift main symbol: {error}"))?;
+    let mut function_builder_context = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut context.func, &mut function_builder_context);
+    let block = builder.create_block();
+    builder.switch_to_block(block);
+    builder.seal_block(block);
+    let entry_return = computed_entry_return(fir, !matches!(profile, BuildProfile::Release));
+    let ret = builder.ins().iconst(types::I32, entry_return as i64);
+    builder.ins().return_(&[ret]);
+    builder.finalize();
+
+    module
+        .define_function(function_id, &mut context)
+        .map_err(|error| anyhow!("failed defining cranelift function body: {error}"))?;
+    module.clear_context(&mut context);
+    let object_product = module.finish();
+    let object_bytes = object_product
+        .emit()
+        .map_err(|error| anyhow!("failed emitting cranelift object bytes: {error}"))?;
+    std::fs::write(&object_path, object_bytes)
+        .with_context(|| format!("failed writing cranelift object: {}", object_path.display()))?;
 
     let candidates = linker_candidates();
     let mut last_error = None;
     for tool in candidates {
         let mut cmd = Command::new(&tool);
-        cmd.arg(&c_path).arg("-o").arg(&bin_path);
+        cmd.arg(&object_path).arg("-o").arg(&bin_path);
         apply_target_link_flags(&mut cmd);
-        let optimize_override = manifest
-            .and_then(|manifest| profile_config(manifest, profile))
-            .and_then(|config| config.optimize);
-        match (profile, optimize_override) {
-            (_, Some(true)) => {
-                cmd.arg("-O2");
-            }
-            (_, Some(false)) => {
-                cmd.arg("-O0");
-            }
-            (BuildProfile::Dev, None) => {
-                cmd.arg("-O0");
-            }
-            (BuildProfile::Release, None) => {
-                cmd.arg("-O2");
-            }
-            (BuildProfile::Verify, None) => {
-                cmd.arg("-O1").arg("-g");
-            }
-        }
+        // Object code is already generated at selected Cranelift optimization level.
         apply_extra_linker_args(&mut cmd);
 
         match cmd.output() {
@@ -630,9 +880,29 @@ fn emit_native_artifact_c_shim(
     }
 
     Err(anyhow!(
-        "failed to compile c_shim native artifact: {}",
+        "failed to link cranelift native artifact: {}",
         last_error.unwrap_or_else(|| "unknown compiler error".to_string())
     ))
+}
+
+fn computed_entry_return(fir: &fir::FirModule, enforce_contract_checks: bool) -> i32 {
+    if enforce_contract_checks {
+        if fir
+            .entry_requires
+            .iter()
+            .any(|condition| matches!(condition, Some(false)))
+        {
+            return 120;
+        }
+        if fir
+            .entry_ensures
+            .iter()
+            .any(|condition| matches!(condition, Some(false)))
+        {
+            return 121;
+        }
+    }
+    fir.entry_return_const_i32.unwrap_or(0)
 }
 
 fn linker_candidates() -> Vec<String> {
@@ -695,7 +965,10 @@ fn profile_config(
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{compile_file, emit_ir, parse_program, BuildProfile};
+    use super::{
+        compile_file, compile_file_with_backend, emit_ir, parse_program, refresh_lockfile,
+        BuildProfile,
+    };
 
     #[test]
     fn compile_file_runs_pipeline() {
@@ -833,6 +1106,88 @@ mod tests {
     }
 
     #[test]
+    fn compile_project_fails_when_lockfile_drifts() {
+        let project_name = format!(
+            "fozzylang-lock-drift-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        let dep_dir = root.join("deps/util");
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::create_dir_all(dep_dir.join("src")).expect("dep src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("source should be written");
+        std::fs::write(
+            dep_dir.join("fozzy.toml"),
+            "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"util\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("dep manifest should be written");
+        std::fs::write(dep_dir.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("dep source should be written");
+
+        let first = compile_file(&root, BuildProfile::Dev).expect("first build should succeed");
+        assert_eq!(first.status, "ok");
+        std::fs::write(
+            dep_dir.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 1\n}\n",
+        )
+        .expect("dep source should mutate");
+        let error = compile_file(&root, BuildProfile::Dev).expect_err("drift should fail build");
+        assert!(error.to_string().contains("lockfile drift detected"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn refresh_lockfile_unblocks_drifted_project_build() {
+        let project_name = format!(
+            "fozzylang-lock-refresh-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        let dep_dir = root.join("deps/util");
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::create_dir_all(dep_dir.join("src")).expect("dep src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("source should be written");
+        std::fs::write(
+            dep_dir.join("fozzy.toml"),
+            "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"util\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("dep manifest should be written");
+        std::fs::write(dep_dir.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("dep source should be written");
+
+        compile_file(&root, BuildProfile::Dev).expect("first build should succeed");
+        std::fs::write(
+            dep_dir.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 2\n}\n",
+        )
+        .expect("dep source should mutate");
+        refresh_lockfile(&root).expect("refresh lockfile should succeed");
+        let artifact = compile_file(&root, BuildProfile::Dev).expect("build should recover");
+        assert_eq!(artifact.status, "ok");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn profile_checks_can_be_disabled() {
         let project_name = format!(
             "fozzylang-profile-{}",
@@ -926,6 +1281,61 @@ mod tests {
         assert!(ir.contains("backend=cranelift"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn backend_override_rejects_removed_c_shim() {
+        let file_name = format!(
+            "fozzylang-backend-removed-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(&path, "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("temp source should be written");
+
+        let error = compile_file_with_backend(&path, BuildProfile::Dev, Some("c_shim"))
+            .expect_err("removed backend must fail");
+        assert!(error.to_string().contains("unknown backend"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn backend_defaults_dev_cranelift_release_llvm() {
+        let project_name = format!(
+            "fozzylang-backend-defaults-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let dev = compile_file_with_backend(&root, BuildProfile::Dev, None)
+            .expect("dev build should succeed");
+        assert_eq!(dev.status, "ok");
+        assert!(root.join(".fozzyc/build/main.o").exists());
+
+        let release = compile_file_with_backend(&root, BuildProfile::Release, None)
+            .expect("release build should succeed");
+        assert_eq!(release.status, "ok");
+        assert!(root.join(".fozzyc/build/main.ll").exists());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

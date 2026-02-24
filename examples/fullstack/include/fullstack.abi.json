@@ -1,4 +1,5 @@
 {
+  "abiRevision": 1,
   "exports": [
     {
       "name": "fs_open",
@@ -17,7 +18,8 @@
       "return": {
         "c": "int32_t",
         "fzy": "i32"
-      }
+      },
+      "symbolVersion": 1
     },
     {
       "name": "fs_write",
@@ -41,7 +43,8 @@
       "return": {
         "c": "int32_t",
         "fzy": "i32"
-      }
+      },
+      "symbolVersion": 1
     },
     {
       "name": "hash32",
@@ -60,10 +63,19 @@
       "return": {
         "c": "uint32_t",
         "fzy": "u32"
-      }
+      },
+      "symbolVersion": 1
     }
   ],
-  "package": "fullstack",
+  "layoutPolicy": {
+    "nonReprCUnstable": true,
+    "reprCStableOnly": true
+  },
+  "package": {
+    "name": "fullstack",
+    "version": "0.1.0"
+  },
   "panicBoundary": "abort-or-translate",
-  "schemaVersion": "fozzylang.ffi_abi.v0"
+  "schemaVersion": "fozzylang.ffi_abi.v0",
+  "symbolVersioning": "strict-name-signature-v0"
 }

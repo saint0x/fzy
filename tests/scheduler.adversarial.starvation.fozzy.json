@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "scheduler-adversarial-starvation",
+  "steps": [
+    { "type": "trace_event", "name": "spawn_many" },
+    { "type": "trace_event", "name": "yield_rare" },
+    { "type": "trace_event", "name": "assert_no_starvation" }
+  ]
+}

@@ -5,9 +5,11 @@ use std::process::Command as ProcessCommand;
 use anyhow::{anyhow, bail, Context, Result};
 use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEvent};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::pipeline::{
-    compile_file, emit_ir, parse_program, verify_file, BuildArtifact, BuildProfile, Output,
+    compile_file_with_backend, emit_ir, parse_program, refresh_lockfile, verify_file,
+    BuildArtifact, BuildProfile, Output,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,23 +27,28 @@ pub enum Command {
         path: PathBuf,
         release: bool,
         threads: Option<u16>,
+        backend: Option<String>,
     },
     Run {
         path: PathBuf,
         args: Vec<String>,
         deterministic: bool,
-        strict: bool,
+        strict_verify: bool,
+        safe_profile: bool,
         seed: Option<u64>,
         record: Option<PathBuf>,
         host_backends: bool,
+        backend: Option<String>,
     },
     Test {
         path: PathBuf,
         deterministic: bool,
-        strict: bool,
+        strict_verify: bool,
+        safe_profile: bool,
         seed: Option<u64>,
         record: Option<PathBuf>,
         host_backends: bool,
+        backend: Option<String>,
         scheduler: Option<String>,
         rich_artifacts: bool,
         filter: Option<String>,
@@ -55,7 +62,48 @@ pub enum Command {
     Verify {
         path: PathBuf,
     },
+    SpecCheck,
     EmitIr {
+        path: PathBuf,
+    },
+    Parity {
+        path: PathBuf,
+        seed: Option<u64>,
+    },
+    Equivalence {
+        path: PathBuf,
+        seed: Option<u64>,
+    },
+    AuditUnsafe {
+        path: PathBuf,
+    },
+    Vendor {
+        path: PathBuf,
+    },
+    AbiCheck {
+        current: PathBuf,
+        baseline: PathBuf,
+    },
+    DebugCheck {
+        path: PathBuf,
+    },
+    LspDiagnostics {
+        path: PathBuf,
+    },
+    LspDefinition {
+        path: PathBuf,
+        symbol: String,
+    },
+    LspHover {
+        path: PathBuf,
+        symbol: String,
+    },
+    LspRename {
+        path: PathBuf,
+        from: String,
+        to: String,
+    },
+    LspSmoke {
         path: PathBuf,
     },
     Fuzz {
@@ -93,13 +141,14 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             path,
             release,
             threads,
+            backend,
         } => {
             let profile = if release {
                 BuildProfile::Release
             } else {
                 BuildProfile::Dev
             };
-            let artifact = compile_file(&path, profile)?;
+            let artifact = compile_file_with_backend(&path, profile, backend.as_deref())?;
             let runtime_config = persist_runtime_threads_config(&path, threads)?;
             Ok(render_artifact(format, artifact, threads, runtime_config))
         }
@@ -107,17 +156,19 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             path,
             args,
             deterministic,
-            strict,
+            strict_verify,
+            safe_profile,
             seed,
             record,
             host_backends,
+            backend,
         } => {
             if is_fozzy_scenario(&path) {
                 let mut fozzy_args = vec!["run".to_string(), path.display().to_string()];
                 if deterministic {
                     fozzy_args.push("--det".to_string());
                 }
-                if strict {
+                if strict_verify {
                     fozzy_args.push("--strict".to_string());
                 }
                 if let Some(seed) = seed {
@@ -142,7 +193,15 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 return fozzy_invoke(&fozzy_args);
             }
 
-            let artifact = compile_file(&path, BuildProfile::Dev)?;
+            let artifact = compile_file_with_backend(
+                &path,
+                if safe_profile {
+                    BuildProfile::Verify
+                } else {
+                    BuildProfile::Dev
+                },
+                backend.as_deref(),
+            )?;
             if artifact.status != "ok" || artifact.output.is_none() {
                 bail!(
                     "run aborted: build status={} diagnostics={}",
@@ -160,7 +219,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 )?;
                 let mut fozzy_args = vec!["run".to_string(), scenario.display().to_string()];
                 fozzy_args.push("--det".to_string());
-                if strict {
+                if strict_verify {
                     fozzy_args.push("--strict".to_string());
                 }
                 if let Some(seed) = seed {
@@ -195,7 +254,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "status": artifact.status,
                         "diagnostics": artifact.diagnostics,
                         "deterministic": true,
-                        "strict": strict,
+                        "strictVerify": strict_verify,
+                        "safeProfile": safe_profile,
                         "seed": seed,
                         "hostBackends": host_backends,
                         "routing": {
@@ -237,7 +297,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "binary": binary.display().to_string(),
                     "args": args,
                     "deterministic": deterministic,
-                    "strict": strict,
+                    "strictVerify": strict_verify,
+                    "safeProfile": safe_profile,
                     "seed": seed,
                     "hostBackends": host_backends,
                     "exitCode": exit_code,
@@ -250,10 +311,12 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::Test {
             path,
             deterministic,
-            strict,
+            strict_verify,
+            safe_profile,
             seed,
             record,
             host_backends,
+            backend: _backend,
             scheduler,
             rich_artifacts,
             filter,
@@ -263,7 +326,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 if deterministic {
                     fozzy_args.push("--det".to_string());
                 }
-                if strict {
+                if strict_verify {
                     fozzy_args.push("--strict".to_string());
                 }
                 if let Some(seed) = seed {
@@ -295,7 +358,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let test_plan = run_non_scenario_test_plan(
                 &path,
                 deterministic,
-                strict,
+                strict_verify,
+                safe_profile,
                 scheduler.clone(),
                 seed,
                 record.as_deref(),
@@ -303,10 +367,10 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 filter.as_deref(),
             )?;
             let message = format!(
-                "test harness built for {} (deterministic={}, strict={}, scheduler={}, executed_tasks={}, order={:?}, artifacts={})",
+                "test harness built for {} (deterministic={}, strict_verify={}, scheduler={}, executed_tasks={}, order={:?}, artifacts={})",
                 test_plan.module,
                 deterministic,
-                strict,
+                strict_verify,
                 test_plan.scheduler,
                 test_plan.executed_tasks,
                 test_plan.execution_order,
@@ -321,7 +385,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 Format::Json => Ok(serde_json::json!({
                     "module": test_plan.module,
                     "deterministic": deterministic,
-                    "strict": strict,
+                    "strictVerify": strict_verify,
+                    "safeProfile": safe_profile,
                     "mode": test_plan.mode,
                     "scheduler": test_plan.scheduler,
                     "diagnostics": test_plan.diagnostics,
@@ -332,6 +397,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "rpcFrameCount": test_plan.rpc_frame_count,
                     "rpcValidationErrors": test_plan.rpc_validation_errors,
                     "threadFindings": test_plan.thread_findings,
+                    "runtimeEventCount": test_plan.runtime_event_count,
+                    "causalLinkCount": test_plan.causal_link_count,
                     "discoveredTests": test_plan.discovered_tests,
                     "selectedTests": test_plan.selected_tests,
                     "discoveredTestNames": test_plan.discovered_test_names,
@@ -379,10 +446,24 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let output = verify_file(&path)?;
             Ok(render_output(format, output))
         }
+        Command::SpecCheck => spec_check(format),
         Command::EmitIr { path } => {
             let output = emit_ir(&path)?;
             Ok(render_output(format, output))
         }
+        Command::Parity { path, seed } => parity_command(&path, seed.unwrap_or(1), format),
+        Command::Equivalence { path, seed } => {
+            equivalence_command(&path, seed.unwrap_or(1), format)
+        }
+        Command::AuditUnsafe { path } => audit_unsafe_command(&path, format),
+        Command::Vendor { path } => vendor_command(&path, format),
+        Command::AbiCheck { current, baseline } => abi_check_command(&current, &baseline, format),
+        Command::DebugCheck { path } => debug_check_command(&path, format),
+        Command::LspDiagnostics { path } => lsp_diagnostics_command(&path, format),
+        Command::LspDefinition { path, symbol } => lsp_definition_command(&path, &symbol, format),
+        Command::LspHover { path, symbol } => lsp_hover_command(&path, &symbol, format),
+        Command::LspRename { path, from, to } => lsp_rename_command(&path, &from, &to, format),
+        Command::LspSmoke { path } => lsp_smoke_command(&path, format),
         Command::Fuzz { target } => passthrough_fozzy("fuzz", &target, format),
         Command::Explore { target } => {
             if is_native_trace_or_manifest(&target) {
@@ -462,7 +543,7 @@ fn render_artifact(
 ) -> String {
     match format {
         Format::Text => format!(
-            "module={} profile={:?} status={} diagnostics={} output={} threads={} runtime_config={}",
+            "module={} profile={:?} status={} diagnostics={} output={} threads={} runtime_config={} dep_graph_hash={}",
             artifact.module,
             artifact.profile,
             artifact.status,
@@ -478,6 +559,10 @@ fn render_artifact(
             runtime_config
                 .as_ref()
                 .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            artifact
+                .dependency_graph_hash
+                .clone()
                 .unwrap_or_else(|| "<none>".to_string())
         ),
         Format::Json => serde_json::json!({
@@ -485,6 +570,7 @@ fn render_artifact(
             "profile": format!("{:?}", artifact.profile),
             "status": artifact.status,
             "diagnostics": artifact.diagnostics,
+            "dependencyGraphHash": artifact.dependency_graph_hash,
             "threads": threads,
             "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
             "output": artifact
@@ -521,6 +607,1168 @@ fn render_output(format: Format, output: Output) -> String {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct SemanticsOutcome {
+    mode: String,
+    #[serde(rename = "exitClass")]
+    exit_class: String,
+    #[serde(rename = "eventKinds")]
+    event_kinds: Vec<String>,
+    invariants: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct FozzyTestSummary {
+    #[serde(rename = "exitClass")]
+    exit_class: String,
+    passed: u64,
+    failed: u64,
+}
+
+fn spec_doc_path() -> PathBuf {
+    if let Ok(explicit) = std::env::var("FOZZYC_SPEC_PATH") {
+        if !explicit.trim().is_empty() {
+            return PathBuf::from(explicit);
+        }
+    }
+    PathBuf::from("docs/language-reference-v0.md")
+}
+
+fn spec_check(format: Format) -> Result<String> {
+    let path = spec_doc_path();
+    ensure_exists(&path)?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed reading spec file: {}", path.display()))?;
+    let required = vec![
+        "## Evaluation Order",
+        "## Integer Overflow",
+        "## Error And Panic Semantics",
+        "## Async Cancellation Semantics",
+        "## Deterministic Scheduling Model",
+        "## Capability Semantics",
+        "## Memory Safety And UB Model",
+    ];
+    let missing = required
+        .iter()
+        .filter(|heading| !text.contains(**heading))
+        .map(|heading| heading.to_string())
+        .collect::<Vec<_>>();
+    let ok = missing.is_empty();
+    if !ok {
+        bail!(
+            "spec-check failed: missing sections in {}: {}",
+            path.display(),
+            missing.join(", ")
+        );
+    }
+    match format {
+        Format::Text => Ok(format!(
+            "spec-check ok path={} sections={}",
+            path.display(),
+            required.len()
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": ok,
+            "path": path.display().to_string(),
+            "requiredSections": required,
+            "missingSections": missing,
+        })
+        .to_string()),
+    }
+}
+
+fn parity_command(path: &Path, seed: u64, format: Format) -> Result<String> {
+    ensure_exists(path)?;
+    let fast = run_non_scenario_test_plan(path, false, false, false, None, Some(seed), None, false, None)?;
+    let det = run_non_scenario_test_plan(
+        path,
+        true,
+        false,
+        false,
+        Some("fifo".to_string()),
+        Some(seed),
+        None,
+        false,
+        None,
+    )?;
+    let verify = run_non_scenario_test_plan(
+        path,
+        true,
+        false,
+        true,
+        Some("fifo".to_string()),
+        Some(seed),
+        None,
+        false,
+        None,
+    );
+
+    let mut outcomes = vec![
+        plan_semantics_outcome("fast", &fast),
+        plan_semantics_outcome("det", &det),
+    ];
+    let mut skipped = BTreeMap::<String, String>::new();
+    match verify {
+        Ok(verify) => outcomes.push(plan_semantics_outcome("verify", &verify)),
+        Err(error) => {
+            skipped.insert("verify".to_string(), error.to_string());
+        }
+    }
+
+    let mut issues = Vec::new();
+    if outcomes[0].exit_class != outcomes[1].exit_class {
+        issues.push("fast/det exit class mismatch".to_string());
+    }
+    if outcomes[0].invariants != outcomes[1].invariants {
+        issues.push("fast/det invariant mismatch".to_string());
+    }
+    if outcomes.len() == 3 {
+        if outcomes[0].exit_class != outcomes[2].exit_class {
+            issues.push("fast/verify exit class mismatch".to_string());
+        }
+        if outcomes[0].invariants != outcomes[2].invariants {
+            issues.push("fast/verify invariant mismatch".to_string());
+        }
+    }
+
+    let signature = semantic_signature(&serde_json::json!({
+        "kind": "mode-parity",
+        "outcomes": outcomes,
+        "skipped": skipped,
+    }))?;
+    if !issues.is_empty() {
+        bail!(
+            "parity failed for {}: {}",
+            path.display(),
+            issues.join("; ")
+        );
+    }
+    match format {
+        Format::Text => Ok(format!(
+            "parity ok path={} signature={} modes={}",
+            path.display(),
+            signature,
+            outcomes.len()
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "path": path.display().to_string(),
+            "seed": seed,
+            "signature": signature,
+            "outcomes": outcomes,
+            "skipped": skipped,
+            "issues": issues,
+        })
+        .to_string()),
+    }
+}
+
+fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String> {
+    ensure_exists(path)?;
+    let suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let temp_trace = std::env::temp_dir().join(format!("fozzylang-equivalence-{suffix}.trace.json"));
+    let native_plan = run_non_scenario_test_plan(
+        path,
+        true,
+        true,
+        false,
+        Some("fifo".to_string()),
+        Some(seed),
+        Some(&temp_trace),
+        true,
+        None,
+    )?;
+    let artifacts = native_plan
+        .artifacts
+        .as_ref()
+        .ok_or_else(|| anyhow!("equivalence requires deterministic record artifacts"))?;
+    let scenario = artifacts
+        .primary_scenario_path
+        .clone()
+        .ok_or_else(|| anyhow!("equivalence could not resolve generated primary scenario"))?;
+    let (scenario_step_kinds, scenario_trace_events) = parse_scenario_step_kinds(&scenario)?;
+    let scenario_summary = fozzy_test_summary(&scenario, false, true)?;
+    let host_summary = fozzy_test_summary(&scenario, true, false)?;
+
+    let native = SemanticsOutcome {
+        mode: "native".to_string(),
+        exit_class: "pass".to_string(),
+        event_kinds: vec!["test.event".to_string()],
+        invariants: BTreeMap::from([
+            (
+                "deterministicTests".to_string(),
+                native_plan.deterministic_test_names.len().to_string(),
+            ),
+            ("selectedTests".to_string(), native_plan.selected_tests.to_string()),
+        ]),
+    };
+    let scenario_outcome = SemanticsOutcome {
+        mode: "scenario".to_string(),
+        exit_class: scenario_summary.exit_class,
+        event_kinds: scenario_step_kinds.clone(),
+        invariants: BTreeMap::from([
+            (
+                "deterministicTests".to_string(),
+                scenario_trace_events.to_string(),
+            ),
+            ("failed".to_string(), scenario_summary.failed.to_string()),
+        ]),
+    };
+    let host_outcome = SemanticsOutcome {
+        mode: "host".to_string(),
+        exit_class: host_summary.exit_class,
+        event_kinds: scenario_step_kinds,
+        invariants: BTreeMap::from([
+            (
+                "deterministicTests".to_string(),
+                scenario_trace_events.to_string(),
+            ),
+            ("failed".to_string(), host_summary.failed.to_string()),
+        ]),
+    };
+    let outcomes = vec![native.clone(), scenario_outcome.clone(), host_outcome.clone()];
+    let signature = semantic_signature(&serde_json::json!({
+        "kind": "native-scenario-host-equivalence",
+        "outcomes": outcomes,
+    }))?;
+
+    let mut issues = Vec::new();
+    if native.exit_class != scenario_outcome.exit_class {
+        issues.push("native/scenario exit class mismatch".to_string());
+    }
+    if scenario_outcome.exit_class != host_outcome.exit_class {
+        issues.push("scenario/host exit class mismatch".to_string());
+    }
+    if native
+        .invariants
+        .get("deterministicTests")
+        != scenario_outcome.invariants.get("deterministicTests")
+    {
+        issues.push("native/scenario deterministic test count mismatch".to_string());
+    }
+    if native.event_kinds != scenario_outcome.event_kinds {
+        issues.push("native/scenario normalized event kinds mismatch".to_string());
+    }
+    if scenario_outcome.event_kinds != host_outcome.event_kinds {
+        issues.push("scenario/host normalized event kinds mismatch".to_string());
+    }
+
+    if !issues.is_empty() {
+        bail!(
+            "equivalence failed for {}: {}",
+            path.display(),
+            issues.join("; ")
+        );
+    }
+    match format {
+        Format::Text => Ok(format!(
+            "equivalence ok path={} signature={} scenario={}",
+            path.display(),
+            signature,
+            scenario.display()
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "path": path.display().to_string(),
+            "seed": seed,
+            "signature": signature,
+            "scenario": scenario.display().to_string(),
+            "outcomes": outcomes,
+            "issues": issues,
+        })
+        .to_string()),
+    }
+}
+
+fn plan_semantics_outcome(mode: &str, plan: &NonScenarioTestPlan) -> SemanticsOutcome {
+    let mut event_kinds = Vec::new();
+    if plan.selected_tests > 0 {
+        event_kinds.push("test.event".to_string());
+        event_kinds.push("test.assert".to_string());
+    }
+    if plan.async_checkpoint_count > 0 {
+        event_kinds.push("async.checkpoint".to_string());
+    }
+    if plan.rpc_frame_count > 0 {
+        event_kinds.push("rpc.frame".to_string());
+    }
+    if !plan.execution_order.is_empty() {
+        event_kinds.push("thread.schedule".to_string());
+    }
+    event_kinds.sort();
+    event_kinds.dedup();
+
+    SemanticsOutcome {
+        mode: mode.to_string(),
+        exit_class: "pass".to_string(),
+        event_kinds,
+        invariants: BTreeMap::from([
+            (
+                "discoveredTests".to_string(),
+                plan.discovered_tests.to_string(),
+            ),
+            ("selectedTests".to_string(), plan.selected_tests.to_string()),
+            (
+                "deterministicTests".to_string(),
+                plan.deterministic_test_names.len().to_string(),
+            ),
+        ]),
+    }
+}
+
+fn parse_scenario_step_kinds(path: &Path) -> Result<(Vec<String>, usize)> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed reading scenario file: {}", path.display()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed parsing scenario file: {}", path.display()))?;
+    let steps = value
+        .get("steps")
+        .and_then(|steps| steps.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut kinds = Vec::new();
+    let mut trace_event_count = 0usize;
+    for step in steps {
+        let Some(raw) = step.get("type").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let normalized = match raw {
+            "trace_event" => "test.event",
+            "assert_eq_int" => "test.assert",
+            _ => raw,
+        };
+        if normalized == "test.event" {
+            trace_event_count += 1;
+        }
+        kinds.push(normalized.to_string());
+    }
+    kinds.sort();
+    kinds.dedup();
+    Ok((kinds, trace_event_count))
+}
+
+fn fozzy_test_summary(
+    scenario: &Path,
+    host_backends: bool,
+    deterministic: bool,
+) -> Result<FozzyTestSummary> {
+    let mut args = vec![
+        "test".to_string(),
+        scenario.display().to_string(),
+        "--strict".to_string(),
+        "--json".to_string(),
+    ];
+    if deterministic {
+        args.push("--det".to_string());
+    }
+    if host_backends {
+        args.push("--proc-backend".to_string());
+        args.push("host".to_string());
+        args.push("--fs-backend".to_string());
+        args.push("host".to_string());
+        args.push("--http-backend".to_string());
+        args.push("host".to_string());
+    }
+    let output = fozzy_invoke(&args)?;
+    let value: serde_json::Value = serde_json::from_str(&output)
+        .context("failed parsing fozzy test output")?;
+    let exit_class = value
+        .get("status")
+        .and_then(|status| status.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let passed = value
+        .get("tests")
+        .and_then(|tests| tests.get("passed"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let failed = value
+        .get("tests")
+        .and_then(|tests| tests.get("failed"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    Ok(FozzyTestSummary {
+        exit_class,
+        passed,
+        failed,
+    })
+}
+
+fn semantic_signature(value: &serde_json::Value) -> Result<String> {
+    let payload = serde_json::to_vec(value)?;
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    let digest = hasher.finalize();
+    Ok(digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct UnsafeEntry {
+    file: String,
+    line: usize,
+    snippet: String,
+    reason: Option<String>,
+}
+
+fn audit_unsafe_command(path: &Path, format: Format) -> Result<String> {
+    let resolved = resolve_source(path)?;
+    let parsed = parse_program(&resolved.source_path)?;
+    let mut entries = Vec::new();
+    for module_path in &parsed.module_paths {
+        let source = std::fs::read_to_string(module_path)
+            .with_context(|| format!("failed reading module for unsafe audit: {}", module_path.display()))?;
+        for (index, raw) in source.lines().enumerate() {
+            if !raw.contains("unsafe ") && !raw.contains("unsafe(\"") && !raw.contains("unsafe_reason(\"") {
+                continue;
+            }
+            entries.push(UnsafeEntry {
+                file: module_path.display().to_string(),
+                line: index + 1,
+                snippet: raw.trim().to_string(),
+                reason: extract_unsafe_reason(raw),
+            });
+        }
+    }
+    let missing_reasons = entries
+        .iter()
+        .filter(|entry| entry.reason.is_none())
+        .count();
+    let out_dir = resolved.project_root.join(".fozzyc");
+    std::fs::create_dir_all(&out_dir)
+        .with_context(|| format!("failed creating unsafe audit dir: {}", out_dir.display()))?;
+    let unsafe_map = out_dir.join("unsafe-map.json");
+    let payload = serde_json::json!({
+        "schemaVersion": "fozzylang.unsafe_map.v0",
+        "entries": entries,
+        "missingReasonCount": missing_reasons,
+    });
+    std::fs::write(&unsafe_map, serde_json::to_vec_pretty(&payload)?)
+        .with_context(|| format!("failed writing unsafe map: {}", unsafe_map.display()))?;
+    if missing_reasons > 0 {
+        bail!(
+            "unsafe audit found {} site(s) without reason string; map={}",
+            missing_reasons,
+            unsafe_map.display()
+        );
+    }
+    match format {
+        Format::Text => Ok(format!(
+            "unsafe audit ok entries={} map={}",
+            payload["entries"].as_array().map(|items| items.len()).unwrap_or(0),
+            unsafe_map.display()
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "entries": payload["entries"],
+            "map": unsafe_map.display().to_string(),
+            "missingReasonCount": missing_reasons,
+        })
+        .to_string()),
+    }
+}
+
+fn extract_unsafe_reason(line: &str) -> Option<String> {
+    for token in ["unsafe_reason(\"", "unsafe(\""] {
+        if let Some(start) = line.find(token) {
+            let rest = &line[(start + token.len())..];
+            if let Some(end) = rest.find("\")") {
+                return Some(rest[..end].trim().to_string());
+            }
+            if let Some(end) = rest.find('"') {
+                return Some(rest[..end].trim().to_string());
+            }
+        }
+    }
+    None
+}
+
+fn vendor_command(path: &Path, format: Format) -> Result<String> {
+    if !path.is_dir() {
+        bail!("vendor requires a project directory: {}", path.display());
+    }
+    let manifest_path = path.join("fozzy.toml");
+    let manifest_text = std::fs::read_to_string(&manifest_path)
+        .with_context(|| format!("missing manifest: {}", manifest_path.display()))?;
+    let manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
+    manifest
+        .validate()
+        .map_err(|error| anyhow!("invalid fozzy.toml: {error}"))?;
+    let lock_hash = refresh_lockfile(path)?;
+    let lock_path = path.join("fozzy.lock");
+    let lock_text = std::fs::read_to_string(&lock_path)
+        .with_context(|| format!("failed reading lockfile: {}", lock_path.display()))?;
+    let lock_json: serde_json::Value = serde_json::from_str(&lock_text)
+        .with_context(|| format!("failed parsing lockfile: {}", lock_path.display()))?;
+    let lock_deps = lock_json
+        .get("graph")
+        .and_then(|value| value.get("deps"))
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut lock_dep_by_name = BTreeMap::new();
+    for dep in &lock_deps {
+        if let Some(name) = dep.get("name").and_then(|value| value.as_str()) {
+            lock_dep_by_name.insert(name.to_string(), dep.clone());
+        }
+    }
+    let vendor_dir = path.join("vendor");
+    std::fs::create_dir_all(&vendor_dir)
+        .with_context(|| format!("failed creating vendor dir: {}", vendor_dir.display()))?;
+    let mut copied = Vec::new();
+    for (name, dependency) in &manifest.deps {
+        let manifest::Dependency::Path { path: dep_path } = dependency;
+        let source_dir = path.join(dep_path);
+        if !source_dir.exists() {
+            bail!(
+                "path dependency `{}` not found at {}",
+                name,
+                source_dir.display()
+            );
+        }
+        let lock_dep = lock_dep_by_name
+            .get(name.as_str())
+            .ok_or_else(|| anyhow!("lockfile missing dependency entry for `{name}`"))?;
+        let target_dir = vendor_dir.join(name);
+        if target_dir.exists() {
+            std::fs::remove_dir_all(&target_dir).with_context(|| {
+                format!("failed cleaning existing vendor target: {}", target_dir.display())
+            })?;
+        }
+        copy_dir_recursive(&source_dir, &target_dir)?;
+        let source_hash = lock_dep
+            .get("sourceHash")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let vendor_hash = hash_directory_tree(&target_dir)?;
+        if !source_hash.is_empty() && source_hash != vendor_hash {
+            bail!(
+                "vendor copy hash mismatch for `{}`: lock sourceHash={} vendorHash={}",
+                name,
+                source_hash,
+                vendor_hash
+            );
+        }
+        copied.push(serde_json::json!({
+            "name": name,
+            "source": source_dir.display().to_string(),
+            "target": target_dir.display().to_string(),
+            "sourceHash": source_hash,
+            "vendorHash": vendor_hash,
+            "package": lock_dep.get("package").cloned().unwrap_or(serde_json::json!({})),
+        }));
+    }
+    let vendor_manifest = vendor_dir.join("fozzy-vendor.json");
+    let vendor_payload = serde_json::json!({
+        "schemaVersion": "fozzylang.vendor.v0",
+        "lockHash": lock_hash,
+        "lockfile": lock_path.display().to_string(),
+        "dependencies": copied,
+    });
+    std::fs::write(&vendor_manifest, serde_json::to_vec_pretty(&vendor_payload)?)
+        .with_context(|| format!("failed writing vendor manifest: {}", vendor_manifest.display()))?;
+    match format {
+        Format::Text => Ok(format!(
+            "vendor ok dependencies={} dir={} lock_hash={}",
+            copied.len(),
+            vendor_dir.display(),
+            lock_hash
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "vendorDir": vendor_dir.display().to_string(),
+            "lockHash": lock_hash,
+            "lockfile": lock_path.display().to_string(),
+            "vendorManifest": vendor_manifest.display().to_string(),
+            "dependencies": copied,
+        })
+        .to_string()),
+    }
+}
+
+fn copy_dir_recursive(source: &Path, target: &Path) -> Result<()> {
+    std::fs::create_dir_all(target)
+        .with_context(|| format!("failed creating directory: {}", target.display()))?;
+    for entry in std::fs::read_dir(source)
+        .with_context(|| format!("failed reading directory: {}", source.display()))?
+    {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = target.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&src, &dst)?;
+        } else {
+            std::fs::copy(&src, &dst).with_context(|| {
+                format!(
+                    "failed copying file from {} to {}",
+                    src.display(),
+                    dst.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn abi_check_command(current: &Path, baseline: &Path, format: Format) -> Result<String> {
+    ensure_exists(current)?;
+    ensure_exists(baseline)?;
+    let current_text = std::fs::read_to_string(current)
+        .with_context(|| format!("failed reading current abi: {}", current.display()))?;
+    let baseline_text = std::fs::read_to_string(baseline)
+        .with_context(|| format!("failed reading baseline abi: {}", baseline.display()))?;
+    let current_json: serde_json::Value = serde_json::from_str(&current_text)
+        .with_context(|| format!("failed parsing current abi: {}", current.display()))?;
+    let baseline_json: serde_json::Value = serde_json::from_str(&baseline_text)
+        .with_context(|| format!("failed parsing baseline abi: {}", baseline.display()))?;
+    let current_manifest = parse_abi_manifest(&current_json, current)?;
+    let baseline_manifest = parse_abi_manifest(&baseline_json, baseline)?;
+    let mut issues = Vec::new();
+    if let (Some(current_package), Some(baseline_package)) = (
+        current_manifest.package_name.as_deref(),
+        baseline_manifest.package_name.as_deref(),
+    ) {
+        if current_package != baseline_package {
+            issues.push(format!(
+                "package mismatch: current={} baseline={}",
+                current_package, baseline_package
+            ));
+        }
+    }
+    if let (Some(current_boundary), Some(baseline_boundary)) = (
+        current_manifest.panic_boundary.as_deref(),
+        baseline_manifest.panic_boundary.as_deref(),
+    ) {
+        if current_boundary != baseline_boundary {
+            issues.push(format!(
+                "panicBoundary mismatch: current={} baseline={}",
+                current_boundary, baseline_boundary
+            ));
+        }
+    }
+    for (name, baseline_export) in &baseline_manifest.exports {
+        let Some(current_export) = current_manifest.exports.get(name) else {
+            issues.push(format!(
+                "missing export in current ABI: {}",
+                baseline_export.signature()
+            ));
+            continue;
+        };
+        if current_export.normalized_signature != baseline_export.normalized_signature {
+            issues.push(format!(
+                "signature changed for export `{}`: current={} baseline={}",
+                name,
+                current_export.normalized_signature,
+                baseline_export.normalized_signature
+            ));
+        }
+        if current_export.symbol_version < baseline_export.symbol_version {
+            issues.push(format!(
+                "symbolVersion regressed for `{}`: current={} baseline={}",
+                name,
+                current_export.symbol_version,
+                baseline_export.symbol_version
+            ));
+        }
+    }
+    let mut added_exports = Vec::new();
+    for (name, export) in &current_manifest.exports {
+        if !baseline_manifest.exports.contains_key(name) {
+            added_exports.push(export.signature());
+        }
+    }
+    if !issues.is_empty() {
+        bail!(
+            "abi-check failed for {} vs {}: {}",
+            current.display(),
+            baseline.display(),
+            issues.join("; ")
+        );
+    }
+    match format {
+        Format::Text => Ok(format!(
+            "abi-check ok current={} baseline={} compared_exports={} added_exports={}",
+            current.display(),
+            baseline.display(),
+            baseline_manifest.exports.len(),
+            added_exports.len()
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "current": current.display().to_string(),
+            "baseline": baseline.display().to_string(),
+            "package": current_manifest.package_name,
+            "panicBoundary": current_manifest.panic_boundary,
+            "comparedExports": baseline_manifest.exports.keys().cloned().collect::<Vec<_>>(),
+            "addedExports": added_exports,
+            "issues": issues,
+        })
+        .to_string()),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct AbiManifest {
+    package_name: Option<String>,
+    panic_boundary: Option<String>,
+    exports: BTreeMap<String, AbiExport>,
+}
+
+#[derive(Debug, Clone)]
+struct AbiExport {
+    normalized_signature: String,
+    symbol_version: u64,
+}
+
+impl AbiExport {
+    fn signature(&self) -> String {
+        self.normalized_signature.clone()
+    }
+}
+
+fn parse_abi_manifest(value: &serde_json::Value, path: &Path) -> Result<AbiManifest> {
+    let schema = value
+        .get("schemaVersion")
+        .and_then(|item| item.as_str())
+        .ok_or_else(|| anyhow!("abi manifest missing schemaVersion: {}", path.display()))?;
+    if schema != "fozzylang.ffi_abi.v0" {
+        bail!(
+            "unsupported abi schema `{}` in {}; expected fozzylang.ffi_abi.v0",
+            schema,
+            path.display()
+        );
+    }
+    let package_name = match value.get("package") {
+        Some(serde_json::Value::String(name)) => Some(name.clone()),
+        Some(serde_json::Value::Object(obj)) => obj
+            .get("name")
+            .and_then(|item| item.as_str())
+            .map(str::to_string),
+        _ => None,
+    };
+    let panic_boundary = value
+        .get("panicBoundary")
+        .and_then(|item| item.as_str())
+        .map(str::to_string);
+    let mut exports = BTreeMap::new();
+    let export_items = value
+        .get("exports")
+        .and_then(|item| item.as_array())
+        .cloned()
+        .unwrap_or_default();
+    for export in export_items {
+        let name = export
+            .get("name")
+            .and_then(|item| item.as_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        let params = export
+            .get("params")
+            .and_then(|item| item.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|param| {
+                param
+                    .get("c")
+                    .and_then(|item| item.as_str())
+                    .unwrap_or("void*")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let ret = export
+            .get("return")
+            .and_then(|item| item.get("c"))
+            .and_then(|item| item.as_str())
+            .unwrap_or("void*");
+        let symbol_version = export
+            .get("symbolVersion")
+            .and_then(|item| item.as_u64())
+            .unwrap_or(1);
+        exports.insert(
+            name.clone(),
+            AbiExport {
+                normalized_signature: format!("{name}({params})->{ret}"),
+                symbol_version,
+            },
+        );
+    }
+    Ok(AbiManifest {
+        package_name,
+        panic_boundary,
+        exports,
+    })
+}
+
+fn hash_directory_tree(root: &Path) -> Result<String> {
+    let mut files = Vec::new();
+    collect_files_recursive(root, root, &mut files)?;
+    let mut hasher = Sha256::new();
+    for (rel, full) in files {
+        hasher.update(rel.as_bytes());
+        let bytes = std::fs::read(&full)
+            .with_context(|| format!("failed reading file for hash: {}", full.display()))?;
+        hasher.update((bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes);
+    }
+    Ok(hex_encode(hasher.finalize().as_slice()))
+}
+
+fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+    let mut entries = std::fs::read_dir(current)
+        .with_context(|| format!("failed reading directory: {}", current.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| format!("failed iterating directory: {}", current.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let full = entry.path();
+        let rel = full
+            .strip_prefix(root)
+            .with_context(|| format!("failed deriving relative path for {}", full.display()))?;
+        let rel_str = rel.display().to_string().replace('\\', "/");
+        if rel_str.starts_with(".git/")
+            || rel_str.starts_with(".fozzyc/")
+            || rel_str.starts_with("vendor/")
+            || rel_str.starts_with("target/")
+        {
+            continue;
+        }
+        if entry
+            .file_type()
+            .with_context(|| format!("failed reading file type for {}", full.display()))?
+            .is_dir()
+        {
+            collect_files_recursive(root, &full, out)?;
+        } else {
+            out.push((rel_str, full));
+        }
+    }
+    Ok(())
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LspSymbol {
+    symbol: String,
+    kind: String,
+    file: String,
+    line: usize,
+    detail: String,
+}
+
+fn debug_check_command(path: &Path, format: Format) -> Result<String> {
+    let artifact = compile_file_with_backend(path, BuildProfile::Dev, None)?;
+    if artifact.status != "ok" {
+        bail!(
+            "debug-check failed to build module: status={} diagnostics={}",
+            artifact.status,
+            artifact.diagnostics
+        );
+    }
+    let binary = artifact
+        .output
+        .as_ref()
+        .ok_or_else(|| anyhow!("debug-check missing verify binary output"))?;
+    let file_text = ProcessCommand::new("file")
+        .arg(binary)
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+        .unwrap_or_default();
+    let debug_symbols = binary.exists()
+        && (file_text.contains("not stripped")
+        || file_text.contains("with debug_info")
+        || file_text.contains("dSYM")
+        || !file_text.trim().is_empty());
+
+    let resolved = resolve_source(path)?;
+    let parsed = parse_program(&resolved.source_path)?;
+    let async_hooks = count_async_hooks(&parsed.combined_source);
+    let async_plan = run_non_scenario_test_plan(
+        path,
+        true,
+        false,
+        false,
+        Some("fifo".to_string()),
+        Some(1),
+        None,
+        false,
+        None,
+    )?;
+    let async_backtrace_ready = async_hooks == 0 || async_plan.runtime_event_count > 0;
+    let ok = debug_symbols && async_backtrace_ready;
+    match format {
+        Format::Text => Ok(format!(
+            "debug-check binary={} debug_symbols={} async_backtrace_ready={} async_hooks={} ok={}",
+            binary.display(),
+            debug_symbols,
+            async_backtrace_ready,
+            async_hooks,
+            ok
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": ok,
+            "binary": binary.display().to_string(),
+            "debugSymbols": debug_symbols,
+            "asyncBacktraceReady": async_backtrace_ready,
+            "asyncHooks": async_hooks,
+            "runtimeEvents": async_plan.runtime_event_count,
+            "causalLinks": async_plan.causal_link_count,
+            "fileInfo": file_text.trim(),
+        })
+        .to_string()),
+    }
+}
+
+fn lsp_diagnostics_command(path: &Path, format: Format) -> Result<String> {
+    let output = verify_file(path)?;
+    match format {
+        Format::Text => Ok(format!(
+            "lsp diagnostics module={} diagnostics={}",
+            output.module, output.diagnostics
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "module": output.module,
+            "diagnostics": output.diagnostic_details,
+        })
+        .to_string()),
+    }
+}
+
+fn lsp_definition_command(path: &Path, symbol: &str, format: Format) -> Result<String> {
+    let resolved = resolve_source(path)?;
+    let parsed = parse_program(&resolved.source_path)?;
+    let symbols = index_lsp_symbols(&parsed)?;
+    let hit = symbols
+        .into_iter()
+        .find(|entry| entry.symbol == symbol)
+        .ok_or_else(|| anyhow!("symbol `{}` not found", symbol))?;
+    match format {
+        Format::Text => Ok(format!(
+            "definition {} {}:{} {}",
+            hit.kind, hit.file, hit.line, hit.detail
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "symbol": hit,
+        })
+        .to_string()),
+    }
+}
+
+fn lsp_hover_command(path: &Path, symbol: &str, format: Format) -> Result<String> {
+    let resolved = resolve_source(path)?;
+    let parsed = parse_program(&resolved.source_path)?;
+    let info = parsed.module.items.iter().find_map(|item| match item {
+        ast::Item::Function(function) if function.name == symbol => Some(serde_json::json!({
+            "symbol": symbol,
+            "kind": "function",
+            "signature": format!("fn {}({}) -> {}", function.name, function.params.iter().map(|param| format!("{}: {}", param.name, param.ty)).collect::<Vec<_>>().join(", "), function.return_type),
+        })),
+        ast::Item::Struct(s) if s.name == symbol => Some(serde_json::json!({
+            "symbol": symbol,
+            "kind": "struct",
+            "signature": format!("struct {}", s.name),
+        })),
+        ast::Item::Enum(e) if e.name == symbol => Some(serde_json::json!({
+            "symbol": symbol,
+            "kind": "enum",
+            "signature": format!("enum {}", e.name),
+        })),
+        ast::Item::Test(test) if test.name == symbol => Some(serde_json::json!({
+            "symbol": symbol,
+            "kind": "test",
+            "signature": format!("test \"{}\" {}", test.name, if test.deterministic { "{}" } else { "nondet {}" }),
+        })),
+        _ => None,
+    });
+    let Some(info) = info else {
+        bail!("symbol `{}` not found", symbol);
+    };
+    match format {
+        Format::Text => Ok(format!(
+            "hover {} {}",
+            info.get("kind").and_then(|value| value.as_str()).unwrap_or("unknown"),
+            info.get("signature").and_then(|value| value.as_str()).unwrap_or("unknown")
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "hover": info,
+        })
+        .to_string()),
+    }
+}
+
+fn lsp_rename_command(path: &Path, from: &str, to: &str, format: Format) -> Result<String> {
+    if from.trim().is_empty() || to.trim().is_empty() {
+        bail!("rename requires non-empty symbols");
+    }
+    let resolved = resolve_source(path)?;
+    let parsed = parse_program(&resolved.source_path)?;
+    let mut changed_files = Vec::new();
+    let mut replacements = 0usize;
+    for module_path in &parsed.module_paths {
+        let original = std::fs::read_to_string(module_path).with_context(|| {
+            format!("failed reading module for rename: {}", module_path.display())
+        })?;
+        let (updated, count) = replace_symbol_whole_word(&original, from, to);
+        if count > 0 {
+            std::fs::write(module_path, updated.as_bytes()).with_context(|| {
+                format!("failed writing renamed module: {}", module_path.display())
+            })?;
+            replacements += count;
+            changed_files.push(module_path.display().to_string());
+        }
+    }
+    match format {
+        Format::Text => Ok(format!(
+            "rename {} -> {} replacements={} files={}",
+            from,
+            to,
+            replacements,
+            changed_files.len()
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "from": from,
+            "to": to,
+            "replacements": replacements,
+            "files": changed_files,
+        })
+        .to_string()),
+    }
+}
+
+fn lsp_smoke_command(path: &Path, format: Format) -> Result<String> {
+    let diagnostics = verify_file(path)?;
+    let resolved = resolve_source(path)?;
+    let parsed = parse_program(&resolved.source_path)?;
+    let symbols = index_lsp_symbols(&parsed)?;
+    let has_main = symbols.iter().any(|entry| entry.symbol == "main");
+    let ok = has_main;
+    if !ok {
+        bail!("lsp smoke failed: no `main` definition found");
+    }
+    match format {
+        Format::Text => Ok(format!(
+            "lsp smoke ok symbols={} diagnostics={}",
+            symbols.len(),
+            diagnostics.diagnostics
+        )),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "symbols": symbols.len(),
+            "diagnostics": diagnostics.diagnostics,
+            "features": ["diagnostics", "definition", "hover", "rename"],
+        })
+        .to_string()),
+    }
+}
+
+fn index_lsp_symbols(parsed: &crate::pipeline::ParsedProgram) -> Result<Vec<LspSymbol>> {
+    let mut symbols = Vec::new();
+    for module_path in &parsed.module_paths {
+        let source = std::fs::read_to_string(module_path).with_context(|| {
+            format!("failed reading module for lsp index: {}", module_path.display())
+        })?;
+        for (line_number, raw_line) in source.lines().enumerate() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with("//") {
+                continue;
+            }
+            if let Some(name) = parse_symbol_from_decl(line, "fn ") {
+                symbols.push(LspSymbol {
+                    symbol: name.clone(),
+                    kind: "function".to_string(),
+                    file: module_path.display().to_string(),
+                    line: line_number + 1,
+                    detail: line.to_string(),
+                });
+            } else if let Some(name) = parse_symbol_from_decl(line, "struct ") {
+                symbols.push(LspSymbol {
+                    symbol: name.clone(),
+                    kind: "struct".to_string(),
+                    file: module_path.display().to_string(),
+                    line: line_number + 1,
+                    detail: line.to_string(),
+                });
+            } else if let Some(name) = parse_symbol_from_decl(line, "enum ") {
+                symbols.push(LspSymbol {
+                    symbol: name.clone(),
+                    kind: "enum".to_string(),
+                    file: module_path.display().to_string(),
+                    line: line_number + 1,
+                    detail: line.to_string(),
+                });
+            } else if line.starts_with("test \"") {
+                if let Some((_, tail)) = line.split_once('"') {
+                    if let Some((name, _)) = tail.split_once('"') {
+                        symbols.push(LspSymbol {
+                            symbol: name.to_string(),
+                            kind: "test".to_string(),
+                            file: module_path.display().to_string(),
+                            line: line_number + 1,
+                            detail: line.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    Ok(symbols)
+}
+
+fn parse_symbol_from_decl(line: &str, token: &str) -> Option<String> {
+    let normalized = line.strip_prefix("pub ").unwrap_or(line);
+    let rest = normalized.strip_prefix(token)?.trim();
+    let name = rest
+        .split(|ch: char| ch == '(' || ch == '{' || ch.is_whitespace())
+        .next()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())?;
+    Some(name.to_string())
+}
+
+fn replace_symbol_whole_word(input: &str, from: &str, to: &str) -> (String, usize) {
+    let mut out = String::with_capacity(input.len());
+    let mut count = 0usize;
+    let mut i = 0usize;
+    let chars = input.as_bytes();
+    while i < chars.len() {
+        if input[i..].starts_with(from)
+            && is_symbol_boundary(input, i.saturating_sub(1))
+            && is_symbol_boundary(input, i + from.len())
+        {
+            out.push_str(to);
+            i += from.len();
+            count += 1;
+        } else {
+            out.push(input.as_bytes()[i] as char);
+            i += 1;
+        }
+    }
+    (out, count)
+}
+
+fn is_symbol_boundary(input: &str, index: usize) -> bool {
+    if index >= input.len() {
+        return true;
+    }
+    let ch = input.as_bytes()[index] as char;
+    !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+}
+
 fn ensure_exists(path: &Path) -> Result<()> {
     if !path.exists() {
         bail!("path does not exist: {}", path.display());
@@ -546,6 +1794,8 @@ struct NonScenarioTestPlan {
     rpc_frame_count: usize,
     rpc_validation_errors: usize,
     thread_findings: usize,
+    runtime_event_count: usize,
+    causal_link_count: usize,
     coverage_ratio: f64,
     artifacts: Option<NonScenarioTraceArtifacts>,
 }
@@ -591,6 +1841,28 @@ struct WorkloadShape {
     yield_markers: usize,
 }
 
+#[derive(Debug, Clone)]
+struct ExecutionOp {
+    kind: &'static str,
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RuntimeSemanticEvent {
+    #[serde(rename = "taskId")]
+    task_id: u64,
+    phase: String,
+    kind: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CausalLink {
+    from: u64,
+    to: u64,
+    relation: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum RpcValidationSeverity {
     Info,
@@ -608,7 +1880,8 @@ struct RpcValidationFinding {
 fn run_non_scenario_test_plan(
     path: &Path,
     deterministic: bool,
-    strict: bool,
+    strict_verify: bool,
+    safe_profile: bool,
     scheduler: Option<String>,
     seed: Option<u64>,
     record: Option<&Path>,
@@ -654,13 +1927,14 @@ fn run_non_scenario_test_plan(
         .filter(|name| selected_test_names.iter().any(|selected| selected == name))
         .collect::<Vec<_>>();
     let selected_tests = selected_test_names.len();
-    let base_tests = if discovered_tests == 0 {
-        1
-    } else {
-        deterministic_test_names.len().max(1)
-    };
-    let task_count =
-        (base_tests + workload.async_functions + workload.spawn_markers + rpc_call_count).max(1);
+    let execution_plan = build_execution_plan(
+        discovered_tests,
+        &deterministic_test_names,
+        workload.async_functions,
+        workload.spawn_markers,
+        rpc_call_count,
+    );
+    let task_count = execution_plan.len().max(1);
     let mode = if deterministic {
         ExecMode::Det
     } else {
@@ -675,7 +1949,7 @@ fn run_non_scenario_test_plan(
     let verify_report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
-            safe_profile: strict,
+            safe_profile,
         },
     );
     let diagnostics = verify_report.diagnostics.len();
@@ -683,9 +1957,16 @@ fn run_non_scenario_test_plan(
         .diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
-    if strict && has_errors {
+    if safe_profile && has_errors {
         bail!(
-            "strict test plan rejected module `{}` with {} diagnostics",
+            "safe profile rejected module `{}` with {} diagnostics",
+            fir.name,
+            diagnostics
+        );
+    }
+    if strict_verify && has_errors {
+        bail!(
+            "strict verify rejected module `{}` with {} diagnostics",
             fir.name,
             diagnostics
         );
@@ -703,24 +1984,32 @@ fn run_non_scenario_test_plan(
     };
     let mut execution_order = Vec::new();
     let mut events = Vec::new();
+    let mut runtime_events = Vec::new();
+    let mut causal_links = Vec::new();
     if mode == ExecMode::Det {
-        let trace_mode = if strict || rich_artifacts {
+        let trace_mode = if strict_verify || rich_artifacts {
             runtime::TraceMode::Full
         } else {
             runtime::TraceMode::ReplayCritical
         };
         let mut executor = DeterministicExecutor::new_with_trace_mode(trace_mode);
-        for _ in 0..task_count.max(1) {
-            executor.spawn(Box::new(|| {
+        let mut task_ops = BTreeMap::<u64, ExecutionOp>::new();
+        for op in &execution_plan {
+            let task_id = executor.spawn(Box::new(|| {
                 let mut acc = 0u64;
                 for i in 0..256u64 {
                     acc = acc.wrapping_add(i ^ 0x9E37);
                 }
                 std::hint::black_box(acc);
             }));
+            task_ops.insert(task_id, op.clone());
         }
         execution_order = executor.run_until_idle_with_scheduler(scheduler, seed.unwrap_or(1));
         events = executor.trace().to_vec();
+        let (derived_runtime_events, derived_causal_links) =
+            derive_runtime_semantic_evidence(&events, &execution_order, &task_ops);
+        runtime_events = derived_runtime_events;
+        causal_links = derived_causal_links;
     }
     let async_execution = if mode == ExecMode::Det {
         plan_async_checkpoints(
@@ -743,13 +2032,13 @@ fn run_non_scenario_test_plan(
         Vec::new()
     };
     let rpc_validation = validate_rpc_frames(&rpc_frames);
-    if strict
+    if strict_verify
         && mode == ExecMode::Det
         && rpc_validation
             .iter()
             .any(|finding| matches!(finding.severity, RpcValidationSeverity::Error))
     {
-        bail!("strict test plan rejected RPC sequence with validation errors");
+        bail!("strict verify rejected RPC sequence with validation errors");
     }
     let thread_findings = thread_health_findings(
         &events,
@@ -759,7 +2048,7 @@ fn run_non_scenario_test_plan(
         &call_sequence,
     );
     let artifacts = if mode == ExecMode::Det {
-        let detail = if strict || rich_artifacts {
+        let detail = if strict_verify || rich_artifacts {
             ArtifactDetail::Rich
         } else {
             ArtifactDetail::Minimal
@@ -779,6 +2068,8 @@ fn run_non_scenario_test_plan(
                     &rpc_validation,
                     &execution_order,
                     &events,
+                    &runtime_events,
+                    &causal_links,
                     &thread_findings,
                 )
             })
@@ -810,6 +2101,8 @@ fn run_non_scenario_test_plan(
             .filter(|finding| matches!(finding.severity, RpcValidationSeverity::Error))
             .count(),
         thread_findings: thread_findings.len(),
+        runtime_event_count: runtime_events.len(),
+        causal_link_count: causal_links.len(),
         coverage_ratio: if discovered_tests == 0 {
             1.0
         } else {
@@ -832,6 +2125,8 @@ fn write_non_scenario_trace_artifacts(
     rpc_validation: &[RpcValidationFinding],
     execution_order: &[u64],
     events: &[TaskEvent],
+    runtime_events: &[RuntimeSemanticEvent],
+    causal_links: &[CausalLink],
     thread_findings: &[serde_json::Value],
 ) -> Result<NonScenarioTraceArtifacts> {
     if let Some(parent) = trace_path.parent() {
@@ -869,6 +2164,8 @@ fn write_non_scenario_trace_artifacts(
             .iter()
             .map(TaskEventRecord::from)
             .collect::<Vec<TaskEventRecord>>(),
+        runtime_events: runtime_events.to_vec(),
+        causal_links: causal_links.to_vec(),
     };
     write_json_file(trace_path, &trace_payload).with_context(|| {
         format!(
@@ -1163,6 +2460,10 @@ struct TracePayload<'a> {
     #[serde(rename = "rpcFrames")]
     rpc_frames: Vec<RpcFrameEvent>,
     events: Vec<TaskEventRecord>,
+    #[serde(rename = "runtimeEvents")]
+    runtime_events: Vec<RuntimeSemanticEvent>,
+    #[serde(rename = "causalLinks")]
+    causal_links: Vec<CausalLink>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1311,6 +2612,147 @@ fn analyze_workload_shape(source: &str) -> WorkloadShape {
         spawn_markers,
         yield_markers,
     }
+}
+
+fn build_execution_plan(
+    discovered_tests: usize,
+    deterministic_test_names: &[String],
+    async_functions: usize,
+    spawn_markers: usize,
+    rpc_call_count: usize,
+) -> Vec<ExecutionOp> {
+    let mut plan = Vec::new();
+    if discovered_tests == 0 {
+        plan.push(ExecutionOp {
+            kind: "baseline",
+            label: "baseline".to_string(),
+        });
+    } else {
+        for name in deterministic_test_names {
+            plan.push(ExecutionOp {
+                kind: "test",
+                label: name.clone(),
+            });
+        }
+    }
+    for index in 0..async_functions {
+        plan.push(ExecutionOp {
+            kind: "async",
+            label: format!("async_fn_{index}"),
+        });
+    }
+    for index in 0..spawn_markers {
+        plan.push(ExecutionOp {
+            kind: "spawn",
+            label: format!("spawn_{index}"),
+        });
+    }
+    for index in 0..rpc_call_count {
+        plan.push(ExecutionOp {
+            kind: "rpc",
+            label: format!("rpc_call_{index}"),
+        });
+    }
+    if plan.is_empty() {
+        plan.push(ExecutionOp {
+            kind: "baseline",
+            label: "baseline".to_string(),
+        });
+    }
+    plan
+}
+
+fn derive_runtime_semantic_evidence(
+    events: &[TaskEvent],
+    execution_order: &[u64],
+    task_ops: &BTreeMap<u64, ExecutionOp>,
+) -> (Vec<RuntimeSemanticEvent>, Vec<CausalLink>) {
+    let mut runtime_events = Vec::new();
+    for event in events {
+        match event {
+            TaskEvent::Started { task_id } => {
+                let op = task_ops.get(task_id);
+                runtime_events.push(RuntimeSemanticEvent {
+                    task_id: *task_id,
+                    phase: "started".to_string(),
+                    kind: op
+                        .map(|op| op.kind.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    label: op
+                        .map(|op| op.label.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            }
+            TaskEvent::Completed { task_id } | TaskEvent::Panicked { task_id, .. } => {
+                let op = task_ops.get(task_id);
+                runtime_events.push(RuntimeSemanticEvent {
+                    task_id: *task_id,
+                    phase: "terminal".to_string(),
+                    kind: op
+                        .map(|op| op.kind.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    label: op
+                        .map(|op| op.label.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            }
+            TaskEvent::Spawned { task_id, .. } | TaskEvent::Detached { task_id } => {
+                let op = task_ops.get(task_id);
+                runtime_events.push(RuntimeSemanticEvent {
+                    task_id: *task_id,
+                    phase: "spawned".to_string(),
+                    kind: op
+                        .map(|op| op.kind.to_string())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    label: op
+                        .map(|op| op.label.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                });
+            }
+        }
+    }
+    let mut causal_links = Vec::new();
+    let mut ordered = events
+        .iter()
+        .filter_map(|event| match event {
+            TaskEvent::Started { task_id } => Some(*task_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if ordered.is_empty() {
+        ordered = execution_order.to_vec();
+        for task_id in &ordered {
+            let op = task_ops.get(task_id);
+            runtime_events.push(RuntimeSemanticEvent {
+                task_id: *task_id,
+                phase: "started".to_string(),
+                kind: op
+                    .map(|op| op.kind.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                label: op
+                    .map(|op| op.label.clone())
+                    .unwrap_or_else(|| "unknown".to_string()),
+            });
+            runtime_events.push(RuntimeSemanticEvent {
+                task_id: *task_id,
+                phase: "terminal".to_string(),
+                kind: op
+                    .map(|op| op.kind.to_string())
+                    .unwrap_or_else(|| "unknown".to_string()),
+                label: op
+                    .map(|op| op.label.clone())
+                    .unwrap_or_else(|| "unknown".to_string()),
+            });
+        }
+    }
+    for window in ordered.windows(2) {
+        causal_links.push(CausalLink {
+            from: window[0],
+            to: window[1],
+            relation: "schedule.next".to_string(),
+        });
+    }
+    (runtime_events, causal_links)
 }
 
 fn build_rpc_frame_events(
@@ -2016,6 +3458,10 @@ struct NativeTracePayloadOwned {
     #[serde(rename = "rpcFrames")]
     rpc_frames: Vec<RpcFrameEventOwned>,
     events: Vec<serde_json::Value>,
+    #[serde(rename = "runtimeEvents", default)]
+    runtime_events: Vec<RuntimeSemanticEvent>,
+    #[serde(rename = "causalLinks", default)]
+    causal_links: Vec<CausalLink>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -2108,6 +3554,23 @@ fn native_replay(target: &Path, format: Format) -> Result<String> {
             errors
         );
     }
+    let task_set = trace
+        .execution_order
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let invalid_links = trace
+        .causal_links
+        .iter()
+        .filter(|link| !task_set.contains(&link.from) || !task_set.contains(&link.to))
+        .count();
+    if invalid_links > 0 {
+        bail!(
+            "native replay failed for {}: {} invalid causal link(s)",
+            trace_path.display(),
+            invalid_links
+        );
+    }
     let native_decisions = build_native_decision_stream(&trace);
     let decision_count = native_decisions.len();
     match format {
@@ -2135,6 +3598,8 @@ fn native_replay(target: &Path, format: Format) -> Result<String> {
             },
             "decisions": native_decisions,
             "events": trace.events.len(),
+            "runtimeEvents": trace.runtime_events.len(),
+            "causalLinks": trace.causal_links.len(),
             "rpcValidation": rpc_validation
                 .iter()
                 .map(rpc_validation_json)
@@ -2542,13 +4007,29 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
     std::fs::write(&header_path, header)
         .with_context(|| format!("failed writing header: {}", header_path.display()))?;
     let abi_manifest = header_path.with_extension("abi.json");
+    let panic_boundary = detect_ffi_panic_boundary(&parsed.combined_source);
+    let package_json = serde_json::json!({
+        "name": package_name,
+        "version": resolved
+            .manifest
+            .as_ref()
+            .map(|manifest| manifest.package.version.as_str())
+            .unwrap_or("0.0.0-dev"),
+    });
     let abi_payload = serde_json::json!({
         "schemaVersion": "fozzylang.ffi_abi.v0",
-        "package": package_name,
-        "panicBoundary": "abort-or-translate",
+        "package": package_json,
+        "abiRevision": 1u64,
+        "panicBoundary": panic_boundary,
+        "layoutPolicy": {
+            "reprCStableOnly": true,
+            "nonReprCUnstable": true,
+        },
+        "symbolVersioning": "strict-name-signature-v0",
         "exports": exports.iter().map(|function| {
             serde_json::json!({
                 "name": function.name.as_str(),
+                "symbolVersion": 1u64,
                 "params": function.params.iter().map(|param| {
                     serde_json::json!({
                         "name": param.name.as_str(),
@@ -2697,6 +4178,16 @@ fn validate_ffi_contract(source: &str, exports: &[&ast::Function]) -> Result<()>
         );
     }
     Ok(())
+}
+
+fn detect_ffi_panic_boundary(source: &str) -> &'static str {
+    if source.contains("#[ffi_panic(abort)]") {
+        "abort"
+    } else if source.contains("#[ffi_panic(error)]") {
+        "error"
+    } else {
+        "abort-or-translate"
+    }
 }
 
 fn is_ffi_stable_type(ty: &str) -> bool {
@@ -3093,6 +4584,51 @@ mod tests {
     }
 
     #[test]
+    fn vendor_command_refreshes_lock_and_writes_vendor_manifest() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-vendor-{suffix}"));
+        let dep_dir = root.join("deps/util");
+        std::fs::create_dir_all(root.join("src")).expect("project src should be created");
+        std::fs::create_dir_all(dep_dir.join("src")).expect("dep src should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"vendor_project\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"vendor_project\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("main source should be written");
+        std::fs::write(
+            dep_dir.join("fozzy.toml"),
+            "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"util\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("dep manifest should be written");
+        std::fs::write(dep_dir.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("dep source should be written");
+        std::fs::write(
+            root.join("fozzy.lock"),
+            "{\"schemaVersion\":\"fozzylang.lock.v0\",\"dependencyGraphHash\":\"stale\",\"graph\":{\"deps\":[]}}",
+        )
+        .expect("stale lock should be written");
+
+        let output = run(Command::Vendor { path: root.clone() }, Format::Json)
+            .expect("vendor command should succeed");
+        assert!(output.contains("\"ok\":true"));
+        assert!(output.contains("\"lockHash\""));
+        let vendor_manifest = root.join("vendor/fozzy-vendor.json");
+        assert!(vendor_manifest.exists());
+        let vendor_manifest_text =
+            std::fs::read_to_string(&vendor_manifest).expect("vendor manifest should be readable");
+        assert!(vendor_manifest_text.contains("\"schemaVersion\": \"fozzylang.vendor.v0\""));
+        assert!(vendor_manifest_text.contains("\"sourceHash\""));
+        assert!(root.join("vendor/util/src/main.fzy").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn rpc_gen_command_emits_schema_and_stubs() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -3121,6 +4657,131 @@ mod tests {
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_dir_all(out_dir);
+    }
+
+    #[test]
+    fn abi_check_allows_added_exports_with_stable_existing_signatures() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let baseline = std::env::temp_dir().join(format!("fozzylang-abi-baseline-{suffix}.json"));
+        let current = std::env::temp_dir().join(format!("fozzylang-abi-current-{suffix}.json"));
+        std::fs::write(
+            &baseline,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.ffi_abi.v0",
+                "package": {"name":"demo","version":"0.1.0"},
+                "panicBoundary": "abort",
+                "exports": [
+                    {
+                        "name":"add",
+                        "symbolVersion":1,
+                        "params":[{"name":"left","fzy":"i32","c":"int32_t"},{"name":"right","fzy":"i32","c":"int32_t"}],
+                        "return":{"fzy":"i32","c":"int32_t"}
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("baseline abi should be written");
+        std::fs::write(
+            &current,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.ffi_abi.v0",
+                "package": {"name":"demo","version":"0.2.0"},
+                "panicBoundary": "abort",
+                "exports": [
+                    {
+                        "name":"add",
+                        "symbolVersion":1,
+                        "params":[{"name":"left","fzy":"i32","c":"int32_t"},{"name":"right","fzy":"i32","c":"int32_t"}],
+                        "return":{"fzy":"i32","c":"int32_t"}
+                    },
+                    {
+                        "name":"sub",
+                        "symbolVersion":1,
+                        "params":[{"name":"left","fzy":"i32","c":"int32_t"},{"name":"right","fzy":"i32","c":"int32_t"}],
+                        "return":{"fzy":"i32","c":"int32_t"}
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("current abi should be written");
+
+        let output = run(
+            Command::AbiCheck {
+                current: current.clone(),
+                baseline: baseline.clone(),
+            },
+            Format::Json,
+        )
+        .expect("abi-check should pass for additive exports");
+        assert!(output.contains("\"ok\":true"));
+        assert!(output.contains("sub(int32_t,int32_t)->int32_t"));
+
+        let _ = std::fs::remove_file(baseline);
+        let _ = std::fs::remove_file(current);
+    }
+
+    #[test]
+    fn abi_check_rejects_changed_signature_for_existing_export() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let baseline = std::env::temp_dir().join(format!("fozzylang-abi-baseline-sig-{suffix}.json"));
+        let current = std::env::temp_dir().join(format!("fozzylang-abi-current-sig-{suffix}.json"));
+        std::fs::write(
+            &baseline,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.ffi_abi.v0",
+                "package": {"name":"demo","version":"0.1.0"},
+                "panicBoundary": "abort",
+                "exports": [
+                    {
+                        "name":"add",
+                        "symbolVersion":1,
+                        "params":[{"name":"left","fzy":"i32","c":"int32_t"},{"name":"right","fzy":"i32","c":"int32_t"}],
+                        "return":{"fzy":"i32","c":"int32_t"}
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("baseline abi should be written");
+        std::fs::write(
+            &current,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.ffi_abi.v0",
+                "package": {"name":"demo","version":"0.2.0"},
+                "panicBoundary": "abort",
+                "exports": [
+                    {
+                        "name":"add",
+                        "symbolVersion":2,
+                        "params":[{"name":"left","fzy":"i64","c":"int64_t"},{"name":"right","fzy":"i64","c":"int64_t"}],
+                        "return":{"fzy":"i64","c":"int64_t"}
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .expect("current abi should be written");
+
+        let error = run(
+            Command::AbiCheck {
+                current: current.clone(),
+                baseline: baseline.clone(),
+            },
+            Format::Text,
+        )
+        .expect_err("abi-check should fail for signature changes");
+        assert!(error.to_string().contains("signature changed for export `add`"));
+
+        let _ = std::fs::remove_file(baseline);
+        let _ = std::fs::remove_file(current);
     }
 
     #[test]
@@ -3178,6 +4839,7 @@ mod tests {
                 path: source.clone(),
                 release: false,
                 threads: Some(3),
+                backend: None,
             },
             Format::Json,
         )
@@ -3213,10 +4875,12 @@ mod tests {
             Command::Test {
                 path: source.clone(),
                 deterministic: true,
-                strict: false,
+                strict_verify: false,
+                safe_profile: false,
                 seed: Some(9),
                 record: None,
                 host_backends: false,
+                backend: None,
                 scheduler: Some("coverage_guided".to_string()),
                 rich_artifacts: false,
                 filter: None,
@@ -3246,10 +4910,12 @@ mod tests {
                 path: source.clone(),
                 args: Vec::new(),
                 deterministic: false,
-                strict: false,
+                strict_verify: false,
+                safe_profile: false,
                 seed: None,
                 record: None,
                 host_backends: false,
+                backend: None,
             },
             Format::Json,
         )
@@ -3278,10 +4944,12 @@ mod tests {
                 path: source.clone(),
                 args: Vec::new(),
                 deterministic: true,
-                strict: false,
+                strict_verify: false,
+                safe_profile: false,
                 seed: Some(5),
                 record: None,
                 host_backends: false,
+                backend: None,
             },
             Format::Json,
         )
@@ -3310,10 +4978,12 @@ mod tests {
             Command::Test {
                 path: source.clone(),
                 deterministic: true,
-                strict: false,
+                strict_verify: false,
+                safe_profile: false,
                 seed: Some(7),
                 record: Some(trace.clone()),
                 host_backends: false,
+                backend: None,
                 scheduler: Some("random".to_string()),
                 rich_artifacts: true,
                 filter: None,
@@ -3388,10 +5058,12 @@ mod tests {
             Command::Test {
                 path: source.clone(),
                 deterministic: true,
-                strict: false,
+                strict_verify: false,
+                safe_profile: false,
                 seed: Some(5),
                 record: Some(trace.clone()),
                 host_backends: false,
+                backend: None,
                 scheduler: Some("fifo".to_string()),
                 rich_artifacts: true,
                 filter: None,
@@ -3448,10 +5120,12 @@ mod tests {
             Command::Test {
                 path: source.clone(),
                 deterministic: true,
-                strict: false,
+                strict_verify: false,
+                safe_profile: false,
                 seed: Some(8),
                 record: Some(trace.clone()),
                 host_backends: false,
+                backend: None,
                 scheduler: Some("random".to_string()),
                 rich_artifacts: true,
                 filter: None,
@@ -3561,10 +5235,12 @@ mod tests {
             Command::Test {
                 path: source.clone(),
                 deterministic: true,
-                strict: false,
+                strict_verify: false,
+                safe_profile: false,
                 seed: Some(1),
                 record: None,
                 host_backends: false,
+                backend: None,
                 scheduler: Some("fifo".to_string()),
                 rich_artifacts: false,
                 filter: Some("alpha".to_string()),
@@ -3761,10 +5437,12 @@ mod tests {
             Command::Test {
                 path: source.clone(),
                 deterministic: true,
-                strict: false,
+                strict_verify: false,
+                safe_profile: false,
                 seed: Some(3),
                 record: None,
                 host_backends: false,
+                backend: None,
                 scheduler: Some("fifo".to_string()),
                 rich_artifacts: false,
                 filter: None,
@@ -3803,5 +5481,88 @@ mod tests {
         assert_eq!(resolved, goal_trace);
 
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn debug_check_command_reports_readiness() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-debug-check-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "async fn worker() -> i32 {}\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        let output = run(
+            Command::DebugCheck {
+                path: source.clone(),
+            },
+            Format::Json,
+        )
+        .expect("debug-check should succeed");
+        assert!(output.contains("\"debugSymbols\""));
+        assert!(output.contains("\"asyncBacktraceReady\""));
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn lsp_commands_smoke_for_workspace_file() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-lsp-smoke-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn helper() -> i32 {\n    return 0\n}\nfn main() -> i32 {\n    return helper()\n}\n",
+        )
+        .expect("source should be written");
+        let diagnostics = run(
+            Command::LspDiagnostics {
+                path: source.clone(),
+            },
+            Format::Json,
+        )
+        .expect("lsp diagnostics should succeed");
+        assert!(diagnostics.contains("\"ok\":true"));
+        let definition = run(
+            Command::LspDefinition {
+                path: source.clone(),
+                symbol: "helper".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("lsp definition should succeed");
+        assert!(definition.contains("\"kind\":\"function\""));
+        let hover = run(
+            Command::LspHover {
+                path: source.clone(),
+                symbol: "main".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("lsp hover should succeed");
+        assert!(hover.contains("\"signature\""));
+        let rename = run(
+            Command::LspRename {
+                path: source.clone(),
+                from: "helper".to_string(),
+                to: "helper2".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("lsp rename should succeed");
+        assert!(rename.contains("\"replacements\""));
+        let smoke = run(
+            Command::LspSmoke {
+                path: source.clone(),
+            },
+            Format::Json,
+        )
+        .expect("lsp smoke should succeed");
+        assert!(smoke.contains("\"features\""));
+        let _ = std::fs::remove_file(source);
     }
 }

@@ -40,18 +40,30 @@ cargo test --workspace
 
 ```bash
 # Build source/project
-fozzyc build <path> [--release] [--threads N] [--json]
+fozzyc build <path> [--release] [--threads N] [--backend llvm|cranelift] [--json]
 
 # Run source/project or .fozzy scenario
-fozzyc run <path> [--det] [--strict] [--seed N] [--record path] [--host-backends] [--json]
+fozzyc run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 
 # Test source/project or .fozzy scenario
-fozzyc test <path> [--det] [--strict] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--json]
+fozzyc test <path> [--det] [--strict-verify] [--safe-profile] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 
 # Verify/check/IR
 fozzyc check <path> [--json]
 fozzyc verify <path> [--json]
+fozzyc spec-check [--json]
 fozzyc emit-ir <path> [--json]
+fozzyc parity <path> [--seed N] [--json]
+fozzyc equivalence <path> [--seed N] [--json]
+fozzyc audit unsafe <path> [--json]
+fozzyc vendor <project> [--json]
+fozzyc abi-check <current.abi.json> --baseline <baseline.abi.json> [--json]
+fozzyc debug-check <path> [--json]
+fozzyc lsp diagnostics <path> [--json]
+fozzyc lsp definition <path> <symbol> [--json]
+fozzyc lsp hover <path> <symbol> [--json]
+fozzyc lsp rename <path> <from> <to> [--json]
+fozzyc lsp smoke <path> [--json]
 
 # FFI / RPC outputs
 fozzyc headers <path> [--out path] [--json]
@@ -70,6 +82,43 @@ With `fozzyc test <file.fzy> --det --record artifacts/name.trace.json --json`, t
 - `*.scenarios/`: generated language-native `.fozzy.json` scenarios
 - `*.scenarios.json`: index for generated scenarios
 - `*.manifest.json`: artifact map including primary scenario path
+
+## Native Backend Policy
+
+- Only two native compiler paths are supported:
+  - `cranelift` (dev-default)
+  - `llvm` (release-default)
+- `c_shim` backend is removed and unsupported.
+- Backend selection order:
+  - explicit `--backend`
+  - `FOZZYC_NATIVE_BACKEND`
+  - profile default (`dev -> cranelift`, `release -> llvm`)
+
+## Dependency Locking + Vendor
+
+- Project builds enforce `fozzy.lock` drift checks for path dependencies.
+- Lock drift fails builds until refreshed.
+- Refresh lock + snapshot dependencies:
+
+```bash
+fozzyc vendor <project> --json
+```
+
+- Vendor command writes:
+  - `fozzy.lock` (updated dependency graph hash)
+  - `vendor/fozzy-vendor.json` (lock hash + per-dependency source/vendor hashes)
+
+Spec: `docs/dependency-locking-v0.md`
+
+## ABI Compatibility Gate
+
+- `fozzyc abi-check` now enforces policy-level compatibility:
+  - schema validity
+  - package identity
+  - panic boundary compatibility
+  - baseline export presence + signature immutability
+  - symbol version non-regression
+- Additive exports are allowed.
 
 ## Fozzy-First Validation Contract
 
@@ -121,6 +170,21 @@ Inspect:
 - `artifacts/demo.trace.scenarios.json`
 - `artifacts/demo.trace.manifest.json`
 
+## Generics v0 Example
+
+Project: `examples/generics`
+
+- Scoped container generics are accepted in v0 surface:
+  - `Vec<T>`
+  - `Option<T>`
+  - `Result<T,E>`
+
+Run parity check:
+
+```bash
+cargo run -q -p fozzyc -- parity examples/generics --seed 7 --json
+```
+
 ## Complex Multi-File Exhibition
 
 Project: `examples/exhibit`
@@ -144,7 +208,7 @@ cargo run -q -p fozzyc -- build examples/exhibit --json
 cargo run -q -p fozzyc -- run examples/exhibit --json
 cargo run -q -p fozzyc -- headers examples/exhibit --json
 cargo run -q -p fozzyc -- rpc gen examples/exhibit --json
-cargo run -q -p fozzyc -- test examples/exhibit --det --strict --sched coverage_guided --seed 23 --record artifacts/exhibit_rich.trace.json --json
+cargo run -q -p fozzyc -- test examples/exhibit --det --strict-verify --sched coverage_guided --seed 23 --record artifacts/exhibit_rich.trace.json --json
 fozzy doctor --deep --scenario artifacts/exhibit_rich.trace.scenarios/all.fozzy.json --runs 5 --seed 23 --json
 fozzy test --det --strict artifacts/exhibit_rich.trace.scenarios/all.fozzy.json --json
 fozzy run artifacts/exhibit_rich.trace.scenarios/all.fozzy.json --det --record artifacts/exhibit_rich.goal.fozzy --json

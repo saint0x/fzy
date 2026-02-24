@@ -1,0 +1,9 @@
+test "vec_roundtrip" {}
+test "result_path" {}
+
+fn main() -> i32 {
+    let bytes: Vec<u8> = make_bytes()
+    let parsed: Result<Vec<u8>, i32> = decode(bytes)
+    let maybe: Option<Result<i32, i32>> = maybe_code()
+    return 0
+}

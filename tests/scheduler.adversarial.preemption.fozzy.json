@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "scheduler-adversarial-preemption",
+  "steps": [
+    { "type": "trace_event", "name": "long_cpu_task" },
+    { "type": "trace_event", "name": "io_task_ready" },
+    { "type": "trace_event", "name": "forced_interleave" },
+    { "type": "trace_event", "name": "assert_preemption_fairness" }
+  ]
+}

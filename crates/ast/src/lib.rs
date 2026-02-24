@@ -8,6 +8,7 @@ pub struct Module {
     pub inferred_capabilities: Vec<String>,
     pub host_syscall_sites: usize,
     pub unsafe_sites: usize,
+    pub unsafe_reasoned_sites: usize,
     pub reference_sites: usize,
     pub alloc_sites: usize,
     pub free_sites: usize,
