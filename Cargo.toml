@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "apps/robust_cli",
   "apps/fozzyc",
   "apps/fozzyfmt",
   "apps/fozzydoc",
