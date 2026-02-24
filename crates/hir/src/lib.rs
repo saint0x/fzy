@@ -18,6 +18,8 @@ pub struct TypedModule {
     pub host_syscall_sites: usize,
     pub unsafe_sites: usize,
     pub reference_sites: usize,
+    pub alloc_sites: usize,
+    pub free_sites: usize,
     pub extern_c_abi_functions: usize,
     pub repr_c_layout_items: usize,
 }
@@ -81,6 +83,8 @@ pub fn lower(module: &Module) -> TypedModule {
         host_syscall_sites: module.host_syscall_sites,
         unsafe_sites: module.unsafe_sites,
         reference_sites: module.reference_sites,
+        alloc_sites: module.alloc_sites,
+        free_sites: module.free_sites,
         extern_c_abi_functions,
         repr_c_layout_items,
     }

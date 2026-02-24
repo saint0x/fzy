@@ -22,6 +22,8 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
         host_syscall_sites: 0,
         unsafe_sites: 0,
         reference_sites: 0,
+        alloc_sites: 0,
+        free_sites: 0,
     };
     let mut diagnostics = Vec::new();
     let mut inferred = BTreeSet::new();
@@ -201,6 +203,8 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
             module.host_syscall_sites += count_host_syscalls(line);
             module.unsafe_sites += count_unsafe_markers(line);
             module.reference_sites += count_reference_markers(line);
+            module.alloc_sites += count_alloc_markers(line);
+            module.free_sites += count_free_markers(line);
             match parse_statement(line) {
                 Ok(statement) => {
                     if let Some(ast::Item::Function(function)) =
@@ -280,6 +284,8 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
         module.host_syscall_sites += count_host_syscalls(line);
         module.unsafe_sites += count_unsafe_markers(line);
         module.reference_sites += count_reference_markers(line);
+        module.alloc_sites += count_alloc_markers(line);
+        module.free_sites += count_free_markers(line);
     }
 
     module.inferred_capabilities = inferred.into_iter().collect();
@@ -728,6 +734,14 @@ fn count_reference_markers(line: &str) -> usize {
         count += 1;
     }
     count
+}
+
+fn count_alloc_markers(line: &str) -> usize {
+    line.match_indices("alloc(").count()
+}
+
+fn count_free_markers(line: &str) -> usize {
+    line.match_indices("free(").count()
 }
 
 fn is_supported_type(ty: &str) -> bool {

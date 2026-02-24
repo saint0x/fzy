@@ -127,6 +127,21 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             Some("replace borrowed references with owned values or non-safe profile".to_string()),
         ));
     }
+    if module.alloc_sites > module.free_sites {
+        let severity = if policy.safe_profile {
+            Severity::Error
+        } else {
+            Severity::Warning
+        };
+        report.diagnostics.push(Diagnostic::new(
+            severity,
+            format!(
+                "memory lifecycle imbalance: alloc sites={} free sites={}",
+                module.alloc_sites, module.free_sites
+            ),
+            Some("pair allocations with explicit `free(...)` or defer-based cleanup".to_string()),
+        ));
+    }
 
     for resource in &module.linear_resources {
         let released = module
@@ -226,6 +241,8 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -253,6 +270,8 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -283,6 +302,8 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -311,6 +332,8 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -339,6 +362,8 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -367,6 +392,8 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -398,6 +425,8 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -409,6 +438,50 @@ mod tests {
         assert!(report.diagnostics.iter().any(|d| d
             .message
             .contains("safe profile forbids capability: thread")));
+    }
+
+    #[test]
+    fn safe_profile_rejects_all_runtime_backed_effects() {
+        let mut effects = capabilities::CapabilitySet::default();
+        for capability in [
+            Capability::Time,
+            Capability::Random,
+            Capability::FileSystem,
+            Capability::Network,
+            Capability::Process,
+            Capability::Memory,
+            Capability::Thread,
+        ] {
+            effects.insert(capability);
+        }
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects,
+            required_effects: capabilities::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some("i32".to_string()),
+            entry_return_const_i32: Some(0),
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+        };
+        let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
+        for expected in ["time", "rng", "fs", "net", "proc", "mem", "thread"] {
+            assert!(report
+                .diagnostics
+                .iter()
+                .any(|d| d.message.contains(&format!("safe profile forbids capability: {expected}"))));
+        }
     }
 
     #[test]
@@ -429,6 +502,8 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
         };
@@ -461,6 +536,8 @@ mod tests {
             host_syscall_sites: 1,
             unsafe_sites: 0,
             reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
             extern_c_abi_functions: 0,
             repr_c_layout_items: 1,
         };
@@ -469,5 +546,35 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.message.contains("extern \"C\" fn")));
+    }
+
+    #[test]
+    fn safe_profile_rejects_alloc_free_imbalance() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: capabilities::CapabilitySet::default(),
+            required_effects: capabilities::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some("i32".to_string()),
+            entry_return_const_i32: Some(0),
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            entry_requires: vec![],
+            entry_ensures: vec![],
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            reference_sites: 0,
+            alloc_sites: 2,
+            free_sites: 1,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+        };
+        let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("memory lifecycle imbalance")));
     }
 }

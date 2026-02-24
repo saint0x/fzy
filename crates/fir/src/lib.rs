@@ -18,6 +18,8 @@ pub struct FirModule {
     pub host_syscall_sites: usize,
     pub unsafe_sites: usize,
     pub reference_sites: usize,
+    pub alloc_sites: usize,
+    pub free_sites: usize,
     pub extern_c_abi_functions: usize,
     pub repr_c_layout_items: usize,
 }
@@ -57,6 +59,8 @@ pub fn build(typed: &TypedModule) -> FirModule {
         host_syscall_sites: typed.host_syscall_sites,
         unsafe_sites: typed.unsafe_sites,
         reference_sites: typed.reference_sites,
+        alloc_sites: typed.alloc_sites,
+        free_sites: typed.free_sites,
         extern_c_abi_functions: typed.extern_c_abi_functions,
         repr_c_layout_items: typed.repr_c_layout_items,
     }

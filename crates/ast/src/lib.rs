@@ -9,6 +9,8 @@ pub struct Module {
     pub host_syscall_sites: usize,
     pub unsafe_sites: usize,
     pub reference_sites: usize,
+    pub alloc_sites: usize,
+    pub free_sites: usize,
 }
 
 #[derive(Debug, Clone)]

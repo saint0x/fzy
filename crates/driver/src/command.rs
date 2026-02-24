@@ -3706,6 +3706,79 @@ mod tests {
     }
 
     #[test]
+    fn shrink_command_uses_native_engine_for_native_trace() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let trace = std::env::temp_dir().join(format!("fozzylang-native-shrink-{suffix}.trace.json"));
+        std::fs::write(
+            &trace,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.thread_trace.v0",
+                "capability": "thread",
+                "scheduler": "fifo",
+                "seed": 11,
+                "executionOrder": [0, 1],
+                "asyncSchedule": [1],
+                "rpcFrames": [
+                    {"event":"rpc_send","method":"Ping","taskId":0},
+                    {"event":"rpc_deadline","method":"Ping","taskId":1}
+                ],
+                "events": [],
+            })
+            .to_string(),
+        )
+        .expect("trace should be written");
+
+        let output = run(
+            Command::Shrink {
+                trace: trace.clone(),
+            },
+            Format::Json,
+        )
+        .expect("shrink should succeed");
+        assert!(output.contains("\"schemaVersion\":\"fozzylang.native_shrink.v0\""));
+        assert!(output.contains("\"minimalRpcRepro\""));
+
+        let _ = std::fs::remove_file(trace);
+    }
+
+    #[test]
+    fn async_workload_uses_structured_task_model() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-async-workload-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "rpc Ping(req: PingReq) -> PingRes;\nasync fn worker() -> i32 {}\ntest \"flow\" {}\nfn main() -> i32 {\n    spawn(worker)\n    Ping(req)\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict: false,
+                seed: Some(3),
+                record: None,
+                host_backends: false,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: false,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+        assert!(output.contains("\"executedTasks\":4"));
+        assert!(output.contains("\"asyncCheckpointCount\":1"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn resolve_replay_target_prefers_manifest_goal_trace() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
