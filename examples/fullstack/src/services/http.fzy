@@ -1,0 +1,9 @@
+use cap.net;
+
+fn start_server() -> i32 {
+    let conn = net.connect()
+    defer close(conn)
+    timeout(10)
+    cancel()
+    return 0
+}

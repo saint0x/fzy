@@ -1,0 +1,7 @@
+use cap.thread;
+
+fn tick() -> i32 {
+    checkpoint()
+    yield()
+    return 0
+}

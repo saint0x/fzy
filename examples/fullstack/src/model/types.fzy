@@ -1,0 +1,11 @@
+#[repr(C)]
+struct UserRow {}
+
+#[repr(C, packed)]
+enum SyncState {}
+
+fn schema_version() -> i32 {
+    let major: i32 = 1
+    let minor: i32 = 0
+    return major + minor
+}

@@ -1,0 +1,6 @@
+use cap.proc;
+
+fn boot() -> i32 {
+    process.exec()
+    return 0
+}

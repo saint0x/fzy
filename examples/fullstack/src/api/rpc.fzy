@@ -1,0 +1,3 @@
+rpc GetUser(req: GetUserReq) -> GetUserRes;
+rpc UpdateUser(req: UpdateUserReq) -> UpdateUserRes;
+rpc WatchUsers(stream<WatchReq>) -> stream<WatchEvent>;

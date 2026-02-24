@@ -153,6 +153,38 @@ fozzy replay artifacts/exhibit_rich.goal.fozzy --json
 fozzy ci artifacts/exhibit_rich.goal.fozzy --json
 ```
 
+## Fullstack Example (CLI DB + RPC + FFI)
+
+Project: `examples/fullstack`
+
+- Multi-module CLI-style data service flow with all implemented language/runtime hooks:
+  - capabilities: `time/rng/fs/net/proc/mem/thread`
+  - contracts (`requires` / `ensures`), `try/catch`, `match`, `defer`
+  - structured async/task markers: `spawn`, `checkpoint`, `yield`, `async fn`
+  - RPC declarations + call sites with deadline/cancel markers
+  - C interop exports for header + ABI generation
+  - host syscall marker path (`syscall.*`) for boundary verification
+
+Run full flow:
+
+```bash
+cargo run -q -p fozzyc -- check examples/fullstack --json
+cargo run -q -p fozzyc -- build examples/fullstack --json
+cargo run -q -p fozzyc -- run examples/fullstack --json
+cargo run -q -p fozzyc -- headers examples/fullstack --json
+cargo run -q -p fozzyc -- rpc gen examples/fullstack --json
+cargo run -q -p fozzyc -- test examples/fullstack --det --sched coverage_guided --seed 41 --record artifacts/fullstack.trace.json --rich-artifacts --json
+cargo run -q -p fozzyc -- replay artifacts/fullstack.trace.manifest.json --json
+cargo run -q -p fozzyc -- shrink artifacts/fullstack.trace.manifest.json --json
+cargo run -q -p fozzyc -- ci artifacts/fullstack.trace.manifest.json --json
+fozzy doctor --deep --scenario artifacts/fullstack.trace.scenarios/all.fozzy.json --runs 5 --seed 41 --json
+fozzy test --det --strict artifacts/fullstack.trace.scenarios/all.fozzy.json --json
+fozzy run artifacts/fullstack.trace.scenarios/all.fozzy.json --det --record artifacts/fullstack.goal.fozzy --json
+fozzy trace verify artifacts/fullstack.goal.fozzy --strict --json
+fozzy replay artifacts/fullstack.goal.fozzy --json
+fozzy ci artifacts/fullstack.goal.fozzy --json
+```
+
 ## Plan Tracking
 
 Execution status is maintained in:

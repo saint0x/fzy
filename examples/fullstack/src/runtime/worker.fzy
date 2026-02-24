@@ -1,0 +1,7 @@
+use cap.thread;
+
+async fn loop() -> i32 {
+    checkpoint()
+    yield()
+    return 0
+}

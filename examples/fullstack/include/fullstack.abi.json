@@ -1,0 +1,69 @@
+{
+  "exports": [
+    {
+      "name": "fs_open",
+      "params": [
+        {
+          "c": "const uint8_t*",
+          "fzy": "*u8",
+          "name": "path"
+        },
+        {
+          "c": "size_t",
+          "fzy": "usize",
+          "name": "len"
+        }
+      ],
+      "return": {
+        "c": "int32_t",
+        "fzy": "i32"
+      }
+    },
+    {
+      "name": "fs_write",
+      "params": [
+        {
+          "c": "int32_t",
+          "fzy": "i32",
+          "name": "fd"
+        },
+        {
+          "c": "const uint8_t*",
+          "fzy": "*u8",
+          "name": "ptr"
+        },
+        {
+          "c": "size_t",
+          "fzy": "usize",
+          "name": "len"
+        }
+      ],
+      "return": {
+        "c": "int32_t",
+        "fzy": "i32"
+      }
+    },
+    {
+      "name": "hash32",
+      "params": [
+        {
+          "c": "const uint8_t*",
+          "fzy": "*u8",
+          "name": "ptr"
+        },
+        {
+          "c": "size_t",
+          "fzy": "usize",
+          "name": "len"
+        }
+      ],
+      "return": {
+        "c": "uint32_t",
+        "fzy": "u32"
+      }
+    }
+  ],
+  "package": "fullstack",
+  "panicBoundary": "abort-or-translate",
+  "schemaVersion": "fozzylang.ffi_abi.v0"
+}

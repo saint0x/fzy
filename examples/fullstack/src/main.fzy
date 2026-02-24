@@ -1,0 +1,64 @@
+use cap.time;
+use cap.rng;
+use cap.fs;
+use cap.net;
+use cap.proc;
+use cap.mem;
+use cap.thread;
+
+mod api::ffi;
+mod api::rpc;
+mod model::types;
+mod services::store;
+mod services::http;
+mod services::auth;
+mod runtime::scheduler;
+mod runtime::worker;
+mod cli::commands;
+
+test "det_boot" {}
+test "det_cli_ops" {}
+test "det_rpc_sync" {}
+test "det_recover" {}
+test "chaos_mode" nondet {}
+
+fn main() -> i32 {
+    requires true
+
+    let db_handle = fs.open()
+    defer close(db_handle)
+
+    let net_handle = net.connect()
+    defer close(net_handle)
+
+    let cache_ptr: *u8 = alloc(256)
+    defer free(cache_ptr)
+
+    let seed: i32 = try rng.seed() catch 11
+    match seed { 0 => pulse(), 1 => pulse(), _ => pulse() }
+
+    cli.boot()
+    services.store.put_user()
+    services.store.get_user()
+    services.http.start_server()
+    services.auth.login_flow()
+
+    checkpoint()
+    yield()
+    spawn(runtime.worker.loop)
+    spawn(runtime.scheduler.tick)
+
+    GetUser(req)
+    UpdateUser(req)
+    WatchUsers(req)
+    timeout(30)
+    cancel()
+
+    syscall.sync()
+
+    ensures seed == seed
+
+    let base: i32 = 40
+    let delta: i32 = 2
+    return base + delta
+}
