@@ -1,6 +1,20 @@
 use cap.proc;
+use cap.fs;
 
 fn boot() -> i32 {
     process.exec()
+    fs.open()
     return 0
+}
+
+fn health() -> i32 {
+    process.exec()
+    return 1
+}
+
+fn compact() -> i32 {
+    let c_handle = fs.open()
+    defer close(c_handle)
+    fs.write()
+    return 1
 }

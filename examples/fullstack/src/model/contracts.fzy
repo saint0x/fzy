@@ -1,0 +1,12 @@
+fn preflight() -> i32 {
+    requires true
+    let ready: i32 = 1
+    ensures ready == 1
+    return ready
+}
+
+fn postflight(code: i32) -> i32 {
+    requires code == code
+    ensures true
+    match code { 0 => 0, _ => 1 }
+}

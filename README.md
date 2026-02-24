@@ -164,6 +164,11 @@ Project: `examples/fullstack`
   - RPC declarations + call sites with deadline/cancel markers
   - C interop exports for header + ABI generation
   - host syscall marker path (`syscall.*`) for boundary verification
+  - richer service topology:
+    - auth + store + HTTP + replication + metrics modules
+    - runtime worker/scheduler/supervisor task orchestration
+    - deterministic + nondeterministic language-native test blocks
+    - native replay decision stream includes `thread.schedule`, `async.schedule`, `rpc.frame`
 
 Run full flow:
 

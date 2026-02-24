@@ -1,16 +1,37 @@
 use cap.fs;
 use cap.mem;
+use cap.time;
+
+fn init_engine() -> i32 {
+    let manifest_handle = fs.open()
+    defer close(manifest_handle)
+    time.now()
+    return 1
+}
 
 fn put_user() -> i32 {
     let ptr: *u8 = alloc(64)
     defer free(ptr)
-    let file = fs.open()
-    defer close(file)
-    return 0
+    let wal_handle = fs.open()
+    defer close(wal_handle)
+    fs.write()
+    return 1
 }
 
 fn get_user() -> i32 {
     let ptr: *u8 = alloc(64)
     defer free(ptr)
+    let read_handle = fs.open()
+    defer close(read_handle)
+    fs.read()
     return 1
+}
+
+fn scan_users() -> i32 {
+    let page_ptr: *u8 = alloc(128)
+    defer free(page_ptr)
+    let idx_handle = fs.open()
+    defer close(idx_handle)
+    fs.read()
+    return 2
 }

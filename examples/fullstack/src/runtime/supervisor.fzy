@@ -1,9 +1,9 @@
 use cap.thread;
+use cap.proc;
 
-fn tick() -> i32 {
-    requires true
+fn guard() -> i32 {
     checkpoint()
+    process.exec()
     yield()
-    ensures true
     return 0
 }

@@ -9,44 +9,72 @@ use cap.thread;
 mod api::ffi;
 mod api::rpc;
 mod model::types;
+mod model::contracts;
 mod services::store;
 mod services::http;
 mod services::auth;
+mod services::replication;
+mod services::metrics;
 mod runtime::scheduler;
 mod runtime::worker;
+mod runtime::supervisor;
 mod cli::commands;
 
 test "det_boot" {}
 test "det_cli_ops" {}
 test "det_rpc_sync" {}
 test "det_recover" {}
+test "det_replicate" {}
+test "det_metrics" {}
 test "chaos_mode" nondet {}
 
 fn main() -> i32 {
     requires true
 
+    let wal_handle = fs.open()
+    defer close(wal_handle)
+
     let db_handle = fs.open()
     defer close(db_handle)
 
-    let net_handle = net.connect()
-    defer close(net_handle)
+    let ingress_handle = net.connect()
+    defer close(ingress_handle)
+
+    let metrics_handle = fs.open()
+    defer close(metrics_handle)
 
     let cache_ptr: *u8 = alloc(256)
     defer free(cache_ptr)
+    let frame_ptr: *u8 = alloc(128)
+    defer free(frame_ptr)
 
-    let seed: i32 = try rng.seed() catch 11
+    let seed: i32 = try rng.seed() catch 13
     match seed { 0 => pulse(), 1 => pulse(), _ => pulse() }
 
+    model.contracts.preflight()
+    model.types.schema_version()
     cli.boot()
+    cli.health()
+    cli.compact()
+
+    services.auth.login_flow()
+    services.auth.authorize()
+    services.store.init_engine()
     services.store.put_user()
     services.store.get_user()
+    services.store.scan_users()
+    services.replication.enqueue()
+    services.replication.flush()
+    services.metrics.record_boot()
+    services.metrics.record_write()
     services.http.start_server()
-    services.auth.login_flow()
+    services.http.poll_health()
 
     checkpoint()
     yield()
     spawn(runtime.worker.loop)
     spawn(runtime.scheduler.tick)
+    spawn(runtime.supervisor.guard)
 
     GetUser(req)
     UpdateUser(req)
@@ -54,9 +82,13 @@ fn main() -> i32 {
     timeout(30)
     cancel()
 
+    api.ffi.hash32(frame_ptr, 128)
+    api.ffi.fs_write(1, cache_ptr, 64)
+    api.ffi.fs_open(cache_ptr, 64)
     syscall.sync()
 
     ensures seed == seed
+    ensures true
 
     let base: i32 = 40
     let delta: i32 = 2

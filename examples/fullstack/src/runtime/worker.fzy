@@ -1,7 +1,11 @@
 use cap.thread;
+use cap.mem;
 
 async fn loop() -> i32 {
+    let job_ptr: *u8 = alloc(32)
+    defer free(job_ptr)
     checkpoint()
     yield()
+    checkpoint()
     return 0
 }

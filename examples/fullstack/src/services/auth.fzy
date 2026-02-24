@@ -1,7 +1,15 @@
 use cap.rng;
+use cap.time;
 
 fn login_flow() -> i32 {
     let token: i32 = try rng.seed() catch 7
     match token { 0 => pulse(), _ => pulse() }
+    time.now()
     return token
+}
+
+fn authorize() -> i32 {
+    let nonce: i32 = try rng.seed() catch 3
+    match nonce { 0 => pulse(), _ => pulse() }
+    return 1
 }
