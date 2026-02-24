@@ -2,6 +2,15 @@
 name = "fozzyc"
 version.workspace = true
 edition.workspace = true
+default-run = "fozzyc"
+
+[[bin]]
+name = "fozzyc"
+path = "src/main.rs"
+
+[[bin]]
+name = "fz"
+path = "src/bin/fz.rs"
 
 [dependencies]
 anyhow.workspace = true
