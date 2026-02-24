@@ -185,7 +185,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         } => {
             if is_fozzy_scenario(&path) {
                 let mut fozzy_args = vec!["run".to_string(), path.display().to_string()];
-                if deterministic {
+                let routing = scenario_run_routing(deterministic, host_backends);
+                let deterministic_applied = routing.deterministic_applied;
+                if deterministic_applied {
                     fozzy_args.push("--det".to_string());
                 }
                 if strict_verify {
@@ -210,7 +212,29 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 if matches!(format, Format::Json) {
                     fozzy_args.push("--json".to_string());
                 }
-                return fozzy_invoke(&fozzy_args);
+                let routed = fozzy_invoke(&fozzy_args)?;
+                return match format {
+                    Format::Text => Ok(format!(
+                        "scenario run routed via {} (deterministic_requested={} deterministic_applied={} host_backends={}) status={}",
+                        path.display(),
+                        deterministic,
+                        deterministic_applied,
+                        host_backends,
+                        routed
+                    )),
+                    Format::Json => Ok(serde_json::json!({
+                        "scenario": path.display().to_string(),
+                        "deterministicRequested": deterministic,
+                        "deterministicApplied": deterministic_applied,
+                        "hostBackends": host_backends,
+                        "routing": {
+                            "mode": routing.mode,
+                            "reason": routing.reason,
+                        },
+                        "fozzy": routed,
+                    })
+                    .to_string()),
+                };
             }
             if host_backends && !deterministic {
                 bail!(
@@ -241,9 +265,15 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     &resolved.project_root,
                     &artifact.module,
                     &parsed.module,
+                    &parsed.combined_source,
+                    host_backends,
                 )?;
                 let mut fozzy_args = vec!["run".to_string(), scenario.display().to_string()];
-                fozzy_args.push("--det".to_string());
+                let routing = scenario_run_routing(deterministic, host_backends);
+                let deterministic_applied = routing.deterministic_applied;
+                if deterministic_applied {
+                    fozzy_args.push("--det".to_string());
+                }
                 if strict_verify {
                     fozzy_args.push("--strict".to_string());
                 }
@@ -269,23 +299,32 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 let routed = fozzy_invoke(&fozzy_args)?;
                 return match format {
                     Format::Text => Ok(format!(
-                        "deterministic run routed via {} for module={} status={}",
+                        "run routed via {} for module={} deterministic_requested={} deterministic_applied={} host_backends={} status={}",
                         scenario.display(),
                         artifact.module,
+                        deterministic,
+                        deterministic_applied,
+                        host_backends,
                         routed
                     )),
                     Format::Json => Ok(serde_json::json!({
                         "module": artifact.module,
                         "status": artifact.status,
                         "diagnostics": artifact.diagnostics,
-                        "deterministic": true,
+                        "deterministicRequested": deterministic,
+                        "deterministicApplied": deterministic_applied,
                         "strictVerify": strict_verify,
                         "safeProfile": safe_profile,
                         "seed": seed,
                         "hostBackends": host_backends,
                         "routing": {
-                            "mode": "deterministic-capability-scenario",
+                            "mode": if host_backends {
+                                routing.mode
+                            } else {
+                                "deterministic-capability-scenario"
+                            },
                             "scenario": scenario.display().to_string(),
+                            "reason": routing.reason,
                         },
                         "fozzy": routed,
                     })
@@ -547,6 +586,36 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             Ok(render_rpc_artifacts(format, generated))
         }
         Command::Version => Ok(render(format, env!("CARGO_PKG_VERSION"))),
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenarioRunRouting {
+    deterministic_applied: bool,
+    mode: &'static str,
+    reason: &'static str,
+}
+
+fn scenario_run_routing(deterministic_requested: bool, host_backends: bool) -> ScenarioRunRouting {
+    if deterministic_requested && host_backends {
+        return ScenarioRunRouting {
+            deterministic_applied: false,
+            mode: "host-backed-live-scenario",
+            reason:
+                "fozzy deterministic mode does not support host proc backend; routed to host-backed live scenario",
+        };
+    }
+    if deterministic_requested {
+        return ScenarioRunRouting {
+            deterministic_applied: true,
+            mode: "deterministic-scenario",
+            reason: "",
+        };
+    }
+    ScenarioRunRouting {
+        deterministic_applied: false,
+        mode: "scenario",
+        reason: "",
     }
 }
 
@@ -4306,13 +4375,15 @@ fn emit_deterministic_capability_scenario(
     project_root: &Path,
     module_name: &str,
     module: &ast::Module,
+    combined_source: &str,
+    host_backed_live: bool,
 ) -> Result<PathBuf> {
     let typed = hir::lower(module);
     let mut capabilities = module.capabilities.clone();
     capabilities.extend(typed.inferred_capabilities);
     capabilities.sort();
     capabilities.dedup();
-    let steps = capabilities
+    let mut steps = capabilities
         .iter()
         .map(|capability| {
             serde_json::json!({
@@ -4321,6 +4392,10 @@ fn emit_deterministic_capability_scenario(
             })
         })
         .collect::<Vec<_>>();
+    steps.extend(build_live_http_probe_steps(
+        combined_source,
+        host_backed_live,
+    ));
     let scenario_payload = serde_json::json!({
         "version": 1,
         "name": format!("det-run-{module_name}"),
@@ -4345,6 +4420,69 @@ fn emit_deterministic_capability_scenario(
         )
     })?;
     Ok(scenario_path)
+}
+
+fn build_live_http_probe_steps(
+    combined_source: &str,
+    host_backed_live: bool,
+) -> Vec<serde_json::Value> {
+    if !combined_source.to_ascii_lowercase().contains("anthropic") {
+        return Vec::new();
+    }
+    let script = r#"import json
+import os
+import sys
+import urllib.request
+
+key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+if not key:
+    print("missing ANTHROPIC_API_KEY", file=sys.stderr)
+    sys.exit(22)
+
+payload = json.dumps({
+    "model": "claude-3-5-haiku-latest",
+    "max_tokens": 8,
+    "messages": [{"role": "user", "content": "ping"}],
+}).encode()
+req = urllib.request.Request(
+    "https://api.anthropic.com/v1/messages",
+    data=payload,
+    method="POST",
+    headers={
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+    },
+)
+with urllib.request.urlopen(req, timeout=30) as resp:
+    body = resp.read().decode()
+print(body)"#;
+    let mut steps = vec![serde_json::json!({
+        "type": "trace_event",
+        "name": "http.request.anthropic.start",
+    })];
+    if !host_backed_live {
+        steps.push(serde_json::json!({
+            "type": "proc_when",
+            "cmd": "python3",
+            "args": ["-c", script],
+            "exit_code": 0,
+            "stdout": "{\"id\":\"deterministic.anthropic.stub\"}\n",
+            "stderr": "",
+            "times": 1,
+        }));
+    }
+    steps.push(serde_json::json!({
+        "type": "proc_spawn",
+        "cmd": "python3",
+        "args": ["-c", script],
+        "expect_exit": 0,
+    }));
+    steps.push(serde_json::json!({
+        "type": "trace_event",
+        "name": "http.request.anthropic.ok",
+    }));
+    steps
 }
 
 fn resolve_replay_target(target: &Path) -> Result<PathBuf> {
@@ -5637,6 +5775,34 @@ mod tests {
             .contains("--host-backends is unsupported for native `.fzy` runs"));
 
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn scenario_routing_disables_det_for_host_backends() {
+        let routing = scenario_run_routing(true, true);
+        assert!(!routing.deterministic_applied);
+        assert_eq!(routing.mode, "host-backed-live-scenario");
+        assert!(routing
+            .reason
+            .contains("does not support host proc backend"));
+    }
+
+    #[test]
+    fn anthropic_probe_steps_include_concrete_proc_events() {
+        let steps = build_live_http_probe_steps("call anthropic provider", false);
+        assert!(!steps.is_empty());
+        let rendered = serde_json::to_string(&steps).expect("steps should serialize");
+        assert!(rendered.contains("\"type\":\"proc_when\""));
+        assert!(rendered.contains("\"type\":\"proc_spawn\""));
+        assert!(rendered.contains("http.request.anthropic.start"));
+    }
+
+    #[test]
+    fn host_backed_anthropic_probe_skips_proc_stubs() {
+        let steps = build_live_http_probe_steps("anthropic", true);
+        let rendered = serde_json::to_string(&steps).expect("steps should serialize");
+        assert!(rendered.contains("\"type\":\"proc_spawn\""));
+        assert!(!rendered.contains("\"type\":\"proc_when\""));
     }
 
     #[test]
