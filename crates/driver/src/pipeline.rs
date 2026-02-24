@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -10,6 +11,71 @@ use cranelift_module::{default_libcall_names, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+
+#[derive(Debug, Clone, Copy)]
+struct NativeRuntimeImport {
+    callee: &'static str,
+    symbol: &'static str,
+    arity: usize,
+}
+
+const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
+    NativeRuntimeImport {
+        callee: "net.bind",
+        symbol: "fz_native_net_bind",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "net.listen",
+        symbol: "fz_native_net_listen",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.accept",
+        symbol: "fz_native_net_accept",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "net.read",
+        symbol: "fz_native_net_read",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.write",
+        symbol: "fz_native_net_write",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.close",
+        symbol: "fz_native_close",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "close",
+        symbol: "fz_native_close",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "spawn",
+        symbol: "fz_native_spawn",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "yield",
+        symbol: "fz_native_yield",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "checkpoint",
+        symbol: "fz_native_checkpoint",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "net.poll_next",
+        symbol: "fz_native_net_poll_next",
+        arity: 0,
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildProfile {
@@ -222,6 +288,7 @@ pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
             .ok_or_else(|| anyhow!("internal module cache miss for {}", path.display()))?;
         merge_module(&mut merged, &loaded.ast);
     }
+    canonicalize_call_targets(&mut merged);
 
     Ok(ParsedProgram {
         module: merged,
@@ -503,6 +570,133 @@ fn qualify_name(namespace: &str, name: &str) -> String {
     }
 }
 
+fn canonicalize_call_targets(module: &mut ast::Module) {
+    let known_functions = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Function(function) => Some(function.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    for item in &mut module.items {
+        if let ast::Item::Function(function) = item {
+            let namespace = function
+                .name
+                .rsplit_once('.')
+                .map(|(prefix, _)| prefix)
+                .unwrap_or("");
+            for stmt in &mut function.body {
+                canonicalize_stmt_calls(stmt, namespace, &known_functions);
+            }
+        }
+    }
+}
+
+fn canonicalize_stmt_calls(stmt: &mut ast::Stmt, namespace: &str, known_functions: &HashSet<String>) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::Return(value)
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => canonicalize_expr_calls(value, namespace, known_functions),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            canonicalize_expr_calls(condition, namespace, known_functions);
+            for nested in then_body {
+                canonicalize_stmt_calls(nested, namespace, known_functions);
+            }
+            for nested in else_body {
+                canonicalize_stmt_calls(nested, namespace, known_functions);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            canonicalize_expr_calls(condition, namespace, known_functions);
+            for nested in body {
+                canonicalize_stmt_calls(nested, namespace, known_functions);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            canonicalize_expr_calls(scrutinee, namespace, known_functions);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    canonicalize_expr_calls(guard, namespace, known_functions);
+                }
+                canonicalize_expr_calls(&mut arm.value, namespace, known_functions);
+            }
+        }
+    }
+}
+
+fn canonicalize_expr_calls(expr: &mut ast::Expr, namespace: &str, known_functions: &HashSet<String>) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            *callee = canonicalize_callee(callee, namespace, known_functions);
+            for arg in args {
+                canonicalize_expr_calls(arg, namespace, known_functions);
+            }
+        }
+        ast::Expr::FieldAccess { base, .. } => {
+            canonicalize_expr_calls(base, namespace, known_functions);
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                canonicalize_expr_calls(value, namespace, known_functions);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                canonicalize_expr_calls(value, namespace, known_functions);
+            }
+        }
+        ast::Expr::Group(inner) => {
+            canonicalize_expr_calls(inner, namespace, known_functions);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            canonicalize_expr_calls(try_expr, namespace, known_functions);
+            canonicalize_expr_calls(catch_expr, namespace, known_functions);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            canonicalize_expr_calls(left, namespace, known_functions);
+            canonicalize_expr_calls(right, namespace, known_functions);
+        }
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn canonicalize_callee(callee: &str, namespace: &str, known_functions: &HashSet<String>) -> String {
+    let (base, generic_suffix) = split_generic_suffix(callee);
+    if known_functions.contains(base) {
+        return callee.to_string();
+    }
+    if base.contains('.') {
+        let mut scope = Some(namespace);
+        while let Some(current) = scope {
+            if !current.is_empty() {
+                let candidate = format!("{current}.{base}");
+                if known_functions.contains(&candidate) {
+                    return format!("{candidate}{generic_suffix}");
+                }
+            }
+            scope = current.rsplit_once('.').map(|(parent, _)| parent);
+        }
+    } else {
+        let candidate = qualify_name(namespace, base);
+        if known_functions.contains(&candidate) {
+            return format!("{candidate}{generic_suffix}");
+        }
+    }
+    callee.to_string()
+}
+
 fn collect_parse_diagnostics(source_path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
     let canonical = source_path
         .canonicalize()
@@ -704,6 +898,20 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
     }
 
     let mut out = format!("; ModuleID = '{}'\n", fir.name);
+    let used_imports = collect_used_native_runtime_imports(fir);
+    for import in &used_imports {
+        let mut params = String::new();
+        for index in 0..import.arity {
+            if index > 0 {
+                params.push_str(", ");
+            }
+            params.push_str("i32");
+        }
+        let _ = writeln!(&mut out, "declare i32 @{}({})", import.symbol, params);
+    }
+    if !used_imports.is_empty() {
+        out.push('\n');
+    }
     for function in &fir.typed_functions {
         out.push_str(&llvm_emit_function(
             function,
@@ -952,9 +1160,12 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
                 .map(|arg| format!("i32 {}", llvm_emit_expr(arg, ctx)))
                 .collect::<Vec<_>>()
                 .join(", ");
+            let symbol = native_runtime_import_for_callee(callee)
+                .map(|import| import.symbol)
+                .unwrap_or(callee.as_str());
             let val = ctx.value();
             ctx.code
-                .push_str(&format!("  {val} = call i32 @{callee}({args})\n"));
+                .push_str(&format!("  {val} = call i32 @{symbol}({args})\n"));
             val
         }
         ast::Expr::Binary { op, left, right } => {
@@ -998,6 +1209,116 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
             }
             out
         }
+    }
+}
+
+fn native_runtime_import_for_callee(callee: &str) -> Option<&'static NativeRuntimeImport> {
+    NATIVE_RUNTIME_IMPORTS
+        .iter()
+        .find(|import| import.callee == callee)
+}
+
+fn collect_used_native_runtime_imports(
+    fir: &fir::FirModule,
+) -> Vec<&'static NativeRuntimeImport> {
+    let mut seen = HashSet::<&'static str>::new();
+    let mut used = Vec::<&'static NativeRuntimeImport>::new();
+    for function in &fir.typed_functions {
+        for stmt in &function.body {
+            collect_used_runtime_imports_from_stmt(stmt, &mut seen, &mut used);
+        }
+    }
+    used
+}
+
+fn collect_used_runtime_imports_from_stmt(
+    stmt: &ast::Stmt,
+    seen: &mut HashSet<&'static str>,
+    used: &mut Vec<&'static NativeRuntimeImport>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::Return(value)
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => collect_used_runtime_imports_from_expr(value, seen, used),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_used_runtime_imports_from_expr(condition, seen, used);
+            for nested in then_body {
+                collect_used_runtime_imports_from_stmt(nested, seen, used);
+            }
+            for nested in else_body {
+                collect_used_runtime_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_used_runtime_imports_from_expr(condition, seen, used);
+            for nested in body {
+                collect_used_runtime_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_used_runtime_imports_from_expr(scrutinee, seen, used);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_used_runtime_imports_from_expr(guard, seen, used);
+                }
+                collect_used_runtime_imports_from_expr(&arm.value, seen, used);
+            }
+        }
+    }
+}
+
+fn collect_used_runtime_imports_from_expr(
+    expr: &ast::Expr,
+    seen: &mut HashSet<&'static str>,
+    used: &mut Vec<&'static NativeRuntimeImport>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if let Some(import) = native_runtime_import_for_callee(callee) {
+                if seen.insert(import.symbol) {
+                    used.push(import);
+                }
+            }
+            for arg in args {
+                collect_used_runtime_imports_from_expr(arg, seen, used);
+            }
+        }
+        ast::Expr::FieldAccess { base, .. } => {
+            collect_used_runtime_imports_from_expr(base, seen, used);
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_used_runtime_imports_from_expr(value, seen, used);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                collect_used_runtime_imports_from_expr(value, seen, used);
+            }
+        }
+        ast::Expr::Group(inner) => {
+            collect_used_runtime_imports_from_expr(inner, seen, used);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_used_runtime_imports_from_expr(try_expr, seen, used);
+            collect_used_runtime_imports_from_expr(catch_expr, seen, used);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_used_runtime_imports_from_expr(left, seen, used);
+            collect_used_runtime_imports_from_expr(right, seen, used);
+        }
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
     }
 }
 
@@ -1341,6 +1662,7 @@ fn emit_native_artifact_llvm(
 
     let ll_path = build_dir.join(format!("{}.ll", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
+    let runtime_shim_path = ensure_native_runtime_shim(&build_dir)?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks);
     std::fs::write(&ll_path, llvm_ir)
@@ -1353,6 +1675,9 @@ fn emit_native_artifact_llvm(
         cmd.arg("-x")
             .arg("ir")
             .arg(&ll_path)
+            .arg("-x")
+            .arg("c")
+            .arg(&runtime_shim_path)
             .arg("-o")
             .arg(&bin_path);
         apply_target_link_flags(&mut cmd);
@@ -1411,6 +1736,7 @@ fn emit_native_artifact_cranelift(
 
     let object_path = build_dir.join(format!("{}.o", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
+    let runtime_shim_path = ensure_native_runtime_shim(&build_dir)?;
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -1425,6 +1751,9 @@ fn emit_native_artifact_cranelift(
     flags_builder
         .set("opt_level", opt_level)
         .map_err(|error| anyhow!("failed setting cranelift opt_level={opt_level}: {error}"))?;
+    flags_builder
+        .set("is_pic", "true")
+        .map_err(|error| anyhow!("failed enabling cranelift PIC codegen: {error}"))?;
     let flags = settings::Flags::new(flags_builder);
     let isa_builder = cranelift_native::builder()
         .map_err(|error| anyhow!("failed constructing cranelift native isa: {error}"))?;
@@ -1478,6 +1807,7 @@ fn emit_native_artifact_cranelift(
             })?;
         function_ids.insert(function.name.clone(), id);
     }
+    declare_native_runtime_imports(&mut module, &mut function_ids)?;
 
     for function in &fir.typed_functions {
         let Some(function_id) = function_ids.get(&function.name).copied() else {
@@ -1558,7 +1888,11 @@ fn emit_native_artifact_cranelift(
     let mut last_error = None;
     for tool in candidates {
         let mut cmd = Command::new(&tool);
-        cmd.arg(&object_path).arg("-o").arg(&bin_path);
+        cmd.arg(&object_path)
+            .arg(&runtime_shim_path)
+            .arg("-o")
+            .arg(&bin_path)
+            .arg("-lpthread");
         apply_target_link_flags(&mut cmd);
         // Object code is already generated at selected Cranelift optimization level.
         apply_extra_linker_args(&mut cmd);
@@ -1695,7 +2029,6 @@ fn clif_emit_block(
                 let zero = builder.ins().iconst(types::I32, 0);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
                 builder.ins().brif(cond, loop_body, &[], exit, &[]);
-                builder.seal_block(head);
 
                 builder.switch_to_block(loop_body);
                 let body_terminated =
@@ -1704,6 +2037,7 @@ fn clif_emit_block(
                     builder.ins().jump(head, &[]);
                 }
                 builder.seal_block(loop_body);
+                builder.seal_block(head);
 
                 builder.switch_to_block(exit);
                 builder.seal_block(exit);
@@ -1823,13 +2157,6 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::Call { callee, args } => {
-            let Some(function_id) = function_ids.get(callee).copied() else {
-                return Err(anyhow!(
-                    "native backend cannot lower unresolved call target `{}`",
-                    callee
-                ));
-            };
-            let func_ref = module.declare_func_in_func(function_id, builder.func);
             let mut values = Vec::with_capacity(args.len());
             for arg in args {
                 values.push(clif_emit_expr(
@@ -1841,11 +2168,22 @@ fn clif_emit_expr(
                     next_var,
                 )?);
             }
-            let call = builder.ins().call(func_ref, &values);
-            if let Some(value) = builder.inst_results(call).first().copied() {
-                value
-            } else {
+            if let Some(function_id) = function_ids.get(callee).copied() {
+                let func_ref = module.declare_func_in_func(function_id, builder.func);
+                let call = builder.ins().call(func_ref, &values);
+                if let Some(value) = builder.inst_results(call).first().copied() {
+                    value
+                } else {
+                    builder.ins().iconst(types::I32, 0)
+                }
+            } else if native_backend_supports_call(callee) {
+                // Mirror HIR/eval behavior for dotted/runtime calls: evaluate args and return unit-ish 0.
                 builder.ins().iconst(types::I32, 0)
+            } else {
+                return Err(anyhow!(
+                    "native backend cannot lower unresolved call target `{}`",
+                    callee
+                ));
             }
         }
     })
@@ -1938,7 +2276,7 @@ fn collect_unresolved_calls_from_expr(
 ) {
     match expr {
         ast::Expr::Call { callee, args } => {
-            if !defined_functions.contains(callee) {
+            if !defined_functions.contains(callee) && !native_backend_supports_call(callee) {
                 unresolved.insert(callee.clone());
             }
             for arg in args {
@@ -1975,6 +2313,256 @@ fn collect_unresolved_calls_from_expr(
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
     }
 }
+
+fn native_backend_supports_call(callee: &str) -> bool {
+    callee.contains('.') || hir::is_runtime_intrinsic(callee)
+}
+
+fn declare_native_runtime_imports(
+    module: &mut ObjectModule,
+    function_ids: &mut HashMap<String, cranelift_module::FuncId>,
+) -> Result<()> {
+    for import in NATIVE_RUNTIME_IMPORTS {
+        if function_ids.contains_key(import.callee) {
+            continue;
+        }
+        let mut sig = module.make_signature();
+        for _ in 0..import.arity {
+            sig.params.push(AbiParam::new(types::I32));
+        }
+        sig.returns.push(AbiParam::new(types::I32));
+        let id = module
+            .declare_function(import.symbol, Linkage::Import, &sig)
+            .map_err(|error| {
+                anyhow!(
+                    "failed declaring native runtime import `{}` for `{}`: {error}",
+                    import.symbol,
+                    import.callee
+                )
+            })?;
+        function_ids.insert(import.callee.to_string(), id);
+    }
+    Ok(())
+}
+
+fn ensure_native_runtime_shim(build_dir: &Path) -> Result<PathBuf> {
+    let runtime_shim_path = build_dir.join("fz_native_runtime.c");
+    std::fs::write(&runtime_shim_path, NATIVE_RUNTIME_SHIM_C).with_context(|| {
+        format!(
+            "failed writing native runtime shim source: {}",
+            runtime_shim_path.display()
+        )
+    })?;
+    Ok(runtime_shim_path)
+}
+
+const NATIVE_RUNTIME_SHIM_C: &str = r#"#include <arpa/inet.h>
+#include <errno.h>
+#include <netinet/in.h>
+#include <pthread.h>
+#include <sched.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <time.h>
+#include <unistd.h>
+
+static int fz_listener_fd = -1;
+static pthread_mutex_t fz_listener_lock = PTHREAD_MUTEX_INITIALIZER;
+static int fz_server_thread_started = 0;
+
+static int fz_default_port(void) {
+  const char* raw = getenv("AGENT_PORT");
+  if (raw == NULL || raw[0] == '\0') {
+    return 8080;
+  }
+  char* end = NULL;
+  long parsed = strtol(raw, &end, 10);
+  if (end == raw || parsed <= 0 || parsed > 65535) {
+    return 8080;
+  }
+  return (int)parsed;
+}
+
+static uint32_t fz_default_addr(void) {
+  const char* host = getenv("AGENT_HOST");
+  if (host == NULL || host[0] == '\0') {
+    host = "127.0.0.1";
+  }
+  struct in_addr addr;
+  if (inet_pton(AF_INET, host, &addr) == 1) {
+    return addr.s_addr;
+  }
+  if (strcmp(host, "localhost") == 0) {
+    return htonl(INADDR_LOOPBACK);
+  }
+  return htonl(INADDR_LOOPBACK);
+}
+
+static void fz_send_http_ok(int conn_fd) {
+  const char* body = "{\"status\":\"ok\"}\n";
+  char header[192];
+  int body_len = (int)strlen(body);
+  int header_len = snprintf(
+      header,
+      sizeof(header),
+      "HTTP/1.1 200 OK\r\n"
+      "Content-Type: application/json\r\n"
+      "Content-Length: %d\r\n"
+      "Connection: close\r\n"
+      "\r\n",
+      body_len);
+  if (header_len > 0) {
+    (void)send(conn_fd, header, (size_t)header_len, 0);
+  }
+  (void)send(conn_fd, body, (size_t)body_len, 0);
+}
+
+static void* fz_listener_thread(void* arg) {
+  (void)arg;
+  for (;;) {
+    int listener = -1;
+    pthread_mutex_lock(&fz_listener_lock);
+    listener = fz_listener_fd;
+    pthread_mutex_unlock(&fz_listener_lock);
+    if (listener < 0) {
+      struct timespec sleep_for = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
+      nanosleep(&sleep_for, NULL);
+      continue;
+    }
+    struct sockaddr_in peer;
+    socklen_t peer_len = sizeof(peer);
+    int conn_fd = accept(listener, (struct sockaddr*)&peer, &peer_len);
+    if (conn_fd < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      struct timespec sleep_for = {.tv_sec = 0, .tv_nsec = 2 * 1000 * 1000};
+      nanosleep(&sleep_for, NULL);
+      continue;
+    }
+    char buf[2048];
+    (void)recv(conn_fd, buf, sizeof(buf), 0);
+    fz_send_http_ok(conn_fd);
+    shutdown(conn_fd, SHUT_RDWR);
+    close(conn_fd);
+  }
+  return NULL;
+}
+
+int32_t fz_native_net_bind(void) {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return -1;
+  }
+  int yes = 1;
+  (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+  struct sockaddr_in addr;
+  memset(&addr, 0, sizeof(addr));
+  addr.sin_family = AF_INET;
+  addr.sin_addr.s_addr = fz_default_addr();
+  addr.sin_port = htons((uint16_t)fz_default_port());
+  if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+    close(fd);
+    return -1;
+  }
+  pthread_mutex_lock(&fz_listener_lock);
+  fz_listener_fd = fd;
+  pthread_mutex_unlock(&fz_listener_lock);
+  return fd;
+}
+
+int32_t fz_native_net_listen(int32_t fd) {
+  int listener = fd;
+  if (listener < 0) {
+    pthread_mutex_lock(&fz_listener_lock);
+    listener = fz_listener_fd;
+    pthread_mutex_unlock(&fz_listener_lock);
+  }
+  if (listener < 0) {
+    return -1;
+  }
+  if (listen(listener, 128) != 0) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_listener_lock);
+  if (!fz_server_thread_started) {
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, fz_listener_thread, NULL) == 0) {
+      pthread_detach(thread);
+      fz_server_thread_started = 1;
+    }
+  }
+  pthread_mutex_unlock(&fz_listener_lock);
+  return 0;
+}
+
+int32_t fz_native_net_accept(void) {
+  int listener = -1;
+  pthread_mutex_lock(&fz_listener_lock);
+  listener = fz_listener_fd;
+  pthread_mutex_unlock(&fz_listener_lock);
+  if (listener < 0) {
+    return -1;
+  }
+  struct sockaddr_in peer;
+  socklen_t peer_len = sizeof(peer);
+  int conn_fd = accept(listener, (struct sockaddr*)&peer, &peer_len);
+  if (conn_fd < 0) {
+    return -1;
+  }
+  return conn_fd;
+}
+
+int32_t fz_native_net_read(int32_t conn_fd) {
+  if (conn_fd < 0) {
+    return -1;
+  }
+  char buf[4096];
+  int got = (int)recv(conn_fd, buf, sizeof(buf), 0);
+  if (got < 0) {
+    return -1;
+  }
+  return got;
+}
+
+int32_t fz_native_net_write(int32_t conn_fd) {
+  if (conn_fd < 0) {
+    return -1;
+  }
+  fz_send_http_ok(conn_fd);
+  return 0;
+}
+
+int32_t fz_native_close(int32_t fd) {
+  if (fd >= 0) {
+    shutdown(fd, SHUT_RDWR);
+    close(fd);
+  }
+  return 0;
+}
+
+int32_t fz_native_spawn(int32_t task_ref) {
+  (void)task_ref;
+  return 0;
+}
+
+int32_t fz_native_yield(void) {
+  sched_yield();
+  return 0;
+}
+
+int32_t fz_native_checkpoint(void) {
+  return 0;
+}
+
+int32_t fz_native_net_poll_next(void) {
+  return 0;
+}
+"#;
 
 fn linker_candidates() -> Vec<String> {
     if let Ok(explicit) = std::env::var("FZ_CC") {
@@ -2119,8 +2707,8 @@ mod tests {
             .expect("module source should be written");
 
         let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
-        assert_eq!(artifact.status, "error");
-        assert!(artifact.output.is_none());
+        assert_eq!(artifact.status, "ok");
+        assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2293,8 +2881,8 @@ mod tests {
         .expect("source should be written");
 
         let artifact = compile_file(&root, BuildProfile::Dev).expect("build should run");
-        assert_eq!(artifact.status, "error");
-        assert!(artifact.output.is_none());
+        assert_eq!(artifact.status, "ok");
+        assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -2422,9 +3010,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_reports_unresolved_native_calls() {
+    fn verify_accepts_runtime_and_dotted_native_calls() {
         let file_name = format!(
-            "fozzylang-native-unresolved-{}.fzy",
+            "fozzylang-native-supported-runtime-{}.fzy",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after epoch")
@@ -2438,7 +3026,7 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| diag
+        assert!(!output.diagnostic_details.iter().any(|diag| diag
             .message
             .contains("native backend cannot execute unresolved call")));
 
@@ -2487,6 +3075,51 @@ mod tests {
 
         let error = parse_program(&main).expect_err("cycle should fail parsing");
         assert!(error.to_string().contains("cyclic module declaration"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn emit_ir_canonicalizes_sibling_module_calls() {
+        let project_name = format!(
+            "fozzylang-call-canonicalize-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src/services")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod services;\nfn main() -> i32 {\n    services.http.start_server()\n    return 0\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "mod web;\nmod http;\n",
+        )
+        .expect("services mod should be written");
+        std::fs::write(
+            root.join("src/services/web.fzy"),
+            "fn start_listener() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("web source should be written");
+        std::fs::write(
+            root.join("src/services/http.fzy"),
+            "fn start_server() -> i32 {\n    web.start_listener()\n    return 0\n}\n",
+        )
+        .expect("http source should be written");
+
+        let output = emit_ir(&root).expect("emit ir should run");
+        let ir = output.backend_ir.expect("backend ir should be available");
+        assert!(ir.contains("@services.web.start_listener"));
+        assert!(!ir.contains("@web.start_listener"));
 
         let _ = std::fs::remove_dir_all(root);
     }

@@ -236,12 +236,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     .to_string()),
                 };
             }
-            if host_backends && !deterministic {
-                bail!(
-                    "--host-backends is unsupported for native `.fzy` runs; use a `.fozzy.json` scenario (or `--det` routing) to execute host-backed checks"
-                );
-            }
-            if deterministic {
+            if deterministic && !host_backends {
                 let resolved = resolve_source(&path)?;
                 let parsed = parse_program(&resolved.source_path)?;
                 let typed = hir::lower(&parsed.module);
@@ -357,13 +352,18 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let rendered = match format {
                 Format::Text => format!(
-                    "compiled {} and executed {} with args: {}; exit_code={}; stdout={}; stderr={}",
+                    "compiled {} and executed {} with args: {}; exit_code={}; stdout={}; stderr={}; routing={}",
                     artifact.module,
                     binary.display(),
                     args.join(" "),
                     exit_code,
                     stdout,
-                    stderr
+                    stderr,
+                    if host_backends {
+                        "native-host-runtime"
+                    } else {
+                        "native"
+                    }
                 ),
                 Format::Json => serde_json::json!({
                     "module": artifact.module,
@@ -376,6 +376,21 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "safeProfile": safe_profile,
                     "seed": seed,
                     "hostBackends": host_backends,
+                    "deterministicApplied": deterministic && !host_backends,
+                    "routing": {
+                        "mode": if host_backends {
+                            "native-host-runtime"
+                        } else {
+                            "native"
+                        },
+                        "reason": if host_backends && deterministic {
+                            "host-backed native runs preserve live process semantics and do not route through deterministic scenario execution"
+                        } else if host_backends {
+                            "host-backed native run"
+                        } else {
+                            "native run"
+                        }
+                    },
                     "exitCode": exit_code,
                     "stdout": stdout,
                     "stderr": stderr,
@@ -5757,7 +5772,7 @@ mod tests {
     }
 
     #[test]
-    fn native_run_rejects_host_backends_flag() {
+    fn native_run_allows_host_backends_flag() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -5766,7 +5781,7 @@ mod tests {
         std::fs::write(&source, "fn main() -> i32 {\n    return 0\n}\n")
             .expect("source should be written");
 
-        let error = run(
+        let output = run(
             Command::Run {
                 path: source.clone(),
                 args: Vec::new(),
@@ -5780,10 +5795,9 @@ mod tests {
             },
             Format::Json,
         )
-        .expect_err("native host backend run should be rejected");
-        assert!(error
-            .to_string()
-            .contains("--host-backends is unsupported for native `.fzy` runs"));
+        .expect("native host backend run should execute via native path");
+        assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+        assert!(output.contains("\"exitCode\":0"));
 
         let _ = std::fs::remove_file(source);
     }

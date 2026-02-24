@@ -2188,7 +2188,7 @@ fn type_satisfies_trait(
         .is_some_and(|impls| impls.iter().any(|candidate| type_compatible(candidate, ty)))
 }
 
-fn is_runtime_intrinsic(name: &str) -> bool {
+pub fn is_runtime_intrinsic(name: &str) -> bool {
     matches!(
         name,
         "spawn"
