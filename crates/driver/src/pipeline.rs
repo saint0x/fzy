@@ -41,14 +41,34 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "net.method",
+        symbol: "fz_native_net_method",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.path",
+        symbol: "fz_native_net_path",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.body",
+        symbol: "fz_native_net_body",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "net.write",
         symbol: "fz_native_net_write",
-        arity: 1,
+        arity: 3,
     },
     NativeRuntimeImport {
         callee: "net.write_json",
         symbol: "fz_native_net_write_json",
-        arity: 1,
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "net.write_response",
+        symbol: "fz_native_net_write_response",
+        arity: 5,
     },
     NativeRuntimeImport {
         callee: "net.close",
@@ -108,6 +128,46 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "proc.exec_timeout",
         symbol: "fz_native_proc_exec_timeout",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "process.wait",
+        symbol: "fz_native_proc_wait",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "proc.wait",
+        symbol: "fz_native_proc_wait",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "process.stdout",
+        symbol: "fz_native_proc_stdout",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "proc.stdout",
+        symbol: "fz_native_proc_stdout",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "process.stderr",
+        symbol: "fz_native_proc_stderr",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "proc.stderr",
+        symbol: "fz_native_proc_stderr",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "process.exit_code",
+        symbol: "fz_native_proc_exit_code",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "proc.exit_code",
+        symbol: "fz_native_proc_exit_code",
         arity: 1,
     },
 ];
@@ -2492,9 +2552,6 @@ fn clif_emit_expr(
                 } else {
                     builder.ins().iconst(types::I32, 0)
                 }
-            } else if native_backend_supports_call(callee) {
-                // Mirror HIR/eval behavior for dotted/runtime calls: evaluate args and return unit-ish 0.
-                builder.ins().iconst(types::I32, 0)
             } else {
                 return Err(anyhow!(
                     "native backend cannot lower unresolved call target `{}`",
@@ -2631,7 +2688,7 @@ fn collect_unresolved_calls_from_expr(
 }
 
 fn native_backend_supports_call(callee: &str) -> bool {
-    callee.contains('.') || hir::is_runtime_intrinsic(callee)
+    native_runtime_import_for_callee(callee).is_some()
 }
 
 fn declare_native_runtime_imports(
@@ -2683,113 +2740,516 @@ fn render_native_runtime_shim(string_literals: &[String]) -> String {
         literal_entries.push_str("  NULL,\n");
     }
     let count = string_literals.len();
-    format!(
+    let mut c = String::new();
+    c.push_str(
         r#"#include <arpa/inet.h>
+#include <ctype.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <sched.h>
+#include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
-static const char* fz_string_literals[] = {{
-{literal_entries}}};
-static const int fz_string_literal_count = {count};
+"#,
+    );
+    c.push_str("static const char* fz_string_literals[] = {\n");
+    c.push_str(&literal_entries);
+    c.push_str("};\n");
+    c.push_str(&format!(
+        "static const int fz_string_literal_count = {};\n\n",
+        count
+    ));
+    c.push_str(
+        r#"#define FZ_MAX_DYNAMIC_STRINGS 16384
+#define FZ_MAX_CONN_STATES 2048
+#define FZ_MAX_HTTP_READ 262144
+#define FZ_MAX_PROC_STATES 1024
+
+static char* fz_dynamic_strings[FZ_MAX_DYNAMIC_STRINGS];
+static int fz_dynamic_string_count = 0;
+static pthread_mutex_t fz_string_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int fz_listener_fd = -1;
 static pthread_mutex_t fz_listener_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static const char* fz_env_or_default(const char* key, const char* fallback) {{
-  const char* value = getenv(key);
-  if (value == NULL || value[0] == '\0') {{
-    return fallback;
-  }}
-  return value;
-}}
+typedef struct {
+  int in_use;
+  int fd;
+  int32_t method_id;
+  int32_t path_id;
+  int32_t body_id;
+  int keep_alive;
+} fz_conn_state;
 
-static const char* fz_lookup_literal(int32_t literal_id) {{
-  if (literal_id <= 0 || literal_id > fz_string_literal_count) {{
-    return NULL;
-  }}
-  return fz_string_literals[literal_id - 1];
-}}
+static fz_conn_state fz_conn_states[FZ_MAX_CONN_STATES];
+static pthread_mutex_t fz_conn_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static int fz_default_port(void) {{
+typedef struct {
+  char* data;
+  size_t len;
+  size_t cap;
+} fz_bytes_buf;
+
+typedef struct {
+  int in_use;
+  pid_t pid;
+  int stdout_fd;
+  int stderr_fd;
+  int done;
+  int exit_code;
+  int32_t stdout_id;
+  int32_t stderr_id;
+  fz_bytes_buf stdout_buf;
+  fz_bytes_buf stderr_buf;
+} fz_proc_state;
+
+static fz_proc_state fz_proc_states[FZ_MAX_PROC_STATES];
+static pthread_mutex_t fz_proc_lock = PTHREAD_MUTEX_INITIALIZER;
+static int32_t fz_proc_default_timeout_ms = 30000;
+
+static const char* fz_lookup_string(int32_t id) {
+  if (id <= 0) {
+    return "";
+  }
+  if (id <= fz_string_literal_count) {
+    const char* literal = fz_string_literals[id - 1];
+    return literal == NULL ? "" : literal;
+  }
+  int dynamic_index = id - fz_string_literal_count - 1;
+  if (dynamic_index < 0 || dynamic_index >= fz_dynamic_string_count) {
+    return "";
+  }
+  const char* value = fz_dynamic_strings[dynamic_index];
+  return value == NULL ? "" : value;
+}
+
+static int32_t fz_intern_owned(char* owned) {
+  if (owned == NULL) {
+    return 0;
+  }
+  pthread_mutex_lock(&fz_string_lock);
+  for (int i = 0; i < fz_string_literal_count; i++) {
+    const char* literal = fz_string_literals[i];
+    if (literal != NULL && strcmp(literal, owned) == 0) {
+      pthread_mutex_unlock(&fz_string_lock);
+      free(owned);
+      return i + 1;
+    }
+  }
+  for (int i = 0; i < fz_dynamic_string_count; i++) {
+    const char* existing = fz_dynamic_strings[i];
+    if (existing != NULL && strcmp(existing, owned) == 0) {
+      pthread_mutex_unlock(&fz_string_lock);
+      free(owned);
+      return fz_string_literal_count + i + 1;
+    }
+  }
+  if (fz_dynamic_string_count >= FZ_MAX_DYNAMIC_STRINGS) {
+    pthread_mutex_unlock(&fz_string_lock);
+    free(owned);
+    return 0;
+  }
+  int index = fz_dynamic_string_count++;
+  fz_dynamic_strings[index] = owned;
+  pthread_mutex_unlock(&fz_string_lock);
+  return fz_string_literal_count + index + 1;
+}
+
+static int32_t fz_intern_slice(const char* data, size_t len) {
+  char* owned = (char*)malloc(len + 1);
+  if (owned == NULL) {
+    return 0;
+  }
+  if (len > 0) {
+    memcpy(owned, data, len);
+  }
+  owned[len] = '\0';
+  return fz_intern_owned(owned);
+}
+
+static int fz_default_port(void) {
   const char* raw = getenv("AGENT_PORT");
-  if (raw == NULL || raw[0] == '\0') {{
+  if (raw == NULL || raw[0] == '\0') {
     return 8080;
-  }}
+  }
   char* end = NULL;
   long parsed = strtol(raw, &end, 10);
-  if (end == raw || parsed <= 0 || parsed > 65535) {{
+  if (end == raw || parsed <= 0 || parsed > 65535) {
     return 8080;
-  }}
+  }
   return (int)parsed;
-}}
+}
 
-static uint32_t fz_default_addr(void) {{
-  const char* host = fz_env_or_default("AGENT_HOST", "127.0.0.1");
+static uint32_t fz_default_addr(void) {
+  const char* host = getenv("AGENT_HOST");
+  if (host == NULL || host[0] == '\0') {
+    host = "127.0.0.1";
+  }
   struct in_addr addr;
-  if (inet_pton(AF_INET, host, &addr) == 1) {{
+  if (inet_pton(AF_INET, host, &addr) == 1) {
     return addr.s_addr;
-  }}
-  if (strcmp(host, "localhost") == 0) {{
+  }
+  if (strcmp(host, "localhost") == 0) {
     return htonl(INADDR_LOOPBACK);
-  }}
+  }
   return htonl(INADDR_LOOPBACK);
-}}
+}
 
-static int fz_send_http_response(
-    int conn_fd,
-    const char* content_type,
-    const char* body,
-    int close_after) {{
-  if (conn_fd < 0) {{
+static int64_t fz_now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (int64_t)ts.tv_sec * 1000 + (ts.tv_nsec / 1000000);
+}
+
+static int fz_send_all(int fd, const char* data, size_t len) {
+  size_t sent = 0;
+  while (sent < len) {
+    ssize_t wrote = send(fd, data + sent, len - sent, 0);
+    if (wrote < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      return -1;
+    }
+    if (wrote == 0) {
+      return -1;
+    }
+    sent += (size_t)wrote;
+  }
+  return 0;
+}
+
+static const char* fz_http_reason(int status_code) {
+  switch (status_code) {
+    case 200: return "OK";
+    case 201: return "Created";
+    case 202: return "Accepted";
+    case 204: return "No Content";
+    case 400: return "Bad Request";
+    case 401: return "Unauthorized";
+    case 403: return "Forbidden";
+    case 404: return "Not Found";
+    case 409: return "Conflict";
+    case 422: return "Unprocessable Entity";
+    case 429: return "Too Many Requests";
+    case 500: return "Internal Server Error";
+    case 502: return "Bad Gateway";
+    case 503: return "Service Unavailable";
+    default: return "OK";
+  }
+}
+
+static fz_conn_state* fz_conn_state_for(int fd, int create_if_missing) {
+  fz_conn_state* free_slot = NULL;
+  for (int i = 0; i < FZ_MAX_CONN_STATES; i++) {
+    if (fz_conn_states[i].in_use && fz_conn_states[i].fd == fd) {
+      return &fz_conn_states[i];
+    }
+    if (!fz_conn_states[i].in_use && free_slot == NULL) {
+      free_slot = &fz_conn_states[i];
+    }
+  }
+  if (!create_if_missing || free_slot == NULL) {
+    return NULL;
+  }
+  memset(free_slot, 0, sizeof(*free_slot));
+  free_slot->in_use = 1;
+  free_slot->fd = fd;
+  return free_slot;
+}
+
+static void fz_conn_state_drop(int fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  for (int i = 0; i < FZ_MAX_CONN_STATES; i++) {
+    if (fz_conn_states[i].in_use && fz_conn_states[i].fd == fd) {
+      memset(&fz_conn_states[i], 0, sizeof(fz_conn_states[i]));
+      break;
+    }
+  }
+  pthread_mutex_unlock(&fz_conn_lock);
+}
+
+static int fz_find_header_end(const char* buf, int len) {
+  for (int i = 0; i + 3 < len; i++) {
+    if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') {
+      return i + 4;
+    }
+  }
+  return -1;
+}
+
+static int fz_contains_ci(const char* hay, size_t hay_len, const char* needle) {
+  size_t needle_len = strlen(needle);
+  if (needle_len == 0 || hay_len < needle_len) {
+    return 0;
+  }
+  for (size_t i = 0; i + needle_len <= hay_len; i++) {
+    size_t j = 0;
+    while (j < needle_len) {
+      char a = (char)tolower((unsigned char)hay[i + j]);
+      char b = (char)tolower((unsigned char)needle[j]);
+      if (a != b) {
+        break;
+      }
+      j++;
+    }
+    if (j == needle_len) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+static int64_t fz_parse_content_length(const char* headers, int header_len) {
+  const char* cursor = headers;
+  const char* end = headers + header_len;
+  while (cursor < end) {
+    const char* line_end = strstr(cursor, "\r\n");
+    if (line_end == NULL || line_end > end) {
+      break;
+    }
+    if (line_end == cursor) {
+      break;
+    }
+    size_t line_len = (size_t)(line_end - cursor);
+    if (line_len >= 15 && strncasecmp(cursor, "Content-Length:", 15) == 0) {
+      const char* value = cursor + 15;
+      while (value < line_end && (*value == ' ' || *value == '\t')) {
+        value++;
+      }
+      char tmp[32];
+      size_t max = (size_t)(line_end - value);
+      if (max >= sizeof(tmp)) {
+        max = sizeof(tmp) - 1;
+      }
+      memcpy(tmp, value, max);
+      tmp[max] = '\0';
+      char* parse_end = NULL;
+      long long parsed = strtoll(tmp, &parse_end, 10);
+      if (parse_end != tmp && parsed >= 0) {
+        return parsed;
+      }
+    }
+    cursor = line_end + 2;
+  }
+  return -1;
+}
+
+static int fz_parse_keep_alive(const char* headers, int header_len, const char* version, int version_len) {
+  int keep_alive = (version_len >= 8 && strncasecmp(version, "HTTP/1.1", 8) == 0) ? 1 : 0;
+  const char* cursor = headers;
+  const char* end = headers + header_len;
+  while (cursor < end) {
+    const char* line_end = strstr(cursor, "\r\n");
+    if (line_end == NULL || line_end > end) {
+      break;
+    }
+    if (line_end == cursor) {
+      break;
+    }
+    size_t line_len = (size_t)(line_end - cursor);
+    if (line_len >= 11 && strncasecmp(cursor, "Connection:", 11) == 0) {
+      const char* value = cursor + 11;
+      while (value < line_end && (*value == ' ' || *value == '\t')) {
+        value++;
+      }
+      size_t value_len = (size_t)(line_end - value);
+      if (fz_contains_ci(value, value_len, "close")) {
+        keep_alive = 0;
+      } else if (fz_contains_ci(value, value_len, "keep-alive")) {
+        keep_alive = 1;
+      }
+      break;
+    }
+    cursor = line_end + 2;
+  }
+  return keep_alive;
+}
+
+static int fz_send_http_response(int conn_fd, int status_code, const char* content_type, const char* body, int close_after) {
+  if (conn_fd < 0) {
     return -1;
-  }}
-  if (body == NULL) {{
+  }
+  if (content_type == NULL || content_type[0] == '\0') {
+    content_type = "text/plain; charset=utf-8";
+  }
+  if (body == NULL) {
     body = "";
-  }}
+  }
   int body_len = (int)strlen(body);
-  char header[256];
+  const char* reason = fz_http_reason(status_code);
+  char header[512];
   int header_len = snprintf(
       header,
       sizeof(header),
-      "HTTP/1.1 200 OK\r\n"
+      "HTTP/1.1 %d %s\r\n"
       "Content-Type: %s\r\n"
       "Content-Length: %d\r\n"
       "Connection: %s\r\n"
       "\r\n",
+      status_code,
+      reason,
       content_type,
       body_len,
       close_after ? "close" : "keep-alive");
-  if (header_len <= 0) {{
+  if (header_len <= 0 || header_len >= (int)sizeof(header)) {
     return -1;
-  }}
-  if (send(conn_fd, header, (size_t)header_len, 0) < 0) {{
+  }
+  if (fz_send_all(conn_fd, header, (size_t)header_len) != 0) {
     return -1;
-  }}
-  if (body_len > 0 && send(conn_fd, body, (size_t)body_len, 0) < 0) {{
+  }
+  if (body_len > 0 && fz_send_all(conn_fd, body, (size_t)body_len) != 0) {
     return -1;
-  }}
-  if (close_after) {{
+  }
+  if (close_after) {
     shutdown(conn_fd, SHUT_RDWR);
     close(conn_fd);
-  }}
+    fz_conn_state_drop(conn_fd);
+  }
   return 0;
-}}
+}
 
-int32_t fz_native_net_bind(void) {{
-  int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {{
+static void fz_bytes_buf_init(fz_bytes_buf* buf) {
+  buf->data = NULL;
+  buf->len = 0;
+  buf->cap = 0;
+}
+
+static void fz_bytes_buf_free(fz_bytes_buf* buf) {
+  if (buf->data != NULL) {
+    free(buf->data);
+  }
+  buf->data = NULL;
+  buf->len = 0;
+  buf->cap = 0;
+}
+
+static int fz_bytes_buf_append(fz_bytes_buf* buf, const char* data, size_t len) {
+  if (len == 0) {
+    return 0;
+  }
+  size_t needed = buf->len + len + 1;
+  if (needed > buf->cap) {
+    size_t next_cap = buf->cap == 0 ? 4096 : buf->cap;
+    while (next_cap < needed) {
+      next_cap *= 2;
+    }
+    char* next = (char*)realloc(buf->data, next_cap);
+    if (next == NULL) {
+      return -1;
+    }
+    buf->data = next;
+    buf->cap = next_cap;
+  }
+  memcpy(buf->data + buf->len, data, len);
+  buf->len += len;
+  buf->data[buf->len] = '\0';
+  return 0;
+}
+
+static int fz_drain_fd(int fd, fz_bytes_buf* buf) {
+  if (fd < 0) {
+    return 0;
+  }
+  char tmp[4096];
+  for (;;) {
+    ssize_t got = read(fd, tmp, sizeof(tmp));
+    if (got > 0) {
+      if (fz_bytes_buf_append(buf, tmp, (size_t)got) != 0) {
+        return -1;
+      }
+      continue;
+    }
+    if (got == 0) {
+      return 1;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return 0;
+    }
     return -1;
-  }}
+  }
+}
+
+static int fz_set_nonblocking(int fd) {
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags < 0) {
+    return -1;
+  }
+  return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static fz_proc_state* fz_proc_state_get(int32_t handle) {
+  if (handle <= 0 || handle > FZ_MAX_PROC_STATES) {
+    return NULL;
+  }
+  fz_proc_state* state = &fz_proc_states[handle - 1];
+  if (!state->in_use) {
+    return NULL;
+  }
+  return state;
+}
+
+static int32_t fz_proc_state_alloc(pid_t pid, int stdout_fd, int stderr_fd) {
+  for (int i = 0; i < FZ_MAX_PROC_STATES; i++) {
+    if (!fz_proc_states[i].in_use) {
+      fz_proc_states[i].in_use = 1;
+      fz_proc_states[i].pid = pid;
+      fz_proc_states[i].stdout_fd = stdout_fd;
+      fz_proc_states[i].stderr_fd = stderr_fd;
+      fz_proc_states[i].done = 0;
+      fz_proc_states[i].exit_code = -1;
+      fz_proc_states[i].stdout_id = 0;
+      fz_proc_states[i].stderr_id = 0;
+      fz_bytes_buf_init(&fz_proc_states[i].stdout_buf);
+      fz_bytes_buf_init(&fz_proc_states[i].stderr_buf);
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+static void fz_proc_finalize(fz_proc_state* state, int exit_code) {
+  if (state->stdout_fd >= 0) {
+    (void)fz_drain_fd(state->stdout_fd, &state->stdout_buf);
+    close(state->stdout_fd);
+    state->stdout_fd = -1;
+  }
+  if (state->stderr_fd >= 0) {
+    (void)fz_drain_fd(state->stderr_fd, &state->stderr_buf);
+    close(state->stderr_fd);
+    state->stderr_fd = -1;
+  }
+  state->stdout_id = fz_intern_slice(
+      state->stdout_buf.data == NULL ? "" : state->stdout_buf.data,
+      state->stdout_buf.data == NULL ? 0 : state->stdout_buf.len);
+  state->stderr_id = fz_intern_slice(
+      state->stderr_buf.data == NULL ? "" : state->stderr_buf.data,
+      state->stderr_buf.data == NULL ? 0 : state->stderr_buf.len);
+  fz_bytes_buf_free(&state->stdout_buf);
+  fz_bytes_buf_free(&state->stderr_buf);
+  state->exit_code = exit_code;
+  state->done = 1;
+}
+
+int32_t fz_native_net_bind(void) {
+  int fd = socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0) {
+    return -1;
+  }
   int yes = 1;
   (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
   struct sockaddr_in addr;
@@ -2797,122 +3257,414 @@ int32_t fz_native_net_bind(void) {{
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = fz_default_addr();
   addr.sin_port = htons((uint16_t)fz_default_port());
-  if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {{
+  if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
     close(fd);
     return -1;
-  }}
+  }
   pthread_mutex_lock(&fz_listener_lock);
   fz_listener_fd = fd;
   pthread_mutex_unlock(&fz_listener_lock);
   return fd;
-}}
+}
 
-int32_t fz_native_net_listen(int32_t fd) {{
+int32_t fz_native_net_listen(int32_t fd) {
   int listener = fd;
-  if (listener < 0) {{
+  if (listener < 0) {
     pthread_mutex_lock(&fz_listener_lock);
     listener = fz_listener_fd;
     pthread_mutex_unlock(&fz_listener_lock);
-  }}
-  if (listener < 0) {{
+  }
+  if (listener < 0) {
     return -1;
-  }}
+  }
   return listen(listener, 128) == 0 ? 0 : -1;
-}}
+}
 
-int32_t fz_native_net_accept(void) {{
+int32_t fz_native_net_accept(void) {
   int listener = -1;
   pthread_mutex_lock(&fz_listener_lock);
   listener = fz_listener_fd;
   pthread_mutex_unlock(&fz_listener_lock);
-  if (listener < 0) {{
+  if (listener < 0) {
     return -1;
-  }}
+  }
   struct sockaddr_in peer;
   socklen_t peer_len = sizeof(peer);
   int conn_fd = accept(listener, (struct sockaddr*)&peer, &peer_len);
-  return conn_fd < 0 ? -1 : conn_fd;
-}}
-
-int32_t fz_native_net_read(int32_t conn_fd) {{
-  if (conn_fd < 0) {{
+  if (conn_fd < 0) {
     return -1;
-  }}
-  char buf[4096];
-  int got = (int)recv(conn_fd, buf, sizeof(buf), 0);
-  return got < 0 ? -1 : got;
-}}
+  }
+  pthread_mutex_lock(&fz_conn_lock);
+  (void)fz_conn_state_for(conn_fd, 1);
+  pthread_mutex_unlock(&fz_conn_lock);
+  return conn_fd;
+}
 
-int32_t fz_native_net_write_json(int32_t conn_fd) {{
-  const char* body = fz_env_or_default("FZ_NET_WRITE_JSON_BODY", "{{\"status\":\"json\"}}\n");
-  return fz_send_http_response(conn_fd, "application/json", body, 1);
-}}
+int32_t fz_native_net_read(int32_t conn_fd) {
+  if (conn_fd < 0) {
+    return -1;
+  }
+  char* req = (char*)malloc(FZ_MAX_HTTP_READ + 1);
+  if (req == NULL) {
+    return -1;
+  }
+  int total = 0;
+  int header_end = -1;
+  int64_t content_length = -1;
+  while (total < FZ_MAX_HTTP_READ) {
+    ssize_t got = recv(conn_fd, req + total, (size_t)(FZ_MAX_HTTP_READ - total), 0);
+    if (got < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      free(req);
+      return -1;
+    }
+    if (got == 0) {
+      break;
+    }
+    total += (int)got;
+    req[total] = '\0';
+    if (header_end < 0) {
+      header_end = fz_find_header_end(req, total);
+      if (header_end >= 0) {
+        content_length = fz_parse_content_length(req, header_end);
+      }
+    }
+    if (header_end >= 0) {
+      if (content_length >= 0) {
+        if (total >= header_end + content_length) {
+          break;
+        }
+      } else {
+        break;
+      }
+    }
+  }
+  if (total <= 0) {
+    free(req);
+    return total;
+  }
+  if (header_end < 0) {
+    free(req);
+    return -1;
+  }
 
-int32_t fz_native_net_write(int32_t conn_fd) {{
-  const char* body = fz_env_or_default("FZ_NET_WRITE_BODY", "ok\n");
-  return fz_send_http_response(conn_fd, "text/plain; charset=utf-8", body, 1);
-}}
+  const char* line_end = strstr(req, "\r\n");
+  if (line_end == NULL) {
+    free(req);
+    return -1;
+  }
+  const char* sp1 = memchr(req, ' ', (size_t)(line_end - req));
+  if (sp1 == NULL) {
+    free(req);
+    return -1;
+  }
+  const char* sp2 = memchr(sp1 + 1, ' ', (size_t)(line_end - (sp1 + 1)));
+  if (sp2 == NULL) {
+    free(req);
+    return -1;
+  }
 
-int32_t fz_native_close(int32_t fd) {{
-  if (fd >= 0) {{
+  size_t method_len = (size_t)(sp1 - req);
+  size_t path_len = (size_t)(sp2 - (sp1 + 1));
+  const char* version = sp2 + 1;
+  int version_len = (int)(line_end - version);
+
+  int body_len = total - header_end;
+  if (content_length >= 0 && body_len > content_length) {
+    body_len = (int)content_length;
+  }
+  if (body_len < 0) {
+    body_len = 0;
+  }
+
+  int32_t method_id = fz_intern_slice(req, method_len);
+  int32_t path_id = fz_intern_slice(sp1 + 1, path_len);
+  int32_t body_id = fz_intern_slice(req + header_end, (size_t)body_len);
+  int keep_alive = fz_parse_keep_alive(req, header_end, version, version_len);
+
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 1);
+  if (state != NULL) {
+    state->method_id = method_id;
+    state->path_id = path_id;
+    state->body_id = body_id;
+    state->keep_alive = keep_alive;
+  }
+  pthread_mutex_unlock(&fz_conn_lock);
+
+  free(req);
+  return total;
+}
+
+int32_t fz_native_net_method(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  int32_t value = state == NULL ? 0 : state->method_id;
+  pthread_mutex_unlock(&fz_conn_lock);
+  return value;
+}
+
+int32_t fz_native_net_path(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  int32_t value = state == NULL ? 0 : state->path_id;
+  pthread_mutex_unlock(&fz_conn_lock);
+  return value;
+}
+
+int32_t fz_native_net_body(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  int32_t value = state == NULL ? 0 : state->body_id;
+  pthread_mutex_unlock(&fz_conn_lock);
+  return value;
+}
+
+int32_t fz_native_net_write_response(
+    int32_t conn_fd,
+    int32_t status_code,
+    int32_t content_type_id,
+    int32_t body_id,
+    int32_t close_after) {
+  const char* content_type = fz_lookup_string(content_type_id);
+  const char* body = fz_lookup_string(body_id);
+  return fz_send_http_response(conn_fd, status_code, content_type, body, close_after != 0);
+}
+
+int32_t fz_native_net_write(int32_t conn_fd, int32_t status_code, int32_t body_id) {
+  int close_after = 1;
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state != NULL) {
+    close_after = state->keep_alive ? 0 : 1;
+  }
+  pthread_mutex_unlock(&fz_conn_lock);
+  return fz_send_http_response(
+      conn_fd,
+      status_code,
+      "text/plain; charset=utf-8",
+      fz_lookup_string(body_id),
+      close_after);
+}
+
+int32_t fz_native_net_write_json(int32_t conn_fd, int32_t status_code, int32_t body_id) {
+  int close_after = 1;
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state != NULL) {
+    close_after = state->keep_alive ? 0 : 1;
+  }
+  pthread_mutex_unlock(&fz_conn_lock);
+  return fz_send_http_response(
+      conn_fd,
+      status_code,
+      "application/json",
+      fz_lookup_string(body_id),
+      close_after);
+}
+
+int32_t fz_native_close(int32_t fd) {
+  if (fd >= 0) {
     shutdown(fd, SHUT_RDWR);
     close(fd);
-  }}
+  }
+  fz_conn_state_drop(fd);
   return 0;
-}}
+}
 
-int32_t fz_native_proc_run(int32_t command_literal_id) {{
-  const char* command = fz_lookup_literal(command_literal_id);
-  if (command == NULL || command[0] == '\0') {{
+int32_t fz_native_proc_spawn(int32_t command_id) {
+  const char* command = fz_lookup_string(command_id);
+  if (command == NULL || command[0] == '\0') {
     return -1;
-  }}
-  int code = system(command);
-  return code;
-}}
+  }
 
-int32_t fz_native_proc_spawn(int32_t command_literal_id) {{
-  const char* command = fz_lookup_literal(command_literal_id);
-  if (command == NULL || command[0] == '\0') {{
+  int out_pipe[2];
+  int err_pipe[2];
+  if (pipe(out_pipe) != 0) {
     return -1;
-  }}
+  }
+  if (pipe(err_pipe) != 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    return -1;
+  }
+
   pid_t pid = fork();
-  if (pid < 0) {{
+  if (pid < 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[0]);
+    close(err_pipe[1]);
     return -1;
-  }}
-  if (pid == 0) {{
+  }
+  if (pid == 0) {
+    dup2(out_pipe[1], STDOUT_FILENO);
+    dup2(err_pipe[1], STDERR_FILENO);
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[0]);
+    close(err_pipe[1]);
     execl("/bin/sh", "sh", "-lc", command, (char*)NULL);
     _exit(127);
-  }}
-  return (int32_t)pid;
-}}
+  }
 
-int32_t fz_native_proc_exec_timeout(int32_t timeout_ms) {{
-  if (timeout_ms <= 0) {{
+  close(out_pipe[1]);
+  close(err_pipe[1]);
+  (void)fz_set_nonblocking(out_pipe[0]);
+  (void)fz_set_nonblocking(err_pipe[0]);
+
+  pthread_mutex_lock(&fz_proc_lock);
+  int32_t handle = fz_proc_state_alloc(pid, out_pipe[0], err_pipe[0]);
+  pthread_mutex_unlock(&fz_proc_lock);
+  if (handle < 0) {
+    kill(pid, SIGKILL);
+    close(out_pipe[0]);
+    close(err_pipe[0]);
+    return -1;
+  }
+  return handle;
+}
+
+int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms) {
+  pthread_mutex_lock(&fz_proc_lock);
+  fz_proc_state* state = fz_proc_state_get(handle);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_proc_lock);
+    return -1;
+  }
+  if (state->done) {
+    pthread_mutex_unlock(&fz_proc_lock);
     return 0;
-  }}
-  usleep((useconds_t)timeout_ms * 1000U);
-  return 0;
-}}
+  }
 
-int32_t fz_native_spawn(int32_t task_ref) {{
+  int64_t start = fz_now_ms();
+  int status = 0;
+  int timed_out = 0;
+  for (;;) {
+    if (fz_drain_fd(state->stdout_fd, &state->stdout_buf) < 0) {
+      pthread_mutex_unlock(&fz_proc_lock);
+      return -1;
+    }
+    if (fz_drain_fd(state->stderr_fd, &state->stderr_buf) < 0) {
+      pthread_mutex_unlock(&fz_proc_lock);
+      return -1;
+    }
+
+    pid_t waited = waitpid(state->pid, &status, WNOHANG);
+    if (waited == state->pid) {
+      break;
+    }
+    if (waited < 0) {
+      pthread_mutex_unlock(&fz_proc_lock);
+      return -1;
+    }
+    if (timeout_ms == 0) {
+      pthread_mutex_unlock(&fz_proc_lock);
+      return 1;
+    }
+    if (timeout_ms > 0 && (fz_now_ms() - start) >= timeout_ms) {
+      kill(state->pid, SIGKILL);
+      (void)waitpid(state->pid, &status, 0);
+      timed_out = 1;
+      break;
+    }
+    usleep(10 * 1000);
+  }
+
+  int exit_code = -1;
+  if (timed_out) {
+    exit_code = -124;
+  } else if (WIFEXITED(status)) {
+    exit_code = WEXITSTATUS(status);
+  } else if (WIFSIGNALED(status)) {
+    exit_code = 128 + WTERMSIG(status);
+  }
+  fz_proc_finalize(state, exit_code);
+  pthread_mutex_unlock(&fz_proc_lock);
+  return 0;
+}
+
+int32_t fz_native_proc_run(int32_t command_id) {
+  int32_t handle = fz_native_proc_spawn(command_id);
+  if (handle < 0) {
+    return -1;
+  }
+  int32_t waited = fz_native_proc_wait(handle, fz_proc_default_timeout_ms);
+  if (waited < 0) {
+    return -1;
+  }
+  return handle;
+}
+
+int32_t fz_native_proc_stdout(int32_t handle) {
+  int wait_result = fz_native_proc_wait(handle, 0);
+  if (wait_result < 0) {
+    return 0;
+  }
+  pthread_mutex_lock(&fz_proc_lock);
+  fz_proc_state* state = fz_proc_state_get(handle);
+  int32_t value = (state == NULL) ? 0 : state->stdout_id;
+  pthread_mutex_unlock(&fz_proc_lock);
+  return value;
+}
+
+int32_t fz_native_proc_stderr(int32_t handle) {
+  int wait_result = fz_native_proc_wait(handle, 0);
+  if (wait_result < 0) {
+    return 0;
+  }
+  pthread_mutex_lock(&fz_proc_lock);
+  fz_proc_state* state = fz_proc_state_get(handle);
+  int32_t value = (state == NULL) ? 0 : state->stderr_id;
+  pthread_mutex_unlock(&fz_proc_lock);
+  return value;
+}
+
+int32_t fz_native_proc_exit_code(int32_t handle) {
+  int wait_result = fz_native_proc_wait(handle, 0);
+  if (wait_result < 0) {
+    return -1;
+  }
+  if (wait_result > 0) {
+    return -2;
+  }
+  pthread_mutex_lock(&fz_proc_lock);
+  fz_proc_state* state = fz_proc_state_get(handle);
+  int32_t value = (state == NULL) ? -1 : state->exit_code;
+  pthread_mutex_unlock(&fz_proc_lock);
+  return value;
+}
+
+int32_t fz_native_proc_exec_timeout(int32_t timeout_ms) {
+  if (timeout_ms > 0) {
+    fz_proc_default_timeout_ms = timeout_ms;
+  }
+  return 0;
+}
+
+int32_t fz_native_spawn(int32_t task_ref) {
   (void)task_ref;
-  return 0;
-}}
+  return -1;
+}
 
-int32_t fz_native_yield(void) {{
+int32_t fz_native_yield(void) {
   sched_yield();
   return 0;
-}}
+}
 
-int32_t fz_native_checkpoint(void) {{
+int32_t fz_native_checkpoint(void) {
+  sched_yield();
   return 0;
-}}
+}
 
-int32_t fz_native_net_poll_next(void) {{
-  return 0;
-}}
-"#
-    )
+int32_t fz_native_net_poll_next(void) {
+  return -1;
+}
+"#,
+    );
+    c
 }
 
 fn linker_candidates() -> Vec<String> {
@@ -2977,7 +3729,7 @@ mod tests {
 
     use super::{
         compile_file, compile_file_with_backend, emit_ir, parse_program, refresh_lockfile,
-        verify_file, BuildProfile,
+        render_native_runtime_shim, verify_file, BuildProfile,
     };
 
     #[test]
@@ -3051,7 +3803,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "mod infra;\nfn main() -> i32 {\n    let c = net.connect()\n    return 0\n}\n",
+            "mod infra;\nfn main() -> i32 {\n    let listener = net.bind()\n    return listener\n}\n",
         )
         .expect("main source should be written");
         std::fs::write(root.join("src/infra.fzy"), "use cap.net;\n")
@@ -3227,7 +3979,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "fn main() -> i32 {\n    let c = net.connect()\n    return 0\n}\n",
+            "use cap.net;\nfn main() -> i32 {\n    let listener = net.bind()\n    return listener\n}\n",
         )
         .expect("source should be written");
 
@@ -3323,6 +4075,31 @@ mod tests {
         assert!(error.to_string().contains("unknown backend"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
+        let shim = render_native_runtime_shim(&[
+            "GET".to_string(),
+            "/healthz".to_string(),
+            "{\"ok\":true}".to_string(),
+        ]);
+        assert!(shim.contains("int32_t fz_native_net_method(int32_t conn_fd)"));
+        assert!(shim.contains("int32_t fz_native_net_path(int32_t conn_fd)"));
+        assert!(shim.contains("int32_t fz_native_net_body(int32_t conn_fd)"));
+        assert!(shim.contains("int32_t fz_native_net_write_response("));
+        assert!(shim.contains("int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms)"));
+        assert!(shim.contains("int32_t fz_native_proc_stdout(int32_t handle)"));
+        assert!(shim.contains("int32_t fz_native_proc_stderr(int32_t handle)"));
+        assert!(shim.contains("int32_t fz_native_proc_exit_code(int32_t handle)"));
+    }
+
+    #[test]
+    fn native_runtime_shim_does_not_use_env_response_templates() {
+        let shim = render_native_runtime_shim(&[]);
+        assert!(!shim.contains("FZ_NET_WRITE_JSON_BODY"));
+        assert!(!shim.contains("FZ_NET_WRITE_BODY"));
+        assert!(!shim.contains("fz_env_or_default"));
     }
 
     #[test]
