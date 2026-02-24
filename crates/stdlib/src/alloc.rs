@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocatorKind {
@@ -158,6 +159,35 @@ impl Allocator for FailAllocator {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct ThreadSafeSystemAllocator {
+    inner: Arc<Mutex<SystemAllocator>>,
+}
+
+impl ThreadSafeSystemAllocator {
+    pub fn alloc(&self, size: usize) -> Result<Allocation, AllocError> {
+        self.inner
+            .lock()
+            .map_err(|_| AllocError::AllocationDisabled)?
+            .alloc(size)
+    }
+
+    pub fn free(&self, id: AllocationId) -> Result<(), AllocError> {
+        self.inner
+            .lock()
+            .map_err(|_| AllocError::AllocationDisabled)?
+            .free(id)
+    }
+
+    pub fn in_use_bytes(&self) -> Result<usize, AllocError> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| AllocError::AllocationDisabled)?
+            .in_use_bytes())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -200,5 +230,24 @@ mod tests {
     fn fail_allocator_always_errors() {
         let mut fail = FailAllocator;
         assert_eq!(fail.alloc(8), Err(AllocError::AllocationDisabled));
+    }
+
+    #[test]
+    fn thread_safe_allocator_supports_parallel_ops() {
+        use std::thread;
+
+        let alloc = super::ThreadSafeSystemAllocator::default();
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let shared = alloc.clone();
+            handles.push(thread::spawn(move || {
+                let block = shared.alloc(16).expect("alloc should work");
+                shared.free(block.id).expect("free should work");
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("thread should finish");
+        }
+        assert_eq!(alloc.in_use_bytes().expect("bytes query should work"), 0);
     }
 }

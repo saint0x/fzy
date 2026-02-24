@@ -83,9 +83,13 @@ pub struct FirModule {
     pub generic_instantiations: Vec<String>,
     pub call_graph: Vec<(String, String)>,
     pub functions: Vec<FunctionIr>,
+    pub typed_functions: Vec<TypedFunction>,
     pub type_errors: usize,
     pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
     pub ownership_violations: Vec<String>,
+    pub capability_token_violations: Vec<String>,
+    pub reference_lifetime_violations: Vec<String>,
+    pub linear_type_violations: Vec<String>,
 }
 
 pub fn build(typed: &TypedModule) -> FirModule {
@@ -135,9 +139,13 @@ pub fn build(typed: &TypedModule) -> FirModule {
             .iter()
             .map(lower_function)
             .collect::<Vec<_>>(),
+        typed_functions: typed.typed_functions.clone(),
         type_errors: typed.type_errors,
         function_capability_requirements: typed.function_capability_requirements.clone(),
         ownership_violations: typed.ownership_violations.clone(),
+        capability_token_violations: typed.capability_token_violations.clone(),
+        reference_lifetime_violations: typed.reference_lifetime_violations.clone(),
+        linear_type_violations: typed.linear_type_violations.clone(),
     }
 }
 

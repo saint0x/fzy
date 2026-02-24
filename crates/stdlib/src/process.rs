@@ -1,11 +1,22 @@
-use capabilities::Capability;
+use capabilities::{Capability, CapabilityToken};
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::capability::{require_capability, CapabilityError};
+
 pub fn required_capability_for_process() -> Capability {
     Capability::Process
+}
+
+pub fn run_child_with_capability(
+    spec: &ProcessSpec,
+    cancelled: bool,
+    token: &CapabilityToken,
+) -> Result<ProcessResult, CapabilityError> {
+    require_capability(token, required_capability_for_process())?;
+    Ok(run_child_process(spec, cancelled))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

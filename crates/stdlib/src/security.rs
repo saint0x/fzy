@@ -54,7 +54,12 @@ impl std::fmt::Debug for Secret {
 
 impl Drop for Secret {
     fn drop(&mut self) {
-        self.bytes.fill(0);
+        for byte in &mut self.bytes {
+            unsafe {
+                std::ptr::write_volatile(byte as *mut u8, 0);
+            }
+        }
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
     }
 }
 

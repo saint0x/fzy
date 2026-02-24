@@ -1,11 +1,22 @@
-use capabilities::Capability;
+use capabilities::{Capability, CapabilityToken};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::capability::{require_capability, CapabilityError};
+
 pub fn required_capability_for_durable_fs() -> Capability {
     Capability::FileSystem
+}
+
+pub fn write_atomic_with_capability(
+    path: &Path,
+    bytes: &[u8],
+    token: &CapabilityToken,
+) -> Result<(), CapabilityError> {
+    require_capability(token, required_capability_for_durable_fs())?;
+    write_atomic(path, bytes).map_err(|_| CapabilityError::Missing(required_capability_for_durable_fs()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

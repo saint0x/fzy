@@ -108,19 +108,19 @@
 #### 1.6.1 Capability Enforcement
 - [ ] ⬜ Enforce capabilities through the type system, not just declarations (a function doing network I/O must require a capability token in its signature that callers must provide).
 - [x] ✅ Add capability propagation so callers can prove they hold required capabilities and pass them to callees.
-- [ ] ⬜ Add capability revocation (ability to drop privileges permanently within a scope).
-- [ ] ⬜ Add capability delegation (grant a subset of capabilities to untrusted code via capability tokens/handles).
-- [ ] ⬜ Add capability algebra (composition, intersection, negation) beyond binary set membership.
+- [x] ✅ Add capability revocation (ability to drop privileges permanently within a scope).
+- [x] ✅ Add capability delegation (grant a subset of capabilities to untrusted code via capability tokens/handles).
+- [x] ✅ Add capability algebra (composition, intersection, negation) beyond binary set membership.
 - [x] ✅ Scope capabilities per-function or per-module instead of global per-compilation-unit.
-- [ ] ⬜ Wire `required_capability_for_*()` functions in stdlib to actual enforcement points instead of returning unused values.
+- [x] ✅ Wire `required_capability_for_*()` functions in stdlib to actual enforcement points instead of returning unused values.
 
 #### 1.6.2 Memory Model
 - [ ] ⬜ Define and document the ownership model for heap allocations (currently `alloc`/`free` are just markers counted by the verifier, not tracked semantically).
 - [x] ✅ Implement ownership transfer semantics so the verifier can track which scope owns an allocation through assignments, function calls, and returns.
-- [ ] ⬜ Implement real linear type enforcement (current detection is by naming convention `_res`/`_handle`, not type-driven).
+- [x] ✅ Implement real linear type enforcement (current detection is by naming convention `_res`/`_handle`, not type-driven).
 - [ ] ⬜ Add region/lifetime annotations for references in safe profile (currently flagged but not analyzed).
-- [ ] ⬜ Prevent compiler from optimizing away `Secret` zero-on-drop (use `volatile` writes or platform-specific secure-zero).
-- [ ] ⬜ Add thread-safe allocator variants for concurrent workloads (current allocators are single-threaded only).
+- [x] ✅ Prevent compiler from optimizing away `Secret` zero-on-drop (use `volatile` writes or platform-specific secure-zero).
+- [x] ✅ Add thread-safe allocator variants for concurrent workloads (current allocators are single-threaded only).
 
 ### 1.7 P3 — Runtime & Executor Improvements
 

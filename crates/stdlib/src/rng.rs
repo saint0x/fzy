@@ -1,7 +1,17 @@
-use capabilities::Capability;
+use capabilities::{Capability, CapabilityToken};
+
+use crate::capability::{require_capability, CapabilityError};
 
 pub fn required_capability_for_rng() -> Capability {
     Capability::Random
+}
+
+pub fn next_u64_with_capability(
+    runtime: &mut RngRuntime,
+    token: &CapabilityToken,
+) -> Result<u64, CapabilityError> {
+    require_capability(token, required_capability_for_rng())?;
+    Ok(runtime.next_u64())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,8 +1,18 @@
-use capabilities::Capability;
+use capabilities::{Capability, CapabilityToken};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use crate::capability::{require_capability, CapabilityError};
 
 pub fn required_capability_for_time() -> Capability {
     Capability::Time
+}
+
+pub fn now_millis_with_capability(
+    clock: &dyn Clock,
+    token: &CapabilityToken,
+) -> Result<u64, CapabilityError> {
+    require_capability(token, required_capability_for_time())?;
+    Ok(clock.now_millis())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

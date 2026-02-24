@@ -61,9 +61,67 @@ impl CapabilitySet {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapabilityToken {
+    values: BTreeSet<Capability>,
+}
+
+impl CapabilityToken {
+    pub fn new(values: impl IntoIterator<Item = Capability>) -> Self {
+        Self {
+            values: values.into_iter().collect(),
+        }
+    }
+
+    pub fn allows(&self, capability: Capability) -> bool {
+        self.values.contains(&capability)
+    }
+
+    pub fn compose(&self, other: &Self) -> Self {
+        let mut values = self.values.clone();
+        values.extend(other.values.iter().copied());
+        Self { values }
+    }
+
+    pub fn intersect(&self, other: &Self) -> Self {
+        let values = self
+            .values
+            .intersection(&other.values)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        Self { values }
+    }
+
+    pub fn negate_from_universe(&self, universe: &Self) -> Self {
+        let values = universe
+            .values
+            .difference(&self.values)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        Self { values }
+    }
+
+    pub fn revoke(&mut self, capability: Capability) {
+        self.values.remove(&capability);
+    }
+
+    pub fn delegate_subset(&self, subset: impl IntoIterator<Item = Capability>) -> Self {
+        let requested = subset.into_iter().collect::<BTreeSet<_>>();
+        let values = requested
+            .intersection(&self.values)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        Self { values }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Capability> + '_ {
+        self.values.iter().copied()
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Capability, CapabilitySet};
+    use super::{Capability, CapabilitySet, CapabilityToken};
 
     #[test]
     fn parse_aliases_work() {
@@ -79,5 +137,26 @@ mod tests {
         set.insert(Capability::Time);
         assert!(set.contains(Capability::Time));
         assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn token_algebra_and_revocation_work() {
+        let t1 = CapabilityToken::new([Capability::Network, Capability::FileSystem]);
+        let t2 = CapabilityToken::new([Capability::Process, Capability::Network]);
+        let composed = t1.compose(&t2);
+        assert!(composed.allows(Capability::Network));
+        assert!(composed.allows(Capability::Process));
+
+        let intersection = t1.intersect(&t2);
+        assert!(intersection.allows(Capability::Network));
+        assert!(!intersection.allows(Capability::Process));
+
+        let mut revocable = composed.clone();
+        revocable.revoke(Capability::Network);
+        assert!(!revocable.allows(Capability::Network));
+
+        let delegated = composed.delegate_subset([Capability::Process, Capability::Memory]);
+        assert!(delegated.allows(Capability::Process));
+        assert!(!delegated.allows(Capability::Memory));
     }
 }

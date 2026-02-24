@@ -38,6 +38,9 @@ pub struct TypedModule {
     pub type_errors: usize,
     pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
     pub ownership_violations: Vec<String>,
+    pub capability_token_violations: Vec<String>,
+    pub reference_lifetime_violations: Vec<String>,
+    pub linear_type_violations: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -176,6 +179,13 @@ pub fn lower(module: &Module) -> TypedModule {
     let generic_instantiations = collect_generic_instantiations(module);
     let call_graph = build_call_graph(module);
     let ownership_violations = analyze_ownership(&typed_functions);
+    let capability_token_violations = if capability_token_mode_enabled(&typed_functions) {
+        analyze_capability_token_contracts(&typed_functions, &function_capability_requirements)
+    } else {
+        Vec::new()
+    };
+    let reference_lifetime_violations = analyze_reference_lifetimes(&typed_functions);
+    let linear_type_violations = analyze_linear_types(&typed_functions);
 
     TypedModule {
         name: module.name.clone(),
@@ -203,6 +213,451 @@ pub fn lower(module: &Module) -> TypedModule {
         type_errors,
         function_capability_requirements,
         ownership_violations,
+        capability_token_violations,
+        reference_lifetime_violations,
+        linear_type_violations,
+    }
+}
+
+fn analyze_capability_token_contracts(
+    functions: &[TypedFunction],
+    requirements: &[FunctionCapabilityRequirement],
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    let requirement_map = requirements
+        .iter()
+        .map(|entry| (entry.function.as_str(), entry))
+        .collect::<BTreeMap<_, _>>();
+
+    for function in functions {
+        let required = requirement_map
+            .get(function.name.as_str())
+            .map(|entry| entry.required.clone())
+            .unwrap_or_default();
+        if required.is_empty() {
+            continue;
+        }
+
+        let mut available = BTreeSet::<String>::new();
+        for param in &function.params {
+            if let Some(caps) = capability_set_from_type(&param.ty) {
+                available.extend(caps);
+            }
+        }
+        for cap in &required {
+            if !available.contains(cap) {
+                violations.push(format!(
+                    "function `{}` requires capability `{}` but has no capability token parameter proving it",
+                    function.name, cap
+                ));
+            }
+        }
+
+        let local_types = function
+            .params
+            .iter()
+            .map(|p| (p.name.clone(), p.ty.clone()))
+            .collect::<BTreeMap<_, _>>();
+        analyze_call_token_propagation(
+            &function.name,
+            &function.body,
+            &local_types,
+            &requirement_map,
+            &mut violations,
+        );
+    }
+
+    violations
+}
+
+fn capability_token_mode_enabled(functions: &[TypedFunction]) -> bool {
+    for function in functions {
+        for param in &function.params {
+            if capability_set_from_type(&param.ty).is_some() {
+                return true;
+            }
+        }
+        for stmt in &function.body {
+            if statement_uses_cap_token_intrinsic(stmt) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
+    fn expr_has_cap_intrinsic(expr: &Expr) -> bool {
+        match expr {
+            Expr::Call { callee, args } => {
+                if callee == "revoke_cap"
+                    || callee == "delegate_cap"
+                    || callee == "compose_cap"
+                    || callee == "intersect_cap"
+                    || callee == "negate_cap"
+                {
+                    return true;
+                }
+                args.iter().any(expr_has_cap_intrinsic)
+            }
+            Expr::TryCatch {
+                try_expr,
+                catch_expr,
+            } => expr_has_cap_intrinsic(try_expr) || expr_has_cap_intrinsic(catch_expr),
+            Expr::Binary { left, right, .. } => {
+                expr_has_cap_intrinsic(left) || expr_has_cap_intrinsic(right)
+            }
+            Expr::Group(inner) => expr_has_cap_intrinsic(inner),
+            Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => false,
+        }
+    }
+
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::Return(value)
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => expr_has_cap_intrinsic(value),
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_has_cap_intrinsic(condition)
+                || then_body.iter().any(statement_uses_cap_token_intrinsic)
+                || else_body.iter().any(statement_uses_cap_token_intrinsic)
+        }
+        Stmt::While { condition, body } => {
+            expr_has_cap_intrinsic(condition) || body.iter().any(statement_uses_cap_token_intrinsic)
+        }
+        Stmt::Match { scrutinee, arms } => {
+            expr_has_cap_intrinsic(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(expr_has_cap_intrinsic)
+                        || expr_has_cap_intrinsic(&arm.value)
+                })
+        }
+    }
+}
+
+fn analyze_call_token_propagation(
+    function_name: &str,
+    body: &[Stmt],
+    local_types: &BTreeMap<String, Type>,
+    requirement_map: &BTreeMap<&str, &FunctionCapabilityRequirement>,
+    violations: &mut Vec<String>,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::Let { .. }
+            | Stmt::Assign { .. }
+            | Stmt::Return(_)
+            | Stmt::Defer(_)
+            | Stmt::Requires(_)
+            | Stmt::Ensures(_)
+            | Stmt::Expr(_) => {
+                analyze_expr_call_tokens(function_name, stmt_expr(stmt), local_types, requirement_map, violations);
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(condition),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+                analyze_call_token_propagation(
+                    function_name,
+                    then_body,
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+                analyze_call_token_propagation(
+                    function_name,
+                    else_body,
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+            Stmt::While { condition, body } => {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(condition),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+                analyze_call_token_propagation(
+                    function_name,
+                    body,
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+            Stmt::Match { scrutinee, arms } => {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(scrutinee),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        analyze_expr_call_tokens(
+                            function_name,
+                            Some(guard),
+                            local_types,
+                            requirement_map,
+                            violations,
+                        );
+                    }
+                    analyze_expr_call_tokens(
+                        function_name,
+                        Some(&arm.value),
+                        local_types,
+                        requirement_map,
+                        violations,
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::Return(value)
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value)
+        | Stmt::Assign { value, .. } => Some(value),
+        Stmt::If { .. } | Stmt::While { .. } | Stmt::Match { .. } => None,
+    }
+}
+
+fn analyze_expr_call_tokens(
+    function_name: &str,
+    expr: Option<&Expr>,
+    local_types: &BTreeMap<String, Type>,
+    requirement_map: &BTreeMap<&str, &FunctionCapabilityRequirement>,
+    violations: &mut Vec<String>,
+) {
+    let Some(expr) = expr else {
+        return;
+    };
+    match expr {
+        Expr::Call { callee, args } => {
+            if let Some(requirement) = requirement_map.get(callee.as_str()) {
+                let mut provided = BTreeSet::<String>::new();
+                for arg in args {
+                    if let Expr::Ident(name) = arg {
+                        if let Some(ty) = local_types.get(name) {
+                            if let Some(caps) = capability_set_from_type(ty) {
+                                provided.extend(caps);
+                            }
+                        }
+                    }
+                }
+                for cap in &requirement.required {
+                    if !provided.contains(cap) {
+                        violations.push(format!(
+                            "function `{}` calls `{}` without passing capability token for `{}`",
+                            function_name, callee, cap
+                        ));
+                    }
+                }
+            }
+
+            if callee == "revoke_cap" || callee == "delegate_cap" {
+                if args.is_empty() {
+                    violations.push(format!(
+                        "function `{}` uses `{}` without token argument",
+                        function_name, callee
+                    ));
+                }
+            }
+
+            for arg in args {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(arg),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            analyze_expr_call_tokens(
+                function_name,
+                Some(try_expr),
+                local_types,
+                requirement_map,
+                violations,
+            );
+            analyze_expr_call_tokens(
+                function_name,
+                Some(catch_expr),
+                local_types,
+                requirement_map,
+                violations,
+            );
+        }
+        Expr::Binary { left, right, .. } => {
+            analyze_expr_call_tokens(
+                function_name,
+                Some(left),
+                local_types,
+                requirement_map,
+                violations,
+            );
+            analyze_expr_call_tokens(
+                function_name,
+                Some(right),
+                local_types,
+                requirement_map,
+                violations,
+            );
+        }
+        Expr::Group(inner) => analyze_expr_call_tokens(
+            function_name,
+            Some(inner),
+            local_types,
+            requirement_map,
+            violations,
+        ),
+        Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => {}
+    }
+}
+
+fn capability_set_from_type(ty: &Type) -> Option<BTreeSet<String>> {
+    match ty {
+        Type::Named { name, args } if name == "Cap" && args.len() == 1 => {
+            let mut set = BTreeSet::new();
+            if let Some(cap_name) = capability_name_from_type(&args[0]) {
+                set.insert(cap_name);
+                return Some(set);
+            }
+            None
+        }
+        Type::Named { name, args } if name == "CapSet" => {
+            let mut set = BTreeSet::new();
+            for arg in args {
+                if let Some(cap_name) = capability_name_from_type(arg) {
+                    set.insert(cap_name);
+                }
+            }
+            if set.is_empty() { None } else { Some(set) }
+        }
+        _ => None,
+    }
+}
+
+fn capability_name_from_type(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Named { name, args } if args.is_empty() => {
+            capabilities::Capability::parse(name).map(|cap| cap.as_str().to_string())
+        }
+        Type::TypeVar(name) => capabilities::Capability::parse(name).map(|cap| cap.as_str().to_string()),
+        _ => None,
+    }
+}
+
+fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for function in functions {
+        let param_refs = function
+            .params
+            .iter()
+            .filter_map(|param| matches!(param.ty, Type::Ref { .. }).then_some(param.name.clone()))
+            .collect::<BTreeSet<_>>();
+        let mut local_refs = BTreeSet::<String>::new();
+        for stmt in &function.body {
+            if let Stmt::Let {
+                name,
+                ty: Some(Type::Ref { .. }),
+                ..
+            } = stmt
+            {
+                local_refs.insert(name.clone());
+            }
+            if let Stmt::Return(Expr::Ident(name)) = stmt {
+                if local_refs.contains(name) && !param_refs.contains(name) {
+                    violations.push(format!(
+                        "function `{}` returns local reference `{}` without valid lifetime region",
+                        function.name, name
+                    ));
+                }
+            }
+        }
+    }
+    violations
+}
+
+fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for function in functions {
+        let mut linear_owned = BTreeSet::<String>::new();
+        let mut linear_freed = BTreeSet::<String>::new();
+        for stmt in &function.body {
+            match stmt {
+                Stmt::Let {
+                    name,
+                    ty: Some(ty),
+                    ..
+                } if is_linear_type(ty) => {
+                    linear_owned.insert(name.clone());
+                }
+                Stmt::Expr(Expr::Call { callee, args }) if callee == "free" || callee.ends_with(".free") => {
+                    if let Some(Expr::Ident(name)) = args.first() {
+                        if !linear_owned.contains(name) {
+                            violations.push(format!(
+                                "function `{}` frees non-linear value `{}` as linear resource",
+                                function.name, name
+                            ));
+                        }
+                        linear_freed.insert(name.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        for name in linear_owned {
+            if !linear_freed.contains(&name) {
+                violations.push(format!(
+                    "function `{}` linear value `{}` was not consumed/freed",
+                    function.name, name
+                ));
+            }
+        }
+    }
+    violations
+}
+
+fn is_linear_type(ty: &Type) -> bool {
+    match ty {
+        Type::Ptr { .. } => true,
+        Type::Named { name, .. } if name == "Linear" || name == "Resource" || name.ends_with("Handle") => {
+            true
+        }
+        _ => false,
     }
 }
 

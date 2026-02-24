@@ -1,9 +1,22 @@
-use capabilities::Capability;
+use capabilities::{Capability, CapabilityToken};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+use crate::capability::{require_capability, CapabilityError};
+
 pub fn required_capability_for_file_io() -> Capability {
     Capability::FileSystem
+}
+
+pub fn read_to_string_with_capability(
+    backend: &dyn IoBackend,
+    path: &str,
+    token: &CapabilityToken,
+) -> Result<String, CapabilityError> {
+    require_capability(token, required_capability_for_file_io())?;
+    backend
+        .read_to_string(path)
+        .map_err(|_| CapabilityError::Missing(required_capability_for_file_io()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

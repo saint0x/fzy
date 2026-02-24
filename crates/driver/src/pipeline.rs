@@ -2,9 +2,10 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, Context, Result};
+use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder};
 use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use sha2::{Digest, Sha256};
@@ -360,29 +361,42 @@ fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> String {
 }
 
 fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String {
-    let ret = if enforce_contract_checks {
+    let forced_main_return = if enforce_contract_checks {
         if fir
             .entry_requires
             .iter()
             .any(|condition| matches!(condition, Some(false)))
         {
-            120
+            Some(120)
         } else if fir
             .entry_ensures
             .iter()
             .any(|condition| matches!(condition, Some(false)))
         {
-            121
+            Some(121)
         } else {
-            fir.entry_return_const_i32.unwrap_or(0)
+            None
         }
     } else {
-        fir.entry_return_const_i32.unwrap_or(0)
+        None
     };
-    format!(
-        "; ModuleID = '{name}'\ndefine i32 @main() {{\nentry:\n  ret i32 {ret}\n}}\n",
-        name = fir.name
-    )
+    if fir.typed_functions.is_empty() {
+        let ret = forced_main_return.or(fir.entry_return_const_i32).unwrap_or(0);
+        return format!(
+            "; ModuleID = '{name}'\ndefine i32 @main() {{\nentry:\n  ret i32 {ret}\n}}\n",
+            name = fir.name
+        );
+    }
+
+    let mut out = format!("; ModuleID = '{}'\n", fir.name);
+    for function in &fir.typed_functions {
+        out.push_str(&llvm_emit_function(
+            function,
+            forced_main_return.filter(|_| function.name == "main"),
+        ));
+        out.push('\n');
+    }
+    out
 }
 
 fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String {
@@ -406,6 +420,216 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> St
         fir.entry_return_const_i32.unwrap_or(0)
     };
     format!("function %main() -> i32 {{\nblock0:\n  v0 = iconst.i32 {ret}\n  return v0\n}}\n")
+}
+
+struct LlvmFuncCtx {
+    next_value: usize,
+    next_label: usize,
+    slots: HashMap<String, String>,
+    code: String,
+}
+
+impl LlvmFuncCtx {
+    fn new() -> Self {
+        Self {
+            next_value: 0,
+            next_label: 0,
+            slots: HashMap::new(),
+            code: String::new(),
+        }
+    }
+
+    fn value(&mut self) -> String {
+        let id = self.next_value;
+        self.next_value += 1;
+        format!("%v{id}")
+    }
+
+    fn label(&mut self, prefix: &str) -> String {
+        let id = self.next_label;
+        self.next_label += 1;
+        format!("{prefix}.{id}")
+    }
+}
+
+fn llvm_emit_function(function: &hir::TypedFunction, forced_return: Option<i32>) -> String {
+    let params = function
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, _)| format!("i32 %arg{i}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut ctx = LlvmFuncCtx::new();
+    let mut out = format!("define i32 @{}({params}) {{\nentry:\n", function.name);
+    for (index, param) in function.params.iter().enumerate() {
+        let slot = format!("%slot_{}", param.name);
+        ctx.code
+            .push_str(&format!("  {slot} = alloca i32\n  store i32 %arg{index}, ptr {slot}\n"));
+        ctx.slots.insert(param.name.clone(), slot);
+    }
+    let terminated = llvm_emit_block(&function.body, &mut ctx);
+    out.push_str(&ctx.code);
+    if !terminated {
+        let fallback = forced_return.unwrap_or(0);
+        out.push_str(&format!("  ret i32 {fallback}\n"));
+    }
+    out.push_str("}\n");
+    out
+}
+
+fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
+    for stmt in body {
+        match stmt {
+            ast::Stmt::Let { name, value, .. } => {
+                let value = llvm_emit_expr(value, ctx);
+                let slot = format!("%slot_{}_{}", name, ctx.next_value);
+                ctx.code.push_str(&format!(
+                    "  {slot} = alloca i32\n  store i32 {value}, ptr {slot}\n"
+                ));
+                ctx.slots.insert(name.clone(), slot);
+            }
+            ast::Stmt::Assign { target, value } => {
+                let value = llvm_emit_expr(value, ctx);
+                let slot = ctx
+                    .slots
+                    .entry(target.clone())
+                    .or_insert_with(|| format!("%slot_{}_{}", target, ctx.next_value))
+                    .clone();
+                if !ctx.code.contains(&format!("{slot} = alloca i32")) {
+                    ctx.code.push_str(&format!("  {slot} = alloca i32\n"));
+                }
+                ctx.code
+                    .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+            }
+            ast::Stmt::Return(expr) => {
+                let value = llvm_emit_expr(expr, ctx);
+                ctx.code.push_str(&format!("  ret i32 {value}\n"));
+                return true;
+            }
+            ast::Stmt::Expr(expr)
+            | ast::Stmt::Requires(expr)
+            | ast::Stmt::Ensures(expr)
+            | ast::Stmt::Defer(expr) => {
+                let _ = llvm_emit_expr(expr, ctx);
+            }
+            ast::Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                let cond = llvm_emit_expr(condition, ctx);
+                let pred = ctx.value();
+                let then_label = ctx.label("then");
+                let else_label = ctx.label("else");
+                let cont_label = ctx.label("ifend");
+                ctx.code.push_str(&format!(
+                    "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{then_label}, label %{else_label}\n{then_label}:\n"
+                ));
+                let then_terminated = llvm_emit_block(then_body, ctx);
+                if !then_terminated {
+                    ctx.code.push_str(&format!("  br label %{cont_label}\n"));
+                }
+                ctx.code.push_str(&format!("{else_label}:\n"));
+                let else_terminated = llvm_emit_block(else_body, ctx);
+                if !else_terminated {
+                    ctx.code.push_str(&format!("  br label %{cont_label}\n"));
+                }
+                if then_terminated && else_terminated {
+                    return true;
+                }
+                ctx.code.push_str(&format!("{cont_label}:\n"));
+            }
+            ast::Stmt::While { condition, body } => {
+                let head_label = ctx.label("while_head");
+                let body_label = ctx.label("while_body");
+                let end_label = ctx.label("while_end");
+                ctx.code.push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
+                let cond = llvm_emit_expr(condition, ctx);
+                let pred = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{body_label}, label %{end_label}\n{body_label}:\n"
+                ));
+                let terminated = llvm_emit_block(body, ctx);
+                if !terminated {
+                    ctx.code.push_str(&format!("  br label %{head_label}\n"));
+                }
+                ctx.code.push_str(&format!("{end_label}:\n"));
+            }
+            ast::Stmt::Match { .. } => {}
+        }
+    }
+    false
+}
+
+fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
+    match expr {
+        ast::Expr::Int(v) => v.to_string(),
+        ast::Expr::Bool(v) => {
+            if *v {
+                "1".to_string()
+            } else {
+                "0".to_string()
+            }
+        }
+        ast::Expr::Str(_) => "0".to_string(),
+        ast::Expr::Ident(name) => {
+            if let Some(slot) = ctx.slots.get(name).cloned() {
+                let val = ctx.value();
+                ctx.code
+                    .push_str(&format!("  {val} = load i32, ptr {slot}\n"));
+                val
+            } else {
+                "0".to_string()
+            }
+        }
+        ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx),
+        ast::Expr::TryCatch { try_expr, .. } => llvm_emit_expr(try_expr, ctx),
+        ast::Expr::Call { callee, args } => {
+            let args = args
+                .iter()
+                .map(|arg| format!("i32 {}", llvm_emit_expr(arg, ctx)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let val = ctx.value();
+            ctx.code
+                .push_str(&format!("  {val} = call i32 @{callee}({args})\n"));
+            val
+        }
+        ast::Expr::Binary { op, left, right } => {
+            let lhs = llvm_emit_expr(left, ctx);
+            let rhs = llvm_emit_expr(right, ctx);
+            let out = ctx.value();
+            match op {
+                ast::BinaryOp::Add => ctx.code.push_str(&format!("  {out} = add i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Sub => ctx.code.push_str(&format!("  {out} = sub i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Mul => ctx.code.push_str(&format!("  {out} = mul i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Div => ctx.code.push_str(&format!("  {out} = sdiv i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Eq
+                | ast::BinaryOp::Neq
+                | ast::BinaryOp::Lt
+                | ast::BinaryOp::Lte
+                | ast::BinaryOp::Gt
+                | ast::BinaryOp::Gte => {
+                    let pred = ctx.value();
+                    let cmp = match op {
+                        ast::BinaryOp::Eq => "eq",
+                        ast::BinaryOp::Neq => "ne",
+                        ast::BinaryOp::Lt => "slt",
+                        ast::BinaryOp::Lte => "sle",
+                        ast::BinaryOp::Gt => "sgt",
+                        ast::BinaryOp::Gte => "sge",
+                        _ => unreachable!(),
+                    };
+                    ctx.code
+                        .push_str(&format!("  {pred} = icmp {cmp} i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = zext i1 {pred} to i32\n"));
+                }
+            }
+            out
+        }
+    }
 }
 
 struct ResolvedSource {
@@ -842,30 +1066,98 @@ fn emit_native_artifact_cranelift(
     let object_builder = ObjectBuilder::new(isa, fir.name.clone(), default_libcall_names())
         .map_err(|error| anyhow!("failed creating cranelift object builder: {error}"))?;
     let mut module = ObjectModule::new(object_builder);
-    let mut context = module.make_context();
-    context
-        .func
-        .signature
-        .returns
-        .push(AbiParam::new(types::I32));
+    let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
+    let forced_main_return = if enforce_contract_checks {
+        if fir
+            .entry_requires
+            .iter()
+            .any(|condition| matches!(condition, Some(false)))
+        {
+            Some(120)
+        } else if fir
+            .entry_ensures
+            .iter()
+            .any(|condition| matches!(condition, Some(false)))
+        {
+            Some(121)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
-    let function_id = module
-        .declare_function("main", Linkage::Export, &context.func.signature)
-        .map_err(|error| anyhow!("failed declaring cranelift main symbol: {error}"))?;
-    let mut function_builder_context = FunctionBuilderContext::new();
-    let mut builder = FunctionBuilder::new(&mut context.func, &mut function_builder_context);
-    let block = builder.create_block();
-    builder.switch_to_block(block);
-    builder.seal_block(block);
-    let entry_return = computed_entry_return(fir, !matches!(profile, BuildProfile::Release));
-    let ret = builder.ins().iconst(types::I32, entry_return as i64);
-    builder.ins().return_(&[ret]);
-    builder.finalize();
+    let mut function_ids = HashMap::new();
+    for function in &fir.typed_functions {
+        let mut sig = module.make_signature();
+        for _ in &function.params {
+            sig.params.push(AbiParam::new(types::I32));
+        }
+        sig.returns.push(AbiParam::new(types::I32));
+        let linkage = if function.name == "main" {
+            Linkage::Export
+        } else {
+            Linkage::Local
+        };
+        let id = module
+            .declare_function(function.name.as_str(), linkage, &sig)
+            .map_err(|error| anyhow!("failed declaring cranelift symbol `{}`: {error}", function.name))?;
+        function_ids.insert(function.name.clone(), id);
+    }
 
-    module
-        .define_function(function_id, &mut context)
-        .map_err(|error| anyhow!("failed defining cranelift function body: {error}"))?;
-    module.clear_context(&mut context);
+    for function in &fir.typed_functions {
+        let Some(function_id) = function_ids.get(&function.name).copied() else {
+            continue;
+        };
+        let mut context = module.make_context();
+        context.func.signature.params.clear();
+        context.func.signature.returns.clear();
+        for _ in &function.params {
+            context.func.signature.params.push(AbiParam::new(types::I32));
+        }
+        context.func.signature.returns.push(AbiParam::new(types::I32));
+
+        let mut function_builder_context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut function_builder_context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let mut locals = HashMap::<String, Variable>::new();
+        for (index, param) in function.params.iter().enumerate() {
+            let var = Variable::from_u32(index as u32);
+            builder.declare_var(var, types::I32);
+            let value = builder.block_params(entry)[index];
+            builder.def_var(var, value);
+            locals.insert(param.name.clone(), var);
+        }
+        let mut next_var = function.params.len();
+
+        let terminated = clif_emit_block(
+            &mut builder,
+            &mut module,
+            &function_ids,
+            &function.body,
+            &mut locals,
+            &mut next_var,
+        )?;
+        if !terminated {
+            let fallback = if function.name == "main" {
+                forced_main_return.or(fir.entry_return_const_i32).unwrap_or(0)
+            } else {
+                0
+            };
+            let ret = builder.ins().iconst(types::I32, fallback as i64);
+            builder.ins().return_(&[ret]);
+        }
+        builder.finalize();
+
+        module
+            .define_function(function_id, &mut context)
+            .map_err(|error| anyhow!("failed defining cranelift function `{}`: {error}", function.name))?;
+        module.clear_context(&mut context);
+    }
     let object_product = module.finish();
     let object_bytes = object_product
         .emit()
@@ -903,24 +1195,228 @@ fn emit_native_artifact_cranelift(
     ))
 }
 
-fn computed_entry_return(fir: &fir::FirModule, enforce_contract_checks: bool) -> i32 {
-    if enforce_contract_checks {
-        if fir
-            .entry_requires
-            .iter()
-            .any(|condition| matches!(condition, Some(false)))
-        {
-            return 120;
-        }
-        if fir
-            .entry_ensures
-            .iter()
-            .any(|condition| matches!(condition, Some(false)))
-        {
-            return 121;
+fn clif_emit_block(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    function_ids: &HashMap<String, cranelift_module::FuncId>,
+    body: &[ast::Stmt],
+    locals: &mut HashMap<String, Variable>,
+    next_var: &mut usize,
+) -> Result<bool> {
+    for stmt in body {
+        match stmt {
+            ast::Stmt::Let { name, value, .. } => {
+                let val = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
+                let var = if let Some(existing) = locals.get(name).copied() {
+                    existing
+                } else {
+                    let var = Variable::from_u32(*next_var as u32);
+                    *next_var += 1;
+                    builder.declare_var(var, types::I32);
+                    locals.insert(name.clone(), var);
+                    var
+                };
+                builder.def_var(var, val);
+            }
+            ast::Stmt::Assign { target, value } => {
+                let val = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
+                let var = if let Some(existing) = locals.get(target).copied() {
+                    existing
+                } else {
+                    let var = Variable::from_u32(*next_var as u32);
+                    *next_var += 1;
+                    builder.declare_var(var, types::I32);
+                    locals.insert(target.clone(), var);
+                    var
+                };
+                builder.def_var(var, val);
+            }
+            ast::Stmt::Return(expr) => {
+                let value = clif_emit_expr(builder, module, function_ids, expr, locals, next_var)?;
+                builder.ins().return_(&[value]);
+                return Ok(true);
+            }
+            ast::Stmt::Expr(expr)
+            | ast::Stmt::Requires(expr)
+            | ast::Stmt::Ensures(expr)
+            | ast::Stmt::Defer(expr) => {
+                let _ = clif_emit_expr(builder, module, function_ids, expr, locals, next_var)?;
+            }
+            ast::Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                let cond_val =
+                    clif_emit_expr(builder, module, function_ids, condition, locals, next_var)?;
+                let zero = builder.ins().iconst(types::I32, 0);
+                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
+                let then_block = builder.create_block();
+                let else_block = builder.create_block();
+                let cont_block = builder.create_block();
+                builder.ins().brif(cond, then_block, &[], else_block, &[]);
+
+                builder.switch_to_block(then_block);
+                let then_terminated = clif_emit_block(
+                    builder,
+                    module,
+                    function_ids,
+                    then_body,
+                    locals,
+                    next_var,
+                )?;
+                if !then_terminated {
+                    builder.ins().jump(cont_block, &[]);
+                }
+                builder.seal_block(then_block);
+
+                builder.switch_to_block(else_block);
+                let else_terminated = clif_emit_block(
+                    builder,
+                    module,
+                    function_ids,
+                    else_body,
+                    locals,
+                    next_var,
+                )?;
+                if !else_terminated {
+                    builder.ins().jump(cont_block, &[]);
+                }
+                builder.seal_block(else_block);
+
+                if then_terminated && else_terminated {
+                    return Ok(true);
+                }
+                builder.switch_to_block(cont_block);
+                builder.seal_block(cont_block);
+            }
+            ast::Stmt::While { condition, body } => {
+                let head = builder.create_block();
+                let loop_body = builder.create_block();
+                let exit = builder.create_block();
+                builder.ins().jump(head, &[]);
+                builder.switch_to_block(head);
+                let cond_val =
+                    clif_emit_expr(builder, module, function_ids, condition, locals, next_var)?;
+                let zero = builder.ins().iconst(types::I32, 0);
+                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
+                builder.ins().brif(cond, loop_body, &[], exit, &[]);
+                builder.seal_block(head);
+
+                builder.switch_to_block(loop_body);
+                let body_terminated =
+                    clif_emit_block(builder, module, function_ids, body, locals, next_var)?;
+                if !body_terminated {
+                    builder.ins().jump(head, &[]);
+                }
+                builder.seal_block(loop_body);
+
+                builder.switch_to_block(exit);
+                builder.seal_block(exit);
+            }
+            ast::Stmt::Match { .. } => {}
         }
     }
-    fir.entry_return_const_i32.unwrap_or(0)
+    Ok(false)
+}
+
+fn clif_emit_expr(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    function_ids: &HashMap<String, cranelift_module::FuncId>,
+    expr: &ast::Expr,
+    locals: &mut HashMap<String, Variable>,
+    next_var: &mut usize,
+) -> Result<cranelift_codegen::ir::Value> {
+    Ok(match expr {
+        ast::Expr::Int(v) => builder.ins().iconst(types::I32, *v as i64),
+        ast::Expr::Bool(v) => builder.ins().iconst(types::I32, if *v { 1 } else { 0 }),
+        ast::Expr::Str(_) => builder.ins().iconst(types::I32, 0),
+        ast::Expr::Ident(name) => {
+            if let Some(var) = locals.get(name).copied() {
+                builder.use_var(var)
+            } else {
+                builder.ins().iconst(types::I32, 0)
+            }
+        }
+        ast::Expr::Group(inner) => {
+            clif_emit_expr(builder, module, function_ids, inner, locals, next_var)?
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => clif_emit_expr(builder, module, function_ids, try_expr, locals, next_var)
+            .or_else(|_| clif_emit_expr(builder, module, function_ids, catch_expr, locals, next_var))?,
+        ast::Expr::Binary { op, left, right } => {
+            let lhs = clif_emit_expr(builder, module, function_ids, left, locals, next_var)?;
+            let rhs = clif_emit_expr(builder, module, function_ids, right, locals, next_var)?;
+            match op {
+                ast::BinaryOp::Add => builder.ins().iadd(lhs, rhs),
+                ast::BinaryOp::Sub => builder.ins().isub(lhs, rhs),
+                ast::BinaryOp::Mul => builder.ins().imul(lhs, rhs),
+                ast::BinaryOp::Div => builder.ins().sdiv(lhs, rhs),
+                ast::BinaryOp::Eq => {
+                    let c = builder.ins().icmp(IntCC::Equal, lhs, rhs);
+                    let one = builder.ins().iconst(types::I32, 1);
+                    let zero = builder.ins().iconst(types::I32, 0);
+                    builder.ins().select(c, one, zero)
+                }
+                ast::BinaryOp::Neq => {
+                    let c = builder.ins().icmp(IntCC::NotEqual, lhs, rhs);
+                    let one = builder.ins().iconst(types::I32, 1);
+                    let zero = builder.ins().iconst(types::I32, 0);
+                    builder.ins().select(c, one, zero)
+                }
+                ast::BinaryOp::Lt => {
+                    let c = builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs);
+                    let one = builder.ins().iconst(types::I32, 1);
+                    let zero = builder.ins().iconst(types::I32, 0);
+                    builder.ins().select(c, one, zero)
+                }
+                ast::BinaryOp::Lte => {
+                    let c = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs);
+                    let one = builder.ins().iconst(types::I32, 1);
+                    let zero = builder.ins().iconst(types::I32, 0);
+                    builder.ins().select(c, one, zero)
+                }
+                ast::BinaryOp::Gt => {
+                    let c = builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs);
+                    let one = builder.ins().iconst(types::I32, 1);
+                    let zero = builder.ins().iconst(types::I32, 0);
+                    builder.ins().select(c, one, zero)
+                }
+                ast::BinaryOp::Gte => {
+                    let c = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs);
+                    let one = builder.ins().iconst(types::I32, 1);
+                    let zero = builder.ins().iconst(types::I32, 0);
+                    builder.ins().select(c, one, zero)
+                }
+            }
+        }
+        ast::Expr::Call { callee, args } => {
+            let Some(function_id) = function_ids.get(callee).copied() else {
+                return Ok(builder.ins().iconst(types::I32, 0));
+            };
+            let func_ref = module.declare_func_in_func(function_id, builder.func);
+            let mut values = Vec::with_capacity(args.len());
+            for arg in args {
+                values.push(clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    arg,
+                    locals,
+                    next_var,
+                )?);
+            }
+            let call = builder.ins().call(func_ref, &values);
+            if let Some(value) = builder.inst_results(call).first().copied() {
+                value
+            } else {
+                builder.ins().iconst(types::I32, 0)
+            }
+        }
+    })
 }
 
 fn linker_candidates() -> Vec<String> {

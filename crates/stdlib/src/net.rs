@@ -1,10 +1,23 @@
-use capabilities::Capability;
+use capabilities::{Capability, CapabilityToken};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 
+use crate::capability::{require_capability, CapabilityError};
+
 pub fn required_capability_for_network() -> Capability {
     Capability::Network
+}
+
+pub fn connect_with_capability(
+    backend: &mut dyn NetBackend,
+    addr: &str,
+    token: &CapabilityToken,
+) -> Result<SocketId, CapabilityError> {
+    require_capability(token, required_capability_for_network())?;
+    backend
+        .connect(addr)
+        .map_err(|_| CapabilityError::Missing(required_capability_for_network()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

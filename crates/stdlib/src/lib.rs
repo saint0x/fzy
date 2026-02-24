@@ -1,4 +1,5 @@
 pub mod alloc;
+pub mod capability;
 pub mod concurrency;
 pub mod deploy;
 pub mod durability;

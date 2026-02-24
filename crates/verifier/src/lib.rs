@@ -189,6 +189,31 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             Some("enforce ownership transfer semantics and ensure every allocation is released".to_string()),
         ));
     }
+    for violation in &module.capability_token_violations {
+        report.diagnostics.push(Diagnostic::new(
+            Severity::Error,
+            violation.clone(),
+            Some("add capability token parameters and propagate delegated tokens explicitly".to_string()),
+        ));
+    }
+    for violation in &module.reference_lifetime_violations {
+        report.diagnostics.push(Diagnostic::new(
+            if policy.safe_profile {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
+            violation.clone(),
+            Some("introduce explicit lifetime/region-safe ownership handoff".to_string()),
+        ));
+    }
+    for violation in &module.linear_type_violations {
+        report.diagnostics.push(Diagnostic::new(
+            Severity::Error,
+            violation.clone(),
+            Some("linear resources must be consumed exactly once".to_string()),
+        ));
+    }
 
     for resource in &module.linear_resources {
         let released = module
@@ -307,9 +332,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
         assert_eq!(report.diagnostics.len(), 1);
@@ -343,9 +372,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -382,9 +415,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -422,9 +459,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -462,9 +503,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -502,9 +547,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -545,9 +594,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         assert!(report
@@ -600,9 +653,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         for expected in ["time", "rng", "fs", "net", "proc", "mem", "thread"] {
@@ -641,9 +698,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -685,9 +746,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -725,9 +790,13 @@ mod tests {
             generic_instantiations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
+            typed_functions: Vec::new(),
             type_errors: 0,
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         assert!(report
