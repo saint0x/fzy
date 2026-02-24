@@ -4,6 +4,10 @@ Correctness-first systems language toolchain with deterministic verification wor
 
 FozzyLang pairs a language/compiler (`fozzyc`) with Fozzy runtime testing so determinism, replay, and artifact-driven debugging are first-class, not bolt-ons.
 
+## Start Here
+
+- Full user manual: `USAGE.md`
+
 ## What This Repo Contains
 
 - `apps/fozzyc`: language CLI (build/run/test/verify/emit-ir/rpc gen/headers)
