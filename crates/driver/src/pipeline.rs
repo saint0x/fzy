@@ -188,7 +188,7 @@ pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
         .canonicalize()
         .with_context(|| format!("failed resolving source file: {}", source_path.display()))?;
     let mut state = ModuleLoadState::default();
-    load_module_recursive(&canonical, &mut state)?;
+    load_module_recursive(&canonical, &canonical, &mut state)?;
 
     let root = state
         .loaded
@@ -241,7 +241,11 @@ struct ModuleLoadState {
     visiting_set: HashSet<PathBuf>,
 }
 
-fn load_module_recursive(path: &Path, state: &mut ModuleLoadState) -> Result<()> {
+fn load_module_recursive(
+    path: &Path,
+    root_source: &Path,
+    state: &mut ModuleLoadState,
+) -> Result<()> {
     let canonical = path
         .canonicalize()
         .with_context(|| format!("failed resolving module path: {}", path.display()))?;
@@ -262,8 +266,10 @@ fn load_module_recursive(path: &Path, state: &mut ModuleLoadState) -> Result<()>
         .file_stem()
         .and_then(|value| value.to_str())
         .ok_or_else(|| anyhow!("invalid module filename for {}", canonical.display()))?;
-    let ast = parser::parse(&source, module_name)
+    let mut ast = parser::parse(&source, module_name)
         .map_err(|diagnostics| anyhow!(render_parse_failure(&canonical, &diagnostics)))?;
+    let namespace = module_namespace(root_source, &canonical)?;
+    qualify_module_symbols(&mut ast, &namespace);
 
     let base_dir = canonical
         .parent()
@@ -276,7 +282,7 @@ fn load_module_recursive(path: &Path, state: &mut ModuleLoadState) -> Result<()>
                 canonical.display()
             )
         })?;
-        load_module_recursive(&module_path, state)?;
+        load_module_recursive(&module_path, root_source, state)?;
     }
 
     state.visiting.pop();
@@ -291,6 +297,206 @@ fn load_module_recursive(path: &Path, state: &mut ModuleLoadState) -> Result<()>
         },
     );
     Ok(())
+}
+
+fn module_namespace(root_source: &Path, module_path: &Path) -> Result<String> {
+    if module_path == root_source {
+        return Ok(String::new());
+    }
+    let root_dir = root_source.parent().ok_or_else(|| {
+        anyhow!(
+            "root source has no parent directory: {}",
+            root_source.display()
+        )
+    })?;
+    let relative = module_path
+        .strip_prefix(root_dir)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| module_path.to_path_buf());
+    let mut components = relative
+        .components()
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(|component| component.to_string())
+        .collect::<Vec<_>>();
+    if components.is_empty() {
+        return Ok(String::new());
+    }
+    let tail = components.pop().unwrap_or_default();
+    let stem = Path::new(&tail)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default();
+    if !stem.is_empty() && stem != "mod" {
+        components.push(stem.to_string());
+    }
+    Ok(components.join("."))
+}
+
+fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
+    let local_functions = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Function(function) => Some(function.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    let module_aliases = module
+        .modules
+        .iter()
+        .map(|module_name| {
+            (
+                module_name.clone(),
+                qualify_name(namespace, module_name.as_str()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+
+    for item in &mut module.items {
+        if let ast::Item::Function(function) = item {
+            qualify_function(function, namespace, &local_functions, &module_aliases);
+        }
+    }
+}
+
+fn qualify_function(
+    function: &mut ast::Function,
+    namespace: &str,
+    local_functions: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) {
+    if !function.is_extern {
+        function.name = qualify_name(namespace, &function.name);
+    }
+    for stmt in &mut function.body {
+        qualify_stmt(stmt, namespace, local_functions, module_aliases);
+    }
+}
+
+fn qualify_stmt(
+    stmt: &mut ast::Stmt,
+    namespace: &str,
+    local_functions: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::Return(value)
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => qualify_expr(value, namespace, local_functions, module_aliases),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            qualify_expr(condition, namespace, local_functions, module_aliases);
+            for nested in then_body {
+                qualify_stmt(nested, namespace, local_functions, module_aliases);
+            }
+            for nested in else_body {
+                qualify_stmt(nested, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            qualify_expr(condition, namespace, local_functions, module_aliases);
+            for nested in body {
+                qualify_stmt(nested, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            qualify_expr(scrutinee, namespace, local_functions, module_aliases);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    qualify_expr(guard, namespace, local_functions, module_aliases);
+                }
+                qualify_expr(&mut arm.value, namespace, local_functions, module_aliases);
+            }
+        }
+    }
+}
+
+fn qualify_expr(
+    expr: &mut ast::Expr,
+    namespace: &str,
+    local_functions: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            *callee = qualify_callee(callee, namespace, local_functions, module_aliases);
+            for arg in args {
+                qualify_expr(arg, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Expr::FieldAccess { base, .. } => {
+            qualify_expr(base, namespace, local_functions, module_aliases);
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                qualify_expr(value, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                qualify_expr(value, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Expr::Group(inner) => {
+            qualify_expr(inner, namespace, local_functions, module_aliases);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            qualify_expr(try_expr, namespace, local_functions, module_aliases);
+            qualify_expr(catch_expr, namespace, local_functions, module_aliases);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            qualify_expr(left, namespace, local_functions, module_aliases);
+            qualify_expr(right, namespace, local_functions, module_aliases);
+        }
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn qualify_callee(
+    callee: &str,
+    namespace: &str,
+    local_functions: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) -> String {
+    let (base, generic_suffix) = split_generic_suffix(callee);
+    let qualified_base = if let Some((head, tail)) = base.split_once('.') {
+        if let Some(qualified_head) = module_aliases.get(head) {
+            format!("{qualified_head}.{tail}")
+        } else {
+            base.to_string()
+        }
+    } else if local_functions.contains(base) {
+        qualify_name(namespace, base)
+    } else {
+        base.to_string()
+    };
+    format!("{qualified_base}{generic_suffix}")
+}
+
+fn split_generic_suffix(callee: &str) -> (&str, &str) {
+    if let Some(index) = callee.find('<') {
+        (&callee[..index], &callee[index..])
+    } else {
+        (callee, "")
+    }
+}
+
+fn qualify_name(namespace: &str, name: &str) -> String {
+    if namespace.is_empty() {
+        name.to_string()
+    } else {
+        format!("{namespace}.{name}")
+    }
 }
 
 fn collect_parse_diagnostics(source_path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {

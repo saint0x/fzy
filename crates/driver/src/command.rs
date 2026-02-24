@@ -212,6 +212,11 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 }
                 return fozzy_invoke(&fozzy_args);
             }
+            if host_backends && !deterministic {
+                bail!(
+                    "--host-backends is unsupported for native `.fzy` runs; use a `.fozzy.json` scenario (or `--det` routing) to execute host-backed checks"
+                );
+            }
 
             let artifact = compile_file_with_backend(
                 &path,
@@ -381,6 +386,11 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     fozzy_args.push("--json".to_string());
                 }
                 return fozzy_invoke(&fozzy_args);
+            }
+            if host_backends {
+                bail!(
+                    "--host-backends is unsupported for native `.fzy` tests; use a `.fozzy.json` scenario for host-backed execution"
+                );
             }
 
             let test_plan = run_non_scenario_test_plan(
@@ -5551,6 +5561,80 @@ mod tests {
         assert_eq!(command_error.exit_code, 7);
         assert!(command_error.output.contains("\"exitCode\":7"));
         assert!(command_error.output.contains("\"binary\""));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn run_supports_same_function_name_in_sibling_modules() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-module-collision-{suffix}"));
+        std::fs::create_dir_all(&root).expect("root should be created");
+        let main = root.join("main.fzy");
+        std::fs::write(
+            &main,
+            "mod a;\nmod b;\nfn main() -> i32 {\n    let sum: i32 = a.ping() + b.ping()\n    return 0\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(root.join("a.fzy"), "fn ping() -> i32 {\n    return 1\n}\n")
+            .expect("a module should be written");
+        std::fs::write(root.join("b.fzy"), "fn ping() -> i32 {\n    return 2\n}\n")
+            .expect("b module should be written");
+
+        let check = run(Command::Check { path: main.clone() }, Format::Json)
+            .expect("check should succeed for sibling name collisions");
+        assert!(check.contains("\"errors\":0"));
+        let run_output = run(
+            Command::Run {
+                path: main.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: None,
+            },
+            Format::Json,
+        )
+        .expect("run should succeed for sibling name collisions");
+        assert!(run_output.contains("\"exitCode\":0"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_run_rejects_host_backends_flag() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-host-backend-flag-{suffix}.fzy"));
+        std::fs::write(&source, "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("source should be written");
+
+        let error = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: None,
+            },
+            Format::Json,
+        )
+        .expect_err("native host backend run should be rejected");
+        assert!(error
+            .to_string()
+            .contains("--host-backends is unsupported for native `.fzy` runs"));
 
         let _ = std::fs::remove_file(source);
     }
