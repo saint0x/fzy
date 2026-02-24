@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "name": "live-server-http-pass",
+  "steps": [
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, os, signal, socket, subprocess, sys, time, urllib.request; bin='target/aarch64-apple-darwin/debug/live_server';\nif not os.path.exists(bin): bin='target/debug/live_server';\nport=18181; store='/tmp/fozzy_live_server_http.json';\ntry: os.remove(store)\nexcept FileNotFoundError: pass\nproc=subprocess.Popen([bin], env={**os.environ,'LIVE_HOST':'127.0.0.1','LIVE_PORT':str(port),'LIVE_STORE':store}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL);\ntry:\n  deadline=time.time()+5\n  ok=False\n  while time.time()<deadline:\n    try:\n      urllib.request.urlopen(f'http://127.0.0.1:{port}/healthz', timeout=1).read(); ok=True; break\n    except Exception:\n      time.sleep(0.05)\n  if not ok: raise RuntimeError('server did not become healthy')\n  req=urllib.request.Request(f'http://127.0.0.1:{port}/v1/items/bench', data=b'{\"value\":\"ok\"}', method='PUT', headers={'Content-Type':'application/json'})\n  urllib.request.urlopen(req, timeout=2).read()\n  body=urllib.request.urlopen(f'http://127.0.0.1:{port}/v1/items/bench', timeout=2).read().decode()\n  assert 'ok' in body\n  print('live-server-http-ok')\nfinally:\n  proc.send_signal(signal.SIGINT)\n  try: proc.wait(timeout=2)\n  except Exception: proc.kill()"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "live-server-http-ok\n"
+    }
+  ]
+}

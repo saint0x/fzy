@@ -248,28 +248,17 @@ impl App {
             )
         })?;
         let serialized = serialize_store(&self.store);
-        write_atomic(&self.store_path, serialized.as_bytes()).map_err(|err| {
-            anyhow!(
-                "failed to write {}: {:?}",
-                self.store_path.display(),
-                err
-            )
-        })?;
-        fsync_file(&self.store_path).map_err(|err| {
-            anyhow!(
-                "failed to fsync {}: {:?}",
-                self.store_path.display(),
-                err
-            )
-        })?;
+        write_atomic(&self.store_path, serialized.as_bytes())
+            .map_err(|err| anyhow!("failed to write {}: {:?}", self.store_path.display(), err))?;
+        fsync_file(&self.store_path)
+            .map_err(|err| anyhow!("failed to fsync {}: {:?}", self.store_path.display(), err))?;
         Ok(())
     }
 
     fn export(&self, target: &Path) -> Result<()> {
         let serialized = serialize_store(&self.store);
-        write_atomic(target, serialized.as_bytes()).map_err(|err| {
-            anyhow!("failed to export to {}: {:?}", target.display(), err)
-        })?;
+        write_atomic(target, serialized.as_bytes())
+            .map_err(|err| anyhow!("failed to export to {}: {:?}", target.display(), err))?;
         fsync_file(target)
             .map_err(|err| anyhow!("failed to fsync {}: {:?}", target.display(), err))?;
         Ok(())
@@ -287,11 +276,7 @@ impl App {
             ),
             (
                 "process_spawn",
-                audit_privileged_operation(
-                    &caps,
-                    PrivilegedOperation::ProcessSpawn,
-                    "export hook",
-                ),
+                audit_privileged_operation(&caps, PrivilegedOperation::ProcessSpawn, "export hook"),
             ),
             (
                 "network_bind",
@@ -323,8 +308,14 @@ impl App {
             open_socket_count: 0,
         };
         println!("{C_BOLD}stats{C_RESET}");
-        println!("  commands.total      {}", self.metrics.counter("cmd.total"));
-        println!("  commands.errors     {}", self.metrics.counter("cmd.error"));
+        println!(
+            "  commands.total      {}",
+            self.metrics.counter("cmd.total")
+        );
+        println!(
+            "  commands.errors     {}",
+            self.metrics.counter("cmd.error")
+        );
         println!("  kv.set              {}", self.metrics.counter("kv.set"));
         println!("  queue.depth         {}", runtime.task_queue_depth);
         println!(
@@ -360,8 +351,8 @@ fn load_store(path: &Path) -> Result<BTreeMap<String, String>> {
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed reading {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed reading {}", path.display()))?;
     let mut map = BTreeMap::new();
     for line in raw.lines() {
         if let Some((k, v)) = line.split_once('\t') {
