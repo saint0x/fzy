@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "live-e2e",
+  "steps": [
+    { "type": "trace_event", "name": "start" },
+    { "type": "set_kv", "key": "build", "value": "ready" },
+    { "type": "get_kv_assert", "key": "build", "equals": "ready" },
+    { "type": "rand_u64", "key": "seed" },
+    { "type": "memory_alloc", "bytes": 64, "key": "buf" },
+    { "type": "memory_assert_in_use_bytes", "equals": 64 },
+    { "type": "memory_free", "key": "buf" },
+    { "type": "memory_assert_in_use_bytes", "equals": 0 },
+    { "type": "assert_eq_int", "a": 42, "b": 42 }
+  ]
+}

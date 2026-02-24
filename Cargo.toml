@@ -1,0 +1,32 @@
+[workspace]
+resolver = "2"
+members = [
+  "apps/fozzyc",
+  "apps/fozzyfmt",
+  "apps/fozzydoc",
+  "crates/ast",
+  "crates/parser",
+  "crates/hir",
+  "crates/fir",
+  "crates/verifier",
+  "crates/runtime",
+  "crates/stdlib",
+  "crates/driver",
+  "crates/diagnostics",
+  "crates/session",
+  "crates/manifest",
+  "crates/capabilities",
+]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+authors = ["FozzyLang Contributors"]
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"

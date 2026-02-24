@@ -1,0 +1,4 @@
+[package]
+name = "capabilities"
+version.workspace = true
+edition.workspace = true

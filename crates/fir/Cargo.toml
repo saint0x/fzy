@@ -1,0 +1,8 @@
+[package]
+name = "fir"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hir = { path = "../hir" }
+capabilities = { path = "../capabilities" }

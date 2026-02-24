@@ -1,0 +1,22 @@
+[package]
+name = "live"
+version = "0.1.0"
+
+[[target.bin]]
+name = "live"
+path = "src/main.fzy"
+
+[deps]
+util = { path = "deps/util" }
+
+[profiles.dev]
+optimize = true
+checks = true
+
+[profiles.release]
+optimize = true
+checks = true
+
+[profiles.verify]
+optimize = false
+checks = true

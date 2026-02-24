@@ -1,0 +1,7 @@
+[package]
+name = "stdlib"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+capabilities = { path = "../capabilities" }

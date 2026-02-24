@@ -1,0 +1,48 @@
+use cap.time;
+use cap.rng;
+use cap.fs;
+use cap.net;
+use cap.proc;
+use cap.mem;
+use cap.thread;
+
+mod api::ffi;
+mod api::rpc;
+mod model::types;
+mod services::calc;
+mod services::io_ops;
+mod services::safety;
+mod runtime::scheduler;
+mod runtime::worker;
+
+test "det_smoke" {}
+test "det_pipeline" {}
+test "det_contracts" {}
+test "chaos_path" nondet {}
+
+fn main() -> i32 {
+    requires true
+
+    let conn_handle = net.connect()
+    defer close(conn_handle)
+
+    let file_handle = fs.open()
+    defer close(file_handle)
+
+    let maybe_seed: i32 = try rng.seed() catch 9
+    match maybe_seed { 0 => pulse(), 1 => pulse(), _ => pulse() }
+
+    checkpoint()
+    yield()
+    spawn(worker.main_loop)
+    timeout(25)
+    cancel()
+
+    syscall.invoke()
+
+    ensures maybe_seed == maybe_seed
+
+    let base: i32 = 40
+    let delta: i32 = 2
+    return base + delta
+}

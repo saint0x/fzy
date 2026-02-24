@@ -1,0 +1,8 @@
+use cap.time;
+use cap.fs;
+
+fn main() -> i32 {
+    return 0
+}
+
+test "deterministic_smoke" {}

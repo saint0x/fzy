@@ -1,0 +1,13 @@
+.DS_Store
+
+# Build outputs
+target/
+**/.fozzyc/
+
+# Runtime artifacts and caches
+.fozzy/
+artifacts/
+tmp/
+
+# Local planning notes
+PLAN.md

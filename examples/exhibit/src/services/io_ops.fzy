@@ -1,0 +1,10 @@
+use cap.fs;
+use cap.net;
+use cap.proc;
+
+fn touch_runtime() -> i32 {
+    fs.flush()
+    net.connect()
+    proc.exec()
+    return 0
+}

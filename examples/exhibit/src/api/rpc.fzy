@@ -1,0 +1,3 @@
+rpc Ping(req: PingReq) -> PingRes;
+rpc Chat(stream<ChatReq>) -> stream<ChatRes>;
+rpc Replicate(req: ReplicaReq) -> ReplicaRes;

@@ -1,0 +1,4 @@
+[package]
+name = "fozzyfmt"
+version.workspace = true
+edition.workspace = true

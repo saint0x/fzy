@@ -1,0 +1,21 @@
+[package]
+name = "driver"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ast = { path = "../ast" }
+parser = { path = "../parser" }
+hir = { path = "../hir" }
+fir = { path = "../fir" }
+verifier = { path = "../verifier" }
+session = { path = "../session" }
+manifest = { path = "../manifest" }
+diagnostics = { path = "../diagnostics" }
+runtime = { path = "../runtime" }
+
+[dev-dependencies]
+anyhow.workspace = true
