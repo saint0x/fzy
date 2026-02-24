@@ -237,8 +237,9 @@ fozzy run tests/live.server.internet.fozzy.json --proc-backend host --fs-backend
 
 ## Plan Tracking
 
-Execution status is maintained in:
+Execution planning docs are maintained locally and intentionally gitignored:
 
-- `PLAN.md` (undone-first, done+verified second, prose third)
+- `PLAN.md`
+- `FEATURES-TO-SHIP.md`
 
-When implementation changes, update `PLAN.md` immediately with accurate ✅/⬜ status.
+Keep these updated during implementation, but they are not committed.

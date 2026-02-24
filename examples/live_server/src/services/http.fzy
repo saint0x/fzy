@@ -2,26 +2,27 @@ use cap.net;
 use cap.time;
 
 fn listen_public() -> i32 {
-    let listener = net.bind()
+    let listener = try net.bind() catch net.bind()
+    defer close(listener)
     net.listen(listener)
     time.now()
     return 0
 }
 
 fn route_health() -> i32 {
-    let conn = net.accept()
+    let conn = try net.accept() catch net.accept()
+    defer close(conn)
     net.read(conn)
     net.write(conn)
-    net.close(conn)
     return 0
 }
 
 fn route_users() -> i32 {
-    let conn = net.accept()
+    let conn = try net.accept() catch net.accept()
+    defer close(conn)
     ctx.deadline(1000)
     net.read(conn)
     net.write(conn)
     ctx.cancel_if_timeout()
-    net.close(conn)
     return 0
 }

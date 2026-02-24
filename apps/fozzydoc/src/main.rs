@@ -4,10 +4,14 @@ use std::path::{Path, PathBuf};
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
+const REF_START: &str = "<!-- fozzydoc:api:start -->";
+const REF_END: &str = "<!-- fozzydoc:api:end -->";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {
     Json,
     Html,
+    Markdown,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -35,6 +39,7 @@ fn main() -> Result<()> {
     let path = PathBuf::from(&args[0]);
     let format = parse_format(&args)?;
     let out = parse_out_path(&args)?;
+    let reference = parse_reference_path(&args)?;
     let files = discover_sources(&path)?;
 
     let mut items = Vec::new();
@@ -46,7 +51,12 @@ fn main() -> Result<()> {
     let rendered = match format {
         OutputFormat::Json => render_json(&items)?,
         OutputFormat::Html => render_html(&items),
+        OutputFormat::Markdown => render_markdown(&items),
     };
+
+    if let Some(reference_path) = reference {
+        integrate_reference(&reference_path, &items)?;
+    }
 
     if let Some(out_path) = out {
         if let Some(parent) = out_path.parent() {
@@ -65,8 +75,9 @@ fn main() -> Result<()> {
 
 fn print_help() {
     eprintln!(
-        "fozzydoc <path> [--format json|html] [--out <file>]\n\
-extracts `///` docs for fn/struct/enum/test declarations from .fzy files"
+        "fozzydoc <path> [--format json|html|markdown] [--out <file>] [--reference <language-reference.md>]\n\
+extracts docs for fn/struct/enum/rpc/test declarations from .fzy files\n\
+--reference inserts/updates an API section between markers in the language reference"
     );
 }
 
@@ -78,7 +89,8 @@ fn parse_format(args: &[String]) -> Result<OutputFormat> {
         return match raw.as_str() {
             "json" => Ok(OutputFormat::Json),
             "html" => Ok(OutputFormat::Html),
-            _ => bail!("unsupported --format value `{raw}` (expected json|html)"),
+            "markdown" | "md" => Ok(OutputFormat::Markdown),
+            _ => bail!("unsupported --format value `{raw}` (expected json|html|markdown)"),
         };
     }
 
@@ -90,6 +102,16 @@ fn parse_out_path(args: &[String]) -> Result<Option<PathBuf>> {
         let raw = args
             .get(idx + 1)
             .ok_or_else(|| anyhow::anyhow!("missing value for --out"))?;
+        return Ok(Some(PathBuf::from(raw)));
+    }
+    Ok(None)
+}
+
+fn parse_reference_path(args: &[String]) -> Result<Option<PathBuf>> {
+    if let Some(idx) = args.iter().position(|arg| arg == "--reference") {
+        let raw = args
+            .get(idx + 1)
+            .ok_or_else(|| anyhow::anyhow!("missing value for --reference"))?;
         return Ok(Some(PathBuf::from(raw)));
     }
     Ok(None)
@@ -138,12 +160,47 @@ fn extract_items(path: &Path) -> Result<Vec<DocItem>> {
 
     let mut items = Vec::new();
     let mut pending_docs = Vec::<String>::new();
+    let mut in_block_doc = false;
 
     for (index, raw) in source.lines().enumerate() {
         let line_number = index + 1;
         let line = raw.trim();
+
+        if in_block_doc {
+            if let Some(prefix) = line.strip_suffix("*/") {
+                let cleaned = prefix.trim_start_matches('*').trim();
+                if !cleaned.is_empty() {
+                    pending_docs.push(cleaned.to_string());
+                }
+                in_block_doc = false;
+                continue;
+            }
+
+            let cleaned = line.trim_start_matches('*').trim();
+            if !cleaned.is_empty() {
+                pending_docs.push(cleaned.to_string());
+            }
+            continue;
+        }
+
         if let Some(doc) = line.strip_prefix("///") {
             pending_docs.push(doc.trim().to_string());
+            continue;
+        }
+
+        if let Some(after) = line.strip_prefix("/**") {
+            if let Some(mid) = after.strip_suffix("*/") {
+                let cleaned = mid.trim();
+                if !cleaned.is_empty() {
+                    pending_docs.push(cleaned.to_string());
+                }
+            } else {
+                let cleaned = after.trim_start_matches('*').trim();
+                if !cleaned.is_empty() {
+                    pending_docs.push(cleaned.to_string());
+                }
+                in_block_doc = true;
+            }
             continue;
         }
 
@@ -179,6 +236,9 @@ fn parse_decl(line: &str) -> Option<(&'static str, String)> {
     }
     if let Some(rest) = line.strip_prefix("enum ") {
         return parse_symbol(rest, '{').map(|name| ("enum", name));
+    }
+    if let Some(rest) = line.strip_prefix("rpc ") {
+        return parse_symbol(rest, '(').map(|name| ("rpc", name));
     }
     if let Some(rest) = line.strip_prefix("test ") {
         let name = rest
@@ -234,6 +294,47 @@ fn render_html(items: &[DocItem]) -> String {
     out
 }
 
+fn render_markdown(items: &[DocItem]) -> String {
+    let mut out = String::from("# API Documentation\n\n");
+    for item in items {
+        out.push_str(&format!(
+            "## `{}` `{}`\n\n",
+            item.kind.trim(),
+            item.name.trim()
+        ));
+        out.push_str(&format!("- Module: `{}`\n", item.module));
+        out.push_str(&format!("- Location: `{}:{}`\n\n", item.path, item.line));
+        out.push_str("```text\n");
+        out.push_str(&item.docs);
+        out.push_str("\n```\n\n");
+    }
+    out
+}
+
+fn integrate_reference(reference_path: &Path, items: &[DocItem]) -> Result<()> {
+    let current = fs::read_to_string(reference_path)
+        .with_context(|| format!("failed reading reference file: {}", reference_path.display()))?;
+    let section = format!(
+        "{REF_START}\n\n{}\n{REF_END}",
+        render_markdown(items).trim_end()
+    );
+
+    let updated = if let Some(start) = current.find(REF_START) {
+        if let Some(end) = current.find(REF_END) {
+            let end_idx = end + REF_END.len();
+            format!("{}{}{}", &current[..start], section, &current[end_idx..])
+        } else {
+            format!("{}\n\n{}\n", current.trim_end(), section)
+        }
+    } else {
+        format!("{}\n\n{}\n", current.trim_end(), section)
+    };
+
+    fs::write(reference_path, updated)
+        .with_context(|| format!("failed writing reference file: {}", reference_path.display()))?;
+    Ok(())
+}
+
 fn escape_html(input: &str) -> String {
     input
         .replace('&', "&amp;")
@@ -245,7 +346,7 @@ fn escape_html(input: &str) -> String {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{extract_items, parse_decl, render_html};
+    use super::{extract_items, parse_decl, render_html, render_markdown};
 
     #[test]
     fn parse_declaration_kinds() {
@@ -255,6 +356,7 @@ mod tests {
         );
         assert_eq!(parse_decl("struct User {"), Some(("struct", "User".into())));
         assert_eq!(parse_decl("enum Kind {"), Some(("enum", "Kind".into())));
+        assert_eq!(parse_decl("rpc Ping(req: Req) -> Res;"), Some(("rpc", "Ping".into())));
         assert_eq!(
             parse_decl("test \"smoke\" {}"),
             Some(("test", "smoke".into()))
@@ -273,15 +375,16 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "/// app entrypoint\nfn main() -> i32 {\n    return 0\n}\n/// model\nenum Kind {}\n",
+            "/// app entrypoint\nfn main() -> i32 {\n    return 0\n}\n/**\n * request-response endpoint\n */\nrpc Ping(req: Req) -> Res;\n",
         )
         .expect("source should be written");
 
         let items = extract_items(&path).expect("extraction should succeed");
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].name, "main");
-        assert_eq!(items[1].kind, "enum");
+        assert_eq!(items[1].kind, "rpc");
         assert!(render_html(&items).contains("FozzyLang Docs"));
+        assert!(render_markdown(&items).contains("request-response endpoint"));
 
         let _ = std::fs::remove_file(path);
     }

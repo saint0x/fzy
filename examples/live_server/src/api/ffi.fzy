@@ -1,3 +1,4 @@
+// #[ffi_panic(error)]
 pub extern "C" fn server_hash32(ptr: *u8, len: usize) -> u32;
 pub extern "C" fn server_write(fd: i32, ptr: *u8, len: usize) -> i32;
 

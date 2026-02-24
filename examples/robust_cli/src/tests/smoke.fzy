@@ -1,4 +1,31 @@
-test "det_cli_boot" {}
-test "det_set_get" {}
-test "det_scan" {}
-test "chaos_cli" nondet {}
+test "det_cli_boot" {
+    model.preflight()
+    runtime.configure_profile()
+    cli.boot()
+    services.boot_all()
+    api.touch()
+}
+
+test "det_set_get" {
+    services.store.open_db()
+    cli.commands.cmd_set()
+    services.store.write_kv()
+    cli.commands.cmd_get()
+    services.store.read_kv()
+}
+
+test "det_scan" {
+    services.store.open_db()
+    services.store.scan_kv()
+    cli.commands.cmd_list()
+    runtime.scheduler.tick()
+}
+
+test "chaos_cli" nondet {
+    spawn(runtime.worker.run)
+    spawn(runtime.scheduler.tick)
+    checkpoint()
+    yield()
+    timeout(10)
+    cancel()
+}

@@ -18,15 +18,115 @@ This document defines the v0 observable semantics contract used by the toolchain
 
 ## Error And Panic Semantics
 
-- `try ... catch ...` evaluates the try branch first; catch branch is used as fallback value.
+- `try <expr> catch <fallback>` evaluates the try branch first and returns the fallback value when the try branch fails.
+- Catch fallback value must type-check against the try expression result type.
+- v0 error classes are runtime operation failures (I/O, process, net), cancellation/deadline events, and verifier/runtime contract failures.
 - `panic(...)` must never cross C ABI boundaries.
 - Exported FFI boundaries must declare panic policy with `#[ffi_panic(abort)]` or `#[ffi_panic(error)]`.
 
-## Async Cancellation Semantics
+## Async And Scheduling Constructs
 
-- Cancellation markers (`cancel`, timeout/deadline markers) are observable events in deterministic analysis.
-- Cleanup registered via `defer` is guaranteed at function scope exit.
-- Cancellation semantics are deterministic in `det` mode relative to recorded scheduling decisions.
+### `spawn(task)`
+
+- Creates a new schedulable task.
+- Task scheduling is deterministic in `det` mode and recorded as replay-critical data.
+- `spawn(...)` implies thread/executor capability requirements.
+
+### `checkpoint()`
+
+- Explicit scheduler yieldpoint for deterministic interleaving exploration.
+- Always observable in traces under `--det --record`.
+
+### `yield()`
+
+- Cooperative handoff to scheduler.
+- Does not imply task completion; execution may resume later.
+
+### `timeout(ms)`
+
+- Declares timeout/deadline behavior for the enclosing operation scope.
+- Timeout decisions are observable deterministic events.
+
+### `cancel()`
+
+- Marks cancellation path for current operation scope/task context.
+- Cleanup registered via `defer` remains guaranteed.
+
+### `pulse()`
+
+- Side-effect marker for deterministic heartbeat/event-signaling flows.
+- Treated as a deterministic observable action in tracing.
+
+## Contract Clauses
+
+### `requires <expr>`
+
+- Precondition required before continuing function execution.
+- Verifier rejects statically false preconditions.
+
+### `ensures <expr>`
+
+- Postcondition expected at function completion.
+- Verifier rejects statically false postconditions.
+
+## RPC Declarations
+
+Syntax:
+
+```fzy
+rpc Method(req: ReqType) -> ResType;
+rpc StreamEvents(stream<WatchReq>) -> stream<WatchEvent>;
+```
+
+Semantics:
+
+- RPC declarations define stable call surface used by codegen and deterministic trace framing.
+- RPC activity emits frame events: `rpc_send`, `rpc_recv`, `rpc_deadline`, `rpc_cancel`.
+- Deadline behavior is controlled by `timeout(...)` markers.
+- Cancellation behavior is controlled by `cancel()` markers.
+- RPC failure paths map to catchable operation failures in `try/catch` expressions.
+
+## Memory Model: `alloc` / `free`
+
+- `alloc(size)` creates owned heap memory in current scope.
+- `free(ptr)` consumes ownership and invalidates the pointer for further use.
+- `defer free(ptr)` is the preferred cleanup pattern.
+- Safe-profile verification flags unmatched allocations/frees and flow paths where allocated memory escapes without release.
+
+## Capability Semantics
+
+- Capabilities are declared by `use cap.<name>;` at module scope.
+- Core capabilities include: `time`, `rng`, `fs`, `net`, `proc`, `mem`, `thread`.
+- Verifier emits diagnostics for unknown or missing required capabilities.
+
+### Capability Inference Rules
+
+- Using runtime operations tied to known effects infers required capability effects.
+- Examples:
+  - `spawn(...)`, `yield()`, `checkpoint()` infer thread/runtime scheduling effects.
+  - filesystem operations infer `cap.fs`.
+  - networking operations infer `cap.net`.
+- Inference does not replace declaration requirements: inferred effects must still be satisfied by explicit module capabilities or propagated capability tokens.
+
+## Test Block Semantics
+
+Syntax:
+
+```fzy
+test "det_case" {
+    // body
+}
+
+test "chaos_case" nondet {
+    // body
+}
+```
+
+- Test blocks are discovered from parsed module trees and emitted into generated scenario artifacts.
+- Deterministic tests (`test "..." {}`) run with deterministic scheduler semantics under `fozzyc test --det`.
+- `nondet` tests are marked for non-deterministic/chaos exploration flows.
+- Test bodies compile as normal statement blocks and may call project functions/modules.
+- Reporting includes per-test execution summaries when trace/report artifacts are requested.
 
 ## Deterministic Scheduling Model
 
@@ -34,13 +134,6 @@ This document defines the v0 observable semantics contract used by the toolchain
 - Scheduling decisions are recorded as replay-critical trace data.
 - Async checkpoints and RPC frame decisions are represented as deterministic events.
 - v0 model controls explicit runtime scheduling points and does not claim arbitrary OS-preemptive interleaving coverage.
-
-## Capability Semantics
-
-- Capabilities are explicit via `use cap.<name>;` plus inferred usage markers.
-- `fast` mode prioritizes execution speed with reduced deterministic instrumentation.
-- `det` mode enforces replay-critical decision capture and deterministic scheduling.
-- `verify`/safe-profile mode enforces additional capability and safety restrictions.
 
 ## Memory Safety And UB Model
 
@@ -64,3 +157,24 @@ This document defines the v0 observable semantics contract used by the toolchain
 - `AcqRel` applies to read-modify-write operations and composes acquire + release edges.
 - `SeqCst` operations participate in a single total order visible to all threads.
 - Deterministic mode does not weaken memory ordering semantics; it only controls scheduling decision sources.
+
+## Common Diagnostics (Examples)
+
+- Missing capability:
+  - `missing required capability: net`
+  - Fix: add `use cap.net;` or propagate capability token.
+- Unknown capability:
+  - `unknown capability: foo`
+  - Fix: use one of the supported capability names.
+- Missing FFI panic contract:
+  - `ffi panic contract missing: add #[ffi_panic(abort)] or #[ffi_panic(error)]`
+- Invalid contract clause:
+  - `requires[0] is statically false`
+  - `ensures[0] is statically false`
+- Invalid try/catch form:
+  - `expected catch in try/catch expression`
+
+<!-- fozzydoc:api:start -->
+
+# API Documentation
+<!-- fozzydoc:api:end -->
