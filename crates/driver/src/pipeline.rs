@@ -46,6 +46,11 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "net.write_json",
+        symbol: "fz_native_net_write_json",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "net.close",
         symbol: "fz_native_close",
         arity: 1,
@@ -74,6 +79,36 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         callee: "net.poll_next",
         symbol: "fz_native_net_poll_next",
         arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "process.run",
+        symbol: "fz_native_proc_run",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "proc.run",
+        symbol: "fz_native_proc_run",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "process.spawn",
+        symbol: "fz_native_proc_spawn",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "proc.spawn",
+        symbol: "fz_native_proc_spawn",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "process.exec_timeout",
+        symbol: "fz_native_proc_exec_timeout",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "proc.exec_timeout",
+        symbol: "fz_native_proc_exec_timeout",
+        arity: 1,
     },
 ];
 
@@ -912,10 +947,12 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
     if !used_imports.is_empty() {
         out.push('\n');
     }
+    let string_literal_ids = build_string_literal_ids(&collect_string_literals(fir));
     for function in &fir.typed_functions {
         out.push_str(&llvm_emit_function(
             function,
             forced_main_return.filter(|_| function.name == "main"),
+            &string_literal_ids,
         ));
         out.push('\n');
     }
@@ -975,7 +1012,11 @@ impl LlvmFuncCtx {
     }
 }
 
-fn llvm_emit_function(function: &hir::TypedFunction, forced_return: Option<i32>) -> String {
+fn llvm_emit_function(
+    function: &hir::TypedFunction,
+    forced_return: Option<i32>,
+    string_literal_ids: &HashMap<String, i32>,
+) -> String {
     let params = function
         .params
         .iter()
@@ -992,7 +1033,7 @@ fn llvm_emit_function(function: &hir::TypedFunction, forced_return: Option<i32>)
         ));
         ctx.slots.insert(param.name.clone(), slot);
     }
-    let terminated = llvm_emit_block(&function.body, &mut ctx);
+    let terminated = llvm_emit_block(&function.body, &mut ctx, string_literal_ids);
     out.push_str(&ctx.code);
     if !terminated {
         let fallback = forced_return.unwrap_or(0);
@@ -1002,11 +1043,15 @@ fn llvm_emit_function(function: &hir::TypedFunction, forced_return: Option<i32>)
     out
 }
 
-fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
+fn llvm_emit_block(
+    body: &[ast::Stmt],
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+) -> bool {
     for stmt in body {
         match stmt {
             ast::Stmt::Let { name, value, .. } => {
-                let rendered = llvm_emit_expr(value, ctx);
+                let rendered = llvm_emit_expr(value, ctx, string_literal_ids);
                 let slot = format!("%slot_{}_{}", name, ctx.next_value);
                 ctx.code.push_str(&format!(
                     "  {slot} = alloca i32\n  store i32 {rendered}, ptr {slot}\n"
@@ -1014,7 +1059,7 @@ fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
                 ctx.slots.insert(name.clone(), slot);
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
-                        let field_value = llvm_emit_expr(field_expr, ctx);
+                        let field_value = llvm_emit_expr(field_expr, ctx, string_literal_ids);
                         let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
                         ctx.code.push_str(&format!(
                             "  {field_slot} = alloca i32\n  store i32 {field_value}, ptr {field_slot}\n"
@@ -1024,7 +1069,7 @@ fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
                 }
             }
             ast::Stmt::Assign { target, value } => {
-                let value = llvm_emit_expr(value, ctx);
+                let value = llvm_emit_expr(value, ctx, string_literal_ids);
                 let slot = ctx
                     .slots
                     .entry(target.clone())
@@ -1037,7 +1082,7 @@ fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
             }
             ast::Stmt::Return(expr) => {
-                let value = llvm_emit_expr(expr, ctx);
+                let value = llvm_emit_expr(expr, ctx, string_literal_ids);
                 ctx.code.push_str(&format!("  ret i32 {value}\n"));
                 return true;
             }
@@ -1045,14 +1090,14 @@ fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
             | ast::Stmt::Requires(expr)
             | ast::Stmt::Ensures(expr)
             | ast::Stmt::Defer(expr) => {
-                let _ = llvm_emit_expr(expr, ctx);
+                let _ = llvm_emit_expr(expr, ctx, string_literal_ids);
             }
             ast::Stmt::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                let cond = llvm_emit_expr(condition, ctx);
+                let cond = llvm_emit_expr(condition, ctx, string_literal_ids);
                 let pred = ctx.value();
                 let then_label = ctx.label("then");
                 let else_label = ctx.label("else");
@@ -1060,12 +1105,12 @@ fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
                 ctx.code.push_str(&format!(
                     "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{then_label}, label %{else_label}\n{then_label}:\n"
                 ));
-                let then_terminated = llvm_emit_block(then_body, ctx);
+                let then_terminated = llvm_emit_block(then_body, ctx, string_literal_ids);
                 if !then_terminated {
                     ctx.code.push_str(&format!("  br label %{cont_label}\n"));
                 }
                 ctx.code.push_str(&format!("{else_label}:\n"));
-                let else_terminated = llvm_emit_block(else_body, ctx);
+                let else_terminated = llvm_emit_block(else_body, ctx, string_literal_ids);
                 if !else_terminated {
                     ctx.code.push_str(&format!("  br label %{cont_label}\n"));
                 }
@@ -1080,12 +1125,12 @@ fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
                 let end_label = ctx.label("while_end");
                 ctx.code
                     .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
-                let cond = llvm_emit_expr(condition, ctx);
+                let cond = llvm_emit_expr(condition, ctx, string_literal_ids);
                 let pred = ctx.value();
                 ctx.code.push_str(&format!(
                     "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{body_label}, label %{end_label}\n{body_label}:\n"
                 ));
-                let terminated = llvm_emit_block(body, ctx);
+                let terminated = llvm_emit_block(body, ctx, string_literal_ids);
                 if !terminated {
                     ctx.code.push_str(&format!("  br label %{head_label}\n"));
                 }
@@ -1097,7 +1142,11 @@ fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
     false
 }
 
-fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
+fn llvm_emit_expr(
+    expr: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+) -> String {
     match expr {
         ast::Expr::Int(v) => v.to_string(),
         ast::Expr::Bool(v) => {
@@ -1107,7 +1156,7 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
                 "0".to_string()
             }
         }
-        ast::Expr::Str(_) => "0".to_string(),
+        ast::Expr::Str(value) => string_literal_ids.get(value).copied().unwrap_or(0).to_string(),
         ast::Expr::Ident(name) => {
             if let Some(slot) = ctx.slots.get(name).cloned() {
                 let val = ctx.value();
@@ -1118,7 +1167,7 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
                 "0".to_string()
             }
         }
-        ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx),
+        ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids),
         ast::Expr::FieldAccess { base, field } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
@@ -1128,12 +1177,12 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
                     return val;
                 }
             }
-            llvm_emit_expr(base, ctx)
+            llvm_emit_expr(base, ctx, string_literal_ids)
         }
         ast::Expr::StructInit { fields, .. } => {
             let mut first = None;
             for (_, value) in fields {
-                let current = llvm_emit_expr(value, ctx);
+                let current = llvm_emit_expr(value, ctx, string_literal_ids);
                 if first.is_none() {
                     first = Some(current);
                 }
@@ -1146,18 +1195,18 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
             payload,
         } => {
             for value in payload {
-                let _ = llvm_emit_expr(value, ctx);
+                let _ = llvm_emit_expr(value, ctx, string_literal_ids);
             }
             (variant.bytes().fold(0u32, |acc, byte| {
                 acc.wrapping_mul(33).wrapping_add(byte as u32)
             }) & 0x7fff_ffff)
                 .to_string()
         }
-        ast::Expr::TryCatch { try_expr, .. } => llvm_emit_expr(try_expr, ctx),
+        ast::Expr::TryCatch { try_expr, .. } => llvm_emit_expr(try_expr, ctx, string_literal_ids),
         ast::Expr::Call { callee, args } => {
             let args = args
                 .iter()
-                .map(|arg| format!("i32 {}", llvm_emit_expr(arg, ctx)))
+                .map(|arg| format!("i32 {}", llvm_emit_expr(arg, ctx, string_literal_ids)))
                 .collect::<Vec<_>>()
                 .join(", ");
             let symbol = native_runtime_import_for_callee(callee)
@@ -1169,8 +1218,8 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
             val
         }
         ast::Expr::Binary { op, left, right } => {
-            let lhs = llvm_emit_expr(left, ctx);
-            let rhs = llvm_emit_expr(right, ctx);
+            let lhs = llvm_emit_expr(left, ctx, string_literal_ids);
+            let rhs = llvm_emit_expr(right, ctx, string_literal_ids);
             let out = ctx.value();
             match op {
                 ast::BinaryOp::Add => ctx
@@ -1229,6 +1278,118 @@ fn collect_used_native_runtime_imports(
         }
     }
     used
+}
+
+fn collect_string_literals(fir: &fir::FirModule) -> Vec<String> {
+    let mut literals = HashSet::<String>::new();
+    for function in &fir.typed_functions {
+        for stmt in &function.body {
+            collect_string_literals_from_stmt(stmt, &mut literals);
+        }
+    }
+    let mut literals = literals.into_iter().collect::<Vec<_>>();
+    literals.sort();
+    literals
+}
+
+fn collect_string_literals_from_stmt(stmt: &ast::Stmt, literals: &mut HashSet<String>) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::Return(value)
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => collect_string_literals_from_expr(value, literals),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_string_literals_from_expr(condition, literals);
+            for nested in then_body {
+                collect_string_literals_from_stmt(nested, literals);
+            }
+            for nested in else_body {
+                collect_string_literals_from_stmt(nested, literals);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_string_literals_from_expr(condition, literals);
+            for nested in body {
+                collect_string_literals_from_stmt(nested, literals);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_string_literals_from_expr(scrutinee, literals);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_string_literals_from_expr(guard, literals);
+                }
+                collect_string_literals_from_expr(&arm.value, literals);
+            }
+        }
+    }
+}
+
+fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<String>) {
+    match expr {
+        ast::Expr::Str(value) => {
+            literals.insert(value.clone());
+        }
+        ast::Expr::Call { args, .. } => {
+            for arg in args {
+                collect_string_literals_from_expr(arg, literals);
+            }
+        }
+        ast::Expr::FieldAccess { base, .. } => collect_string_literals_from_expr(base, literals),
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_string_literals_from_expr(value, literals);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                collect_string_literals_from_expr(value, literals);
+            }
+        }
+        ast::Expr::Group(inner) => collect_string_literals_from_expr(inner, literals),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_string_literals_from_expr(try_expr, literals);
+            collect_string_literals_from_expr(catch_expr, literals);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_string_literals_from_expr(left, literals);
+            collect_string_literals_from_expr(right, literals);
+        }
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn build_string_literal_ids(literals: &[String]) -> HashMap<String, i32> {
+    literals
+        .iter()
+        .enumerate()
+        .map(|(index, value)| (value.clone(), index as i32 + 1))
+        .collect()
+}
+
+fn escape_c_string(value: &str) -> String {
+    let mut escaped = String::new();
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn collect_used_runtime_imports_from_stmt(
@@ -1662,7 +1823,8 @@ fn emit_native_artifact_llvm(
 
     let ll_path = build_dir.join(format!("{}.ll", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
-    let runtime_shim_path = ensure_native_runtime_shim(&build_dir)?;
+    let string_literals = collect_string_literals(fir);
+    let runtime_shim_path = ensure_native_runtime_shim(&build_dir, &string_literals)?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks);
     std::fs::write(&ll_path, llvm_ir)
@@ -1736,7 +1898,9 @@ fn emit_native_artifact_cranelift(
 
     let object_path = build_dir.join(format!("{}.o", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
-    let runtime_shim_path = ensure_native_runtime_shim(&build_dir)?;
+    let string_literals = collect_string_literals(fir);
+    let runtime_shim_path = ensure_native_runtime_shim(&build_dir, &string_literals)?;
+    let string_literal_ids = build_string_literal_ids(&string_literals);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -1853,6 +2017,7 @@ fn emit_native_artifact_cranelift(
             &function.body,
             &mut locals,
             &mut next_var,
+            &string_literal_ids,
         )?;
         if !terminated {
             let fallback = if function.name == "main" {
@@ -1925,11 +2090,20 @@ fn clif_emit_block(
     body: &[ast::Stmt],
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
+    string_literal_ids: &HashMap<String, i32>,
 ) -> Result<bool> {
     for stmt in body {
         match stmt {
             ast::Stmt::Let { name, value, .. } => {
-                let val = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
+                let val = clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    value,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                )?;
                 let var = if let Some(existing) = locals.get(name).copied() {
                     existing
                 } else {
@@ -1949,6 +2123,7 @@ fn clif_emit_block(
                             field_expr,
                             locals,
                             next_var,
+                            string_literal_ids,
                         )?;
                         let field_var = Variable::from_u32(*next_var as u32);
                         *next_var += 1;
@@ -1959,7 +2134,15 @@ fn clif_emit_block(
                 }
             }
             ast::Stmt::Assign { target, value } => {
-                let val = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
+                let val = clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    value,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                )?;
                 let var = if let Some(existing) = locals.get(target).copied() {
                     existing
                 } else {
@@ -1972,7 +2155,15 @@ fn clif_emit_block(
                 builder.def_var(var, val);
             }
             ast::Stmt::Return(expr) => {
-                let value = clif_emit_expr(builder, module, function_ids, expr, locals, next_var)?;
+                let value = clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    expr,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                )?;
                 builder.ins().return_(&[value]);
                 return Ok(true);
             }
@@ -1980,7 +2171,15 @@ fn clif_emit_block(
             | ast::Stmt::Requires(expr)
             | ast::Stmt::Ensures(expr)
             | ast::Stmt::Defer(expr) => {
-                let _ = clif_emit_expr(builder, module, function_ids, expr, locals, next_var)?;
+                let _ = clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    expr,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                )?;
             }
             ast::Stmt::If {
                 condition,
@@ -1988,7 +2187,15 @@ fn clif_emit_block(
                 else_body,
             } => {
                 let cond_val =
-                    clif_emit_expr(builder, module, function_ids, condition, locals, next_var)?;
+                    clif_emit_expr(
+                        builder,
+                        module,
+                        function_ids,
+                        condition,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                    )?;
                 let zero = builder.ins().iconst(types::I32, 0);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
                 let then_block = builder.create_block();
@@ -1998,7 +2205,15 @@ fn clif_emit_block(
 
                 builder.switch_to_block(then_block);
                 let then_terminated =
-                    clif_emit_block(builder, module, function_ids, then_body, locals, next_var)?;
+                    clif_emit_block(
+                        builder,
+                        module,
+                        function_ids,
+                        then_body,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                    )?;
                 if !then_terminated {
                     builder.ins().jump(cont_block, &[]);
                 }
@@ -2006,7 +2221,15 @@ fn clif_emit_block(
 
                 builder.switch_to_block(else_block);
                 let else_terminated =
-                    clif_emit_block(builder, module, function_ids, else_body, locals, next_var)?;
+                    clif_emit_block(
+                        builder,
+                        module,
+                        function_ids,
+                        else_body,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                    )?;
                 if !else_terminated {
                     builder.ins().jump(cont_block, &[]);
                 }
@@ -2025,14 +2248,30 @@ fn clif_emit_block(
                 builder.ins().jump(head, &[]);
                 builder.switch_to_block(head);
                 let cond_val =
-                    clif_emit_expr(builder, module, function_ids, condition, locals, next_var)?;
+                    clif_emit_expr(
+                        builder,
+                        module,
+                        function_ids,
+                        condition,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                    )?;
                 let zero = builder.ins().iconst(types::I32, 0);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
                 builder.ins().brif(cond, loop_body, &[], exit, &[]);
 
                 builder.switch_to_block(loop_body);
                 let body_terminated =
-                    clif_emit_block(builder, module, function_ids, body, locals, next_var)?;
+                    clif_emit_block(
+                        builder,
+                        module,
+                        function_ids,
+                        body,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                    )?;
                 if !body_terminated {
                     builder.ins().jump(head, &[]);
                 }
@@ -2055,11 +2294,14 @@ fn clif_emit_expr(
     expr: &ast::Expr,
     locals: &mut HashMap<String, Variable>,
     next_var: &mut usize,
+    string_literal_ids: &HashMap<String, i32>,
 ) -> Result<cranelift_codegen::ir::Value> {
     Ok(match expr {
         ast::Expr::Int(v) => builder.ins().iconst(types::I32, *v as i64),
         ast::Expr::Bool(v) => builder.ins().iconst(types::I32, if *v { 1 } else { 0 }),
-        ast::Expr::Str(_) => builder.ins().iconst(types::I32, 0),
+        ast::Expr::Str(value) => builder
+            .ins()
+            .iconst(types::I32, string_literal_ids.get(value).copied().unwrap_or(0) as i64),
         ast::Expr::Ident(name) => {
             if let Some(var) = locals.get(name).copied() {
                 builder.use_var(var)
@@ -2068,23 +2310,55 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::Group(inner) => {
-            clif_emit_expr(builder, module, function_ids, inner, locals, next_var)?
+            clif_emit_expr(
+                builder,
+                module,
+                function_ids,
+                inner,
+                locals,
+                next_var,
+                string_literal_ids,
+            )?
         }
         ast::Expr::FieldAccess { base, field } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(var) = locals.get(&format!("{name}.{field}")).copied() {
                     builder.use_var(var)
                 } else {
-                    clif_emit_expr(builder, module, function_ids, base, locals, next_var)?
+                    clif_emit_expr(
+                        builder,
+                        module,
+                        function_ids,
+                        base,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                    )?
                 }
             } else {
-                clif_emit_expr(builder, module, function_ids, base, locals, next_var)?
+                clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    base,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                )?
             }
         }
         ast::Expr::StructInit { fields, .. } => {
             let mut first = None;
             for (_, value) in fields {
-                let out = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
+                let out = clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    value,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                )?;
                 if first.is_none() {
                     first = Some(out);
                 }
@@ -2095,7 +2369,15 @@ fn clif_emit_expr(
             variant, payload, ..
         } => {
             for value in payload {
-                let _ = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
+                let _ = clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    value,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                )?;
             }
             let tag = variant.bytes().fold(0u32, |acc, byte| {
                 acc.wrapping_mul(33).wrapping_add(byte as u32)
@@ -2105,12 +2387,45 @@ fn clif_emit_expr(
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
-        } => clif_emit_expr(builder, module, function_ids, try_expr, locals, next_var).or_else(
-            |_| clif_emit_expr(builder, module, function_ids, catch_expr, locals, next_var),
-        )?,
+        } => clif_emit_expr(
+            builder,
+            module,
+            function_ids,
+            try_expr,
+            locals,
+            next_var,
+            string_literal_ids,
+        )
+        .or_else(|_| {
+            clif_emit_expr(
+                builder,
+                module,
+                function_ids,
+                catch_expr,
+                locals,
+                next_var,
+                string_literal_ids,
+            )
+        })?,
         ast::Expr::Binary { op, left, right } => {
-            let lhs = clif_emit_expr(builder, module, function_ids, left, locals, next_var)?;
-            let rhs = clif_emit_expr(builder, module, function_ids, right, locals, next_var)?;
+            let lhs = clif_emit_expr(
+                builder,
+                module,
+                function_ids,
+                left,
+                locals,
+                next_var,
+                string_literal_ids,
+            )?;
+            let rhs = clif_emit_expr(
+                builder,
+                module,
+                function_ids,
+                right,
+                locals,
+                next_var,
+                string_literal_ids,
+            )?;
             match op {
                 ast::BinaryOp::Add => builder.ins().iadd(lhs, rhs),
                 ast::BinaryOp::Sub => builder.ins().isub(lhs, rhs),
@@ -2166,6 +2481,7 @@ fn clif_emit_expr(
                     arg,
                     locals,
                     next_var,
+                    string_literal_ids,
                 )?);
             }
             if let Some(function_id) = function_ids.get(callee).copied() {
@@ -2345,18 +2661,30 @@ fn declare_native_runtime_imports(
     Ok(())
 }
 
-fn ensure_native_runtime_shim(build_dir: &Path) -> Result<PathBuf> {
+fn ensure_native_runtime_shim(build_dir: &Path, string_literals: &[String]) -> Result<PathBuf> {
     let runtime_shim_path = build_dir.join("fz_native_runtime.c");
-    std::fs::write(&runtime_shim_path, NATIVE_RUNTIME_SHIM_C).with_context(|| {
+    std::fs::write(&runtime_shim_path, render_native_runtime_shim(string_literals)).with_context(
+        || {
         format!(
             "failed writing native runtime shim source: {}",
             runtime_shim_path.display()
         )
-    })?;
+    },
+    )?;
     Ok(runtime_shim_path)
 }
 
-const NATIVE_RUNTIME_SHIM_C: &str = r#"#include <arpa/inet.h>
+fn render_native_runtime_shim(string_literals: &[String]) -> String {
+    let mut literal_entries = String::new();
+    for literal in string_literals {
+        let _ = writeln!(&mut literal_entries, "  \"{}\",", escape_c_string(literal));
+    }
+    if literal_entries.is_empty() {
+        literal_entries.push_str("  NULL,\n");
+    }
+    let count = string_literals.len();
+    format!(
+        r#"#include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -2370,94 +2698,98 @@ const NATIVE_RUNTIME_SHIM_C: &str = r#"#include <arpa/inet.h>
 #include <time.h>
 #include <unistd.h>
 
+static const char* fz_string_literals[] = {{
+{literal_entries}}};
+static const int fz_string_literal_count = {count};
+
 static int fz_listener_fd = -1;
 static pthread_mutex_t fz_listener_lock = PTHREAD_MUTEX_INITIALIZER;
-static int fz_server_thread_started = 0;
 
-static int fz_default_port(void) {
+static const char* fz_env_or_default(const char* key, const char* fallback) {{
+  const char* value = getenv(key);
+  if (value == NULL || value[0] == '\0') {{
+    return fallback;
+  }}
+  return value;
+}}
+
+static const char* fz_lookup_literal(int32_t literal_id) {{
+  if (literal_id <= 0 || literal_id > fz_string_literal_count) {{
+    return NULL;
+  }}
+  return fz_string_literals[literal_id - 1];
+}}
+
+static int fz_default_port(void) {{
   const char* raw = getenv("AGENT_PORT");
-  if (raw == NULL || raw[0] == '\0') {
+  if (raw == NULL || raw[0] == '\0') {{
     return 8080;
-  }
+  }}
   char* end = NULL;
   long parsed = strtol(raw, &end, 10);
-  if (end == raw || parsed <= 0 || parsed > 65535) {
+  if (end == raw || parsed <= 0 || parsed > 65535) {{
     return 8080;
-  }
+  }}
   return (int)parsed;
-}
+}}
 
-static uint32_t fz_default_addr(void) {
-  const char* host = getenv("AGENT_HOST");
-  if (host == NULL || host[0] == '\0') {
-    host = "127.0.0.1";
-  }
+static uint32_t fz_default_addr(void) {{
+  const char* host = fz_env_or_default("AGENT_HOST", "127.0.0.1");
   struct in_addr addr;
-  if (inet_pton(AF_INET, host, &addr) == 1) {
+  if (inet_pton(AF_INET, host, &addr) == 1) {{
     return addr.s_addr;
-  }
-  if (strcmp(host, "localhost") == 0) {
+  }}
+  if (strcmp(host, "localhost") == 0) {{
     return htonl(INADDR_LOOPBACK);
-  }
+  }}
   return htonl(INADDR_LOOPBACK);
-}
+}}
 
-static void fz_send_http_ok(int conn_fd) {
-  const char* body = "{\"status\":\"ok\"}\n";
-  char header[192];
+static int fz_send_http_response(
+    int conn_fd,
+    const char* content_type,
+    const char* body,
+    int close_after) {{
+  if (conn_fd < 0) {{
+    return -1;
+  }}
+  if (body == NULL) {{
+    body = "";
+  }}
   int body_len = (int)strlen(body);
+  char header[256];
   int header_len = snprintf(
       header,
       sizeof(header),
       "HTTP/1.1 200 OK\r\n"
-      "Content-Type: application/json\r\n"
+      "Content-Type: %s\r\n"
       "Content-Length: %d\r\n"
-      "Connection: close\r\n"
+      "Connection: %s\r\n"
       "\r\n",
-      body_len);
-  if (header_len > 0) {
-    (void)send(conn_fd, header, (size_t)header_len, 0);
-  }
-  (void)send(conn_fd, body, (size_t)body_len, 0);
-}
-
-static void* fz_listener_thread(void* arg) {
-  (void)arg;
-  for (;;) {
-    int listener = -1;
-    pthread_mutex_lock(&fz_listener_lock);
-    listener = fz_listener_fd;
-    pthread_mutex_unlock(&fz_listener_lock);
-    if (listener < 0) {
-      struct timespec sleep_for = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
-      nanosleep(&sleep_for, NULL);
-      continue;
-    }
-    struct sockaddr_in peer;
-    socklen_t peer_len = sizeof(peer);
-    int conn_fd = accept(listener, (struct sockaddr*)&peer, &peer_len);
-    if (conn_fd < 0) {
-      if (errno == EINTR) {
-        continue;
-      }
-      struct timespec sleep_for = {.tv_sec = 0, .tv_nsec = 2 * 1000 * 1000};
-      nanosleep(&sleep_for, NULL);
-      continue;
-    }
-    char buf[2048];
-    (void)recv(conn_fd, buf, sizeof(buf), 0);
-    fz_send_http_ok(conn_fd);
+      content_type,
+      body_len,
+      close_after ? "close" : "keep-alive");
+  if (header_len <= 0) {{
+    return -1;
+  }}
+  if (send(conn_fd, header, (size_t)header_len, 0) < 0) {{
+    return -1;
+  }}
+  if (body_len > 0 && send(conn_fd, body, (size_t)body_len, 0) < 0) {{
+    return -1;
+  }}
+  if (close_after) {{
     shutdown(conn_fd, SHUT_RDWR);
     close(conn_fd);
-  }
-  return NULL;
-}
+  }}
+  return 0;
+}}
 
-int32_t fz_native_net_bind(void) {
+int32_t fz_native_net_bind(void) {{
   int fd = socket(AF_INET, SOCK_STREAM, 0);
-  if (fd < 0) {
+  if (fd < 0) {{
     return -1;
-  }
+  }}
   int yes = 1;
   (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
   struct sockaddr_in addr;
@@ -2465,104 +2797,123 @@ int32_t fz_native_net_bind(void) {
   addr.sin_family = AF_INET;
   addr.sin_addr.s_addr = fz_default_addr();
   addr.sin_port = htons((uint16_t)fz_default_port());
-  if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+  if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {{
     close(fd);
     return -1;
-  }
+  }}
   pthread_mutex_lock(&fz_listener_lock);
   fz_listener_fd = fd;
   pthread_mutex_unlock(&fz_listener_lock);
   return fd;
-}
+}}
 
-int32_t fz_native_net_listen(int32_t fd) {
+int32_t fz_native_net_listen(int32_t fd) {{
   int listener = fd;
-  if (listener < 0) {
+  if (listener < 0) {{
     pthread_mutex_lock(&fz_listener_lock);
     listener = fz_listener_fd;
     pthread_mutex_unlock(&fz_listener_lock);
-  }
-  if (listener < 0) {
+  }}
+  if (listener < 0) {{
     return -1;
-  }
-  if (listen(listener, 128) != 0) {
-    return -1;
-  }
-  pthread_mutex_lock(&fz_listener_lock);
-  if (!fz_server_thread_started) {
-    pthread_t thread;
-    if (pthread_create(&thread, NULL, fz_listener_thread, NULL) == 0) {
-      pthread_detach(thread);
-      fz_server_thread_started = 1;
-    }
-  }
-  pthread_mutex_unlock(&fz_listener_lock);
-  return 0;
-}
+  }}
+  return listen(listener, 128) == 0 ? 0 : -1;
+}}
 
-int32_t fz_native_net_accept(void) {
+int32_t fz_native_net_accept(void) {{
   int listener = -1;
   pthread_mutex_lock(&fz_listener_lock);
   listener = fz_listener_fd;
   pthread_mutex_unlock(&fz_listener_lock);
-  if (listener < 0) {
+  if (listener < 0) {{
     return -1;
-  }
+  }}
   struct sockaddr_in peer;
   socklen_t peer_len = sizeof(peer);
   int conn_fd = accept(listener, (struct sockaddr*)&peer, &peer_len);
-  if (conn_fd < 0) {
-    return -1;
-  }
-  return conn_fd;
-}
+  return conn_fd < 0 ? -1 : conn_fd;
+}}
 
-int32_t fz_native_net_read(int32_t conn_fd) {
-  if (conn_fd < 0) {
+int32_t fz_native_net_read(int32_t conn_fd) {{
+  if (conn_fd < 0) {{
     return -1;
-  }
+  }}
   char buf[4096];
   int got = (int)recv(conn_fd, buf, sizeof(buf), 0);
-  if (got < 0) {
-    return -1;
-  }
-  return got;
-}
+  return got < 0 ? -1 : got;
+}}
 
-int32_t fz_native_net_write(int32_t conn_fd) {
-  if (conn_fd < 0) {
-    return -1;
-  }
-  fz_send_http_ok(conn_fd);
-  return 0;
-}
+int32_t fz_native_net_write_json(int32_t conn_fd) {{
+  const char* body = fz_env_or_default("FZ_NET_WRITE_JSON_BODY", "{{\"status\":\"json\"}}\n");
+  return fz_send_http_response(conn_fd, "application/json", body, 1);
+}}
 
-int32_t fz_native_close(int32_t fd) {
-  if (fd >= 0) {
+int32_t fz_native_net_write(int32_t conn_fd) {{
+  const char* body = fz_env_or_default("FZ_NET_WRITE_BODY", "ok\n");
+  return fz_send_http_response(conn_fd, "text/plain; charset=utf-8", body, 1);
+}}
+
+int32_t fz_native_close(int32_t fd) {{
+  if (fd >= 0) {{
     shutdown(fd, SHUT_RDWR);
     close(fd);
-  }
+  }}
   return 0;
-}
+}}
 
-int32_t fz_native_spawn(int32_t task_ref) {
+int32_t fz_native_proc_run(int32_t command_literal_id) {{
+  const char* command = fz_lookup_literal(command_literal_id);
+  if (command == NULL || command[0] == '\0') {{
+    return -1;
+  }}
+  int code = system(command);
+  return code;
+}}
+
+int32_t fz_native_proc_spawn(int32_t command_literal_id) {{
+  const char* command = fz_lookup_literal(command_literal_id);
+  if (command == NULL || command[0] == '\0') {{
+    return -1;
+  }}
+  pid_t pid = fork();
+  if (pid < 0) {{
+    return -1;
+  }}
+  if (pid == 0) {{
+    execl("/bin/sh", "sh", "-lc", command, (char*)NULL);
+    _exit(127);
+  }}
+  return (int32_t)pid;
+}}
+
+int32_t fz_native_proc_exec_timeout(int32_t timeout_ms) {{
+  if (timeout_ms <= 0) {{
+    return 0;
+  }}
+  usleep((useconds_t)timeout_ms * 1000U);
+  return 0;
+}}
+
+int32_t fz_native_spawn(int32_t task_ref) {{
   (void)task_ref;
   return 0;
-}
+}}
 
-int32_t fz_native_yield(void) {
+int32_t fz_native_yield(void) {{
   sched_yield();
   return 0;
-}
+}}
 
-int32_t fz_native_checkpoint(void) {
+int32_t fz_native_checkpoint(void) {{
   return 0;
-}
+}}
 
-int32_t fz_native_net_poll_next(void) {
+int32_t fz_native_net_poll_next(void) {{
   return 0;
+}}
+"#
+    )
 }
-"#;
 
 fn linker_candidates() -> Vec<String> {
     if let Ok(explicit) = std::env::var("FZ_CC") {

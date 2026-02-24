@@ -958,11 +958,8 @@ fn collect_function_caps_and_calls(
                 if callee == "spawn" || callee.contains("await") {
                     self.caps.insert("thread".to_string());
                 }
-                if callee.contains("timeout")
-                    || callee.contains("deadline")
-                    || callee.contains("cancel")
-                {
-                    self.caps.insert("net".to_string());
+                if matches!(callee.as_str(), "timeout" | "deadline" | "cancel") {
+                    self.caps.insert("thread".to_string());
                 }
             }
             ast::walk_expr(self, expr);
@@ -1156,11 +1153,8 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                     if callee == "spawn" || callee.contains("await") {
                         self.caps.insert("thread".to_string());
                     }
-                    if callee.contains("timeout")
-                        || callee.contains("deadline")
-                        || callee.contains("cancel")
-                    {
-                        self.caps.insert("net".to_string());
+                    if matches!(callee.as_str(), "timeout" | "deadline" | "cancel") {
+                        self.caps.insert("thread".to_string());
                     }
                 }
                 ast::walk_expr(self, expr);
