@@ -2,7 +2,7 @@
 
 Correctness-first systems language toolchain with deterministic verification workflows.
 
-FozzyLang pairs a language/compiler (`fozzyc`) with Fozzy runtime testing so determinism, replay, and artifact-driven debugging are first-class, not bolt-ons.
+fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, replay, and artifact-driven debugging are first-class, not bolt-ons.
 
 ## Start Here
 
@@ -10,7 +10,7 @@ FozzyLang pairs a language/compiler (`fozzyc`) with Fozzy runtime testing so det
 
 ## What This Repo Contains
 
-- `apps/fozzyc`: language CLI (build/run/test/verify/emit-ir/rpc gen/headers)
+- compiler CLI (binary: `fz`) (build/run/test/verify/emit-ir/rpc gen/headers)
 - `apps/fozzyfmt`: formatter
 - `apps/fozzydoc`: docs extractor/generator
 - `crates/parser`, `crates/ast`, `crates/hir`, `crates/fir`: front-end + IR pipeline
@@ -24,14 +24,14 @@ FozzyLang pairs a language/compiler (`fozzyc`) with Fozzy runtime testing so det
 Implemented and verified in this repo:
 
 - Deterministic scheduler modes (`fifo`, `random`, `coverage_guided`) for non-scenario tests
-- Thread/async/RPC decision artifacts in `fozzyc test --det --record ...`
+- Thread/async/RPC decision artifacts in `fz test --det --record ...`
 - RPC frame model events: `rpc_send`, `rpc_recv`, `rpc_deadline`, `rpc_cancel`
 - Explore + shrink metadata artifacts for replay/shrink prioritization
 - Language-native scenario generation from parsed `test` blocks (combined + per-test)
 - Recursive multi-file module loading from `mod` declarations (`foo.fzy`, `foo/mod.fzy`, `foo::bar`)
 - C header generation from exported `pub extern "C" fn` signatures
-- RPC schema/client/server stub generation (`fozzyc rpc gen`)
-- `fozzyc run` executes compiled native output and reports real process exit/stdout/stderr
+- RPC schema/client/server stub generation (`fz rpc gen`)
+- `fz run` executes compiled native output and reports real process exit/stdout/stderr
 
 ## Build And Test
 
@@ -44,40 +44,40 @@ cargo test --workspace
 
 ```bash
 # Build source/project
-fozzyc build <path> [--release] [--threads N] [--backend llvm|cranelift] [--json]
+fz build <path> [--release] [--threads N] [--backend llvm|cranelift] [--json]
 
 # Run source/project or .fozzy scenario
-fozzyc run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 
 # Test source/project or .fozzy scenario
-fozzyc test <path> [--det] [--strict-verify] [--safe-profile] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz test <path> [--det] [--strict-verify] [--safe-profile] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 
 # Verify/check/IR
-fozzyc check <path> [--json]
-fozzyc verify <path> [--json]
-fozzyc dx-check <project> [--strict] [--json]
-fozzyc spec-check [--json]
-fozzyc emit-ir <path> [--json]
-fozzyc parity <path> [--seed N] [--json]
-fozzyc equivalence <path> [--seed N] [--json]
-fozzyc audit unsafe <path> [--json]
-fozzyc vendor <project> [--json]
-fozzyc abi-check <current.abi.json> --baseline <baseline.abi.json> [--json]
-fozzyc debug-check <path> [--json]
-fozzyc lsp diagnostics <path> [--json]
-fozzyc lsp definition <path> <symbol> [--json]
-fozzyc lsp hover <path> <symbol> [--json]
-fozzyc lsp rename <path> <from> <to> [--json]
-fozzyc lsp smoke <path> [--json]
+fz check <path> [--json]
+fz verify <path> [--json]
+fz dx-check <project> [--strict] [--json]
+fz spec-check [--json]
+fz emit-ir <path> [--json]
+fz parity <path> [--seed N] [--json]
+fz equivalence <path> [--seed N] [--json]
+fz audit unsafe <path> [--json]
+fz vendor <project> [--json]
+fz abi-check <current.abi.json> --baseline <baseline.abi.json> [--json]
+fz debug-check <path> [--json]
+fz lsp diagnostics <path> [--json]
+fz lsp definition <path> <symbol> [--json]
+fz lsp hover <path> <symbol> [--json]
+fz lsp rename <path> <from> <to> [--json]
+fz lsp smoke <path> [--json]
 
 # FFI / RPC outputs
-fozzyc headers <path> [--out path] [--json]
-fozzyc rpc gen <path> [--out-dir dir] [--json]
+fz headers <path> [--out path] [--json]
+fz rpc gen <path> [--out-dir dir] [--json]
 ```
 
 ## Deterministic Artifacts
 
-With `fozzyc test <file.fzy> --det --record artifacts/name.trace.json --json`, the driver emits:
+With `fz test <file.fzy> --det --record artifacts/name.trace.json --json`, the driver emits:
 
 - `*.trace.json`: deterministic execution trace (thread + async + RPC frame events)
 - `*.timeline.json`: schedule decisions (`thread.schedule`, `async.schedule`, `rpc.frame`)
@@ -96,7 +96,7 @@ With `fozzyc test <file.fzy> --det --record artifacts/name.trace.json --json`, t
 - `c_shim` backend is removed and unsupported.
 - Backend selection order:
   - explicit `--backend`
-  - `FOZZYC_NATIVE_BACKEND`
+  - `FZ_NATIVE_BACKEND`
   - profile default (`dev -> cranelift`, `release -> llvm`)
 
 ## Dependency Locking + Vendor
@@ -106,7 +106,7 @@ With `fozzyc test <file.fzy> --det --record artifacts/name.trace.json --json`, t
 - Refresh lock + snapshot dependencies:
 
 ```bash
-fozzyc vendor <project> --json
+fz vendor <project> --json
 ```
 
 - Vendor command writes:
@@ -117,7 +117,7 @@ Spec: `docs/dependency-locking-v0.md`
 
 ## ABI Compatibility Gate
 
-- `fozzyc abi-check` now enforces policy-level compatibility:
+- `fz abi-check` now enforces policy-level compatibility:
   - schema validity
   - package identity
   - panic boundary compatibility
@@ -162,7 +162,7 @@ fn main() -> i32 {
 }
 FZY
 
-fozzyc test /tmp/demo.fzy --det --sched random --seed 13 --record artifacts/demo.trace.json --json
+fz test /tmp/demo.fzy --det --sched random --seed 13 --record artifacts/demo.trace.json --json
 ```
 
 Inspect:
@@ -195,37 +195,37 @@ Available projects:
 Validate a project:
 
 ```bash
-cargo run -q -p fozzyc -- dx-check examples/fullstack --strict --json
+cargo run -q -p fz -- dx-check examples/fullstack --strict --json
 ```
 
 Run fullstack flow:
 
 ```bash
-cargo run -q -p fozzyc -- check examples/fullstack --json
-cargo run -q -p fozzyc -- build examples/fullstack --backend cranelift --json
-cargo run -q -p fozzyc -- build examples/fullstack --release --backend llvm --json
-cargo run -q -p fozzyc -- run examples/fullstack --backend cranelift --json
-cargo run -q -p fozzyc -- test examples/fullstack --det --seed 41 --backend llvm --json
-cargo run -q -p fozzyc -- headers examples/fullstack --json
-cargo run -q -p fozzyc -- abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json
+cargo run -q -p fz -- check examples/fullstack --json
+cargo run -q -p fz -- build examples/fullstack --backend cranelift --json
+cargo run -q -p fz -- build examples/fullstack --release --backend llvm --json
+cargo run -q -p fz -- run examples/fullstack --backend cranelift --json
+cargo run -q -p fz -- test examples/fullstack --det --seed 41 --backend llvm --json
+cargo run -q -p fz -- headers examples/fullstack --json
+cargo run -q -p fz -- abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json
 ```
 
 Run robust CLI app:
 
 ```bash
-cargo run -q -p fozzyc -- dx-check examples/robust_cli --strict --json
-cargo run -q -p fozzyc -- build examples/robust_cli --backend cranelift --json
-cargo run -q -p fozzyc -- run examples/robust_cli --backend llvm --json
-cargo run -q -p fozzyc -- test examples/robust_cli --det --seed 55 --backend cranelift --json
+cargo run -q -p fz -- dx-check examples/robust_cli --strict --json
+cargo run -q -p fz -- build examples/robust_cli --backend cranelift --json
+cargo run -q -p fz -- run examples/robust_cli --backend llvm --json
+cargo run -q -p fz -- test examples/robust_cli --det --seed 55 --backend cranelift --json
 ```
 
 Run live server runtime + verified runtime stats:
 
 ```bash
-cargo run -q -p fozzyc -- dx-check examples/live_server --strict --json
-cargo run -q -p fozzyc -- build examples/live_server --backend cranelift --json
-cargo run -q -p fozzyc -- run examples/live_server --backend llvm --json
-cargo run -q -p fozzyc -- test examples/live_server --det --seed 77 --backend cranelift --record artifacts/live_server.stats.trace.json --rich-artifacts --json
+cargo run -q -p fz -- dx-check examples/live_server --strict --json
+cargo run -q -p fz -- build examples/live_server --backend cranelift --json
+cargo run -q -p fz -- run examples/live_server --backend llvm --json
+cargo run -q -p fz -- test examples/live_server --det --seed 77 --backend cranelift --record artifacts/live_server.stats.trace.json --rich-artifacts --json
 
 # inspect runtime stats artifacts
 cat artifacts/live_server.stats.trace.report.json

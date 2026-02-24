@@ -53,8 +53,8 @@ cargo test -p parser -p hir -p fir -p verifier -p driver
 
 Deterministic lifecycle (example):
 ```bash
-cargo run -p fozzyc -- run /tmp/p15_smoke.fzy --det --strict-verify --record /tmp/p15_smoke.trace.fozzy --json
-cargo run -p fozzyc -- replay /tmp/p15_smoke.trace.fozzy --json
-cargo run -p fozzyc -- ci /tmp/p15_smoke.trace.fozzy --json
-cargo run -p fozzyc -- test /tmp/p15_smoke.fzy --det --strict-verify --json
+cargo run -p fz -- run /tmp/p15_smoke.fzy --det --strict-verify --record /tmp/p15_smoke.trace.fozzy --json
+cargo run -p fz -- replay /tmp/p15_smoke.trace.fozzy --json
+cargo run -p fz -- ci /tmp/p15_smoke.trace.fozzy --json
+cargo run -p fz -- test /tmp/p15_smoke.fzy --det --strict-verify --json
 ```

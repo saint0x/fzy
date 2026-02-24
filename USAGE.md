@@ -1,6 +1,6 @@
-# FozzyLang User Guide (USAGE.md)
+# fzy User Guide (USAGE.md)
 
-This is the definitive user manual for working with the FozzyLang toolchain in this repository.
+This is the definitive user manual for working with the fzy toolchain in this repository.
 
 It is optimized for onboarding and day-to-day developer experience:
 
@@ -15,7 +15,7 @@ It intentionally avoids deep internal compiler/runtime implementation details.
 
 You will mainly use these tools:
 
-- `fozzyc`: language/compiler/project workflow CLI
+- `fz`: language/compiler/project workflow CLI
 - `fozzy`: deterministic scenario testing, replay, fuzzing, diagnosis
 - `fozzyfmt`: source formatter for `.fzy`
 - `fozzydoc`: API docs extractor/generator for `.fzy`
@@ -29,7 +29,7 @@ cargo run -q -p <tool> -- <args>
 Examples:
 
 ```bash
-cargo run -q -p fozzyc -- check examples/fullstack --json
+cargo run -q -p fz -- check examples/fullstack --json
 cargo run -q -p fozzyfmt -- examples/fullstack/src --check
 cargo run -q -p fozzydoc -- examples/fullstack/src --format markdown --out artifacts/fullstack.api.md
 ```
@@ -38,7 +38,7 @@ If you have globally installed binaries, direct usage also works:
 
 ```bash
 fozzy ...
-fozzyc ...
+fz ...
 ```
 
 ## 2. Prerequisites
@@ -61,11 +61,11 @@ cargo test --workspace
 ### 3.1 Validate one example project
 
 ```bash
-cargo run -q -p fozzyc -- dx-check examples/fullstack --strict --json
-cargo run -q -p fozzyc -- check examples/fullstack --json
-cargo run -q -p fozzyc -- build examples/fullstack --backend cranelift --json
-cargo run -q -p fozzyc -- run examples/fullstack --backend cranelift --json
-cargo run -q -p fozzyc -- test examples/fullstack --det --seed 41 --json
+cargo run -q -p fz -- dx-check examples/fullstack --strict --json
+cargo run -q -p fz -- check examples/fullstack --json
+cargo run -q -p fz -- build examples/fullstack --backend cranelift --json
+cargo run -q -p fz -- run examples/fullstack --backend cranelift --json
+cargo run -q -p fz -- test examples/fullstack --det --seed 41 --json
 ```
 
 ### 3.2 Format and generate docs
@@ -91,21 +91,21 @@ fozzy ci artifacts/trace.fozzy --json
 Treat your workflow as three layers:
 
 1. Authoring layer (`.fzy` source and project layout)
-2. Language toolchain layer (`fozzyc` commands)
+2. Language toolchain layer (`fz` commands)
 3. Deterministic validation layer (`fozzy` commands, trace lifecycle)
 
 A complete change is not done when it only compiles. It is done when:
 
 - project conventions pass (`dx-check`)
-- deterministic tests pass (`fozzyc test --det` and/or `fozzy test --det --strict`)
+- deterministic tests pass (`fz test --det` and/or `fozzy test --det --strict`)
 - at least one trace is recordable, verifiable, and replayable
 
-## 5. `fozzyc` Command Guide
+## 5. `fz` Command Guide
 
 ## 5.1 Create and scaffold
 
 ```bash
-fozzyc init <name>
+fz init <name>
 ```
 
 Use for new projects.
@@ -113,9 +113,9 @@ Use for new projects.
 ## 5.2 Build, run, test
 
 ```bash
-fozzyc build <path> [--release] [--threads N] [--backend llvm|cranelift] [--json]
-fozzyc run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
-fozzyc test <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
+fz build <path> [--release] [--threads N] [--backend llvm|cranelift] [--json]
+fz run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz test <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
 ```
 
 Use cases:
@@ -127,11 +127,11 @@ Use cases:
 ## 5.3 Quality and verification
 
 ```bash
-fozzyc fmt <path>
-fozzyc check <path>
-fozzyc verify <path>
-fozzyc dx-check <project> [--strict]
-fozzyc spec-check
+fz fmt <path>
+fz check <path>
+fz verify <path>
+fz dx-check <project> [--strict]
+fz spec-check
 ```
 
 Recommended order for feature work:
@@ -145,11 +145,11 @@ Recommended order for feature work:
 ## 5.4 Analysis and debugging commands
 
 ```bash
-fozzyc emit-ir <path>
-fozzyc parity <path> [--seed N]
-fozzyc equivalence <path> [--seed N]
-fozzyc audit unsafe <path>
-fozzyc debug-check <path>
+fz emit-ir <path>
+fz parity <path> [--seed N]
+fz equivalence <path> [--seed N]
+fz audit unsafe <path>
+fz debug-check <path>
 ```
 
 Use these when behavior is correct in one mode but drifts in another, or when hardening safety properties.
@@ -157,11 +157,11 @@ Use these when behavior is correct in one mode but drifts in another, or when ha
 ## 5.5 LSP helpers
 
 ```bash
-fozzyc lsp diagnostics <path>
-fozzyc lsp definition <path> <symbol>
-fozzyc lsp hover <path> <symbol>
-fozzyc lsp rename <path> <from> <to>
-fozzyc lsp smoke <path>
+fz lsp diagnostics <path>
+fz lsp definition <path> <symbol>
+fz lsp hover <path> <symbol>
+fz lsp rename <path> <from> <to>
+fz lsp smoke <path>
 ```
 
 Use these for scripted editor-like operations and refactoring checks.
@@ -169,9 +169,9 @@ Use these for scripted editor-like operations and refactoring checks.
 ## 5.6 FFI / RPC outputs and ABI checks
 
 ```bash
-fozzyc headers <path> [--out path]
-fozzyc rpc gen <path> [--out-dir dir]
-fozzyc abi-check <current.abi.json> --baseline <baseline.abi.json>
+fz headers <path> [--out path]
+fz rpc gen <path> [--out-dir dir]
+fz abi-check <current.abi.json> --baseline <baseline.abi.json>
 ```
 
 Typical use:
@@ -182,7 +182,7 @@ Typical use:
 ## 5.7 Dependency locking and vendor
 
 ```bash
-fozzyc vendor <project>
+fz vendor <project>
 ```
 
 When to run:
@@ -198,11 +198,11 @@ Expected outputs:
 ## 5.8 Deterministic artifact flows
 
 ```bash
-fozzyc fuzz <scenario>
-fozzyc explore <scenario>
-fozzyc replay <trace>
-fozzyc shrink <trace>
-fozzyc ci <trace>
+fz fuzz <scenario>
+fz explore <scenario>
+fz replay <trace>
+fz shrink <trace>
+fz ci <trace>
 ```
 
 Use this family when you already have (or want) trace-driven debugging and minimization.
@@ -309,7 +309,7 @@ Project layout:
 Always run:
 
 ```bash
-fozzyc dx-check <project> --strict
+fz dx-check <project> --strict
 ```
 
 ## 9. Day-to-Day Workflows
@@ -318,9 +318,9 @@ fozzyc dx-check <project> --strict
 
 1. Edit source.
 2. `fozzyfmt <paths>`
-3. `fozzyc check <project> --json`
-4. `fozzyc dx-check <project> --strict --json`
-5. `fozzyc test <project> --det --seed <seed> --json`
+3. `fz check <project> --json`
+4. `fz dx-check <project> --strict --json`
+5. `fz test <project> --det --seed <seed> --json`
 6. For high confidence: record + replay a trace with `fozzy`.
 
 ## 9.2 Investigate flaky or nondeterministic failures
@@ -335,14 +335,14 @@ fozzyc dx-check <project> --strict
 ## 9.3 Prepare ABI-sensitive changes
 
 1. Run/update generation:
-   - `fozzyc headers <path>`
-   - `fozzyc rpc gen <path>`
+   - `fz headers <path>`
+   - `fz rpc gen <path>`
 2. Compare ABI:
-   - `fozzyc abi-check <current.abi.json> --baseline <baseline.abi.json> --json`
+   - `fz abi-check <current.abi.json> --baseline <baseline.abi.json> --json`
 
 ## 9.4 Refresh dependency lock/vendor state
 
-1. `fozzyc vendor <project> --json`
+1. `fz vendor <project> --json`
 2. rerun build/test pipeline
 
 ## 10. Artifacts and How To Read Them
@@ -379,8 +379,8 @@ Use human output when:
 For meaningful changes, run at least:
 
 1. `cargo test --workspace`
-2. `fozzyc dx-check <project> --strict --json`
-3. `fozzyc test <project> --det --seed <seed> --json`
+2. `fz dx-check <project> --strict --json`
+3. `fz test <project> --det --seed <seed> --json`
 4. `fozzy doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json`
 5. trace lifecycle:
    - `fozzy run ... --det --record ... --json`
@@ -395,7 +395,7 @@ For meaningful changes, run at least:
 - `dx-check` failure:
   - usually layout/order/tests placement mismatch; align with section 8.
 - lock drift/build blocked:
-  - run `fozzyc vendor <project>`.
+  - run `fz vendor <project>`.
 - deterministic replay mismatch:
   - verify trace file integrity with `fozzy trace verify --strict`.
 - host-backend discrepancies:
@@ -403,7 +403,7 @@ For meaningful changes, run at least:
 
 ## 14. Command Reference Snapshot
 
-`fozzyc` top-level commands:
+`fz` top-level commands:
 
 - `init`, `build`, `run`, `test`
 - `fmt`, `check`, `verify`, `dx-check`, `spec-check`

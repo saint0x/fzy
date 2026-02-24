@@ -40,9 +40,9 @@ Non-breaking in v0:
 
 - adding a new export with a unique symbol name
 
-Use `fozzyc abi-check <current.abi.json> --baseline <baseline.abi.json>` to gate compatibility.
+Use `fz abi-check <current.abi.json> --baseline <baseline.abi.json>` to gate compatibility.
 
-`fozzyc abi-check` validates:
+`fz abi-check` validates:
 
 - schema version correctness
 - package identity compatibility

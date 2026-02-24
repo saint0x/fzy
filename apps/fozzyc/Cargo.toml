@@ -1,16 +1,12 @@
 [package]
-name = "fozzyc"
+name = "fz"
 version.workspace = true
 edition.workspace = true
-default-run = "fozzyc"
-
-[[bin]]
-name = "fozzyc"
-path = "src/main.rs"
+default-run = "fz"
 
 [[bin]]
 name = "fz"
-path = "src/bin/fz.rs"
+path = "src/main.rs"
 
 [dependencies]
 anyhow.workspace = true

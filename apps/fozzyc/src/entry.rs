@@ -228,7 +228,7 @@ fn arg_path(args: &[String], idx: usize) -> Result<PathBuf> {
 
 fn print_help() {
     eprintln!(
-        "fozzyc <command> [options]\n\
+        "fz <command> [options]\n\
 commands:\n\
   init <name>\n\
   build <path> [--release] [--threads N] [--backend llvm|cranelift]\n\

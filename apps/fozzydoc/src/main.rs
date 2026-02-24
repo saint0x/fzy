@@ -276,7 +276,7 @@ fn render_html(items: &[DocItem]) -> String {
     let mut out = String::from(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>fozzydoc</title></head><body>",
     );
-    out.push_str("<h1>FozzyLang Docs</h1><ul>");
+    out.push_str("<h1>fzy docs</h1><ul>");
     for item in items {
         out.push_str("<li>");
         out.push_str(&format!(
@@ -383,7 +383,7 @@ mod tests {
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].name, "main");
         assert_eq!(items[1].kind, "rpc");
-        assert!(render_html(&items).contains("FozzyLang Docs"));
+        assert!(render_html(&items).contains("fzy docs"));
         assert!(render_markdown(&items).contains("request-response endpoint"));
 
         let _ = std::fs::remove_file(path);

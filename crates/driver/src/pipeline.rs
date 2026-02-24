@@ -802,7 +802,7 @@ fn write_lockfile(
                     false
                 } else {
                     return Err(anyhow!(
-                        "lockfile drift detected at {}: expected dependencyGraphHash={} (run `fozzyc vendor {}` to refresh)",
+                        "lockfile drift detected at {}: expected dependencyGraphHash={} (run `fz vendor {}` to refresh)",
                         lock_path.display(),
                         graph_hash,
                         dir.display()
@@ -941,7 +941,7 @@ fn collect_files_recursive(
 
 fn should_skip_hash_path(rel: &str) -> bool {
     rel.starts_with(".git/")
-        || rel.starts_with(".fozzyc/")
+        || rel.starts_with(".fz/")
         || rel.starts_with("vendor/")
         || rel.starts_with("target/")
 }
@@ -971,7 +971,7 @@ fn emit_native_artifact(
         "llvm" => emit_native_artifact_llvm(fir, project_root, profile, manifest),
         "cranelift" => emit_native_artifact_cranelift(fir, project_root, profile, manifest),
         other => Err(anyhow!(
-            "unknown FOZZYC_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
+            "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
             other
         )),
     }
@@ -988,12 +988,12 @@ fn resolve_native_backend(profile: BuildProfile, backend_override: Option<&str>)
             )),
         };
     }
-    if let Ok(explicit) = std::env::var("FOZZYC_NATIVE_BACKEND") {
+    if let Ok(explicit) = std::env::var("FZ_NATIVE_BACKEND") {
         let normalized = explicit.trim().to_ascii_lowercase();
         return match normalized.as_str() {
             "llvm" | "cranelift" => Ok(normalized),
             other => Err(anyhow!(
-                "unknown FOZZYC_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
+                "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
                 other
             )),
         };
@@ -1011,7 +1011,7 @@ fn emit_native_artifact_llvm(
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
 ) -> Result<PathBuf> {
-    let build_dir = project_root.join(".fozzyc").join("build");
+    let build_dir = project_root.join(".fz").join("build");
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
 
@@ -1081,7 +1081,7 @@ fn emit_native_artifact_cranelift(
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
 ) -> Result<PathBuf> {
-    let build_dir = project_root.join(".fozzyc").join("build");
+    let build_dir = project_root.join(".fz").join("build");
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
 
@@ -1512,7 +1512,7 @@ fn clif_emit_expr(
 }
 
 fn linker_candidates() -> Vec<String> {
-    if let Ok(explicit) = std::env::var("FOZZYC_CC") {
+    if let Ok(explicit) = std::env::var("FZ_CC") {
         if !explicit.trim().is_empty() {
             return vec![explicit];
         }
@@ -1547,7 +1547,7 @@ fn apply_target_link_flags(cmd: &mut Command) {
 }
 
 fn apply_extra_linker_args(cmd: &mut Command) {
-    if let Ok(extra) = std::env::var("FOZZYC_LINKER_ARGS") {
+    if let Ok(extra) = std::env::var("FZ_LINKER_ARGS") {
         for arg in extra.split_whitespace() {
             if !arg.trim().is_empty() {
                 cmd.arg(arg);
@@ -1946,12 +1946,12 @@ mod tests {
         let dev = compile_file_with_backend(&root, BuildProfile::Dev, None)
             .expect("dev build should succeed");
         assert_eq!(dev.status, "ok");
-        assert!(root.join(".fozzyc/build/main.o").exists());
+        assert!(root.join(".fz/build/main.o").exists());
 
         let release = compile_file_with_backend(&root, BuildProfile::Release, None)
             .expect("release build should succeed");
         assert_eq!(release.status, "ok");
-        assert!(root.join(".fozzyc/build/main.ll").exists());
+        assert!(root.join(".fz/build/main.ll").exists());
 
         let _ = std::fs::remove_dir_all(root);
     }

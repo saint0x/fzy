@@ -123,7 +123,7 @@ test "chaos_case" nondet {
 ```
 
 - Test blocks are discovered from parsed module trees and emitted into generated scenario artifacts.
-- Deterministic tests (`test "..." {}`) run with deterministic scheduler semantics under `fozzyc test --det`.
+- Deterministic tests (`test "..." {}`) run with deterministic scheduler semantics under `fz test --det`.
 - `nondet` tests are marked for non-deterministic/chaos exploration flows.
 - Test bodies compile as normal statement blocks and may call project functions/modules.
 - Reporting includes per-test execution summaries when trace/report artifacts are requested.

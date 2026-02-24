@@ -44,5 +44,5 @@
 
 ## Enforcement
 
-- Run `fozzyc dx-check <project> --strict`.
+- Run `fz dx-check <project> --strict`.
 - `dx-check` fails when conventions are violated.
