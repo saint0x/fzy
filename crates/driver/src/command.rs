@@ -3179,6 +3179,9 @@ fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
         ast::Stmt::Match { scrutinee, arms } => {
             collect_call_names_from_expr(scrutinee, out);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_call_names_from_expr(guard, out);
+                }
                 collect_call_names_from_expr(&arm.value, out);
             }
         }

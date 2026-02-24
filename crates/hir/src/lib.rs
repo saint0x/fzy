@@ -8,6 +8,7 @@ pub struct TypedFunction {
     pub params: Vec<ast::Param>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
+    pub required_capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,14 @@ pub struct TypedModule {
     pub call_graph: Vec<(String, String)>,
     pub typed_functions: Vec<TypedFunction>,
     pub type_errors: usize,
+    pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
+    pub ownership_violations: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionCapabilityRequirement {
+    pub function: String,
+    pub required: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -97,7 +106,18 @@ pub fn lower(module: &Module) -> TypedModule {
                 params: function.params.clone(),
                 return_type: function.return_type.clone(),
                 body: function.body.clone(),
+                required_capabilities: Vec::new(),
             });
+        }
+    }
+
+    let function_capability_requirements = compute_function_capabilities(&typed_functions);
+    for function in &mut typed_functions {
+        if let Some(entry) = function_capability_requirements
+            .iter()
+            .find(|entry| entry.function == function.name)
+        {
+            function.required_capabilities = entry.required.clone();
         }
     }
 
@@ -155,6 +175,7 @@ pub fn lower(module: &Module) -> TypedModule {
         .count();
     let generic_instantiations = collect_generic_instantiations(module);
     let call_graph = build_call_graph(module);
+    let ownership_violations = analyze_ownership(&typed_functions);
 
     TypedModule {
         name: module.name.clone(),
@@ -180,7 +201,237 @@ pub fn lower(module: &Module) -> TypedModule {
         call_graph,
         typed_functions,
         type_errors,
+        function_capability_requirements,
+        ownership_violations,
     }
+}
+
+fn compute_function_capabilities(
+    functions: &[TypedFunction],
+) -> Vec<FunctionCapabilityRequirement> {
+    let mut local = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut calls = BTreeMap::<String, BTreeSet<String>>::new();
+
+    for function in functions {
+        let mut local_caps = BTreeSet::<String>::new();
+        let mut local_calls = BTreeSet::<String>::new();
+        collect_function_caps_and_calls(function, &mut local_caps, &mut local_calls);
+        local.insert(function.name.clone(), local_caps);
+        calls.insert(function.name.clone(), local_calls);
+    }
+
+    let known = functions
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for function in functions {
+            let mut next = local.get(&function.name).cloned().unwrap_or_default();
+            for callee in calls
+                .get(&function.name)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+            {
+                if !known.contains(callee.as_str()) {
+                    continue;
+                }
+                if let Some(callee_caps) = local.get(&callee) {
+                    let before = next.len();
+                    next.extend(callee_caps.iter().cloned());
+                    if next.len() != before {
+                        changed = true;
+                    }
+                }
+            }
+            local.insert(function.name.clone(), next);
+        }
+    }
+
+    functions
+        .iter()
+        .map(|function| FunctionCapabilityRequirement {
+            function: function.name.clone(),
+            required: local
+                .get(&function.name)
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .collect(),
+        })
+        .collect()
+}
+
+fn collect_function_caps_and_calls(
+    function: &TypedFunction,
+    caps: &mut BTreeSet<String>,
+    calls: &mut BTreeSet<String>,
+) {
+    struct Collector<'a> {
+        caps: &'a mut BTreeSet<String>,
+        calls: &'a mut BTreeSet<String>,
+    }
+    impl AstVisitor for Collector<'_> {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let Expr::Call { callee, .. } = expr {
+                self.calls.insert(callee.clone());
+                if let Some((prefix, _)) = callee.split_once('.') {
+                    match prefix {
+                        "time" | "std.time" => {
+                            self.caps.insert("time".to_string());
+                        }
+                        "rng" | "random" | "std.rand" => {
+                            self.caps.insert("rng".to_string());
+                        }
+                        "fs" | "file" | "std.io" => {
+                            self.caps.insert("fs".to_string());
+                        }
+                        "net" | "socket" | "std.net" => {
+                            self.caps.insert("net".to_string());
+                        }
+                        "proc" | "process" | "syscall" | "std.proc" => {
+                            self.caps.insert("proc".to_string());
+                        }
+                        "alloc" | "std.alloc" => {
+                            self.caps.insert("mem".to_string());
+                        }
+                        "thread" | "std.thread" => {
+                            self.caps.insert("thread".to_string());
+                        }
+                        _ => {}
+                    }
+                }
+                if callee == "spawn" || callee.contains("await") {
+                    self.caps.insert("thread".to_string());
+                }
+                if callee.contains("timeout") || callee.contains("deadline") || callee.contains("cancel")
+                {
+                    self.caps.insert("net".to_string());
+                }
+            }
+            ast::walk_expr(self, expr);
+        }
+    }
+
+    let mut collector = Collector { caps, calls };
+    for stmt in &function.body {
+        collector.visit_stmt(stmt);
+    }
+}
+
+fn analyze_ownership(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for function in functions {
+        let mut owners = BTreeMap::<String, usize>::new();
+        let mut next_alloc = 1usize;
+        analyze_ownership_block(
+            &function.body,
+            &mut owners,
+            &mut next_alloc,
+            &mut violations,
+            &function.name,
+        );
+        for (name, alloc_id) in owners {
+            violations.push(format!(
+                "function `{}` leaks allocation id={} owned by `{}`",
+                function.name, alloc_id, name
+            ));
+        }
+    }
+    violations
+}
+
+fn analyze_ownership_block(
+    body: &[Stmt],
+    owners: &mut BTreeMap<String, usize>,
+    next_alloc: &mut usize,
+    violations: &mut Vec<String>,
+    function_name: &str,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::Let { name, value, .. } => {
+                if is_alloc_expr(value) {
+                    owners.insert(name.clone(), *next_alloc);
+                    *next_alloc += 1;
+                }
+                if let Expr::Ident(from) = value {
+                    if let Some(owner) = owners.remove(from) {
+                        owners.insert(name.clone(), owner);
+                    }
+                }
+            }
+            Stmt::Assign { target, value } => {
+                if let Expr::Ident(from) = value {
+                    if let Some(owner) = owners.remove(from) {
+                        owners.insert(target.clone(), owner);
+                    }
+                }
+            }
+            Stmt::Expr(Expr::Call { callee, args }) => {
+                if callee == "free" || callee.ends_with(".free") {
+                    if let Some(Expr::Ident(name)) = args.first() {
+                        if owners.remove(name).is_none() {
+                            violations.push(format!(
+                                "function `{}` frees non-owned or already-freed value `{}`",
+                                function_name, name
+                            ));
+                        }
+                    }
+                }
+            }
+            Stmt::Return(Expr::Ident(name)) => {
+                owners.remove(name);
+            }
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                let mut then_owners = owners.clone();
+                let mut else_owners = owners.clone();
+                analyze_ownership_block(
+                    then_body,
+                    &mut then_owners,
+                    next_alloc,
+                    violations,
+                    function_name,
+                );
+                analyze_ownership_block(
+                    else_body,
+                    &mut else_owners,
+                    next_alloc,
+                    violations,
+                    function_name,
+                );
+                *owners = then_owners
+                    .into_iter()
+                    .filter(|(name, id)| else_owners.get(name).is_some_and(|other| other == id))
+                    .collect();
+            }
+            Stmt::While { body, .. } => {
+                analyze_ownership_block(body, owners, next_alloc, violations, function_name);
+            }
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        let _ = guard;
+                    }
+                }
+            }
+            Stmt::Defer(_)
+            | Stmt::Requires(_)
+            | Stmt::Ensures(_)
+            | Stmt::Expr(_)
+            | Stmt::Return(_) => {}
+        }
+    }
+}
+
+fn is_alloc_expr(expr: &Expr) -> bool {
+    matches!(expr, Expr::Call { callee, .. } if callee == "alloc" || callee.ends_with(".alloc"))
 }
 
 fn build_call_graph(module: &Module) -> Vec<(String, String)> {
@@ -367,7 +618,7 @@ fn collect_semantic_hints(functions: &[TypedFunction]) -> (Vec<String>, Vec<Stri
                 Stmt::Match { arms, .. } => {
                     if !arms
                         .iter()
-                        .any(|arm| matches!(arm.pattern, ast::Pattern::Wildcard))
+                        .any(|arm| pattern_has_wildcard(&arm.pattern))
                     {
                         matches_without_wildcard += 1;
                     }
@@ -576,18 +827,14 @@ fn type_check_stmt(
         Stmt::Match { scrutinee, arms } => {
             let scrutinee_ty = infer_expr_type(scrutinee, scopes, fn_sigs, errors);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    let guard_ty = infer_expr_type(guard, scopes, fn_sigs, errors);
+                    if !matches!(guard_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
+                        *errors += 1;
+                    }
+                }
                 let value_ty = infer_expr_type(&arm.value, scopes, fn_sigs, errors);
-                if let (Some(scrutinee_ty), ast::Pattern::Int(_)) = (&scrutinee_ty, &arm.pattern) {
-                    if !matches!(scrutinee_ty, Type::Int { .. }) {
-                        *errors += 1;
-                    }
-                }
-                if let (Some(scrutinee_ty), ast::Pattern::Bool(_)) = (&scrutinee_ty, &arm.pattern)
-                {
-                    if !matches!(scrutinee_ty, Type::Bool) {
-                        *errors += 1;
-                    }
-                }
+                check_pattern_compatibility(&arm.pattern, scrutinee_ty.as_ref(), errors);
                 let _ = value_ty;
             }
         }
@@ -702,6 +949,23 @@ fn is_runtime_intrinsic(name: &str) -> bool {
     )
 }
 
+fn check_pattern_compatibility(pattern: &ast::Pattern, scrutinee_ty: Option<&Type>, errors: &mut usize) {
+    match (pattern, scrutinee_ty) {
+        (ast::Pattern::Int(_), Some(Type::Int { .. })) => {}
+        (ast::Pattern::Bool(_), Some(Type::Bool)) => {}
+        (ast::Pattern::Wildcard, _)
+        | (ast::Pattern::Ident(_), _)
+        | (ast::Pattern::Variant { .. }, _) => {}
+        (ast::Pattern::Or(patterns), ty) => {
+            for pattern in patterns {
+                check_pattern_compatibility(pattern, ty, errors);
+            }
+        }
+        (ast::Pattern::Int(_), Some(_)) | (ast::Pattern::Bool(_), Some(_)) => *errors += 1,
+        (ast::Pattern::Int(_) | ast::Pattern::Bool(_), None) => *errors += 1,
+    }
+}
+
 fn type_compatible(expected: &Type, actual: &Type) -> bool {
     expected == actual
 }
@@ -765,7 +1029,11 @@ fn eval_block<'a>(
             Stmt::Match { scrutinee, arms } => {
                 let value = eval_expr(scrutinee, env, functions)?;
                 for arm in arms {
-                    if pattern_matches(&arm.pattern, &value) {
+                    let guard_ok = match &arm.guard {
+                        Some(guard) => truthy(&eval_expr(guard, env, functions)?),
+                        None => true,
+                    };
+                    if guard_ok && pattern_matches(&arm.pattern, &value) {
                         let out = eval_expr(&arm.value, env, functions)?;
                         return Some(out);
                     }
@@ -853,7 +1121,20 @@ fn pattern_matches(pattern: &ast::Pattern, value: &Value) -> bool {
         (ast::Pattern::Int(a), Value::I32(b)) => a == b,
         (ast::Pattern::Bool(a), Value::Bool(b)) => a == b,
         (ast::Pattern::Ident(_), _) => true,
+        (ast::Pattern::Variant { .. }, _) => true,
+        (ast::Pattern::Or(patterns), value) => patterns.iter().any(|p| pattern_matches(p, value)),
         _ => false,
+    }
+}
+
+fn pattern_has_wildcard(pattern: &ast::Pattern) -> bool {
+    match pattern {
+        ast::Pattern::Wildcard => true,
+        ast::Pattern::Or(patterns) => patterns.iter().any(pattern_has_wildcard),
+        ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_)
+        | ast::Pattern::Ident(_)
+        | ast::Pattern::Variant { .. } => false,
     }
 }
 

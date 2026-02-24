@@ -48,6 +48,7 @@ enum TokenKind {
     Colon,
     Semi,
     Dot,
+    Pipe,
     Plus,
     Minus,
     Star,
@@ -517,11 +518,30 @@ impl Parser {
             while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
                 let pattern = self.parse_pattern()?;
                 if !self.consume(&TokenKind::FatArrow) {
-                    self.push_diag_here("expected `=>` in match arm");
-                    return None;
+                    let guard = if self.consume(&TokenKind::KwIf) {
+                        self.parse_expr(0)
+                    } else {
+                        None
+                    };
+                    if !self.consume(&TokenKind::FatArrow) {
+                        self.push_diag_here("expected `=>` in match arm");
+                        return None;
+                    }
+                    let value = self.parse_expr(0)?;
+                    arms.push(MatchArm {
+                        pattern,
+                        guard,
+                        value,
+                    });
+                    let _ = self.consume(&TokenKind::Comma);
+                    continue;
                 }
                 let value = self.parse_expr(0)?;
-                arms.push(MatchArm { pattern, value });
+                arms.push(MatchArm {
+                    pattern,
+                    guard: None,
+                    value,
+                });
                 let _ = self.consume(&TokenKind::Comma);
             }
             let _ = self.consume(&TokenKind::RBrace);
@@ -562,13 +582,41 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Option<Pattern> {
+        let mut patterns = Vec::new();
+        patterns.push(self.parse_single_pattern()?);
+        while self.consume(&TokenKind::Pipe) {
+            patterns.push(self.parse_single_pattern()?);
+        }
+        if patterns.len() == 1 {
+            patterns.pop()
+        } else {
+            Some(Pattern::Or(patterns))
+        }
+    }
+
+    fn parse_single_pattern(&mut self) -> Option<Pattern> {
         let token = self.advance()?;
         match token.kind {
             TokenKind::Int(v) => Some(Pattern::Int(v)),
             TokenKind::KwTrue => Some(Pattern::Bool(true)),
             TokenKind::KwFalse => Some(Pattern::Bool(false)),
             TokenKind::Ident(name) if name == "_" => Some(Pattern::Wildcard),
-            TokenKind::Ident(name) => Some(Pattern::Ident(name)),
+            TokenKind::Ident(name) => {
+                if self.consume(&TokenKind::LParen) {
+                    let mut bindings = Vec::new();
+                    while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                        let binding = self.expect_ident("expected variant binding")?;
+                        bindings.push(binding);
+                        if !self.consume(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    let _ = self.consume(&TokenKind::RParen);
+                    Some(Pattern::Variant { name, bindings })
+                } else {
+                    Some(Pattern::Ident(name))
+                }
+            }
             _ => {
                 self.push_diag_at(token.line, token.col, "invalid match pattern");
                 None
@@ -1005,6 +1053,10 @@ impl<'a> Lexer<'a> {
                 '.' => {
                     self.advance_char();
                     TokenKind::Dot
+                }
+                '|' => {
+                    self.advance_char();
+                    TokenKind::Pipe
                 }
                 '+' => {
                     self.advance_char();

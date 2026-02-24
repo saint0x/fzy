@@ -1,6 +1,6 @@
 use ast::Type;
 use capabilities::CapabilitySet;
-use hir::{TypedFunction, TypedModule};
+use hir::{FunctionCapabilityRequirement, TypedFunction, TypedModule};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueType {
@@ -40,6 +40,22 @@ pub struct FunctionIr {
     pub name: String,
     pub return_type: ValueType,
     pub blocks: Vec<BasicBlock>,
+    pub def_use: Vec<DefUseBlock>,
+    pub liveness: Vec<LivenessBlock>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DefUseBlock {
+    pub block: usize,
+    pub defs: Vec<String>,
+    pub uses: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LivenessBlock {
+    pub block: usize,
+    pub live_in: Vec<String>,
+    pub live_out: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +84,8 @@ pub struct FirModule {
     pub call_graph: Vec<(String, String)>,
     pub functions: Vec<FunctionIr>,
     pub type_errors: usize,
+    pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
+    pub ownership_violations: Vec<String>,
 }
 
 pub fn build(typed: &TypedModule) -> FirModule {
@@ -118,6 +136,8 @@ pub fn build(typed: &TypedModule) -> FirModule {
             .map(lower_function)
             .collect::<Vec<_>>(),
         type_errors: typed.type_errors,
+        function_capability_requirements: typed.function_capability_requirements.clone(),
+        ownership_violations: typed.ownership_violations.clone(),
     }
 }
 
@@ -134,6 +154,8 @@ fn lower_function(function: &TypedFunction) -> FunctionIr {
     FunctionIr {
         name: function.name.clone(),
         return_type: to_value_type(&function.return_type),
+        def_use: compute_def_use(&blocks),
+        liveness: compute_liveness(&blocks),
         blocks,
     }
 }
@@ -220,4 +242,81 @@ fn to_value_type(ty: &Type) -> ValueType {
         Type::Void => ValueType::Void,
         _ => ValueType::Unknown,
     }
+}
+
+fn compute_def_use(blocks: &[BasicBlock]) -> Vec<DefUseBlock> {
+    let mut out = Vec::new();
+    for block in blocks {
+        let mut defs = Vec::new();
+        let mut uses = Vec::new();
+        for inst in &block.instructions {
+            match inst {
+                Instruction::Let { name, .. } => defs.push(name.clone()),
+                Instruction::Assign { name } => {
+                    uses.push(name.clone());
+                    defs.push(name.clone());
+                }
+                Instruction::Expr
+                | Instruction::Return
+                | Instruction::Branch { .. }
+                | Instruction::Jump { .. }
+                | Instruction::Match { .. } => {}
+            }
+        }
+        out.push(DefUseBlock {
+            block: block.id,
+            defs,
+            uses,
+        });
+    }
+    out
+}
+
+fn compute_liveness(blocks: &[BasicBlock]) -> Vec<LivenessBlock> {
+    let def_use = compute_def_use(blocks);
+    let mut live_in = vec![std::collections::BTreeSet::<String>::new(); blocks.len()];
+    let mut live_out = vec![std::collections::BTreeSet::<String>::new(); blocks.len()];
+    let block_index = blocks
+        .iter()
+        .enumerate()
+        .map(|(idx, block)| (block.id, idx))
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for (idx, block) in blocks.iter().enumerate().rev() {
+            let mut out_set = std::collections::BTreeSet::<String>::new();
+            for succ in &block.successors {
+                if let Some(succ_idx) = block_index.get(succ) {
+                    out_set.extend(live_in[*succ_idx].iter().cloned());
+                }
+            }
+
+            let mut in_set = out_set.clone();
+            let du = &def_use[idx];
+            for def in &du.defs {
+                in_set.remove(def);
+            }
+            for used in &du.uses {
+                in_set.insert(used.clone());
+            }
+
+            if out_set != live_out[idx] || in_set != live_in[idx] {
+                live_out[idx] = out_set;
+                live_in[idx] = in_set;
+                changed = true;
+            }
+        }
+    }
+
+    blocks
+        .iter()
+        .enumerate()
+        .map(|(idx, block)| LivenessBlock {
+            block: block.id,
+            live_in: live_in[idx].iter().cloned().collect(),
+            live_out: live_out[idx].iter().cloned().collect(),
+        })
+        .collect()
 }

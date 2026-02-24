@@ -85,7 +85,7 @@
 #### 1.5.3 Control Flow
 - [x] ✅ Add `if`/`else` to AST, parser, and codegen (currently no conditional branching in the language).
 - [x] ✅ Add loop constructs (`for`, `while`, or equivalent) to AST, parser, and codegen.
-- [ ] ⬜ Extend `match` with destructuring patterns, guard clauses, and or-patterns (currently only wildcard, int, bool, ident).
+- [x] ✅ Extend `match` with destructuring patterns, guard clauses, and or-patterns (currently only wildcard, int, bool, ident).
 - [x] ✅ Build a control flow graph (CFG) representation in the IR for dominance analysis, liveness, and dead code detection.
 
 #### 1.5.4 Real Code Generation
@@ -100,23 +100,23 @@
 #### 1.5.5 IR Pipeline Integrity
 - [x] ✅ Make the FIR an actual intermediate representation with basic blocks, control flow edges, and typed instructions (currently a metadata bag, not an IR).
 - [x] ✅ Build a call graph and dependency graph between functions/modules for whole-program analysis.
-- [ ] ⬜ Add data flow analysis (def-use chains, liveness) to enable dead code elimination and proper resource tracking.
+- [x] ✅ Add data flow analysis (def-use chains, liveness) to enable dead code elimination and proper resource tracking.
 - [x] ✅ Implement AST visitor/walker pattern to eliminate duplicated analysis logic across pipeline stages.
 
 ### 1.6 P2 — Capability Enforcement & Memory Model
 
 #### 1.6.1 Capability Enforcement
 - [ ] ⬜ Enforce capabilities through the type system, not just declarations (a function doing network I/O must require a capability token in its signature that callers must provide).
-- [ ] ⬜ Add capability propagation so callers can prove they hold required capabilities and pass them to callees.
+- [x] ✅ Add capability propagation so callers can prove they hold required capabilities and pass them to callees.
 - [ ] ⬜ Add capability revocation (ability to drop privileges permanently within a scope).
 - [ ] ⬜ Add capability delegation (grant a subset of capabilities to untrusted code via capability tokens/handles).
 - [ ] ⬜ Add capability algebra (composition, intersection, negation) beyond binary set membership.
-- [ ] ⬜ Scope capabilities per-function or per-module instead of global per-compilation-unit.
+- [x] ✅ Scope capabilities per-function or per-module instead of global per-compilation-unit.
 - [ ] ⬜ Wire `required_capability_for_*()` functions in stdlib to actual enforcement points instead of returning unused values.
 
 #### 1.6.2 Memory Model
 - [ ] ⬜ Define and document the ownership model for heap allocations (currently `alloc`/`free` are just markers counted by the verifier, not tracked semantically).
-- [ ] ⬜ Implement ownership transfer semantics so the verifier can track which scope owns an allocation through assignments, function calls, and returns.
+- [x] ✅ Implement ownership transfer semantics so the verifier can track which scope owns an allocation through assignments, function calls, and returns.
 - [ ] ⬜ Implement real linear type enforcement (current detection is by naming convention `_res`/`_handle`, not type-driven).
 - [ ] ⬜ Add region/lifetime annotations for references in safe profile (currently flagged but not analyzed).
 - [ ] ⬜ Prevent compiler from optimizing away `Secret` zero-on-drop (use `volatile` writes or platform-specific secure-zero).

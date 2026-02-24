@@ -54,6 +54,25 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             ));
         }
     }
+    for function in &module.function_capability_requirements {
+        for required in &function.required {
+            if let Some(parsed) = capabilities::Capability::parse(required) {
+                if !module.effects.contains(parsed) {
+                    report.diagnostics.push(Diagnostic::new(
+                        Severity::Error,
+                        format!(
+                            "function `{}` is missing required capability: {}",
+                            function.function, required
+                        ),
+                        Some(format!(
+                            "declare `use cap.{}` or propagate a capability token to `{}`",
+                            required, function.function
+                        )),
+                    ));
+                }
+            }
+        }
+    }
 
     for effect in &module.unknown_effects {
         report.diagnostics.push(Diagnostic::new(
@@ -157,6 +176,17 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 module.alloc_sites, module.free_sites
             ),
             Some("pair allocations with explicit `free(...)` or defer-based cleanup".to_string()),
+        ));
+    }
+    for violation in &module.ownership_violations {
+        report.diagnostics.push(Diagnostic::new(
+            if policy.safe_profile {
+                Severity::Error
+            } else {
+                Severity::Warning
+            },
+            violation.clone(),
+            Some("enforce ownership transfer semantics and ensure every allocation is released".to_string()),
         ));
     }
 
@@ -278,6 +308,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify(&module);
         assert_eq!(report.diagnostics.len(), 1);
@@ -312,6 +344,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -349,6 +383,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -387,6 +423,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -425,6 +463,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -463,6 +503,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -504,6 +546,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         assert!(report
@@ -557,6 +601,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         for expected in ["time", "rng", "fs", "net", "proc", "mem", "thread"] {
@@ -596,6 +642,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -638,6 +686,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify(&module);
         assert!(report
@@ -676,6 +726,8 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             type_errors: 0,
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         assert!(report

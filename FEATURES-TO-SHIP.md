@@ -89,6 +89,14 @@
 - [ ] ⬜ P1.5.next Cranelift/LLVM full instruction selection for all expression/statement forms still pending.
 - [ ] ⬜ P1.5.next Dataflow/liveness and advanced generics/traits specialization still pending.
 
+### 1.6 P2 — Capability Enforcement & Memory Model (Started)
+- [x] ✅ P2.1 Added function-scoped capability requirement propagation (callee requirements flow to callers).
+- [x] ✅ P2.1 Added verifier diagnostics for per-function missing required capabilities.
+- [x] ✅ P2.2 Added ownership transfer tracking for `alloc`/`free` through assignments and returns.
+- [x] ✅ P2.2 Added ownership violation reporting (double-free/non-owned free/leak-at-function-exit baseline).
+- [ ] ⬜ P2.next Capability tokens, revocation/delegation/algebra, and stdlib capability-token wiring still pending.
+- [ ] ⬜ P2.next Full region/lifetime model and secure-zero optimization barriers still pending.
+
 ---
 
 ## 2) Completed (Verified)

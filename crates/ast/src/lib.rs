@@ -140,6 +140,7 @@ pub enum BinaryOp {
 #[derive(Debug, Clone)]
 pub struct MatchArm {
     pub pattern: Pattern,
+    pub guard: Option<Expr>,
     pub value: Expr,
 }
 
@@ -149,6 +150,11 @@ pub enum Pattern {
     Int(i32),
     Bool(bool),
     Ident(String),
+    Variant {
+        name: String,
+        bindings: Vec<String>,
+    },
+    Or(Vec<Pattern>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,6 +274,9 @@ pub fn walk_stmt<V: AstVisitor + ?Sized>(visitor: &mut V, stmt: &Stmt) {
         Stmt::Match { scrutinee, arms } => {
             visitor.visit_expr(scrutinee);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    visitor.visit_expr(guard);
+                }
                 visitor.visit_expr(&arm.value);
             }
         }

@@ -14,6 +14,9 @@ Implemented:
 - Tree-walking interpreter semantics for typed `main` evaluation.
 - FIR upgraded to typed function IR with basic blocks and instruction nodes.
 - Call graph construction and reusable AST visitor/walker traversal.
+- Extended match patterns with variant-destructuring form, guard clauses, and or-patterns.
+- Added FIR def-use and liveness analysis output per basic block.
+- Started 1.6 capability/memory work: function-scoped capability requirement propagation and ownership-transfer violation detection.
 
 Still pending in 1.5:
 - Full Cranelift and LLVM instruction selection for all expression/statement forms.
