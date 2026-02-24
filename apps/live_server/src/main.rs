@@ -3,8 +3,8 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::str;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -29,34 +29,43 @@ struct AppConfig {
     worker_count: usize,
     graceful_stop_ms: u64,
     read_buffer_bytes: usize,
+    queue_capacity: usize,
+    flush_interval_ms: u64,
+    sync_writes: bool,
 }
 
 impl AppConfig {
-    fn from_env() -> Result<Self> {
+    fn from_env() -> Self {
         let env = EnvConfig::from_current_env();
         let host = env
             .get_required("LIVE_HOST")
             .unwrap_or_else(|_| "127.0.0.1".to_string());
         let port = env.parse_u16("LIVE_PORT").unwrap_or(8080);
-        let worker_count = env.parse_usize("LIVE_WORKERS").unwrap_or(4).max(1);
+        let worker_count = env.parse_usize("LIVE_WORKERS").unwrap_or(8).max(1);
         let graceful_stop_ms = env.parse_usize("LIVE_GRACEFUL_STOP_MS").unwrap_or(5_000) as u64;
         let read_buffer_bytes = env
             .parse_usize("LIVE_READ_BUFFER")
             .unwrap_or(16 * 1024)
             .max(1024);
+        let queue_capacity = env.parse_usize("LIVE_QUEUE_CAP").unwrap_or(2048).max(32);
+        let flush_interval_ms = env.parse_usize("LIVE_FLUSH_INTERVAL_MS").unwrap_or(100) as u64;
+        let sync_writes = env.parse_bool("LIVE_SYNC_WRITES").unwrap_or(false);
         let store_path = PathBuf::from(
             env.get_required("LIVE_STORE")
                 .unwrap_or_else(|_| "examples/live_server/store.json".to_string()),
         );
 
-        Ok(Self {
+        Self {
             host,
             port,
             store_path,
             worker_count,
             graceful_stop_ms,
             read_buffer_bytes,
-        })
+            queue_capacity,
+            flush_interval_ms,
+            sync_writes,
+        }
     }
 
     fn addr(&self) -> String {
@@ -64,17 +73,14 @@ impl AppConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct StoreData {
     items: BTreeMap<String, String>,
 }
 
-impl Default for StoreData {
-    fn default() -> Self {
-        Self {
-            items: BTreeMap::new(),
-        }
-    }
+enum FlushCommand {
+    Flush,
+    Shutdown,
 }
 
 struct SharedState {
@@ -87,11 +93,14 @@ struct SharedState {
     healthy: AtomicBool,
     ready: AtomicBool,
     shutting_down: AtomicBool,
+    pending_connections: AtomicUsize,
+    dirty_store: AtomicBool,
     started_at: Instant,
+    flush_tx: SyncSender<FlushCommand>,
 }
 
 impl SharedState {
-    fn new(cfg: AppConfig, store: StoreData) -> Self {
+    fn new(cfg: AppConfig, store: StoreData, flush_tx: SyncSender<FlushCommand>) -> Self {
         let mut logger = Logger::default();
         logger.min_level = LogLevel::Info;
         logger.policy = RedactionPolicy::RedactKnownSecrets;
@@ -106,7 +115,10 @@ impl SharedState {
             healthy: AtomicBool::new(true),
             ready: AtomicBool::new(true),
             shutting_down: AtomicBool::new(false),
+            pending_connections: AtomicUsize::new(0),
+            dirty_store: AtomicBool::new(false),
             started_at: Instant::now(),
+            flush_tx,
         }
     }
 
@@ -131,7 +143,19 @@ impl SharedState {
         }
     }
 
-    fn save_store(&self) -> Result<()> {
+    fn mark_store_dirty(&self) {
+        self.dirty_store.store(true, Ordering::SeqCst);
+    }
+
+    fn request_flush(&self) {
+        let _ = self.flush_tx.try_send(FlushCommand::Flush);
+    }
+
+    fn flush_store_now(&self) -> Result<()> {
+        if !self.dirty_store.swap(false, Ordering::SeqCst) {
+            return Ok(());
+        }
+
         let parent = self
             .cfg
             .store_path
@@ -140,12 +164,12 @@ impl SharedState {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create store parent dir: {}", parent.display()))?;
 
-        let store = self
+        let snapshot = self
             .store
             .read()
             .map_err(|_| anyhow!("store lock poisoned"))?
             .clone();
-        let bytes = serde_json::to_vec_pretty(&store).context("failed to serialize store")?;
+        let bytes = serde_json::to_vec(&snapshot).context("failed to serialize store")?;
 
         let _lock = acquire_file_lock(&self.cfg.store_path)
             .map_err(|err| anyhow!("failed to lock store: {:?}", err))?;
@@ -153,6 +177,8 @@ impl SharedState {
             .map_err(|err| anyhow!("failed to write store atomically: {:?}", err))?;
         fsync_file(&self.cfg.store_path)
             .map_err(|err| anyhow!("failed to fsync store: {:?}", err))?;
+
+        self.inc("store.flush.total", 1);
         Ok(())
     }
 
@@ -163,7 +189,7 @@ impl SharedState {
             .map(|rt| rt.snapshot_stats())
             .unwrap_or_default();
         ObsRuntimeStats {
-            task_queue_depth: stats.task_queue_depth,
+            task_queue_depth: self.pending_connections.load(Ordering::SeqCst),
             scheduler_lag_ms: stats.scheduler_lag_ms,
             allocation_pressure_bytes: stats.allocation_pressure_bytes,
             open_file_count: stats.open_file_count,
@@ -178,30 +204,36 @@ fn main() -> Result<()> {
         return run_bench();
     }
 
-    let cfg = AppConfig::from_env()?;
-    run_server(cfg)
+    run_server(AppConfig::from_env())
 }
 
 fn run_server(cfg: AppConfig) -> Result<()> {
     let store = load_store(&cfg.store_path)?;
-    let state = Arc::new(SharedState::new(cfg.clone(), store));
+
+    let (flush_tx, flush_rx) = mpsc::sync_channel::<FlushCommand>(64);
+    let state = Arc::new(SharedState::new(cfg.clone(), store, flush_tx.clone()));
+
     if let Ok(mut rt) = state.runtime.lock() {
         rt.set_file_count(1);
         rt.set_socket_count(1);
         rt.set_scheduler_lag(0);
         rt.set_allocation_pressure(0);
-        for idx in 0..cfg.worker_count {
-            rt.enqueue(format!("worker-{idx}"));
-            let _ = rt.dequeue();
-        }
     }
+
+    let flusher_state = Arc::clone(&state);
+    let flusher = thread::spawn(move || flush_worker(flusher_state, flush_rx));
 
     let profile = RuntimeProfile::Release.config();
     state.log(
         LogLevel::Info,
         &format!(
-            "boot profile=release workers={} det={} strict_verify={}",
-            profile.worker_count, profile.deterministic, profile.strict_verify
+            "boot profile=release workers={} det={} strict_verify={} queue={} flush_ms={} sync_writes={}",
+            profile.worker_count,
+            profile.deterministic,
+            profile.strict_verify,
+            cfg.queue_capacity,
+            cfg.flush_interval_ms,
+            cfg.sync_writes
         ),
         None,
     );
@@ -231,26 +263,48 @@ fn run_server(cfg: AppConfig) -> Result<()> {
         .set_nonblocking(true)
         .context("failed to set listener nonblocking")?;
 
+    let limits = HttpServerLimits {
+        max_header_bytes: hardening.max_header_bytes,
+        max_body_bytes: hardening.max_body_bytes,
+        max_connections: hardening.max_connections,
+        read_timeout_ms: hardening.request_timeout_ms,
+        write_timeout_ms: hardening.request_timeout_ms,
+        parse_timeout_ms: hardening.parse_timeout_ms,
+        keepalive_max_requests: 64,
+    };
+
     state.log(
         LogLevel::Info,
         &format!(
             "listening addr={} limits(header={}, body={}, conn={})",
             cfg.addr(),
-            hardening.max_header_bytes,
-            hardening.max_body_bytes,
-            hardening.max_connections
+            limits.max_header_bytes,
+            limits.max_body_bytes,
+            limits.max_connections
         ),
         None,
     );
 
+    let (work_tx, work_rx) = mpsc::sync_channel::<TcpStream>(cfg.queue_capacity);
+    let shared_rx = Arc::new(Mutex::new(work_rx));
+    let mut workers = Vec::with_capacity(cfg.worker_count);
+    for idx in 0..cfg.worker_count {
+        let rx = Arc::clone(&shared_rx);
+        let worker_state = Arc::clone(&state);
+        let worker_limits = limits.clone();
+        workers.push(thread::spawn(move || {
+            worker_loop(idx, worker_state, rx, worker_limits)
+        }));
+    }
+
     let running = Arc::new(AtomicBool::new(true));
     let running_flag = Arc::clone(&running);
     let state_for_signal = Arc::clone(&state);
+    let graceful_ms = cfg.graceful_stop_ms;
     ctrlc::set_handler(move || {
         state_for_signal.shutting_down.store(true, Ordering::SeqCst);
         if let Ok(mut rt) = state_for_signal.runtime.lock() {
-            rt.shutdown
-                .begin(ShutdownSignal::Sigint, cfg.graceful_stop_ms, 0);
+            rt.shutdown.begin(ShutdownSignal::Sigint, graceful_ms, 0);
         }
         running_flag.store(false, Ordering::SeqCst);
     })
@@ -260,49 +314,110 @@ fn run_server(cfg: AppConfig) -> Result<()> {
         match listener.accept() {
             Ok((mut stream, _addr)) => {
                 if state.shutting_down.load(Ordering::SeqCst) {
-                    let _ = write_response(&mut stream, 503, b"shutting down", false);
+                    let _ =
+                        write_response(&mut stream, 503, br#"{"error":"shutting down"}"#, false);
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
                 }
 
-                let state = Arc::clone(&state);
-                let limits = HttpServerLimits {
-                    max_header_bytes: hardening.max_header_bytes,
-                    max_body_bytes: hardening.max_body_bytes,
-                    max_connections: hardening.max_connections,
-                    read_timeout_ms: hardening.request_timeout_ms,
-                    write_timeout_ms: hardening.request_timeout_ms,
-                    parse_timeout_ms: hardening.parse_timeout_ms,
-                    keepalive_max_requests: 32,
-                };
-                thread::spawn(move || {
-                    if let Err(err) = handle_connection(&state, &mut stream, &limits) {
-                        state.inc("http.request.error", 1);
-                        state.log(LogLevel::Error, &format!("request error: {err:#}"), None);
+                state.pending_connections.fetch_add(1, Ordering::SeqCst);
+                match work_tx.try_send(stream) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(mut stream)) => {
+                        state.pending_connections.fetch_sub(1, Ordering::SeqCst);
+                        state.inc("http.queue.full", 1);
                         let _ = write_response(
                             &mut stream,
-                            500,
-                            br#"{"error":"internal server error"}"#,
+                            503,
+                            br#"{"error":"server overloaded"}"#,
                             false,
                         );
                         let _ = stream.shutdown(Shutdown::Both);
                     }
-                });
+                    Err(TrySendError::Disconnected(_)) => {
+                        state.pending_connections.fetch_sub(1, Ordering::SeqCst);
+                        break;
+                    }
+                }
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(5));
+                thread::sleep(Duration::from_millis(1));
             }
             Err(err) => {
                 state.inc("http.accept.error", 1);
                 state.log(LogLevel::Error, &format!("accept error: {err}"), None);
-                thread::sleep(Duration::from_millis(10));
+                thread::sleep(Duration::from_millis(5));
             }
         }
     }
 
+    drop(work_tx);
+    for handle in workers {
+        let _ = handle.join();
+    }
+
+    let _ = state.flush_tx.try_send(FlushCommand::Shutdown);
+    let _ = flusher.join();
+
     state.ready.store(false, Ordering::SeqCst);
     state.log(LogLevel::Info, "shutdown complete", None);
     Ok(())
+}
+
+fn worker_loop(
+    _idx: usize,
+    state: Arc<SharedState>,
+    rx: Arc<Mutex<Receiver<TcpStream>>>,
+    limits: HttpServerLimits,
+) {
+    loop {
+        let stream = {
+            let guard = match rx.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            match guard.recv() {
+                Ok(stream) => stream,
+                Err(_) => return,
+            }
+        };
+
+        state.pending_connections.fetch_sub(1, Ordering::SeqCst);
+        let mut stream = stream;
+        if let Err(err) = handle_connection(&state, &mut stream, &limits) {
+            state.inc("http.request.error", 1);
+            state.log(LogLevel::Error, &format!("request error: {err:#}"), None);
+            let _ = write_response(
+                &mut stream,
+                500,
+                br#"{"error":"internal server error"}"#,
+                false,
+            );
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+}
+
+fn flush_worker(state: Arc<SharedState>, rx: Receiver<FlushCommand>) {
+    let interval = Duration::from_millis(state.cfg.flush_interval_ms.max(10));
+    loop {
+        match rx.recv_timeout(interval) {
+            Ok(FlushCommand::Flush) => {
+                let _ = state.flush_store_now();
+            }
+            Ok(FlushCommand::Shutdown) => {
+                let _ = state.flush_store_now();
+                return;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = state.flush_store_now();
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = state.flush_store_now();
+                return;
+            }
+        }
+    }
 }
 
 fn handle_connection(
@@ -340,7 +455,6 @@ fn handle_connection(
 
     let (status, body, keep_alive) = route_request(state, &req.method, &req.path, &req.body)?;
     write_response(stream, status, body.as_bytes(), keep_alive)?;
-
     if !keep_alive {
         let _ = stream.shutdown(Shutdown::Both);
     }
@@ -374,8 +488,16 @@ fn route_request(
                     metrics.counter("http.request.total")
                 ));
                 out.push_str(&format!(
+                    "http_request_error {}\n",
+                    metrics.counter("http.request.error")
+                ));
+                out.push_str(&format!(
                     "http_accept_error {}\n",
                     metrics.counter("http.accept.error")
+                ));
+                out.push_str(&format!(
+                    "http_queue_full {}\n",
+                    metrics.counter("http.queue.full")
                 ));
                 out.push_str(&format!(
                     "kv_write_total {}\n",
@@ -384,6 +506,10 @@ fn route_request(
                 out.push_str(&format!(
                     "kv_read_total {}\n",
                     metrics.counter("kv.read.total")
+                ));
+                out.push_str(&format!(
+                    "store_flush_total {}\n",
+                    metrics.counter("store.flush.total")
                 ));
             }
             let stats = state.runtime_stats();
@@ -400,8 +526,7 @@ fn route_request(
                 .store
                 .read()
                 .map_err(|_| anyhow!("store lock poisoned"))?;
-            let body =
-                serde_json::to_string_pretty(&store.items).context("failed serializing items")?;
+            let body = serde_json::to_string(&store.items).context("failed serializing items")?;
             Ok((200, body, true))
         }
         _ if path.starts_with("/v1/items/") => {
@@ -438,7 +563,12 @@ fn route_request(
                             .map_err(|_| anyhow!("store lock poisoned"))?;
                         store.items.insert(key.to_string(), value);
                     }
-                    state.save_store()?;
+                    state.mark_store_dirty();
+                    if state.cfg.sync_writes {
+                        state.flush_store_now()?;
+                    } else {
+                        state.request_flush();
+                    }
                     Ok((200, "{\"ok\":true}".to_string(), true))
                 }
                 "DELETE" => {
@@ -450,7 +580,12 @@ fn route_request(
                             .map_err(|_| anyhow!("store lock poisoned"))?;
                         store.items.remove(key).is_some()
                     };
-                    state.save_store()?;
+                    state.mark_store_dirty();
+                    if state.cfg.sync_writes {
+                        state.flush_store_now()?;
+                    } else {
+                        state.request_flush();
+                    }
                     if removed {
                         Ok((200, "{\"deleted\":true}".to_string(), true))
                     } else {
@@ -474,6 +609,8 @@ fn write_response(
         200 => "OK",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
         503 => "Service Unavailable",
         _ => "Error",
     };
@@ -488,9 +625,8 @@ fn write_response(
         .headers
         .insert("Content-Type".to_string(), "application/json".to_string());
 
-    let bytes = response.to_bytes();
     stream
-        .write_all(&bytes)
+        .write_all(&response.to_bytes())
         .context("failed writing response")?;
     Ok(())
 }
@@ -516,7 +652,7 @@ fn escape_json(input: &str) -> String {
 }
 
 fn run_bench() -> Result<()> {
-    let cfg = AppConfig::from_env()?;
+    let cfg = AppConfig::from_env();
     let server_addr = cfg.addr();
 
     let mut cmd = std::process::Command::new(
@@ -531,21 +667,42 @@ fn run_bench() -> Result<()> {
     let mut child = cmd.spawn().context("failed to spawn server for bench")?;
     wait_for_server(&server_addr, Duration::from_secs(5))?;
 
-    let requests = 1000usize;
-    let started = Instant::now();
-    let mut latencies = Vec::with_capacity(requests);
-    for i in 0..requests {
-        let t0 = Instant::now();
-        let key = format!("bench_{i}");
-        http_put(&server_addr, &key, "v")?;
-        let _ = http_get(&server_addr, &key)?;
-        latencies.push(t0.elapsed().as_micros() as u64);
+    let requests = 2000usize;
+    let workers = 8usize;
+    let start = Instant::now();
+    let lats = Arc::new(Mutex::new(Vec::<u64>::with_capacity(requests)));
+    let mut handles = Vec::with_capacity(workers);
+
+    for w in 0..workers {
+        let addr = server_addr.clone();
+        let lats = Arc::clone(&lats);
+        handles.push(thread::spawn(move || -> Result<()> {
+            for i in (w..requests).step_by(workers) {
+                let t0 = Instant::now();
+                let key = format!("bench_{i}");
+                http_put(&addr, &key, "v")?;
+                let _ = http_get(&addr, &key)?;
+                let us = t0.elapsed().as_micros() as u64;
+                if let Ok(mut l) = lats.lock() {
+                    l.push(us);
+                }
+            }
+            Ok(())
+        }));
     }
-    let total_ms = started.elapsed().as_millis() as u64;
+
+    for h in handles {
+        h.join().map_err(|_| anyhow!("bench worker panicked"))??;
+    }
+    let total_ms = start.elapsed().as_millis() as u64;
 
     let _ = child.kill();
     let _ = child.wait();
 
+    let mut latencies = lats
+        .lock()
+        .map_err(|_| anyhow!("bench lock poisoned"))?
+        .clone();
     latencies.sort_unstable();
     let p50 = percentile(&latencies, 50);
     let p95 = percentile(&latencies, 95);
@@ -568,7 +725,7 @@ fn wait_for_server(addr: &str, timeout: Duration) -> Result<()> {
         if start.elapsed() > timeout {
             return Err(anyhow!("timed out waiting for server at {addr}"));
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -613,8 +770,7 @@ fn read_http_body(stream: &mut TcpStream) -> Result<String> {
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| anyhow!("invalid http response"))?;
-    let body = &out[(split + 4)..];
-    Ok(String::from_utf8_lossy(body).to_string())
+    Ok(String::from_utf8_lossy(&out[(split + 4)..]).to_string())
 }
 
 #[cfg(test)]

@@ -50,17 +50,17 @@ cargo run -p live_server -- bench
 
 Observed output:
 
-- `requests=1000`
-- `total_ms=21443`
-- `rps=46`
-- `p50_us=21483`
-- `p95_us=29170`
-- `p99_us=36918`
+- `requests=2000`
+- `total_ms=632`
+- `rps=3164`
+- `p50_us=2519`
+- `p95_us=2692`
+- `p99_us=3144`
 
 Interpretation:
 
-- This is a correctness-first baseline with durability + instrumentation enabled.
-- Throughput is expected to increase materially with worker accept loop tuning and batched persistence.
+- Server now runs a fixed worker pool with bounded accept queue and async durability flusher.
+- This moved the service from the prior ~`46 rps` baseline to ~`3164 rps` in local bench mode while preserving endpoint correctness and traceability.
 
 ## Production Heuristics To Track
 
