@@ -12,8 +12,13 @@ pub enum ValueType {
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    Let { name: String, ty: ValueType },
-    Assign { name: String },
+    Let {
+        name: String,
+        ty: ValueType,
+    },
+    Assign {
+        name: String,
+    },
     Expr,
     Return,
     Branch {
@@ -172,16 +177,17 @@ fn lower_function(function: &TypedFunction) -> FunctionIr {
     }
 }
 
-fn lower_stmts_into_block(stmts: &[ast::Stmt], current: &mut BasicBlock, blocks: &mut Vec<BasicBlock>) {
+fn lower_stmts_into_block(
+    stmts: &[ast::Stmt],
+    current: &mut BasicBlock,
+    blocks: &mut Vec<BasicBlock>,
+) {
     for stmt in stmts {
         match stmt {
             ast::Stmt::Let { name, ty, .. } => {
                 current.instructions.push(Instruction::Let {
                     name: name.clone(),
-                    ty: ty
-                        .as_ref()
-                        .map(to_value_type)
-                        .unwrap_or(ValueType::Unknown),
+                    ty: ty.as_ref().map(to_value_type).unwrap_or(ValueType::Unknown),
                 });
             }
             ast::Stmt::Assign { target, .. } => {
@@ -195,9 +201,9 @@ fn lower_stmts_into_block(stmts: &[ast::Stmt], current: &mut BasicBlock, blocks:
             | ast::Stmt::Defer(_) => current.instructions.push(Instruction::Expr),
             ast::Stmt::Return(_) => current.instructions.push(Instruction::Return),
             ast::Stmt::Match { arms, .. } => {
-                current
-                    .instructions
-                    .push(Instruction::Match { arm_count: arms.len() });
+                current.instructions.push(Instruction::Match {
+                    arm_count: arms.len(),
+                });
             }
             ast::Stmt::If {
                 then_body,

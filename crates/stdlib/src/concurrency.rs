@@ -198,7 +198,9 @@ impl<T> BoundedChannel<T> {
 
     pub fn len(&self) -> usize {
         let (lock, _, _) = &*self.state;
-        lock.lock().map(|state| state.queue.len()).unwrap_or_default()
+        lock.lock()
+            .map(|state| state.queue.len())
+            .unwrap_or_default()
     }
 
     fn fire_overflow(&self, event: OverflowEvent) {
@@ -372,11 +374,7 @@ impl<T> OnceCell<T> {
     }
 
     pub fn get(&self) -> Option<Arc<T>> {
-        self.value
-            .lock()
-            .expect("once cell lock")
-            .as_ref()
-            .cloned()
+        self.value.lock().expect("once cell lock").as_ref().cloned()
     }
 
     pub fn get_or_init<F: FnOnce() -> T>(&self, init: F) -> Arc<T> {

@@ -164,11 +164,7 @@ impl Parser {
             return;
         }
         if !self.consume(&TokenKind::LParen) {
-            self.push_diag_at(
-                name_token.line,
-                name_token.col,
-                "expected `(` after `repr`",
-            );
+            self.push_diag_at(name_token.line, name_token.col, "expected `(` after `repr`");
             return;
         }
         let mut parts = Vec::new();
@@ -779,12 +775,14 @@ impl Parser {
             TokenKind::KwTrue => Expr::Bool(true),
             TokenKind::KwFalse => Expr::Bool(false),
             TokenKind::Str(v) => Expr::Str(v),
+            TokenKind::KwRpc => Expr::Ident("rpc".to_string()),
             TokenKind::Ident(name) => {
                 if self.looks_like_struct_initializer() {
                     let _ = self.consume(&TokenKind::LBrace);
                     let mut fields = Vec::new();
                     while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
-                        let field_name = self.expect_ident("expected field name in struct initializer")?;
+                        let field_name =
+                            self.expect_ident("expected field name in struct initializer")?;
                         if !self.consume(&TokenKind::Colon) {
                             self.push_diag_here("expected `:` in struct initializer");
                             return None;
@@ -1042,7 +1040,13 @@ impl Parser {
             return false;
         }
         match (self.peek_n(1), self.peek_n(2)) {
-            (Some(Token { kind: TokenKind::RBrace, .. }), _) => true,
+            (
+                Some(Token {
+                    kind: TokenKind::RBrace,
+                    ..
+                }),
+                _,
+            ) => true,
             (
                 Some(Token {
                     kind: TokenKind::Ident(_),
@@ -1155,11 +1159,15 @@ impl Parser {
 
     fn expect_ident(&mut self, message: &str) -> Option<String> {
         let token = self.advance()?;
-        if let TokenKind::Ident(value) = token.kind {
-            Some(value)
-        } else {
-            self.push_diag_at(token.line, token.col, message);
-            None
+        match token.kind {
+            TokenKind::Ident(value) => Some(value),
+            // `rpc` is a contextual keyword: declarations use keyword position, but
+            // module names and paths may still legally use `rpc`.
+            TokenKind::KwRpc => Some("rpc".to_string()),
+            _ => {
+                self.push_diag_at(token.line, token.col, message);
+                None
+            }
         }
     }
 
@@ -1172,9 +1180,13 @@ impl Parser {
     }
 
     fn push_diag_at(&mut self, line: usize, col: usize, message: &str) {
-        self.diagnostics.push(
-            Diagnostic::new(Severity::Error, message, None).with_span(line, col, line, col + 1),
-        );
+        self.diagnostics
+            .push(Diagnostic::new(Severity::Error, message, None).with_span(
+                line,
+                col,
+                line,
+                col + 1,
+            ));
     }
 
     fn consume_until(&mut self, kinds: &[TokenKind]) {
@@ -1567,10 +1579,22 @@ mod tests {
             }
         "#;
         let module = parse(source, "main").expect("parse should succeed");
-        assert!(module.items.iter().any(|item| matches!(item, ast::Item::Trait(_))));
-        assert!(module.items.iter().any(|item| matches!(item, ast::Item::Impl(_))));
-        assert!(module.items.iter().any(|item| matches!(item, ast::Item::Struct(_))));
-        assert!(module.items.iter().any(|item| matches!(item, ast::Item::Enum(_))));
+        assert!(module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Trait(_))));
+        assert!(module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Impl(_))));
+        assert!(module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Struct(_))));
+        assert!(module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Enum(_))));
         let main_fn = module
             .items
             .iter()
@@ -1625,5 +1649,19 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn rpc_can_be_used_as_module_name_and_call_path() {
+        let source = r#"
+            mod rpc;
+
+            fn main() -> i32 {
+                rpc.touch();
+                return 0;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        assert!(module.modules.iter().any(|decl| decl == "rpc"));
     }
 }

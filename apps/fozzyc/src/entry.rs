@@ -1,11 +1,15 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Result};
-use driver::{run as driver_run, Command, Format};
+use driver::{run as driver_run, Command, CommandFailure, Format};
 
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
+        print_help();
+        return Ok(());
+    }
+    if args.len() == 1 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help") {
         print_help();
         return Ok(());
     }
@@ -15,9 +19,95 @@ pub fn run() -> Result<()> {
     let filtered: Vec<String> = args.into_iter().filter(|a| a != "--json").collect();
 
     let command = parse_command(&filtered)?;
-    let output = driver_run(command, format)?;
+    let output = match driver_run(command.clone(), format) {
+        Ok(output) => output,
+        Err(error) => {
+            if let Some(command_error) = error.downcast_ref::<CommandFailure>() {
+                if !command_error.output.trim().is_empty() {
+                    println!("{}", command_error.output);
+                }
+                std::process::exit(command_error.exit_code);
+            }
+            return Err(error);
+        }
+    };
     println!("{output}");
+    if let Some(exit_code) = infer_exit_code(&command, &output, json) {
+        std::process::exit(exit_code);
+    }
     Ok(())
+}
+
+fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
+    if json {
+        let payload: serde_json::Value = serde_json::from_str(output).ok()?;
+        return match command {
+            Command::Run { .. } => payload
+                .get("exitCode")
+                .and_then(serde_json::Value::as_i64)
+                .map(|code| code as i32)
+                .filter(|code| *code != 0),
+            Command::Check { .. } | Command::Verify { .. } | Command::LspDiagnostics { .. } => {
+                let has_error = payload
+                    .get("items")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| {
+                        items.iter().any(|item| {
+                            item.get("severity")
+                                .and_then(serde_json::Value::as_str)
+                                .is_some_and(|severity| severity == "Error")
+                        })
+                    })
+                    .or_else(|| {
+                        payload
+                            .get("diagnostics")
+                            .and_then(serde_json::Value::as_array)
+                            .map(|items| {
+                                items.iter().any(|item| {
+                                    item.get("severity")
+                                        .and_then(serde_json::Value::as_str)
+                                        .is_some_and(|severity| severity == "Error")
+                                })
+                            })
+                    })
+                    .unwrap_or_else(|| {
+                        payload
+                            .get("ok")
+                            .and_then(serde_json::Value::as_bool)
+                            .is_some_and(|ok| !ok)
+                    });
+                if has_error {
+                    Some(1)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+    }
+
+    match command {
+        Command::Run { .. } => output
+            .split("exit_code=")
+            .nth(1)
+            .and_then(|tail| tail.split(';').next())
+            .and_then(|raw| raw.trim().parse::<i32>().ok())
+            .filter(|code| *code != 0),
+        Command::Check { .. } | Command::Verify { .. } | Command::LspDiagnostics { .. } => {
+            let errors = output
+                .split("errors=")
+                .nth(1)
+                .and_then(|tail| tail.split_whitespace().next())
+                .and_then(|raw| raw.trim().parse::<usize>().ok())
+                .unwrap_or(0);
+            if errors > 0 || output.contains("ok=false") {
+                Some(1)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 fn parse_command(args: &[String]) -> Result<Command> {

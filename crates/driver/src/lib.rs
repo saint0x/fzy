@@ -1,4 +1,4 @@
 pub mod command;
 pub mod pipeline;
 
-pub use command::{run, Command, Format};
+pub use command::{run, Command, CommandFailure, Format};

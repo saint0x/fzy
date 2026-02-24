@@ -151,7 +151,8 @@ mod tests {
     fn normalizes_indent_and_trailing_whitespace() {
         let source = "fn main() -> i32 {   \nlet x = 1\nif x {\nreturn x\n}\n}\n";
         let got = format_source(source);
-        let expected = "fn main() -> i32 {\n    let x = 1\n    if x {\n        return x\n    }\n}\n";
+        let expected =
+            "fn main() -> i32 {\n    let x = 1\n    if x {\n        return x\n    }\n}\n";
         assert_eq!(got, expected);
     }
 }

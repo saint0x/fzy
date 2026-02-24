@@ -6,7 +6,10 @@ pub enum CapabilityError {
     Parse(String),
 }
 
-pub fn require_capability(token: &CapabilityToken, required: Capability) -> Result<(), CapabilityError> {
+pub fn require_capability(
+    token: &CapabilityToken,
+    required: Capability,
+) -> Result<(), CapabilityError> {
     if token.allows(required) {
         Ok(())
     } else {

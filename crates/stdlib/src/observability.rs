@@ -131,13 +131,15 @@ impl Logger {
                         .append(true)
                         .open(path)
                     {
-                        let line = serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string());
+                        let line =
+                            serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string());
                         let _ = writeln!(file, "{}", line);
                     }
                 }
                 LoggerSink::UdpJson { addr } => {
                     if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-                        let line = serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string());
+                        let line =
+                            serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string());
                         let _ = socket.send_to(line.as_bytes(), addr);
                     }
                 }
@@ -219,7 +221,12 @@ impl Metrics {
     pub fn histogram(&self, name: &str) -> Vec<u64> {
         self.histograms
             .get(name)
-            .map(|points| points.iter().map(|point| point.value.max(0) as u64).collect())
+            .map(|points| {
+                points
+                    .iter()
+                    .map(|point| point.value.max(0) as u64)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -229,7 +236,8 @@ impl Metrics {
             return None;
         }
         values.sort_unstable();
-        let index = ((pct.clamp(0.0, 100.0) / 100.0) * ((values.len() - 1) as f64)).round() as usize;
+        let index =
+            ((pct.clamp(0.0, 100.0) / 100.0) * ((values.len() - 1) as f64)).round() as usize;
         values.get(index).copied()
     }
 

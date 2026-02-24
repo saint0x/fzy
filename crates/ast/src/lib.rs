@@ -192,10 +192,7 @@ pub enum Pattern {
     Int(i32),
     Bool(bool),
     Ident(String),
-    Variant {
-        name: String,
-        bindings: Vec<String>,
-    },
+    Variant { name: String, bindings: Vec<String> },
     Or(Vec<Pattern>),
 }
 
@@ -203,22 +200,39 @@ pub enum Pattern {
 pub enum Type {
     Void,
     Bool,
-    Int { signed: bool, bits: u16 },
-    Float { bits: u16 },
+    Int {
+        signed: bool,
+        bits: u16,
+    },
+    Float {
+        bits: u16,
+    },
     Char,
     Str,
-    Ptr { mutable: bool, to: Box<Type> },
+    Ptr {
+        mutable: bool,
+        to: Box<Type>,
+    },
     Ref {
         mutable: bool,
         lifetime: Option<String>,
         to: Box<Type>,
     },
     Slice(Box<Type>),
-    Array { elem: Box<Type>, len: usize },
-    Result { ok: Box<Type>, err: Box<Type> },
+    Array {
+        elem: Box<Type>,
+        len: usize,
+    },
+    Result {
+        ok: Box<Type>,
+        err: Box<Type>,
+    },
     Option(Box<Type>),
     Vec(Box<Type>),
-    Named { name: String, args: Vec<Type> },
+    Named {
+        name: String,
+        args: Vec<Type>,
+    },
     TypeVar(String),
 }
 

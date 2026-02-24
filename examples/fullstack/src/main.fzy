@@ -14,21 +14,10 @@ mod cli;
 mod tests;
 
 fn main() -> i32 {
-    requires true
-
     model.preflight()
     cli.boot()
     services.boot_all()
     runtime.start()
     api.touch()
-
-    let cache_ptr: *u8 = alloc(128)
-    defer free(cache_ptr)
-    let seed: i32 = try rng.seed() catch 13
-    match seed { 0 => pulse(), _ => pulse() }
-
-    syscall.sync()
-
-    ensures true
-    return 42
+    return 0
 }

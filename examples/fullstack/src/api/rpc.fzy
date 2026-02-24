@@ -3,10 +3,5 @@ rpc UpdateUser(req: UpdateUserReq) -> UpdateUserRes;
 rpc WatchUsers(stream<WatchReq>) -> stream<WatchEvent>;
 
 fn touch() -> i32 {
-    GetUser(req)
-    UpdateUser(req)
-    WatchUsers(req)
-    timeout(30)
-    cancel()
     return 0
 }

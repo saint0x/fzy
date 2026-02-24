@@ -135,13 +135,19 @@ pub fn lower(module: &Module) -> TypedModule {
         .items
         .iter()
         .filter_map(|item| match item {
-            ast::Item::Impl(item) => item.trait_name.clone().map(|trait_name| (trait_name, item.for_type.clone())),
+            ast::Item::Impl(item) => item
+                .trait_name
+                .clone()
+                .map(|trait_name| (trait_name, item.for_type.clone())),
             _ => None,
         })
-        .fold(HashMap::<String, Vec<Type>>::new(), |mut acc, (trait_name, ty)| {
-            acc.entry(trait_name).or_default().push(ty);
-            acc
-        });
+        .fold(
+            HashMap::<String, Vec<Type>>::new(),
+            |mut acc, (trait_name, ty)| {
+                acc.entry(trait_name).or_default().push(ty);
+                acc
+            },
+        );
     let mut generic_specializations = BTreeSet::new();
     let mut trait_violations = validate_trait_impls(module, &trait_defs);
 
@@ -210,8 +216,14 @@ pub fn lower(module: &Module) -> TypedModule {
     let (linear_resources, deferred_resources, matches_without_wildcard) =
         collect_semantic_hints(&typed_functions);
     let (entry_requires, entry_ensures) = collect_entry_contracts(&typed_functions, &fn_sigs);
-    let (host_syscall_sites, unsafe_sites, unsafe_reasoned_sites, reference_sites, alloc_sites, free_sites) =
-        collect_effect_markers(&typed_functions);
+    let (
+        host_syscall_sites,
+        unsafe_sites,
+        unsafe_reasoned_sites,
+        reference_sites,
+        alloc_sites,
+        free_sites,
+    ) = collect_effect_markers(&typed_functions);
     let inferred_capabilities = infer_capabilities(&typed_functions);
     let extern_c_abi_functions = module
         .items
@@ -285,10 +297,7 @@ pub fn lower(module: &Module) -> TypedModule {
     }
 }
 
-fn validate_trait_impls(
-    module: &Module,
-    trait_defs: &HashMap<String, ast::Trait>,
-) -> Vec<String> {
+fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait>) -> Vec<String> {
     let mut violations = Vec::new();
     for item in &module.items {
         let ast::Item::Impl(item) = item else {
@@ -302,7 +311,11 @@ fn validate_trait_impls(
             continue;
         };
         for method in &trait_def.methods {
-            let Some(found) = item.methods.iter().find(|candidate| candidate.name == method.name) else {
+            let Some(found) = item
+                .methods
+                .iter()
+                .find(|candidate| candidate.name == method.name)
+            else {
                 violations.push(format!(
                     "impl for `{}` missing method `{}` required by trait `{}`",
                     item.for_type, method.name, trait_name
@@ -408,7 +421,9 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 args.iter().any(expr_has_cap_intrinsic)
             }
             Expr::FieldAccess { base, .. } => expr_has_cap_intrinsic(base),
-            Expr::StructInit { fields, .. } => fields.iter().any(|(_, value)| expr_has_cap_intrinsic(value)),
+            Expr::StructInit { fields, .. } => fields
+                .iter()
+                .any(|(_, value)| expr_has_cap_intrinsic(value)),
             Expr::EnumInit { payload, .. } => payload.iter().any(expr_has_cap_intrinsic),
             Expr::TryCatch {
                 try_expr,
@@ -445,9 +460,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
         Stmt::Match { scrutinee, arms } => {
             expr_has_cap_intrinsic(scrutinee)
                 || arms.iter().any(|arm| {
-                    arm.guard
-                        .as_ref()
-                        .is_some_and(expr_has_cap_intrinsic)
+                    arm.guard.as_ref().is_some_and(expr_has_cap_intrinsic)
                         || expr_has_cap_intrinsic(&arm.value)
                 })
         }
@@ -470,7 +483,13 @@ fn analyze_call_token_propagation(
             | Stmt::Requires(_)
             | Stmt::Ensures(_)
             | Stmt::Expr(_) => {
-                analyze_expr_call_tokens(function_name, stmt_expr(stmt), local_types, requirement_map, violations);
+                analyze_expr_call_tokens(
+                    function_name,
+                    stmt_expr(stmt),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
             }
             Stmt::If {
                 condition,
@@ -703,7 +722,11 @@ fn capability_set_from_type(ty: &Type) -> Option<BTreeSet<String>> {
                     set.insert(cap_name);
                 }
             }
-            if set.is_empty() { None } else { Some(set) }
+            if set.is_empty() {
+                None
+            } else {
+                Some(set)
+            }
         }
         _ => None,
     }
@@ -714,7 +737,9 @@ fn capability_name_from_type(ty: &Type) -> Option<String> {
         Type::Named { name, args } if args.is_empty() => {
             capabilities::Capability::parse(name).map(|cap| cap.as_str().to_string())
         }
-        Type::TypeVar(name) => capabilities::Capability::parse(name).map(|cap| cap.as_str().to_string()),
+        Type::TypeVar(name) => {
+            capabilities::Capability::parse(name).map(|cap| cap.as_str().to_string())
+        }
         _ => None,
     }
 }
@@ -789,13 +814,13 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
         for stmt in &function.body {
             match stmt {
                 Stmt::Let {
-                    name,
-                    ty: Some(ty),
-                    ..
+                    name, ty: Some(ty), ..
                 } if is_linear_type(ty) => {
                     linear_owned.insert(name.clone());
                 }
-                Stmt::Expr(Expr::Call { callee, args }) if callee == "free" || callee.ends_with(".free") => {
+                Stmt::Expr(Expr::Call { callee, args })
+                    if callee == "free" || callee.ends_with(".free") =>
+                {
                     if let Some(Expr::Ident(name)) = args.first() {
                         if !linear_owned.contains(name) {
                             violations.push(format!(
@@ -824,7 +849,9 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
 fn is_linear_type(ty: &Type) -> bool {
     match ty {
         Type::Ptr { .. } => true,
-        Type::Named { name, .. } if name == "Linear" || name == "Resource" || name.ends_with("Handle") => {
+        Type::Named { name, .. }
+            if name == "Linear" || name == "Resource" || name.ends_with("Handle") =>
+        {
             true
         }
         _ => false,
@@ -931,7 +958,9 @@ fn collect_function_caps_and_calls(
                 if callee == "spawn" || callee.contains("await") {
                     self.caps.insert("thread".to_string());
                 }
-                if callee.contains("timeout") || callee.contains("deadline") || callee.contains("cancel")
+                if callee.contains("timeout")
+                    || callee.contains("deadline")
+                    || callee.contains("cancel")
                 {
                     self.caps.insert("net".to_string());
                 }
@@ -1127,7 +1156,10 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                     if callee == "spawn" || callee.contains("await") {
                         self.caps.insert("thread".to_string());
                     }
-                    if callee.contains("timeout") || callee.contains("deadline") || callee.contains("cancel") {
+                    if callee.contains("timeout")
+                        || callee.contains("deadline")
+                        || callee.contains("cancel")
+                    {
                         self.caps.insert("net".to_string());
                     }
                 }
@@ -1246,9 +1278,7 @@ fn collect_semantic_hints(functions: &[TypedFunction]) -> (Vec<String>, Vec<Stri
         for statement in &function.body {
             match statement {
                 Stmt::Let {
-                    name,
-                    ty: Some(ty),
-                    ..
+                    name, ty: Some(ty), ..
                 } if ty.is_pointer_like() => {
                     linear_resources.push(name.clone());
                 }
@@ -1258,10 +1288,7 @@ fn collect_semantic_hints(functions: &[TypedFunction]) -> (Vec<String>, Vec<Stri
                     }
                 }
                 Stmt::Match { arms, .. } => {
-                    if !arms
-                        .iter()
-                        .any(|arm| pattern_has_wildcard(&arm.pattern))
-                    {
+                    if !arms.iter().any(|arm| pattern_has_wildcard(&arm.pattern)) {
                         matches_without_wildcard += 1;
                     }
                 }
@@ -1277,7 +1304,9 @@ fn collect_semantic_hints(functions: &[TypedFunction]) -> (Vec<String>, Vec<Stri
     )
 }
 
-fn collect_effect_markers(functions: &[TypedFunction]) -> (usize, usize, usize, usize, usize, usize) {
+fn collect_effect_markers(
+    functions: &[TypedFunction],
+) -> (usize, usize, usize, usize, usize, usize) {
     let mut host_syscall_sites = 0usize;
     let mut unsafe_sites = 0usize;
     let mut unsafe_reasoned_sites = 0usize;
@@ -1363,9 +1392,7 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
         ast::Expr::StructInit { fields, .. } => fields
             .iter()
             .find_map(|(_, value)| deferred_resource(value)),
-        ast::Expr::EnumInit { payload, .. } => payload
-            .iter()
-            .find_map(deferred_resource),
+        ast::Expr::EnumInit { payload, .. } => payload.iter().find_map(deferred_resource),
         ast::Expr::Int(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
@@ -1726,7 +1753,9 @@ fn infer_expr_type(
                     .join(", ");
                 generic_specializations.insert(format!("{base_callee}<{rendered}>"));
                 for generic in &generics {
-                    if let Some((_, concrete)) = bindings.iter().find(|(name, _)| *name == generic.name) {
+                    if let Some((_, concrete)) =
+                        bindings.iter().find(|(name, _)| *name == generic.name)
+                    {
                         for bound in &generic.bounds {
                             if !type_satisfies_trait(concrete, bound, trait_impls) {
                                 trait_violations.push(format!(
@@ -1774,7 +1803,11 @@ fn infer_expr_type(
                 *errors += 1;
                 return None;
             };
-            let Some(found) = struct_def.fields.iter().find(|candidate| candidate.name == *field) else {
+            let Some(found) = struct_def
+                .fields
+                .iter()
+                .find(|candidate| candidate.name == *field)
+            else {
                 *errors += 1;
                 return None;
             };
@@ -1786,7 +1819,11 @@ fn infer_expr_type(
                 return None;
             };
             for (field_name, value) in fields {
-                let Some(found) = struct_def.fields.iter().find(|candidate| candidate.name == *field_name) else {
+                let Some(found) = struct_def
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.name == *field_name)
+                else {
                     *errors += 1;
                     continue;
                 };
@@ -1822,7 +1859,11 @@ fn infer_expr_type(
                 *errors += 1;
                 return None;
             };
-            let Some(found_variant) = enum_def.variants.iter().find(|candidate| candidate.name == *variant) else {
+            let Some(found_variant) = enum_def
+                .variants
+                .iter()
+                .find(|candidate| candidate.name == *variant)
+            else {
                 *errors += 1;
                 return None;
             };
@@ -1842,7 +1883,8 @@ fn infer_expr_type(
                     generic_specializations,
                     trait_violations,
                 );
-                if let (Some(expected), Some(actual)) = (found_variant.payload.get(index), value_ty) {
+                if let (Some(expected), Some(actual)) = (found_variant.payload.get(index), value_ty)
+                {
                     if !type_compatible(expected, &actual) {
                         *errors += 1;
                     }
@@ -1967,14 +2009,38 @@ fn parse_simple_type(token: &str) -> Option<Type> {
         "bool" => Type::Bool,
         "str" => Type::Str,
         "void" => Type::Void,
-        "i8" => Type::Int { signed: true, bits: 8 },
-        "i16" => Type::Int { signed: true, bits: 16 },
-        "i32" => Type::Int { signed: true, bits: 32 },
-        "i64" => Type::Int { signed: true, bits: 64 },
-        "u8" => Type::Int { signed: false, bits: 8 },
-        "u16" => Type::Int { signed: false, bits: 16 },
-        "u32" => Type::Int { signed: false, bits: 32 },
-        "u64" => Type::Int { signed: false, bits: 64 },
+        "i8" => Type::Int {
+            signed: true,
+            bits: 8,
+        },
+        "i16" => Type::Int {
+            signed: true,
+            bits: 16,
+        },
+        "i32" => Type::Int {
+            signed: true,
+            bits: 32,
+        },
+        "i64" => Type::Int {
+            signed: true,
+            bits: 64,
+        },
+        "u8" => Type::Int {
+            signed: false,
+            bits: 8,
+        },
+        "u16" => Type::Int {
+            signed: false,
+            bits: 16,
+        },
+        "u32" => Type::Int {
+            signed: false,
+            bits: 32,
+        },
+        "u64" => Type::Int {
+            signed: false,
+            bits: 64,
+        },
         other if !other.is_empty() => Type::Named {
             name: other.to_string(),
             args: Vec::new(),
@@ -2042,17 +2108,31 @@ fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<Strin
         Type::Ptr {
             mutable,
             to: template_to,
-        } => matches!(concrete, Type::Ptr { mutable: other_mut, to: other_to } if mutable == other_mut && bind_typevars(template_to, other_to, bindings)),
+        } => {
+            matches!(concrete, Type::Ptr { mutable: other_mut, to: other_to } if mutable == other_mut && bind_typevars(template_to, other_to, bindings))
+        }
         Type::Ref {
             mutable,
             lifetime,
             to: template_to,
-        } => matches!(concrete, Type::Ref { mutable: other_mut, lifetime: other_lifetime, to: other_to } if mutable == other_mut && lifetime == other_lifetime && bind_typevars(template_to, other_to, bindings)),
-        Type::Slice(inner) => matches!(concrete, Type::Slice(other) if bind_typevars(inner, other, bindings)),
-        Type::Array { elem, len } => matches!(concrete, Type::Array { elem: other_elem, len: other_len } if len == other_len && bind_typevars(elem, other_elem, bindings)),
-        Type::Result { ok, err } => matches!(concrete, Type::Result { ok: other_ok, err: other_err } if bind_typevars(ok, other_ok, bindings) && bind_typevars(err, other_err, bindings)),
-        Type::Option(inner) => matches!(concrete, Type::Option(other) if bind_typevars(inner, other, bindings)),
-        Type::Vec(inner) => matches!(concrete, Type::Vec(other) if bind_typevars(inner, other, bindings)),
+        } => {
+            matches!(concrete, Type::Ref { mutable: other_mut, lifetime: other_lifetime, to: other_to } if mutable == other_mut && lifetime == other_lifetime && bind_typevars(template_to, other_to, bindings))
+        }
+        Type::Slice(inner) => {
+            matches!(concrete, Type::Slice(other) if bind_typevars(inner, other, bindings))
+        }
+        Type::Array { elem, len } => {
+            matches!(concrete, Type::Array { elem: other_elem, len: other_len } if len == other_len && bind_typevars(elem, other_elem, bindings))
+        }
+        Type::Result { ok, err } => {
+            matches!(concrete, Type::Result { ok: other_ok, err: other_err } if bind_typevars(ok, other_ok, bindings) && bind_typevars(err, other_err, bindings))
+        }
+        Type::Option(inner) => {
+            matches!(concrete, Type::Option(other) if bind_typevars(inner, other, bindings))
+        }
+        Type::Vec(inner) => {
+            matches!(concrete, Type::Vec(other) if bind_typevars(inner, other, bindings))
+        }
         _ => type_compatible(template, concrete),
     }
 }
@@ -2098,7 +2178,11 @@ fn substitute_typevars(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
     }
 }
 
-fn type_satisfies_trait(ty: &Type, trait_name: &str, trait_impls: &HashMap<String, Vec<Type>>) -> bool {
+fn type_satisfies_trait(
+    ty: &Type,
+    trait_name: &str,
+    trait_impls: &HashMap<String, Vec<Type>>,
+) -> bool {
     trait_impls
         .get(trait_name)
         .is_some_and(|impls| impls.iter().any(|candidate| type_compatible(candidate, ty)))
@@ -2115,10 +2199,17 @@ fn is_runtime_intrinsic(name: &str) -> bool {
             | "cancel"
             | "recv"
             | "pulse"
+            | "alloc"
+            | "free"
+            | "close"
     )
 }
 
-fn check_pattern_compatibility(pattern: &ast::Pattern, scrutinee_ty: Option<&Type>, errors: &mut usize) {
+fn check_pattern_compatibility(
+    pattern: &ast::Pattern,
+    scrutinee_ty: Option<&Type>,
+    errors: &mut usize,
+) {
     match (pattern, scrutinee_ty) {
         (ast::Pattern::Int(_), Some(Type::Int { .. })) => {}
         (ast::Pattern::Bool(_), Some(Type::Bool)) => {}

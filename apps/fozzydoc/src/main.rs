@@ -312,8 +312,12 @@ fn render_markdown(items: &[DocItem]) -> String {
 }
 
 fn integrate_reference(reference_path: &Path, items: &[DocItem]) -> Result<()> {
-    let current = fs::read_to_string(reference_path)
-        .with_context(|| format!("failed reading reference file: {}", reference_path.display()))?;
+    let current = fs::read_to_string(reference_path).with_context(|| {
+        format!(
+            "failed reading reference file: {}",
+            reference_path.display()
+        )
+    })?;
     let section = format!(
         "{REF_START}\n\n{}\n{REF_END}",
         render_markdown(items).trim_end()
@@ -330,8 +334,12 @@ fn integrate_reference(reference_path: &Path, items: &[DocItem]) -> Result<()> {
         format!("{}\n\n{}\n", current.trim_end(), section)
     };
 
-    fs::write(reference_path, updated)
-        .with_context(|| format!("failed writing reference file: {}", reference_path.display()))?;
+    fs::write(reference_path, updated).with_context(|| {
+        format!(
+            "failed writing reference file: {}",
+            reference_path.display()
+        )
+    })?;
     Ok(())
 }
 
@@ -356,7 +364,10 @@ mod tests {
         );
         assert_eq!(parse_decl("struct User {"), Some(("struct", "User".into())));
         assert_eq!(parse_decl("enum Kind {"), Some(("enum", "Kind".into())));
-        assert_eq!(parse_decl("rpc Ping(req: Req) -> Res;"), Some(("rpc", "Ping".into())));
+        assert_eq!(
+            parse_decl("rpc Ping(req: Req) -> Res;"),
+            Some(("rpc", "Ping".into()))
+        );
         assert_eq!(
             parse_decl("test \"smoke\" {}"),
             Some(("test", "smoke".into()))

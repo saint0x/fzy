@@ -110,15 +110,19 @@ pub fn verify_file(path: &Path) -> Result<Output> {
     let parsed = match parse_program(&resolved.source_path) {
         Ok(parsed) => parsed,
         Err(error) => {
+            let diagnostics =
+                collect_parse_diagnostics(&resolved.source_path).unwrap_or_else(|_| {
+                    vec![diagnostics::Diagnostic::new(
+                        diagnostics::Severity::Error,
+                        error.to_string(),
+                        None,
+                    )]
+                });
             return Ok(Output {
                 module: module_name.to_string(),
                 nodes: 0,
-                diagnostics: 1,
-                diagnostic_details: vec![diagnostics::Diagnostic::new(
-                    diagnostics::Severity::Error,
-                    error.to_string(),
-                    None,
-                )],
+                diagnostics: diagnostics.len(),
+                diagnostic_details: diagnostics,
                 backend_ir: None,
             });
         }
@@ -258,13 +262,8 @@ fn load_module_recursive(path: &Path, state: &mut ModuleLoadState) -> Result<()>
         .file_stem()
         .and_then(|value| value.to_str())
         .ok_or_else(|| anyhow!("invalid module filename for {}", canonical.display()))?;
-    let ast = parser::parse(&source, module_name).map_err(|diagnostics| {
-        anyhow!(
-            "parse failed for {} with {} diagnostics",
-            canonical.display(),
-            diagnostics.len()
-        )
-    })?;
+    let ast = parser::parse(&source, module_name)
+        .map_err(|diagnostics| anyhow!(render_parse_failure(&canonical, &diagnostics)))?;
 
     let base_dir = canonical
         .parent()
@@ -292,6 +291,110 @@ fn load_module_recursive(path: &Path, state: &mut ModuleLoadState) -> Result<()>
         },
     );
     Ok(())
+}
+
+fn collect_parse_diagnostics(source_path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
+    let canonical = source_path
+        .canonicalize()
+        .with_context(|| format!("failed resolving source file: {}", source_path.display()))?;
+    let mut visited = HashSet::<PathBuf>::new();
+    let mut visiting = HashSet::<PathBuf>::new();
+    match collect_parse_diagnostics_recursive(&canonical, &mut visited, &mut visiting)? {
+        Some((failed_path, diagnostics)) => Ok(diagnostics
+            .into_iter()
+            .map(|diagnostic| annotate_parse_diagnostic(diagnostic, &failed_path))
+            .collect()),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn collect_parse_diagnostics_recursive(
+    path: &Path,
+    visited: &mut HashSet<PathBuf>,
+    visiting: &mut HashSet<PathBuf>,
+) -> Result<Option<(PathBuf, Vec<diagnostics::Diagnostic>)>> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("failed resolving module path: {}", path.display()))?;
+    if visited.contains(&canonical) || visiting.contains(&canonical) {
+        return Ok(None);
+    }
+    visiting.insert(canonical.clone());
+    let source = std::fs::read_to_string(&canonical)
+        .with_context(|| format!("failed reading source file: {}", canonical.display()))?;
+    let module_name = canonical
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("invalid module filename for {}", canonical.display()))?;
+    let ast = match parser::parse(&source, module_name) {
+        Ok(ast) => ast,
+        Err(diagnostics) => return Ok(Some((canonical.clone(), diagnostics))),
+    };
+    visited.insert(canonical.clone());
+
+    let base_dir = canonical
+        .parent()
+        .ok_or_else(|| anyhow!("module has no parent directory: {}", canonical.display()))?;
+    for module_decl in &ast.modules {
+        let module_path = resolve_declared_module(base_dir, module_decl).with_context(|| {
+            format!(
+                "while resolving module `{}` from {}",
+                module_decl,
+                canonical.display()
+            )
+        })?;
+        if let Some(failure) = collect_parse_diagnostics_recursive(&module_path, visited, visiting)?
+        {
+            return Ok(Some(failure));
+        }
+    }
+    visiting.remove(&canonical);
+    Ok(None)
+}
+
+fn annotate_parse_diagnostic(
+    mut diagnostic: diagnostics::Diagnostic,
+    module_path: &Path,
+) -> diagnostics::Diagnostic {
+    let mut help = diagnostic.help.unwrap_or_default();
+    if !help.is_empty() {
+        help.push(' ');
+    }
+    help.push_str(&format!("source: {}", module_path.display()));
+    diagnostic.help = Some(help);
+    diagnostic
+}
+
+fn render_parse_failure(path: &Path, diagnostics: &[diagnostics::Diagnostic]) -> String {
+    let mut summary = format!(
+        "parse failed for {} with {} diagnostics",
+        path.display(),
+        diagnostics.len()
+    );
+    if diagnostics.is_empty() {
+        return summary;
+    }
+    let details = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            if let Some(span) = &diagnostic.span {
+                format!(
+                    "{}:{}-{}:{} {}",
+                    span.start_line,
+                    span.start_col,
+                    span.end_line,
+                    span.end_col,
+                    diagnostic.message
+                )
+            } else {
+                diagnostic.message.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    summary.push_str(": ");
+    summary.push_str(&details);
+    summary
 }
 
 fn resolve_declared_module(base_dir: &Path, module_decl: &str) -> Result<PathBuf> {
@@ -381,7 +484,9 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
         None
     };
     if fir.typed_functions.is_empty() {
-        let ret = forced_main_return.or(fir.entry_return_const_i32).unwrap_or(0);
+        let ret = forced_main_return
+            .or(fir.entry_return_const_i32)
+            .unwrap_or(0);
         return format!(
             "; ModuleID = '{name}'\ndefine i32 @main() {{\nentry:\n  ret i32 {ret}\n}}\n",
             name = fir.name
@@ -464,8 +569,9 @@ fn llvm_emit_function(function: &hir::TypedFunction, forced_return: Option<i32>)
     let mut out = format!("define i32 @{}({params}) {{\nentry:\n", function.name);
     for (index, param) in function.params.iter().enumerate() {
         let slot = format!("%slot_{}", param.name);
-        ctx.code
-            .push_str(&format!("  {slot} = alloca i32\n  store i32 %arg{index}, ptr {slot}\n"));
+        ctx.code.push_str(&format!(
+            "  {slot} = alloca i32\n  store i32 %arg{index}, ptr {slot}\n"
+        ));
         ctx.slots.insert(param.name.clone(), slot);
     }
     let terminated = llvm_emit_block(&function.body, &mut ctx);
@@ -554,7 +660,8 @@ fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
                 let head_label = ctx.label("while_head");
                 let body_label = ctx.label("while_body");
                 let end_label = ctx.label("while_end");
-                ctx.code.push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
+                ctx.code
+                    .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
                 let cond = llvm_emit_expr(condition, ctx);
                 let pred = ctx.value();
                 ctx.code.push_str(&format!(
@@ -623,10 +730,9 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
             for value in payload {
                 let _ = llvm_emit_expr(value, ctx);
             }
-            (variant
-                .bytes()
-                .fold(0u32, |acc, byte| acc.wrapping_mul(33).wrapping_add(byte as u32))
-                & 0x7fff_ffff)
+            (variant.bytes().fold(0u32, |acc, byte| {
+                acc.wrapping_mul(33).wrapping_add(byte as u32)
+            }) & 0x7fff_ffff)
                 .to_string()
         }
         ast::Expr::TryCatch { try_expr, .. } => llvm_emit_expr(try_expr, ctx),
@@ -646,10 +752,18 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
             let rhs = llvm_emit_expr(right, ctx);
             let out = ctx.value();
             match op {
-                ast::BinaryOp::Add => ctx.code.push_str(&format!("  {out} = add i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::Sub => ctx.code.push_str(&format!("  {out} = sub i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::Mul => ctx.code.push_str(&format!("  {out} = mul i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::Div => ctx.code.push_str(&format!("  {out} = sdiv i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Add => ctx
+                    .code
+                    .push_str(&format!("  {out} = add i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Sub => ctx
+                    .code
+                    .push_str(&format!("  {out} = sub i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Mul => ctx
+                    .code
+                    .push_str(&format!("  {out} = mul i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Div => ctx
+                    .code
+                    .push_str(&format!("  {out} = sdiv i32 {lhs}, {rhs}\n")),
                 ast::BinaryOp::Eq
                 | ast::BinaryOp::Neq
                 | ast::BinaryOp::Lt
@@ -1146,7 +1260,12 @@ fn emit_native_artifact_cranelift(
         };
         let id = module
             .declare_function(function.name.as_str(), linkage, &sig)
-            .map_err(|error| anyhow!("failed declaring cranelift symbol `{}`: {error}", function.name))?;
+            .map_err(|error| {
+                anyhow!(
+                    "failed declaring cranelift symbol `{}`: {error}",
+                    function.name
+                )
+            })?;
         function_ids.insert(function.name.clone(), id);
     }
 
@@ -1158,9 +1277,17 @@ fn emit_native_artifact_cranelift(
         context.func.signature.params.clear();
         context.func.signature.returns.clear();
         for _ in &function.params {
-            context.func.signature.params.push(AbiParam::new(types::I32));
+            context
+                .func
+                .signature
+                .params
+                .push(AbiParam::new(types::I32));
         }
-        context.func.signature.returns.push(AbiParam::new(types::I32));
+        context
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I32));
 
         let mut function_builder_context = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut context.func, &mut function_builder_context);
@@ -1189,7 +1316,9 @@ fn emit_native_artifact_cranelift(
         )?;
         if !terminated {
             let fallback = if function.name == "main" {
-                forced_main_return.or(fir.entry_return_const_i32).unwrap_or(0)
+                forced_main_return
+                    .or(fir.entry_return_const_i32)
+                    .unwrap_or(0)
             } else {
                 0
             };
@@ -1200,7 +1329,12 @@ fn emit_native_artifact_cranelift(
 
         module
             .define_function(function_id, &mut context)
-            .map_err(|error| anyhow!("failed defining cranelift function `{}`: {error}", function.name))?;
+            .map_err(|error| {
+                anyhow!(
+                    "failed defining cranelift function `{}`: {error}",
+                    function.name
+                )
+            })?;
         module.clear_context(&mut context);
     }
     let object_product = module.finish();
@@ -1319,28 +1453,16 @@ fn clif_emit_block(
                 builder.ins().brif(cond, then_block, &[], else_block, &[]);
 
                 builder.switch_to_block(then_block);
-                let then_terminated = clif_emit_block(
-                    builder,
-                    module,
-                    function_ids,
-                    then_body,
-                    locals,
-                    next_var,
-                )?;
+                let then_terminated =
+                    clif_emit_block(builder, module, function_ids, then_body, locals, next_var)?;
                 if !then_terminated {
                     builder.ins().jump(cont_block, &[]);
                 }
                 builder.seal_block(then_block);
 
                 builder.switch_to_block(else_block);
-                let else_terminated = clif_emit_block(
-                    builder,
-                    module,
-                    function_ids,
-                    else_body,
-                    locals,
-                    next_var,
-                )?;
+                let else_terminated =
+                    clif_emit_block(builder, module, function_ids, else_body, locals, next_var)?;
                 if !else_terminated {
                     builder.ins().jump(cont_block, &[]);
                 }
@@ -1425,20 +1547,23 @@ fn clif_emit_expr(
             }
             first.unwrap_or_else(|| builder.ins().iconst(types::I32, 0))
         }
-        ast::Expr::EnumInit { variant, payload, .. } => {
+        ast::Expr::EnumInit {
+            variant, payload, ..
+        } => {
             for value in payload {
                 let _ = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
             }
-            let tag = variant
-                .bytes()
-                .fold(0u32, |acc, byte| acc.wrapping_mul(33).wrapping_add(byte as u32));
+            let tag = variant.bytes().fold(0u32, |acc, byte| {
+                acc.wrapping_mul(33).wrapping_add(byte as u32)
+            });
             builder.ins().iconst(types::I32, (tag & 0x7fff_ffff) as i64)
         }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
-        } => clif_emit_expr(builder, module, function_ids, try_expr, locals, next_var)
-            .or_else(|_| clif_emit_expr(builder, module, function_ids, catch_expr, locals, next_var))?,
+        } => clif_emit_expr(builder, module, function_ids, try_expr, locals, next_var).or_else(
+            |_| clif_emit_expr(builder, module, function_ids, catch_expr, locals, next_var),
+        )?,
         ast::Expr::Binary { op, left, right } => {
             let lhs = clif_emit_expr(builder, module, function_ids, left, locals, next_var)?;
             let rhs = clif_emit_expr(builder, module, function_ids, right, locals, next_var)?;
@@ -1478,7 +1603,9 @@ fn clif_emit_expr(
                     builder.ins().select(c, one, zero)
                 }
                 ast::BinaryOp::Gte => {
-                    let c = builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs);
+                    let c = builder
+                        .ins()
+                        .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs);
                     let one = builder.ins().iconst(types::I32, 1);
                     let zero = builder.ins().iconst(types::I32, 0);
                     builder.ins().select(c, one, zero)

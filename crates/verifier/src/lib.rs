@@ -189,14 +189,20 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 Severity::Warning
             },
             violation.clone(),
-            Some("enforce ownership transfer semantics and ensure every allocation is released".to_string()),
+            Some(
+                "enforce ownership transfer semantics and ensure every allocation is released"
+                    .to_string(),
+            ),
         ));
     }
     for violation in &module.capability_token_violations {
         report.diagnostics.push(Diagnostic::new(
             Severity::Error,
             violation.clone(),
-            Some("add capability token parameters and propagate delegated tokens explicitly".to_string()),
+            Some(
+                "add capability token parameters and propagate delegated tokens explicitly"
+                    .to_string(),
+            ),
         ));
     }
     for violation in &module.trait_violations {

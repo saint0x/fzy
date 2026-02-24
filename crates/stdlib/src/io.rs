@@ -194,7 +194,8 @@ impl IoBackend for HostIo {
         Self::ensure_parent_safe(path_ref)?;
         let tmp = path_ref.with_extension("tmp");
         {
-            let mut file = std::fs::File::create(&tmp).map_err(|e| IoError::Backend(e.to_string()))?;
+            let mut file =
+                std::fs::File::create(&tmp).map_err(|e| IoError::Backend(e.to_string()))?;
             file.write_all(value)
                 .map_err(|e| IoError::Backend(e.to_string()))?;
             file.sync_all()
@@ -230,7 +231,8 @@ impl IoBackend for DeterministicIo {
     }
 
     fn write_string(&mut self, path: &str, value: &str) -> Result<(), IoError> {
-        self.files.insert(path.to_string(), value.as_bytes().to_vec());
+        self.files
+            .insert(path.to_string(), value.as_bytes().to_vec());
         Ok(())
     }
 
@@ -356,10 +358,7 @@ mod tests {
         assert_eq!(io.read_stream("/tmp/demo.bin", 2, 3).expect("read"), b"cde");
         io.write_binary("/tmp/demo.bin", b"+", WriteMode::Append)
             .expect("append");
-        assert_eq!(
-            io.read_binary("/tmp/demo.bin").expect("read"),
-            b"abcdef+"
-        );
+        assert_eq!(io.read_binary("/tmp/demo.bin").expect("read"), b"abcdef+");
     }
 
     #[test]

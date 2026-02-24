@@ -11,3 +11,4 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 driver = { path = "../../crates/driver" }
+serde_json.workspace = true

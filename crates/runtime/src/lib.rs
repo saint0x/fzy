@@ -148,25 +148,54 @@ pub enum JoinOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaskEvent {
-    Spawned { task_id: TaskId, detached: bool },
-    Started { task_id: TaskId },
-    Completed { task_id: TaskId },
-    Panicked { task_id: TaskId, message: String },
+    Spawned {
+        task_id: TaskId,
+        detached: bool,
+    },
+    Started {
+        task_id: TaskId,
+    },
+    Completed {
+        task_id: TaskId,
+    },
+    Panicked {
+        task_id: TaskId,
+        message: String,
+    },
     PanicRootCause {
         task_id: TaskId,
         cause_task_id: Option<TaskId>,
     },
-    TimedOut { task_id: TaskId, timeout_ms: u64 },
-    Cancelled { task_id: TaskId },
+    TimedOut {
+        task_id: TaskId,
+        timeout_ms: u64,
+    },
+    Cancelled {
+        task_id: TaskId,
+    },
     Backpressure {
         queue_depth: usize,
         capacity: usize,
     },
-    JoinWait { waiter: TaskId, target: TaskId },
-    JoinCycle { path: Vec<TaskId> },
-    Yielded { task_id: TaskId, reason: String },
-    IoWait { task_id: TaskId, key: String },
-    IoReady { task_id: TaskId, key: String },
+    JoinWait {
+        waiter: TaskId,
+        target: TaskId,
+    },
+    JoinCycle {
+        path: Vec<TaskId>,
+    },
+    Yielded {
+        task_id: TaskId,
+        reason: String,
+    },
+    IoWait {
+        task_id: TaskId,
+        key: String,
+    },
+    IoReady {
+        task_id: TaskId,
+        key: String,
+    },
     ChannelSend {
         task_id: TaskId,
         channel: String,
@@ -179,7 +208,9 @@ pub enum TaskEvent {
         bytes: usize,
         payload_hash: u64,
     },
-    Detached { task_id: TaskId },
+    Detached {
+        task_id: TaskId,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -411,7 +442,6 @@ impl DeterministicExecutor {
                 }
             }
         }
-
     }
 
     pub fn run_until_idle(&mut self) {
@@ -529,7 +559,10 @@ impl DeterministicExecutor {
             return false;
         };
         entry.state = TaskState::Waiting;
-        self.io_waiters.entry(key.clone()).or_default().push(task_id);
+        self.io_waiters
+            .entry(key.clone())
+            .or_default()
+            .push(task_id);
         self.record_event(TaskEvent::IoWait { task_id, key });
         true
     }
@@ -551,7 +584,12 @@ impl DeterministicExecutor {
         woken
     }
 
-    pub fn record_channel_send(&mut self, task_id: TaskId, channel: impl Into<String>, payload: &[u8]) {
+    pub fn record_channel_send(
+        &mut self,
+        task_id: TaskId,
+        channel: impl Into<String>,
+        payload: &[u8],
+    ) {
         self.record_event(TaskEvent::ChannelSend {
             task_id,
             channel: channel.into(),
@@ -560,7 +598,12 @@ impl DeterministicExecutor {
         });
     }
 
-    pub fn record_channel_recv(&mut self, task_id: TaskId, channel: impl Into<String>, payload: &[u8]) {
+    pub fn record_channel_recv(
+        &mut self,
+        task_id: TaskId,
+        channel: impl Into<String>,
+        payload: &[u8],
+    ) {
         self.record_event(TaskEvent::ChannelRecv {
             task_id,
             channel: channel.into(),
@@ -791,12 +834,14 @@ mod tests {
             max_queue_depth: Some(1),
             task_timeout: None,
         });
-        let _ = executor.spawn_bounded(Box::new(|| {})).expect("first spawn");
+        let _ = executor
+            .spawn_bounded(Box::new(|| {}))
+            .expect("first spawn");
         assert!(executor.spawn_bounded(Box::new(|| {})).is_err());
-        assert!(executor.trace().iter().any(|event| matches!(
-            event,
-            TaskEvent::Backpressure { .. }
-        )));
+        assert!(executor
+            .trace()
+            .iter()
+            .any(|event| matches!(event, TaskEvent::Backpressure { .. })));
     }
 
     #[test]

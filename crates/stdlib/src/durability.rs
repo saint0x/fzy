@@ -16,7 +16,8 @@ pub fn write_atomic_with_capability(
     token: &CapabilityToken,
 ) -> Result<(), CapabilityError> {
     require_capability(token, required_capability_for_durable_fs())?;
-    write_atomic(path, bytes).map_err(|_| CapabilityError::Missing(required_capability_for_durable_fs()))
+    write_atomic(path, bytes)
+        .map_err(|_| CapabilityError::Missing(required_capability_for_durable_fs()))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +261,9 @@ mod tests {
             fs.read_all("/tmp/fail"),
             Err(FsError::Injected(_))
         ));
-        assert_eq!(fs.read_all("/tmp/fail").expect("read").as_deref(), Some(&b"ok"[..]));
+        assert_eq!(
+            fs.read_all("/tmp/fail").expect("read").as_deref(),
+            Some(&b"ok"[..])
+        );
     }
 }

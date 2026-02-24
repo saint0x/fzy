@@ -1,3 +1,4 @@
+use crate::capability::{require_capability, CapabilityError};
 use capabilities::{Capability, CapabilityToken};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -5,7 +6,6 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 #[cfg(unix)]
 use std::os::unix::net::UnixDatagram;
-use crate::capability::{require_capability, CapabilityError};
 
 pub fn required_capability_for_network() -> Capability {
     Capability::Network
@@ -89,22 +89,65 @@ pub enum PollerEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetDecision {
-    Bind { addr: String, listener: SocketId },
-    Listen { listener: SocketId, backlog: usize },
-    Accept { listener: SocketId, connection: SocketId },
-    Connect { addr: String, connection: SocketId },
-    BindUdp { addr: String, socket: SocketId },
-    ConnectUdp { addr: String, socket: SocketId },
-    BindUnix { path: String, socket: SocketId },
-    JoinMulticast { socket: SocketId, group: String },
-    Read { socket: SocketId, bytes: usize },
-    Write { socket: SocketId, bytes: usize },
-    Close { socket: SocketId },
-    Deadline { context: ContextId, deadline_ms: u64 },
-    Cancel { context: ContextId },
-    Timeout { context: ContextId },
-    Reset { socket: SocketId },
-    ShutdownStart { timeout_ms: u64 },
+    Bind {
+        addr: String,
+        listener: SocketId,
+    },
+    Listen {
+        listener: SocketId,
+        backlog: usize,
+    },
+    Accept {
+        listener: SocketId,
+        connection: SocketId,
+    },
+    Connect {
+        addr: String,
+        connection: SocketId,
+    },
+    BindUdp {
+        addr: String,
+        socket: SocketId,
+    },
+    ConnectUdp {
+        addr: String,
+        socket: SocketId,
+    },
+    BindUnix {
+        path: String,
+        socket: SocketId,
+    },
+    JoinMulticast {
+        socket: SocketId,
+        group: String,
+    },
+    Read {
+        socket: SocketId,
+        bytes: usize,
+    },
+    Write {
+        socket: SocketId,
+        bytes: usize,
+    },
+    Close {
+        socket: SocketId,
+    },
+    Deadline {
+        context: ContextId,
+        deadline_ms: u64,
+    },
+    Cancel {
+        context: ContextId,
+    },
+    Timeout {
+        context: ContextId,
+    },
+    Reset {
+        socket: SocketId,
+    },
+    ShutdownStart {
+        timeout_ms: u64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -208,15 +251,33 @@ pub trait NetBackend {
 
     fn bind_udp(&mut self, addr: &str) -> Result<SocketId, NetError>;
     fn connect_udp(&mut self, socket: SocketId, addr: &str) -> Result<(), NetError>;
-    fn udp_send_to(&mut self, socket: SocketId, addr: &str, payload: &[u8]) -> Result<usize, NetError>;
-    fn udp_recv_from(&mut self, socket: SocketId, max_bytes: usize) -> Result<(Vec<u8>, Option<SocketAddr>), NetError>;
+    fn udp_send_to(
+        &mut self,
+        socket: SocketId,
+        addr: &str,
+        payload: &[u8],
+    ) -> Result<usize, NetError>;
+    fn udp_recv_from(
+        &mut self,
+        socket: SocketId,
+        max_bytes: usize,
+    ) -> Result<(Vec<u8>, Option<SocketAddr>), NetError>;
 
     fn bind_unix_datagram(&mut self, path: &str) -> Result<SocketId, NetError>;
-    fn unix_send_to(&mut self, socket: SocketId, path: &str, payload: &[u8]) -> Result<usize, NetError>;
+    fn unix_send_to(
+        &mut self,
+        socket: SocketId,
+        path: &str,
+        payload: &[u8],
+    ) -> Result<usize, NetError>;
 
     fn join_multicast_v4(&mut self, socket: SocketId, group: Ipv4Addr) -> Result<(), NetError>;
 
-    fn set_socket_options(&mut self, socket: SocketId, options: SocketOptions) -> Result<(), NetError>;
+    fn set_socket_options(
+        &mut self,
+        socket: SocketId,
+        options: SocketOptions,
+    ) -> Result<(), NetError>;
 
     fn read(&mut self, socket: SocketId, max_bytes: usize) -> Result<Vec<u8>, NetError>;
     fn write(&mut self, socket: SocketId, payload: &[u8]) -> Result<usize, NetError>;
@@ -295,15 +356,25 @@ impl HostNet {
     fn scan_poll_interests(&mut self, max_queue_depth: usize) -> Result<(), NetError> {
         for (socket, interest) in self.poll_interests.clone() {
             let event = match (self.sockets.get(&socket).map(|(s, _)| s), interest) {
-                (Some(HostSocket::Listener(_)), PollInterest::Acceptable) => PollerEvent::Acceptable(socket),
-                (Some(HostSocket::Stream(_)), PollInterest::Readable) => PollerEvent::Readable(socket),
+                (Some(HostSocket::Listener(_)), PollInterest::Acceptable) => {
+                    PollerEvent::Acceptable(socket)
+                }
+                (Some(HostSocket::Stream(_)), PollInterest::Readable) => {
+                    PollerEvent::Readable(socket)
+                }
                 (Some(HostSocket::Udp(_)), PollInterest::Readable) => PollerEvent::Readable(socket),
                 #[cfg(unix)]
-                (Some(HostSocket::UnixDatagram(_)), PollInterest::Readable) => PollerEvent::Readable(socket),
-                (Some(HostSocket::Stream(_)), PollInterest::Writable) => PollerEvent::Writable(socket),
+                (Some(HostSocket::UnixDatagram(_)), PollInterest::Readable) => {
+                    PollerEvent::Readable(socket)
+                }
+                (Some(HostSocket::Stream(_)), PollInterest::Writable) => {
+                    PollerEvent::Writable(socket)
+                }
                 (Some(HostSocket::Udp(_)), PollInterest::Writable) => PollerEvent::Writable(socket),
                 #[cfg(unix)]
-                (Some(HostSocket::UnixDatagram(_)), PollInterest::Writable) => PollerEvent::Writable(socket),
+                (Some(HostSocket::UnixDatagram(_)), PollInterest::Writable) => {
+                    PollerEvent::Writable(socket)
+                }
                 _ => continue,
             };
             self.queue_event(event, max_queue_depth)?;
@@ -343,7 +414,11 @@ impl NetBackend for HostNet {
 
     fn bind(&mut self, addr: &str) -> Result<SocketId, NetError> {
         let target = Self::resolve_one(addr)?;
-        let domain = if target.is_ipv6() { Domain::IPV6 } else { Domain::IPV4 };
+        let domain = if target.is_ipv6() {
+            Domain::IPV6
+        } else {
+            Domain::IPV4
+        };
         let socket = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))
             .map_err(|e| NetError::Io(e.to_string()))?;
         socket
@@ -359,7 +434,10 @@ impl NetBackend for HostNet {
         let id = self.new_socket_id();
         self.sockets.insert(
             id,
-            (HostSocket::Listener(listener), SocketOwnership::RuntimeOwned),
+            (
+                HostSocket::Listener(listener),
+                SocketOwnership::RuntimeOwned,
+            ),
         );
         self.decisions.push(NetDecision::Bind {
             addr: addr.to_string(),
@@ -395,7 +473,10 @@ impl NetBackend for HostNet {
                 let id = self.new_socket_id();
                 self.sockets.insert(
                     id,
-                    (HostSocket::Stream(stream), SocketOwnership::ApplicationOwned),
+                    (
+                        HostSocket::Stream(stream),
+                        SocketOwnership::ApplicationOwned,
+                    ),
                 );
                 self.decisions.push(NetDecision::Accept {
                     listener,
@@ -420,7 +501,10 @@ impl NetBackend for HostNet {
         let id = self.new_socket_id();
         self.sockets.insert(
             id,
-            (HostSocket::Stream(stream), SocketOwnership::ApplicationOwned),
+            (
+                HostSocket::Stream(stream),
+                SocketOwnership::ApplicationOwned,
+            ),
         );
         self.decisions.push(NetDecision::Connect {
             addr: addr.to_string(),
@@ -461,7 +545,12 @@ impl NetBackend for HostNet {
         Ok(())
     }
 
-    fn udp_send_to(&mut self, socket: SocketId, addr: &str, payload: &[u8]) -> Result<usize, NetError> {
+    fn udp_send_to(
+        &mut self,
+        socket: SocketId,
+        addr: &str,
+        payload: &[u8],
+    ) -> Result<usize, NetError> {
         let target = Self::resolve_one(addr)?;
         let Some((HostSocket::Udp(sock), _)) = self.sockets.get_mut(&socket) else {
             return Err(NetError::InvalidSocketKind);
@@ -470,7 +559,11 @@ impl NetBackend for HostNet {
             .map_err(|e| NetError::Io(e.to_string()))
     }
 
-    fn udp_recv_from(&mut self, socket: SocketId, max_bytes: usize) -> Result<(Vec<u8>, Option<SocketAddr>), NetError> {
+    fn udp_recv_from(
+        &mut self,
+        socket: SocketId,
+        max_bytes: usize,
+    ) -> Result<(Vec<u8>, Option<SocketAddr>), NetError> {
         let Some((HostSocket::Udp(sock), _)) = self.sockets.get_mut(&socket) else {
             return Err(NetError::InvalidSocketKind);
         };
@@ -496,7 +589,10 @@ impl NetBackend for HostNet {
             let id = self.new_socket_id();
             self.sockets.insert(
                 id,
-                (HostSocket::UnixDatagram(socket), SocketOwnership::ApplicationOwned),
+                (
+                    HostSocket::UnixDatagram(socket),
+                    SocketOwnership::ApplicationOwned,
+                ),
             );
             self.decisions.push(NetDecision::BindUnix {
                 path: path.to_string(),
@@ -507,11 +603,18 @@ impl NetBackend for HostNet {
         #[cfg(not(unix))]
         {
             let _ = path;
-            Err(NetError::Io("unix datagram unsupported on this platform".to_string()))
+            Err(NetError::Io(
+                "unix datagram unsupported on this platform".to_string(),
+            ))
         }
     }
 
-    fn unix_send_to(&mut self, socket: SocketId, path: &str, payload: &[u8]) -> Result<usize, NetError> {
+    fn unix_send_to(
+        &mut self,
+        socket: SocketId,
+        path: &str,
+        payload: &[u8],
+    ) -> Result<usize, NetError> {
         #[cfg(unix)]
         {
             let Some((HostSocket::UnixDatagram(sock), _)) = self.sockets.get_mut(&socket) else {
@@ -523,7 +626,9 @@ impl NetBackend for HostNet {
         #[cfg(not(unix))]
         {
             let _ = (socket, path, payload);
-            Err(NetError::Io("unix datagram unsupported on this platform".to_string()))
+            Err(NetError::Io(
+                "unix datagram unsupported on this platform".to_string(),
+            ))
         }
     }
 
@@ -540,13 +645,21 @@ impl NetBackend for HostNet {
         Ok(())
     }
 
-    fn set_socket_options(&mut self, socket: SocketId, options: SocketOptions) -> Result<(), NetError> {
+    fn set_socket_options(
+        &mut self,
+        socket: SocketId,
+        options: SocketOptions,
+    ) -> Result<(), NetError> {
         let Some((host_socket, _)) = self.sockets.get_mut(&socket) else {
             return Err(NetError::NotFound);
         };
         match host_socket {
             HostSocket::Listener(listener) => {
-                let sock = Socket::from(listener.try_clone().map_err(|e| NetError::Io(e.to_string()))?);
+                let sock = Socket::from(
+                    listener
+                        .try_clone()
+                        .map_err(|e| NetError::Io(e.to_string()))?,
+                );
                 sock.set_reuse_address(options.reuse_addr)
                     .map_err(|e| NetError::Io(e.to_string()))?;
                 let _ = options.reuse_port;
@@ -826,7 +939,12 @@ impl NetBackend for DeterministicNet {
         Ok(())
     }
 
-    fn udp_send_to(&mut self, socket: SocketId, addr: &str, payload: &[u8]) -> Result<usize, NetError> {
+    fn udp_send_to(
+        &mut self,
+        socket: SocketId,
+        addr: &str,
+        payload: &[u8],
+    ) -> Result<usize, NetError> {
         if !self.open.contains(&socket) {
             return Err(NetError::NotFound);
         }
@@ -838,7 +956,11 @@ impl NetBackend for DeterministicNet {
         Ok(payload.len())
     }
 
-    fn udp_recv_from(&mut self, socket: SocketId, max_bytes: usize) -> Result<(Vec<u8>, Option<SocketAddr>), NetError> {
+    fn udp_recv_from(
+        &mut self,
+        socket: SocketId,
+        max_bytes: usize,
+    ) -> Result<(Vec<u8>, Option<SocketAddr>), NetError> {
         if !self.open.contains(&socket) {
             return Err(NetError::NotFound);
         }
@@ -864,7 +986,12 @@ impl NetBackend for DeterministicNet {
         Ok(id)
     }
 
-    fn unix_send_to(&mut self, socket: SocketId, path: &str, payload: &[u8]) -> Result<usize, NetError> {
+    fn unix_send_to(
+        &mut self,
+        socket: SocketId,
+        path: &str,
+        payload: &[u8],
+    ) -> Result<usize, NetError> {
         if !self.open.contains(&socket) {
             return Err(NetError::NotFound);
         }
@@ -889,7 +1016,11 @@ impl NetBackend for DeterministicNet {
         Ok(())
     }
 
-    fn set_socket_options(&mut self, socket: SocketId, _options: SocketOptions) -> Result<(), NetError> {
+    fn set_socket_options(
+        &mut self,
+        socket: SocketId,
+        _options: SocketOptions,
+    ) -> Result<(), NetError> {
         if !self.open.contains(&socket) {
             return Err(NetError::NotFound);
         }
@@ -1078,14 +1209,23 @@ impl NetBackend for NetRuntime {
         }
     }
 
-    fn udp_send_to(&mut self, socket: SocketId, addr: &str, payload: &[u8]) -> Result<usize, NetError> {
+    fn udp_send_to(
+        &mut self,
+        socket: SocketId,
+        addr: &str,
+        payload: &[u8],
+    ) -> Result<usize, NetError> {
         match self {
             Self::Host(backend) => backend.udp_send_to(socket, addr, payload),
             Self::Deterministic(backend) => backend.udp_send_to(socket, addr, payload),
         }
     }
 
-    fn udp_recv_from(&mut self, socket: SocketId, max_bytes: usize) -> Result<(Vec<u8>, Option<SocketAddr>), NetError> {
+    fn udp_recv_from(
+        &mut self,
+        socket: SocketId,
+        max_bytes: usize,
+    ) -> Result<(Vec<u8>, Option<SocketAddr>), NetError> {
         match self {
             Self::Host(backend) => backend.udp_recv_from(socket, max_bytes),
             Self::Deterministic(backend) => backend.udp_recv_from(socket, max_bytes),
@@ -1099,7 +1239,12 @@ impl NetBackend for NetRuntime {
         }
     }
 
-    fn unix_send_to(&mut self, socket: SocketId, path: &str, payload: &[u8]) -> Result<usize, NetError> {
+    fn unix_send_to(
+        &mut self,
+        socket: SocketId,
+        path: &str,
+        payload: &[u8],
+    ) -> Result<usize, NetError> {
         match self {
             Self::Host(backend) => backend.unix_send_to(socket, path, payload),
             Self::Deterministic(backend) => backend.unix_send_to(socket, path, payload),
@@ -1113,7 +1258,11 @@ impl NetBackend for NetRuntime {
         }
     }
 
-    fn set_socket_options(&mut self, socket: SocketId, options: SocketOptions) -> Result<(), NetError> {
+    fn set_socket_options(
+        &mut self,
+        socket: SocketId,
+        options: SocketOptions,
+    ) -> Result<(), NetError> {
         match self {
             Self::Host(backend) => backend.set_socket_options(socket, options),
             Self::Deterministic(backend) => backend.set_socket_options(socket, options),
@@ -1149,7 +1298,9 @@ impl NetBackend for NetRuntime {
     ) -> Result<(), NetError> {
         match self {
             Self::Host(backend) => backend.poll_register(socket, interest, max_queue_depth),
-            Self::Deterministic(backend) => backend.poll_register(socket, interest, max_queue_depth),
+            Self::Deterministic(backend) => {
+                backend.poll_register(socket, interest, max_queue_depth)
+            }
         }
     }
 
@@ -1293,7 +1444,9 @@ pub fn parse_http_request(raw: &[u8], limits: &HttpServerLimits) -> Result<HttpR
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| NetError::Parse("missing header terminator".to_string()))?;
     if headers_end > limits.max_header_bytes {
-        return Err(NetError::LimitsExceeded("header limit exceeded".to_string()));
+        return Err(NetError::LimitsExceeded(
+            "header limit exceeded".to_string(),
+        ));
     }
 
     let head = String::from_utf8(raw[..headers_end].to_vec())
@@ -1442,7 +1595,9 @@ fn encode_chunked(raw: &[u8]) -> Vec<u8> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TlsPolicy {
     Disabled,
-    ProxyTerminated { trusted_proxy_cidrs: Vec<String> },
+    ProxyTerminated {
+        trusted_proxy_cidrs: Vec<String>,
+    },
     NativeAdapter {
         provider: String,
         min_version: String,

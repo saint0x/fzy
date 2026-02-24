@@ -1,4 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::error::Error as StdError;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 
@@ -17,6 +19,20 @@ pub enum Format {
     Text,
     Json,
 }
+
+#[derive(Debug, Clone)]
+pub struct CommandFailure {
+    pub exit_code: i32,
+    pub output: String,
+}
+
+impl fmt::Display for CommandFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "command failed with exit code {}", self.exit_code)
+    }
+}
+
+impl StdError for CommandFailure {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -284,8 +300,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let exit_code = output.status.code().unwrap_or(1);
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            match format {
-                Format::Text => Ok(format!(
+            let rendered = match format {
+                Format::Text => format!(
                     "compiled {} and executed {} with args: {}; exit_code={}; stdout={}; stderr={}",
                     artifact.module,
                     binary.display(),
@@ -293,8 +309,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     exit_code,
                     stdout,
                     stderr
-                )),
-                Format::Json => Ok(serde_json::json!({
+                ),
+                Format::Json => serde_json::json!({
                     "module": artifact.module,
                     "status": artifact.status,
                     "diagnostics": artifact.diagnostics,
@@ -309,8 +325,16 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "stdout": stdout,
                     "stderr": stderr,
                 })
-                .to_string()),
+                .to_string(),
+            };
+            if exit_code != 0 {
+                return Err(CommandFailure {
+                    exit_code,
+                    output: rendered,
+                }
+                .into());
             }
+            Ok(rendered)
         }
         Command::Test {
             path,
@@ -434,11 +458,17 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         }
         Command::Fmt { path } => {
             ensure_exists(&path)?;
-            let changed = format_source_file(&path)?;
-            let message = if changed {
-                format!("formatted {}", path.display())
-            } else {
+            let formatted_count = format_source_target(&path)?;
+            let message = if formatted_count == 0 {
                 format!("already formatted {}", path.display())
+            } else if path.is_dir() {
+                format!(
+                    "formatted {} file(s) under {}",
+                    formatted_count,
+                    path.display()
+                )
+            } else {
+                format!("formatted {}", path.display())
             };
             Ok(render(format, &message))
         }
@@ -670,11 +700,21 @@ fn render_artifact(
 }
 
 fn render_output(format: Format, output: Output) -> String {
+    let errors = output
+        .diagnostic_details
+        .iter()
+        .filter(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error))
+        .count();
+    let warnings = output
+        .diagnostic_details
+        .iter()
+        .filter(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Warning))
+        .count();
     match format {
         Format::Text => {
             let mut rendered = format!(
-                "module={} nodes={} diagnostics={}",
-                output.module, output.nodes, output.diagnostics
+                "module={} nodes={} diagnostics={} errors={} warnings={}",
+                output.module, output.nodes, output.diagnostics, errors, warnings
             );
             if let Some(ir) = &output.backend_ir {
                 rendered.push('\n');
@@ -687,6 +727,8 @@ fn render_output(format: Format, output: Output) -> String {
             "module": output.module,
             "nodes": output.nodes,
             "diagnostics": output.diagnostics,
+            "errors": errors,
+            "warnings": warnings,
             "items": output.diagnostic_details,
             "backendIr": output.backend_ir,
         })
@@ -1832,13 +1874,14 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
 
 fn lsp_diagnostics_command(path: &Path, format: Format) -> Result<String> {
     let output = verify_file(path)?;
+    let ok = !output_has_errors(&output);
     match format {
         Format::Text => Ok(format!(
-            "lsp diagnostics module={} diagnostics={}",
-            output.module, output.diagnostics
+            "lsp diagnostics module={} diagnostics={} ok={}",
+            output.module, output.diagnostics, ok
         )),
         Format::Json => Ok(serde_json::json!({
-            "ok": true,
+            "ok": ok,
             "module": output.module,
             "diagnostics": output.diagnostic_details,
         })
@@ -4912,10 +4955,23 @@ fn fozzy_invoke(args: &[String]) -> Result<String> {
     let output = child.output().context("failed to invoke fozzy binary")?;
     if !output.status.success() {
         let command = args.join(" ");
+        let status = output.status.code().unwrap_or(1);
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         bail!(
-            "fozzy {} failed: {}",
+            "fozzy {} failed (exit={}): stderr=`{}` stdout=`{}`",
             command,
-            String::from_utf8_lossy(&output.stderr)
+            status,
+            if stderr.is_empty() {
+                "<empty>"
+            } else {
+                &stderr
+            },
+            if stdout.is_empty() {
+                "<empty>"
+            } else {
+                &stdout
+            }
         );
     }
 
@@ -4961,6 +5017,48 @@ fn format_source_file(path: &Path) -> Result<bool> {
     }
 }
 
+fn format_source_target(path: &Path) -> Result<usize> {
+    if path.is_dir() {
+        let mut changed = 0usize;
+        for entry in std::fs::read_dir(path).with_context(|| {
+            format!(
+                "failed reading directory for formatting: {}",
+                path.display()
+            )
+        })? {
+            let entry = entry.with_context(|| {
+                format!(
+                    "failed reading directory entry for formatting: {}",
+                    path.display()
+                )
+            })?;
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                changed += format_source_target(&entry_path)?;
+                continue;
+            }
+            if entry_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext == "fzy")
+                && format_source_file(&entry_path)?
+            {
+                changed += 1;
+            }
+        }
+        return Ok(changed);
+    }
+
+    Ok(usize::from(format_source_file(path)?))
+}
+
+fn output_has_errors(output: &Output) -> bool {
+    output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error))
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -4999,6 +5097,32 @@ mod tests {
         assert!(content.ends_with('\n'));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn formatter_accepts_directory_targets() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-fmt-dir-{suffix}"));
+        std::fs::create_dir_all(root.join("nested")).expect("directory should be created");
+        let first = root.join("main.fzy");
+        let second = root.join("nested/lib.fzy");
+        std::fs::write(&first, "fn main() -> i32 {   \n    return 0\n}\n")
+            .expect("first source should be written");
+        std::fs::write(&second, "fn helper() -> i32 {   \n    return 0\n}\n")
+            .expect("second source should be written");
+
+        let changed = format_source_target(&root).expect("directory format should succeed");
+        assert_eq!(changed, 2);
+        let first_content = std::fs::read_to_string(&first).expect("first source should be read");
+        let second_content =
+            std::fs::read_to_string(&second).expect("second source should be read");
+        assert!(!first_content.contains("   \n"));
+        assert!(!second_content.contains("   \n"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -5406,7 +5530,7 @@ mod tests {
         std::fs::write(&source, "fn main() -> i32 {\n    return 7\n}\n")
             .expect("source should be written");
 
-        let output = run(
+        let error = run(
             Command::Run {
                 path: source.clone(),
                 args: Vec::new(),
@@ -5420,9 +5544,13 @@ mod tests {
             },
             Format::Json,
         )
-        .expect("run command should succeed");
-        assert!(output.contains("\"exitCode\":7"));
-        assert!(output.contains("\"binary\""));
+        .expect_err("run command should fail with child exit code");
+        let command_error = error
+            .downcast_ref::<CommandFailure>()
+            .expect("expected command failure payload");
+        assert_eq!(command_error.exit_code, 7);
+        assert!(command_error.output.contains("\"exitCode\":7"));
+        assert!(command_error.output.contains("\"binary\""));
 
         let _ = std::fs::remove_file(source);
     }
