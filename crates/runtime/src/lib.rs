@@ -1,3 +1,5 @@
+pub mod service;
+
 use std::collections::{BTreeMap, VecDeque};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 

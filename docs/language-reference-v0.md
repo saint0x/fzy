@@ -48,3 +48,11 @@ This document defines the v0 observable semantics contract used by the toolchain
 - Safe-profile rejects unresolved reference-region usage and host-syscall usage.
 - Alloc/free imbalance is diagnosed and can be a hard failure in safe profile.
 - v0 does not claim complete alias/lifetime proof coverage for all low-level patterns.
+
+## Atomics And Memory Ordering Contract
+
+- v0 exposes stable atomic orderings: `Relaxed`, `Acquire`, `Release`, `AcqRel`, `SeqCst`.
+- `Acquire` reads synchronize-with `Release` writes on the same atomic location.
+- `AcqRel` applies to read-modify-write operations and composes acquire + release edges.
+- `SeqCst` operations participate in a single total order visible to all threads.
+- Deterministic mode does not weaken memory ordering semantics; it only controls scheduling decision sources.

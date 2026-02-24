@@ -604,11 +604,8 @@ fn init_project(name: &str) -> Result<()> {
         "fn boot() -> i32 {\n    return 0\n}\n",
     )
     .context("failed to write src/cli/commands.fzy")?;
-    std::fs::write(
-        src.join("tests/mod.fzy"),
-        "mod smoke;\n",
-    )
-    .context("failed to write src/tests/mod.fzy")?;
+    std::fs::write(src.join("tests/mod.fzy"), "mod smoke;\n")
+        .context("failed to write src/tests/mod.fzy")?;
     std::fs::write(
         src.join("tests/smoke.fzy"),
         "test \"det_boot\" {}\ntest \"det_flow\" {}\n",
@@ -744,8 +741,13 @@ fn dx_check_command(path: &Path, strict: bool, format: Format) -> Result<String>
         .file_stem()
         .and_then(|value| value.to_str())
         .unwrap_or("main");
-    let main_ast = parser::parse(&main_source, main_name)
-        .map_err(|diagnostics| anyhow!("failed parsing {}: {} diagnostics", main_path.display(), diagnostics.len()))?;
+    let main_ast = parser::parse(&main_source, main_name).map_err(|diagnostics| {
+        anyhow!(
+            "failed parsing {}: {} diagnostics",
+            main_path.display(),
+            diagnostics.len()
+        )
+    })?;
     let mut issues = Vec::<DxIssue>::new();
     let required = vec!["api", "model", "services", "runtime", "cli", "tests"];
     for module in &required {
@@ -779,11 +781,15 @@ fn dx_check_command(path: &Path, strict: bool, format: Format) -> Result<String>
             ),
         });
     }
-    if main_source.lines().any(|line| line.trim_start().starts_with("test \"")) {
+    if main_source
+        .lines()
+        .any(|line| line.trim_start().starts_with("test \""))
+    {
         issues.push(DxIssue {
             level: "error",
             file: main_path.display().to_string(),
-            message: "test declarations are forbidden in main.fzy; move tests under src/tests/*".to_string(),
+            message: "test declarations are forbidden in main.fzy; move tests under src/tests/*"
+                .to_string(),
         });
     }
     let main_is_last = matches!(
@@ -933,7 +939,17 @@ fn spec_check(format: Format) -> Result<String> {
 
 fn parity_command(path: &Path, seed: u64, format: Format) -> Result<String> {
     ensure_exists(path)?;
-    let fast = run_non_scenario_test_plan(path, false, false, false, None, Some(seed), None, false, None)?;
+    let fast = run_non_scenario_test_plan(
+        path,
+        false,
+        false,
+        false,
+        None,
+        Some(seed),
+        None,
+        false,
+        None,
+    )?;
     let det = run_non_scenario_test_plan(
         path,
         true,
@@ -1023,7 +1039,8 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
         .duration_since(std::time::UNIX_EPOCH)
         .expect("clock should be after epoch")
         .as_nanos();
-    let temp_trace = std::env::temp_dir().join(format!("fozzylang-equivalence-{suffix}.trace.json"));
+    let temp_trace =
+        std::env::temp_dir().join(format!("fozzylang-equivalence-{suffix}.trace.json"));
     let native_plan = run_non_scenario_test_plan(
         path,
         true,
@@ -1056,7 +1073,10 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
                 "deterministicTests".to_string(),
                 native_plan.deterministic_test_names.len().to_string(),
             ),
-            ("selectedTests".to_string(), native_plan.selected_tests.to_string()),
+            (
+                "selectedTests".to_string(),
+                native_plan.selected_tests.to_string(),
+            ),
         ]),
     };
     let scenario_outcome = SemanticsOutcome {
@@ -1083,7 +1103,11 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
             ("failed".to_string(), host_summary.failed.to_string()),
         ]),
     };
-    let outcomes = vec![native.clone(), scenario_outcome.clone(), host_outcome.clone()];
+    let outcomes = vec![
+        native.clone(),
+        scenario_outcome.clone(),
+        host_outcome.clone(),
+    ];
     let signature = semantic_signature(&serde_json::json!({
         "kind": "native-scenario-host-equivalence",
         "outcomes": outcomes,
@@ -1096,9 +1120,7 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
     if scenario_outcome.exit_class != host_outcome.exit_class {
         issues.push("scenario/host exit class mismatch".to_string());
     }
-    if native
-        .invariants
-        .get("deterministicTests")
+    if native.invariants.get("deterministicTests")
         != scenario_outcome.invariants.get("deterministicTests")
     {
         issues.push("native/scenario deterministic test count mismatch".to_string());
@@ -1227,8 +1249,8 @@ fn fozzy_test_summary(
         args.push("host".to_string());
     }
     let output = fozzy_invoke(&args)?;
-    let value: serde_json::Value = serde_json::from_str(&output)
-        .context("failed parsing fozzy test output")?;
+    let value: serde_json::Value =
+        serde_json::from_str(&output).context("failed parsing fozzy test output")?;
     let exit_class = value
         .get("status")
         .and_then(|status| status.as_str())
@@ -1275,10 +1297,17 @@ fn audit_unsafe_command(path: &Path, format: Format) -> Result<String> {
     let parsed = parse_program(&resolved.source_path)?;
     let mut entries = Vec::new();
     for module_path in &parsed.module_paths {
-        let source = std::fs::read_to_string(module_path)
-            .with_context(|| format!("failed reading module for unsafe audit: {}", module_path.display()))?;
+        let source = std::fs::read_to_string(module_path).with_context(|| {
+            format!(
+                "failed reading module for unsafe audit: {}",
+                module_path.display()
+            )
+        })?;
         for (index, raw) in source.lines().enumerate() {
-            if !raw.contains("unsafe ") && !raw.contains("unsafe(\"") && !raw.contains("unsafe_reason(\"") {
+            if !raw.contains("unsafe ")
+                && !raw.contains("unsafe(\"")
+                && !raw.contains("unsafe_reason(\"")
+            {
                 continue;
             }
             entries.push(UnsafeEntry {
@@ -1314,7 +1343,10 @@ fn audit_unsafe_command(path: &Path, format: Format) -> Result<String> {
     match format {
         Format::Text => Ok(format!(
             "unsafe audit ok entries={} map={}",
-            payload["entries"].as_array().map(|items| items.len()).unwrap_or(0),
+            payload["entries"]
+                .as_array()
+                .map(|items| items.len())
+                .unwrap_or(0),
             unsafe_map.display()
         )),
         Format::Json => Ok(serde_json::json!({
@@ -1391,7 +1423,10 @@ fn vendor_command(path: &Path, format: Format) -> Result<String> {
         let target_dir = vendor_dir.join(name);
         if target_dir.exists() {
             std::fs::remove_dir_all(&target_dir).with_context(|| {
-                format!("failed cleaning existing vendor target: {}", target_dir.display())
+                format!(
+                    "failed cleaning existing vendor target: {}",
+                    target_dir.display()
+                )
             })?;
         }
         copy_dir_recursive(&source_dir, &target_dir)?;
@@ -1425,8 +1460,16 @@ fn vendor_command(path: &Path, format: Format) -> Result<String> {
         "lockfile": lock_path.display().to_string(),
         "dependencies": copied,
     });
-    std::fs::write(&vendor_manifest, serde_json::to_vec_pretty(&vendor_payload)?)
-        .with_context(|| format!("failed writing vendor manifest: {}", vendor_manifest.display()))?;
+    std::fs::write(
+        &vendor_manifest,
+        serde_json::to_vec_pretty(&vendor_payload)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed writing vendor manifest: {}",
+            vendor_manifest.display()
+        )
+    })?;
     match format {
         Format::Text => Ok(format!(
             "vendor ok dependencies={} dir={} lock_hash={}",
@@ -1517,17 +1560,13 @@ fn abi_check_command(current: &Path, baseline: &Path, format: Format) -> Result<
         if current_export.normalized_signature != baseline_export.normalized_signature {
             issues.push(format!(
                 "signature changed for export `{}`: current={} baseline={}",
-                name,
-                current_export.normalized_signature,
-                baseline_export.normalized_signature
+                name, current_export.normalized_signature, baseline_export.normalized_signature
             ));
         }
         if current_export.symbol_version < baseline_export.symbol_version {
             issues.push(format!(
                 "symbolVersion regressed for `{}`: current={} baseline={}",
-                name,
-                current_export.symbol_version,
-                baseline_export.symbol_version
+                name, current_export.symbol_version, baseline_export.symbol_version
             ));
         }
     }
@@ -1675,7 +1714,11 @@ fn hash_directory_tree(root: &Path) -> Result<String> {
     Ok(hex_encode(hasher.finalize().as_slice()))
 }
 
-fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+fn collect_files_recursive(
+    root: &Path,
+    current: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> Result<()> {
     let mut entries = std::fs::read_dir(current)
         .with_context(|| format!("failed reading directory: {}", current.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()
@@ -1708,7 +1751,10 @@ fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<(String, P
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1741,9 +1787,9 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
         .unwrap_or_default();
     let debug_symbols = binary.exists()
         && (file_text.contains("not stripped")
-        || file_text.contains("with debug_info")
-        || file_text.contains("dSYM")
-        || !file_text.trim().is_empty());
+            || file_text.contains("with debug_info")
+            || file_text.contains("dSYM")
+            || !file_text.trim().is_empty());
 
     let resolved = resolve_source(path)?;
     let parsed = parse_program(&resolved.source_path)?;
@@ -1853,8 +1899,12 @@ fn lsp_hover_command(path: &Path, symbol: &str, format: Format) -> Result<String
     match format {
         Format::Text => Ok(format!(
             "hover {} {}",
-            info.get("kind").and_then(|value| value.as_str()).unwrap_or("unknown"),
-            info.get("signature").and_then(|value| value.as_str()).unwrap_or("unknown")
+            info.get("kind")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown"),
+            info.get("signature")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
         )),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
@@ -1874,7 +1924,10 @@ fn lsp_rename_command(path: &Path, from: &str, to: &str, format: Format) -> Resu
     let mut replacements = 0usize;
     for module_path in &parsed.module_paths {
         let original = std::fs::read_to_string(module_path).with_context(|| {
-            format!("failed reading module for rename: {}", module_path.display())
+            format!(
+                "failed reading module for rename: {}",
+                module_path.display()
+            )
         })?;
         let (updated, count) = replace_symbol_whole_word(&original, from, to);
         if count > 0 {
@@ -1934,7 +1987,10 @@ fn index_lsp_symbols(parsed: &crate::pipeline::ParsedProgram) -> Result<Vec<LspS
     let mut symbols = Vec::new();
     for module_path in &parsed.module_paths {
         let source = std::fs::read_to_string(module_path).with_context(|| {
-            format!("failed reading module for lsp index: {}", module_path.display())
+            format!(
+                "failed reading module for lsp index: {}",
+                module_path.display()
+            )
         })?;
         for (line_number, raw_line) in source.lines().enumerate() {
             let line = raw_line.trim();
@@ -2200,12 +2256,7 @@ fn run_non_scenario_test_plan(
 
     let typed = hir::lower(&parsed.module);
     let fir = fir::build(&typed);
-    let verify_report = verifier::verify_with_policy(
-        &fir,
-        verifier::VerifyPolicy {
-            safe_profile,
-        },
-    );
+    let verify_report = verifier::verify_with_policy(&fir, verifier::VerifyPolicy { safe_profile });
     let diagnostics = verify_report.diagnostics.len();
     let has_errors = verify_report
         .diagnostics
@@ -3947,8 +3998,12 @@ fn native_shrink(target: &Path, format: Format) -> Result<String> {
         .unwrap_or_else(|| Path::new("."))
         .join(format!("{stem}.shrink.json"));
     if shrink_path.exists() {
-        let shrink = std::fs::read_to_string(&shrink_path)
-            .with_context(|| format!("failed reading native shrink artifact: {}", shrink_path.display()))?;
+        let shrink = std::fs::read_to_string(&shrink_path).with_context(|| {
+            format!(
+                "failed reading native shrink artifact: {}",
+                shrink_path.display()
+            )
+        })?;
         return match format {
             Format::Text => Ok(format!("native shrink artifact={}", shrink_path.display())),
             Format::Json => Ok(shrink),
@@ -3977,7 +4032,10 @@ fn native_shrink(target: &Path, format: Format) -> Result<String> {
         "focus": classify_failure_classes(&rpc_frames, &trace.async_schedule, &trace.execution_order),
     });
     match format {
-        Format::Text => Ok(format!("native shrink synthesized for trace={}", trace_path.display())),
+        Format::Text => Ok(format!(
+            "native shrink synthesized for trace={}",
+            trace_path.display()
+        )),
         Format::Json => Ok(payload.to_string()),
     }
 }
@@ -3985,8 +4043,12 @@ fn native_shrink(target: &Path, format: Format) -> Result<String> {
 fn native_ci(target: &Path, format: Format) -> Result<String> {
     let (trace_path, trace) = load_native_trace(target)?;
     let replay = native_replay(target, Format::Json)?;
-    let replay_json: serde_json::Value = serde_json::from_str(&replay)
-        .with_context(|| format!("failed parsing native replay payload for {}", trace_path.display()))?;
+    let replay_json: serde_json::Value = serde_json::from_str(&replay).with_context(|| {
+        format!(
+            "failed parsing native replay payload for {}",
+            trace_path.display()
+        )
+    })?;
     let has_thread = !trace.execution_order.is_empty();
     let has_async_model = !trace.async_schedule.is_empty();
     let has_rpc_model = !trace.rpc_frames.is_empty();
@@ -3996,9 +4058,12 @@ fn native_ci(target: &Path, format: Format) -> Result<String> {
         serde_json::json!({"name":"rpc_frame_model", "ok": has_rpc_model || trace.rpc_frames.is_empty(), "detail": format!("rpc.frame={}", trace.rpc_frames.len())}),
         serde_json::json!({"name":"native_replay", "ok": replay_json.get("status").and_then(|v| v.as_str()) == Some("pass"), "detail": "replay passed"}),
     ];
-    let ok = checks
-        .iter()
-        .all(|check| check.get("ok").and_then(|value| value.as_bool()).unwrap_or(false));
+    let ok = checks.iter().all(|check| {
+        check
+            .get("ok")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    });
     if !ok {
         bail!("native ci failed for {}", trace_path.display());
     }
@@ -4298,8 +4363,12 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
             })
         }).collect::<Vec<_>>(),
     });
-    std::fs::write(&abi_manifest, serde_json::to_vec_pretty(&abi_payload)?)
-        .with_context(|| format!("failed writing ffi abi manifest: {}", abi_manifest.display()))?;
+    std::fs::write(&abi_manifest, serde_json::to_vec_pretty(&abi_payload)?).with_context(|| {
+        format!(
+            "failed writing ffi abi manifest: {}",
+            abi_manifest.display()
+        )
+    })?;
 
     Ok(HeaderArtifact {
         path: header_path,
@@ -4852,15 +4921,21 @@ mod tests {
             "[package]\nname=\"vendor_project\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"vendor_project\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
         )
         .expect("manifest should be written");
-        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
-            .expect("main source should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("main source should be written");
         std::fs::write(
             dep_dir.join("fozzy.toml"),
             "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"util\"\npath=\"src/main.fzy\"\n",
         )
         .expect("dep manifest should be written");
-        std::fs::write(dep_dir.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
-            .expect("dep source should be written");
+        std::fs::write(
+            dep_dir.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("dep source should be written");
         std::fs::write(
             root.join("fozzy.lock"),
             "{\"schemaVersion\":\"fozzylang.lock.v0\",\"dependencyGraphHash\":\"stale\",\"graph\":{\"deps\":[]}}",
@@ -4985,7 +5060,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let baseline = std::env::temp_dir().join(format!("fozzylang-abi-baseline-sig-{suffix}.json"));
+        let baseline =
+            std::env::temp_dir().join(format!("fozzylang-abi-baseline-sig-{suffix}.json"));
         let current = std::env::temp_dir().join(format!("fozzylang-abi-current-sig-{suffix}.json"));
         std::fs::write(
             &baseline,
@@ -5032,7 +5108,9 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for signature changes");
-        assert!(error.to_string().contains("signature changed for export `add`"));
+        assert!(error
+            .to_string()
+            .contains("signature changed for export `add`"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -5465,9 +5543,7 @@ mod tests {
             Format::Text,
         )
         .expect_err("headers command should fail");
-        assert!(error
-            .to_string()
-            .contains("ffi panic contract missing"));
+        assert!(error.to_string().contains("ffi panic contract missing"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -5514,7 +5590,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let trace = std::env::temp_dir().join(format!("fozzylang-native-replay-{suffix}.trace.json"));
+        let trace =
+            std::env::temp_dir().join(format!("fozzylang-native-replay-{suffix}.trace.json"));
         std::fs::write(
             &trace,
             serde_json::json!({
@@ -5604,7 +5681,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let trace = std::env::temp_dir().join(format!("fozzylang-native-ci-fail-{suffix}.trace.json"));
+        let trace =
+            std::env::temp_dir().join(format!("fozzylang-native-ci-fail-{suffix}.trace.json"));
         std::fs::write(
             &trace,
             serde_json::json!({
@@ -5641,7 +5719,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let trace = std::env::temp_dir().join(format!("fozzylang-native-shrink-{suffix}.trace.json"));
+        let trace =
+            std::env::temp_dir().join(format!("fozzylang-native-shrink-{suffix}.trace.json"));
         std::fs::write(
             &trace,
             serde_json::json!({
@@ -5829,8 +5908,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("fozzylang-dx-ok-{suffix}"));
         std::fs::create_dir_all(root.join("src/api")).expect("api dir should be created");
         std::fs::create_dir_all(root.join("src/model")).expect("model dir should be created");
-        std::fs::create_dir_all(root.join("src/services"))
-            .expect("services dir should be created");
+        std::fs::create_dir_all(root.join("src/services")).expect("services dir should be created");
         std::fs::create_dir_all(root.join("src/runtime")).expect("runtime dir should be created");
         std::fs::create_dir_all(root.join("src/cli")).expect("cli dir should be created");
         std::fs::create_dir_all(root.join("src/tests")).expect("tests dir should be created");
@@ -5848,7 +5926,7 @@ mod tests {
             root.join("src/api/mod.fzy"),
             "fn touch() -> i32 {\n    return 0\n}\n",
         )
-            .expect("api mod should be written");
+        .expect("api mod should be written");
         std::fs::write(
             root.join("src/model/mod.fzy"),
             "fn preflight() -> i32 {\n    return 0\n}\n",
@@ -5868,7 +5946,7 @@ mod tests {
             root.join("src/cli/mod.fzy"),
             "fn boot() -> i32 {\n    return 0\n}\n",
         )
-            .expect("cli mod should be written");
+        .expect("cli mod should be written");
         std::fs::write(root.join("src/tests/mod.fzy"), "mod smoke;\n")
             .expect("tests mod should be written");
         std::fs::write(root.join("src/tests/smoke.fzy"), "test \"det\" {}\n")
@@ -5896,8 +5974,7 @@ mod tests {
         let root = std::env::temp_dir().join(format!("fozzylang-dx-bad-{suffix}"));
         std::fs::create_dir_all(root.join("src/api")).expect("api dir should be created");
         std::fs::create_dir_all(root.join("src/model")).expect("model dir should be created");
-        std::fs::create_dir_all(root.join("src/services"))
-            .expect("services dir should be created");
+        std::fs::create_dir_all(root.join("src/services")).expect("services dir should be created");
         std::fs::create_dir_all(root.join("src/runtime")).expect("runtime dir should be created");
         std::fs::create_dir_all(root.join("src/cli")).expect("cli dir should be created");
         std::fs::create_dir_all(root.join("src/tests")).expect("tests dir should be created");
@@ -5915,7 +5992,7 @@ mod tests {
             root.join("src/api/mod.fzy"),
             "fn touch() -> i32 {\n    return 0\n}\n",
         )
-            .expect("api mod should be written");
+        .expect("api mod should be written");
         std::fs::write(
             root.join("src/model/mod.fzy"),
             "fn preflight() -> i32 {\n    return 0\n}\n",
@@ -5935,7 +6012,7 @@ mod tests {
             root.join("src/cli/mod.fzy"),
             "fn boot() -> i32 {\n    return 0\n}\n",
         )
-            .expect("cli mod should be written");
+        .expect("cli mod should be written");
         std::fs::write(root.join("src/tests/mod.fzy"), "mod smoke;\n")
             .expect("tests mod should be written");
         std::fs::write(root.join("src/tests/smoke.fzy"), "test \"det\" {}\n")

@@ -1,6 +1,12 @@
 pub mod alloc;
+pub mod concurrency;
+pub mod deploy;
+pub mod durability;
 pub mod io;
 pub mod net;
+pub mod observability;
+pub mod process;
 pub mod rng;
+pub mod security;
 pub mod test;
 pub mod time;

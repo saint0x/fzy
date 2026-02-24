@@ -510,10 +510,9 @@ mod tests {
         };
         let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
         for expected in ["time", "rng", "fs", "net", "proc", "mem", "thread"] {
-            assert!(report
-                .diagnostics
-                .iter()
-                .any(|d| d.message.contains(&format!("safe profile forbids capability: {expected}"))));
+            assert!(report.diagnostics.iter().any(|d| d
+                .message
+                .contains(&format!("safe profile forbids capability: {expected}"))));
         }
     }
 

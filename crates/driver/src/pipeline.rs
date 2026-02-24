@@ -7,8 +7,8 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_module::{default_libcall_names, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use std::collections::{HashMap, HashSet};
 use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildProfile {
@@ -623,19 +623,32 @@ fn hash_directory_tree(root: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
     for (rel, full) in files {
         hasher.update(rel.as_bytes());
-        let bytes = std::fs::read(&full)
-            .with_context(|| format!("failed reading dependency file for hashing: {}", full.display()))?;
+        let bytes = std::fs::read(&full).with_context(|| {
+            format!(
+                "failed reading dependency file for hashing: {}",
+                full.display()
+            )
+        })?;
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(bytes);
     }
     Ok(hex_encode(hasher.finalize().as_slice()))
 }
 
-fn collect_files_recursive(root: &Path, current: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+fn collect_files_recursive(
+    root: &Path,
+    current: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> Result<()> {
     let mut entries = std::fs::read_dir(current)
         .with_context(|| format!("failed reading dependency directory: {}", current.display()))?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("failed iterating dependency directory: {}", current.display()))?;
+        .with_context(|| {
+            format!(
+                "failed iterating dependency directory: {}",
+                current.display()
+            )
+        })?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let full = entry.path();
@@ -673,7 +686,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 fn emit_native_artifact(
@@ -829,7 +845,11 @@ fn emit_native_artifact_cranelift(
         .map_err(|error| anyhow!("failed creating cranelift object builder: {error}"))?;
     let mut module = ObjectModule::new(object_builder);
     let mut context = module.make_context();
-    context.func.signature.returns.push(AbiParam::new(types::I32));
+    context
+        .func
+        .signature
+        .returns
+        .push(AbiParam::new(types::I32));
 
     let function_id = module
         .declare_function("main", Linkage::Export, &context.func.signature)
@@ -1123,15 +1143,21 @@ mod tests {
             "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
         )
         .expect("manifest should be written");
-        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
-            .expect("source should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
         std::fs::write(
             dep_dir.join("fozzy.toml"),
             "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"util\"\npath=\"src/main.fzy\"\n",
         )
         .expect("dep manifest should be written");
-        std::fs::write(dep_dir.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
-            .expect("dep source should be written");
+        std::fs::write(
+            dep_dir.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("dep source should be written");
 
         let first = compile_file(&root, BuildProfile::Dev).expect("first build should succeed");
         assert_eq!(first.status, "ok");
@@ -1164,15 +1190,21 @@ mod tests {
             "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[deps]\nutil={path=\"deps/util\"}\n",
         )
         .expect("manifest should be written");
-        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
-            .expect("source should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
         std::fs::write(
             dep_dir.join("fozzy.toml"),
             "[package]\nname=\"util\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"util\"\npath=\"src/main.fzy\"\n",
         )
         .expect("dep manifest should be written");
-        std::fs::write(dep_dir.join("src/main.fzy"), "fn main() -> i32 {\n    return 0\n}\n")
-            .expect("dep source should be written");
+        std::fs::write(
+            dep_dir.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("dep source should be written");
 
         compile_file(&root, BuildProfile::Dev).expect("first build should succeed");
         std::fs::write(

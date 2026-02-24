@@ -34,6 +34,47 @@
 - [x] ✅ DX2: Added `fozzyc dx-check <project> [--strict]` enforcing main-placement, module-order, mod-root, and test-placement rules.
 - [x] ✅ DX3: Published module layout conventions in `docs/project-conventions-v0.md`.
 
+### 1.4 P3 — Production Runtime + Stdlib (Serious Systems Baseline)
+- [x] ✅ P3.0 Layering contract: networking/runtime primitives belong to stdlib/runtime; web framework is a library on top.
+- [x] ✅ P3.0 Publish `docs/runtime-networking-v0.md` and `docs/stdlib-v0.md` with hard stability guarantees and non-goals.
+- [x] ✅ P3.1 Live internet server core in stdlib/runtime:
+- [x] ✅ P3.1 Add real socket primitives (`bind`, `listen`, `accept`, `connect`, `read`, `write`, `close`) with explicit ownership semantics.
+- [x] ✅ P3.1 Add nonblocking I/O + poller abstraction (`epoll`/`kqueue` equivalent backend contract) with bounded queues.
+- [x] ✅ P3.1 Add request context cancellation/deadline propagation for long-lived services.
+- [x] ✅ P3.1 Add graceful shutdown semantics (drain in-flight requests, close listeners, bounded timeout).
+- [x] ✅ P3.1 Ship minimal HTTP/1.1 server stack (parser, router hooks, request/response types, keepalive controls).
+- [x] ✅ P3.1 Add TLS boundary strategy (native TLS adapter or proxy-facing mode) with explicit policy.
+- [x] ✅ P3.2 Deterministic replay model for real networked services:
+- [x] ✅ P3.2 Record/replay network decisions (`accept` order, read chunk boundaries, timeout ordering, reset/close events).
+- [x] ✅ P3.2 Ensure same app API in `fast` and `det` modes; only decision source differs.
+- [x] ✅ P3.2 Add incident replay flow from production traces into deterministic local reproduction.
+- [x] ✅ P3.3 Observability primitives in stdlib:
+- [x] ✅ P3.3 Structured logging API (levels, fields, request IDs, redaction policy).
+- [x] ✅ P3.3 Metrics API (counters, gauges, histograms, latency buckets, error classes).
+- [x] ✅ P3.3 Tracing/span API (root span, child span, correlation propagation across async/RPC boundaries).
+- [x] ✅ P3.3 Runtime stats surface (task queue depth, scheduler lag, allocation pressure, file/socket counts).
+- [x] ✅ P3.4 Process + OS primitives:
+- [x] ✅ P3.4 Signal handling (`SIGTERM`, `SIGINT`) and shutdown hooks.
+- [x] ✅ P3.4 Environment/config loading with typed parsing + validation.
+- [x] ✅ P3.4 Child process spawn/io controls with timeout + cancellation + exit classification.
+- [x] ✅ P3.5 Storage + durability primitives:
+- [x] ✅ P3.5 Durable fs APIs (`flush`, `fsync`, atomic rename/write patterns, temp file discipline).
+- [x] ✅ P3.5 File lock primitive and multi-process contention behavior contract.
+- [x] ✅ P3.5 Streaming IO readers/writers with bounded buffering and backpressure.
+- [x] ✅ P3.6 Concurrency + memory primitives:
+- [x] ✅ P3.6 Bounded channels/queues in stdlib (default bounded, explicit overflow policy).
+- [x] ✅ P3.6 Synchronization primitives (`mutex`, `rwlock`, `condvar`/event) with deterministic test hooks.
+- [x] ✅ P3.6 Pooling primitives (buffer pool/object pool) for low-allocation hot paths.
+- [x] ✅ P3.6 Stable atomics/memory-order contract in language reference.
+- [x] ✅ P3.7 Security + hardening defaults:
+- [x] ✅ P3.7 Safe server defaults (header/body/time limits, parse limits, timeout defaults, connection caps).
+- [x] ✅ P3.7 Secret handling primitive (zeroization boundary + redacted logs).
+- [x] ✅ P3.7 Capability-gated privileged operations with strict audit output.
+- [x] ✅ P3.8 Runtime packaging/deploy primitives:
+- [x] ✅ P3.8 Health/readiness probe conventions.
+- [x] ✅ P3.8 Profiled runtime config (`dev`, `verify`, `release`) with semantic parity guarantees.
+- [x] ✅ P3.8 Service manifest for ports, limits, worker count, and graceful-stop budget.
+
 ---
 
 ## 2) Completed (Verified)
@@ -97,3 +138,8 @@
 - [ ] ⬜ Native/scenario/host equivalence signatures are stable in CI.
 - [ ] ⬜ Strict verification is demonstrably separate from safe-profile bans.
 - [ ] ⬜ ABI policy + compatibility checks are enforced in CI.
+- [x] ✅ Live internet-facing server can run with real sockets and documented graceful shutdown semantics.
+- [x] ✅ Deterministic replay captures/permutes network decisions from real incident traces.
+- [x] ✅ Observability primitives are production-usable (structured logs, metrics, trace/span propagation).
+- [x] ✅ Security defaults enforce bounded parsing, timeouts, connection caps, and secret redaction.
+- [x] ✅ Durable storage/process/config primitives support real service lifecycle operations.

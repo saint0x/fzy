@@ -816,7 +816,11 @@ fn is_supported_type(ty: &str) -> bool {
 
 fn is_ffi_unstable_type(ty: &str) -> bool {
     let ty = ty.trim();
-    ty == "str" || ty.starts_with("[]") || ty.starts_with('[') || ty.contains('!') || ty.contains('<')
+    ty == "str"
+        || ty.starts_with("[]")
+        || ty.starts_with('[')
+        || ty.contains('!')
+        || ty.contains('<')
 }
 
 fn split_generic_type(ty: &str) -> Option<(&str, &str)> {
@@ -842,7 +846,8 @@ fn is_supported_generic_type(base: &str, args: &str) -> bool {
     if args.len() != expected {
         return false;
     }
-    args.iter().all(|arg| is_supported_type_or_generic_param(arg))
+    args.iter()
+        .all(|arg| is_supported_type_or_generic_param(arg))
 }
 
 fn split_top_level_generic_args(input: &str) -> Vec<String> {
