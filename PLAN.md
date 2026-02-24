@@ -77,8 +77,8 @@
 - [x] ✅ Replace string-based type representation with a structured type enum (primitives, pointers, functions, structs, enums, type variables).
 - [x] ✅ Build a symbol table with proper scope management (module, function, block scopes) and name resolution.
 - [x] ✅ Implement type inference (Hindley-Milner or bidirectional type checking) so the HIR performs real type checking, not metadata collection.
-- [ ] ⬜ Implement generic type instantiation and specialization (current generics are collected as strings, not expanded or checked).
-- [ ] ⬜ Add a trait/interface system for bounded polymorphism and capability constraints.
+- [x] ✅ Implement generic type instantiation and specialization (current generics are collected as strings, not expanded or checked).
+- [x] ✅ Add a trait/interface system for bounded polymorphism and capability constraints.
 - [x] ✅ Validate function existence and signatures at call sites (currently no cross-function or cross-module resolution).
 - [x] ✅ Track and verify expression types through the entire pipeline (AST nodes currently carry no type information).
 
@@ -91,11 +91,11 @@
 #### 1.5.4 Real Code Generation
 - [x] ✅ Implement actual expression evaluation and statement execution in codegen (current backends emit a `main()` returning a hardcoded constant).
 - [x] ✅ Implement a tree-walking interpreter as a fast path to validate language semantics before full native codegen.
-- [ ] ⬜ Implement instruction selection from typed IR to Cranelift IR for all expression/statement forms.
-- [ ] ⬜ Implement instruction selection from typed IR to LLVM IR for all expression/statement forms.
+- [x] ✅ Implement instruction selection from typed IR to Cranelift IR for all expression/statement forms.
+- [x] ✅ Implement instruction selection from typed IR to LLVM IR for all expression/statement forms.
 - [ ] ⬜ Add register allocation (or rely on backend RA) for compiled output.
 - [ ] ⬜ Implement function call codegen: argument passing, return values, stack frames, calling conventions.
-- [ ] ⬜ Implement struct field access, enum variant construction, and pattern match lowering in codegen.
+- [x] ✅ Implement struct field access, enum variant construction, and pattern match lowering in codegen.
 
 #### 1.5.5 IR Pipeline Integrity
 - [x] ✅ Make the FIR an actual intermediate representation with basic blocks, control flow edges, and typed instructions (currently a metadata bag, not an IR).
@@ -106,7 +106,7 @@
 ### 1.6 P2 — Capability Enforcement & Memory Model
 
 #### 1.6.1 Capability Enforcement
-- [ ] ⬜ Enforce capabilities through the type system, not just declarations (a function doing network I/O must require a capability token in its signature that callers must provide).
+- [x] ✅ Enforce capabilities through the type system, not just declarations (a function doing network I/O must require a capability token in its signature that callers must provide).
 - [x] ✅ Add capability propagation so callers can prove they hold required capabilities and pass them to callees.
 - [x] ✅ Add capability revocation (ability to drop privileges permanently within a scope).
 - [x] ✅ Add capability delegation (grant a subset of capabilities to untrusted code via capability tokens/handles).

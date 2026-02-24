@@ -482,12 +482,22 @@ fn llvm_emit_block(body: &[ast::Stmt], ctx: &mut LlvmFuncCtx) -> bool {
     for stmt in body {
         match stmt {
             ast::Stmt::Let { name, value, .. } => {
-                let value = llvm_emit_expr(value, ctx);
+                let rendered = llvm_emit_expr(value, ctx);
                 let slot = format!("%slot_{}_{}", name, ctx.next_value);
                 ctx.code.push_str(&format!(
-                    "  {slot} = alloca i32\n  store i32 {value}, ptr {slot}\n"
+                    "  {slot} = alloca i32\n  store i32 {rendered}, ptr {slot}\n"
                 ));
                 ctx.slots.insert(name.clone(), slot);
+                if let ast::Expr::StructInit { fields, .. } = value {
+                    for (field, field_expr) in fields {
+                        let field_value = llvm_emit_expr(field_expr, ctx);
+                        let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
+                        ctx.code.push_str(&format!(
+                            "  {field_slot} = alloca i32\n  store i32 {field_value}, ptr {field_slot}\n"
+                        ));
+                        ctx.slots.insert(format!("{name}.{field}"), field_slot);
+                    }
+                }
             }
             ast::Stmt::Assign { target, value } => {
                 let value = llvm_emit_expr(value, ctx);
@@ -584,6 +594,41 @@ fn llvm_emit_expr(expr: &ast::Expr, ctx: &mut LlvmFuncCtx) -> String {
             }
         }
         ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx),
+        ast::Expr::FieldAccess { base, field } => {
+            if let ast::Expr::Ident(name) = base.as_ref() {
+                if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
+                    let val = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {val} = load i32, ptr {slot}\n"));
+                    return val;
+                }
+            }
+            llvm_emit_expr(base, ctx)
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            let mut first = None;
+            for (_, value) in fields {
+                let current = llvm_emit_expr(value, ctx);
+                if first.is_none() {
+                    first = Some(current);
+                }
+            }
+            first.unwrap_or_else(|| "0".to_string())
+        }
+        ast::Expr::EnumInit {
+            enum_name: _,
+            variant,
+            payload,
+        } => {
+            for value in payload {
+                let _ = llvm_emit_expr(value, ctx);
+            }
+            (variant
+                .bytes()
+                .fold(0u32, |acc, byte| acc.wrapping_mul(33).wrapping_add(byte as u32))
+                & 0x7fff_ffff)
+                .to_string()
+        }
         ast::Expr::TryCatch { try_expr, .. } => llvm_emit_expr(try_expr, ctx),
         ast::Expr::Call { callee, args } => {
             let args = args
@@ -1217,6 +1262,23 @@ fn clif_emit_block(
                     var
                 };
                 builder.def_var(var, val);
+                if let ast::Expr::StructInit { fields, .. } = value {
+                    for (field, field_expr) in fields {
+                        let field_val = clif_emit_expr(
+                            builder,
+                            module,
+                            function_ids,
+                            field_expr,
+                            locals,
+                            next_var,
+                        )?;
+                        let field_var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(field_var, types::I32);
+                        builder.def_var(field_var, field_val);
+                        locals.insert(format!("{name}.{field}"), field_var);
+                    }
+                }
             }
             ast::Stmt::Assign { target, value } => {
                 let val = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
@@ -1341,6 +1403,36 @@ fn clif_emit_expr(
         }
         ast::Expr::Group(inner) => {
             clif_emit_expr(builder, module, function_ids, inner, locals, next_var)?
+        }
+        ast::Expr::FieldAccess { base, field } => {
+            if let ast::Expr::Ident(name) = base.as_ref() {
+                if let Some(var) = locals.get(&format!("{name}.{field}")).copied() {
+                    builder.use_var(var)
+                } else {
+                    clif_emit_expr(builder, module, function_ids, base, locals, next_var)?
+                }
+            } else {
+                clif_emit_expr(builder, module, function_ids, base, locals, next_var)?
+            }
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            let mut first = None;
+            for (_, value) in fields {
+                let out = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
+                if first.is_none() {
+                    first = Some(out);
+                }
+            }
+            first.unwrap_or_else(|| builder.ins().iconst(types::I32, 0))
+        }
+        ast::Expr::EnumInit { variant, payload, .. } => {
+            for value in payload {
+                let _ = clif_emit_expr(builder, module, function_ids, value, locals, next_var)?;
+            }
+            let tag = variant
+                .bytes()
+                .fold(0u32, |acc, byte| acc.wrapping_mul(33).wrapping_add(byte as u32));
+            builder.ins().iconst(types::I32, (tag & 0x7fff_ffff) as i64)
         }
         ast::Expr::TryCatch {
             try_expr,

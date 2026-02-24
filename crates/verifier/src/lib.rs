@@ -196,6 +196,13 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             Some("add capability token parameters and propagate delegated tokens explicitly".to_string()),
         ));
     }
+    for violation in &module.trait_violations {
+        report.diagnostics.push(Diagnostic::new(
+            Severity::Error,
+            violation.clone(),
+            Some("implement required trait methods and satisfy generic trait bounds".to_string()),
+        ));
+    }
     for violation in &module.reference_lifetime_violations {
         report.diagnostics.push(Diagnostic::new(
             if policy.safe_profile {
@@ -330,6 +337,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -337,6 +345,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -370,6 +379,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -377,6 +387,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -413,6 +424,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -420,6 +432,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -457,6 +470,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -464,6 +478,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -501,6 +516,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -508,6 +524,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -545,6 +562,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -552,6 +570,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -592,6 +611,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -599,6 +619,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -651,6 +672,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -658,6 +680,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -696,6 +719,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -703,6 +727,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -744,6 +769,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 1,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -751,6 +777,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
@@ -788,6 +815,7 @@ mod tests {
             extern_c_abi_functions: 0,
             repr_c_layout_items: 0,
             generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
@@ -795,6 +823,7 @@ mod tests {
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };

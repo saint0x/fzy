@@ -18,12 +18,15 @@ pub enum Item {
     Function(Function),
     Struct(Struct),
     Enum(Enum),
+    Trait(Trait),
+    Impl(Impl),
     Test(TestBlock),
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
+    pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
@@ -36,6 +39,12 @@ pub struct Function {
 pub struct Param {
     pub name: String,
     pub ty: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct GenericParam {
+    pub name: String,
+    pub bounds: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +71,26 @@ pub struct Field {
 pub struct Variant {
     pub name: String,
     pub payload: Vec<Type>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Trait {
+    pub name: String,
+    pub methods: Vec<TraitMethod>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitMethod {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct Impl {
+    pub trait_name: Option<String>,
+    pub for_type: Type,
+    pub methods: Vec<Function>,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +139,19 @@ pub enum Expr {
     Call {
         callee: String,
         args: Vec<Expr>,
+    },
+    FieldAccess {
+        base: Box<Expr>,
+        field: String,
+    },
+    StructInit {
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
+    EnumInit {
+        enum_name: String,
+        variant: String,
+        payload: Vec<Expr>,
     },
     Group(Box<Expr>),
     TryCatch {
@@ -288,6 +330,17 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
         Expr::Call { args, .. } => {
             for arg in args {
                 visitor.visit_expr(arg);
+            }
+        }
+        Expr::FieldAccess { base, .. } => visitor.visit_expr(base),
+        Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                visitor.visit_expr(value);
+            }
+        }
+        Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                visitor.visit_expr(value);
             }
         }
         Expr::TryCatch {

@@ -3196,6 +3196,17 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
                 collect_call_names_from_expr(arg, out);
             }
         }
+        ast::Expr::FieldAccess { base, .. } => collect_call_names_from_expr(base, out),
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_call_names_from_expr(value, out);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                collect_call_names_from_expr(value, out);
+            }
+        }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,

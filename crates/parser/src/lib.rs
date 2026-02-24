@@ -23,6 +23,9 @@ enum TokenKind {
     KwMod,
     KwStruct,
     KwEnum,
+    KwTrait,
+    KwImpl,
+    KwFor,
     KwTest,
     KwNondet,
     KwLet,
@@ -203,6 +206,12 @@ impl Parser {
         if self.at(&TokenKind::KwEnum) {
             return self.parse_enum();
         }
+        if self.at(&TokenKind::KwTrait) {
+            return self.parse_trait();
+        }
+        if self.at(&TokenKind::KwImpl) {
+            return self.parse_impl();
+        }
         if self.at(&TokenKind::KwRpc) {
             self.parse_rpc_decl();
             return None;
@@ -356,6 +365,109 @@ impl Parser {
         }))
     }
 
+    fn parse_trait(&mut self) -> Option<ast::Item> {
+        let _ = self.consume(&TokenKind::KwTrait);
+        let name = self.expect_ident("expected trait name")?;
+        if !self.consume(&TokenKind::LBrace) {
+            self.push_diag_here("expected `{` after trait name");
+            return None;
+        }
+        let mut methods = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            if !self.consume(&TokenKind::KwFn) {
+                self.push_diag_here("expected `fn` in trait body");
+                self.recover_item();
+                continue;
+            }
+            let method_name = self.expect_ident("expected trait method name")?;
+            if !self.consume(&TokenKind::LParen) {
+                self.push_diag_here("expected `(` after trait method name");
+                return None;
+            }
+            let mut params = Vec::new();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                let param_name = match self.expect_ident("expected parameter name") {
+                    Some(v) => v,
+                    None => break,
+                };
+                if !self.consume(&TokenKind::Colon) {
+                    self.push_diag_here("expected `:` in parameter declaration");
+                    self.consume_until(&[TokenKind::Comma, TokenKind::RParen]);
+                    let _ = self.consume(&TokenKind::Comma);
+                    continue;
+                }
+                let Some(ty) = self.parse_type() else {
+                    self.consume_until(&[TokenKind::Comma, TokenKind::RParen]);
+                    let _ = self.consume(&TokenKind::Comma);
+                    continue;
+                };
+                params.push(ast::Param {
+                    name: param_name,
+                    ty,
+                });
+                if !self.consume(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            let _ = self.consume(&TokenKind::RParen);
+            let return_type = if self.consume(&TokenKind::Arrow) {
+                self.parse_type().unwrap_or(Type::Void)
+            } else {
+                Type::Void
+            };
+            let _ = self.consume(&TokenKind::Semi);
+            methods.push(ast::TraitMethod {
+                name: method_name,
+                params,
+                return_type,
+            });
+        }
+        let _ = self.consume(&TokenKind::RBrace);
+        Some(ast::Item::Trait(ast::Trait { name, methods }))
+    }
+
+    fn parse_impl(&mut self) -> Option<ast::Item> {
+        let _ = self.consume(&TokenKind::KwImpl);
+        let first = self.parse_type()?;
+        let (trait_name, for_type) = if self.consume(&TokenKind::KwFor) {
+            let Some(ty) = self.parse_type() else {
+                self.push_diag_here("expected type after `for`");
+                return None;
+            };
+            let trait_name = match first {
+                Type::Named { name, args } if args.is_empty() => Some(name),
+                Type::TypeVar(name) => Some(name),
+                _ => {
+                    self.push_diag_here("trait in impl must be a named trait");
+                    None
+                }
+            };
+            (trait_name, ty)
+        } else {
+            (None, first)
+        };
+        if !self.consume(&TokenKind::LBrace) {
+            self.push_diag_here("expected `{` after impl header");
+            return None;
+        }
+        let mut methods = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            match self.parse_function()? {
+                ast::Item::Function(function) => methods.push(function),
+                _ => {
+                    self.push_diag_here("expected function in impl body");
+                    self.recover_item();
+                }
+            }
+        }
+        let _ = self.consume(&TokenKind::RBrace);
+        Some(ast::Item::Impl(ast::Impl {
+            trait_name,
+            for_type,
+            methods,
+        }))
+    }
+
     fn parse_function(&mut self) -> Option<ast::Item> {
         let _is_async = self.consume(&TokenKind::KwAsync);
         let is_pub = self.consume(&TokenKind::KwPub);
@@ -378,6 +490,7 @@ impl Parser {
             return None;
         }
         let name = self.expect_ident("expected function name")?;
+        let generics = self.parse_generic_params();
 
         if !self.consume(&TokenKind::LParen) {
             self.push_diag_here("expected `(` after function name");
@@ -433,6 +546,7 @@ impl Parser {
 
         Some(ast::Item::Function(ast::Function {
             name,
+            generics,
             params,
             return_type,
             body,
@@ -664,7 +778,49 @@ impl Parser {
             TokenKind::KwTrue => Expr::Bool(true),
             TokenKind::KwFalse => Expr::Bool(false),
             TokenKind::Str(v) => Expr::Str(v),
-            TokenKind::Ident(name) => Expr::Ident(name),
+            TokenKind::Ident(name) => {
+                if self.looks_like_struct_initializer() {
+                    let _ = self.consume(&TokenKind::LBrace);
+                    let mut fields = Vec::new();
+                    while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                        let field_name = self.expect_ident("expected field name in struct initializer")?;
+                        if !self.consume(&TokenKind::Colon) {
+                            self.push_diag_here("expected `:` in struct initializer");
+                            return None;
+                        }
+                        let value = self.parse_expr(0)?;
+                        fields.push((field_name, value));
+                        if !self.consume(&TokenKind::Comma) {
+                            break;
+                        }
+                    }
+                    let _ = self.consume(&TokenKind::RBrace);
+                    Expr::StructInit { name, fields }
+                } else if self.at(&TokenKind::Colon)
+                    && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Colon)
+                {
+                    let _ = self.consume(&TokenKind::Colon);
+                    let _ = self.consume(&TokenKind::Colon);
+                    let variant = self.expect_ident("expected enum variant name")?;
+                    let mut payload = Vec::new();
+                    if self.consume(&TokenKind::LParen) {
+                        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                            payload.push(self.parse_expr(0)?);
+                            if !self.consume(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                        let _ = self.consume(&TokenKind::RParen);
+                    }
+                    Expr::EnumInit {
+                        enum_name: name,
+                        variant,
+                        payload,
+                    }
+                } else {
+                    Expr::Ident(name)
+                }
+            }
             TokenKind::LParen => {
                 let inner = self.parse_expr(0)?;
                 let _ = self.consume(&TokenKind::RParen);
@@ -681,21 +837,17 @@ impl Parser {
                 let Some(seg) = self.expect_ident("expected member name after `.`") else {
                     return None;
                 };
-                expr = match expr {
-                    Expr::Ident(base) => Expr::Ident(format!("{base}.{seg}")),
-                    Expr::Group(inner) => match *inner {
-                        Expr::Ident(base) => Expr::Ident(format!("{base}.{seg}")),
-                        _ => {
-                            self.push_diag_here("member access base must be identifier");
-                            return None;
-                        }
-                    },
-                    _ => {
-                        self.push_diag_here("member access base must be identifier");
-                        return None;
-                    }
+                expr = Expr::FieldAccess {
+                    base: Box::new(expr),
+                    field: seg,
                 };
                 continue;
+            }
+            if self.at(&TokenKind::Lt) {
+                if let Some(generic_callee) = self.try_parse_generic_callee(&expr) {
+                    expr = generic_callee;
+                    continue;
+                }
             }
             if self.consume(&TokenKind::LParen) {
                 let mut args = Vec::new();
@@ -708,19 +860,9 @@ impl Parser {
                     }
                 }
                 let _ = self.consume(&TokenKind::RParen);
-                let callee = match expr {
-                    Expr::Ident(name) => name,
-                    Expr::Group(inner) => match *inner {
-                        Expr::Ident(name) => name,
-                        _ => {
-                            self.push_diag_here("callee must be an identifier");
-                            return None;
-                        }
-                    },
-                    _ => {
-                        self.push_diag_here("callee must be an identifier");
-                        return None;
-                    }
+                let Some(callee) = Self::expr_to_callee_name(&expr) else {
+                    self.push_diag_here("callee must be an identifier");
+                    return None;
                 };
                 expr = Expr::Call { callee, args };
                 continue;
@@ -858,6 +1000,105 @@ impl Parser {
         Some(ty)
     }
 
+    fn parse_generic_params(&mut self) -> Vec<ast::GenericParam> {
+        let mut out = Vec::new();
+        if !self.consume(&TokenKind::Lt) {
+            return out;
+        }
+        while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
+            let Some(name) = self.expect_ident("expected generic parameter name") else {
+                break;
+            };
+            let mut bounds = Vec::new();
+            if self.consume(&TokenKind::Colon) {
+                loop {
+                    let Some(bound) = self.expect_ident("expected trait bound") else {
+                        break;
+                    };
+                    bounds.push(bound);
+                    if !self.consume(&TokenKind::Plus) {
+                        break;
+                    }
+                }
+            }
+            out.push(ast::GenericParam { name, bounds });
+            if !self.consume(&TokenKind::Comma) {
+                break;
+            }
+        }
+        let _ = self.consume(&TokenKind::Gt);
+        out
+    }
+
+    fn looks_like_struct_initializer(&self) -> bool {
+        if !self.at(&TokenKind::LBrace) {
+            return false;
+        }
+        match (self.peek_n(1), self.peek_n(2)) {
+            (Some(Token { kind: TokenKind::RBrace, .. }), _) => true,
+            (
+                Some(Token {
+                    kind: TokenKind::Ident(_),
+                    ..
+                }),
+                Some(Token {
+                    kind: TokenKind::Colon,
+                    ..
+                }),
+            ) => true,
+            _ => false,
+        }
+    }
+
+    fn try_parse_generic_callee(&mut self, expr: &Expr) -> Option<Expr> {
+        let save = self.pos;
+        let diag_len = self.diagnostics.len();
+        let mut args = Vec::new();
+        let _ = self.consume(&TokenKind::Lt);
+        while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
+            let Some(ty) = self.parse_type() else {
+                self.pos = save;
+                self.diagnostics.truncate(diag_len);
+                return None;
+            };
+            args.push(ty);
+            if !self.consume(&TokenKind::Comma) {
+                break;
+            }
+        }
+        if !self.consume(&TokenKind::Gt) || !self.at(&TokenKind::LParen) {
+            self.pos = save;
+            self.diagnostics.truncate(diag_len);
+            return None;
+        }
+        let callee = match expr {
+            Expr::Ident(name) => name.clone(),
+            _ => {
+                self.pos = save;
+                self.diagnostics.truncate(diag_len);
+                return None;
+            }
+        };
+        let rendered = args
+            .iter()
+            .map(|ty| ty.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        Some(Expr::Ident(format!("{callee}<{rendered}>")))
+    }
+
+    fn expr_to_callee_name(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Ident(name) => Some(name.clone()),
+            Expr::Group(inner) => Self::expr_to_callee_name(inner),
+            Expr::FieldAccess { base, field } => {
+                let base = Self::expr_to_callee_name(base)?;
+                Some(format!("{base}.{field}"))
+            }
+            _ => None,
+        }
+    }
+
     fn current_binary_op(&self) -> Option<(BinaryOp, u8)> {
         let kind = &self.peek()?.kind;
         let (op, prec) = match kind {
@@ -949,6 +1190,8 @@ impl Parser {
             TokenKind::KwRpc,
             TokenKind::KwStruct,
             TokenKind::KwEnum,
+            TokenKind::KwTrait,
+            TokenKind::KwImpl,
             TokenKind::KwTest,
             TokenKind::Hash,
             TokenKind::Semi,
@@ -1228,6 +1471,9 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "mod" => TokenKind::KwMod,
         "struct" => TokenKind::KwStruct,
         "enum" => TokenKind::KwEnum,
+        "trait" => TokenKind::KwTrait,
+        "impl" => TokenKind::KwImpl,
+        "for" => TokenKind::KwFor,
         "test" => TokenKind::KwTest,
         "nondet" => TokenKind::KwNondet,
         "let" => TokenKind::KwLet,
@@ -1283,5 +1529,58 @@ mod tests {
         "#;
         let diagnostics = parse(source, "bad").expect_err("should fail");
         assert!(diagnostics.len() >= 2);
+    }
+
+    #[test]
+    fn parses_traits_impls_and_struct_enum_exprs() {
+        let source = r#"
+            trait Printable {
+                fn render(v: i32) -> i32;
+            }
+            struct Point { x: i32, y: i32 }
+            enum Maybe { Some(i32), None }
+            impl Printable for Point {
+                fn render(v: i32) -> i32 { return v; }
+            }
+            fn id<T: Printable>(v: T) -> T { return v; }
+            fn main() -> i32 {
+                let p = Point { x: 7, y: 3 };
+                let px = p.x;
+                let m = Maybe::Some(px);
+                let _ = id<Point>(p);
+                match m {
+                    Some(v) => v,
+                    _ => 0,
+                };
+                return 0;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        assert!(module.items.iter().any(|item| matches!(item, ast::Item::Trait(_))));
+        assert!(module.items.iter().any(|item| matches!(item, ast::Item::Impl(_))));
+        assert!(module.items.iter().any(|item| matches!(item, ast::Item::Struct(_))));
+        assert!(module.items.iter().any(|item| matches!(item, ast::Item::Enum(_))));
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::StructInit { .. },
+                ..
+            }
+        )));
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::FieldAccess { .. },
+                ..
+            }
+        )));
     }
 }

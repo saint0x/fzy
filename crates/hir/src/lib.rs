@@ -5,6 +5,7 @@ use ast::{AstVisitor, BinaryOp, Expr, Module, Stmt, Type};
 #[derive(Debug, Clone)]
 pub struct TypedFunction {
     pub name: String,
+    pub generics: Vec<ast::GenericParam>,
     pub params: Vec<ast::Param>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
@@ -33,12 +34,14 @@ pub struct TypedModule {
     pub extern_c_abi_functions: usize,
     pub repr_c_layout_items: usize,
     pub generic_instantiations: Vec<String>,
+    pub generic_specializations: Vec<String>,
     pub call_graph: Vec<(String, String)>,
     pub typed_functions: Vec<TypedFunction>,
     pub type_errors: usize,
     pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
     pub ownership_violations: Vec<String>,
     pub capability_token_violations: Vec<String>,
+    pub trait_violations: Vec<String>,
     pub reference_lifetime_violations: Vec<String>,
     pub linear_type_violations: Vec<String>,
 }
@@ -54,6 +57,15 @@ enum Value {
     I32(i32),
     Bool(bool),
     Str(String),
+    Struct {
+        _name: String,
+        fields: BTreeMap<String, Value>,
+    },
+    Enum {
+        _enum_name: String,
+        variant: String,
+        _payload: Vec<Value>,
+    },
 }
 
 #[derive(Default)]
@@ -92,8 +104,46 @@ impl SymbolScopes {
 
 pub fn lower(module: &Module) -> TypedModule {
     let mut fn_sigs = HashMap::<String, (Vec<Type>, Type)>::new();
+    let mut fn_generics = HashMap::<String, Vec<ast::GenericParam>>::new();
     let mut typed_functions = Vec::new();
     let mut type_errors = 0usize;
+    let struct_defs = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Struct(item) => Some((item.name.clone(), item.clone())),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let enum_defs = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Enum(item) => Some((item.name.clone(), item.clone())),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let trait_defs = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Trait(item) => Some((item.name.clone(), item.clone())),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let trait_impls = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Impl(item) => item.trait_name.clone().map(|trait_name| (trait_name, item.for_type.clone())),
+            _ => None,
+        })
+        .fold(HashMap::<String, Vec<Type>>::new(), |mut acc, (trait_name, ty)| {
+            acc.entry(trait_name).or_default().push(ty);
+            acc
+        });
+    let mut generic_specializations = BTreeSet::new();
+    let mut trait_violations = validate_trait_impls(module, &trait_defs);
 
     for item in &module.items {
         if let ast::Item::Function(function) = item {
@@ -104,8 +154,10 @@ pub fn lower(module: &Module) -> TypedModule {
                     function.return_type.clone(),
                 ),
             );
+            fn_generics.insert(function.name.clone(), function.generics.clone());
             typed_functions.push(TypedFunction {
                 name: function.name.clone(),
+                generics: function.generics.clone(),
                 params: function.params.clone(),
                 return_type: function.return_type.clone(),
                 body: function.body.clone(),
@@ -133,7 +185,19 @@ pub fn lower(module: &Module) -> TypedModule {
             scopes.insert(param.name.clone(), param.ty.clone());
         }
         for stmt in &function.body {
-            type_check_stmt(stmt, &mut scopes, &fn_sigs, &function.return_type, &mut type_errors);
+            type_check_stmt(
+                stmt,
+                &mut scopes,
+                &fn_sigs,
+                &fn_generics,
+                &struct_defs,
+                &enum_defs,
+                &trait_impls,
+                &function.return_type,
+                &mut type_errors,
+                &mut generic_specializations,
+                &mut trait_violations,
+            );
         }
     }
 
@@ -208,15 +272,58 @@ pub fn lower(module: &Module) -> TypedModule {
         extern_c_abi_functions,
         repr_c_layout_items,
         generic_instantiations,
+        generic_specializations: generic_specializations.into_iter().collect(),
         call_graph,
         typed_functions,
         type_errors,
         function_capability_requirements,
         ownership_violations,
         capability_token_violations,
+        trait_violations,
         reference_lifetime_violations,
         linear_type_violations,
     }
+}
+
+fn validate_trait_impls(
+    module: &Module,
+    trait_defs: &HashMap<String, ast::Trait>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for item in &module.items {
+        let ast::Item::Impl(item) = item else {
+            continue;
+        };
+        let Some(trait_name) = &item.trait_name else {
+            continue;
+        };
+        let Some(trait_def) = trait_defs.get(trait_name) else {
+            violations.push(format!("impl references unknown trait `{trait_name}`"));
+            continue;
+        };
+        for method in &trait_def.methods {
+            let Some(found) = item.methods.iter().find(|candidate| candidate.name == method.name) else {
+                violations.push(format!(
+                    "impl for `{}` missing method `{}` required by trait `{}`",
+                    item.for_type, method.name, trait_name
+                ));
+                continue;
+            };
+            if found.params.len() != method.params.len() {
+                violations.push(format!(
+                    "impl method `{}` parameter count mismatch for trait `{}`",
+                    method.name, trait_name
+                ));
+            }
+            if !type_compatible(&found.return_type, &method.return_type) {
+                violations.push(format!(
+                    "impl method `{}` return type mismatch for trait `{}`",
+                    method.name, trait_name
+                ));
+            }
+        }
+    }
+    violations
 }
 
 fn analyze_capability_token_contracts(
@@ -300,6 +407,9 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 }
                 args.iter().any(expr_has_cap_intrinsic)
             }
+            Expr::FieldAccess { base, .. } => expr_has_cap_intrinsic(base),
+            Expr::StructInit { fields, .. } => fields.iter().any(|(_, value)| expr_has_cap_intrinsic(value)),
+            Expr::EnumInit { payload, .. } => payload.iter().any(expr_has_cap_intrinsic),
             Expr::TryCatch {
                 try_expr,
                 catch_expr,
@@ -495,6 +605,35 @@ fn analyze_expr_call_tokens(
                 analyze_expr_call_tokens(
                     function_name,
                     Some(arg),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+        }
+        Expr::FieldAccess { base, .. } => analyze_expr_call_tokens(
+            function_name,
+            Some(base),
+            local_types,
+            requirement_map,
+            violations,
+        ),
+        Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(value),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+        }
+        Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(value),
                     local_types,
                     requirement_map,
                     violations,
@@ -1000,6 +1139,23 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
                 }
             }
             ast::Item::Test(_) => {}
+            ast::Item::Trait(item) => {
+                for method in &item.methods {
+                    collect_type_instantiation(&method.return_type, &mut out);
+                    for param in &method.params {
+                        collect_type_instantiation(&param.ty, &mut out);
+                    }
+                }
+            }
+            ast::Item::Impl(item) => {
+                collect_type_instantiation(&item.for_type, &mut out);
+                for method in &item.methods {
+                    collect_type_instantiation(&method.return_type, &mut out);
+                    for param in &method.params {
+                        collect_type_instantiation(&param.ty, &mut out);
+                    }
+                }
+            }
         }
     }
     out.sort();
@@ -1172,6 +1328,13 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             try_expr,
             catch_expr,
         } => deferred_resource(try_expr).or_else(|| deferred_resource(catch_expr)),
+        ast::Expr::FieldAccess { base, .. } => deferred_resource(base),
+        ast::Expr::StructInit { fields, .. } => fields
+            .iter()
+            .find_map(|(_, value)| deferred_resource(value)),
+        ast::Expr::EnumInit { payload, .. } => payload
+            .iter()
+            .find_map(deferred_resource),
         ast::Expr::Int(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
@@ -1210,12 +1373,29 @@ fn type_check_stmt(
     stmt: &Stmt,
     scopes: &mut SymbolScopes,
     fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
+    fn_generics: &HashMap<String, Vec<ast::GenericParam>>,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+    trait_impls: &HashMap<String, Vec<Type>>,
     expected_return: &Type,
     errors: &mut usize,
+    generic_specializations: &mut BTreeSet<String>,
+    trait_violations: &mut Vec<String>,
 ) {
     match stmt {
         Stmt::Let { name, ty, value } => {
-            let inferred = infer_expr_type(value, scopes, fn_sigs, errors);
+            let inferred = infer_expr_type(
+                value,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
             let final_ty = match (ty, inferred) {
                 (Some(explicit), Some(actual)) => {
                     if !type_compatible(explicit, &actual) {
@@ -1234,7 +1414,18 @@ fn type_check_stmt(
         }
         Stmt::Assign { target, value } => {
             let target_ty = scopes.get(target);
-            let value_ty = infer_expr_type(value, scopes, fn_sigs, errors);
+            let value_ty = infer_expr_type(
+                value,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
                 if !type_compatible(&target_ty, &value_ty) {
                     *errors += 1;
@@ -1246,55 +1437,168 @@ fn type_check_stmt(
             then_body,
             else_body,
         } => {
-            let cond_ty = infer_expr_type(condition, scopes, fn_sigs, errors);
+            let cond_ty = infer_expr_type(
+                condition,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
             if !matches!(cond_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
                 *errors += 1;
             }
             scopes.push();
             for stmt in then_body {
-                type_check_stmt(stmt, scopes, fn_sigs, expected_return, errors);
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    expected_return,
+                    errors,
+                    generic_specializations,
+                    trait_violations,
+                );
             }
             scopes.pop();
             scopes.push();
             for stmt in else_body {
-                type_check_stmt(stmt, scopes, fn_sigs, expected_return, errors);
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    expected_return,
+                    errors,
+                    generic_specializations,
+                    trait_violations,
+                );
             }
             scopes.pop();
         }
         Stmt::While { condition, body } => {
-            let cond_ty = infer_expr_type(condition, scopes, fn_sigs, errors);
+            let cond_ty = infer_expr_type(
+                condition,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
             if !matches!(cond_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
                 *errors += 1;
             }
             scopes.push();
             for stmt in body {
-                type_check_stmt(stmt, scopes, fn_sigs, expected_return, errors);
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    expected_return,
+                    errors,
+                    generic_specializations,
+                    trait_violations,
+                );
             }
             scopes.pop();
         }
         Stmt::Return(expr) => {
-            if let Some(actual) = infer_expr_type(expr, scopes, fn_sigs, errors) {
+            if let Some(actual) = infer_expr_type(
+                expr,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            ) {
                 if !type_compatible(expected_return, &actual) {
                     *errors += 1;
                 }
             }
         }
         Stmt::Match { scrutinee, arms } => {
-            let scrutinee_ty = infer_expr_type(scrutinee, scopes, fn_sigs, errors);
+            let scrutinee_ty = infer_expr_type(
+                scrutinee,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    let guard_ty = infer_expr_type(guard, scopes, fn_sigs, errors);
+                    let guard_ty = infer_expr_type(
+                        guard,
+                        scopes,
+                        fn_sigs,
+                        fn_generics,
+                        struct_defs,
+                        enum_defs,
+                        trait_impls,
+                        errors,
+                        generic_specializations,
+                        trait_violations,
+                    );
                     if !matches!(guard_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
                         *errors += 1;
                     }
                 }
-                let value_ty = infer_expr_type(&arm.value, scopes, fn_sigs, errors);
+                let value_ty = infer_expr_type(
+                    &arm.value,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    errors,
+                    generic_specializations,
+                    trait_violations,
+                );
                 check_pattern_compatibility(&arm.pattern, scrutinee_ty.as_ref(), errors);
                 let _ = value_ty;
             }
         }
         Stmt::Defer(expr) | Stmt::Requires(expr) | Stmt::Ensures(expr) | Stmt::Expr(expr) => {
-            let _ = infer_expr_type(expr, scopes, fn_sigs, errors);
+            let _ = infer_expr_type(
+                expr,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
         }
     }
 }
@@ -1303,7 +1607,13 @@ fn infer_expr_type(
     expr: &Expr,
     scopes: &SymbolScopes,
     fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
+    fn_generics: &HashMap<String, Vec<ast::GenericParam>>,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+    trait_impls: &HashMap<String, Vec<Type>>,
     errors: &mut usize,
+    generic_specializations: &mut BTreeSet<String>,
+    trait_violations: &mut Vec<String>,
 ) -> Option<Type> {
     match expr {
         Expr::Int(_) => Some(Type::Int {
@@ -1313,12 +1623,35 @@ fn infer_expr_type(
         Expr::Bool(_) => Some(Type::Bool),
         Expr::Str(_) => Some(Type::Str),
         Expr::Ident(name) => scopes.get(name),
-        Expr::Group(inner) => infer_expr_type(inner, scopes, fn_sigs, errors),
+        Expr::Group(inner) => infer_expr_type(
+            inner,
+            scopes,
+            fn_sigs,
+            fn_generics,
+            struct_defs,
+            enum_defs,
+            trait_impls,
+            errors,
+            generic_specializations,
+            trait_violations,
+        ),
         Expr::Call { callee, args } => {
-            let Some((params, ret)) = fn_sigs.get(callee) else {
+            let (base_callee, explicit_types) = split_generic_callee(callee);
+            let Some((params, ret)) = fn_sigs.get(base_callee) else {
                 if callee.contains('.') || is_runtime_intrinsic(callee) {
                     for arg in args {
-                        let _ = infer_expr_type(arg, scopes, fn_sigs, errors);
+                        let _ = infer_expr_type(
+                            arg,
+                            scopes,
+                            fn_sigs,
+                            fn_generics,
+                            struct_defs,
+                            enum_defs,
+                            trait_impls,
+                            errors,
+                            generic_specializations,
+                            trait_violations,
+                        );
                     }
                     return Some(Type::Int {
                         signed: true,
@@ -1328,25 +1661,195 @@ fn infer_expr_type(
                 *errors += 1;
                 return None;
             };
-            if params.len() != args.len() {
+            let generics = fn_generics.get(base_callee).cloned().unwrap_or_default();
+            let mut arg_types = Vec::with_capacity(args.len());
+            for arg in args {
+                arg_types.push(infer_expr_type(
+                    arg,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    errors,
+                    generic_specializations,
+                    trait_violations,
+                ));
+            }
+            let Some((resolved_params, resolved_ret, bindings)) = resolve_call_signature(
+                params,
+                ret,
+                &generics,
+                &arg_types,
+                explicit_types.as_deref(),
+            ) else {
+                *errors += 1;
+                return None;
+            };
+            if !bindings.is_empty() {
+                let rendered = bindings
+                    .iter()
+                    .map(|(name, ty)| format!("{name}={ty}"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                generic_specializations.insert(format!("{base_callee}<{rendered}>"));
+                for generic in &generics {
+                    if let Some((_, concrete)) = bindings.iter().find(|(name, _)| *name == generic.name) {
+                        for bound in &generic.bounds {
+                            if !type_satisfies_trait(concrete, bound, trait_impls) {
+                                trait_violations.push(format!(
+                                    "generic specialization `{}` violates bound `{}` on `{}`",
+                                    base_callee, bound, generic.name
+                                ));
+                                *errors += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            if resolved_params.len() != args.len() {
                 *errors += 1;
             }
-            for (index, arg) in args.iter().enumerate() {
-                let arg_ty = infer_expr_type(arg, scopes, fn_sigs, errors);
-                if let (Some(expected), Some(actual)) = (params.get(index), arg_ty) {
+            for (index, arg_ty) in arg_types.into_iter().enumerate() {
+                if let (Some(expected), Some(actual)) = (resolved_params.get(index), arg_ty) {
                     if !type_compatible(expected, &actual) {
                         *errors += 1;
                     }
                 }
             }
-            Some(ret.clone())
+            Some(resolved_ret)
+        }
+        Expr::FieldAccess { base, field } => {
+            let Some(base_ty) = infer_expr_type(
+                base,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            ) else {
+                return None;
+            };
+            let Type::Named { name, .. } = base_ty else {
+                *errors += 1;
+                return None;
+            };
+            let Some(struct_def) = struct_defs.get(&name) else {
+                *errors += 1;
+                return None;
+            };
+            let Some(found) = struct_def.fields.iter().find(|candidate| candidate.name == *field) else {
+                *errors += 1;
+                return None;
+            };
+            Some(found.ty.clone())
+        }
+        Expr::StructInit { name, fields } => {
+            let Some(struct_def) = struct_defs.get(name) else {
+                *errors += 1;
+                return None;
+            };
+            for (field_name, value) in fields {
+                let Some(found) = struct_def.fields.iter().find(|candidate| candidate.name == *field_name) else {
+                    *errors += 1;
+                    continue;
+                };
+                let value_ty = infer_expr_type(
+                    value,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    errors,
+                    generic_specializations,
+                    trait_violations,
+                );
+                if let Some(value_ty) = value_ty {
+                    if !type_compatible(&found.ty, &value_ty) {
+                        *errors += 1;
+                    }
+                }
+            }
+            Some(Type::Named {
+                name: name.clone(),
+                args: Vec::new(),
+            })
+        }
+        Expr::EnumInit {
+            enum_name,
+            variant,
+            payload,
+        } => {
+            let Some(enum_def) = enum_defs.get(enum_name) else {
+                *errors += 1;
+                return None;
+            };
+            let Some(found_variant) = enum_def.variants.iter().find(|candidate| candidate.name == *variant) else {
+                *errors += 1;
+                return None;
+            };
+            if found_variant.payload.len() != payload.len() {
+                *errors += 1;
+            }
+            for (index, value) in payload.iter().enumerate() {
+                let value_ty = infer_expr_type(
+                    value,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    errors,
+                    generic_specializations,
+                    trait_violations,
+                );
+                if let (Some(expected), Some(actual)) = (found_variant.payload.get(index), value_ty) {
+                    if !type_compatible(expected, &actual) {
+                        *errors += 1;
+                    }
+                }
+            }
+            Some(Type::Named {
+                name: enum_name.clone(),
+                args: Vec::new(),
+            })
         }
         Expr::TryCatch {
             try_expr,
             catch_expr,
         } => {
-            let left = infer_expr_type(try_expr, scopes, fn_sigs, errors);
-            let right = infer_expr_type(catch_expr, scopes, fn_sigs, errors);
+            let left = infer_expr_type(
+                try_expr,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
+            let right = infer_expr_type(
+                catch_expr,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
             match (left, right) {
                 (Some(l), Some(r)) if type_compatible(&l, &r) => Some(l),
                 (Some(_), Some(_)) => {
@@ -1359,8 +1862,30 @@ fn infer_expr_type(
             }
         }
         Expr::Binary { op, left, right } => {
-            let left_ty = infer_expr_type(left, scopes, fn_sigs, errors);
-            let right_ty = infer_expr_type(right, scopes, fn_sigs, errors);
+            let left_ty = infer_expr_type(
+                left,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
+            let right_ty = infer_expr_type(
+                right,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                generic_specializations,
+                trait_violations,
+            );
             match op {
                 BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
                     if matches!(left_ty, Some(Type::Int { .. }))
@@ -1388,6 +1913,158 @@ fn infer_expr_type(
             }
         }
     }
+}
+
+fn split_generic_callee(callee: &str) -> (&str, Option<Vec<Type>>) {
+    let Some(start) = callee.find('<') else {
+        return (callee, None);
+    };
+    let Some(end) = callee.rfind('>') else {
+        return (&callee[..start], None);
+    };
+    let base = &callee[..start];
+    let inside = &callee[start + 1..end];
+    let parsed = inside
+        .split(',')
+        .map(|token| parse_simple_type(token.trim()))
+        .collect::<Option<Vec<_>>>();
+    (base, parsed)
+}
+
+fn parse_simple_type(token: &str) -> Option<Type> {
+    Some(match token {
+        "bool" => Type::Bool,
+        "str" => Type::Str,
+        "void" => Type::Void,
+        "i8" => Type::Int { signed: true, bits: 8 },
+        "i16" => Type::Int { signed: true, bits: 16 },
+        "i32" => Type::Int { signed: true, bits: 32 },
+        "i64" => Type::Int { signed: true, bits: 64 },
+        "u8" => Type::Int { signed: false, bits: 8 },
+        "u16" => Type::Int { signed: false, bits: 16 },
+        "u32" => Type::Int { signed: false, bits: 32 },
+        "u64" => Type::Int { signed: false, bits: 64 },
+        other if !other.is_empty() => Type::Named {
+            name: other.to_string(),
+            args: Vec::new(),
+        },
+        _ => return None,
+    })
+}
+
+fn resolve_call_signature(
+    params: &[Type],
+    ret: &Type,
+    generics: &[ast::GenericParam],
+    arg_types: &[Option<Type>],
+    explicit_types: Option<&[Type]>,
+) -> Option<(Vec<Type>, Type, Vec<(String, Type)>)> {
+    let mut bindings = BTreeMap::<String, Type>::new();
+    if let Some(explicit_types) = explicit_types {
+        if explicit_types.len() != generics.len() {
+            return None;
+        }
+        for (generic, concrete) in generics.iter().zip(explicit_types) {
+            bindings.insert(generic.name.clone(), concrete.clone());
+        }
+    }
+    for (param, arg_ty) in params.iter().zip(arg_types.iter()) {
+        let Some(arg_ty) = arg_ty else {
+            continue;
+        };
+        if !bind_typevars(param, arg_ty, &mut bindings) {
+            return None;
+        }
+    }
+    let resolved_params = params
+        .iter()
+        .map(|ty| substitute_typevars(ty, &bindings))
+        .collect::<Vec<_>>();
+    let resolved_ret = substitute_typevars(ret, &bindings);
+    Some((
+        resolved_params,
+        resolved_ret,
+        bindings.into_iter().collect::<Vec<_>>(),
+    ))
+}
+
+fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<String, Type>) -> bool {
+    match template {
+        Type::TypeVar(name) => {
+            if let Some(existing) = bindings.get(name) {
+                type_compatible(existing, concrete)
+            } else {
+                bindings.insert(name.clone(), concrete.clone());
+                true
+            }
+        }
+        Type::Named { name, args } => match concrete {
+            Type::Named {
+                name: other_name,
+                args: other_args,
+            } if name == other_name && args.len() == other_args.len() => args
+                .iter()
+                .zip(other_args.iter())
+                .all(|(left, right)| bind_typevars(left, right, bindings)),
+            _ => false,
+        },
+        Type::Ptr {
+            mutable,
+            to: template_to,
+        } => matches!(concrete, Type::Ptr { mutable: other_mut, to: other_to } if mutable == other_mut && bind_typevars(template_to, other_to, bindings)),
+        Type::Ref {
+            mutable,
+            to: template_to,
+        } => matches!(concrete, Type::Ref { mutable: other_mut, to: other_to } if mutable == other_mut && bind_typevars(template_to, other_to, bindings)),
+        Type::Slice(inner) => matches!(concrete, Type::Slice(other) if bind_typevars(inner, other, bindings)),
+        Type::Array { elem, len } => matches!(concrete, Type::Array { elem: other_elem, len: other_len } if len == other_len && bind_typevars(elem, other_elem, bindings)),
+        Type::Result { ok, err } => matches!(concrete, Type::Result { ok: other_ok, err: other_err } if bind_typevars(ok, other_ok, bindings) && bind_typevars(err, other_err, bindings)),
+        Type::Option(inner) => matches!(concrete, Type::Option(other) if bind_typevars(inner, other, bindings)),
+        Type::Vec(inner) => matches!(concrete, Type::Vec(other) if bind_typevars(inner, other, bindings)),
+        _ => type_compatible(template, concrete),
+    }
+}
+
+fn substitute_typevars(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
+    match ty {
+        Type::TypeVar(name) => bindings
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Type::TypeVar(name.clone())),
+        Type::Ptr { mutable, to } => Type::Ptr {
+            mutable: *mutable,
+            to: Box::new(substitute_typevars(to, bindings)),
+        },
+        Type::Ref { mutable, to } => Type::Ref {
+            mutable: *mutable,
+            to: Box::new(substitute_typevars(to, bindings)),
+        },
+        Type::Slice(inner) => Type::Slice(Box::new(substitute_typevars(inner, bindings))),
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(substitute_typevars(elem, bindings)),
+            len: *len,
+        },
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(substitute_typevars(ok, bindings)),
+            err: Box::new(substitute_typevars(err, bindings)),
+        },
+        Type::Option(inner) => Type::Option(Box::new(substitute_typevars(inner, bindings))),
+        Type::Vec(inner) => Type::Vec(Box::new(substitute_typevars(inner, bindings))),
+        Type::Named { name, args } => Type::Named {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| substitute_typevars(arg, bindings))
+                .collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+fn type_satisfies_trait(ty: &Type, trait_name: &str, trait_impls: &HashMap<String, Vec<Type>>) -> bool {
+    trait_impls
+        .get(trait_name)
+        .is_some_and(|impls| impls.iter().any(|candidate| type_compatible(candidate, ty)))
 }
 
 fn is_runtime_intrinsic(name: &str) -> bool {
@@ -1422,7 +2099,10 @@ fn check_pattern_compatibility(pattern: &ast::Pattern, scrutinee_ty: Option<&Typ
 }
 
 fn type_compatible(expected: &Type, actual: &Type) -> bool {
-    expected == actual
+    match (expected, actual) {
+        (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
+        _ => expected == actual,
+    }
 }
 
 fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
@@ -1436,6 +2116,7 @@ fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
         Value::I32(v) => Some(v),
         Value::Bool(v) => Some(v as i32),
         Value::Str(_) => None,
+        Value::Struct { .. } | Value::Enum { .. } => None,
     })
 }
 
@@ -1512,7 +2193,8 @@ fn eval_expr<'a>(
         Expr::Ident(name) => env.get(name).cloned(),
         Expr::Group(inner) => eval_expr(inner, env, functions),
         Expr::Call { callee, args } => {
-            let Some(function) = functions.get(callee.as_str()) else {
+            let (callee_name, _) = split_generic_callee(callee);
+            let Some(function) = functions.get(callee_name) else {
                 if callee.contains('.') || is_runtime_intrinsic(callee) {
                     for arg in args {
                         let _ = eval_expr(arg, env, functions)?;
@@ -1529,6 +2211,38 @@ fn eval_expr<'a>(
                 local.insert(param.name.clone(), eval_expr(arg, env, functions)?);
             }
             eval_block(&function.body, &mut local, functions)
+        }
+        Expr::FieldAccess { base, field } => {
+            let base = eval_expr(base, env, functions)?;
+            match base {
+                Value::Struct { fields, .. } => fields.get(field).cloned(),
+                _ => None,
+            }
+        }
+        Expr::StructInit { name, fields } => {
+            let mut map = BTreeMap::new();
+            for (field, value) in fields {
+                map.insert(field.clone(), eval_expr(value, env, functions)?);
+            }
+            Some(Value::Struct {
+                _name: name.clone(),
+                fields: map,
+            })
+        }
+        Expr::EnumInit {
+            enum_name,
+            variant,
+            payload,
+        } => {
+            let mut values = Vec::with_capacity(payload.len());
+            for value in payload {
+                values.push(eval_expr(value, env, functions)?);
+            }
+            Some(Value::Enum {
+                _enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                _payload: values,
+            })
         }
         Expr::TryCatch {
             try_expr,
@@ -1567,6 +2281,7 @@ fn truthy(v: &Value) -> bool {
         Value::Bool(v) => *v,
         Value::I32(v) => *v != 0,
         Value::Str(v) => !v.is_empty(),
+        Value::Struct { .. } | Value::Enum { .. } => true,
     }
 }
 
@@ -1576,7 +2291,8 @@ fn pattern_matches(pattern: &ast::Pattern, value: &Value) -> bool {
         (ast::Pattern::Int(a), Value::I32(b)) => a == b,
         (ast::Pattern::Bool(a), Value::Bool(b)) => a == b,
         (ast::Pattern::Ident(_), _) => true,
-        (ast::Pattern::Variant { .. }, _) => true,
+        (ast::Pattern::Variant { name, .. }, Value::Enum { variant, .. }) => name == variant,
+        (ast::Pattern::Variant { .. }, _) => false,
         (ast::Pattern::Or(patterns), value) => patterns.iter().any(|p| pattern_matches(p, value)),
         _ => false,
     }
@@ -1608,5 +2324,51 @@ fn eval_bool_expr(
         Value::Bool(v) => Some(v),
         Value::I32(v) => Some(v != 0),
         Value::Str(v) => Some(!v.is_empty()),
+        Value::Struct { .. } | Value::Enum { .. } => Some(true),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lower;
+
+    #[test]
+    fn lowers_trait_bounds_and_generic_specializations() {
+        let source = r#"
+            trait Show { fn show(v: i32) -> i32; }
+            struct Boxed { value: i32 }
+            impl Show for Boxed { fn show(v: i32) -> i32 { return v; } }
+            fn id<T: Show>(v: T) -> T { return v; }
+            fn main() -> i32 {
+                let b = Boxed { value: 9 };
+                let b2 = id<Boxed>(b);
+                return b2.value;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed.trait_violations.is_empty());
+        assert!(typed
+            .generic_specializations
+            .iter()
+            .any(|entry| entry.starts_with("id<")));
+    }
+
+    #[test]
+    fn flags_missing_trait_impl_for_specialization() {
+        let source = r#"
+            trait Show { fn show(v: i32) -> i32; }
+            fn id<T: Show>(v: T) -> T { return v; }
+            fn main() -> i32 {
+                let v: i32 = 4;
+                let _ = id<i32>(v);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(!typed.trait_violations.is_empty());
     }
 }

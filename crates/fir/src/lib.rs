@@ -81,6 +81,7 @@ pub struct FirModule {
     pub extern_c_abi_functions: usize,
     pub repr_c_layout_items: usize,
     pub generic_instantiations: Vec<String>,
+    pub generic_specializations: Vec<String>,
     pub call_graph: Vec<(String, String)>,
     pub functions: Vec<FunctionIr>,
     pub typed_functions: Vec<TypedFunction>,
@@ -88,6 +89,7 @@ pub struct FirModule {
     pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
     pub ownership_violations: Vec<String>,
     pub capability_token_violations: Vec<String>,
+    pub trait_violations: Vec<String>,
     pub reference_lifetime_violations: Vec<String>,
     pub linear_type_violations: Vec<String>,
 }
@@ -133,6 +135,7 @@ pub fn build(typed: &TypedModule) -> FirModule {
         extern_c_abi_functions: typed.extern_c_abi_functions,
         repr_c_layout_items: typed.repr_c_layout_items,
         generic_instantiations: typed.generic_instantiations.clone(),
+        generic_specializations: typed.generic_specializations.clone(),
         call_graph: typed.call_graph.clone(),
         functions: typed
             .typed_functions
@@ -144,6 +147,7 @@ pub fn build(typed: &TypedModule) -> FirModule {
         function_capability_requirements: typed.function_capability_requirements.clone(),
         ownership_violations: typed.ownership_violations.clone(),
         capability_token_violations: typed.capability_token_violations.clone(),
+        trait_violations: typed.trait_violations.clone(),
         reference_lifetime_violations: typed.reference_lifetime_violations.clone(),
         linear_type_violations: typed.linear_type_violations.clone(),
     }
