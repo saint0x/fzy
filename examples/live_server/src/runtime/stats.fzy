@@ -1,9 +1,14 @@
 use cap.thread;
 use cap.time;
+use cap.fs;
 
 fn sample() -> i32 {
     checkpoint()
+    metrics.gauge()
+    metrics.gauge()
+    metrics.gauge()
     time.now()
+    fs.write()
     yield()
     return 0
 }

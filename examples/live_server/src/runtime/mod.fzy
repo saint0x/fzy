@@ -5,6 +5,7 @@ mod supervisor;
 mod stats;
 
 fn start() -> i32 {
+    runtime.profile()
     spawn(acceptor.run)
     spawn(worker.run)
     spawn(scheduler.tick)

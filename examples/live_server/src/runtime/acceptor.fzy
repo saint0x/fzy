@@ -1,6 +1,11 @@
 use cap.thread;
+use cap.net;
 
 fn run() -> i32 {
+    let listener = net.bind()
+    net.listen(listener)
+    let conn = net.accept(listener)
+    net.poll_register(conn)
     checkpoint()
     return 0
 }

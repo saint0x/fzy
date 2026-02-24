@@ -1,8 +1,22 @@
 mod scheduler;
 mod worker;
 
+fn configure_profile() -> i32 {
+    env.load_typed_config()
+    runtime.profile()
+    return 0
+}
+
 fn start() -> i32 {
     spawn(worker.run)
     spawn(scheduler.tick)
+    return 0
+}
+
+fn begin_shutdown_drain() -> i32 {
+    signal.watch()
+    runtime.shutdown_begin(2000)
+    runtime.shutdown_drain()
+    runtime.shutdown_ready()
     return 0
 }

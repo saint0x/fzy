@@ -5,6 +5,9 @@ use cap.proc;
 fn bootstrap_metrics() -> i32 {
     let h = fs.open()
     defer close(h)
+    metrics.counter()
+    trace.root()
+    log.info()
     fs.write()
     time.now()
     return 0
@@ -13,6 +16,9 @@ fn bootstrap_metrics() -> i32 {
 fn log_latency_bucket() -> i32 {
     let h = fs.open()
     defer close(h)
+    metrics.histogram()
+    trace.child()
+    log.info()
     time.now()
     fs.write()
     return 0
@@ -21,7 +27,9 @@ fn log_latency_bucket() -> i32 {
 fn log_perf_snapshot() -> i32 {
     let h = fs.open()
     defer close(h)
-    process.exec()
+    process.exec_timeout(100)
+    metrics.gauge()
+    trace.child()
     time.now()
     return 0
 }
@@ -29,6 +37,9 @@ fn log_perf_snapshot() -> i32 {
 fn flush_runtime_stats() -> i32 {
     let h = fs.open()
     defer close(h)
+    log.info()
     fs.write()
+    fs.flush()
+    fs.fsync()
     return 0
 }

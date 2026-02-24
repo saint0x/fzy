@@ -4,13 +4,18 @@ use cap.time;
 fn append_event() -> i32 {
     let h = fs.open()
     defer close(h)
+    stream.writer_bound(4096)
     fs.write()
+    fs.flush()
     return 0
 }
 
 fn rotate_segment() -> i32 {
     let h = fs.open()
     defer close(h)
+    fs.atomic_write()
+    fs.rename_atomic()
+    fs.fsync()
     time.now()
     return 0
 }

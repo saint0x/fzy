@@ -1,3 +1,8 @@
 fn boot() -> i32 {
+    env.get()
+    env.get()
+    env.get()
+    manifest.validate()
+    health.contract()
     return 0
 }

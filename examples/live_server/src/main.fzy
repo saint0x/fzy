@@ -22,7 +22,8 @@ fn main() -> i32 {
     runtime.start()
     api.touch()
 
-    let listener = net.connect()
+    let listener = net.bind()
+    net.listen(listener)
     defer close(listener)
 
     let heap: *u8 = alloc(512)
@@ -45,6 +46,12 @@ fn main() -> i32 {
     services.telemetry.flush_runtime_stats()
     services.replication.push_state()
 
+    runtime.acceptor.run()
+    runtime.worker.run()
+    runtime.scheduler.tick()
+    runtime.supervisor.guard()
+    runtime.stats.sample()
+
     checkpoint()
     yield()
     spawn(runtime.acceptor.run)
@@ -59,6 +66,7 @@ fn main() -> i32 {
     timeout(30)
     cancel()
 
+    runtime.supervisor.begin_graceful_shutdown()
     syscall.sync()
 
     ensures true

@@ -1,6 +1,17 @@
 use cap.proc;
+use cap.time;
 
 fn guard() -> i32 {
-    process.exec()
+    signal.watch()
+    signal.watch()
+    process.exec_timeout(500)
+    time.now()
+    return 0
+}
+
+fn begin_graceful_shutdown() -> i32 {
+    runtime.shutdown_begin(5000)
+    runtime.shutdown_drain()
+    runtime.shutdown_ready()
     return 0
 }

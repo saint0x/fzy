@@ -1,31 +1,37 @@
 use cap.proc;
+use cap.fs;
 
 fn cmd_init() -> i32 {
-    process.exec()
+    env.get()
+    process.exec_timeout(200)
     return 0
 }
 
 fn cmd_set() -> i32 {
-    process.exec()
+    process.exec_timeout(200)
+    fs.flush()
     return 0
 }
 
 fn cmd_get() -> i32 {
-    process.exec()
+    process.exec_timeout(200)
     return 0
 }
 
 fn cmd_list() -> i32 {
-    process.exec()
+    process.exec_timeout(200)
     return 0
 }
 
 fn cmd_compact() -> i32 {
-    process.exec()
+    fs.atomic_write()
+    fs.rename_atomic()
+    fs.fsync()
     return 0
 }
 
 fn cmd_export() -> i32 {
-    process.exec()
+    process.exec_timeout(500)
+    process.exit_class()
     return 0
 }

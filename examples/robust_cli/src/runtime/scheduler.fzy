@@ -1,6 +1,10 @@
 use cap.thread;
+use cap.time;
 
 fn tick() -> i32 {
+    queue.bound(256)
+    poll.wait(50)
     checkpoint()
+    time.now()
     return 0
 }

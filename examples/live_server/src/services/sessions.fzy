@@ -3,11 +3,14 @@ use cap.time;
 
 fn issue_token() -> i32 {
     try rng.seed() catch 1
+    secret.zeroize_boundary()
+    log.redact()
     time.now()
     return 0
 }
 
 fn validate_token() -> i32 {
+    trace.child()
     time.now()
     return 0
 }

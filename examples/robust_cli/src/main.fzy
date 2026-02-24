@@ -17,6 +17,7 @@ fn main() -> i32 {
     requires true
 
     model.preflight()
+    runtime.configure_profile()
     cli.boot()
     services.boot_all()
     runtime.start()
@@ -42,12 +43,17 @@ fn main() -> i32 {
     services.journal.append_event()
     services.journal.rotate_segment()
     services.audit.log_access()
+    services.audit.audit_privileged_op()
+
+    runtime.scheduler.tick()
+    runtime.worker.run()
 
     checkpoint()
     yield()
     spawn(runtime.worker.run)
     spawn(runtime.scheduler.tick)
 
+    runtime.begin_shutdown_drain()
     syscall.sync()
 
     ensures true

@@ -1,6 +1,14 @@
 use cap.thread;
+use cap.mem;
 
 fn run() -> i32 {
+    mutex.lock()
+    channel.send()
+    channel.recv()
+    pool.buffer_checkout()
+    pool.buffer_checkin()
+    condvar.signal()
     yield()
+    mutex.unlock()
     return 0
 }

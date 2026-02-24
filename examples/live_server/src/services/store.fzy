@@ -4,6 +4,8 @@ use cap.mem;
 fn read_user() -> i32 {
     let h = fs.open()
     defer close(h)
+    fs.lock()
+    stream.reader_bound(4096)
     fs.read()
     return 0
 }
@@ -11,6 +13,11 @@ fn read_user() -> i32 {
 fn write_user() -> i32 {
     let h = fs.open()
     defer close(h)
+    fs.lock()
+    fs.atomic_write()
+    fs.rename_atomic()
+    fs.flush()
+    fs.fsync()
     fs.write()
     return 0
 }

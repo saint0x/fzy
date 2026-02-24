@@ -2,8 +2,15 @@ use cap.proc;
 use cap.fs;
 
 fn log_access() -> i32 {
-    process.exec()
+    process.exec_timeout(200)
     let h = fs.open()
     defer close(h)
+    log.info()
+    return 0
+}
+
+fn audit_privileged_op() -> i32 {
+    capability.audit()
+    secret.redact()
     return 0
 }

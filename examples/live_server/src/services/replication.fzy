@@ -2,6 +2,8 @@ use cap.net;
 
 fn push_state() -> i32 {
     let conn = net.connect()
-    defer close(conn)
+    net.write(conn)
+    net.read(conn)
+    net.close(conn)
     return 0
 }
