@@ -1,5 +1,5 @@
-use cap.thread;
-use cap.net;
+use core.thread;
+use core.net;
 
 fn run() -> i32 {
     channel.send()

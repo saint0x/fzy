@@ -38,7 +38,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         report.diagnostics.push(Diagnostic::new(
             Severity::Warning,
             "module has declarations but no explicit capabilities",
-            Some("declare required capabilities with `use cap.<name>;`".to_string()),
+            Some("declare required capabilities with `use core.<name>;`".to_string()),
         ));
     }
 
@@ -48,7 +48,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 Severity::Error,
                 format!("missing required capability: {}", required.as_str()),
                 Some(format!(
-                    "add `use cap.{};` to module scope",
+                    "add `use core.{};` to module scope",
                     required.as_str()
                 )),
             ));
@@ -65,7 +65,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                             function.function, required
                         ),
                         Some(format!(
-                            "declare `use cap.{}` or propagate a capability token to `{}`",
+                            "declare `use core.{}` or propagate a capability token to `{}`",
                             required, function.function
                         )),
                     ));

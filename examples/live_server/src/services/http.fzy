@@ -1,5 +1,5 @@
-use cap.net;
-use cap.time;
+use core.net;
+use core.time;
 
 fn listen_public() -> i32 {
     let listener = try net.bind() catch net.bind()

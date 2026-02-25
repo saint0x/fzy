@@ -1,4 +1,4 @@
-use cap.thread;
+use core.thread;
 
 fn tick() -> i32 {
     checkpoint()

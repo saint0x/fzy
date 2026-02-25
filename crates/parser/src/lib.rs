@@ -19,7 +19,7 @@ enum TokenKind {
     KwAsync,
     KwRpc,
     KwUse,
-    KwCap,
+    KwCore,
     KwMod,
     KwStruct,
     KwEnum,
@@ -226,9 +226,9 @@ impl Parser {
 
     fn parse_use_or_cap(&mut self) {
         let _ = self.consume(&TokenKind::KwUse);
-        if self.consume(&TokenKind::KwCap) {
+        if self.consume(&TokenKind::KwCore) {
             if !self.consume(&TokenKind::Dot) {
-                self.push_diag_here("expected `.` after `use cap`");
+                self.push_diag_here("expected `.` after `use core`");
                 return;
             }
             let Some(cap) = self.expect_ident("expected capability name") else {
@@ -1183,7 +1183,7 @@ impl Parser {
             TokenKind::KwAsync => Some("async".to_string()),
             TokenKind::KwRpc => Some("rpc".to_string()),
             TokenKind::KwUse => Some("use".to_string()),
-            TokenKind::KwCap => Some("cap".to_string()),
+            TokenKind::KwCore => Some("core".to_string()),
             TokenKind::KwMod => Some("mod".to_string()),
             TokenKind::KwStruct => Some("struct".to_string()),
             TokenKind::KwEnum => Some("enum".to_string()),
@@ -1607,7 +1607,7 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "async" => TokenKind::KwAsync,
         "rpc" => TokenKind::KwRpc,
         "use" => TokenKind::KwUse,
-        "cap" => TokenKind::KwCap,
+        "core" => TokenKind::KwCore,
         "mod" => TokenKind::KwMod,
         "struct" => TokenKind::KwStruct,
         "enum" => TokenKind::KwEnum,
@@ -1640,7 +1640,7 @@ mod tests {
     #[test]
     fn parses_if_while_and_calls() {
         let source = r#"
-            use cap.net;
+            use core.net;
             fn add(x: i32, y: i32) -> i32 { return x + y; }
             fn main() -> i32 {
                 let v: i32 = add(1, 2);

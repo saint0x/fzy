@@ -95,7 +95,7 @@ Semantics:
 
 ## Capability Semantics
 
-- Capabilities are declared by `use cap.<name>;` at module scope.
+- Capabilities are declared by `use core.<name>;` at module scope.
 - Core capabilities include: `time`, `rng`, `fs`, `net`, `proc`, `mem`, `thread`.
 - Verifier emits diagnostics for unknown or missing required capabilities.
 
@@ -104,8 +104,8 @@ Semantics:
 - Using runtime operations tied to known effects infers required capability effects.
 - Examples:
   - `spawn(...)`, `yield()`, `checkpoint()` infer thread/runtime scheduling effects.
-  - filesystem operations infer `cap.fs`.
-  - networking operations infer `cap.net`.
+  - filesystem operations infer `core.fs`.
+  - networking operations infer `core.net`.
 - Inference does not replace declaration requirements: inferred effects must still be satisfied by explicit module capabilities or propagated capability tokens.
 
 ## Test Block Semantics
@@ -162,7 +162,7 @@ test "chaos_case" nondet {
 
 - Missing capability:
   - `missing required capability: net`
-  - Fix: add `use cap.net;` or propagate capability token.
+  - Fix: add `use core.net;` or propagate capability token.
 - Unknown capability:
   - `unknown capability: foo`
   - Fix: use one of the supported capability names.

@@ -1,4 +1,4 @@
-use cap.rng;
+use core.rng;
 
 fn init() -> i32 {
     try rng.seed() catch 1

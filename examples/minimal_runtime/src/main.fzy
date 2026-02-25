@@ -1,7 +1,7 @@
-use cap.time;
-use cap.fs;
-use cap.net;
-use cap.thread;
+use core.time;
+use core.fs;
+use core.net;
+use core.thread;
 
 mod api;
 mod model;

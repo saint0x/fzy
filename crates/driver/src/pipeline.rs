@@ -6982,7 +6982,7 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "use cap.time;\nfn main() -> i32 {\n    return 0\n}\n",
+            "use core.time;\nfn main() -> i32 {\n    return 0\n}\n",
         )
         .expect("temp source should be written");
 
@@ -7012,7 +7012,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "use cap.time;\nfn main() -> i32 {\n    return 0\n}\n",
+            "use core.time;\nfn main() -> i32 {\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -7044,7 +7044,7 @@ mod tests {
             "mod infra;\nfn main() -> i32 {\n    let listener = net.bind()\n    return listener\n}\n",
         )
         .expect("main source should be written");
-        std::fs::write(root.join("src/infra.fzy"), "use cap.net;\n")
+        std::fs::write(root.join("src/infra.fzy"), "use core.net;\n")
             .expect("module source should be written");
 
         let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
@@ -7217,7 +7217,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "use cap.net;\nfn main() -> i32 {\n    let listener = net.bind()\n    return listener\n}\n",
+            "use core.net;\nfn main() -> i32 {\n    let listener = net.bind()\n    return listener\n}\n",
         )
         .expect("source should be written");
 
@@ -7240,7 +7240,7 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "use cap.net;\nfn main() -> i32 {\n    let c = net.connect()\n    return 0\n}\n",
+            "use core.net;\nfn main() -> i32 {\n    let c = net.connect()\n    return 0\n}\n",
         )
         .expect("temp source should be written");
 
@@ -7432,7 +7432,7 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "use cap.net;\nfn main() -> i32 {\n    let listener = net.bind()\n    net.listen(listener)\n    return 0\n}\n",
+            "use core.net;\nfn main() -> i32 {\n    let listener = net.bind()\n    net.listen(listener)\n    return 0\n}\n",
         )
         .expect("temp source should be written");
 

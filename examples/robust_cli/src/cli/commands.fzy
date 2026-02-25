@@ -1,5 +1,5 @@
-use cap.proc;
-use cap.fs;
+use core.proc;
+use core.fs;
 
 fn cmd_init() -> i32 {
     env.get()

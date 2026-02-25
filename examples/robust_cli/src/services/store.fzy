@@ -1,6 +1,6 @@
-use cap.fs;
-use cap.mem;
-use cap.time;
+use core.fs;
+use core.mem;
+use core.time;
 
 fn open_db() -> i32 {
     let handle = fs.open()

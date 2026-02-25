@@ -1,5 +1,5 @@
-use cap.proc;
-use cap.time;
+use core.proc;
+use core.time;
 
 fn guard() -> i32 {
     signal.watch()

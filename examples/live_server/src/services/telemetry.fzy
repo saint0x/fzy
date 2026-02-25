@@ -1,6 +1,6 @@
-use cap.fs;
-use cap.time;
-use cap.proc;
+use core.fs;
+use core.time;
+use core.proc;
 
 fn bootstrap_metrics() -> i32 {
     let h = fs.open()

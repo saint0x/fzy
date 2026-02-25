@@ -2810,7 +2810,7 @@ mod tests {
     #[test]
     fn net_path_routing_typechecks_and_keeps_entry_i32() {
         let source = r#"
-            use cap.net;
+            use core.net;
             fn main() -> i32 {
                 let l = net.bind();
                 net.listen(l);
@@ -2847,7 +2847,7 @@ mod tests {
     #[test]
     fn process_spawn_string_command_typechecks() {
         let source = r#"
-            use cap.proc;
+            use core.proc;
             fn main() -> i32 {
                 process.spawn("echo hi");
                 return 0;
@@ -2861,7 +2861,7 @@ mod tests {
     #[test]
     fn process_spawn_non_string_reports_detail() {
         let source = r#"
-            use cap.proc;
+            use core.proc;
             fn main() -> i32 {
                 process.spawn(1);
                 return 0;
@@ -2879,7 +2879,7 @@ mod tests {
     #[test]
     fn process_spawnv_with_json_args_typechecks() {
         let source = r#"
-            use cap.proc;
+            use core.proc;
             fn main() -> i32 {
                 process.spawnv("echo", "[\"hi\"]", "{\"K\":\"V\"}", "stdin");
                 return 0;
@@ -2893,7 +2893,7 @@ mod tests {
     #[test]
     fn http_capture_and_json_builders_typecheck() {
         let source = r#"
-            use cap.net;
+            use core.net;
             fn main() -> i32 {
                 let user = json.str("hello");
                 let msg = json.object2("role", json.str("user"), "content", user);
@@ -2912,8 +2912,8 @@ mod tests {
     #[test]
     fn extended_runtime_primitives_typecheck() {
         let source = r#"
-            use cap.net;
-            use cap.proc;
+            use core.net;
+            use core.proc;
             fn main() -> i32 {
                 let l = list.new();
                 list.push(l, "a");

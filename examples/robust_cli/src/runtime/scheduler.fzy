@@ -1,5 +1,5 @@
-use cap.thread;
-use cap.time;
+use core.thread;
+use core.time;
 
 fn tick() -> i32 {
     queue.bound(256)

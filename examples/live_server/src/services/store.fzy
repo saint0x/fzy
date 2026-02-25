@@ -1,5 +1,5 @@
-use cap.fs;
-use cap.mem;
+use core.fs;
+use core.mem;
 
 fn read_user() -> i32 {
     let h = fs.open()

@@ -1,6 +1,6 @@
-use cap.thread;
-use cap.time;
-use cap.fs;
+use core.thread;
+use core.time;
+use core.fs;
 
 fn sample() -> i32 {
     checkpoint()

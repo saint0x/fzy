@@ -666,7 +666,7 @@ fn init_project(name: &str) -> Result<()> {
     std::fs::write(root.join("fozzy.toml"), &manifest).context("failed to write fozzy.toml")?;
     std::fs::write(
         src.join("main.fzy"),
-        "use cap.time;\nuse cap.fs;\nuse cap.net;\nuse cap.thread;\n\nmod api;\nmod model;\nmod services;\nmod runtime;\nmod cli;\nmod tests;\n\nfn main() -> i32 {\n    requires true\n\n    model.preflight()\n    cli.boot()\n    services.boot_all()\n    runtime.start()\n    api.touch()\n\n    ensures true\n    return 0\n}\n",
+        "use core.time;\nuse core.fs;\nuse core.net;\nuse core.thread;\n\nmod api;\nmod model;\nmod services;\nmod runtime;\nmod cli;\nmod tests;\n\nfn main() -> i32 {\n    requires true\n\n    model.preflight()\n    cli.boot()\n    services.boot_all()\n    runtime.start()\n    api.touch()\n\n    ensures true\n    return 0\n}\n",
     )
     .context("failed to write src/main.fzy")?;
     std::fs::write(
@@ -706,12 +706,12 @@ fn init_project(name: &str) -> Result<()> {
     .context("failed to write src/services/mod.fzy")?;
     std::fs::write(
         src.join("services/store.fzy"),
-        "use cap.fs;\n\nfn init() -> i32 {\n    let handle = fs.open()\n    defer close(handle)\n    return 0\n}\n",
+        "use core.fs;\n\nfn init() -> i32 {\n    let handle = fs.open()\n    defer close(handle)\n    return 0\n}\n",
     )
     .context("failed to write src/services/store.fzy")?;
     std::fs::write(
         src.join("services/http.fzy"),
-        "use cap.net;\n\nfn start() -> i32 {\n    let conn = net.connect()\n    defer close(conn)\n    return 0\n}\n",
+        "use core.net;\n\nfn start() -> i32 {\n    let conn = net.connect()\n    defer close(conn)\n    return 0\n}\n",
     )
     .context("failed to write src/services/http.fzy")?;
     std::fs::write(
@@ -721,12 +721,12 @@ fn init_project(name: &str) -> Result<()> {
     .context("failed to write src/runtime/mod.fzy")?;
     std::fs::write(
         src.join("runtime/scheduler.fzy"),
-        "use cap.thread;\n\nfn tick() -> i32 {\n    checkpoint()\n    return 0\n}\n",
+        "use core.thread;\n\nfn tick() -> i32 {\n    checkpoint()\n    return 0\n}\n",
     )
     .context("failed to write src/runtime/scheduler.fzy")?;
     std::fs::write(
         src.join("runtime/worker.fzy"),
-        "use cap.thread;\n\nfn run() -> i32 {\n    yield()\n    return 0\n}\n",
+        "use core.thread;\n\nfn run() -> i32 {\n    yield()\n    return 0\n}\n",
     )
     .context("failed to write src/runtime/worker.fzy")?;
     std::fs::write(
@@ -5857,7 +5857,7 @@ mod tests {
         std::fs::write(
             &source,
             format!(
-                "use cap.proc;\nuse cap.thread;\n\nfn worker() -> i32 {{\n    process.run(\"/bin/sh -lc 'echo spawned > {quoted_out}'\")\n    return 0\n}}\n\nfn main() -> i32 {{\n    spawn(worker)\n    return 0\n}}\n"
+                "use core.proc;\nuse core.thread;\n\nfn worker() -> i32 {{\n    process.run(\"/bin/sh -lc 'echo spawned > {quoted_out}'\")\n    return 0\n}}\n\nfn main() -> i32 {{\n    spawn(worker)\n    return 0\n}}\n"
             ),
         )
         .expect("source should be written");
@@ -5999,7 +5999,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-run-det-route-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "use cap.fs;\nfn main() -> i32 {\n    fs.open()\n    return 0\n}\n",
+            "use core.fs;\nfn main() -> i32 {\n    fs.open()\n    return 0\n}\n",
         )
         .expect("source should be written");
 

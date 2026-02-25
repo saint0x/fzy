@@ -1,5 +1,5 @@
-use cap.rng;
-use cap.time;
+use core.rng;
+use core.time;
 
 fn issue_token() -> i32 {
     try rng.seed() catch 1

@@ -1,5 +1,5 @@
-use cap.fs;
-use cap.time;
+use core.fs;
+use core.time;
 
 fn init() -> i32 {
     let metrics = fs.open()

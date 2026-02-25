@@ -1,5 +1,5 @@
-use cap.thread;
-use cap.mem;
+use core.thread;
+use core.mem;
 
 fn run() -> i32 {
     mutex.lock()

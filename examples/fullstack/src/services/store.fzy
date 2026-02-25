@@ -1,5 +1,5 @@
-use cap.fs;
-use cap.mem;
+use core.fs;
+use core.mem;
 
 fn init() -> i32 {
     let db = fs.open()

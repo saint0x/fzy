@@ -1,5 +1,5 @@
-use cap.proc;
-use cap.fs;
+use core.proc;
+use core.fs;
 
 fn log_access() -> i32 {
     process.exec_timeout(200)

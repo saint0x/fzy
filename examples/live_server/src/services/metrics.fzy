@@ -1,5 +1,5 @@
-use cap.fs;
-use cap.time;
+use core.fs;
+use core.time;
 
 fn record_req() -> i32 {
     let h = fs.open()
