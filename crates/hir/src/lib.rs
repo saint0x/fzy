@@ -2674,6 +2674,20 @@ fn type_check_stmt(
                     errors,
                     type_error_details,
                 );
+                if arm.returns {
+                    if let Some(actual) = value_ty.as_ref() {
+                        if !type_compatible(expected_return, actual) {
+                            record_type_error(
+                                errors,
+                                type_error_details,
+                                format!(
+                                    "return type mismatch: expected `{}`, got `{}`",
+                                    expected_return, actual
+                                ),
+                            );
+                        }
+                    }
+                }
                 let _ = value_ty;
             }
         }
@@ -3911,7 +3925,9 @@ fn stmt_has_explicit_return(stmt: &Stmt) -> bool {
                 || else_body.iter().any(stmt_has_explicit_return)
         }
         Stmt::While { body, .. } => body.iter().any(stmt_has_explicit_return),
-        Stmt::Match { arms, .. } => arms.iter().any(|arm| expr_has_nested_return(&arm.value)),
+        Stmt::Match { arms, .. } => arms
+            .iter()
+            .any(|arm| arm.returns || expr_has_nested_return(&arm.value)),
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
         | Stmt::Expr(value)
@@ -3975,8 +3991,12 @@ fn eval_block<'a>(
                         None => true,
                     };
                     if guard_ok && pattern_matches(&arm.pattern, &value) {
-                        let out = eval_expr(&arm.value, env, functions)?;
-                        return Some(out);
+                        if arm.returns {
+                            let out = eval_expr(&arm.value, env, functions)?;
+                            return Some(out);
+                        }
+                        let _ = eval_expr(&arm.value, env, functions)?;
+                        break;
                     }
                 }
             }
@@ -3991,10 +4011,7 @@ fn eval_expr<'a>(
     env: &BTreeMap<String, Value>,
     functions: &HashMap<&'a str, &'a TypedFunction>,
 ) -> Option<Value> {
-    fn has_function_ref(
-        functions: &HashMap<&str, &TypedFunction>,
-        candidate: &str,
-    ) -> bool {
+    fn has_function_ref(functions: &HashMap<&str, &TypedFunction>, candidate: &str) -> bool {
         if functions.contains_key(candidate) {
             return true;
         }
@@ -4144,9 +4161,7 @@ fn pattern_matches(pattern: &ast::Pattern, value: &Value) -> bool {
         (ast::Pattern::Ident(_), _) => true,
         (
             ast::Pattern::Variant {
-                enum_name,
-                variant,
-                ..
+                enum_name, variant, ..
             },
             Value::Enum {
                 enum_name: value_enum_name,
@@ -4475,6 +4490,42 @@ mod tests {
             .type_error_details
             .iter()
             .any(|detail| detail.contains("does not match scrutinee enum")));
+    }
+
+    #[test]
+    fn match_arm_return_typechecks_and_counts_as_explicit_return() {
+        let source = r#"
+            fn main() -> i32 {
+                match 1 {
+                    1 => return 7,
+                    _ => 0,
+                };
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn match_arm_return_type_mismatch_reports_error() {
+        let source = r#"
+            fn main() -> i32 {
+                match 1 {
+                    1 => return true,
+                    _ => 0,
+                };
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("return type mismatch")));
     }
 
     #[test]

@@ -573,7 +573,11 @@ mod tests {
         let command = parse_command(&args).expect("run should parse without explicit path");
         let cwd = std::env::current_dir().expect("cwd should resolve");
         match command {
-            Command::Run { path, deterministic, .. } => {
+            Command::Run {
+                path,
+                deterministic,
+                ..
+            } => {
                 assert_eq!(path, cwd);
                 assert!(deterministic);
             }

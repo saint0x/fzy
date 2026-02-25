@@ -754,35 +754,23 @@ impl Parser {
                         self.push_diag_here("expected `=>` in match arm");
                         return None;
                     }
-                    if self.at(&TokenKind::KwReturn) {
-                        self.push_diag_here(
-                            "`return` is not allowed directly in a match arm expression; return after `match`",
-                        );
-                        self.consume_until(&[TokenKind::Comma, TokenKind::RBrace]);
-                        let _ = self.consume(&TokenKind::Comma);
-                        continue;
-                    }
+                    let returns = self.consume(&TokenKind::KwReturn);
                     let value = self.parse_expr(0)?;
                     arms.push(MatchArm {
                         pattern,
                         guard,
+                        returns,
                         value,
                     });
                     let _ = self.consume(&TokenKind::Comma);
                     continue;
                 }
-                if self.at(&TokenKind::KwReturn) {
-                    self.push_diag_here(
-                        "`return` is not allowed directly in a match arm expression; return after `match`",
-                    );
-                    self.consume_until(&[TokenKind::Comma, TokenKind::RBrace]);
-                    let _ = self.consume(&TokenKind::Comma);
-                    continue;
-                }
+                let returns = self.consume(&TokenKind::KwReturn);
                 let value = self.parse_expr(0)?;
                 arms.push(MatchArm {
                     pattern,
                     guard: None,
+                    returns,
                     value,
                 });
                 let _ = self.consume(&TokenKind::Comma);
@@ -1961,7 +1949,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_return_in_match_arm_expression() {
+    fn allows_return_in_match_arm_expression() {
         let source = r#"
             fn main() -> i32 {
                 match 1 {
@@ -1971,11 +1959,26 @@ mod tests {
                 return 0;
             }
         "#;
-        let diagnostics = parse(source, "main").expect_err("parse should fail");
-        assert!(diagnostics.iter().any(|diag| {
-            diag.message
-                .contains("`return` is not allowed directly in a match arm expression")
-        }));
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main should exist");
+        let arm_returns = main_fn
+            .body
+            .iter()
+            .find_map(|stmt| match stmt {
+                ast::Stmt::Match { arms, .. } => {
+                    Some(arms.iter().map(|arm| arm.returns).collect::<Vec<_>>())
+                }
+                _ => None,
+            })
+            .expect("match should exist");
+        assert_eq!(arm_returns, vec![true, false]);
     }
 
     #[test]

@@ -13,8 +13,7 @@ struct Token {
 }
 
 pub fn is_fzy_source_path(path: &std::path::Path) -> bool {
-    path
-        .extension()
+    path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext == "fzy")
 }
@@ -119,7 +118,9 @@ pub fn format_source(source: &str) -> String {
                         out.push(';');
                         if paren_depth == 0 && bracket_depth == 0 {
                             push_newline(&mut out, &mut line_start);
-                        } else if !next.is_some_and(|t| t.kind == TokenKind::Symbol && t.text == "]") {
+                        } else if !next
+                            .is_some_and(|t| t.kind == TokenKind::Symbol && t.text == "]")
+                        {
                             out.push(' ');
                         }
                     }
@@ -127,8 +128,10 @@ pub fn format_source(source: &str) -> String {
                         write_indent(&mut out, line_start, indent);
                         line_start = false;
                         out.push(',');
-                        if !next.is_some_and(|t| t.kind == TokenKind::Symbol && (t.text == ")" || t.text == "]" || t.text == "}"))
-                        {
+                        if !next.is_some_and(|t| {
+                            t.kind == TokenKind::Symbol
+                                && (t.text == ")" || t.text == "]" || t.text == "}")
+                        }) {
                             out.push(' ');
                         }
                     }
@@ -217,8 +220,7 @@ fn needs_word_space(prev: Option<&Token>, current: &Token) -> bool {
         TokenKind::Symbol => {
             !matches!(
                 prev.text.as_str(),
-                "("
-                    | "["
+                "(" | "["
                     | "{"
                     | "#"
                     | "."
@@ -243,8 +245,7 @@ fn needs_word_space(prev: Option<&Token>, current: &Token) -> bool {
                     | "/"
                     | "&"
                     | "|"
-            )
-                && !matches!(current.kind, TokenKind::Comment)
+            ) && !matches!(current.kind, TokenKind::Comment)
         }
         TokenKind::Comment => true,
     }

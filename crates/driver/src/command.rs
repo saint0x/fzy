@@ -376,13 +376,18 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     child.args(&args);
                     child.stdout(Stdio::inherit());
                     child.stderr(Stdio::inherit());
-                    let status = child.spawn().with_context(|| {
-                        format!("failed to execute native artifact: {}", binary.display())
-                    })?
-                    .wait()
-                    .with_context(|| {
-                        format!("failed while waiting for native artifact: {}", binary.display())
-                    })?;
+                    let status = child
+                        .spawn()
+                        .with_context(|| {
+                            format!("failed to execute native artifact: {}", binary.display())
+                        })?
+                        .wait()
+                        .with_context(|| {
+                            format!(
+                                "failed while waiting for native artifact: {}",
+                                binary.display()
+                            )
+                        })?;
                     let exit_code = status.code().unwrap_or(1);
                     let message = render_text_fields(&[
                         (
@@ -1083,13 +1088,9 @@ fn render_output(format: Format, output: Output) -> String {
 fn render_run_compile_abort(format: Format, artifact: &BuildArtifact) -> String {
     match format {
         Format::Text => {
-            let mut rendered = String::from("run aborted before execution due to compile-time diagnostics\n");
-            rendered.push_str(&render_artifact(
-                Format::Text,
-                artifact.clone(),
-                None,
-                None,
-            ));
+            let mut rendered =
+                String::from("run aborted before execution due to compile-time diagnostics\n");
+            rendered.push_str(&render_artifact(Format::Text, artifact.clone(), None, None));
             rendered
         }
         Format::Json => serde_json::json!({
@@ -2958,7 +2959,10 @@ fn run_non_scenario_test_plan(
             diagnostic.path = Some(resolved.source_path.display().to_string());
         }
     }
-    diagnostics::assign_stable_codes(&mut verify_diagnostics, diagnostics::DiagnosticDomain::Driver);
+    diagnostics::assign_stable_codes(
+        &mut verify_diagnostics,
+        diagnostics::DiagnosticDomain::Driver,
+    );
     let diagnostics = verify_diagnostics.len();
     let has_errors = verify_diagnostics
         .iter()
@@ -6181,8 +6185,7 @@ fn format_source_target(path: &Path) -> Result<usize> {
                 changed += format_source_target(&entry_path)?;
                 continue;
             }
-            if entry_path
-                .is_file()
+            if entry_path.is_file()
                 && is_fzy_source_path(&entry_path)
                 && format_source_file(&entry_path)?
             {

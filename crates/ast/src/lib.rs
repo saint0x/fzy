@@ -186,6 +186,7 @@ pub enum BinaryOp {
 pub struct MatchArm {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
+    pub returns: bool,
     pub value: Expr,
 }
 

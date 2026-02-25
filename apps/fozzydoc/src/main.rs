@@ -450,7 +450,9 @@ fn clean_signature(line: &str) -> String {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{extract_items, parse_decl, render_html, render_markdown, strip_leading_attributes};
+    use super::{
+        extract_items, parse_decl, render_html, render_markdown, strip_leading_attributes,
+    };
 
     #[test]
     fn parse_declaration_kinds() {

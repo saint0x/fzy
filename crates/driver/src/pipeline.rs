@@ -2245,8 +2245,13 @@ fn llvm_emit_block(
                         ));
                     }
                     ctx.code.push_str(&format!("{arm_label}:\n"));
-                    let _ = llvm_emit_expr(&arm.value, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  br label %{end_label}\n"));
+                    let arm_value =
+                        llvm_emit_expr(&arm.value, ctx, string_literal_ids, task_ref_ids);
+                    if arm.returns {
+                        ctx.code.push_str(&format!("  ret i32 {arm_value}\n"));
+                    } else {
+                        ctx.code.push_str(&format!("  br label %{end_label}\n"));
+                    }
                 }
                 ctx.code.push_str(&format!("{end_label}:\n"));
             }
@@ -2283,9 +2288,7 @@ fn llvm_emit_match_pattern_pred(
             pred
         }
         ast::Pattern::Variant {
-            enum_name,
-            variant,
-            ..
+            enum_name, variant, ..
         } => {
             let key = format!("{enum_name}::{variant}");
             let tag = variant_tag(&key);
@@ -4175,7 +4178,7 @@ fn clif_emit_block(
                     }
 
                     builder.switch_to_block(arm_block);
-                    let _ = clif_emit_expr(
+                    let arm_value = clif_emit_expr(
                         builder,
                         module,
                         function_ids,
@@ -4186,7 +4189,11 @@ fn clif_emit_block(
                         string_literal_ids,
                         task_ref_ids,
                     )?;
-                    builder.ins().jump(end_block, &[]);
+                    if arm.returns {
+                        builder.ins().return_(&[arm_value.value]);
+                    } else {
+                        builder.ins().jump(end_block, &[]);
+                    }
                     builder.seal_block(arm_block);
                 }
                 builder.switch_to_block(end_block);
@@ -4217,9 +4224,7 @@ fn clif_emit_match_pattern_pred(
             builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
         }
         ast::Pattern::Variant {
-            enum_name,
-            variant,
-            ..
+            enum_name, variant, ..
         } => {
             let key = format!("{enum_name}::{variant}");
             let rhs = builder.ins().iconst(scrutinee.ty, variant_tag(&key) as i64);

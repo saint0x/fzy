@@ -50,6 +50,15 @@
 - [✅] Upgrade all exhibition/smoke/example repos to canonical `Type::Variant` idioms once compiler semantics are stabilized.
 - [✅] Publish and freeze enum/match style guide in docs with explicit "idiomatic Fozzy" guidance and migration notes.
 
+### Match Arm Early-Return Semantics (Production DX Closure, No Backwards Compatibility)
+- [✅] Remove parser-level hard rejection of `return` inside match arms.
+- [✅] Add first-class AST encoding for match-arm early-return intent (`returns` on `MatchArm`).
+- [✅] Lower match-arm early returns correctly in both LLVM and Cranelift native backends.
+- [✅] Enforce return-type compatibility for early-return match arms during type checking.
+- [✅] Align interpreter/evaluator semantics so non-return match arms do not implicitly terminate enclosing functions.
+- [✅] Replace old parser regression (`rejects_return_in_match_arm_expression`) with positive acceptance coverage.
+- [✅] Treat this as a deliberate semantics break (no backwards compatibility) and standardize on explicit early-return arms.
+
 ### Memory Safety Hardening Depth
 - [✅] Strengthen alias/lifetime/provenance verification beyond current heuristic/intra-procedural baseline.
 - [✅] Add deeper async suspension borrow-safety proofs and regressions for borrow-across-`await` edge cases.
