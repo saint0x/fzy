@@ -9,8 +9,8 @@
 extern "C" {
 #endif
 
-uint32_t server_hash32(const uint8_t* ptr, size_t len);
-int32_t server_write(int32_t fd, const uint8_t* ptr, size_t len);
+uint32_t server_hash32(const uint8_t* ptr, uint64_t len);
+int32_t server_write(int32_t fd, const uint8_t* ptr, uint64_t len);
 
 #ifdef __cplusplus
 }

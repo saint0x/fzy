@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "fozzy.memory_delta.v1",
+  "beforeLeakedBytes": 0,
+  "afterLeakedBytes": 0,
+  "beforeLeakedAllocs": 0,
+  "afterLeakedAllocs": 0,
+  "beforeAllocCount": 0,
+  "afterAllocCount": 0
+}

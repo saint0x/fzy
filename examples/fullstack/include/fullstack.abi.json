@@ -1,27 +1,81 @@
 {
-  "schemaVersion": "fozzylang.ffi_abi.v0",
-  "package": {"name": "fullstack", "version": "0.1.0"},
   "abiRevision": 1,
-  "panicBoundary": "abort-or-translate",
-  "symbolVersioning": "strict-name-signature-v0",
   "exports": [
     {
       "name": "fs_open",
-      "symbolVersion": 1,
-      "params": [{"name":"path","fzy":"*u8","c":"const uint8_t*"},{"name":"len","fzy":"usize","c":"size_t"}],
-      "return": {"fzy":"i32","c":"int32_t"}
+      "params": [
+        {
+          "c": "const uint8_t*",
+          "fzy": "*u8",
+          "name": "path"
+        },
+        {
+          "c": "uint64_t",
+          "fzy": "u64",
+          "name": "len"
+        }
+      ],
+      "return": {
+        "c": "int32_t",
+        "fzy": "i32"
+      },
+      "symbolVersion": 1
     },
     {
       "name": "fs_write",
-      "symbolVersion": 1,
-      "params": [{"name":"fd","fzy":"i32","c":"int32_t"},{"name":"ptr","fzy":"*u8","c":"const uint8_t*"},{"name":"len","fzy":"usize","c":"size_t"}],
-      "return": {"fzy":"i32","c":"int32_t"}
+      "params": [
+        {
+          "c": "int32_t",
+          "fzy": "i32",
+          "name": "fd"
+        },
+        {
+          "c": "const uint8_t*",
+          "fzy": "*u8",
+          "name": "ptr"
+        },
+        {
+          "c": "uint64_t",
+          "fzy": "u64",
+          "name": "len"
+        }
+      ],
+      "return": {
+        "c": "int32_t",
+        "fzy": "i32"
+      },
+      "symbolVersion": 1
     },
     {
       "name": "hash32",
-      "symbolVersion": 1,
-      "params": [{"name":"ptr","fzy":"*u8","c":"const uint8_t*"},{"name":"len","fzy":"usize","c":"size_t"}],
-      "return": {"fzy":"u32","c":"uint32_t"}
+      "params": [
+        {
+          "c": "const uint8_t*",
+          "fzy": "*u8",
+          "name": "ptr"
+        },
+        {
+          "c": "uint64_t",
+          "fzy": "u64",
+          "name": "len"
+        }
+      ],
+      "return": {
+        "c": "uint32_t",
+        "fzy": "u32"
+      },
+      "symbolVersion": 1
     }
-  ]
+  ],
+  "layoutPolicy": {
+    "nonReprCUnstable": true,
+    "reprCStableOnly": true
+  },
+  "package": {
+    "name": "fullstack",
+    "version": "0.1.0"
+  },
+  "panicBoundary": "error",
+  "schemaVersion": "fozzylang.ffi_abi.v0",
+  "symbolVersioning": "strict-name-signature-v0"
 }

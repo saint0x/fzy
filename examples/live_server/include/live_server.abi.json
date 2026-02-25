@@ -10,8 +10,8 @@
           "name": "ptr"
         },
         {
-          "c": "size_t",
-          "fzy": "usize",
+          "c": "uint64_t",
+          "fzy": "u64",
           "name": "len"
         }
       ],
@@ -35,8 +35,8 @@
           "name": "ptr"
         },
         {
-          "c": "size_t",
-          "fzy": "usize",
+          "c": "uint64_t",
+          "fzy": "u64",
           "name": "len"
         }
       ],
@@ -55,7 +55,7 @@
     "name": "live_server",
     "version": "0.1.0"
   },
-  "panicBoundary": "abort-or-translate",
+  "panicBoundary": "error",
   "schemaVersion": "fozzylang.ffi_abi.v0",
   "symbolVersioning": "strict-name-signature-v0"
 }
