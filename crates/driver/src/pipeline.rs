@@ -1636,9 +1636,82 @@ fn enrich_diagnostics_context(diagnostics: &mut [diagnostics::Diagnostic]) {
                         span: Some(span.clone()),
                     });
                 }
+            } else if let Some(anchors) = derive_anchors_from_message(&diagnostic.message, lines) {
+                if let Some((primary_token, primary_span)) = anchors.first() {
+                    diagnostic.span = Some(primary_span.clone());
+                    diagnostic.snippet = Some(lines[primary_span.start_line - 1].clone());
+                    diagnostic.labels.push(diagnostics::Label {
+                        message: format!("while analyzing `{primary_token}`"),
+                        primary: true,
+                        span: Some(primary_span.clone()),
+                    });
+                }
+                for (token, span) in anchors.iter().skip(1) {
+                    diagnostic.labels.push(diagnostics::Label {
+                        message: format!("related context `{token}`"),
+                        primary: false,
+                        span: Some(span.clone()),
+                    });
+                }
+                diagnostic.notes.push(
+                    "source anchors derived from diagnostic evidence when explicit semantic spans are unavailable"
+                        .to_string(),
+                );
             }
         }
     }
+}
+
+fn derive_anchors_from_message(
+    message: &str,
+    lines: &[String],
+) -> Option<Vec<(String, diagnostics::Span)>> {
+    let quoted = extract_backticked_tokens(message);
+    let mut out = Vec::new();
+    for token in quoted {
+        if token.trim().is_empty() {
+            continue;
+        }
+        if let Some(span) = find_token_span(lines, &token) {
+            out.push((token, span));
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn extract_backticked_tokens(message: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut start = None;
+    for (idx, ch) in message.char_indices() {
+        if ch == '`' {
+            if let Some(open) = start.take() {
+                if idx > open + 1 {
+                    out.push(message[open + 1..idx].to_string());
+                }
+            } else {
+                start = Some(idx);
+            }
+        }
+    }
+    out
+}
+
+fn find_token_span(lines: &[String], token: &str) -> Option<diagnostics::Span> {
+    for (line_idx, line) in lines.iter().enumerate() {
+        if let Some(col_idx) = line.find(token) {
+            return Some(diagnostics::Span {
+                start_line: line_idx + 1,
+                start_col: col_idx + 1,
+                end_line: line_idx + 1,
+                end_col: col_idx + token.len().max(1),
+            });
+        }
+    }
+    None
 }
 
 fn resolve_declared_module(base_dir: &Path, module_decl: &str) -> Result<PathBuf> {
@@ -8930,9 +9003,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        compile_file, compile_file_with_backend, compile_library_with_backend, emit_ir,
-        lower_llvm_ir, parse_program, refresh_lockfile, render_native_runtime_shim, verify_file,
-        BuildProfile,
+        compile_file, compile_file_with_backend, compile_library_with_backend,
+        derive_anchors_from_message, emit_ir, lower_llvm_ir, parse_program, refresh_lockfile,
+        render_native_runtime_shim, verify_file, BuildProfile,
     };
 
     #[test]
@@ -8957,6 +9030,22 @@ mod tests {
         assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn derive_anchors_from_message_extracts_primary_and_related_tokens() {
+        let lines = vec![
+            "fn main() -> i32 {".to_string(),
+            "    let payload = build()".to_string(),
+            "    return payload.missing".to_string(),
+            "}".to_string(),
+        ];
+        let anchors =
+            derive_anchors_from_message("field access on `payload` has no field `missing`", &lines)
+                .expect("anchors should be extracted");
+        assert_eq!(anchors.len(), 2);
+        assert_eq!(anchors[0].0, "payload");
+        assert_eq!(anchors[1].0, "missing");
     }
 
     #[test]

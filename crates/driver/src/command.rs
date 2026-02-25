@@ -5976,6 +5976,19 @@ mod tests {
 
     use super::*;
 
+    fn run_check_text(source: &str, suffix: &str) -> String {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("fozzylang-diag-{suffix}-{unique}.fzy"));
+        std::fs::write(&path, source).expect("source should be written");
+        let output = run(Command::Check { path: path.clone() }, Format::Text)
+            .expect("check command should run");
+        let _ = std::fs::remove_file(path);
+        output
+    }
+
     #[test]
     fn version_command_returns_semver() {
         let output = run(Command::Version, Format::Text).expect("version command should run");
@@ -7472,6 +7485,89 @@ mod tests {
         assert!(diagnostics.contains("\"snippet\""));
         assert!(diagnostics.contains("\"labels\""));
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn lsp_diagnostics_text_includes_full_diagnostic_body() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-lsp-diag-text-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    missing_call()\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        let diagnostics = run(
+            Command::LspDiagnostics {
+                path: source.clone(),
+            },
+            Format::Text,
+        )
+        .expect("lsp diagnostics should succeed");
+        assert!(diagnostics.contains("lsp diagnostics module="));
+        assert!(diagnostics.contains("error["));
+        assert!(diagnostics.contains("help:"));
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn diagnostics_regression_unresolved_call_and_field_variant_resolution() {
+        let unresolved = run_check_text(
+            "fn main() -> i32 {\n    return missing_symbol()\n}\n",
+            "unresolved-call",
+        );
+        assert!(unresolved.contains("unresolved call target"));
+
+        let field = run_check_text(
+            "struct User { id: i32 }\nfn main() -> i32 {\n    let user = User { id: 1 }\n    return user.missing\n}\n",
+            "field-resolution",
+        );
+        assert!(field.contains("has no field `missing`"));
+
+        let variant = run_check_text(
+            "enum Status { Ok }\nfn main() -> i32 {\n    let _ = Status::Err\n    return 0\n}\n",
+            "variant-resolution",
+        );
+        assert!(variant.contains("has no variant `Err`"));
+    }
+
+    #[test]
+    fn diagnostics_regression_match_capability_and_ffi_boundary() {
+        let match_unreachable = run_check_text(
+            "fn main() -> i32 {\n    match 1 {\n        _ => 0,\n        1 => 1,\n    }\n}\n",
+            "match-unreachable",
+        );
+        assert!(match_unreachable.contains("unreachable"));
+
+        let capability = run_check_text(
+            "fn main() -> i32 {\n    let listener = net.bind()\n    return listener\n}\n",
+            "capability-violation",
+        );
+        assert!(capability.contains("missing required capability"));
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("fozzylang-diag-ffi-boundary-{unique}.fzy"));
+        std::fs::write(
+            &path,
+            "pub extern \"C\" fn exported() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        let ffi = run(
+            Command::Headers {
+                path: path.clone(),
+                output: None,
+            },
+            Format::Text,
+        )
+        .expect_err("headers should fail without ffi_panic attribute")
+        .to_string();
+        assert!(ffi.contains("ffi panic contract missing"));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
