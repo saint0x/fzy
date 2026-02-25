@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+use std::process::{Command as ProcessCommand, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
 use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEvent};
@@ -364,30 +364,38 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 .output
                 .as_ref()
                 .ok_or_else(|| anyhow!("missing native output artifact"))?;
-            let output = ProcessCommand::new(binary)
-                .args(&args)
-                .output()
-                .with_context(|| {
-                    format!("failed to execute native artifact: {}", binary.display())
-                })?;
-            let exit_code = output.status.code().unwrap_or(1);
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let routing_mode = if host_backends {
+                "native-host-runtime"
+            } else {
+                "native"
+            };
             let rendered = match format {
                 Format::Text => {
-                    let mut message = render_text_fields(&[
-                        ("status", "ok".to_string()),
+                    let mut child = ProcessCommand::new(binary);
+                    child.args(&args);
+                    child.stdout(Stdio::inherit());
+                    child.stderr(Stdio::inherit());
+                    let status = child.spawn().with_context(|| {
+                        format!("failed to execute native artifact: {}", binary.display())
+                    })?
+                    .wait()
+                    .with_context(|| {
+                        format!("failed while waiting for native artifact: {}", binary.display())
+                    })?;
+                    let exit_code = status.code().unwrap_or(1);
+                    let message = render_text_fields(&[
+                        (
+                            "status",
+                            if exit_code == 0 {
+                                "ok".to_string()
+                            } else {
+                                "error".to_string()
+                            },
+                        ),
                         ("mode", "run".to_string()),
                         ("module", artifact.module.clone()),
                         ("binary", binary.display().to_string()),
-                        (
-                            "routing",
-                            if host_backends {
-                                "native-host-runtime".to_string()
-                            } else {
-                                "native".to_string()
-                            },
-                        ),
+                        ("routing", routing_mode.to_string()),
                         (
                             "args",
                             if args.is_empty() {
@@ -396,57 +404,67 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                                 args.join(" ")
                             },
                         ),
+                        ("stdout", "<streamed-live>".to_string()),
+                        ("stderr", "<streamed-live>".to_string()),
                         ("exit_code", exit_code.to_string()),
                     ]);
-                    message.push_str("\nstdout:");
-                    message.push('\n');
-                    message.push_str(if stdout.is_empty() { "<empty>" } else { &stdout });
-                    message.push_str("\nstderr:");
-                    message.push('\n');
-                    message.push_str(if stderr.is_empty() { "<empty>" } else { &stderr });
+                    if exit_code != 0 {
+                        return Err(CommandFailure {
+                            exit_code,
+                            output: message,
+                        }
+                        .into());
+                    }
                     message
                 }
-                Format::Json => serde_json::json!({
-                    "module": artifact.module,
-                    "status": artifact.status,
-                    "diagnostics": artifact.diagnostics,
-                    "items": artifact.diagnostic_details,
-                    "binary": binary.display().to_string(),
-                    "args": args,
-                    "deterministic": deterministic,
-                    "strictVerify": strict_verify,
-                    "safeProfile": safe_profile,
-                    "productionMemorySafety": true,
-                    "seed": seed,
-                    "hostBackends": host_backends,
-                    "deterministicApplied": deterministic && !host_backends,
-                    "routing": {
-                        "mode": if host_backends {
-                            "native-host-runtime"
-                        } else {
-                            "native"
+                Format::Json => {
+                    let output = ProcessCommand::new(binary)
+                        .args(&args)
+                        .output()
+                        .with_context(|| {
+                            format!("failed to execute native artifact: {}", binary.display())
+                        })?;
+                    let exit_code = output.status.code().unwrap_or(1);
+                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let payload = serde_json::json!({
+                        "module": artifact.module,
+                        "status": artifact.status,
+                        "diagnostics": artifact.diagnostics,
+                        "items": artifact.diagnostic_details,
+                        "binary": binary.display().to_string(),
+                        "args": args,
+                        "deterministic": deterministic,
+                        "strictVerify": strict_verify,
+                        "safeProfile": safe_profile,
+                        "productionMemorySafety": true,
+                        "seed": seed,
+                        "hostBackends": host_backends,
+                        "deterministicApplied": deterministic && !host_backends,
+                        "routing": {
+                            "mode": routing_mode,
+                            "reason": if host_backends && deterministic {
+                                "host-backed native runs preserve live process semantics and do not route through deterministic scenario execution"
+                            } else if host_backends {
+                                "host-backed native run"
+                            } else {
+                                "native run"
+                            }
                         },
-                        "reason": if host_backends && deterministic {
-                            "host-backed native runs preserve live process semantics and do not route through deterministic scenario execution"
-                        } else if host_backends {
-                            "host-backed native run"
-                        } else {
-                            "native run"
+                        "exitCode": exit_code,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                    });
+                    if exit_code != 0 {
+                        return Err(CommandFailure {
+                            exit_code,
+                            output: payload.to_string(),
                         }
-                    },
-                    "exitCode": exit_code,
-                    "stdout": stdout,
-                    "stderr": stderr,
-                })
-                .to_string(),
-            };
-            if exit_code != 0 {
-                return Err(CommandFailure {
-                    exit_code,
-                    output: rendered,
+                        .into());
+                    }
+                    payload.to_string()
                 }
-                .into());
-            }
+            };
             Ok(rendered)
         }
         Command::Test {

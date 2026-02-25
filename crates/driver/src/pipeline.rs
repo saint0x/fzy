@@ -7749,13 +7749,15 @@ static int32_t fz_log_emit(const char* level, const char* message, const char* f
   if (message == NULL) message = "";
   if (fields == NULL) fields = "{}";
   int64_t ts = fz_now_ms();
-  if (fz_log_json || fields[0] != '\0') {
+  if (fz_log_json) {
     fprintf(stdout, "{\"ts\":%lld,\"level\":\"%s\",\"msg\":\"", (long long)ts, level);
     for (const char* p = message; *p; p++) {
       if (*p == '"' || *p == '\\') fputc('\\', stdout);
       fputc(*p, stdout);
     }
     fprintf(stdout, "\",\"fields\":%s}\n", fields[0] == '\0' ? "{}" : fields);
+  } else if (fields[0] != '\0' && strcmp(fields, "{}") != 0) {
+    fprintf(stdout, "[%lld] %s %s | fields=%s\n", (long long)ts, level, message, fields);
   } else {
     fprintf(stdout, "[%lld] %s %s\n", (long long)ts, level, message);
   }
