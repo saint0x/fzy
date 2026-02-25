@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "runtime-bind-json-env-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, os, pathlib, socket, subprocess, tempfile, time, urllib.request;\nrepo = pathlib.Path.cwd();\nsource = repo / 'tests/fixtures/runtime_bind_json_env/main.fzy';\nassert source.exists(), f'missing fixture: {source}';\nprobe = socket.socket(socket.AF_INET, socket.SOCK_STREAM);\ntry:\n  probe.bind(('127.0.0.1', 8787));\nfinally:\n  probe.close();\nwith tempfile.TemporaryDirectory(prefix='fozzy-runtime-bind-json-env-') as tmp:\n  dotenv = pathlib.Path(tmp) / '.env';\n  dotenv.write_text('FZ_DOTENV_PROBE=from_dotenv\\n', encoding='utf-8');\n  env = dict(os.environ);\n  env.pop('FZ_DOTENV_PROBE', None);\n  env.pop('ANTHROPIC_API_KEY', None);\n  env['FZ_DOTENV_PATH'] = str(dotenv);\n  cmd = ['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(source), '--host-backends', '--json'];\n  proc = subprocess.Popen(cmd, cwd=str(repo), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True);\n  try:\n    deadline = time.time() + 20;\n    healthy = False;\n    while time.time() < deadline:\n      try:\n        with urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=1) as resp:\n          body = resp.read().decode();\n        assert body == 'ok';\n        healthy = True;\n        break;\n      except Exception:\n        time.sleep(0.05);\n    if not healthy:\n      raise RuntimeError('server did not become healthy on 127.0.0.1:8787');\n\n    with urllib.request.urlopen('http://127.0.0.1:8787/jsonz', timeout=2) as resp:\n      raw = resp.read().decode();\n    payload = json.loads(raw);\n    assert payload.get('error') == 'invalid_json_payload', payload;\n    assert 'bad' in payload.get('raw', ''), payload;\n\n    out, err = proc.communicate(timeout=30);\n    if proc.returncode != 0:\n      raise RuntimeError(f'fz run failed rc={proc.returncode} stdout={out} stderr={err}');\n    run_json = json.loads(out.strip());\n    assert run_json.get('exitCode') == 0, run_json;\n    assert '[fz-runtime] listen active addr=127.0.0.1 port=8787' in err, err;\n    print('runtime-bind-json-env-ok')\n  finally:\n    if proc.poll() is None:\n      proc.kill();\n      proc.wait(timeout=2)"
+      ],
+      "exit_code": 0,
+      "stdout": "runtime-bind-json-env-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, os, pathlib, socket, subprocess, tempfile, time, urllib.request;\nrepo = pathlib.Path.cwd();\nsource = repo / 'tests/fixtures/runtime_bind_json_env/main.fzy';\nassert source.exists(), f'missing fixture: {source}';\nprobe = socket.socket(socket.AF_INET, socket.SOCK_STREAM);\ntry:\n  probe.bind(('127.0.0.1', 8787));\nfinally:\n  probe.close();\nwith tempfile.TemporaryDirectory(prefix='fozzy-runtime-bind-json-env-') as tmp:\n  dotenv = pathlib.Path(tmp) / '.env';\n  dotenv.write_text('FZ_DOTENV_PROBE=from_dotenv\\n', encoding='utf-8');\n  env = dict(os.environ);\n  env.pop('FZ_DOTENV_PROBE', None);\n  env.pop('ANTHROPIC_API_KEY', None);\n  env['FZ_DOTENV_PATH'] = str(dotenv);\n  cmd = ['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(source), '--host-backends', '--json'];\n  proc = subprocess.Popen(cmd, cwd=str(repo), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True);\n  try:\n    deadline = time.time() + 20;\n    healthy = False;\n    while time.time() < deadline:\n      try:\n        with urllib.request.urlopen('http://127.0.0.1:8787/healthz', timeout=1) as resp:\n          body = resp.read().decode();\n        assert body == 'ok';\n        healthy = True;\n        break;\n      except Exception:\n        time.sleep(0.05);\n    if not healthy:\n      raise RuntimeError('server did not become healthy on 127.0.0.1:8787');\n\n    with urllib.request.urlopen('http://127.0.0.1:8787/jsonz', timeout=2) as resp:\n      raw = resp.read().decode();\n    payload = json.loads(raw);\n    assert payload.get('error') == 'invalid_json_payload', payload;\n    assert 'bad' in payload.get('raw', ''), payload;\n\n    out, err = proc.communicate(timeout=30);\n    if proc.returncode != 0:\n      raise RuntimeError(f'fz run failed rc={proc.returncode} stdout={out} stderr={err}');\n    run_json = json.loads(out.strip());\n    assert run_json.get('exitCode') == 0, run_json;\n    assert '[fz-runtime] listen active addr=127.0.0.1 port=8787' in err, err;\n    print('runtime-bind-json-env-ok')\n  finally:\n    if proc.poll() is None:\n      proc.kill();\n      proc.wait(timeout=2)"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "runtime-bind-json-env-ok\n"
+    }
+  ]
+}

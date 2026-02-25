@@ -1,0 +1,38 @@
+use core.net;
+
+fn main() -> i32 {
+    let dotenv_probe = env.get("FZ_DOTENV_PROBE")
+    if str.contains(dotenv_probe, "from_dotenv") != 1 {
+        return 90
+    }
+
+    let listener = net.bind()
+    if listener < 0 {
+        return 10
+    }
+    if net.listen(listener) != 0 {
+        return 11
+    }
+
+    let health_conn = net.accept()
+    if health_conn < 0 {
+        return 12
+    }
+    net.read(health_conn)
+    net.write(health_conn, 200, "ok")
+
+    let json_conn = net.accept()
+    if json_conn < 0 {
+        return 13
+    }
+    net.read(json_conn)
+    net.write_json(json_conn, 200, "bad\njson")
+
+    http.post_json_capture("https://api.anthropic.com/v1/messages", "{}")
+    let emsg = error.message()
+    if str.contains(emsg, "ANTHROPIC_API_KEY") != 1 {
+        return 91
+    }
+
+    return 0
+}

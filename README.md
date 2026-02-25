@@ -75,6 +75,12 @@ fz headers <path> [--out path] [--json]
 fz rpc gen <path> [--out-dir dir] [--json]
 ```
 
+Runtime defaults for native host-backed HTTP:
+- bind host default: `127.0.0.1` (`FZ_HOST` > `AGENT_HOST` > default)
+- bind port default: `8787` (`FZ_PORT` > `AGENT_PORT` > `PORT` > default)
+- startup visibility: runtime prints effective bind target on successful `listen`
+- env bootstrap: runtime loads `.env` (or `FZ_DOTENV_PATH`) once before env/http operations
+
 ## Deterministic Artifacts
 
 With `fz test <file.fzy> --det --record artifacts/name.trace.json --json`, the driver emits:

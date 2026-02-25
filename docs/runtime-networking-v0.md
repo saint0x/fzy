@@ -24,6 +24,13 @@
 - Parser supports request line + headers + body with configured limits.
 - Router hooks are framework-agnostic via request/response structs and routing trait.
 - Keepalive policy is explicit and bounded (`keepalive_max_requests`).
+- Native host-backed runtime bind defaults are explicit: host `127.0.0.1`, port `8787`.
+- Native host-backed runtime must emit effective listen target (`addr`, `port`, source) at startup.
+
+## Runtime Env Ergonomics
+
+- Native runtime bootstraps process env from `.env` (or `FZ_DOTENV_PATH`) once before env/http lookups.
+- Provider-bound HTTP primitives should fail early with explicit missing-key diagnostics before transport invocation.
 
 ## TLS Boundary Strategy
 

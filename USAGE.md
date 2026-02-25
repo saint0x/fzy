@@ -124,6 +124,12 @@ Use cases:
 - `run`: execute a project or scenario once
 - `test`: execute discovered tests with optional deterministic scheduler policy
 
+Native host-backed runtime defaults:
+- bind host default is `127.0.0.1` (`FZ_HOST` > `AGENT_HOST` > default)
+- bind port default is `8787` (`FZ_PORT` > `AGENT_PORT` > `PORT` > default)
+- runtime emits effective bind `addr/port` on successful `listen`
+- runtime bootstraps env from `.env` (or `FZ_DOTENV_PATH`) before env/http calls
+
 ## 5.3 Quality and verification
 
 ```bash

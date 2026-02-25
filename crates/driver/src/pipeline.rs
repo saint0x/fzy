@@ -3626,6 +3626,7 @@ static pthread_t fz_spawn_threads[FZ_MAX_SPAWN_THREADS];
 static int fz_spawn_thread_count = 0;
 static pthread_mutex_t fz_spawn_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t fz_spawn_atexit_once = PTHREAD_ONCE_INIT;
+static pthread_once_t fz_env_bootstrap_once = PTHREAD_ONCE_INIT;
 
 typedef struct {
   fz_task_entry_fn entry;
@@ -3633,6 +3634,11 @@ typedef struct {
 
 static int fz_mark_cloexec(int fd);
 static void fz_proc_set_last_error(const char* msg);
+static void fz_dotenv_load(void);
+static void fz_env_bootstrap(void);
+static const char* fz_env_get_bootstrapped(const char* key);
+static int fz_has_env_value(const char* key);
+static void fz_log_bind_target(int listener_fd);
 static int fz_json_parse_string(const char** cursor, char** out);
 static int fz_parse_json_string_array(const char* raw, char*** out_items, int* out_count);
 static int fz_parse_json_env_object(const char* raw, char*** out_items, int* out_count);
@@ -3776,24 +3782,147 @@ static int fz_map_find_index(fz_map_state* map, const char* key) {
   return -1;
 }
 
-static int fz_default_port(void) {
-  const char* raw = getenv("AGENT_PORT");
+static char* fz_trim_ascii(char* text) {
+  if (text == NULL) {
+    return NULL;
+  }
+  while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') {
+    text++;
+  }
+  size_t len = strlen(text);
+  while (len > 0 && (text[len - 1] == ' ' || text[len - 1] == '\t' || text[len - 1] == '\r' || text[len - 1] == '\n')) {
+    text[--len] = '\0';
+  }
+  return text;
+}
+
+static void fz_unquote_env_value(char* value) {
+  if (value == NULL) {
+    return;
+  }
+  size_t len = strlen(value);
+  if (len < 2) {
+    return;
+  }
+  char quote = value[0];
+  if ((quote != '\'' && quote != '\"') || value[len - 1] != quote) {
+    return;
+  }
+  value[len - 1] = '\0';
+  memmove(value, value + 1, len - 1);
+  if (quote == '\"') {
+    char* src = value;
+    char* dst = value;
+    while (*src != '\0') {
+      if (*src == '\\' && src[1] != '\0') {
+        src++;
+        switch (*src) {
+          case 'n': *dst++ = '\n'; break;
+          case 'r': *dst++ = '\r'; break;
+          case 't': *dst++ = '\t'; break;
+          case '\\': *dst++ = '\\'; break;
+          case '\"': *dst++ = '\"'; break;
+          default: *dst++ = *src; break;
+        }
+        src++;
+        continue;
+      }
+      *dst++ = *src++;
+    }
+    *dst = '\0';
+  }
+}
+
+static void fz_dotenv_load(void) {
+  const char* path = getenv("FZ_DOTENV_PATH");
+  if (path == NULL || path[0] == '\0') {
+    path = ".env";
+  }
+  FILE* file = fopen(path, "r");
+  if (file == NULL) {
+    return;
+  }
+  char line[4096];
+  while (fgets(line, sizeof(line), file) != NULL) {
+    char* entry = fz_trim_ascii(line);
+    if (entry == NULL || entry[0] == '\0' || entry[0] == '#') {
+      continue;
+    }
+    if (strncmp(entry, "export ", 7) == 0) {
+      entry = fz_trim_ascii(entry + 7);
+      if (entry == NULL || entry[0] == '\0') {
+        continue;
+      }
+    }
+    char* eq = strchr(entry, '=');
+    if (eq == NULL) {
+      continue;
+    }
+    *eq = '\0';
+    char* key = fz_trim_ascii(entry);
+    char* value = fz_trim_ascii(eq + 1);
+    if (key == NULL || key[0] == '\0' || value == NULL) {
+      continue;
+    }
+    fz_unquote_env_value(value);
+    if (getenv(key) == NULL) {
+      (void)setenv(key, value, 0);
+    }
+  }
+  fclose(file);
+}
+
+static void fz_env_bootstrap(void) {
+  fz_dotenv_load();
+}
+
+static const char* fz_env_get_bootstrapped(const char* key) {
+  if (key == NULL || key[0] == '\0') {
+    return NULL;
+  }
+  (void)pthread_once(&fz_env_bootstrap_once, fz_env_bootstrap);
+  return getenv(key);
+}
+
+static int fz_has_env_value(const char* key) {
+  const char* value = fz_env_get_bootstrapped(key);
+  return value != NULL && value[0] != '\0';
+}
+
+static int fz_parse_port_from_env(const char* key, int fallback) {
+  const char* raw = fz_env_get_bootstrapped(key);
   if (raw == NULL || raw[0] == '\0') {
-    return 8080;
+    return fallback;
   }
   char* end = NULL;
   long parsed = strtol(raw, &end, 10);
   if (end == raw || parsed <= 0 || parsed > 65535) {
-    return 8080;
+    return fallback;
   }
   return (int)parsed;
 }
 
-static uint32_t fz_default_addr(void) {
-  const char* host = getenv("AGENT_HOST");
+static int fz_default_port(void) {
+  int port = 8787;
+  port = fz_parse_port_from_env("PORT", port);
+  port = fz_parse_port_from_env("AGENT_PORT", port);
+  port = fz_parse_port_from_env("FZ_PORT", port);
+  return port;
+}
+
+static const char* fz_default_host_name(void) {
+  const char* host = fz_env_get_bootstrapped("FZ_HOST");
+  if (host == NULL || host[0] == '\0') {
+    host = fz_env_get_bootstrapped("AGENT_HOST");
+  }
   if (host == NULL || host[0] == '\0') {
     host = "127.0.0.1";
   }
+  return host;
+}
+
+static uint32_t fz_default_addr(void) {
+  const char* host = fz_default_host_name();
   struct in_addr addr;
   if (inet_pton(AF_INET, host, &addr) == 1) {
     return addr.s_addr;
@@ -3802,6 +3931,37 @@ static uint32_t fz_default_addr(void) {
     return htonl(INADDR_LOOPBACK);
   }
   return htonl(INADDR_LOOPBACK);
+}
+
+static void fz_log_bind_target(int listener_fd) {
+  struct sockaddr_in addr;
+  socklen_t addr_len = sizeof(addr);
+  memset(&addr, 0, sizeof(addr));
+  if (getsockname(listener_fd, (struct sockaddr*)&addr, &addr_len) != 0) {
+    return;
+  }
+  char host[64];
+  const char* rendered = inet_ntop(AF_INET, &addr.sin_addr, host, sizeof(host));
+  if (rendered == NULL) {
+    rendered = "127.0.0.1";
+  }
+  int port = (int)ntohs(addr.sin_port);
+  const char* host_source = fz_has_env_value("FZ_HOST")
+      ? "FZ_HOST"
+      : (fz_has_env_value("AGENT_HOST") ? "AGENT_HOST" : "default");
+  const char* port_source = fz_has_env_value("FZ_PORT")
+      ? "FZ_PORT"
+      : (fz_has_env_value("AGENT_PORT")
+            ? "AGENT_PORT"
+            : (fz_has_env_value("PORT") ? "PORT" : "default"));
+  fprintf(
+      stderr,
+      "[fz-runtime] listen active addr=%s port=%d (host_source=%s port_source=%s)\n",
+      rendered,
+      port,
+      host_source,
+      port_source);
+  fflush(stderr);
 }
 
 static int64_t fz_now_ms(void) {
@@ -4609,7 +4769,7 @@ int32_t fz_native_env_get(int32_t key_id) {
   if (key == NULL || key[0] == '\0') {
     return 0;
   }
-  const char* value = getenv(key);
+  const char* value = fz_env_get_bootstrapped(key);
   if (value == NULL) {
     value = "";
   }
@@ -5603,12 +5763,25 @@ static int fz_http_extract_status(char* payload, size_t payload_len, int* status
 }
 
 static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_id, int return_body) {
+  (void)pthread_once(&fz_env_bootstrap_once, fz_env_bootstrap);
   const char* endpoint = fz_lookup_string(endpoint_id);
   const char* body = fz_lookup_string(body_id);
   if (endpoint == NULL || endpoint[0] == '\0') {
     fz_last_exit_class = 3;
+    fz_set_last_error(EINVAL, 3, "http_post_json failed: endpoint is empty");
     fz_http_set_last_result(0, "", "http_post_json: empty endpoint");
     return return_body ? fz_intern_slice("", 0) : -1;
+  }
+  if (strstr(endpoint, "api.anthropic.com") != NULL) {
+    const char* key = fz_env_get_bootstrapped("ANTHROPIC_API_KEY");
+    if (key == NULL || key[0] == '\0') {
+      const char* msg =
+          "http_post_json failed: ANTHROPIC_API_KEY missing; export it or define it in .env";
+      fz_last_exit_class = 3;
+      fz_set_last_error(22, 3, msg);
+      fz_http_set_last_result(0, "", msg);
+      return return_body ? fz_intern_slice("", 0) : -1;
+    }
   }
   if (body == NULL || body[0] == '\0') {
     body = "{}";
@@ -5642,6 +5815,7 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
   if (argv == NULL) {
     for (int i = 0; i < header_count; i++) free(header_buf[i]);
     fz_last_exit_class = 3;
+    fz_set_last_error(ENOMEM, 3, "http_post_json failed: argv alloc failed");
     fz_http_set_last_result(0, "", "http_post_json: alloc failed");
     return return_body ? fz_intern_slice("", 0) : -1;
   }
@@ -5666,6 +5840,7 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
     free(argv);
     for (int i = 0; i < header_count; i++) free(header_buf[i]);
     fz_last_exit_class = 3;
+    fz_set_last_error(errno, 3, "http_post_json failed: pipe failed");
     fz_http_set_last_result(0, "", "http_post_json: pipe failed");
     return return_body ? fz_intern_slice("", 0) : -1;
   }
@@ -5677,6 +5852,7 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
     free(argv);
     for (int i = 0; i < header_count; i++) free(header_buf[i]);
     fz_last_exit_class = 3;
+    fz_set_last_error(errno, 3, "http_post_json failed: fork failed");
     fz_http_set_last_result(0, "", "http_post_json: fork failed");
     return return_body ? fz_intern_slice("", 0) : -1;
   }
@@ -5717,6 +5893,7 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
   for (int i = 0; i < header_count; i++) free(header_buf[i]);
   if (waited < 0) {
     fz_last_exit_class = 3;
+    fz_set_last_error(errno, 3, "http_post_json failed: waitpid failed");
     fz_http_set_last_result(0, "", "http_post_json: waitpid failed");
     fz_bytes_buf_free(&out);
     return return_body ? fz_intern_slice("", 0) : -1;
@@ -5740,17 +5917,35 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
   fz_bytes_buf_free(&out);
 
   if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+    fz_set_last_error(0, 0, "");
     return return_body ? body_value_id : 0;
   }
   if (return_body) {
     return body_value_id;
   }
   if (WIFEXITED(status)) {
+    char msg[256];
+    snprintf(
+        msg,
+        sizeof(msg),
+        "http_post_json failed: curl exit=%d endpoint=%s",
+        WEXITSTATUS(status),
+        endpoint);
+    fz_set_last_error(WEXITSTATUS(status), 3, msg);
     return WEXITSTATUS(status);
   }
   if (WIFSIGNALED(status)) {
+    char msg[256];
+    snprintf(
+        msg,
+        sizeof(msg),
+        "http_post_json failed: curl terminated by signal=%d endpoint=%s",
+        WTERMSIG(status),
+        endpoint);
+    fz_set_last_error(128 + WTERMSIG(status), 3, msg);
     return 128 + WTERMSIG(status);
   }
+  fz_set_last_error(-1, 3, "http_post_json failed: unknown child status");
   return -1;
 }
 
@@ -6142,8 +6337,12 @@ int32_t fz_native_path_normalize(int32_t path_id) {
 }
 
 int32_t fz_native_net_bind(void) {
+  (void)pthread_once(&fz_env_bootstrap_once, fz_env_bootstrap);
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
+    char msg[256];
+    snprintf(msg, sizeof(msg), "net.bind failed: socket() errno=%d (%s)", errno, strerror(errno));
+    fz_set_last_error(errno, 3, msg);
     return -1;
   }
   (void)fz_mark_cloexec(fd);
@@ -6155,12 +6354,29 @@ int32_t fz_native_net_bind(void) {
   addr.sin_addr.s_addr = fz_default_addr();
   addr.sin_port = htons((uint16_t)fz_default_port());
   if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+    char host[64];
+    const char* rendered = inet_ntop(AF_INET, &addr.sin_addr, host, sizeof(host));
+    if (rendered == NULL) {
+      rendered = fz_default_host_name();
+    }
+    int bind_port = (int)ntohs(addr.sin_port);
+    char msg[320];
+    snprintf(
+        msg,
+        sizeof(msg),
+        "net.bind failed on %s:%d errno=%d (%s); set FZ_HOST/FZ_PORT or AGENT_HOST/AGENT_PORT",
+        rendered,
+        bind_port,
+        errno,
+        strerror(errno));
+    fz_set_last_error(errno, 3, msg);
     close(fd);
     return -1;
   }
   pthread_mutex_lock(&fz_listener_lock);
   fz_listener_fd = fd;
   pthread_mutex_unlock(&fz_listener_lock);
+  fz_set_last_error(0, 0, "");
   return fd;
 }
 
@@ -6172,9 +6388,24 @@ int32_t fz_native_net_listen(int32_t fd) {
     pthread_mutex_unlock(&fz_listener_lock);
   }
   if (listener < 0) {
+    fz_set_last_error(EINVAL, 3, "net.listen failed: no listener fd (call net.bind first)");
     return -1;
   }
-  return listen(listener, 128) == 0 ? 0 : -1;
+  if (listen(listener, 128) != 0) {
+    char msg[256];
+    snprintf(
+        msg,
+        sizeof(msg),
+        "net.listen failed fd=%d backlog=128 errno=%d (%s)",
+        listener,
+        errno,
+        strerror(errno));
+    fz_set_last_error(errno, 3, msg);
+    return -1;
+  }
+  fz_log_bind_target(listener);
+  fz_set_last_error(0, 0, "");
+  return 0;
 }
 
 int32_t fz_native_net_accept(void) {
@@ -6183,12 +6414,24 @@ int32_t fz_native_net_accept(void) {
   listener = fz_listener_fd;
   pthread_mutex_unlock(&fz_listener_lock);
   if (listener < 0) {
+    fz_set_last_error(EINVAL, 3, "net.accept failed: listener not initialized");
     return -1;
   }
   struct sockaddr_in peer;
   socklen_t peer_len = sizeof(peer);
   int conn_fd = accept(listener, (struct sockaddr*)&peer, &peer_len);
   if (conn_fd < 0) {
+    if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+      char msg[256];
+      snprintf(
+          msg,
+          sizeof(msg),
+          "net.accept failed listener=%d errno=%d (%s)",
+          listener,
+          errno,
+          strerror(errno));
+      fz_set_last_error(errno, 3, msg);
+    }
     return -1;
   }
   (void)fz_mark_cloexec(conn_fd);
@@ -6207,6 +6450,7 @@ int32_t fz_native_net_accept(void) {
     state->param_count = 0;
   }
   pthread_mutex_unlock(&fz_conn_lock);
+  fz_set_last_error(0, 0, "");
   return conn_fd;
 }
 
@@ -6663,7 +6907,101 @@ int32_t fz_native_net_write(int32_t conn_fd, int32_t status_code, int32_t body_i
       close_after);
 }
 
+static char* fz_json_escape_string_bytes(const char* raw) {
+  if (raw == NULL) {
+    raw = "";
+  }
+  size_t len = strlen(raw);
+  size_t cap = (len * 6) + 1;
+  char* out = (char*)malloc(cap);
+  if (out == NULL) {
+    return NULL;
+  }
+  size_t used = 0;
+  for (size_t i = 0; i < len; i++) {
+    unsigned char ch = (unsigned char)raw[i];
+    if (ch == '\"' || ch == '\\') {
+      out[used++] = '\\';
+      out[used++] = (char)ch;
+      continue;
+    }
+    switch (ch) {
+      case '\b':
+        out[used++] = '\\';
+        out[used++] = 'b';
+        break;
+      case '\f':
+        out[used++] = '\\';
+        out[used++] = 'f';
+        break;
+      case '\n':
+        out[used++] = '\\';
+        out[used++] = 'n';
+        break;
+      case '\r':
+        out[used++] = '\\';
+        out[used++] = 'r';
+        break;
+      case '\t':
+        out[used++] = '\\';
+        out[used++] = 't';
+        break;
+      default:
+        if (ch < 0x20) {
+          (void)snprintf(out + used, cap - used, "\\u%04x", (unsigned int)ch);
+          used += 6;
+        } else {
+          out[used++] = (char)ch;
+        }
+        break;
+    }
+  }
+  out[used] = '\0';
+  return out;
+}
+
+static int32_t fz_json_wrap_invalid_payload(const char* raw) {
+  char* escaped = fz_json_escape_string_bytes(raw);
+  if (escaped == NULL) {
+    const char* fallback =
+        "{\"error\":\"invalid_json_payload\",\"message\":\"net.write_json could not allocate sanitize buffer\"}";
+    return fz_intern_slice(fallback, strlen(fallback));
+  }
+  const char* prefix =
+      "{\"error\":\"invalid_json_payload\",\"message\":\"net.write_json sanitized non-JSON body\",\"raw\":\"";
+  const char* suffix = "\"}";
+  size_t total = strlen(prefix) + strlen(escaped) + strlen(suffix) + 1;
+  char* wrapped = (char*)malloc(total);
+  if (wrapped == NULL) {
+    free(escaped);
+    const char* fallback =
+        "{\"error\":\"invalid_json_payload\",\"message\":\"net.write_json sanitize alloc failed\"}";
+    return fz_intern_slice(fallback, strlen(fallback));
+  }
+  snprintf(wrapped, total, "%s%s%s", prefix, escaped, suffix);
+  free(escaped);
+  return fz_intern_owned(wrapped);
+}
+
 int32_t fz_native_net_write_json(int32_t conn_fd, int32_t status_code, int32_t body_id) {
+  const char* body = fz_lookup_string(body_id);
+  if (body == NULL || body[0] == '\0') {
+    body = "null";
+  }
+  const char* send_body = body;
+  int32_t replacement_id = 0;
+  const char* start = NULL;
+  const char* end = NULL;
+  if (fz_json_parse_value_slice(body, &start, &end) != 0) {
+    replacement_id = fz_json_wrap_invalid_payload(body);
+    send_body = fz_lookup_string(replacement_id);
+    fz_set_last_error(
+        EINVAL,
+        3,
+        "net.write_json received invalid JSON body; response was sanitized");
+  } else {
+    fz_set_last_error(0, 0, "");
+  }
   int close_after = 1;
   pthread_mutex_lock(&fz_conn_lock);
   fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
@@ -6675,7 +7013,7 @@ int32_t fz_native_net_write_json(int32_t conn_fd, int32_t status_code, int32_t b
       conn_fd,
       status_code,
       "application/json",
-      fz_lookup_string(body_id),
+      send_body,
       close_after);
 }
 
@@ -7916,7 +8254,9 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_proc_exit_code(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_env_get(int32_t key_id)"));
         assert!(shim.contains("int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id)"));
-        assert!(shim.contains("int32_t fz_native_str_contains(int32_t haystack_id, int32_t needle_id)"));
+        assert!(
+            shim.contains("int32_t fz_native_str_contains(int32_t haystack_id, int32_t needle_id)")
+        );
         assert!(shim.contains("int32_t fz_native_http_header(int32_t key_id, int32_t value_id)"));
         assert!(
             shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)")
@@ -7931,13 +8271,17 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_json_array4("));
         assert!(shim.contains("int32_t fz_native_json_from_map(int32_t map_handle)"));
         assert!(shim.contains("int32_t fz_native_json_parse(int32_t json_id)"));
-        assert!(shim.contains("int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id)"));
-        assert!(shim.contains("int32_t fz_native_json_get_str(int32_t json_value_handle, int32_t key_id)"));
-        assert!(shim.contains("int32_t fz_native_json_has(int32_t json_value_handle, int32_t key_id)"));
-        assert!(shim.contains("int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id)"));
         assert!(
-            shim.contains("int32_t fz_native_json_object1(int32_t k1_id, int32_t v1_id)")
+            shim.contains("int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id)")
         );
+        assert!(shim
+            .contains("int32_t fz_native_json_get_str(int32_t json_value_handle, int32_t key_id)"));
+        assert!(
+            shim.contains("int32_t fz_native_json_has(int32_t json_value_handle, int32_t key_id)")
+        );
+        assert!(shim
+            .contains("int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id)"));
+        assert!(shim.contains("int32_t fz_native_json_object1(int32_t k1_id, int32_t v1_id)"));
         assert!(shim.contains(
             "int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id)"
         ));
@@ -7947,9 +8291,13 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_proc_spawnv("));
         assert!(shim.contains("int32_t fz_native_proc_runv("));
         assert!(shim.contains("int32_t fz_native_proc_poll(int32_t handle)"));
-        assert!(shim.contains("int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes)"));
+        assert!(
+            shim.contains("int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes)")
+        );
         assert!(shim.contains("int32_t fz_native_net_header(int32_t conn_fd, int32_t key_id)"));
-        assert!(shim.contains("int32_t fz_native_route_match(int32_t conn_fd, int32_t method_id, int32_t pattern_id)"));
+        assert!(shim.contains(
+            "int32_t fz_native_route_match(int32_t conn_fd, int32_t method_id, int32_t pattern_id)"
+        ));
         assert!(shim.contains("int32_t fz_native_fs_read_file(int32_t path_id)"));
         assert!(shim.contains("int32_t fz_native_time_tick(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_error_code(void)"));
@@ -7969,6 +8317,28 @@ mod tests {
         assert!(!shim.contains("FZ_NET_WRITE_JSON_BODY"));
         assert!(!shim.contains("FZ_NET_WRITE_BODY"));
         assert!(!shim.contains("fz_env_or_default"));
+    }
+
+    #[test]
+    fn native_runtime_shim_uses_documented_bind_defaults_and_visibility() {
+        let shim = render_native_runtime_shim(&[], &[]);
+        assert!(shim.contains("int port = 8787;"));
+        assert!(shim.contains("[fz-runtime] listen active addr=%s port=%d"));
+        assert!(shim.contains("host_source=%s port_source=%s"));
+    }
+
+    #[test]
+    fn native_runtime_shim_sanitizes_invalid_json_http_bodies() {
+        let shim = render_native_runtime_shim(&[], &[]);
+        assert!(shim.contains("invalid_json_payload"));
+        assert!(shim.contains("net.write_json sanitized non-JSON body"));
+    }
+
+    #[test]
+    fn native_runtime_shim_bootstraps_dotenv_for_env_and_http() {
+        let shim = render_native_runtime_shim(&[], &[]);
+        assert!(shim.contains("FZ_DOTENV_PATH"));
+        assert!(shim.contains("ANTHROPIC_API_KEY missing"));
     }
 
     #[test]
