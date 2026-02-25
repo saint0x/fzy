@@ -313,6 +313,14 @@ fn lower_stmts_into_block(
 fn to_value_type(ty: &Type) -> ValueType {
     match ty {
         Type::Bool => ValueType::Bool,
+        Type::ISize => ValueType::Int {
+            signed: true,
+            bits: usize::BITS as u16,
+        },
+        Type::USize => ValueType::Int {
+            signed: false,
+            bits: usize::BITS as u16,
+        },
         Type::Int { signed, bits } => ValueType::Int {
             signed: *signed,
             bits: *bits,

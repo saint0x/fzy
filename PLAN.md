@@ -189,14 +189,14 @@ Production-readiness objective:
 - [ ] Make shipped examples release-blocking for FFI contracts (`fz headers`/ABI generation must pass for examples that export C ABI).
 
 ### Systems Language Semantics Parity
-- [ ] Remove `i32`-only literal/token bottleneck from parser/AST and support full-width integer literal typing.
-- [ ] Complete end-to-end type semantics parity across parser -> HIR -> FIR -> verifier -> native backends for `u*/i*/f*`, pointers, refs, arrays, structs, enums.
-- [ ] Remove or close remaining `void/i32`-only native signature constraints with concrete lowering support.
+- [✅] Remove `i32`-only literal/token bottleneck from parser/AST and support full-width integer literal typing.
+- [✅] Complete end-to-end type semantics parity across parser -> HIR -> FIR -> verifier -> native backends for `u*/i*/f*`, pointers, refs, arrays, structs, enums.
+- [✅] Remove or close remaining `void/i32`-only native signature constraints with concrete lowering support.
 - [✅] Expand verifier guarantees beyond current narrow entry return-type assumptions to full declared return-type families.
-- [ ] Add cross-backend semantic conformance tests for non-`i32` signatures and aggregate returns.
-- [ ] Add ABI/layout contract tests for non-trivial `repr(C)` structs/enums and alignment-sensitive cases.
-- [ ] Fix `usize`/`isize` semantics to be target-dependent and ABI-correct (no unconditional `usize -> u64`, `isize -> i64` concretization in language/FFI paths).
-- [ ] Align C type mapping for pointer-sized integers to `size_t`/`ssize_t` semantics where applicable, not fixed-width aliases.
+- [✅] Add cross-backend semantic conformance tests for non-`i32` signatures and aggregate returns.
+- [✅] Add ABI/layout contract tests for non-trivial `repr(C)` structs/enums and alignment-sensitive cases.
+- [✅] Fix `usize`/`isize` semantics to be target-dependent and ABI-correct (no unconditional `usize -> u64`, `isize -> i64` concretization in language/FFI paths).
+- [✅] Align C type mapping for pointer-sized integers to `size_t`/`ssize_t` semantics where applicable, not fixed-width aliases.
 - [✅] Extend ABI manifest identity with hard build/target identity fields (target triple, data-layout hash, compiler/toolchain identity hash).
 
 ### Memory Safety Hardening Depth

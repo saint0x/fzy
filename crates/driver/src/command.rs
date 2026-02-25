@@ -5415,7 +5415,7 @@ fn render_c_header(package_name: &str, exports: &[&ast::Function]) -> String {
     header.push_str(&guard);
     header.push_str("\n#define ");
     header.push_str(&guard);
-    header.push_str("\n\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
+    header.push_str("\n\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n#include <sys/types.h>\n\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
     header.push_str("typedef int32_t (*fz_callback_i32_v0)(int32_t arg);\n");
     header.push_str("int32_t fz_host_init(void);\n");
     header.push_str("int32_t fz_host_shutdown(void);\n");
@@ -5629,6 +5629,9 @@ fn ffi_type_layout(ty: &ast::Type) -> Option<(usize, usize)> {
         ast::Type::Void => Some((0, 1)),
         ast::Type::Bool => Some((1, 1)),
         ast::Type::Char => Some((4, 4)),
+        ast::Type::ISize | ast::Type::USize => {
+            Some((std::mem::size_of::<usize>(), std::mem::align_of::<usize>()))
+        }
         ast::Type::Int { bits, .. } => {
             let bytes = (*bits as usize) / 8;
             Some((bytes.max(1), bytes.max(1)))
@@ -5676,6 +5679,8 @@ fn is_ffi_stable_type(ty: &ast::Type) -> bool {
         | ast::Type::Bool
         | ast::Type::Char
         | ast::Type::Float { .. }
+        | ast::Type::ISize
+        | ast::Type::USize
         | ast::Type::Int { .. } => true,
         ast::Type::Ptr { to, .. } => is_ffi_stable_type(to),
         ast::Type::Str
@@ -5701,6 +5706,8 @@ fn to_c_type(ty: &ast::Type) -> String {
         }
         ast::Type::Void => "void".to_string(),
         ast::Type::Bool => "bool".to_string(),
+        ast::Type::ISize => "ssize_t".to_string(),
+        ast::Type::USize => "size_t".to_string(),
         ast::Type::Int {
             signed: true,
             bits: 8,
@@ -6196,6 +6203,90 @@ mod tests {
         assert!(header_text.contains("fz_host_register_callback_i32"));
         let abi_path = header.with_extension("abi.json");
         assert!(abi_path.exists());
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(header);
+        let _ = std::fs::remove_file(abi_path);
+    }
+
+    #[test]
+    fn headers_command_maps_pointer_sized_ints_to_size_t_semantics() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-headers-psize-{suffix}.fzy"));
+        let header = std::env::temp_dir().join(format!("fozzylang-headers-psize-{suffix}.h"));
+        std::fs::write(
+            &source,
+            "#[ffi_panic(abort)]\npub extern \"C\" fn span(len: usize, delta: isize) -> usize;\n",
+        )
+        .expect("source should be written");
+
+        run(
+            Command::Headers {
+                path: source.clone(),
+                output: Some(header.clone()),
+            },
+            Format::Text,
+        )
+        .expect("headers command should succeed");
+        let header_text = std::fs::read_to_string(&header).expect("header should be created");
+        assert!(header_text.contains("size_t span(size_t len, ssize_t delta);"));
+
+        let abi_path = header.with_extension("abi.json");
+        let abi_text = std::fs::read_to_string(&abi_path).expect("abi manifest should be created");
+        assert!(abi_text.contains("\"fzy\": \"usize\""));
+        assert!(abi_text.contains("\"fzy\": \"isize\""));
+        assert!(abi_text.contains("\"c\": \"size_t\""));
+        assert!(abi_text.contains("\"c\": \"ssize_t\""));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(header);
+        let _ = std::fs::remove_file(abi_path);
+    }
+
+    #[test]
+    fn headers_command_reports_repr_c_alignment_sensitive_layouts() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-headers-layout-{suffix}.fzy"));
+        let header = std::env::temp_dir().join(format!("fozzylang-headers-layout-{suffix}.h"));
+        std::fs::write(
+            &source,
+            "#[repr(C)]\nstruct PackedLike { a: u8, b: u64, c: u16 }\n#[repr(C)]\nenum Mode { Ready, Busy }\n#[ffi_panic(abort)]\npub extern \"C\" fn touch(v: u64) -> u64;\n",
+        )
+        .expect("source should be written");
+
+        run(
+            Command::Headers {
+                path: source.clone(),
+                output: Some(header.clone()),
+            },
+            Format::Text,
+        )
+        .expect("headers command should succeed");
+        let abi_path = header.with_extension("abi.json");
+        let abi_text = std::fs::read_to_string(&abi_path).expect("abi manifest should be created");
+        let abi: serde_json::Value =
+            serde_json::from_str(&abi_text).expect("abi manifest should be valid json");
+        let layouts = abi["reprCLayouts"]
+            .as_array()
+            .expect("reprCLayouts should be an array");
+        let packed = layouts
+            .iter()
+            .find(|layout| layout["name"] == "PackedLike")
+            .expect("PackedLike layout should exist");
+        assert_eq!(packed["size"].as_u64(), Some(24));
+        assert_eq!(packed["align"].as_u64(), Some(8));
+        let mode = layouts
+            .iter()
+            .find(|layout| layout["name"] == "Mode")
+            .expect("Mode layout should exist");
+        assert_eq!(mode["size"].as_u64(), Some(4));
+        assert_eq!(mode["align"].as_u64(), Some(4));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(header);

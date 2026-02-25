@@ -11,7 +11,7 @@ struct Token {
 #[derive(Debug, Clone, PartialEq)]
 enum TokenKind {
     Ident(String),
-    Int(i32),
+    Int(i128),
     Str(String),
     KwFn,
     KwPub,
@@ -1026,7 +1026,13 @@ impl Parser {
                 return None;
             }
             let len = match self.advance()?.kind {
-                TokenKind::Int(v) if v >= 0 => v as usize,
+                TokenKind::Int(v) if v >= 0 => match usize::try_from(v) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        self.push_diag_here("array length exceeds target usize");
+                        return None;
+                    }
+                },
                 _ => {
                     self.push_diag_here("expected array length integer");
                     return None;
@@ -1078,10 +1084,7 @@ impl Parser {
                 signed: true,
                 bits: 128,
             },
-            ("isize", []) => Type::Int {
-                signed: true,
-                bits: 64,
-            },
+            ("isize", []) => Type::ISize,
             ("u8", []) => Type::Int {
                 signed: false,
                 bits: 8,
@@ -1102,10 +1105,7 @@ impl Parser {
                 signed: false,
                 bits: 128,
             },
-            ("usize", []) => Type::Int {
-                signed: false,
-                bits: 64,
-            },
+            ("usize", []) => Type::USize,
             ("f32", []) => Type::Float { bits: 32 },
             ("f64", []) => Type::Float { bits: 64 },
             ("Vec", [inner]) => Type::Vec(Box::new(inner.clone())),
@@ -1570,8 +1570,17 @@ impl<'a> Lexer<'a> {
                             break;
                         }
                     }
-                    let value = self.source[start..end].parse::<i32>().unwrap_or(0);
-                    TokenKind::Int(value)
+                    match self.source[start..end].parse::<i128>() {
+                        Ok(value) => TokenKind::Int(value),
+                        Err(_) => {
+                            self.diagnostics.push(Diagnostic::new(
+                                Severity::Error,
+                                "integer literal exceeds i128 range",
+                                Some("use smaller literal or explicit narrowing".to_string()),
+                            ));
+                            TokenKind::Int(0)
+                        }
+                    }
                 }
                 c if is_ident_start(c) => {
                     let start = idx;
@@ -1999,5 +2008,47 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("ffi_panic mode must be")));
+    }
+
+    #[test]
+    fn parses_pointer_sized_types_and_wide_integer_literals() {
+        let source = r#"
+            fn main() -> usize {
+                let small: isize = 7;
+                let wide: i128 = 170141183460469231731687303715884105727;
+                let ptr: usize = 42;
+                let _ = small;
+                let _ = wide;
+                return ptr;
+            }
+        "#;
+        let module = parse(source, "wide").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(matches!(main_fn.return_type, ast::Type::USize));
+        assert!(matches!(main_fn.params.len(), 0));
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                ty: Some(ast::Type::ISize),
+                ..
+            }
+        )));
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                ty: Some(ast::Type::Int {
+                    signed: true,
+                    bits: 128
+                }),
+                ..
+            }
+        )));
     }
 }

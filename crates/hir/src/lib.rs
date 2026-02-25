@@ -1684,6 +1684,8 @@ fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
         | Type::Array { elem: to, .. } => collect_type_instantiation(to, out),
         Type::Void
         | Type::Bool
+        | Type::ISize
+        | Type::USize
         | Type::Int { .. }
         | Type::Float { .. }
         | Type::Char
@@ -2110,7 +2112,7 @@ fn type_check_stmt(
                 generic_specializations,
                 trait_violations,
             );
-            if !matches!(cond_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
+            if !is_bool_or_integer(cond_ty.as_ref()) {
                 let found = cond_ty
                     .as_ref()
                     .map(ToString::to_string)
@@ -2118,7 +2120,7 @@ fn type_check_stmt(
                 record_type_error(
                     errors,
                     type_error_details,
-                    format!("if-condition must be bool/i32-compatible, got `{found}`"),
+                    format!("if-condition must be bool/integer-compatible, got `{found}`"),
                 );
             }
             scopes.push();
@@ -2172,7 +2174,7 @@ fn type_check_stmt(
                 generic_specializations,
                 trait_violations,
             );
-            if !matches!(cond_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
+            if !is_bool_or_integer(cond_ty.as_ref()) {
                 let found = cond_ty
                     .as_ref()
                     .map(ToString::to_string)
@@ -2180,7 +2182,7 @@ fn type_check_stmt(
                 record_type_error(
                     errors,
                     type_error_details,
-                    format!("while-condition must be bool/i32-compatible, got `{found}`"),
+                    format!("while-condition must be bool/integer-compatible, got `{found}`"),
                 );
             }
             scopes.push();
@@ -2257,7 +2259,7 @@ fn type_check_stmt(
                         generic_specializations,
                         trait_violations,
                     );
-                    if !matches!(guard_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
+                    if !is_bool_or_integer(guard_ty.as_ref()) {
                         let found = guard_ty
                             .as_ref()
                             .map(ToString::to_string)
@@ -2265,7 +2267,7 @@ fn type_check_stmt(
                         record_type_error(
                             errors,
                             type_error_details,
-                            format!("match guard must be bool/i32-compatible, got `{found}`"),
+                            format!("match guard must be bool/integer-compatible, got `{found}`"),
                         );
                     }
                 }
@@ -2323,10 +2325,16 @@ fn infer_expr_type(
     trait_violations: &mut Vec<String>,
 ) -> Option<Type> {
     match expr {
-        Expr::Int(_) => Some(Type::Int {
-            signed: true,
-            bits: 32,
-        }),
+        Expr::Int(v) => {
+            let bits = if i32::try_from(*v).is_ok() {
+                32
+            } else if i64::try_from(*v).is_ok() {
+                64
+            } else {
+                128
+            };
+            Some(Type::Int { signed: true, bits })
+        }
         Expr::Bool(_) => Some(Type::Bool),
         Expr::Str(_) => Some(Type::Str),
         Expr::Ident(name) => {
@@ -2768,8 +2776,8 @@ fn infer_expr_type(
             );
             match op {
                 BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
-                    if matches!(left_ty, Some(Type::Int { .. }))
-                        && matches!(right_ty, Some(Type::Int { .. }))
+                    if left_ty.as_ref().is_some_and(is_integer_type)
+                        && right_ty.as_ref().is_some_and(is_integer_type)
                     {
                         left_ty
                     } else {
@@ -2837,6 +2845,8 @@ fn parse_simple_type(token: &str) -> Option<Type> {
         "bool" => Type::Bool,
         "str" => Type::Str,
         "void" => Type::Void,
+        "isize" => Type::ISize,
+        "usize" => Type::USize,
         "i8" => Type::Int {
             signed: true,
             bits: 8,
@@ -2852,6 +2862,10 @@ fn parse_simple_type(token: &str) -> Option<Type> {
         "i64" => Type::Int {
             signed: true,
             bits: 64,
+        },
+        "i128" => Type::Int {
+            signed: true,
+            bits: 128,
         },
         "u8" => Type::Int {
             signed: false,
@@ -2869,6 +2883,12 @@ fn parse_simple_type(token: &str) -> Option<Type> {
             signed: false,
             bits: 64,
         },
+        "u128" => Type::Int {
+            signed: false,
+            bits: 128,
+        },
+        "f32" => Type::Float { bits: 32 },
+        "f64" => Type::Float { bits: 64 },
         other if !other.is_empty() => Type::Named {
             name: other.to_string(),
             args: Vec::new(),
@@ -3042,10 +3062,7 @@ fn i32_type() -> Type {
 
 fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let i32 = i32_type();
-    let usize_ty = Type::Int {
-        signed: false,
-        bits: 64,
-    };
+    let usize_ty = Type::USize;
     let u8_ty = Type::Int {
         signed: false,
         bits: 8,
@@ -3259,7 +3276,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
 fn runtime_default_value(ty: &Type) -> Option<Value> {
     match ty {
         Type::Bool => Some(Value::Bool(false)),
-        Type::Int { .. } => Some(Value::I32(0)),
+        Type::ISize | Type::USize | Type::Int { .. } => Some(Value::I32(0)),
         Type::Str => Some(Value::Str(String::new())),
         Type::Void => Some(Value::I32(0)),
         _ => None,
@@ -3273,7 +3290,7 @@ fn check_pattern_compatibility(
     type_error_details: &mut Vec<String>,
 ) {
     match (pattern, scrutinee_ty) {
-        (ast::Pattern::Int(_), Some(Type::Int { .. })) => {}
+        (ast::Pattern::Int(_), Some(ty)) if is_integer_type(ty) => {}
         (ast::Pattern::Bool(_), Some(Type::Bool)) => {}
         (ast::Pattern::Wildcard, _)
         | (ast::Pattern::Ident(_), _)
@@ -3306,6 +3323,14 @@ fn type_compatible(expected: &Type, actual: &Type) -> bool {
         (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
         _ => expected == actual,
     }
+}
+
+fn is_integer_type(ty: &Type) -> bool {
+    matches!(ty, Type::ISize | Type::USize | Type::Int { .. })
+}
+
+fn is_bool_or_integer(ty: Option<&Type>) -> bool {
+    matches!(ty, Some(Type::Bool)) || ty.is_some_and(is_integer_type)
 }
 
 fn record_type_error(errors: &mut usize, type_error_details: &mut Vec<String>, detail: String) {
@@ -3425,7 +3450,7 @@ fn eval_expr<'a>(
     functions: &HashMap<&'a str, &'a TypedFunction>,
 ) -> Option<Value> {
     match expr {
-        Expr::Int(v) => Some(Value::I32(*v)),
+        Expr::Int(v) => i32::try_from(*v).ok().map(Value::I32),
         Expr::Bool(v) => Some(Value::Bool(*v)),
         Expr::Str(v) => Some(Value::Str(v.clone())),
         Expr::Ident(name) => env.get(name).cloned().or_else(|| {
@@ -3533,7 +3558,7 @@ fn truthy(v: &Value) -> bool {
 fn pattern_matches(pattern: &ast::Pattern, value: &Value) -> bool {
     match (pattern, value) {
         (ast::Pattern::Wildcard, _) => true,
-        (ast::Pattern::Int(a), Value::I32(b)) => a == b,
+        (ast::Pattern::Int(a), Value::I32(b)) => i128::from(*b) == *a,
         (ast::Pattern::Bool(a), Value::Bool(b)) => a == b,
         (ast::Pattern::Ident(_), _) => true,
         (ast::Pattern::Variant { name, .. }, Value::Enum { variant, .. }) => name == variant,

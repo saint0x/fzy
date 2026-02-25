@@ -2,15 +2,33 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{types, AbiParam, InstBuilder};
+use cranelift_codegen::ir::{types, AbiParam, InstBuilder, Type as ClifType};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
 use cranelift_module::{default_libcall_names, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
+
+#[derive(Clone, Copy)]
+struct LocalBinding {
+    var: Variable,
+    ty: ClifType,
+}
+
+#[derive(Clone, Copy)]
+struct ClifValue {
+    value: cranelift_codegen::ir::Value,
+    ty: ClifType,
+}
+
+#[derive(Clone)]
+struct ClifFunctionSignature {
+    params: Vec<ClifType>,
+    ret: Option<ClifType>,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct NativeRuntimeImport {
@@ -3030,12 +3048,20 @@ fn emit_native_libraries_cranelift(
     let mut module = ObjectModule::new(object_builder);
 
     let mut function_ids = HashMap::new();
+    let mut function_signatures = HashMap::new();
     for function in &fir.typed_functions {
         let mut sig = module.make_signature();
-        for _ in &function.params {
-            sig.params.push(AbiParam::new(types::I32));
+        let mut param_tys = Vec::new();
+        for param in &function.params {
+            let ty = ast_signature_type_to_clif_type(&param.ty)
+                .ok_or_else(|| anyhow!("unsupported native parameter type `{}`", param.ty))?;
+            sig.params.push(AbiParam::new(ty));
+            param_tys.push(ty);
         }
-        sig.returns.push(AbiParam::new(types::I32));
+        let ret_ty = ast_signature_type_to_clif_type(&function.return_type);
+        if let Some(ret_ty) = ret_ty {
+            sig.returns.push(AbiParam::new(ret_ty));
+        }
         let linkage = if is_extern_c_import_decl(function) {
             Linkage::Import
         } else {
@@ -3050,8 +3076,15 @@ fn emit_native_libraries_cranelift(
                 )
             })?;
         function_ids.insert(function.name.clone(), id);
+        function_signatures.insert(
+            function.name.clone(),
+            ClifFunctionSignature {
+                params: param_tys,
+                ret: ret_ty,
+            },
+        );
     }
-    declare_native_runtime_imports(&mut module, &mut function_ids)?;
+    declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let mut task_ref_ids = HashMap::<String, i32>::new();
     for (index, symbol) in spawn_task_symbols.iter().enumerate() {
@@ -3067,18 +3100,23 @@ fn emit_native_libraries_cranelift(
         let mut context = module.make_context();
         context.func.signature.params.clear();
         context.func.signature.returns.clear();
-        for _ in &function.params {
+        let signature = function_signatures
+            .get(&function.name)
+            .ok_or_else(|| anyhow!("missing signature for `{}`", function.name))?;
+        for param_ty in &signature.params {
             context
                 .func
                 .signature
                 .params
-                .push(AbiParam::new(types::I32));
+                .push(AbiParam::new(*param_ty));
         }
-        context
-            .func
-            .signature
-            .returns
-            .push(AbiParam::new(types::I32));
+        if let Some(ret_ty) = signature.ret {
+            context
+                .func
+                .signature
+                .returns
+                .push(AbiParam::new(ret_ty));
+        }
 
         let mut function_builder_context = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut context.func, &mut function_builder_context);
@@ -3087,28 +3125,39 @@ fn emit_native_libraries_cranelift(
         builder.switch_to_block(entry);
         builder.seal_block(entry);
 
-        let mut locals = HashMap::<String, Variable>::new();
+        let mut locals = HashMap::<String, LocalBinding>::new();
         for (index, param) in function.params.iter().enumerate() {
             let var = Variable::from_u32(index as u32);
-            builder.declare_var(var, types::I32);
+            let param_ty = signature
+                .params
+                .get(index)
+                .copied()
+                .ok_or_else(|| anyhow!("missing param {} type for `{}`", index, function.name))?;
+            builder.declare_var(var, param_ty);
             let value = builder.block_params(entry)[index];
             builder.def_var(var, value);
-            locals.insert(param.name.clone(), var);
+            locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
         let mut next_var = function.params.len();
         let terminated = clif_emit_block(
             &mut builder,
             &mut module,
             &function_ids,
+            &function_signatures,
             &function.body,
             &mut locals,
+            signature.ret,
             &mut next_var,
             &string_literal_ids,
             &task_ref_ids,
         )?;
         if !terminated {
-            let ret = builder.ins().iconst(types::I32, 0);
-            builder.ins().return_(&[ret]);
+            if let Some(ret_ty) = signature.ret {
+                let ret = zero_for_type(&mut builder, ret_ty);
+                builder.ins().return_(&[ret]);
+            } else {
+                builder.ins().return_(&[]);
+            }
         }
         builder.finalize();
         module
@@ -3482,12 +3531,20 @@ fn emit_native_artifact_cranelift(
     };
 
     let mut function_ids = HashMap::new();
+    let mut function_signatures = HashMap::new();
     for function in &fir.typed_functions {
         let mut sig = module.make_signature();
-        for _ in &function.params {
-            sig.params.push(AbiParam::new(types::I32));
+        let mut param_tys = Vec::new();
+        for param in &function.params {
+            let ty = ast_signature_type_to_clif_type(&param.ty)
+                .ok_or_else(|| anyhow!("unsupported native parameter type `{}`", param.ty))?;
+            sig.params.push(AbiParam::new(ty));
+            param_tys.push(ty);
         }
-        sig.returns.push(AbiParam::new(types::I32));
+        let ret_ty = ast_signature_type_to_clif_type(&function.return_type);
+        if let Some(ret_ty) = ret_ty {
+            sig.returns.push(AbiParam::new(ret_ty));
+        }
         let linkage = if is_extern_c_import_decl(function) {
             Linkage::Import
         } else {
@@ -3502,8 +3559,15 @@ fn emit_native_artifact_cranelift(
                 )
             })?;
         function_ids.insert(function.name.clone(), id);
+        function_signatures.insert(
+            function.name.clone(),
+            ClifFunctionSignature {
+                params: param_tys,
+                ret: ret_ty,
+            },
+        );
     }
-    declare_native_runtime_imports(&mut module, &mut function_ids)?;
+    declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let mut task_ref_ids = HashMap::<String, i32>::new();
     for (index, symbol) in spawn_task_symbols.iter().enumerate() {
@@ -3522,18 +3586,23 @@ fn emit_native_artifact_cranelift(
         let mut context = module.make_context();
         context.func.signature.params.clear();
         context.func.signature.returns.clear();
-        for _ in &function.params {
+        let signature = function_signatures
+            .get(&function.name)
+            .ok_or_else(|| anyhow!("missing signature for `{}`", function.name))?;
+        for param_ty in &signature.params {
             context
                 .func
                 .signature
                 .params
-                .push(AbiParam::new(types::I32));
+                .push(AbiParam::new(*param_ty));
         }
-        context
-            .func
-            .signature
-            .returns
-            .push(AbiParam::new(types::I32));
+        if let Some(ret_ty) = signature.ret {
+            context
+                .func
+                .signature
+                .returns
+                .push(AbiParam::new(ret_ty));
+        }
 
         let mut function_builder_context = FunctionBuilderContext::new();
         let mut builder = FunctionBuilder::new(&mut context.func, &mut function_builder_context);
@@ -3542,13 +3611,18 @@ fn emit_native_artifact_cranelift(
         builder.switch_to_block(entry);
         builder.seal_block(entry);
 
-        let mut locals = HashMap::<String, Variable>::new();
+        let mut locals = HashMap::<String, LocalBinding>::new();
         for (index, param) in function.params.iter().enumerate() {
             let var = Variable::from_u32(index as u32);
-            builder.declare_var(var, types::I32);
+            let param_ty = signature
+                .params
+                .get(index)
+                .copied()
+                .ok_or_else(|| anyhow!("missing param {} type for `{}`", index, function.name))?;
+            builder.declare_var(var, param_ty);
             let value = builder.block_params(entry)[index];
             builder.def_var(var, value);
-            locals.insert(param.name.clone(), var);
+            locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
         let mut next_var = function.params.len();
 
@@ -3556,22 +3630,32 @@ fn emit_native_artifact_cranelift(
             &mut builder,
             &mut module,
             &function_ids,
+            &function_signatures,
             &function.body,
             &mut locals,
+            signature.ret,
             &mut next_var,
             &string_literal_ids,
             &task_ref_ids,
         )?;
         if !terminated {
-            let fallback = if function.name == "main" {
+            let fallback = if function.name == "main" && signature.ret == Some(types::I32) {
                 forced_main_return
                     .or(fir.entry_return_const_i32)
                     .unwrap_or(0)
             } else {
                 0
             };
-            let ret = builder.ins().iconst(types::I32, fallback as i64);
-            builder.ins().return_(&[ret]);
+            if let Some(ret_ty) = signature.ret {
+                let ret = if ret_ty == types::I32 {
+                    builder.ins().iconst(types::I32, fallback as i64)
+                } else {
+                    zero_for_type(&mut builder, ret_ty)
+                };
+                builder.ins().return_(&[ret]);
+            } else {
+                builder.ins().return_(&[]);
+            }
         }
         builder.finalize();
 
@@ -3631,41 +3715,54 @@ fn clif_emit_block(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     function_ids: &HashMap<String, cranelift_module::FuncId>,
+    function_signatures: &HashMap<String, ClifFunctionSignature>,
     body: &[ast::Stmt],
-    locals: &mut HashMap<String, Variable>,
+    locals: &mut HashMap<String, LocalBinding>,
+    return_ty: Option<ClifType>,
     next_var: &mut usize,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
 ) -> Result<bool> {
     for stmt in body {
         match stmt {
-            ast::Stmt::Let { name, value, .. } => {
-                let val = clif_emit_expr(
+            ast::Stmt::Let {
+                name, value, ty, ..
+            } => {
+                let mut val = clif_emit_expr(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     value,
                     locals,
                     next_var,
                     string_literal_ids,
                     task_ref_ids,
                 )?;
-                let var = if let Some(existing) = locals.get(name).copied() {
+                let target_ty = ty
+                    .as_ref()
+                    .and_then(ast_signature_type_to_clif_type)
+                    .unwrap_or(val.ty);
+                val = cast_clif_value(builder, val, target_ty)?;
+                let binding = if let Some(existing) = locals.get(name).copied() {
                     existing
                 } else {
                     let var = Variable::from_u32(*next_var as u32);
                     *next_var += 1;
-                    builder.declare_var(var, types::I32);
-                    locals.insert(name.clone(), var);
-                    var
+                    builder.declare_var(var, target_ty);
+                    let binding = LocalBinding { var, ty: target_ty };
+                    locals.insert(name.clone(), binding);
+                    binding
                 };
-                builder.def_var(var, val);
+                let val = cast_clif_value(builder, val, binding.ty)?;
+                builder.def_var(binding.var, val.value);
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
                         let field_val = clif_emit_expr(
                             builder,
                             module,
                             function_ids,
+                            function_signatures,
                             field_expr,
                             locals,
                             next_var,
@@ -3674,9 +3771,15 @@ fn clif_emit_block(
                         )?;
                         let field_var = Variable::from_u32(*next_var as u32);
                         *next_var += 1;
-                        builder.declare_var(field_var, types::I32);
-                        builder.def_var(field_var, field_val);
-                        locals.insert(format!("{name}.{field}"), field_var);
+                        builder.declare_var(field_var, field_val.ty);
+                        builder.def_var(field_var, field_val.value);
+                        locals.insert(
+                            format!("{name}.{field}"),
+                            LocalBinding {
+                                var: field_var,
+                                ty: field_val.ty,
+                            },
+                        );
                     }
                 }
             }
@@ -3685,35 +3788,44 @@ fn clif_emit_block(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     value,
                     locals,
                     next_var,
                     string_literal_ids,
                     task_ref_ids,
                 )?;
-                let var = if let Some(existing) = locals.get(target).copied() {
+                let binding = if let Some(existing) = locals.get(target).copied() {
                     existing
                 } else {
                     let var = Variable::from_u32(*next_var as u32);
                     *next_var += 1;
-                    builder.declare_var(var, types::I32);
-                    locals.insert(target.clone(), var);
-                    var
+                    builder.declare_var(var, val.ty);
+                    let binding = LocalBinding { var, ty: val.ty };
+                    locals.insert(target.clone(), binding);
+                    binding
                 };
-                builder.def_var(var, val);
+                let val = cast_clif_value(builder, val, binding.ty)?;
+                builder.def_var(binding.var, val.value);
             }
             ast::Stmt::Return(expr) => {
-                let value = clif_emit_expr(
+                let mut value = clif_emit_expr(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     expr,
                     locals,
                     next_var,
                     string_literal_ids,
                     task_ref_ids,
                 )?;
-                builder.ins().return_(&[value]);
+                if let Some(return_ty) = return_ty {
+                    value = cast_clif_value(builder, value, return_ty)?;
+                    builder.ins().return_(&[value.value]);
+                } else {
+                    builder.ins().return_(&[]);
+                }
                 return Ok(true);
             }
             ast::Stmt::Expr(expr)
@@ -3724,6 +3836,7 @@ fn clif_emit_block(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     expr,
                     locals,
                     next_var,
@@ -3740,14 +3853,15 @@ fn clif_emit_block(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     condition,
                     locals,
                     next_var,
                     string_literal_ids,
                     task_ref_ids,
                 )?;
-                let zero = builder.ins().iconst(types::I32, 0);
-                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
+                let zero = zero_for_type(builder, cond_val.ty);
+                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
                 let then_block = builder.create_block();
                 let else_block = builder.create_block();
                 let cont_block = builder.create_block();
@@ -3758,8 +3872,10 @@ fn clif_emit_block(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     then_body,
                     locals,
+                    return_ty,
                     next_var,
                     string_literal_ids,
                     task_ref_ids,
@@ -3774,8 +3890,10 @@ fn clif_emit_block(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     else_body,
                     locals,
+                    return_ty,
                     next_var,
                     string_literal_ids,
                     task_ref_ids,
@@ -3801,14 +3919,15 @@ fn clif_emit_block(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     condition,
                     locals,
                     next_var,
                     string_literal_ids,
                     task_ref_ids,
                 )?;
-                let zero = builder.ins().iconst(types::I32, 0);
-                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
+                let zero = zero_for_type(builder, cond_val.ty);
+                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
                 builder.ins().brif(cond, loop_body, &[], exit, &[]);
 
                 builder.switch_to_block(loop_body);
@@ -3816,8 +3935,10 @@ fn clif_emit_block(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     body,
                     locals,
+                    return_ty,
                     next_var,
                     string_literal_ids,
                     task_ref_ids,
@@ -3836,6 +3957,7 @@ fn clif_emit_block(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     scrutinee,
                     locals,
                     next_var,
@@ -3855,14 +3977,15 @@ fn clif_emit_block(
                             builder,
                             module,
                             function_ids,
+                            function_signatures,
                             guard,
                             locals,
                             next_var,
                             string_literal_ids,
                             task_ref_ids,
                         )?;
-                        let zero = builder.ins().iconst(types::I32, 0);
-                        let guard_pred = builder.ins().icmp(IntCC::NotEqual, guard_val, zero);
+                        let zero = zero_for_type(builder, guard_val.ty);
+                        let guard_pred = builder.ins().icmp(IntCC::NotEqual, guard_val.value, zero);
                         builder.ins().band(pred, guard_pred)
                     } else {
                         pred
@@ -3884,6 +4007,7 @@ fn clif_emit_block(
                         builder,
                         module,
                         function_ids,
+                        function_signatures,
                         &arm.value,
                         locals,
                         next_var,
@@ -3903,24 +4027,28 @@ fn clif_emit_block(
 
 fn clif_emit_match_pattern_pred(
     builder: &mut FunctionBuilder,
-    scrutinee: cranelift_codegen::ir::Value,
+    scrutinee: ClifValue,
     pattern: &ast::Pattern,
 ) -> cranelift_codegen::ir::Value {
     match pattern {
         ast::Pattern::Wildcard | ast::Pattern::Ident(_) => {
-            builder.ins().icmp(IntCC::Equal, scrutinee, scrutinee)
+            builder
+                .ins()
+                .icmp(IntCC::Equal, scrutinee.value, scrutinee.value)
         }
         ast::Pattern::Int(v) => {
-            let rhs = builder.ins().iconst(types::I32, *v as i64);
-            builder.ins().icmp(IntCC::Equal, scrutinee, rhs)
+            let rhs = builder.ins().iconst(scrutinee.ty, *v as i64);
+            builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
         }
         ast::Pattern::Bool(v) => {
-            let rhs = builder.ins().iconst(types::I32, if *v { 1 } else { 0 });
-            builder.ins().icmp(IntCC::Equal, scrutinee, rhs)
+            let rhs = builder.ins().iconst(scrutinee.ty, if *v { 1 } else { 0 });
+            builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
         }
         ast::Pattern::Variant { name, .. } => {
-            let rhs = builder.ins().iconst(types::I32, variant_tag(name) as i64);
-            builder.ins().icmp(IntCC::Equal, scrutinee, rhs)
+            let rhs = builder
+                .ins()
+                .iconst(scrutinee.ty, variant_tag(name) as i64);
+            builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
         }
         ast::Pattern::Or(patterns) => {
             let mut merged: Option<cranelift_codegen::ir::Value> = None;
@@ -3931,7 +4059,11 @@ fn clif_emit_match_pattern_pred(
                     None => pred,
                 });
             }
-            merged.unwrap_or_else(|| builder.ins().icmp(IntCC::Equal, scrutinee, scrutinee))
+            merged.unwrap_or_else(|| {
+                builder
+                    .ins()
+                    .icmp(IntCC::Equal, scrutinee.value, scrutinee.value)
+            })
         }
     }
 }
@@ -3946,32 +4078,59 @@ fn clif_emit_expr(
     builder: &mut FunctionBuilder,
     module: &mut ObjectModule,
     function_ids: &HashMap<String, cranelift_module::FuncId>,
+    function_signatures: &HashMap<String, ClifFunctionSignature>,
     expr: &ast::Expr,
-    locals: &mut HashMap<String, Variable>,
+    locals: &mut HashMap<String, LocalBinding>,
     next_var: &mut usize,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
-) -> Result<cranelift_codegen::ir::Value> {
+) -> Result<ClifValue> {
     Ok(match expr {
-        ast::Expr::Int(v) => builder.ins().iconst(types::I32, *v as i64),
-        ast::Expr::Bool(v) => builder.ins().iconst(types::I32, if *v { 1 } else { 0 }),
-        ast::Expr::Str(value) => builder.ins().iconst(
-            types::I32,
-            string_literal_ids.get(value).copied().unwrap_or(0) as i64,
-        ),
-        ast::Expr::Ident(name) => {
-            if let Some(var) = locals.get(name).copied() {
-                builder.use_var(var)
-            } else if let Some(task_ref) = task_ref_ids.get(name).copied() {
-                builder.ins().iconst(types::I32, task_ref as i64)
+        ast::Expr::Int(v) => {
+            let ty = if i32::try_from(*v).is_ok() {
+                types::I32
             } else {
-                builder.ins().iconst(types::I32, 0)
+                types::I64
+            };
+            ClifValue {
+                value: builder.ins().iconst(ty, *v as i64),
+                ty,
+            }
+        }
+        ast::Expr::Bool(v) => ClifValue {
+            value: builder.ins().iconst(types::I8, if *v { 1 } else { 0 }),
+            ty: types::I8,
+        },
+        ast::Expr::Str(value) => ClifValue {
+            value: builder.ins().iconst(
+                pointer_sized_clif_type(),
+                string_literal_ids.get(value).copied().unwrap_or(0) as i64,
+            ),
+            ty: pointer_sized_clif_type(),
+        },
+        ast::Expr::Ident(name) => {
+            if let Some(binding) = locals.get(name).copied() {
+                ClifValue {
+                    value: builder.use_var(binding.var),
+                    ty: binding.ty,
+                }
+            } else if let Some(task_ref) = task_ref_ids.get(name).copied() {
+                ClifValue {
+                    value: builder.ins().iconst(default_int_clif_type(), task_ref as i64),
+                    ty: default_int_clif_type(),
+                }
+            } else {
+                ClifValue {
+                    value: builder.ins().iconst(default_int_clif_type(), 0),
+                    ty: default_int_clif_type(),
+                }
             }
         }
         ast::Expr::Group(inner) => clif_emit_expr(
             builder,
             module,
             function_ids,
+            function_signatures,
             inner,
             locals,
             next_var,
@@ -3982,6 +4141,7 @@ fn clif_emit_expr(
             builder,
             module,
             function_ids,
+            function_signatures,
             inner,
             locals,
             next_var,
@@ -3990,16 +4150,23 @@ fn clif_emit_expr(
         )?,
         ast::Expr::FieldAccess { base, field } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
-                if let Some(var) = locals.get(&format!("{name}.{field}")).copied() {
-                    builder.use_var(var)
+                if let Some(binding) = locals.get(&format!("{name}.{field}")).copied() {
+                    ClifValue {
+                        value: builder.use_var(binding.var),
+                        ty: binding.ty,
+                    }
                 } else if let Some(task_ref_name) = expr_task_ref_name(expr) {
                     if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
-                        builder.ins().iconst(types::I32, task_ref as i64)
+                        ClifValue {
+                            value: builder.ins().iconst(default_int_clif_type(), task_ref as i64),
+                            ty: default_int_clif_type(),
+                        }
                     } else {
                         clif_emit_expr(
                             builder,
                             module,
                             function_ids,
+                            function_signatures,
                             base,
                             locals,
                             next_var,
@@ -4012,6 +4179,7 @@ fn clif_emit_expr(
                         builder,
                         module,
                         function_ids,
+                        function_signatures,
                         base,
                         locals,
                         next_var,
@@ -4024,6 +4192,7 @@ fn clif_emit_expr(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     base,
                     locals,
                     next_var,
@@ -4039,6 +4208,7 @@ fn clif_emit_expr(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     value,
                     locals,
                     next_var,
@@ -4049,7 +4219,10 @@ fn clif_emit_expr(
                     first = Some(out);
                 }
             }
-            first.unwrap_or_else(|| builder.ins().iconst(types::I32, 0))
+            first.unwrap_or_else(|| ClifValue {
+                value: builder.ins().iconst(pointer_sized_clif_type(), 0),
+                ty: pointer_sized_clif_type(),
+            })
         }
         ast::Expr::EnumInit {
             variant, payload, ..
@@ -4059,6 +4232,7 @@ fn clif_emit_expr(
                     builder,
                     module,
                     function_ids,
+                    function_signatures,
                     value,
                     locals,
                     next_var,
@@ -4066,9 +4240,12 @@ fn clif_emit_expr(
                     task_ref_ids,
                 )?;
             }
-            builder
-                .ins()
-                .iconst(types::I32, variant_tag(variant) as i64)
+            ClifValue {
+                value: builder
+                    .ins()
+                    .iconst(default_int_clif_type(), variant_tag(variant) as i64),
+                ty: default_int_clif_type(),
+            }
         }
         ast::Expr::TryCatch {
             try_expr,
@@ -4077,6 +4254,7 @@ fn clif_emit_expr(
             builder,
             module,
             function_ids,
+            function_signatures,
             try_expr,
             locals,
             next_var,
@@ -4088,6 +4266,7 @@ fn clif_emit_expr(
                 builder,
                 module,
                 function_ids,
+                function_signatures,
                 catch_expr,
                 locals,
                 next_var,
@@ -4100,6 +4279,7 @@ fn clif_emit_expr(
                 builder,
                 module,
                 function_ids,
+                function_signatures,
                 left,
                 locals,
                 next_var,
@@ -4110,6 +4290,7 @@ fn clif_emit_expr(
                 builder,
                 module,
                 function_ids,
+                function_signatures,
                 right,
                 locals,
                 next_var,
@@ -4117,73 +4298,150 @@ fn clif_emit_expr(
                 task_ref_ids,
             )?;
             match op {
-                ast::BinaryOp::Add => builder.ins().iadd(lhs, rhs),
-                ast::BinaryOp::Sub => builder.ins().isub(lhs, rhs),
-                ast::BinaryOp::Mul => builder.ins().imul(lhs, rhs),
-                ast::BinaryOp::Div => builder.ins().sdiv(lhs, rhs),
+                ast::BinaryOp::Add => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        ClifValue {
+                            value: builder.ins().fadd(lhs.value, rhs.value),
+                            ty: lhs.ty,
+                        }
+                    } else {
+                        ClifValue {
+                            value: builder.ins().iadd(lhs.value, rhs.value),
+                            ty: lhs.ty,
+                        }
+                    }
+                }
+                ast::BinaryOp::Sub => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        ClifValue {
+                            value: builder.ins().fsub(lhs.value, rhs.value),
+                            ty: lhs.ty,
+                        }
+                    } else {
+                        ClifValue {
+                            value: builder.ins().isub(lhs.value, rhs.value),
+                            ty: lhs.ty,
+                        }
+                    }
+                }
+                ast::BinaryOp::Mul => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        ClifValue {
+                            value: builder.ins().fmul(lhs.value, rhs.value),
+                            ty: lhs.ty,
+                        }
+                    } else {
+                        ClifValue {
+                            value: builder.ins().imul(lhs.value, rhs.value),
+                            ty: lhs.ty,
+                        }
+                    }
+                }
+                ast::BinaryOp::Div => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        ClifValue {
+                            value: builder.ins().fdiv(lhs.value, rhs.value),
+                            ty: lhs.ty,
+                        }
+                    } else {
+                        ClifValue {
+                            value: builder.ins().sdiv(lhs.value, rhs.value),
+                            ty: lhs.ty,
+                        }
+                    }
+                }
                 ast::BinaryOp::Eq => {
-                    let c = builder.ins().icmp(IntCC::Equal, lhs, rhs);
-                    let one = builder.ins().iconst(types::I32, 1);
-                    let zero = builder.ins().iconst(types::I32, 0);
-                    builder.ins().select(c, one, zero)
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    let pred = builder.ins().icmp(IntCC::Equal, lhs.value, rhs.value);
+                    bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Neq => {
-                    let c = builder.ins().icmp(IntCC::NotEqual, lhs, rhs);
-                    let one = builder.ins().iconst(types::I32, 1);
-                    let zero = builder.ins().iconst(types::I32, 0);
-                    builder.ins().select(c, one, zero)
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    let pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, rhs.value);
+                    bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Lt => {
-                    let c = builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs);
-                    let one = builder.ins().iconst(types::I32, 1);
-                    let zero = builder.ins().iconst(types::I32, 0);
-                    builder.ins().select(c, one, zero)
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    let pred = builder.ins().icmp(IntCC::SignedLessThan, lhs.value, rhs.value);
+                    bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Lte => {
-                    let c = builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs);
-                    let one = builder.ins().iconst(types::I32, 1);
-                    let zero = builder.ins().iconst(types::I32, 0);
-                    builder.ins().select(c, one, zero)
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    let pred = builder
+                        .ins()
+                        .icmp(IntCC::SignedLessThanOrEqual, lhs.value, rhs.value);
+                    bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Gt => {
-                    let c = builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs);
-                    let one = builder.ins().iconst(types::I32, 1);
-                    let zero = builder.ins().iconst(types::I32, 0);
-                    builder.ins().select(c, one, zero)
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    let pred = builder
+                        .ins()
+                        .icmp(IntCC::SignedGreaterThan, lhs.value, rhs.value);
+                    bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Gte => {
-                    let c = builder
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    let pred = builder
                         .ins()
-                        .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs);
-                    let one = builder.ins().iconst(types::I32, 1);
-                    let zero = builder.ins().iconst(types::I32, 0);
-                    builder.ins().select(c, one, zero)
+                        .icmp(IntCC::SignedGreaterThanOrEqual, lhs.value, rhs.value);
+                    bool_to_i8(builder, pred)
                 }
             }
         }
         ast::Expr::Call { callee, args } => {
             let mut values = Vec::with_capacity(args.len());
-            for arg in args {
-                values.push(clif_emit_expr(
-                    builder,
-                    module,
-                    function_ids,
-                    arg,
-                    locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
-                )?);
-            }
             if let Some(function_id) = function_ids.get(callee).copied() {
+                let signature = function_signatures.get(callee).ok_or_else(|| {
+                    anyhow!("missing native function signature metadata for `{callee}`")
+                })?;
+                for (index, arg) in args.iter().enumerate() {
+                    let mut lowered = clif_emit_expr(
+                        builder,
+                        module,
+                        function_ids,
+                        function_signatures,
+                        arg,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                    if let Some(target) = signature.params.get(index).copied() {
+                        lowered = cast_clif_value(builder, lowered, target)?;
+                    }
+                    values.push(lowered.value);
+                }
                 let func_ref = module.declare_func_in_func(function_id, builder.func);
                 let call = builder.ins().call(func_ref, &values);
                 if let Some(value) = builder.inst_results(call).first().copied() {
-                    value
+                    ClifValue {
+                        value,
+                        ty: signature.ret.unwrap_or(default_int_clif_type()),
+                    }
                 } else {
-                    builder.ins().iconst(types::I32, 0)
+                    ClifValue {
+                        value: builder.ins().iconst(default_int_clif_type(), 0),
+                        ty: default_int_clif_type(),
+                    }
                 }
             } else {
+                for arg in args {
+                    let _ = clif_emit_expr(
+                        builder,
+                        module,
+                        function_ids,
+                        function_signatures,
+                        arg,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                }
                 return Err(anyhow!(
                     "native backend cannot lower unresolved call target `{}`",
                     callee
@@ -4208,7 +4466,7 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                         param.ty, function.name
                     ),
                     Some(
-                        "v0 native backend function signatures support only `i32` and `void`"
+                        "native backend signatures support scalar widths, pointer-sized integers, floats, and pointer-like/aggregate handles"
                             .to_string(),
                     ),
                 ));
@@ -4222,7 +4480,7 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                     function.return_type, function.name
                 ),
                 Some(
-                    "v0 native backend function signatures support only `i32` and `void`"
+                    "native backend signatures support scalar widths, pointer-sized integers, floats, and pointer-like/aggregate handles"
                         .to_string(),
                 ),
             ));
@@ -4266,14 +4524,130 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
 }
 
 fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {
-    matches!(
-        ty,
-        ast::Type::Void
-            | ast::Type::Int {
-                signed: true,
-                bits: 32
-            }
-    )
+    ast_signature_type_to_clif_type(ty).is_some() || matches!(ty, ast::Type::Void)
+}
+
+fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType> {
+    match ty {
+        ast::Type::Void => None,
+        ast::Type::Bool => Some(types::I8),
+        ast::Type::ISize | ast::Type::USize => Some(pointer_sized_clif_type()),
+        ast::Type::Int { bits, .. } => match bits {
+            8 => Some(types::I8),
+            16 => Some(types::I16),
+            32 => Some(types::I32),
+            64 => Some(types::I64),
+            128 => Some(types::I128),
+            _ => None,
+        },
+        ast::Type::Float { bits } => match bits {
+            32 => Some(types::F32),
+            64 => Some(types::F64),
+            _ => None,
+        },
+        ast::Type::Char
+        | ast::Type::Str
+        | ast::Type::Ptr { .. }
+        | ast::Type::Ref { .. }
+        | ast::Type::Slice(_)
+        | ast::Type::Array { .. }
+        | ast::Type::Result { .. }
+        | ast::Type::Option(_)
+        | ast::Type::Vec(_)
+        | ast::Type::Named { .. }
+        | ast::Type::TypeVar(_) => Some(pointer_sized_clif_type()),
+    }
+}
+
+fn pointer_sized_clif_type() -> ClifType {
+    if std::mem::size_of::<usize>() == 8 {
+        types::I64
+    } else {
+        types::I32
+    }
+}
+
+fn default_int_clif_type() -> ClifType {
+    types::I32
+}
+
+fn zero_for_type(builder: &mut FunctionBuilder, ty: ClifType) -> cranelift_codegen::ir::Value {
+    if ty.is_int() {
+        builder.ins().iconst(ty, 0)
+    } else if ty == types::F32 {
+        builder.ins().f32const(0.0)
+    } else if ty == types::F64 {
+        builder.ins().f64const(0.0)
+    } else {
+        builder.ins().iconst(default_int_clif_type(), 0)
+    }
+}
+
+fn bool_to_i8(builder: &mut FunctionBuilder, pred: cranelift_codegen::ir::Value) -> ClifValue {
+    let one = builder.ins().iconst(types::I8, 1);
+    let zero = builder.ins().iconst(types::I8, 0);
+    ClifValue {
+        value: builder.ins().select(pred, one, zero),
+        ty: types::I8,
+    }
+}
+
+fn cast_clif_value(
+    builder: &mut FunctionBuilder,
+    value: ClifValue,
+    target: ClifType,
+) -> Result<ClifValue> {
+    if value.ty == target {
+        return Ok(value);
+    }
+    if value.ty.is_int() && target.is_int() {
+        if value.ty.bits() < target.bits() {
+            return Ok(ClifValue {
+                value: builder.ins().sextend(target, value.value),
+                ty: target,
+            });
+        }
+        if value.ty.bits() > target.bits() {
+            return Ok(ClifValue {
+                value: builder.ins().ireduce(target, value.value),
+                ty: target,
+            });
+        }
+    }
+    if value.ty.is_int() && (target == types::F32 || target == types::F64) {
+        let out = if target == types::F32 {
+            builder.ins().fcvt_from_sint(types::F32, value.value)
+        } else {
+            builder.ins().fcvt_from_sint(types::F64, value.value)
+        };
+        return Ok(ClifValue {
+            value: out,
+            ty: target,
+        });
+    }
+    if (value.ty == types::F32 || value.ty == types::F64) && target.is_int() {
+        return Ok(ClifValue {
+            value: builder.ins().fcvt_to_sint(target, value.value),
+            ty: target,
+        });
+    }
+    if value.ty == types::F32 && target == types::F64 {
+        return Ok(ClifValue {
+            value: builder.ins().fpromote(types::F64, value.value),
+            ty: types::F64,
+        });
+    }
+    if value.ty == types::F64 && target == types::F32 {
+        return Ok(ClifValue {
+            value: builder.ins().fdemote(types::F32, value.value),
+            ty: types::F32,
+        });
+    }
+    bail!(
+        "unsupported native cast from `{}` to `{}`",
+        value.ty,
+        target
+    );
 }
 
 fn collect_unresolved_calls_from_stmt(
@@ -4377,6 +4751,7 @@ fn native_backend_supports_call(callee: &str) -> bool {
 fn declare_native_runtime_imports(
     module: &mut ObjectModule,
     function_ids: &mut HashMap<String, cranelift_module::FuncId>,
+    function_signatures: &mut HashMap<String, ClifFunctionSignature>,
 ) -> Result<()> {
     for import in NATIVE_RUNTIME_IMPORTS {
         if function_ids.contains_key(import.callee) {
@@ -4397,6 +4772,13 @@ fn declare_native_runtime_imports(
                 )
             })?;
         function_ids.insert(import.callee.to_string(), id);
+        function_signatures.insert(
+            import.callee.to_string(),
+            ClifFunctionSignature {
+                params: (0..import.arity).map(|_| types::I32).collect(),
+                ret: Some(types::I32),
+            },
+        );
     }
     Ok(())
 }
@@ -9586,6 +9968,38 @@ mod tests {
     }
 
     #[test]
+    fn cross_backend_non_i32_and_aggregate_signatures_compile() {
+        let project_name = format!(
+            "fozzylang-non-i32-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "#[repr(C)]\nstruct Pair { lo: i32, hi: i32 }\nfn id64(v: i64) -> i64 {\n    return v\n}\nfn gate(flag: bool) -> bool {\n    return flag\n}\nfn make_pair() -> Pair {\n    return Pair { lo: 1, hi: 2 }\n}\nfn main() -> i64 {\n    let p: Pair = make_pair()\n    let _ = p\n    if gate(true) {\n        return id64(3000000000)\n    }\n    return id64(3000000000)\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn verify_reports_unsupported_native_signature_types() {
         let file_name = format!(
             "fozzylang-native-signature-unsupported-{}.fzy",
@@ -9602,9 +10016,9 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
-                .contains("native backend does not support parameter type `bool`")
+                .contains("native backend does not support parameter type")
         }));
 
         let _ = std::fs::remove_file(path);

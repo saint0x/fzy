@@ -134,7 +134,7 @@ pub enum Stmt {
 
 #[derive(Debug, Clone)]
 pub enum Expr {
-    Int(i32),
+    Int(i128),
     Bool(bool),
     Str(String),
     Ident(String),
@@ -192,7 +192,7 @@ pub struct MatchArm {
 #[derive(Debug, Clone)]
 pub enum Pattern {
     Wildcard,
-    Int(i32),
+    Int(i128),
     Bool(bool),
     Ident(String),
     Variant { name: String, bindings: Vec<String> },
@@ -203,6 +203,8 @@ pub enum Pattern {
 pub enum Type {
     Void,
     Bool,
+    ISize,
+    USize,
     Int {
         signed: bool,
         bits: u16,
@@ -250,6 +252,8 @@ impl std::fmt::Display for Type {
         match self {
             Type::Void => write!(f, "void"),
             Type::Bool => write!(f, "bool"),
+            Type::ISize => write!(f, "isize"),
+            Type::USize => write!(f, "usize"),
             Type::Int { signed: true, bits } => write!(f, "i{bits}"),
             Type::Int {
                 signed: false,
