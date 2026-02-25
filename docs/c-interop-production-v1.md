@@ -5,7 +5,7 @@ This guide covers production C interoperability for Fozzy in both directions:
 - C host calling Fozzy exports.
 - Fozzy code importing C linker symbols.
 
-## Contract (No Backward Compatibility)
+## Contract
 - `#[ffi_panic(abort)]` or `#[ffi_panic(error)]` is required on every exported `pub extern "C" fn`.
 - Mixed panic modes across exports are rejected.
 - Missing panic contract rejects header/ABI generation.
