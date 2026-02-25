@@ -1,0 +1,43 @@
+use core.proc;
+
+fn mix(v: i32) -> i32 {
+    let base: i32 = (v << 1) + (v >> 1)
+    let mask: i32 = (~v) & 255
+    let out: i32 = (base ^ mask) % 97
+    if out > 0 && true || false {
+        return out + 5
+    }
+    return out
+}
+
+fn spin(limit: i32) -> i32 {
+    let total: i32 = 0
+    let i: i32 = 0
+    while i < limit {
+        i += 1
+        if i % 2 == 0 {
+            continue
+        }
+        total += i
+        if total > 20 {
+            break
+        }
+    }
+    return total
+}
+
+fn apply_id(cb: fn(i32) -> i32, v: i32) -> i32 {
+    let _ = cb
+    return v
+}
+
+fn id(v: i32) -> i32 {
+    return v
+}
+
+fn main() -> i32 {
+    process.run("echo primitive-host-probe > /dev/null")
+    let seeded: i32 = spin(10)
+    let lifted: i32 = apply_id(id, seeded)
+    return mix(lifted)
+}

@@ -26,9 +26,13 @@ RUSTFLAGS="-D warnings" cargo check --workspace >/dev/null
 echo "[ship] workspace tests"
 cargo test --workspace >/dev/null
 
+echo "[ship] language primitive drift gate"
+python3 ./scripts/language_primitive_drift_gate.py >/dev/null
+
 echo "[ship] parity/equivalence representative probes"
 PROBE_A="$TMP_DIR/parity_probe_a.fzy"
 PROBE_B="$TMP_DIR/parity_probe_b.fzy"
+PROBE_C="$ROOT/tests/fixtures/primitive_parity/main.fzy"
 cat > "$PROBE_A" <<'FZY'
 fn main() -> i32 {
     return 0
@@ -51,6 +55,8 @@ FZY
 "${FZ_CMD[@]}" equivalence "$PROBE_A" --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity "$PROBE_B" --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" equivalence "$PROBE_B" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity "$PROBE_C" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence "$PROBE_C" --seed "$SEED" --json >/dev/null
 
 echo "[ship] FFI release-blocking examples (headers + abi-check)"
 for example in fullstack live_server; do

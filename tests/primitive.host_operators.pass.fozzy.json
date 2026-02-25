@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "primitive-host-operators-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess; repo = pathlib.Path.cwd(); src = repo / 'tests/fixtures/primitive_host/main.fzy'; cmd = ['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(src), '--host-backends', '--json']; proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, check=True); payload = json.loads(proc.stdout.strip()); assert payload.get('exitCode') == 27, payload; print('primitive-host-operators-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "primitive-host-operators-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess; repo = pathlib.Path.cwd(); src = repo / 'tests/fixtures/primitive_host/main.fzy'; cmd = ['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(src), '--host-backends', '--json']; proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, check=True); payload = json.loads(proc.stdout.strip()); assert payload.get('exitCode') == 27, payload; print('primitive-host-operators-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "primitive-host-operators-ok\n"
+    }
+  ]
+}

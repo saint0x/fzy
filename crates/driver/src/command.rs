@@ -6296,6 +6296,7 @@ fn is_ffi_stable_type(ty: &ast::Type) -> bool {
         | ast::Type::Vec(_)
         | ast::Type::Ref { .. }
         | ast::Type::Array { .. }
+        | ast::Type::Function { .. }
         | ast::Type::Named { .. }
         | ast::Type::TypeVar(_) => false,
     }
@@ -6681,6 +6682,22 @@ mod tests {
     fn detects_scenario_paths() {
         assert!(is_fozzy_scenario(Path::new("tests/example.fozzy.json")));
         assert!(!is_fozzy_scenario(Path::new("examples/main.fzy")));
+    }
+
+    #[test]
+    fn parity_and_equivalence_cover_primitive_control_flow_fixture() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/primitive_parity/main.fzy");
+        let parity = parity_command(&source, 4242, Format::Json).expect("parity should run");
+        let parity_json: serde_json::Value =
+            serde_json::from_str(&parity).expect("parity json should parse");
+        assert_eq!(parity_json["ok"], true);
+
+        let equivalence =
+            equivalence_command(&source, 4242, Format::Json).expect("equivalence should run");
+        let equivalence_json: serde_json::Value =
+            serde_json::from_str(&equivalence).expect("equivalence json should parse");
+        assert_eq!(equivalence_json["ok"], true);
     }
 
     #[test]

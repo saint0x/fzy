@@ -77,6 +77,7 @@ enum Value {
         variant: String,
         _payload: Vec<Value>,
     },
+    FnRef(String),
 }
 
 #[derive(Default)]
@@ -2427,6 +2428,12 @@ fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
         | Type::Ref { to, .. }
         | Type::Slice(to)
         | Type::Array { elem: to, .. } => collect_type_instantiation(to, out),
+        Type::Function { params, ret } => {
+            for param in params {
+                collect_type_instantiation(param, out);
+            }
+            collect_type_instantiation(ret, out);
+        }
         Type::Void
         | Type::Bool
         | Type::ISize
@@ -3094,6 +3101,18 @@ fn infer_expr_type(
         matched
     }
 
+    fn function_ref_type(
+        fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
+        candidate: &str,
+    ) -> Option<Type> {
+        let resolved = resolve_function_ref_name(fn_sigs, candidate)?;
+        let (params, ret) = fn_sigs.get(&resolved)?;
+        Some(Type::Function {
+            params: params.clone(),
+            ret: Box::new(ret.clone()),
+        })
+    }
+
     fn expr_function_ref_name(expr: &Expr) -> Option<String> {
         match expr {
             Expr::Ident(name) => Some(name.clone()),
@@ -3129,13 +3148,8 @@ fn infer_expr_type(
             if let Some(found) = scopes.get(name) {
                 return Some(found);
             }
-            if resolve_function_ref_name(fn_sigs, name).is_some() {
-                // Function symbols are first-class callable handles for scheduler/runtime intrinsics
-                // such as spawn(worker). They lower as opaque i32 handles in v1.
-                return Some(Type::Int {
-                    signed: true,
-                    bits: 32,
-                });
+            if let Some(fn_ty) = function_ref_type(fn_sigs, name) {
+                return Some(fn_ty);
             }
             record_type_error(
                 state.errors,
@@ -3148,6 +3162,57 @@ fn infer_expr_type(
         Expr::Await(inner) => infer_expr_type(inner, scopes, env, state),
         Expr::Call { callee, args } => {
             let (base_callee, explicit_types) = split_generic_callee(callee);
+            if let Some(Type::Function { params, ret }) = scopes.get(base_callee) {
+                if explicit_types.is_some() {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "generic specialization is not valid on function values: `{}`",
+                            base_callee
+                        ),
+                    );
+                }
+                let mut arg_types = Vec::with_capacity(args.len());
+                for arg in args {
+                    arg_types.push(infer_expr_type(arg, scopes, env, state));
+                }
+                if params.len() != arg_types.len() {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "call `{}` expects {} args but got {}",
+                            base_callee,
+                            params.len(),
+                            arg_types.len()
+                        ),
+                    );
+                }
+                for (index, expected) in params.iter().enumerate() {
+                    if let Some(Some(actual)) = arg_types.get(index) {
+                        if !type_compatible(expected, actual) {
+                            record_type_error(
+                                state.errors,
+                                state.type_error_details,
+                                format!(
+                                    "call `{}` argument {} type mismatch: expected `{}`, got `{}`",
+                                    base_callee, index, expected, actual
+                                ),
+                            );
+                        }
+                    }
+                }
+                return Some(*ret);
+            }
+            if let Some(found) = scopes.get(base_callee) {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!("call target `{}` is not callable (found `{}`)", base_callee, found),
+                );
+                return None;
+            }
             let runtime_sig = runtime_call_signature(base_callee);
             let (params, ret) = if let Some((params, ret)) = fn_sigs.get(base_callee) {
                 (params.clone(), ret.clone())
@@ -3288,11 +3353,8 @@ fn infer_expr_type(
         }
         Expr::FieldAccess { base, field } => {
             if let Some(function_ref) = expr_function_ref_name(expr) {
-                if resolve_function_ref_name(fn_sigs, &function_ref).is_some() {
-                    return Some(Type::Int {
-                        signed: true,
-                        bits: 32,
-                    });
+                if let Some(fn_ty) = function_ref_type(fn_sigs, &function_ref) {
+                    return Some(fn_ty);
                 }
             }
             let base_ty = infer_expr_type(base, scopes, env, state)?;
@@ -3759,6 +3821,7 @@ fn parse_simple_type(token: &str) -> Option<Type> {
         },
         "f32" => Type::Float { bits: 32 },
         "f64" => Type::Float { bits: 64 },
+        other if other.starts_with("fn(") => return None,
         other if !other.is_empty() => Type::Named {
             name: other.to_string(),
             args: Vec::new(),
@@ -3945,6 +4008,10 @@ fn i32_type() -> Type {
 
 fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let i32 = i32_type();
+    let task_fn = Type::Function {
+        params: Vec::new(),
+        ret: Box::new(i32.clone()),
+    };
     let usize_ty = Type::USize;
     let u8_ty = Type::Int {
         signed: false,
@@ -3956,13 +4023,13 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     };
     let str_ty = Type::Str;
     Some(match name {
-        "spawn" | "thread.spawn" => (vec![i32.clone()], i32.clone()),
-        "spawn_ctx" => (vec![i32.clone(), i32.clone()], i32.clone()),
+        "spawn" | "thread.spawn" => (vec![task_fn.clone()], i32.clone()),
+        "spawn_ctx" => (vec![task_fn.clone(), i32.clone()], i32.clone()),
         "join" | "detach" | "cancel_task" | "task_result" => (vec![i32.clone()], i32.clone()),
         "yield" | "checkpoint" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
         "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
         "task.context" | "task.group_begin" => (vec![], i32.clone()),
-        "task.group_spawn" => (vec![i32.clone(), i32.clone()], i32.clone()),
+        "task.group_spawn" => (vec![i32.clone(), task_fn], i32.clone()),
         "task.group_join" | "task.group_cancel" => (vec![i32.clone()], i32.clone()),
         "alloc" => (vec![usize_ty], ptr_u8.clone()),
         "free" => (vec![ptr_u8], Type::Void),
@@ -4311,6 +4378,23 @@ fn check_pattern_compatibility(
 fn type_compatible(expected: &Type, actual: &Type) -> bool {
     match (expected, actual) {
         (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
+        (
+            Type::Function {
+                params: lhs_params,
+                ret: lhs_ret,
+            },
+            Type::Function {
+                params: rhs_params,
+                ret: rhs_ret,
+            },
+        ) => {
+            lhs_params.len() == rhs_params.len()
+                && lhs_params
+                    .iter()
+                    .zip(rhs_params.iter())
+                    .all(|(lhs, rhs)| type_compatible(lhs, rhs))
+                && type_compatible(lhs_ret, rhs_ret)
+        }
         _ => expected == actual,
     }
 }
@@ -4345,7 +4429,7 @@ fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
         Value::Bool(v) => Some(v as i32),
         Value::Char(v) => Some(v as i32),
         Value::Str(_) => None,
-        Value::List(_) | Value::Struct { .. } | Value::Enum { .. } => None,
+        Value::FnRef(_) | Value::List(_) | Value::Struct { .. } | Value::Enum { .. } => None,
     })
 }
 
@@ -4635,6 +4719,26 @@ fn eval_expr<'a>(
         found
     }
 
+    fn resolve_function_ref_name(
+        functions: &HashMap<&str, &TypedFunction>,
+        candidate: &str,
+    ) -> Option<String> {
+        if functions.contains_key(candidate) {
+            return Some(candidate.to_string());
+        }
+        let suffix = format!(".{candidate}");
+        let mut matched: Option<String> = None;
+        for name in functions.keys() {
+            if name.ends_with(&suffix) {
+                if matched.is_some() {
+                    return None;
+                }
+                matched = Some((*name).to_string());
+            }
+        }
+        matched
+    }
+
     fn expr_function_ref_name(expr: &Expr) -> Option<String> {
         match expr {
             Expr::Ident(name) => Some(name.clone()),
@@ -4657,7 +4761,7 @@ fn eval_expr<'a>(
         Expr::Str(v) => Some(Value::Str(v.clone())),
         Expr::Ident(name) => env.get(name).cloned().or_else(|| {
             if has_function_ref(functions, name.as_str()) {
-                Some(Value::I32(0))
+                resolve_function_ref_name(functions, name).map(Value::FnRef)
             } else {
                 None
             }
@@ -4666,7 +4770,14 @@ fn eval_expr<'a>(
         Expr::Await(inner) => eval_expr(inner, env, functions),
         Expr::Call { callee, args } => {
             let (callee_name, _) = split_generic_callee(callee);
-            let Some(function) = functions.get(callee_name) else {
+            let resolved_name = match functions.get(callee_name) {
+                Some(_) => Some(callee_name.to_string()),
+                None => match env.get(callee_name) {
+                    Some(Value::FnRef(function)) => Some(function.clone()),
+                    _ => None,
+                },
+            };
+            let Some(resolved_name) = resolved_name else {
                 if let Some((_, ret_ty)) = runtime_call_signature(callee_name) {
                     for arg in args {
                         let _ = eval_expr(arg, env, functions)?;
@@ -4675,6 +4786,7 @@ fn eval_expr<'a>(
                 }
                 return None;
             };
+            let function = functions.get(resolved_name.as_str())?;
             if function.params.len() != args.len() {
                 return None;
             }
@@ -4687,7 +4799,8 @@ fn eval_expr<'a>(
         Expr::FieldAccess { base, field } => {
             if let Some(function_ref) = expr_function_ref_name(expr) {
                 if has_function_ref(functions, function_ref.as_str()) {
-                    return Some(Value::I32(0));
+                    return resolve_function_ref_name(functions, function_ref.as_str())
+                        .map(Value::FnRef);
                 }
             }
             let base = eval_expr(base, env, functions)?;
@@ -4855,7 +4968,7 @@ fn truthy(v: &Value) -> bool {
         Value::Char(v) => *v != '\0',
         Value::Str(v) => !v.is_empty(),
         Value::List(v) => !v.is_empty(),
-        Value::Struct { .. } | Value::Enum { .. } => true,
+        Value::FnRef(_) | Value::Struct { .. } | Value::Enum { .. } => true,
     }
 }
 
@@ -4907,12 +5020,14 @@ fn eval_bool_expr(
         Value::Char(v) => Some(v != '\0'),
         Value::Str(v) => Some(!v.is_empty()),
         Value::List(v) => Some(!v.is_empty()),
-        Value::Struct { .. } | Value::Enum { .. } => Some(true),
+        Value::FnRef(_) | Value::Struct { .. } | Value::Enum { .. } => Some(true),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::lower;
 
     #[test]
@@ -5443,5 +5558,54 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn function_type_values_support_higher_order_calls() {
+        let source = r#"
+            fn id(v: i32) -> i32 {
+                return v;
+            }
+            fn apply(f: fn(i32) -> i32, value: i32) -> i32 {
+                return f(value);
+            }
+            fn main() -> i32 {
+                return apply(id, 7);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert_eq!(typed.entry_return_const_i32, Some(7));
+    }
+
+    #[test]
+    fn non_callable_values_fail_callability_checks() {
+        let source = r#"
+            fn main() -> i32 {
+                let value: i32 = 1;
+                return value(2);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("is not callable")));
+    }
+
+    #[test]
+    fn primitive_parity_fixture_typechecks_and_interprets() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/primitive_parity/main.fzy"),
+        )
+        .expect("primitive parity fixture should be readable");
+        let module = parser::parse(&source, "primitive_parity").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert_eq!(typed.entry_return_const_i32, Some(27));
     }
 }

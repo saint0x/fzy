@@ -22,8 +22,15 @@ mkdir -p "$ARTIFACT_DIR"
 echo "[gate] deterministic doctor"
 fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
 
+echo "[gate] language primitive drift gate"
+python3 ./scripts/language_primitive_drift_gate.py >/dev/null
+
 echo "[gate] deterministic strict tests"
 fozzy test --det --strict tests/*.fozzy.json --seed "$SEED" --json >/dev/null
+
+echo "[gate] primitive parity/equivalence probes"
+"${FZ_CMD[@]}" parity tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
 
 echo "[gate] deterministic memory doctor/tests"
 fozzy doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
@@ -46,6 +53,7 @@ fozzy ci "$MEM_TRACE_PATH" --json >/dev/null
 echo "[gate] host-backed run"
 fozzy run tests/runtime.bind_json_env.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/memory_graph_diff_top.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
+fozzy run tests/primitive.host_operators.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 
 echo "[gate] host-backed C interop matrix"
 fozzy run tests/c_ffi_matrix.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null

@@ -384,6 +384,7 @@ fn to_value_type(ty: &Type) -> ValueType {
         | Type::Option(_)
         | Type::Result { .. }
         | Type::Vec(_)
+        | Type::Function { .. }
         | Type::Char
         | Type::TypeVar(_) => ValueType::Aggregate,
         Type::Void => ValueType::Void,

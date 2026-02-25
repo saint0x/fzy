@@ -5473,6 +5473,7 @@ fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType> {
         | ast::Type::Result { .. }
         | ast::Type::Option(_)
         | ast::Type::Vec(_)
+        | ast::Type::Function { .. }
         | ast::Type::Named { .. }
         | ast::Type::TypeVar(_) => Some(pointer_sized_clif_type()),
     }
@@ -10969,6 +10970,7 @@ fn profile_config(
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
@@ -11582,6 +11584,39 @@ mod tests {
             "#[repr(C)]\nstruct Pair { lo: i32, hi: i32 }\nfn id64(v: i64) -> i64 {\n    return v\n}\nfn gate(flag: bool) -> bool {\n    return flag\n}\nfn make_pair() -> Pair {\n    return Pair { lo: 1, hi: 2 }\n}\nfn main() -> i64 {\n    let p: Pair = make_pair()\n    let _ = p\n    if gate(true) {\n        return id64(3000000000)\n    }\n    return id64(3000000000)\n}\n",
         )
         .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_primitive_control_flow_and_operator_fixture_compile() {
+        let project_name = format!(
+            "fozzylang-primitive-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        let fixture = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/primitive_parity/main.fzy"),
+        )
+        .expect("primitive parity fixture should be readable");
+        std::fs::write(root.join("src/main.fzy"), fixture).expect("source should be written");
 
         let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
             .expect("cranelift build should succeed");

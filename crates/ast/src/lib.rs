@@ -54,6 +54,7 @@ pub struct Struct {
     pub name: String,
     pub fields: Vec<Field>,
     pub repr: Option<String>,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +62,7 @@ pub struct Enum {
     pub name: String,
     pub variants: Vec<Variant>,
     pub repr: Option<String>,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -79,6 +81,7 @@ pub struct Variant {
 pub struct Trait {
     pub name: String,
     pub methods: Vec<TraitMethod>,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +96,7 @@ pub struct Impl {
     pub trait_name: Option<String>,
     pub for_type: Type,
     pub methods: Vec<Function>,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -296,6 +300,10 @@ pub enum Type {
     },
     Option(Box<Type>),
     Vec(Box<Type>),
+    Function {
+        params: Vec<Type>,
+        ret: Box<Type>,
+    },
     Named {
         name: String,
         args: Vec<Type>,
@@ -353,6 +361,18 @@ impl std::fmt::Display for Type {
             Type::Result { ok, err } => write!(f, "Result<{ok}, {err}>"),
             Type::Option(inner) => write!(f, "Option<{inner}>"),
             Type::Vec(inner) => write!(f, "Vec<{inner}>"),
+            Type::Function { params, ret } => {
+                write!(
+                    f,
+                    "fn({}) -> {}",
+                    params
+                        .iter()
+                        .map(|t| t.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    ret
+                )
+            }
             Type::Named { name, args } => {
                 if args.is_empty() {
                     write!(f, "{name}")

@@ -115,6 +115,30 @@ Semantics:
   - networking operations infer `core.net`.
 - Inference does not replace declaration requirements: inferred effects must still be satisfied by explicit module capabilities or propagated capability tokens.
 
+## Function Value Semantics
+
+### Function Type Surface
+
+- Function types use `fn(<param-types...>) -> <return-type>`.
+- Function items can be used as first-class values where a compatible `fn(...) -> ...` type is expected.
+- Function type compatibility is exact on arity, parameter types, and return type.
+
+### Higher-Order Callability Rules
+
+- Calling a function value is valid only when the call target resolves to a `fn(...) -> ...` type.
+- Calling non-callable values is a hard type error.
+- Generic specialization syntax is not valid on function-value call targets.
+
+## Module And Import Ergonomics (v1 Contract)
+
+- `use path::item;` is supported.
+- Unsupported forms are hard diagnostics in v1:
+  - `use path as alias;`
+  - `use path::*;`
+  - `use path::{a, b};`
+  - `pub use ...;` re-exports
+- Visibility support includes `pub fn`, `pub struct`, `pub enum`, `pub trait`, and `pub impl`.
+
 ## Test Block Semantics
 
 Syntax:

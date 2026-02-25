@@ -252,18 +252,18 @@
 - [✅] Add collection literals expected in core language surface (array literal support at minimum; tuple literal support if tuples are declared in-scope for v1.x).
 - [✅] Add indexing/subscript expression support (`arr[i]`, map/list index rules) with bounds/type diagnostics and deterministic lowering.
 - [✅] Add `return;` support for unit/void-return functions and align verifier expectations with unit-return semantics.
-- [ ] Formalize and implement unit/void operational-function conventions to remove forced `-> i32` scaffolding in normal code paths.
-- [ ] Add function-value primitives expected by modern language users (closures/lambdas or an explicitly documented equivalent model), including capture/ownership rules.
-- [ ] Add function-type surface and callability checks for higher-order use cases (if closures/function values are in scope for release target).
+- [✅] Formalize and implement unit/void operational-function conventions to remove forced `-> i32` scaffolding in normal code paths.
+- [✅] Add function-value primitives expected by modern language users (closures/lambdas or an explicitly documented equivalent model), including capture/ownership rules.
+- [✅] Add function-type surface and callability checks for higher-order use cases (if closures/function values are in scope for release target).
 - [✅] Implement test-block body semantics as first-class compiled statements (no body discard), aligned with documented test semantics.
-- [ ] Expand module/import ergonomics expected by production users (import aliases/re-exports/wildcards, or document explicit non-support with hard diagnostics).
-- [ ] Expand visibility model beyond minimal function-level `pub` where required by production modularity contracts.
-- [ ] Add exhaustive parser/type/lowering conformance suite for each primitive family above (positive + negative + ambiguity cases).
-- [ ] Add cross-backend parity tests (LLVM/Cranelift) for all new primitives and edge-case semantics.
-- [ ] Add deterministic replay/equivalence coverage specifically for new control-flow and operator semantics.
-- [ ] Add host-backed production probes for primitive-heavy workloads where runtime behavior can diverge from deterministic mode.
-- [ ] Add language-spec drift gate: fail CI/release when documented primitives differ from implemented parser/AST/HIR capabilities.
-- [ ] Publish and freeze a "real-language primitive baseline" matrix (`implemented` / `partial` / `missing`) and make it release-blocking for advertised features.
+- [✅] Expand module/import ergonomics expected by production users (import aliases/re-exports/wildcards, or document explicit non-support with hard diagnostics).
+- [✅] Expand visibility model beyond minimal function-level `pub` where required by production modularity contracts.
+- [✅] Add exhaustive parser/type/lowering conformance suite for each primitive family above (positive + negative + ambiguity cases).
+- [✅] Add cross-backend parity tests (LLVM/Cranelift) for all new primitives and edge-case semantics.
+- [✅] Add deterministic replay/equivalence coverage specifically for new control-flow and operator semantics.
+- [✅] Add host-backed production probes for primitive-heavy workloads where runtime behavior can diverge from deterministic mode.
+- [✅] Add language-spec drift gate: fail CI/release when documented primitives differ from implemented parser/AST/HIR capabilities.
+- [✅] Publish and freeze a "real-language primitive baseline" matrix (`implemented` / `partial` / `missing`) and make it release-blocking for advertised features.
 - [✅] Add completion/drift gate for `PLAN.md` claim accuracy (completed items must be evidenced by source+tests; stale completions fail release readiness).
 
 ### Dependency + Project UX Maturity

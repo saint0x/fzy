@@ -254,6 +254,40 @@ impl Parser {
     }
 
     fn parse_item(&mut self) -> Option<ast::Item> {
+        if self.at(&TokenKind::KwPub) {
+            match self.peek_n(1).map(|token| &token.kind) {
+                Some(TokenKind::KwUse) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    self.push_diag_here(
+                        "`pub use` re-exports are not supported yet; expose module APIs with explicit wrapper items",
+                    );
+                    self.parse_use_or_cap();
+                    return None;
+                }
+                Some(TokenKind::KwMod) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    self.parse_mod_decl(true);
+                    return None;
+                }
+                Some(TokenKind::KwStruct) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    return self.parse_struct(true);
+                }
+                Some(TokenKind::KwEnum) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    return self.parse_enum(true);
+                }
+                Some(TokenKind::KwTrait) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    return self.parse_trait(true);
+                }
+                Some(TokenKind::KwImpl) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    return self.parse_impl(true);
+                }
+                _ => {}
+            }
+        }
         if self.pending_ffi_panic.is_some()
             && !matches!(
                 self.peek_kind(),
@@ -268,23 +302,23 @@ impl Parser {
             return None;
         }
         if self.at(&TokenKind::KwMod) {
-            self.parse_mod_decl();
+            self.parse_mod_decl(false);
             return None;
         }
         if self.at(&TokenKind::KwTest) {
             return self.parse_test();
         }
         if self.at(&TokenKind::KwStruct) {
-            return self.parse_struct();
+            return self.parse_struct(false);
         }
         if self.at(&TokenKind::KwEnum) {
-            return self.parse_enum();
+            return self.parse_enum(false);
         }
         if self.at(&TokenKind::KwTrait) {
-            return self.parse_trait();
+            return self.parse_trait(false);
         }
         if self.at(&TokenKind::KwImpl) {
-            return self.parse_impl();
+            return self.parse_impl(false);
         }
         if self.at(&TokenKind::KwRpc) {
             self.parse_rpc_decl();
@@ -386,18 +420,58 @@ impl Parser {
                 self.push_diag_here("expected `::` in import path");
                 break;
             }
-            if let Some(seg) = self.expect_ident("expected import path segment") {
-                path.push_str("::");
-                path.push_str(&seg);
-            } else {
+            if self.consume(&TokenKind::Star) {
+                self.push_diag_here(
+                    "wildcard imports are not supported; import explicit module paths instead",
+                );
                 break;
             }
+            if self.consume(&TokenKind::LBrace) {
+                self.push_diag_here(
+                    "grouped imports are not supported; use one `use` line per explicit import path",
+                );
+                self.consume_until(&[TokenKind::RBrace, TokenKind::Semi]);
+                let _ = self.consume(&TokenKind::RBrace);
+                break;
+            }
+            let Some(seg) = self.expect_ident("expected import path segment") else {
+                break;
+            };
+            path.push_str("::");
+            path.push_str(&seg);
         }
-        self.module.imports.push(path);
+        if self.consume(&TokenKind::Ident("as".to_string())) {
+            self.push_diag_here(
+                "import aliases are not supported; use the canonical module path directly",
+            );
+            let _ = self.expect_ident("expected alias target after `as`");
+        }
+        if self.at(&TokenKind::Comma) {
+            self.push_diag_here("multiple imports in one `use` are not supported");
+            self.consume_until(&[TokenKind::Semi]);
+        }
+        if self.at(&TokenKind::LBrace) {
+            self.push_diag_here(
+                "grouped imports are not supported; use one `use` line per explicit import path",
+            );
+            self.consume_until(&[TokenKind::RBrace, TokenKind::Semi]);
+            let _ = self.consume(&TokenKind::RBrace);
+        }
+        if self.at(&TokenKind::Star) {
+            self.push_diag_here(
+                "wildcard imports are not supported; import explicit module paths instead",
+            );
+            let _ = self.advance();
+        }
+        if !path.is_empty() {
+            self.module.imports.push(path);
+        } else {
+            self.consume_until(&[TokenKind::Semi]);
+        }
         let _ = self.consume(&TokenKind::Semi);
     }
 
-    fn parse_mod_decl(&mut self) {
+    fn parse_mod_decl(&mut self, _is_pub: bool) {
         let _ = self.consume(&TokenKind::KwMod);
         let Some(name) = self.expect_ident("expected module name") else {
             return;
@@ -429,7 +503,7 @@ impl Parser {
         }))
     }
 
-    fn parse_struct(&mut self) -> Option<ast::Item> {
+    fn parse_struct(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwStruct);
         let name = self.expect_ident("expected struct name")?;
         let mut fields = Vec::new();
@@ -465,10 +539,11 @@ impl Parser {
             name,
             fields,
             repr: self.pending_repr.take(),
+            is_pub,
         }))
     }
 
-    fn parse_enum(&mut self) -> Option<ast::Item> {
+    fn parse_enum(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwEnum);
         let name = self.expect_ident("expected enum name")?;
         let mut variants = Vec::new();
@@ -501,10 +576,11 @@ impl Parser {
             name,
             variants,
             repr: self.pending_repr.take(),
+            is_pub,
         }))
     }
 
-    fn parse_trait(&mut self) -> Option<ast::Item> {
+    fn parse_trait(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwTrait);
         let name = self.expect_ident("expected trait name")?;
         if !self.consume(&TokenKind::LBrace) {
@@ -562,10 +638,14 @@ impl Parser {
             });
         }
         let _ = self.consume(&TokenKind::RBrace);
-        Some(ast::Item::Trait(ast::Trait { name, methods }))
+        Some(ast::Item::Trait(ast::Trait {
+            name,
+            methods,
+            is_pub,
+        }))
     }
 
-    fn parse_impl(&mut self) -> Option<ast::Item> {
+    fn parse_impl(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwImpl);
         let first = self.parse_type()?;
         let (trait_name, for_type) = if self.consume(&TokenKind::KwFor) {
@@ -604,6 +684,7 @@ impl Parser {
             trait_name,
             for_type,
             methods,
+            is_pub,
         }))
     }
 
@@ -1238,6 +1319,34 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Option<Type> {
+        if self.consume(&TokenKind::KwFn) {
+            if !self.consume(&TokenKind::LParen) {
+                self.push_diag_here("expected `(` after `fn` in function type");
+                return None;
+            }
+            let mut params = Vec::new();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                let Some(param_ty) = self.parse_type() else {
+                    self.consume_until(&[TokenKind::Comma, TokenKind::RParen]);
+                    let _ = self.consume(&TokenKind::Comma);
+                    continue;
+                };
+                params.push(param_ty);
+                if !self.consume(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            let _ = self.consume(&TokenKind::RParen);
+            let ret = if self.consume(&TokenKind::Arrow) {
+                self.parse_type().unwrap_or(Type::Void)
+            } else {
+                Type::Void
+            };
+            return Some(Type::Function {
+                params,
+                ret: Box::new(ret),
+            });
+        }
         if self.consume(&TokenKind::Star) {
             let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
             let inner = self.parse_type()?;
@@ -2294,6 +2403,8 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::parse;
 
     #[test]
@@ -2883,5 +2994,98 @@ mod tests {
             })
             .expect("test block should exist");
         assert!(!test.body.is_empty());
+    }
+
+    #[test]
+    fn parses_function_type_and_expanded_pub_items() {
+        let source = r#"
+            pub struct Exposed { value: i32 }
+            pub enum Flag { On, Off }
+            pub trait Show { fn show(v: i32) -> i32; }
+            pub impl Show for Exposed {
+                pub fn show(v: i32) -> i32 { return v; }
+            }
+            fn apply(f: fn(i32) -> i32, value: i32) -> i32 {
+                return f(value);
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let apply = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "apply" => Some(function),
+                _ => None,
+            })
+            .expect("apply function should exist");
+        assert!(matches!(
+            apply.params.first().map(|param| &param.ty),
+            Some(ast::Type::Function { .. })
+        ));
+        assert!(module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Struct(ast::Struct { is_pub: true, .. }))));
+        assert!(module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Enum(ast::Enum { is_pub: true, .. }))));
+        assert!(module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Trait(ast::Trait { is_pub: true, .. }))));
+        assert!(module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Impl(ast::Impl { is_pub: true, .. }))));
+    }
+
+    #[test]
+    fn rejects_unsupported_use_alias_wildcard_and_group_forms() {
+        let source = r#"
+            pub use core.net;
+            use app::net as netmod;
+            use app::net::*;
+            use app::fs::{open, close};
+        "#;
+        let diagnostics = parse(source, "imports").expect_err("parse should fail");
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message
+                .contains("`pub use` re-exports are not supported yet")
+        }));
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("import aliases are not supported")));
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("wildcard imports are not supported")));
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("grouped imports are not supported")));
+    }
+
+    #[test]
+    fn primitive_parity_fixture_parses_full_control_flow_and_operator_surface() {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/primitive_parity/main.fzy"),
+        )
+        .expect("primitive parity fixture should be readable");
+        let module = parse(&source, "primitive_parity").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(
+            |stmt| matches!(stmt, ast::Stmt::Let { ty: Some(ast::Type::Int { .. }), .. })
+        ));
+        assert!(module.items.iter().any(|item| matches!(
+            item,
+            ast::Item::Function(ast::Function { name, .. }) if name == "apply_id"
+        )));
     }
 }
