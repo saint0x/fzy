@@ -5,7 +5,7 @@ Fully verifiable, copy-paste examples for real fzy workflows.
 All examples assume you are in repo root:
 
 ```bash
-cd /Users/deepsaint/Desktop/fozzylang
+cd fozzylang
 ```
 
 If `fz` is not installed globally, define a local fallback once in your shell:
