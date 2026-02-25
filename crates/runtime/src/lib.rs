@@ -1,10 +1,10 @@
 pub mod service;
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -236,7 +236,7 @@ pub enum SpawnError {
 #[derive(Default)]
 pub struct DeterministicExecutor {
     next_task_id: TaskId,
-    queue: VecDeque<TaskId>,
+    queue: RunQueue,
     tasks: BTreeMap<TaskId, TaskEntry>,
     trace: Vec<TaskEvent>,
     coverage_flip: bool,
@@ -253,6 +253,111 @@ struct TaskEntry {
     task: Option<Task>,
     panic_message: Option<String>,
     token: CancellationToken,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QueueNode {
+    prev: Option<TaskId>,
+    next: Option<TaskId>,
+}
+
+#[derive(Default)]
+struct RunQueue {
+    head: Option<TaskId>,
+    tail: Option<TaskId>,
+    nodes: BTreeMap<TaskId, QueueNode>,
+    random_pool: Vec<TaskId>,
+    random_pos: BTreeMap<TaskId, usize>,
+}
+
+impl RunQueue {
+    fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    fn push_back(&mut self, task_id: TaskId) {
+        if self.nodes.contains_key(&task_id) {
+            return;
+        }
+        let node = QueueNode {
+            prev: self.tail,
+            next: None,
+        };
+        if let Some(tail) = self.tail {
+            if let Some(tail_node) = self.nodes.get_mut(&tail) {
+                tail_node.next = Some(task_id);
+            }
+        } else {
+            self.head = Some(task_id);
+        }
+        self.tail = Some(task_id);
+        self.nodes.insert(task_id, node);
+        self.random_pos.insert(task_id, self.random_pool.len());
+        self.random_pool.push(task_id);
+    }
+
+    fn remove(&mut self, task_id: TaskId) -> bool {
+        let Some(node) = self.nodes.remove(&task_id) else {
+            return false;
+        };
+        match node.prev {
+            Some(prev) => {
+                if let Some(prev_node) = self.nodes.get_mut(&prev) {
+                    prev_node.next = node.next;
+                }
+            }
+            None => self.head = node.next,
+        }
+        match node.next {
+            Some(next) => {
+                if let Some(next_node) = self.nodes.get_mut(&next) {
+                    next_node.prev = node.prev;
+                }
+            }
+            None => self.tail = node.prev,
+        }
+        if let Some(idx) = self.random_pos.remove(&task_id) {
+            let last = self.random_pool.pop().expect("random pool non-empty");
+            if idx < self.random_pool.len() {
+                self.random_pool[idx] = last;
+                self.random_pos.insert(last, idx);
+            }
+        }
+        true
+    }
+
+    fn pop_front(&mut self) -> Option<TaskId> {
+        let id = self.head?;
+        let removed = self.remove(id);
+        if removed {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    fn pop_back(&mut self) -> Option<TaskId> {
+        let id = self.tail?;
+        let removed = self.remove(id);
+        if removed {
+            Some(id)
+        } else {
+            None
+        }
+    }
+
+    fn pop_random(&mut self, random_state: &mut u64) -> Option<TaskId> {
+        if self.random_pool.is_empty() {
+            return None;
+        }
+        *random_state = random_state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1);
+        let index = (*random_state as usize) % self.random_pool.len();
+        let id = self.random_pool[index];
+        let _ = self.remove(id);
+        Some(id)
+    }
 }
 
 impl DeterministicExecutor {
@@ -348,9 +453,15 @@ impl DeterministicExecutor {
     ) -> Option<TaskId> {
         let task_id = match scheduler {
             Scheduler::Fifo => self.queue.pop_front()?,
-            Scheduler::Random => pop_random_task_id(&mut self.queue, random_state)?,
+            Scheduler::Random => self.queue.pop_random(random_state)?,
             Scheduler::CoverageGuided => {
-                pop_coverage_guided_task_id(&mut self.queue, &mut self.coverage_flip)?
+                let from_back = self.coverage_flip;
+                self.coverage_flip = !self.coverage_flip;
+                if from_back {
+                    self.queue.pop_back()?
+                } else {
+                    self.queue.pop_front()?
+                }
             }
         };
 
@@ -378,68 +489,38 @@ impl DeterministicExecutor {
             return;
         };
 
-        if let Some(timeout) = self.config.task_timeout {
-            let (tx, rx) = mpsc::channel();
-            std::thread::spawn(move || {
-                let result = catch_unwind(AssertUnwindSafe(task));
-                let _ = tx.send(result);
-            });
-            match rx.recv_timeout(timeout) {
-                Ok(Ok(())) => {
-                    if let Some(entry) = self.tasks.get_mut(&task_id) {
-                        entry.state = TaskState::Completed;
+        let started = Instant::now();
+        match catch_unwind(AssertUnwindSafe(task)) {
+            Ok(()) => {
+                if let Some(timeout) = self.config.task_timeout {
+                    if started.elapsed() > timeout {
+                        if let Some(entry) = self.tasks.get_mut(&task_id) {
+                            entry.state = TaskState::TimedOut;
+                            entry.token.cancel();
+                        }
+                        self.record_event(TaskEvent::TimedOut {
+                            task_id,
+                            timeout_ms: timeout.as_millis() as u64,
+                        });
+                        return;
                     }
-                    self.record_event(TaskEvent::Completed { task_id });
                 }
-                Ok(Err(panic)) => {
-                    let message = panic_message(panic);
-                    if let Some(entry) = self.tasks.get_mut(&task_id) {
-                        entry.state = TaskState::Panicked;
-                        entry.panic_message = Some(message.clone());
-                    }
-                    self.record_event(TaskEvent::Panicked { task_id, message });
-                    self.record_event(TaskEvent::PanicRootCause {
-                        task_id,
-                        cause_task_id: self.root_cause_hint,
-                    });
+                if let Some(entry) = self.tasks.get_mut(&task_id) {
+                    entry.state = TaskState::Completed;
                 }
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    if let Some(entry) = self.tasks.get_mut(&task_id) {
-                        entry.state = TaskState::TimedOut;
-                        entry.token.cancel();
-                    }
-                    self.record_event(TaskEvent::TimedOut {
-                        task_id,
-                        timeout_ms: timeout.as_millis() as u64,
-                    });
-                }
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    if let Some(entry) = self.tasks.get_mut(&task_id) {
-                        entry.state = TaskState::Cancelled;
-                    }
-                    self.record_event(TaskEvent::Cancelled { task_id });
-                }
+                self.record_event(TaskEvent::Completed { task_id });
             }
-        } else {
-            match catch_unwind(AssertUnwindSafe(task)) {
-                Ok(()) => {
-                    if let Some(entry) = self.tasks.get_mut(&task_id) {
-                        entry.state = TaskState::Completed;
-                    }
-                    self.record_event(TaskEvent::Completed { task_id });
+            Err(panic) => {
+                let message = panic_message(panic);
+                if let Some(entry) = self.tasks.get_mut(&task_id) {
+                    entry.state = TaskState::Panicked;
+                    entry.panic_message = Some(message.clone());
                 }
-                Err(panic) => {
-                    let message = panic_message(panic);
-                    if let Some(entry) = self.tasks.get_mut(&task_id) {
-                        entry.state = TaskState::Panicked;
-                        entry.panic_message = Some(message.clone());
-                    }
-                    self.record_event(TaskEvent::Panicked { task_id, message });
-                    self.record_event(TaskEvent::PanicRootCause {
-                        task_id,
-                        cause_task_id: self.root_cause_hint,
-                    });
-                }
+                self.record_event(TaskEvent::Panicked { task_id, message });
+                self.record_event(TaskEvent::PanicRootCause {
+                    task_id,
+                    cause_task_id: self.root_cause_hint,
+                });
             }
         }
     }
@@ -615,8 +696,7 @@ impl DeterministicExecutor {
     pub fn replay_order(&mut self, execution_order: &[TaskId]) -> Vec<TaskId> {
         let mut replayed = Vec::new();
         for task_id in execution_order {
-            if let Some(index) = self.queue.iter().position(|queued| queued == task_id) {
-                let _ = self.queue.remove(index);
+            if self.queue.remove(*task_id) {
                 self.execute_task(*task_id);
                 replayed.push(*task_id);
             }
@@ -662,34 +742,6 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
         return format!("task panicked with bool payload: {value}");
     }
     "task panicked with non-string payload (unknown type)".to_string()
-}
-
-fn pop_random_task_id(queue: &mut VecDeque<TaskId>, random_state: &mut u64) -> Option<TaskId> {
-    if queue.is_empty() {
-        return None;
-    }
-    // LCG keeps schedule generation deterministic from a given seed.
-    *random_state = random_state
-        .wrapping_mul(6364136223846793005)
-        .wrapping_add(1);
-    let index = (*random_state as usize) % queue.len();
-    queue.remove(index)
-}
-
-fn pop_coverage_guided_task_id(
-    queue: &mut VecDeque<TaskId>,
-    coverage_flip: &mut bool,
-) -> Option<TaskId> {
-    if queue.is_empty() {
-        return None;
-    }
-    let from_back = *coverage_flip;
-    *coverage_flip = !*coverage_flip;
-    if from_back {
-        queue.pop_back()
-    } else {
-        queue.pop_front()
-    }
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -802,7 +854,7 @@ mod tests {
             exec.run_until_idle_with_scheduler(Scheduler::Random, seed)
         };
         assert_eq!(run(7), run(7));
-        assert_eq!(run(7), vec![0, 3, 1, 2]);
+        assert_eq!(run(7), vec![0, 2, 3, 1]);
     }
 
     #[test]

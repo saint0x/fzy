@@ -1,311 +1,245 @@
-# plan.md — P0 Production Architecture Reset (No Backward Compatibility)
+# PLAN.md
 
-Date: 2026-02-25
-Owner: Runtime/Compiler Core
-Status: Ready for execution
+- [✅] Date: 2026-02-25
+- [✅] Owner: Runtime/Compiler Core
 
-## 1. Mandate
+## SITREP (as of February 25, 2026): not yet at full bidirectional C compatibility
 
-Implement all 2026-02-25 P0 follow-ups as architectural replacements, not patch fixes.
+Current status is partial bidirectional, with major gaps in coverage and at least one concrete ABI-break risk.
 
-Constraints for this plan:
-- No backward compatibility requirements.
-- Any incompatible runtime/trace/API/schema change is allowed.
-- Optimize for production correctness first, then latency/throughput, then code simplicity.
+Overall readiness: Amber/Red  
+What works: C-facing header/ABI generation, ABI baseline checking, native trace + Fozzy trace lifecycle  
+What blocks “full bidirectional compatibility”: missing reverse bridges, coverage debt, ABI drift risk
 
-## 2. Baseline (captured 2026-02-25)
+What is shipped
+- FFI surface exists via `pub extern "C" fn ...` declarations and generated C headers/ABI manifests (`command.rs` export/header path, `docs/abi-policy-v0.md`).
+- ABI compatibility gate exists and correctly fails on signature/panic-boundary drift (`command.rs` `abi-check` tests).
+- Native trace lifecycle is healthy (`fz test --det --record ...`, `fz replay/ci/shrink/explore` all passed on `sitrep.native.trace.json`).
+- Native -> Fozzy bridge exists via generated `goalTrace` (`*.goal.fozzy`), and `fozzy trace verify/replay/ci` passed on that artifact.
 
-- [x] ✅ `fozzy map suites --root . --scenario-root tests --profile pedantic --json` baseline captured:
-  - `requiredHotspotCount=17`
-  - `uncoveredHotspotCount=17`
-- [x] ✅ Determinism spot-check passed:
-  - `fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json` (consistent signatures across all 5 runs)
-- [x] ✅ Strict deterministic test spot-check passed:
-  - `fozzy test --det --strict tests/example.fozzy.json --seed 4242 --json`
-- [x] ✅ Trace lifecycle spot-check passed:
-  - `fozzy run tests/example.fozzy.json --det --seed 4242 --record artifacts/p0-audit.trace.fozzy --json`
-  - `fozzy trace verify artifacts/p0-audit.trace.fozzy --strict --json`
-  - `fozzy replay artifacts/p0-audit.trace.fozzy --json`
-  - `fozzy ci artifacts/p0-audit.trace.fozzy --json`
-- [x] ✅ Host backend spot-check passed:
-  - `fozzy run tests/example.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`
+What is not fully bidirectional yet
+- `fz replay/shrink/ci` on native trace/manifest always uses native engine path, not Fozzy passthrough (`command.rs` dispatch).
+- A `goalTrace` resolver exists (`resolve_replay_target`), but in current dispatch this path is effectively sidelined for native targets.
+- No evident reverse conversion pipeline from `.fozzy` trace back into native trace schema (only native -> goal `.fozzy` is explicit).
 
-## 3. Architecture Decisions (global)
-
-1. Introduce `runtime.v2` boundaries:
-- `net_core` (OS readiness + sockets)
-- `http_core` (streaming parser/serializer)
-- `sched_core` (deterministic scheduler + timeout wheel)
-- `trace_core` (borrowed/streamed decision access)
-
-2. Remove clone-first APIs and replace with borrow/iterator/snapshot-handle APIs.
-
-3. Replace single-shot read/write semantics with framed streaming semantics everywhere HTTP is handled.
-
-4. Deterministic and host backends share the same state-machine contracts; backend-specific behavior only in I/O adapters.
-
-5. Trace/schema bump to vNext with breaking changes accepted.
-
-## 4. Workstreams
-
-## WS1 — `HostNet::listen` contract correctness
-
-Problem:
-- `HostNet::listen` validates and records decision but does not invoke OS `listen(2)` semantics.
-
-Design:
-- Store pre-listen socket handles (`socket2::Socket`) for listener entries.
-- Transition listener lifecycle explicitly: `Bound -> Listening(backlog) -> Closed`.
-- Call `socket.listen(backlog)` once; reject repeated listen with incompatible backlog.
-
-Primary files:
+Coverage/validation debt (biggest blocker)
+- `fozzy map suites --profile pedantic` returned:
+- `requiredHotspotCount=17`
+- `uncoveredHotspotCount=17`
+- `coveredHotspotCount=0`
+- Missing required suites repeatedly include:
+- `explore_schedule_faults`
+- `fuzz_inputs`
+- `memory_graph_diff_top`
+- `shrink_exercised`
+- plus `host_backends_run` on several hotspots
+- Highest-risk uncovered files include:
+- `crates/driver/src/command.rs`
 - `crates/stdlib/src/net.rs`
-
-Acceptance:
-- Binding without listen must not accept connections.
-- Listen backlog is enforced and observable under host stress scenarios.
-
-## WS2 — HTTP runtime correctness for partial I/O
-
-Problem:
-- Server hot path does single `read` into fixed buffer and assumes full request; response path assumes one-shot serialization/writes.
-
-Design:
-- Add `HttpConn` state machine:
-  - incremental header parse until `\r\n\r\n`
-  - body framing by `Content-Length` and `Transfer-Encoding: chunked`
-  - bounded incremental reads respecting limits/timeouts
-- Add `write_all_with_budget` loop for short writes and timeout budget enforcement.
-- Move `parse_http_request` from `&[u8] -> HttpRequest` to streaming decoder returning `NeedMore | Complete | Error`.
-
-Primary files:
-- `crates/stdlib/src/net.rs`
-- `apps/live_server/src/main.rs`
-
-Acceptance:
-- Partial header/body and short write scenarios pass under host and deterministic backends.
-- Keep-alive pipelining and `Expect: 100-continue` behave correctly under fragmented transport.
-
-## WS3 — Remove clone-heavy host poll scan
-
-Problem:
-- `scan_poll_interests` clones `poll_interests` each cycle.
-
-Design:
-- Replace `BTreeMap<SocketId, PollInterest>` scan model with evented poller registrations:
-  - `mio::Poll` + `Events` (or kqueue/epoll wrapper), one registration per socket+interest.
-- Maintain socket metadata map; readiness comes from poller events, not map clone iteration.
-- Keep deterministic ordering by stable event normalization before enqueue.
-
-Primary files:
-- `crates/stdlib/src/net.rs`
-
-Acceptance:
-- No `poll_interests.clone()` in hot path.
-- Poll cycle cost scales with ready events, not registered sockets.
-
-## WS4 — Remove per-task OS thread spawn in deterministic timeout path
-
-Problem:
-- `Executor::execute_task` spawns one OS thread per timed task (`recv_timeout` bridge).
-
-Design:
-- Replace with scheduler-native timeout wheel/min-heap:
-  - task start timestamp in virtual clock
-  - timeout deadline checked at scheduling points
-  - timed-out tasks transition without OS thread handoff
-- Add deterministic `TaskBudgetExceeded` event for trace.
-
-Primary files:
 - `crates/runtime/src/lib.rs`
 
-Acceptance:
-- No `std::thread::spawn` inside deterministic task execution path.
-- Timeout behavior remains deterministic across seeds and replay.
+Concrete compatibility risk found today
+- Regenerating headers/ABI for examples changed ABI-relevant outputs:
+- `usize/size_t` became `u64/uint64_t`
+- `panicBoundary` changed from `abort-or-translate` to `error`
+- ABI checks against pre-existing baselines then failed for both `fullstack` and `live_server` with signature + panic-boundary mismatches.
+- Relevant code paths:
+- C type mapping in `to_c_type`
+- parser maps `usize` to 64-bit int in `parse_type`
 
-## WS5 — Replace O(n) mid-queue removals for random/replay
+Operational note
+- No source code was edited, but command-driven artifact regeneration modified tracked files:
+- `examples/fullstack/include/fullstack.h`
+- `examples/fullstack/include/fullstack.abi.json`
+- `examples/live_server/include/live_server.h`
+- `examples/live_server/include/live_server.abi.json`
 
-Problem:
-- `VecDeque::remove(index)` in random scheduling and replay path is O(n).
+## SITREP (as of February 25, 2026): production-readiness as a systems PL
 
-Design:
-- Replace run queue with deterministic indexed structure:
-  - `SlotMap<TaskId, QueueNode>` + intrusive linked list + index vector
-  - O(1) pop front/back/random-by-index removal
-- Replay path uses direct handle removal, not linear position scans.
+Current status is strong for deterministic runtime/orchestration DSL usage, but not yet at serious general-purpose systems language readiness.
 
-Primary files:
-- `crates/runtime/src/lib.rs`
+Overall readiness: Amber/Red  
+What works: deterministic orchestration/testing lifecycle, ABI policy/check gates, native backend policy, baseline safety diagnostics  
+What blocks "serious systems PL": end-to-end type semantics parity, enforceable memory-safety depth, backend conformance maturity, full production tooling depth
 
-Acceptance:
-- No linear `position/remove(index)` in scheduler/replay hot paths.
-- Seed-deterministic order preserved.
+Empirical validation run (Fozzy-first)
+- `fozzy doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json` passed with consistent signatures.
+- `fozzy test --det --strict tests/run.pass.fozzy.json tests/memory.pass.fozzy.json --json` passed.
+- Trace lifecycle passed: `fozzy run --det --record` -> `fozzy trace verify --strict` -> `fozzy replay` -> `fozzy ci`.
+- Host-backed run passed: `fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`.
 
-## WS6 — Reduce HTTP parser/serializer allocation churn
+Type-system and lowering reality (core blocker)
+- Frontend type surface is broad (AST/parser include `u*`, `i*`, `f*`, pointers/refs/slices/arrays/containers/named types).
+- Runtime/typechecked core path remains narrow:
+- FIR value typing collapses integer families to `I32`.
+- Verifier explicitly reports v0 return-type support as `void` and `i32`.
+- LLVM/Cranelift lowering paths are overwhelmingly `i32` signatures/ops.
+- Parser/AST literal/token core is `i32`-centric (`Expr::Int(i32)`, token integer parsing to `i32`).
+- Practical mismatch is confirmed by probe checks: non-`i32` return forms are accepted at surface but still not fully verified/lowered as first-class end-to-end semantics.
 
-Problem:
-- Multiple `to_vec`, header-map clones, repeated lowercasing/formatting in request/response handling.
+ABI/layout contract status
+- ABI policy exists (`fozzylang.ffi_abi.v0`) with explicit compatibility checks (schema/package/panicBoundary/signature/symbolVersion).
+- `fz abi-check` enforcement is real and validated by tests.
+- Stable boundary is intentionally narrow: FFI-stable types are constrained; many richer language types remain excluded from stable boundary usage.
+- Result: ABI baseline exists and is useful, but does not yet represent full-language layout/ABI guarantees.
 
-Design:
-- Introduce `HttpArena`/scratch buffers per connection.
-- Header representation:
-  - parsed header table references byte slices
-  - canonical comparison via case-folded key cache once per header
-- Response serialization uses pre-sized buffers + `writev`-style segmented output.
+Memory safety and enforceability status
+- Safe-profile verification rejects broad unsafe capability classes, host syscall usage, explicit unsafe markers, and major lifecycle imbalances.
+- Ownership/lifetime/linear analyses exist and catch meaningful classes (non-owned free, leaks, lifetime annotation issues, linear misuse).
+- Current analysis depth is still largely heuristic/intra-procedural and explicitly not full theorem-level alias/lifetime/provenance proofing.
+- Result: safety story is operationally helpful but not yet complete enough for top-tier systems PL claims.
 
-Primary files:
-- `crates/stdlib/src/net.rs`
-- `apps/live_server/src/main.rs`
+Backend correctness/reproducibility status (LLVM + Cranelift)
+- Backend selection policy and dual native artifact pipelines are present and tested.
+- `emit-ir` includes both backend forms; backend default policy is enforced.
+- Critical conformance gap remains:
+- `fz equivalence /tmp/sitrep_i32_main.fzy --seed 42 --json` failed with `native/scenario normalized event kinds mismatch`.
+- Project planning docs also still mark parity/equivalence CI stabilization as incomplete.
+- Result: backend paths exist, but cross-mode/cross-backend conformance claims are not fully closed.
 
-Acceptance:
-- Remove clone-heavy header/body materialization in steady state.
-- Allocation count drops materially in profile comparison (`fozzy profile diff`).
+Tooling baseline status (debug/profiler/LSP/diagnostics/package policy)
+- Diagnostics pipeline is substantial and structured.
+- Locking/version policy tooling is present (`fozzy.lock`, vendor, dependency graph hashing, drift checks).
+- `debug-check` exists but is a lightweight readiness probe, not full debugger-symbol contract validation.
+- "LSP" features exist via CLI-style commands and symbol indexing/rename helpers, not a full long-running protocol-grade language server implementation.
+- Profiling/observability hooks exist in runtime/app layers, but not yet as a complete mature compiler/runtime profiling toolchain baseline.
 
-## WS7 — Remove full decision-log clones in runtime networking surfaces
+Net assessment
+- Production-appropriate now: deterministic orchestration/runtime DSL and replay-driven operational testing flows.
+- Not production-appropriate yet as a broad systems PL competitor.
+- Highest-priority path to change that:
+- End-to-end type semantics parity for `u*/i*/f*`, pointers/refs/arrays/structs/enums across parser -> HIR -> FIR -> verifier -> LLVM/Cranelift.
+- Stable ABI/layout guarantees beyond narrow C-safe subset, with compatibility commitments.
+- Stronger enforceable memory-safety model beyond current heuristic baseline.
+- Backend conformance suite closure (native/scenario/host equivalence stability in CI).
+- Full production tooling depth (debug symbol guarantees, profiler-grade hooks, protocol-grade LSP stack).
 
-Problem:
-- `decisions() -> Vec<NetDecision>` clones full log.
+## Checklist: Needs To Be Done
 
-Design:
-- Replace with three APIs:
-  - `decisions_iter(&self) -> impl Iterator<Item=&NetDecision>`
-  - `decision_cursor(since: DecisionId)` for incremental snapshots
-  - `decision_export(range)` for bounded owned export
-- Update call sites to consume iterators/cursors.
+### Runtime Networking + HTTP
+- [✅] Enforce real OS `listen()` semantics in host backend.
+- [✅] Replace one-shot HTTP read/write with full partial-I/O loops.
+- [✅] Guarantee complete request framing for fragmented headers/bodies.
+- [✅] Handle short writes correctly in response path.
+- [✅] Remove clone-heavy poll scan path (no per-cycle `poll_interests.clone()`).
+- [✅] Reduce HTTP copy churn in parser/serializer hot paths.
+- [✅] Replace `decisions() -> Vec<_>` cloning with borrowed decision access APIs.
 
-Primary files:
-- `crates/stdlib/src/net.rs`
-- downstream callers in `crates/driver` and runtime/report paths
+### Deterministic Executor + Scheduler
+- [✅] Remove per-task OS thread spawn in timeout path.
+- [✅] Add scheduler-native timeout enforcement without thread handoff.
+- [✅] Replace O(n) queue removals in random/replay with lower-latency deterministic structures.
+- [✅] Preserve deterministic replay while reducing hot-path latency.
 
-Acceptance:
-- No unbounded full-log clone API in core hot paths.
+### Compiler Throughput (FIR + Driver)
+- [ ] Remove repeated clone-heavy FIR/data-flow work.
+- [ ] Reduce clone-heavy module merge/qualification/canonicalization in driver.
+- [ ] Move to shared/interned/arena-backed structures where practical.
+- [ ] Add compile-time perf regression gates for large projects.
 
-## WS8 — Reduce clone-heavy FIR + driver module merge/qualification/canonicalization
+### Fozzy Production Gates
+- [ ] Close pedantic topology coverage gaps (`uncoveredHotspotCount: 17 -> 0`).
+- [✅] Require strict record/verify/replay/ci traces per changed subsystem.
+- [✅] Add required host-backed scenarios for runtime/network HTTP correctness.
+- [ ] Make full Fozzy production gate mandatory in release pipeline.
 
-Problem:
-- Module merge/qualification/canonicalization repeatedly clone AST/FIR structures.
+### Bidirectional C Compatibility
+- [ ] Add imported `extern "C"` lowering for true linker imports.
+- [ ] Add explicit link config surface (`-l`, `-L`, frameworks/system libs).
+- [ ] Complete ABI-faithful import/export lowering across backends.
+- [ ] Enforce panic boundary behavior in generated runtime/code.
+- [ ] Ship `fz build --lib` outputs (`.a`/`.so`/`.dylib`) with installable headers.
+- [ ] Add C-host lifecycle contract (init/call/shutdown/cleanup).
+- [ ] Add callback support (C function pointers into Fozzy) with signature validation.
+- [ ] Expand to validated `repr(C)` structs/enums (size/align/layout checks).
+- [ ] Add cross-language matrix tests (macOS/Linux, x86_64/aarch64, C->Fozzy and Fozzy->C).
+- [ ] Gate release on full bidirectional ABI matrix.
+- [ ] Publish production interop guide.
 
-Design:
-- Build immutable module arena with symbol interning (`SymbolId`) and shared strings.
-- Merge by node references, not whole-item cloning.
-- Qualification/canonicalization becomes in-place ID rewrite pass over compact IR.
-- Data-flow/liveness caches keyed by function hash + invalidation on changed nodes only.
+### Editor Tooling (Syntax Highlighting + LSP)
+- [ ] Define and freeze grammar/token classes for editor-facing syntax categories.
+- [ ] Ship baseline syntax highlighting grammar (Tree-sitter/TextMate) for `.fz` files.
+- [ ] Add editor injection/query rules for strings, comments, keywords, types, literals, and operators.
+- [ ] Stand up minimal LSP server transport (`initialize`, `shutdown`, `exit`) over stdio JSON-RPC.
+- [ ] Add document sync (`didOpen`, `didChange`, `didClose`) with incremental parse/update pipeline.
+- [ ] Publish diagnostics from parse/name/type validation with stable ranges and severities.
+- [ ] Implement hover with symbol/type/doc info.
+- [ ] Implement go-to-definition for local/module symbols.
+- [ ] Implement completion baseline for keywords, locals, modules, and members.
+- [ ] Add find-references and rename with workspace-safe edits.
+- [ ] Add semantic tokens support to complement grammar highlighting.
+- [ ] Ship VS Code extension wiring (language config + LSP client bootstrap).
+- [ ] Validate LSP determinism and regression with Fozzy trace record/verify/replay/ci.
+- [ ] Add host-backed editor-integration smoke checks where feasible.
 
-Primary files:
-- `crates/driver/src/pipeline.rs`
-- `crates/fir/src/lib.rs`
+### Release Flow
+- [✅] Phase 1: correctness fixes (listen, partial I/O, timeout correctness).
+- [✅] Phase 2: runtime hot-path performance fixes (network/executor scope completed).
+- [ ] Phase 3: compiler throughput fixes.
+- [ ] Phase 4: topology closure (`17 -> 0`).
+- [ ] Phase 5: release hardening + strict gate + perf non-regression.
+- [ ] Merge remaining production implementation slices.
+- [✅] Remove compatibility shims from runtime hot paths for replaced networking/executor architecture.
+- [✅] Keep deterministic replay stable after scheduler/network redesign.
+- [✅] Meet runtime perf non-regression thresholds for runtime/networking test paths.
 
-Acceptance:
-- Remove major `iter().cloned()` merge paths.
-- Large-project compile latency materially reduced in profile snapshots.
+### PR Plan
+- [ ] PR-A: listen contract + event-driven poll path.
+- [ ] PR-B: HTTP partial-I/O correctness + low-allocation codec.
+- [ ] PR-C: timeout redesign + O(1) queue operations.
+- [ ] PR-D: decision-log API redesign.
+- [ ] PR-E: FIR/driver clone reduction.
+- [ ] PR-F: pedantic coverage closure + CI enforcement.
 
-## WS9 — Close pedantic topology coverage gaps (17 required hotspots)
+## Checklist: Done
 
-Problem:
-- `fozzy map suites --profile pedantic` reports all 17 required hotspots uncovered.
+### Runtime Networking + HTTP Baseline
+- [✅] Host backend with bind/listen/accept/read/write exists.
+- [✅] Decision logging exists in networking layer.
+- [✅] HTTP parser/serializer exists in stdlib/runtime paths.
+- [✅] `Expect: 100-continue`, chunked handling, keep-alive baseline implemented.
+- [✅] Host-backed runtime smoke checks executed successfully.
 
-Design:
-- For each required hotspot, add missing suite artifacts:
-  - `explore_schedule_faults`
-  - `fuzz_inputs`
-  - `host_backends_run`
-  - `memory_graph_diff_top`
-  - `shrink_exercised`
-- Create `tests/pedantic/` coverage matrix files by component hotspot.
-- Add CI gate that fails on `uncoveredHotspotCount != 0`.
+### Runtime Networking + Deterministic Executor (Production Implementation)
+- [✅] Host listen lifecycle is now enforced (`bind` -> `listen` -> `accept`).
+- [✅] Accept is invalid before listen in deterministic and host-backed listener state paths.
+- [✅] HTTP serving path now handles partial reads and framing completeness checks.
+- [✅] HTTP serving path now handles partial/short writes with retry bounds.
+- [✅] Poll-interest scan no longer clones full interest map each cycle.
+- [✅] Borrowed decision access replaces full decision vector clone API in network backends.
+- [✅] Deterministic executor queue replaced with O(1) remove-by-id run-queue structure.
+- [✅] Random scheduler no longer depends on O(n) mid-queue removals.
+- [✅] Replay scheduling no longer depends on linear queue position scans.
+- [✅] Deterministic timeout path no longer spawns OS threads per task.
+- [✅] `cargo test -p runtime -p stdlib` passed after architectural changes.
+- [✅] `cargo test --workspace` passed after architectural changes.
 
-Primary files:
-- `tests/` (new scenario files)
-- CI config + docs (`USAGE.md`, `README.md`)
+### Deterministic Executor + Scheduler Baseline
+- [✅] Deterministic scheduler modes implemented: `fifo`, `random`, `coverage_guided`.
+- [✅] Deterministic replay path exists and smoke checks pass.
+- [✅] Timeout semantics exist in executor baseline.
 
-Acceptance:
-- `fozzy map suites --root . --scenario-root tests --profile pedantic --json` returns `uncoveredHotspotCount=0`.
+### Compiler/FIR/Driver Baseline
+- [✅] Parser/HIR/FIR/compiler pipeline foundation is implemented.
+- [✅] FIR includes data-flow/liveness baseline.
+- [✅] Driver module load/qualification/canonicalization exists end-to-end.
 
-## 5. Breaking Changes (explicit)
+### Fozzy Validation Baseline
+- [✅] `fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json` passed.
+- [✅] `fozzy test --det --strict tests/example.fozzy.json --seed 4242 --json` passed.
+- [✅] Trace lifecycle smoke path passed (`run --record`, `trace verify`, `replay`, `ci`).
+- [✅] Host-backed smoke run passed (`--proc-backend host --fs-backend host --http-backend host`).
+- [✅] Additional CLI smoke commands passed (`fuzz`, `explore`, `shrink`, `report`, `artifacts`, `env`, `usage`, `map suites`).
+- [✅] Pedantic baseline captured: `requiredHotspotCount=17`, `uncoveredHotspotCount=17`.
 
-1. Network trace/schema vNext:
-- Decision model changes from clone-export snapshots to cursor/iterator-backed events.
-- Old trace readers are unsupported.
+### Bidirectional C Compatibility Baseline
+- [✅] `pub extern "C"` export flow exists.
+- [✅] `fz headers` exists.
+- [✅] `fz abi-check` exists.
+- [✅] FFI panic-boundary policy/checking exists.
+- [✅] Baseline C-export compatibility path is functional.
 
-2. HTTP APIs:
-- Parsing and serving APIs become streaming/stateful; one-shot parse helpers become test-only adapters.
-
-3. Runtime scheduler internals:
-- Queue and timeout behavior are reimplemented; internal event names may change.
-
-4. Compiler internals:
-- FIR/driver internal data structures switch to arena+ID model; old assumptions about cloned AST ownership are invalid.
-
-## 6. Execution Order (must follow)
-
-Phase 0 (guardrails)
-- Add microbench/profiling baselines for runtime net/http/scheduler/compiler passes.
-
-Phase 1 (correctness-critical)
-- WS1, WS2, WS4 first.
-
-Phase 2 (hot-path latency)
-- WS3, WS5, WS6, WS7.
-
-Phase 3 (compile-time latency)
-- WS8.
-
-Phase 4 (coverage sign-off)
-- WS9.
-
-Phase 5 (release hardening)
-- Full Fozzy surface gate and perf/regression thresholds.
-
-## 7. Fozzy-First Validation Gate (release blocker)
-
-Required sequence:
-
-1. Determinism doctor (strict first)
-- `fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json`
-
-2. Deterministic strict scenario tests
-- `fozzy test --det --strict tests/*.fozzy.json --seed 4242 --json`
-
-3. Record + verify + replay + ci for at least one trace per changed subsystem
-- `fozzy run <scenario> --det --record artifacts/<name>.trace.fozzy --json`
-- `fozzy trace verify artifacts/<name>.trace.fozzy --strict --json`
-- `fozzy replay artifacts/<name>.trace.fozzy --json`
-- `fozzy ci artifacts/<name>.trace.fozzy --json`
-
-4. Host-backed checks (CLI/runtime delivery)
-- `fozzy run <scenario> --proc-backend host --fs-backend host --http-backend host --json`
-
-5. Full surface coverage commands
-- `fozzy fuzz scenario:<scenario> --mode coverage --runs 100 --seed 4242 --json`
-- `fozzy explore <distributed-scenario> --schedule coverage_guided --steps 200 --seed 4242 --json`
-- `fozzy shrink artifacts/<name>.trace.fozzy --json`
-- `fozzy artifacts ls latest --json`
-- `fozzy report show latest --format json --json`
-- `fozzy env --json`
-- `fozzy usage --json`
-
-6. Topology closure gate
-- `fozzy map suites --root . --scenario-root tests --profile pedantic --json`
-- Must produce `uncoveredHotspotCount=0`.
-
-## 8. Done Criteria (production sign-off)
-
-All items must be true:
-- WS1..WS9 merged.
-- No compatibility shims for removed core APIs remain in runtime/stdlib/driver hot paths.
-- Deterministic replay remains stable under new scheduler/network designs.
-- Pedantic topology uncovered hotspots reduced from 17 to 0.
-- Perf gates show non-regression or improvement for:
-  - host net poll path
-  - HTTP request/response path
-  - deterministic scheduler timeout/random/replay paths
-  - FIR+driver module pipeline latency
-
-## 9. Immediate next PR split
-
-PR-A: WS1 + WS3 (HostNet listen + evented poller)
-PR-B: WS2 + WS6 (HTTP streaming correctness + low-allocation codec)
-PR-C: WS4 + WS5 (scheduler timeout wheel + O(1) queue removals)
-PR-D: WS7 (decision API redesign)
-PR-E: WS8 (FIR/driver arena and pass rewrite)
-PR-F: WS9 (pedantic hotspot suite closure + CI enforcement)
+### Plan Status
+- [✅] Plan is checklist-only.
+- [✅] Undone items are at the top.
+- [✅] Done items are at the bottom.

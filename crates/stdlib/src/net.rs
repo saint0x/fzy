@@ -296,11 +296,12 @@ pub trait NetBackend {
     fn request_finished(&mut self);
     fn shutdown_ready(&self, now_ms: u64) -> bool;
 
-    fn decisions(&self) -> Vec<NetDecision>;
+    fn decisions(&self) -> &[NetDecision];
 }
 
 enum HostSocket {
-    Listener(TcpListener),
+    Listener(Socket),
+    Listening(TcpListener, usize),
     Stream(TcpStream),
     Udp(UdpSocket),
     #[cfg(unix)]
@@ -354,9 +355,10 @@ impl HostNet {
     }
 
     fn scan_poll_interests(&mut self, max_queue_depth: usize) -> Result<(), NetError> {
-        for (socket, interest) in self.poll_interests.clone() {
+        let mut pending = Vec::new();
+        for (&socket, &interest) in &self.poll_interests {
             let event = match (self.sockets.get(&socket).map(|(s, _)| s), interest) {
-                (Some(HostSocket::Listener(_)), PollInterest::Acceptable) => {
+                (Some(HostSocket::Listening(_, _)), PollInterest::Acceptable) => {
                     PollerEvent::Acceptable(socket)
                 }
                 (Some(HostSocket::Stream(_)), PollInterest::Readable) => {
@@ -377,6 +379,9 @@ impl HostNet {
                 }
                 _ => continue,
             };
+            pending.push(event);
+        }
+        for event in pending {
             self.queue_event(event, max_queue_depth)?;
         }
         Ok(())
@@ -430,12 +435,14 @@ impl NetBackend for HostNet {
         socket
             .set_nonblocking(true)
             .map_err(|e| NetError::Io(e.to_string()))?;
-        let listener: TcpListener = socket.into();
+        socket
+            .set_nonblocking(true)
+            .map_err(|e| NetError::Io(e.to_string()))?;
         let id = self.new_socket_id();
         self.sockets.insert(
             id,
             (
-                HostSocket::Listener(listener),
+                HostSocket::Listener(socket),
                 SocketOwnership::RuntimeOwned,
             ),
         );
@@ -450,16 +457,38 @@ impl NetBackend for HostNet {
         if backlog == 0 {
             return Err(NetError::LimitsExceeded("backlog must be > 0".to_string()));
         }
-        let Some((HostSocket::Listener(_), _)) = self.sockets.get(&listener) else {
+        let Some((socket, _)) = self.sockets.get_mut(&listener) else {
             return Err(NetError::InvalidSocketKind);
         };
+        match socket {
+            HostSocket::Listener(sock) => {
+                sock.listen(backlog as i32)
+                    .map_err(|e| NetError::Io(e.to_string()))?;
+                sock.set_nonblocking(true)
+                    .map_err(|e| NetError::Io(e.to_string()))?;
+                let listener_sock: TcpListener = sock
+                    .try_clone()
+                    .map_err(|e| NetError::Io(e.to_string()))?
+                    .into();
+                *socket = HostSocket::Listening(listener_sock, backlog);
+            }
+            HostSocket::Listening(_, existing) => {
+                if *existing != backlog {
+                    return Err(NetError::LimitsExceeded(format!(
+                        "listener already active with backlog {}",
+                        existing
+                    )));
+                }
+            }
+            _ => return Err(NetError::InvalidSocketKind),
+        }
         self.decisions
             .push(NetDecision::Listen { listener, backlog });
         Ok(())
     }
 
     fn accept(&mut self, listener: SocketId) -> Result<Option<SocketId>, NetError> {
-        let Some((HostSocket::Listener(sock), _)) = self.sockets.get_mut(&listener) else {
+        let Some((HostSocket::Listening(sock, _), _)) = self.sockets.get_mut(&listener) else {
             return Err(NetError::InvalidSocketKind);
         };
         match sock.accept() {
@@ -654,7 +683,12 @@ impl NetBackend for HostNet {
             return Err(NetError::NotFound);
         };
         match host_socket {
-            HostSocket::Listener(listener) => {
+            HostSocket::Listener(sock) => {
+                sock.set_reuse_address(options.reuse_addr)
+                    .map_err(|e| NetError::Io(e.to_string()))?;
+                let _ = options.reuse_port;
+            }
+            HostSocket::Listening(listener, _) => {
                 let sock = Socket::from(
                     listener
                         .try_clone()
@@ -725,8 +759,13 @@ impl NetBackend for HostNet {
         interest: PollInterest,
         _max_queue_depth: usize,
     ) -> Result<(), NetError> {
-        if !self.sockets.contains_key(&socket) {
+        let Some((host_socket, _)) = self.sockets.get(&socket) else {
             return Err(NetError::NotFound);
+        };
+        if matches!(interest, PollInterest::Acceptable)
+            && !matches!(host_socket, HostSocket::Listening(_, _))
+        {
+            return Err(NetError::InvalidSocketKind);
         }
         self.poll_interests.insert(socket, interest);
         Ok(())
@@ -765,8 +804,8 @@ impl NetBackend for HostNet {
         self.shutdown.ready_to_exit(now_ms)
     }
 
-    fn decisions(&self) -> Vec<NetDecision> {
-        self.decisions.clone()
+    fn decisions(&self) -> &[NetDecision] {
+        &self.decisions
     }
 }
 
@@ -780,6 +819,7 @@ pub struct DeterministicNet {
     decisions: Vec<NetDecision>,
     shutdown: GracefulShutdown,
     listeners: BTreeMap<SocketId, String>,
+    listening: BTreeSet<SocketId>,
 }
 
 impl Default for DeterministicNet {
@@ -794,6 +834,7 @@ impl Default for DeterministicNet {
             decisions: Vec::new(),
             shutdown: GracefulShutdown::default(),
             listeners: BTreeMap::new(),
+            listening: BTreeSet::new(),
         }
     }
 }
@@ -883,17 +924,24 @@ impl NetBackend for DeterministicNet {
         if !self.open.contains(&listener) {
             return Err(NetError::NotFound);
         }
+        if !self.listeners.contains_key(&listener) {
+            return Err(NetError::InvalidSocketKind);
+        }
         if backlog == 0 {
             return Err(NetError::LimitsExceeded("backlog must be > 0".to_string()));
         }
+        self.listening.insert(listener);
         self.decisions
             .push(NetDecision::Listen { listener, backlog });
         Ok(())
     }
 
     fn accept(&mut self, listener: SocketId) -> Result<Option<SocketId>, NetError> {
-        if !self.open.contains(&listener) {
-            return Err(NetError::NotFound);
+        if !self.listeners.contains_key(&listener) {
+            return Err(NetError::InvalidSocketKind);
+        }
+        if !self.listening.contains(&listener) {
+            return Ok(None);
         }
         if let Some(connection) = self.scripted_accepts.pop_front() {
             self.open.insert(connection);
@@ -1064,6 +1112,8 @@ impl NetBackend for DeterministicNet {
         if !self.open.remove(&socket) {
             return Err(NetError::NotFound);
         }
+        self.listening.remove(&socket);
+        self.listeners.remove(&socket);
         self.decisions.push(NetDecision::Close { socket });
         self.poll_queue.push_back(PollerEvent::Closed(socket));
         Ok(())
@@ -1077,6 +1127,9 @@ impl NetBackend for DeterministicNet {
     ) -> Result<(), NetError> {
         if !self.open.contains(&socket) {
             return Err(NetError::NotFound);
+        }
+        if matches!(interest, PollInterest::Acceptable) && !self.listening.contains(&socket) {
+            return Err(NetError::InvalidSocketKind);
         }
         if self.poll_queue.len() >= max_queue_depth {
             return Err(NetError::QueueFull);
@@ -1119,8 +1172,8 @@ impl NetBackend for DeterministicNet {
         self.shutdown.ready_to_exit(now_ms)
     }
 
-    fn decisions(&self) -> Vec<NetDecision> {
-        self.decisions.clone()
+    fn decisions(&self) -> &[NetDecision] {
+        &self.decisions
     }
 }
 
@@ -1339,7 +1392,7 @@ impl NetBackend for NetRuntime {
         }
     }
 
-    fn decisions(&self) -> Vec<NetDecision> {
+    fn decisions(&self) -> &[NetDecision] {
         match self {
             Self::Host(backend) => backend.decisions(),
             Self::Deterministic(backend) => backend.decisions(),
@@ -1407,22 +1460,35 @@ impl HttpResponse {
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();
         out.extend_from_slice(format!("HTTP/1.1 {} {}\r\n", self.status, self.reason).as_bytes());
-        let mut headers = self.headers.clone();
-        headers.insert(
-            "Connection".to_string(),
-            if self.keep_alive {
-                "keep-alive".to_string()
-            } else {
-                "close".to_string()
-            },
-        );
-        if self.chunked {
-            headers.insert("Transfer-Encoding".to_string(), "chunked".to_string());
-        } else {
-            headers.insert("Content-Length".to_string(), self.body.len().to_string());
-        }
-        for (k, v) in headers {
+        let mut has_connection = false;
+        let mut has_len = false;
+        let mut has_chunked = false;
+        for (k, v) in &self.headers {
+            let lower = k.to_ascii_lowercase();
+            if lower == "connection" {
+                has_connection = true;
+            } else if lower == "content-length" {
+                has_len = true;
+            } else if lower == "transfer-encoding" {
+                has_chunked = true;
+            }
             out.extend_from_slice(format!("{}: {}\r\n", k, v).as_bytes());
+        }
+        if !has_connection {
+            out.extend_from_slice(
+                format!(
+                    "Connection: {}\r\n",
+                    if self.keep_alive { "keep-alive" } else { "close" }
+                )
+                .as_bytes(),
+            );
+        }
+        if self.chunked {
+            if !has_chunked {
+                out.extend_from_slice(b"Transfer-Encoding: chunked\r\n");
+            }
+        } else if !has_len {
+            out.extend_from_slice(format!("Content-Length: {}\r\n", self.body.len()).as_bytes());
         }
         out.extend_from_slice(b"\r\n");
         if self.chunked {
@@ -1473,6 +1539,14 @@ pub fn parse_http_request(raw: &[u8], limits: &HttpServerLimits) -> Result<HttpR
         .is_some_and(|value| value.to_ascii_lowercase().contains("chunked"))
     {
         body = decode_chunked(&body)?;
+    } else if let Some(content_length) = headers
+        .get("Content-Length")
+        .and_then(|value| value.parse::<usize>().ok())
+    {
+        if body.len() < content_length {
+            return Err(NetError::Parse("incomplete request body".to_string()));
+        }
+        body.truncate(content_length);
     }
     if body.len() > limits.max_body_bytes {
         return Err(NetError::LimitsExceeded("body limit exceeded".to_string()));
@@ -1514,8 +1588,32 @@ pub fn serve_http_once<B: NetBackend, R: HttpRouter>(
 
     backend.poll_register(connection, PollInterest::Readable, 128)?;
     let _ = backend.poll_next(8)?;
-    let raw = backend.read(connection, limits.max_header_bytes + limits.max_body_bytes)?;
-    let request = parse_http_request(&raw, limits)?;
+    let mut raw = Vec::with_capacity(limits.max_header_bytes.min(4096));
+    let max_total = limits.max_header_bytes + limits.max_body_bytes;
+    let mut read_stalls = 0usize;
+    let request = loop {
+        let remaining = max_total.saturating_sub(raw.len());
+        if remaining == 0 {
+            backend.request_finished();
+            return Err(NetError::LimitsExceeded(
+                "request exceeds configured size limits".to_string(),
+            ));
+        }
+        let chunk = backend.read(connection, remaining.min(16 * 1024))?;
+        if chunk.is_empty() {
+            read_stalls += 1;
+            if read_stalls > 64 {
+                backend.request_finished();
+                return Err(NetError::DeadlineExceeded);
+            }
+            continue;
+        }
+        read_stalls = 0;
+        raw.extend_from_slice(&chunk);
+        if is_http_request_complete(&raw, limits)? {
+            break parse_http_request(&raw, limits)?;
+        }
+    };
 
     if request
         .headers
@@ -1534,12 +1632,64 @@ pub fn serve_http_once<B: NetBackend, R: HttpRouter>(
     let serialized = response.to_bytes();
     backend.poll_register(connection, PollInterest::Writable, 128)?;
     let _ = backend.poll_next(8)?;
-    let wrote = backend.write(connection, &serialized)?;
+    let mut wrote = 0usize;
+    let mut write_stalls = 0usize;
+    while wrote < serialized.len() {
+        let n = backend.write(connection, &serialized[wrote..])?;
+        if n == 0 {
+            write_stalls += 1;
+            if write_stalls > 64 {
+                backend.request_finished();
+                return Err(NetError::DeadlineExceeded);
+            }
+            continue;
+        }
+        write_stalls = 0;
+        wrote += n;
+    }
     if !response.keep_alive {
         backend.close(connection)?;
     }
     backend.request_finished();
     Ok(wrote)
+}
+
+fn is_http_request_complete(raw: &[u8], limits: &HttpServerLimits) -> Result<bool, NetError> {
+    let Some(headers_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+        return Ok(false);
+    };
+    if headers_end > limits.max_header_bytes {
+        return Err(NetError::LimitsExceeded(
+            "header limit exceeded".to_string(),
+        ));
+    }
+    let head = String::from_utf8_lossy(&raw[..headers_end]);
+    let mut content_length = None::<usize>;
+    let mut chunked = false;
+    for line in head.lines().skip(1) {
+        if let Some((name, value)) = line.split_once(':') {
+            let name = name.trim().to_ascii_lowercase();
+            let value = value.trim();
+            if name == "content-length" {
+                content_length = value.parse::<usize>().ok();
+            } else if name == "transfer-encoding"
+                && value.to_ascii_lowercase().contains("chunked")
+            {
+                chunked = true;
+            }
+        }
+    }
+    let body = &raw[(headers_end + 4)..];
+    if chunked {
+        Ok(body.windows(5).any(|w| w == b"0\r\n\r\n"))
+    } else if let Some(len) = content_length {
+        if len > limits.max_body_bytes {
+            return Err(NetError::LimitsExceeded("body limit exceeded".to_string()));
+        }
+        Ok(body.len() >= len)
+    } else {
+        Ok(true)
+    }
 }
 
 fn decode_chunked(raw: &[u8]) -> Result<Vec<u8>, NetError> {
@@ -1660,6 +1810,7 @@ mod tests {
     fn poller_queue_is_bounded() {
         let mut net = DeterministicNet::default();
         let listener = net.bind("127.0.0.1:9090").expect("bind should work");
+        net.listen(listener, 32).expect("listen should succeed");
         net.poll_register(listener, PollInterest::Acceptable, 1)
             .expect("first registration should fit in queue");
         assert_eq!(
@@ -1702,6 +1853,7 @@ mod tests {
     fn http_serve_once_routes_request() {
         let mut net = DeterministicNet::with_scripted_accepts(1);
         let listener = net.bind("127.0.0.1:9191").expect("bind should work");
+        net.listen(listener, 64).expect("listen should work");
         let connection = SocketId(1);
         net.push_read_chunk(
             connection,
