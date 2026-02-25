@@ -200,11 +200,11 @@ Production-readiness objective:
 - [✅] Extend ABI manifest identity with hard build/target identity fields (target triple, data-layout hash, compiler/toolchain identity hash).
 
 ### Memory Safety Hardening Depth
-- [ ] Strengthen alias/lifetime/provenance verification beyond current heuristic/intra-procedural baseline.
-- [ ] Add deeper async suspension borrow-safety proofs and regressions for borrow-across-`await` edge cases.
-- [ ] Add inter-procedural ownership/lifetime summaries for generic/trait-heavy call paths.
-- [ ] Add memory-model conformance probes for atomic ordering claims (`Relaxed`/`Acquire`/`Release`/`AcqRel`/`SeqCst`).
-- [ ] Align public safety positioning with enforceability: avoid "Rust-class outcomes" claims until proof depth and guarantees actually match.
+- [✅] Strengthen alias/lifetime/provenance verification beyond current heuristic/intra-procedural baseline.
+- [✅] Add deeper async suspension borrow-safety proofs and regressions for borrow-across-`await` edge cases.
+- [✅] Add inter-procedural ownership/lifetime summaries for generic/trait-heavy call paths.
+- [✅] Add memory-model conformance probes for atomic ordering claims (`Relaxed`/`Acquire`/`Release`/`AcqRel`/`SeqCst`).
+- [✅] Align public safety positioning with enforceability: avoid "Rust-class outcomes" claims until proof depth and guarantees actually match.
 
 ### Bidirectional Trace/Interop Closure
 - [ ] Route native trace replay/shrink/ci through validated Fozzy replay path (or provide explicit equivalence bridge) so bidirectional claim is operationally true.

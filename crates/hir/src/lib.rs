@@ -792,20 +792,28 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     for function in functions {
         let has_await = function_body_has_await(&function.body);
-        let mut ref_bindings = BTreeMap::<String, Option<String>>::new();
+        let mut ref_bindings = BTreeMap::<String, (Option<String>, bool)>::new();
         for param in &function.params {
-            if let Type::Ref { lifetime, .. } = &param.ty {
+            if let Type::Ref {
+                lifetime, mutable, ..
+            } = &param.ty
+            {
                 if lifetime.is_none() {
                     violations.push(format!(
                         "function `{}` parameter `{}` is a reference missing explicit lifetime annotation",
                         function.name, param.name
                     ));
                 }
-                ref_bindings.insert(param.name.clone(), lifetime.clone());
-                if function.is_async && has_await {
+                ref_bindings.insert(param.name.clone(), (lifetime.clone(), *mutable));
+                if function.is_async
+                    && has_await
+                    && ref_used_after_await(&function.body, &param.name, *mutable)
+                {
                     violations.push(format!(
-                        "function `{}` cannot hold parameter reference `{}` across await points",
-                        function.name, param.name
+                        "function `{}` cannot use {} reference `{}` across await suspension points",
+                        function.name,
+                        if *mutable { "mutable" } else { "borrowed" },
+                        param.name
                     ));
                 }
             }
@@ -825,7 +833,9 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
         for stmt in &function.body {
             if let Stmt::Let {
                 name,
-                ty: Some(Type::Ref { lifetime, .. }),
+                ty: Some(Type::Ref {
+                    lifetime, mutable, ..
+                }),
                 ..
             } = stmt
             {
@@ -835,16 +845,21 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
                         function.name, name
                     ));
                 }
-                ref_bindings.insert(name.clone(), lifetime.clone());
-                if function.is_async && has_await {
+                ref_bindings.insert(name.clone(), (lifetime.clone(), *mutable));
+                if function.is_async
+                    && has_await
+                    && ref_used_after_await(&function.body, name, *mutable)
+                {
                     violations.push(format!(
-                        "function `{}` cannot hold local reference `{}` across await points",
-                        function.name, name
+                        "function `{}` cannot use {} local reference `{}` across await suspension points",
+                        function.name,
+                        if *mutable { "mutable" } else { "borrowed" },
+                        name
                     ));
                 }
             }
             if let Stmt::Return(Expr::Ident(name)) = stmt {
-                if let Some(bound_lifetime) = ref_bindings.get(name) {
+                if let Some((bound_lifetime, _)) = ref_bindings.get(name) {
                     if return_lifetime.is_some() && return_lifetime != *bound_lifetime {
                         violations.push(format!(
                             "function `{}` returns reference `{}` with mismatched lifetime (expected {:?}, got {:?})",
@@ -861,6 +876,22 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
         }
     }
     violations
+}
+
+fn ref_used_after_await(body: &[Stmt], name: &str, mutable: bool) -> bool {
+    let mut seen_await = false;
+    for stmt in body {
+        if seen_await && stmt_uses_ident(stmt, name) {
+            return true;
+        }
+        if stmt_has_await(stmt) {
+            if mutable && stmt_uses_ident(stmt, name) {
+                return true;
+            }
+            seen_await = true;
+        }
+    }
+    false
 }
 
 fn analyze_send_sync_contracts(functions: &[TypedFunction]) -> Vec<String> {
@@ -1120,6 +1151,8 @@ fn collect_function_caps_and_calls(
 fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)]) -> Vec<String> {
     let mut violations = Vec::new();
     let summaries = build_function_memory_summaries(functions);
+    violations.extend(analyze_alias_and_provenance(functions));
+    violations.extend(analyze_atomic_ordering_claims(functions));
     for function in functions {
         let mut owners = BTreeMap::<String, usize>::new();
         let mut moved = BTreeSet::<String>::new();
@@ -1160,6 +1193,24 @@ fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)
         {
             violations.push(format!(
                 "call edge `{caller} -> {callee}` can hold mutable borrows across await boundary",
+            ));
+        }
+        if caller_summary.is_async
+            && caller_summary.has_await
+            && callee_summary.has_ref_params
+            && callee_summary.returns_ref
+        {
+            violations.push(format!(
+                "call edge `{caller} -> {callee}` can propagate borrowed references across async suspension boundary",
+            ));
+        }
+        if (callee_summary.generic_param_count > 0 || callee_summary.trait_bound_count > 0)
+            && callee_summary.has_ref_params
+            && caller_summary.is_async
+            && caller_summary.has_await
+        {
+            violations.push(format!(
+                "call edge `{caller} -> {callee}` is generic/trait-heavy with borrowed parameters across await; inter-procedural lifetime summary rejected",
             ));
         }
     }
@@ -1317,6 +1368,10 @@ struct FunctionMemorySummary {
     unsafe_sites: usize,
     unsafe_reasoned_sites: usize,
     has_mut_ref_params: bool,
+    has_ref_params: bool,
+    returns_ref: bool,
+    generic_param_count: usize,
+    trait_bound_count: usize,
     has_await: bool,
     is_async: bool,
 }
@@ -1383,6 +1438,13 @@ fn build_function_memory_summaries(
             .params
             .iter()
             .any(|param| matches!(param.ty, Type::Ref { mutable: true, .. }));
+        let has_ref_params = function
+            .params
+            .iter()
+            .any(|param| matches!(param.ty, Type::Ref { .. }));
+        let returns_ref = matches!(function.return_type, Type::Ref { .. });
+        let generic_param_count = function.generics.len();
+        let trait_bound_count = function.generics.iter().map(|g| g.bounds.len()).sum::<usize>();
         out.insert(
             function.name.clone(),
             FunctionMemorySummary {
@@ -1392,6 +1454,10 @@ fn build_function_memory_summaries(
                 unsafe_sites,
                 unsafe_reasoned_sites,
                 has_mut_ref_params,
+                has_ref_params,
+                returns_ref,
+                generic_param_count,
+                trait_bound_count,
                 has_await,
                 is_async: function.is_async,
             },
@@ -1510,6 +1576,318 @@ fn is_alloc_expr(expr: &Expr) -> bool {
     matches!(expr, Expr::Call { callee, .. } if callee == "alloc" || callee.ends_with(".alloc"))
 }
 
+fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let signatures = functions
+        .iter()
+        .map(|function| (function.name.clone(), function.params.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for function in functions {
+        let mut next_root = 1usize;
+        let mut roots = BTreeMap::<String, usize>::new();
+        let mut freed_roots = BTreeSet::<usize>::new();
+        for stmt in &function.body {
+            let used = collect_stmt_idents(stmt);
+            for used_name in used {
+                let Some(root) = roots.get(&used_name).copied() else {
+                    continue;
+                };
+                if freed_roots.contains(&root) && !stmt_is_direct_free_of(stmt, &used_name) {
+                    violations.push(format!(
+                        "function `{}` uses value `{}` after provenance root {} was freed",
+                        function.name, used_name, root
+                    ));
+                }
+            }
+            match stmt {
+                Stmt::Let { name, value, .. } => {
+                    if is_alloc_expr(value) {
+                        roots.insert(name.clone(), next_root);
+                        next_root += 1;
+                    } else if let Expr::Ident(from) = value {
+                        if let Some(root) = roots.get(from).copied() {
+                            roots.insert(name.clone(), root);
+                        }
+                    }
+                }
+                Stmt::Assign { target, value } => {
+                    if let Expr::Ident(from) = value {
+                        if let Some(root) = roots.get(from).copied() {
+                            roots.insert(target.clone(), root);
+                        }
+                    }
+                }
+                Stmt::Expr(Expr::Call { callee, args }) => {
+                    if is_free_callee(callee) {
+                        if let Some(Expr::Ident(name)) = args.first() {
+                            if let Some(root) = roots.get(name).copied() {
+                                if !freed_roots.insert(root) {
+                                    violations.push(format!(
+                                        "function `{}` double-frees provenance root {} via `{}`",
+                                        function.name, root, name
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    if let Some(params) = signatures.get(callee) {
+                        let mut mut_ref_aliases = BTreeMap::<String, usize>::new();
+                        let mut shared_ref_aliases = BTreeMap::<String, usize>::new();
+                        for (index, param) in params.iter().enumerate() {
+                            let Some(Expr::Ident(arg_name)) = args.get(index) else {
+                                continue;
+                            };
+                            match &param.ty {
+                                Type::Ref { mutable: true, .. } => {
+                                    *mut_ref_aliases.entry(arg_name.clone()).or_default() += 1;
+                                }
+                                Type::Ref { mutable: false, .. } => {
+                                    *shared_ref_aliases.entry(arg_name.clone()).or_default() += 1;
+                                }
+                                _ => {}
+                            }
+                        }
+                        for (name, count) in &mut_ref_aliases {
+                            if *count > 1 {
+                                violations.push(format!(
+                                    "function `{}` call `{}` aliases mutable reference parameter `{}` {} times",
+                                    function.name, callee, name, count
+                                ));
+                            }
+                            if shared_ref_aliases.contains_key(name) {
+                                violations.push(format!(
+                                    "function `{}` call `{}` aliases mutable and shared borrows for `{}`",
+                                    function.name, callee, name
+                                ));
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    violations
+}
+
+fn analyze_atomic_ordering_claims(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    struct Collector {
+        function: String,
+        violations: Vec<String>,
+    }
+    impl AstVisitor for Collector {
+        fn visit_expr(&mut self, expr: &Expr) {
+            if let Expr::Call { callee, args } = expr {
+                if callee.starts_with("atomic.") {
+                    if let Some(message) = validate_atomic_call(callee, args) {
+                        self.violations
+                            .push(format!("function `{}` {}", self.function, message));
+                    }
+                }
+            }
+            ast::walk_expr(self, expr);
+        }
+    }
+    for function in functions {
+        let mut collector = Collector {
+            function: function.name.clone(),
+            violations: Vec::new(),
+        };
+        for stmt in &function.body {
+            collector.visit_stmt(stmt);
+        }
+        violations.extend(collector.violations);
+    }
+    violations
+}
+
+fn validate_atomic_call(callee: &str, args: &[Expr]) -> Option<String> {
+    let ordering = |index: usize| {
+        args.get(index).and_then(|arg| match arg {
+            Expr::Str(value) | Expr::Ident(value) => Some(value.as_str()),
+            _ => None,
+        })
+    };
+    let is_supported = |value: &str| {
+        matches!(
+            value,
+            "Relaxed" | "Acquire" | "Release" | "AcqRel" | "SeqCst"
+        )
+    };
+    let is_release_like = |value: &str| matches!(value, "Release" | "AcqRel" | "SeqCst");
+    match callee {
+        "atomic.load" => {
+            let Some(ord) = ordering(1) else {
+                return Some("atomic.load is missing ordering argument".to_string());
+            };
+            if !is_supported(ord) {
+                return Some(format!(
+                    "atomic.load uses unsupported ordering `{ord}` (expected Relaxed/Acquire/SeqCst)"
+                ));
+            }
+            if matches!(ord, "Release" | "AcqRel") {
+                return Some(format!(
+                    "atomic.load ordering `{ord}` is invalid (expected Relaxed/Acquire/SeqCst)"
+                ));
+            }
+        }
+        "atomic.store" => {
+            let Some(ord) = ordering(2) else {
+                return Some("atomic.store is missing ordering argument".to_string());
+            };
+            if !is_supported(ord) {
+                return Some(format!(
+                    "atomic.store uses unsupported ordering `{ord}` (expected Relaxed/Release/SeqCst)"
+                ));
+            }
+            if matches!(ord, "Acquire" | "AcqRel") {
+                return Some(format!(
+                    "atomic.store ordering `{ord}` is invalid (expected Relaxed/Release/SeqCst)"
+                ));
+            }
+        }
+        "atomic.compare_exchange" => {
+            let Some(success) = ordering(3) else {
+                return Some(
+                    "atomic.compare_exchange is missing success ordering argument".to_string(),
+                );
+            };
+            let Some(failure) = ordering(4) else {
+                return Some(
+                    "atomic.compare_exchange is missing failure ordering argument".to_string(),
+                );
+            };
+            if !is_supported(success) || !is_supported(failure) {
+                return Some(format!(
+                    "atomic.compare_exchange uses unsupported orderings success=`{success}` failure=`{failure}`"
+                ));
+            }
+            if matches!(failure, "Release" | "AcqRel") {
+                return Some(format!(
+                    "atomic.compare_exchange failure ordering `{failure}` is invalid (failure must not be release-like)"
+                ));
+            }
+            if is_release_like(failure) && !is_release_like(success) {
+                return Some(format!(
+                    "atomic.compare_exchange failure ordering `{failure}` cannot be stronger than success ordering `{success}`"
+                ));
+            }
+        }
+        "atomic.fetch_add" | "atomic.fetch_sub" | "atomic.fetch_and" | "atomic.fetch_or"
+        | "atomic.fetch_xor" | "atomic.swap" => {
+            let Some(ord) = ordering(2) else {
+                return Some(format!("{callee} is missing ordering argument"));
+            };
+            if !is_supported(ord) {
+                return Some(format!("{callee} uses unsupported ordering `{ord}`"));
+            }
+        }
+        "atomic.fence" => {
+            let Some(ord) = ordering(0) else {
+                return Some("atomic.fence is missing ordering argument".to_string());
+            };
+            if !is_supported(ord) {
+                return Some(format!("atomic.fence uses unsupported ordering `{ord}`"));
+            }
+            if ord == "Relaxed" {
+                return Some(
+                    "atomic.fence ordering `Relaxed` is invalid (expected Acquire/Release/AcqRel/SeqCst)"
+                        .to_string(),
+                );
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+fn stmt_is_direct_free_of(stmt: &Stmt, name: &str) -> bool {
+    matches!(
+        stmt,
+        Stmt::Expr(Expr::Call { callee, args })
+            if is_free_callee(callee)
+                && matches!(args.first(), Some(Expr::Ident(arg)) if arg == name)
+    )
+}
+
+fn collect_stmt_idents(stmt: &Stmt) -> Vec<String> {
+    let mut out = Vec::new();
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::Return(value)
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => collect_expr_idents(value, &mut out),
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_expr_idents(condition, &mut out);
+            for nested in then_body {
+                out.extend(collect_stmt_idents(nested));
+            }
+            for nested in else_body {
+                out.extend(collect_stmt_idents(nested));
+            }
+        }
+        Stmt::While { condition, body } => {
+            collect_expr_idents(condition, &mut out);
+            for nested in body {
+                out.extend(collect_stmt_idents(nested));
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            collect_expr_idents(scrutinee, &mut out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_expr_idents(guard, &mut out);
+                }
+                collect_expr_idents(&arm.value, &mut out);
+            }
+        }
+    }
+    out
+}
+
+fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
+    match expr {
+        Expr::Ident(name) => out.push(name.clone()),
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_expr_idents(arg, out);
+            }
+        }
+        Expr::FieldAccess { base, .. } => collect_expr_idents(base, out),
+        Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_expr_idents(value, out);
+            }
+        }
+        Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                collect_expr_idents(value, out);
+            }
+        }
+        Expr::Group(inner) | Expr::Await(inner) => collect_expr_idents(inner, out),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_expr_idents(try_expr, out);
+            collect_expr_idents(catch_expr, out);
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_expr_idents(left, out);
+            collect_expr_idents(right, out);
+        }
+        Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) => {}
+    }
+}
+
 fn build_call_graph(module: &Module) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for item in &module.items {
@@ -1523,7 +1901,8 @@ fn build_call_graph(module: &Module) -> Vec<(String, String)> {
         impl AstVisitor for Collector {
             fn visit_expr(&mut self, expr: &Expr) {
                 if let Expr::Call { callee, .. } = expr {
-                    self.edges.push((self.from.clone(), callee.clone()));
+                    let (base, _) = split_generic_callee(callee);
+                    self.edges.push((self.from.clone(), base.to_string()));
                 }
                 ast::walk_expr(self, expr);
             }
@@ -3880,5 +4259,85 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn detects_use_after_free_via_alias_provenance() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                let q = p;
+                free(p);
+                close(q);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `q` after provenance root")));
+    }
+
+    #[test]
+    fn detects_mutable_aliasing_across_ref_params() {
+        let source = r#"
+            fn touch(a: &'a mut i32, b: &'a mut i32) -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                touch(x, x);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("aliases mutable reference parameter `x`")));
+    }
+
+    #[test]
+    fn detects_invalid_atomic_ordering_claims() {
+        let source = r#"
+            fn main() -> i32 {
+                let v = atomic.load(1, "Release");
+                let _ = v;
+                atomic.fence("Relaxed");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("atomic.load ordering `Release` is invalid")));
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("atomic.fence ordering `Relaxed` is invalid")));
+    }
+
+    #[test]
+    fn detects_generic_borrow_across_await_call_edge() {
+        let source = r#"
+            fn project<T: Show>(value: &'a T) -> &'a T {
+                return value;
+            }
+            async fn worker(v: &'a i32) -> i32 {
+                await recv();
+                let _ = project<i32>(v);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("generic/trait-heavy with borrowed parameters across await")
+        }));
     }
 }

@@ -4,7 +4,8 @@
 
 - Safe-by-default semantics are mandatory for production run/test/build pipelines.
 - Unsafe behavior is allowed only through explicit `unsafe(...)`/`unsafe_reason(...)` islands with reason strings and invariants.
-- Production policy target is Rust-class default safety with no unsound default fallback path.
+- Production policy target is enforceable high-assurance default safety with no unsound default fallback path.
+- The implementation intentionally does not claim full theorem-proved equivalence to Rust’s borrow checker.
 
 ## Ownership
 
