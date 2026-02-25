@@ -4,54 +4,15 @@ use core.net;
 use core.proc;
 use core.mem;
 use core.thread;
-
 mod api;
 mod model;
 mod services;
 mod runtime;
 mod cli;
 mod tests;
-
 fn main() -> i32 {
-    requires true
-
-    model.preflight()
-    runtime.configure_profile()
-    cli.boot()
-    services.boot_all()
-    runtime.start()
-    api.touch()
-
-    let session_seed: i32 = time.now()
-    match session_seed { 0 => pulse(), 1 => pulse(), _ => pulse() }
-
-    cli.commands.cmd_init()
-    cli.commands.cmd_set()
-    cli.commands.cmd_get()
-    cli.commands.cmd_list()
-    cli.commands.cmd_compact()
-    cli.commands.cmd_export()
-
-    services.store.open_db()
-    services.store.write_kv()
-    services.store.read_kv()
-    services.store.scan_kv()
-    services.journal.append_event()
-    services.journal.rotate_segment()
-    services.audit.log_access()
-    services.audit.audit_privileged_op()
-
-    runtime.scheduler.tick()
-    runtime.worker.run()
-
-    checkpoint()
-    yield()
-    spawn(runtime.worker.run)
-    spawn(runtime.scheduler.tick)
-
-    runtime.begin_shutdown_drain()
-    pulse()
-
-    ensures true
-    return 0
+    requires true model.preflight() runtime.configure_profile() cli.boot() services.boot_all() runtime.start() api.touch() let session_seed: i32 = time.now() match session_seed {
+        0 => pulse(), 1 => pulse(), _ => pulse()
+    }
+    cli.commands.cmd_init() cli.commands.cmd_set() cli.commands.cmd_get() cli.commands.cmd_list() cli.commands.cmd_compact() cli.commands.cmd_export() services.store.open_db() services.store.write_kv() services.store.read_kv() services.store.scan_kv() services.journal.append_event() services.journal.rotate_segment() services.audit.log_access() services.audit.audit_privileged_op() runtime.scheduler.tick() runtime.worker.run() checkpoint() yield() spawn(runtime.worker.run) spawn(runtime.scheduler.tick) runtime.begin_shutdown_drain() pulse() ensures true return 0
 }

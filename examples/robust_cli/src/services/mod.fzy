@@ -1,10 +1,6 @@
 mod store;
 mod journal;
 mod audit;
-
 fn boot_all() -> i32 {
-    store.open_db()
-    journal.append_event()
-    audit.log_access()
-    return 0
+    store.open_db() journal.append_event() audit.log_access() return 0
 }

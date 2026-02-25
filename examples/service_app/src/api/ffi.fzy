@@ -1,6 +1,5 @@
 // #[ffi_panic(error)]
 pub extern "C" fn hash32(ptr: *u8, len: usize) -> u32;
-
 fn touch() -> i32 {
     return 0
 }

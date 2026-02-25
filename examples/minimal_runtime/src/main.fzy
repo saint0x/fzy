@@ -2,23 +2,12 @@ use core.time;
 use core.fs;
 use core.net;
 use core.thread;
-
 mod api;
 mod model;
 mod services;
 mod runtime;
 mod cli;
 mod tests;
-
 fn main() -> i32 {
-    requires true
-
-    model.preflight()
-    cli.boot()
-    services.boot_all()
-    runtime.start()
-    api.touch()
-
-    ensures true
-    return 0
+    requires true model.preflight() cli.boot() services.boot_all() runtime.start() api.touch() ensures true return 0
 }

@@ -1,5 +1,3 @@
 fn preflight() -> i32 {
-    requires true
-    ensures true
-    return 0
+    requires true ensures true return 0
 }

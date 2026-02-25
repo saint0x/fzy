@@ -12,6 +12,7 @@ members = [
   "crates/fir",
   "crates/verifier",
   "crates/runtime",
+  "crates/formatter",
   "crates/stdlib",
   "crates/driver",
   "crates/diagnostics",

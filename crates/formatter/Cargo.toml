@@ -1,7 +1,6 @@
 [package]
-name = "fozzyfmt"
+name = "formatter"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
-formatter = { path = "../../crates/formatter" }

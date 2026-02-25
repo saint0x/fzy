@@ -1,14 +1,6 @@
 use core.thread;
 use core.time;
 use core.fs;
-
 fn sample() -> i32 {
-    checkpoint()
-    log.info("runtime.stats", "{}")
-    log.info("runtime.stats", "{}")
-    log.info("runtime.stats", "{}")
-    time.now()
-    fs.write()
-    yield()
-    return 0
+    checkpoint() log.info("runtime.stats", log.fields2("component", "runtime.stats", "phase", "sample_a")) log.info("runtime.stats", log.fields2("component", "runtime.stats", "phase", "sample_b")) log.info("runtime.stats", log.fields2("component", "runtime.stats", "phase", "sample_c")) time.now() fs.write() yield() return 0
 }

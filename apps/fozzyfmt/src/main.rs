@@ -1,6 +1,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use formatter::{format_source, is_fzy_source_path};
+
 fn main() {
     if let Err(err) = run() {
         eprintln!("fozzyfmt error: {err}");
@@ -69,7 +71,7 @@ formats .fzy files recursively\n\
 
 fn discover_sources(path: &Path) -> Result<Vec<PathBuf>, String> {
     if path.is_file() {
-        if path.extension().and_then(|ext| ext.to_str()) == Some("fzy") {
+        if is_fzy_source_path(path) {
             return Ok(vec![path.to_path_buf()]);
         }
         return Ok(Vec::new());
@@ -96,63 +98,9 @@ fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
             walk(&path, files)?;
             continue;
         }
-        if path.extension().and_then(|ext| ext.to_str()) == Some("fzy") {
+        if is_fzy_source_path(&path) {
             files.push(path);
         }
     }
     Ok(())
-}
-
-fn format_source(source: &str) -> String {
-    let mut out = String::new();
-    let mut indent = 0usize;
-
-    for raw in source.lines() {
-        let trimmed_end = raw.trim_end();
-        let line = trimmed_end.trim_start();
-
-        if line.is_empty() {
-            out.push('\n');
-            continue;
-        }
-
-        let effective_indent = if line.starts_with('}') {
-            indent.saturating_sub(1)
-        } else {
-            indent
-        };
-
-        out.push_str(&" ".repeat(effective_indent * 4));
-        out.push_str(line);
-        out.push('\n');
-
-        let open_count = line.chars().filter(|ch| *ch == '{').count();
-        let close_count = line.chars().filter(|ch| *ch == '}').count();
-
-        if open_count >= close_count {
-            indent += open_count - close_count;
-        } else {
-            indent = indent.saturating_sub(close_count - open_count);
-        }
-    }
-
-    if !out.ends_with('\n') {
-        out.push('\n');
-    }
-
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::format_source;
-
-    #[test]
-    fn normalizes_indent_and_trailing_whitespace() {
-        let source = "fn main() -> i32 {   \nlet x = 1\nif x {\nreturn x\n}\n}\n";
-        let got = format_source(source);
-        let expected =
-            "fn main() -> i32 {\n    let x = 1\n    if x {\n        return x\n    }\n}\n";
-        assert_eq!(got, expected);
-    }
 }

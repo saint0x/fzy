@@ -6,6 +6,7 @@ target/
 
 # Runtime artifacts and caches
 .fozzy/
+**/.fz/
 artifacts/
 tmp/
 

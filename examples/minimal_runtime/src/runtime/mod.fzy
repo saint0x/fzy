@@ -1,6 +1,4 @@
 mod loop;
-
 fn start() -> i32 {
-    spawn(loop.run)
-    return 0
+    spawn(loop.run) return 0
 }

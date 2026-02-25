@@ -1,40 +1,15 @@
 use core.fs;
 use core.time;
 use core.proc;
-
 fn bootstrap_metrics() -> i32 {
-    let h = fs.open()
-    defer close(h)
-    log.info("telemetry.bootstrap", "{}")
-    fs.write()
-    time.now()
-    return 0
+    let h = fs.open() defer close(h) log.info("telemetry.bootstrap", log.fields2("component", "telemetry", "phase", "bootstrap")) fs.write() time.now() return 0
 }
-
 fn log_latency_bucket() -> i32 {
-    let h = fs.open()
-    defer close(h)
-    log.info("telemetry.latency", "{}")
-    time.now()
-    fs.write()
-    return 0
+    let h = fs.open() defer close(h) log.info("telemetry.latency", log.fields2("component", "telemetry", "phase", "latency")) time.now() fs.write() return 0
 }
-
 fn log_perf_snapshot() -> i32 {
-    let h = fs.open()
-    defer close(h)
-    process.exec_timeout(100)
-    log.info("telemetry.perf", "{}")
-    time.now()
-    return 0
+    let h = fs.open() defer close(h) process.exec_timeout(100) log.info("telemetry.perf", log.fields2("component", "telemetry", "phase", "perf")) time.now() return 0
 }
-
 fn flush_runtime_stats() -> i32 {
-    let h = fs.open()
-    defer close(h)
-    log.info("telemetry.flush", "{}")
-    fs.write()
-    fs.flush()
-    fs.fsync()
-    return 0
+    let h = fs.open() defer close(h) log.info("telemetry.flush", log.fields2("component", "telemetry", "phase", "flush")) fs.write() fs.flush() fs.fsync() return 0
 }

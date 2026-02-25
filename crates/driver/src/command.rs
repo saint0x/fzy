@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 
 use anyhow::{anyhow, bail, Context, Result};
+use formatter::{format_source, is_fzy_source_path};
 use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEvent};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -3174,6 +3175,7 @@ fn write_non_scenario_trace_artifacts(
     let explore_path = base_dir.join(format!("{stem}.explore.json"));
     let shrink_path = base_dir.join(format!("{stem}.shrink.json"));
     let scenarios_index_path = base_dir.join(format!("{stem}.scenarios.json"));
+    let native_trace_path = base_dir.join(format!("{stem}.native.trace.json"));
     let trace_payload = TracePayload {
         schema_version: "fozzylang.thread_trace.v0",
         capability: "thread",
@@ -3189,10 +3191,10 @@ fn write_non_scenario_trace_artifacts(
         runtime_events: runtime_events.to_vec(),
         causal_links: causal_links.to_vec(),
     };
-    write_json_file(trace_path, &trace_payload).with_context(|| {
+    write_json_file(&native_trace_path, &trace_payload).with_context(|| {
         format!(
             "failed writing thread trace artifact: {}",
-            trace_path.display()
+            native_trace_path.display()
         )
     })?;
 
@@ -3201,8 +3203,18 @@ fn write_non_scenario_trace_artifacts(
     let mut explore_written = None;
     let mut shrink_written = None;
     let mut scenarios_written = None;
-    let mut primary_scenario_path = None;
     let mut goal_trace_written = None;
+    let (primary_scenario_path, generated_scenarios) =
+        generate_language_test_scenarios(&base_dir, stem, deterministic_test_names)?;
+    if let Some(primary_scenario) = &primary_scenario_path {
+        ensure_goal_trace_from_scenario(primary_scenario, trace_path, seed).with_context(|| {
+            format!(
+                "failed generating goal trace from scenario {}",
+                primary_scenario.display()
+            )
+        })?;
+        goal_trace_written = Some(trace_path.to_path_buf());
+    }
 
     if detail == ArtifactDetail::Rich {
         let mut timeline_entries =
@@ -3253,24 +3265,6 @@ fn write_non_scenario_trace_artifacts(
             )
         })?;
         timeline_written = Some(timeline_path.clone());
-
-        let (generated_primary, generated_scenarios) =
-            generate_language_test_scenarios(&base_dir, stem, deterministic_test_names)?;
-        primary_scenario_path = generated_primary;
-        if let Some(primary_scenario) = &primary_scenario_path {
-            let goal_trace_path = base_dir.join(format!("{stem}.goal.fozzy"));
-            if let Err(error) =
-                ensure_goal_trace_from_scenario(primary_scenario, &goal_trace_path, seed)
-            {
-                eprintln!(
-                    "warning: failed generating goal trace from {}: {}",
-                    primary_scenario.display(),
-                    error
-                );
-            } else {
-                goal_trace_written = Some(goal_trace_path);
-            }
-        }
 
         write_json_file(
             &report_path,
@@ -3372,7 +3366,7 @@ fn write_non_scenario_trace_artifacts(
         &manifest_path,
         &ManifestPayload {
             schema_version: "fozzylang.artifacts.v0",
-            trace: trace_path.display().to_string(),
+            trace: native_trace_path.display().to_string(),
             report: report_written
                 .as_ref()
                 .map(|path| path.display().to_string()),
@@ -5313,7 +5307,12 @@ fn ensure_goal_trace_from_scenario(
     seed: u64,
 ) -> Result<()> {
     if goal_trace_path.exists() {
-        return Ok(());
+        std::fs::remove_file(goal_trace_path).with_context(|| {
+            format!(
+                "failed removing stale goal trace before regeneration: {}",
+                goal_trace_path.display()
+            )
+        })?;
     }
     let args = vec![
         "run".to_string(),
@@ -6151,25 +6150,7 @@ fn is_fozzy_scenario(path: &Path) -> bool {
 fn format_source_file(path: &Path) -> Result<bool> {
     let original = std::fs::read_to_string(path)
         .with_context(|| format!("failed reading file for formatting: {}", path.display()))?;
-    let mut formatted = String::new();
-    let mut previous_blank = false;
-    for line in original.lines() {
-        let trimmed_end = line.trim_end();
-        let is_blank = trimmed_end.is_empty();
-        if is_blank {
-            if !previous_blank {
-                formatted.push('\n');
-            }
-        } else {
-            formatted.push_str(trimmed_end);
-            formatted.push('\n');
-        }
-        previous_blank = is_blank;
-    }
-
-    if !formatted.ends_with('\n') {
-        formatted.push('\n');
-    }
+    let formatted = format_source(&original);
 
     if formatted != original {
         std::fs::write(path, formatted)
@@ -6201,15 +6182,18 @@ fn format_source_target(path: &Path) -> Result<usize> {
                 continue;
             }
             if entry_path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| ext == "fzy")
+                .is_file()
+                && is_fzy_source_path(&entry_path)
                 && format_source_file(&entry_path)?
             {
                 changed += 1;
             }
         }
         return Ok(changed);
+    }
+
+    if !is_fzy_source_path(path) {
+        return Ok(0);
     }
 
     Ok(usize::from(format_source_file(path)?))
@@ -7215,10 +7199,10 @@ mod tests {
         )
         .expect("test command should succeed");
         assert!(output.contains("\"artifacts\""));
-        let trace_text = std::fs::read_to_string(&trace).expect("trace should be written");
-        assert!(trace_text.contains("\"schemaVersion\": \"fozzylang.thread_trace.v0\""));
-        assert!(trace_text.contains("\"capability\": \"thread\""));
-        assert!(trace_text.contains("\"scheduler\": \"random\""));
+        let trace_text = std::fs::read_to_string(&trace).expect("goal trace should be written");
+        assert!(trace_text.contains("\"format\":\"fozzy-trace\""));
+        assert!(trace_text.contains("\"version\":3"));
+        assert!(trace_text.contains("\"events\":["));
 
         let stem = trace
             .file_stem()
@@ -7229,6 +7213,12 @@ mod tests {
             .parent()
             .expect("trace should have parent")
             .to_path_buf();
+        let native_trace = base.join(format!("{stem}.native.trace.json"));
+        let native_trace_text =
+            std::fs::read_to_string(&native_trace).expect("native trace should be written");
+        assert!(native_trace_text.contains("\"schemaVersion\": \"fozzylang.thread_trace.v0\""));
+        assert!(native_trace_text.contains("\"capability\": \"thread\""));
+        assert!(native_trace_text.contains("\"scheduler\": \"random\""));
         assert!(base.join(format!("{stem}.timeline.json")).exists());
         assert!(base.join(format!("{stem}.report.json")).exists());
         assert!(base.join(format!("{stem}.manifest.json")).exists());
@@ -7239,6 +7229,7 @@ mod tests {
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
@@ -7299,9 +7290,6 @@ mod tests {
         assert!(output.contains("\"asyncCheckpointCount\":1"));
         assert!(output.contains("\"asyncExecution\":[0]"));
 
-        let trace_text = std::fs::read_to_string(&trace).expect("trace should be written");
-        assert!(trace_text.contains("\"asyncSchedule\": ["));
-
         let stem = trace
             .file_stem()
             .and_then(|value| value.to_str())
@@ -7311,12 +7299,17 @@ mod tests {
             .parent()
             .expect("trace should have parent")
             .to_path_buf();
+        let native_trace_text =
+            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
+                .expect("native trace should be readable");
+        assert!(native_trace_text.contains("\"asyncSchedule\": ["));
         let timeline = std::fs::read_to_string(base.join(format!("{stem}.timeline.json")))
             .expect("timeline should be readable");
         assert!(timeline.contains("\"decision\": \"async.schedule\""));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
@@ -7361,13 +7354,6 @@ mod tests {
         assert!(output.contains("\"rpcFrameCount\":4"));
         assert!(output.contains("\"rpcValidationErrors\":0"));
 
-        let trace_text = std::fs::read_to_string(&trace).expect("trace should be written");
-        assert!(trace_text.contains("\"rpcFrames\": ["));
-        assert!(trace_text.contains("\"event\": \"rpc_send\""));
-        assert!(!trace_text.contains("\"event\": \"rpc_recv\""));
-        assert!(trace_text.contains("\"event\": \"rpc_deadline\""));
-        assert!(trace_text.contains("\"event\": \"rpc_cancel\""));
-
         let stem = trace
             .file_stem()
             .and_then(|value| value.to_str())
@@ -7377,6 +7363,14 @@ mod tests {
             .parent()
             .expect("trace should have parent")
             .to_path_buf();
+        let native_trace_text =
+            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
+                .expect("native trace should be written");
+        assert!(native_trace_text.contains("\"rpcFrames\": ["));
+        assert!(native_trace_text.contains("\"event\": \"rpc_send\""));
+        assert!(!native_trace_text.contains("\"event\": \"rpc_recv\""));
+        assert!(native_trace_text.contains("\"event\": \"rpc_deadline\""));
+        assert!(native_trace_text.contains("\"event\": \"rpc_cancel\""));
         let timeline = std::fs::read_to_string(base.join(format!("{stem}.timeline.json")))
             .expect("timeline should be readable");
         assert!(timeline.contains("\"decision\": \"rpc.frame\""));
@@ -7406,6 +7400,7 @@ mod tests {
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
         let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));

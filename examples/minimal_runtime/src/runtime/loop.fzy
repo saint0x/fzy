@@ -1,7 +1,4 @@
 use core.thread;
-
 fn run() -> i32 {
-    checkpoint()
-    yield()
-    return 0
+    checkpoint() yield() return 0
 }

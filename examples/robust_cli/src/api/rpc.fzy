@@ -1,8 +1,5 @@
 rpc SyncSnapshot(req: SnapshotReq) -> SnapshotRes;
 rpc PushJournal(req: JournalReq) -> JournalRes;
-
 fn touch() -> i32 {
-    timeout(10)
-    cancel()
-    return 0
+    timeout(10) cancel() return 0
 }

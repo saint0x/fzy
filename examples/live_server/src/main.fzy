@@ -5,19 +5,12 @@ use core.net;
 use core.proc;
 use core.mem;
 use core.thread;
-
 mod api;
 mod model;
 mod services;
 mod runtime;
 mod cli;
 mod tests;
-
 fn main() -> i32 {
-    model.preflight()
-    cli.boot()
-    services.boot_all()
-    runtime.start()
-    api.touch()
-    return 0
+    model.preflight() cli.boot() services.boot_all() runtime.start() api.touch() return 0
 }

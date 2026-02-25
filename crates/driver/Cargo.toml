@@ -16,6 +16,7 @@ session = { path = "../session" }
 manifest = { path = "../manifest" }
 diagnostics = { path = "../diagnostics" }
 runtime = { path = "../runtime" }
+formatter = { path = "../formatter" }
 sha2 = "0.10"
 cranelift-codegen = "0.116"
 cranelift-frontend = "0.116"

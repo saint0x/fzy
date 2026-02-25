@@ -1,10 +1,6 @@
-#[ffi_panic(error)]
-pub extern "C" fn fs_open(path_borrowed: *u8, len: usize) -> i32;
-#[ffi_panic(error)]
-pub extern "C" fn fs_write(fd: i32, ptr_borrowed: *u8, len: usize) -> i32;
-#[ffi_panic(error)]
-pub extern "C" fn hash32(ptr_borrowed: *u8, len: usize) -> u32;
-
+#[ffi_panic(error)] pub extern "C" fn fs_open(path_borrowed: *u8, len: usize) -> i32;
+#[ffi_panic(error)] pub extern "C" fn fs_write(fd: i32, ptr_borrowed: *u8, len: usize) -> i32;
+#[ffi_panic(error)] pub extern "C" fn hash32(ptr_borrowed: *u8, len: usize) -> u32;
 fn touch() -> i32 {
     return 0
 }

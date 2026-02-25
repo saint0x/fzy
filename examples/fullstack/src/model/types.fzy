@@ -1,6 +1,5 @@
-#[repr(C)]
-struct UserRow {}
-
+#[repr(C)] struct UserRow {
+}
 fn schema_version() -> i32 {
     return 3
 }

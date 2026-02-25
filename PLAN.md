@@ -223,6 +223,27 @@
 - [✅] Add diagnostics-focused Fozzy gates using strict deterministic first (`doctor --deep`, `test --det --strict`) plus trace record/verify/replay/ci and host-backed checks where feasible.
 - [✅] Publish production diagnostics guide and error-code reference with examples and remediation playbooks.
 
+### Anthropic Smoke Audit: First-Class Language + Runtime Gaps (Production Closure)
+- [ ] Eliminate escaped JSON string literals in app logs by shipping typed log-field APIs (no manual `"{\"k\":\"v\"}"` payload strings in userland code).
+- [ ] Add first-class JSON value ergonomics (object/array/value literals and builders) so responses and payloads do not require mixed `json.object*` + raw string assembly.
+- [ ] Add type-level distinction for JSON embedding (`json value` vs `string`) and enforce `raw` vs `string` embedding correctness to prevent double-encoding and escaped payload artifacts.
+- [ ] Add typed process invocation API surface (`argv/env/cwd` typed inputs) to replace stringly JSON argument vectors in `process.runv` call sites.
+- [ ] Add capability-safe, portable path APIs for tool execution contexts (no hardcoded user-home absolute paths in exhibition projects).
+- [ ] Add ergonomic error propagation/result handling (`Result`-class flow + concise propagation) to remove degenerate `try X catch X` patterns in normal server/runtime code.
+- [ ] Define and stabilize idiomatic non-value return semantics for operational functions (unit/void-style conventions) so production code does not require pervasive `-> i32` + `return 0` scaffolding.
+- [ ] Add derive/macros or equivalent for enum/string/code conversion to remove repetitive manual label/code mapping boilerplate in model/runtime state types.
+- [ ] Add structured-concurrency ergonomics layer (scoped groups, join/cancel result aggregation, deterministic teardown contracts) so app code avoids manual handle lifecycle choreography.
+- [ ] Add first-class middleware/handler composition constructs for HTTP services (typed route/middleware pipelines over repetitive imperative wrappers).
+- [ ] Add assertion-rich testing primitives and matchers for `.fzy` tests (value assertions, response assertions, failure assertions), replacing call-only smoke tests as the primary correctness signal.
+- [ ] Add deterministic integration-test harness support for HTTP endpoints (request/response assertions + fixture inputs) to verify behavior, not only execution reachability.
+- [ ] Strengthen compiler diagnostics/lints for production ergonomics:
+- [ ] unused bindings/values in app code paths
+- [ ] suspicious JSON raw/string embedding patterns
+- [ ] hardcoded absolute host paths in source
+- [ ] dead helper functions and unreachable route branches
+- [ ] Add exhibition repo hardening policy: public sample projects must be portable-by-default, env-driven for credentials, and free of user-specific identity/path assumptions.
+- [ ] Add mandatory "exhibition quality gate" to ship flow: `fz check`, `fz build`, `fz test`, deterministic trace verify/replay/ci, and static policy scans for JSON/log/path ergonomics.
+
 ### Release Flow
 - [✅] Phase 1: correctness fixes (listen, partial I/O, timeout correctness).
 - [✅] Phase 2: runtime hot-path performance fixes (network/executor scope completed).

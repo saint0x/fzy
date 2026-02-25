@@ -1,7 +1,6 @@
 // #[ffi_panic(error)]
 pub extern "C" fn cli_hash32(ptr: *u8, len: usize) -> u32;
 pub extern "C" fn cli_write(fd: i32, ptr: *u8, len: usize) -> i32;
-
 fn touch() -> i32 {
     return 0
 }

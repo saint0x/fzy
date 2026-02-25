@@ -3680,6 +3680,40 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "log.info" | "log.warn" | "log.error" => {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
         }
+        "log.fields1" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
+        "log.fields2" => (
+            vec![
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+            ],
+            str_ty.clone(),
+        ),
+        "log.fields3" => (
+            vec![
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+            ],
+            str_ty.clone(),
+        ),
+        "log.fields4" => (
+            vec![
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+            ],
+            str_ty.clone(),
+        ),
         "log.set_json" => (vec![i32.clone()], i32.clone()),
         "log.correlation_id" => (vec![i32.clone()], str_ty.clone()),
         "error.code" | "error.class" => (vec![], i32.clone()),
@@ -3695,6 +3729,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
                 str_ty.clone(),
                 str_ty.clone(),
             ],
+            i32.clone(),
+        ),
+        "process.runl" | "proc.runl" | "process.spawnl" | "proc.spawnl" => (
+            vec![str_ty.clone(), i32.clone(), i32.clone(), str_ty.clone()],
             i32.clone(),
         ),
         "process.exec_timeout" | "proc.exec_timeout" => (vec![i32.clone()], i32.clone()),
@@ -4289,6 +4327,25 @@ mod tests {
     }
 
     #[test]
+    fn process_spawnl_with_typed_args_typechecks() {
+        let source = r#"
+            use core.proc;
+            fn main() -> i32 {
+                let args = list.new();
+                list.push(args, "hi");
+                let env = map.new();
+                map.set(env, "K", "V");
+                process.spawnl("echo", args, env, "stdin");
+                process.runl("echo", args, env, "");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
     fn http_capture_and_json_builders_typecheck() {
         let source = r#"
             use core.net;
@@ -4324,7 +4381,8 @@ mod tests {
                 let c = net.accept();
                 let _ = net.header(c, "content-type");
                 let _ = route.match(c, "GET", "/sessions/:id/messages");
-                let _ = log.info("x", "{}");
+                let fields = log.fields2("component", "test", "phase", "boot");
+                let _ = log.info("x", fields);
                 return 0;
             }
         "#;

@@ -1,2 +1,4 @@
-test "det_boot" {}
-test "det_rpc" {}
+test "det_boot" {
+}
+test "det_rpc" {
+}

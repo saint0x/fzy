@@ -1,11 +1,5 @@
 use core.thread;
 use core.net;
-
 fn run() -> i32 {
-    let listener = net.bind()
-    net.listen(listener)
-    let conn = net.accept()
-    net.read(conn)
-    checkpoint()
-    return 0
+    let listener = net.bind() net.listen(listener) let conn = net.accept() net.read(conn) checkpoint() return 0
 }

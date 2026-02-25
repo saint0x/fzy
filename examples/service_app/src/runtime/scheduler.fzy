@@ -1,6 +1,4 @@
 use core.thread;
-
 fn tick() -> i32 {
-    checkpoint()
-    return 0
+    checkpoint() return 0
 }

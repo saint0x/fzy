@@ -1,7 +1,3 @@
 fn boot() -> i32 {
-    env.get("FZ_HOST")
-    env.get("FZ_PORT")
-    env.get("SERVICE_ENV")
-    log.info("cli.boot", "{}")
-    return 0
+    env.get("FZ_HOST") env.get("FZ_PORT") env.get("SERVICE_ENV") log.info("cli.boot", log.fields2("component", "cli", "phase", "boot")) return 0
 }

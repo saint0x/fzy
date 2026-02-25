@@ -1,22 +1,8 @@
 use core.fs;
 use core.mem;
-
 fn read_user() -> i32 {
-    let h = fs.open()
-    defer close(h)
-    fs.flush()
-    fs.read()
-    return 0
+    let h = fs.open() defer close(h) fs.flush() fs.read() return 0
 }
-
 fn write_user() -> i32 {
-    let h = fs.open()
-    defer close(h)
-    fs.flush()
-    fs.atomic_write()
-    fs.rename_atomic()
-    fs.flush()
-    fs.fsync()
-    fs.write()
-    return 0
+    let h = fs.open() defer close(h) fs.flush() fs.atomic_write() fs.rename_atomic() fs.flush() fs.fsync() fs.write() return 0
 }

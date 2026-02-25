@@ -1,10 +1,6 @@
 mod scheduler;
 mod worker;
 mod supervisor;
-
 fn start() -> i32 {
-    spawn(worker.run)
-    spawn(scheduler.tick)
-    spawn(supervisor.guard)
-    return 0
+    spawn(worker.run) spawn(scheduler.tick) spawn(supervisor.guard) return 0
 }

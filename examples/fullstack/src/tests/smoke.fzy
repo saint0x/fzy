@@ -1,4 +1,8 @@
-test "det_boot" {}
-test "det_cli_ops" {}
-test "det_rpc_sync" {}
-test "chaos_mode" nondet {}
+test "det_boot" {
+}
+test "det_cli_ops" {
+}
+test "det_rpc_sync" {
+}
+test "chaos_mode" nondet {
+}

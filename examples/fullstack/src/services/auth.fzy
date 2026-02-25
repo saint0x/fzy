@@ -1,6 +1,4 @@
 use core.time;
-
 fn init() -> i32 {
-    time.now()
-    return 0
+    time.now() return 0
 }

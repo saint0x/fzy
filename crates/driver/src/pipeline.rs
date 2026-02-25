@@ -519,6 +519,26 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
+        callee: "log.fields1",
+        symbol: "fz_native_log_fields1",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "log.fields2",
+        symbol: "fz_native_log_fields2",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "log.fields3",
+        symbol: "fz_native_log_fields3",
+        arity: 6,
+    },
+    NativeRuntimeImport {
+        callee: "log.fields4",
+        symbol: "fz_native_log_fields4",
+        arity: 8,
+    },
+    NativeRuntimeImport {
         callee: "log.set_json",
         symbol: "fz_native_log_set_json",
         arity: 1,
@@ -704,8 +724,18 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 4,
     },
     NativeRuntimeImport {
+        callee: "process.runl",
+        symbol: "fz_native_proc_runl",
+        arity: 4,
+    },
+    NativeRuntimeImport {
         callee: "proc.runv",
         symbol: "fz_native_proc_runv",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "proc.runl",
+        symbol: "fz_native_proc_runl",
         arity: 4,
     },
     NativeRuntimeImport {
@@ -714,8 +744,18 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 4,
     },
     NativeRuntimeImport {
+        callee: "process.spawnl",
+        symbol: "fz_native_proc_spawnl",
+        arity: 4,
+    },
+    NativeRuntimeImport {
         callee: "proc.spawnv",
         symbol: "fz_native_proc_spawnv",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "proc.spawnl",
+        symbol: "fz_native_proc_spawnl",
         arity: 4,
     },
     NativeRuntimeImport {
@@ -7859,6 +7899,46 @@ int32_t fz_native_log_error(int32_t message_id, int32_t fields_id) {
   return fz_log_emit("error", fz_lookup_string(message_id), fz_lookup_string(fields_id));
 }
 
+int32_t fz_native_log_fields1(int32_t k1_id, int32_t v1_id) {
+  int32_t value = fz_native_json_str(v1_id);
+  return fz_native_json_object1(k1_id, value);
+}
+
+int32_t fz_native_log_fields2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id) {
+  int32_t value1 = fz_native_json_str(v1_id);
+  int32_t value2 = fz_native_json_str(v2_id);
+  return fz_native_json_object2(k1_id, value1, k2_id, value2);
+}
+
+int32_t fz_native_log_fields3(
+    int32_t k1_id,
+    int32_t v1_id,
+    int32_t k2_id,
+    int32_t v2_id,
+    int32_t k3_id,
+    int32_t v3_id) {
+  int32_t value1 = fz_native_json_str(v1_id);
+  int32_t value2 = fz_native_json_str(v2_id);
+  int32_t value3 = fz_native_json_str(v3_id);
+  return fz_native_json_object3(k1_id, value1, k2_id, value2, k3_id, value3);
+}
+
+int32_t fz_native_log_fields4(
+    int32_t k1_id,
+    int32_t v1_id,
+    int32_t k2_id,
+    int32_t v2_id,
+    int32_t k3_id,
+    int32_t v3_id,
+    int32_t k4_id,
+    int32_t v4_id) {
+  int32_t value1 = fz_native_json_str(v1_id);
+  int32_t value2 = fz_native_json_str(v2_id);
+  int32_t value3 = fz_native_json_str(v3_id);
+  int32_t value4 = fz_native_json_str(v4_id);
+  return fz_native_json_object4(k1_id, value1, k2_id, value2, k3_id, value3, k4_id, value4);
+}
+
 int32_t fz_native_log_set_json(int32_t enabled) {
   fz_log_json = enabled != 0 ? 1 : 0;
   return 0;
@@ -9325,6 +9405,146 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
   return fz_native_proc_spawn_argv("sh", argv, environ, NULL);
 }
 
+static int fz_clone_list_items(int32_t list_handle, char*** out_items, int* out_count) {
+  if (out_items == NULL || out_count == NULL) {
+    return -1;
+  }
+  *out_items = NULL;
+  *out_count = 0;
+  if (list_handle <= 0) {
+    return 0;
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_list_state* list = fz_list_get(list_handle);
+  if (list == NULL || list->count <= 0) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  int count = list->count;
+  char** items = (char**)calloc((size_t)count, sizeof(char*));
+  if (items == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  for (int i = 0; i < count; i++) {
+    const char* src = list->items[i] == NULL ? "" : list->items[i];
+    items[i] = strdup(src);
+    if (items[i] == NULL) {
+      for (int j = 0; j < i; j++) {
+        free(items[j]);
+      }
+      free(items);
+      pthread_mutex_unlock(&fz_collections_lock);
+      return -1;
+    }
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  *out_items = items;
+  *out_count = count;
+  return 0;
+}
+
+static int fz_clone_map_entries_as_env(int32_t map_handle, char*** out_items, int* out_count) {
+  if (out_items == NULL || out_count == NULL) {
+    return -1;
+  }
+  *out_items = NULL;
+  *out_count = 0;
+  if (map_handle <= 0) {
+    return 0;
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_map_state* map = fz_map_get(map_handle);
+  if (map == NULL || map->count <= 0) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  int count = map->count;
+  char** entries = (char**)calloc((size_t)count, sizeof(char*));
+  if (entries == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  for (int i = 0; i < count; i++) {
+    const char* key = map->keys[i] == NULL ? "" : map->keys[i];
+    const char* value = map->values[i] == NULL ? "" : map->values[i];
+    size_t n = strlen(key) + strlen(value) + 2;
+    entries[i] = (char*)malloc(n);
+    if (entries[i] == NULL) {
+      for (int j = 0; j < i; j++) {
+        free(entries[j]);
+      }
+      free(entries);
+      pthread_mutex_unlock(&fz_collections_lock);
+      return -1;
+    }
+    snprintf(entries[i], n, "%s=%s", key, value);
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  *out_items = entries;
+  *out_count = count;
+  return 0;
+}
+
+int32_t fz_native_proc_spawnl(
+    int32_t command_id,
+    int32_t args_list_id,
+    int32_t env_map_id,
+    int32_t stdin_id) {
+  const char* command = fz_lookup_string(command_id);
+  const char* stdin_payload = fz_lookup_string(stdin_id);
+  if (command == NULL || command[0] == '\0') {
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawnl: empty command");
+    return -1;
+  }
+
+  char** arg_items = NULL;
+  int arg_count = 0;
+  if (fz_clone_list_items(args_list_id, &arg_items, &arg_count) != 0) {
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawnl: args_list clone failed");
+    return -1;
+  }
+
+  char** env_items = NULL;
+  int env_count = 0;
+  if (fz_clone_map_entries_as_env(env_map_id, &env_items, &env_count) != 0) {
+    fz_free_string_list(arg_items, arg_count);
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawnl: env_map clone failed");
+    return -1;
+  }
+
+  int argv_count = arg_count + 2;
+  char** argv = (char**)calloc((size_t)argv_count, sizeof(char*));
+  if (argv == NULL) {
+    fz_free_string_list(arg_items, arg_count);
+    fz_free_string_list(env_items, env_count);
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawnl: argv alloc failed");
+    return -1;
+  }
+  argv[0] = (char*)command;
+  for (int i = 0; i < arg_count; i++) {
+    argv[i + 1] = arg_items[i];
+  }
+  argv[argv_count - 1] = NULL;
+
+  char** envp = fz_clone_env_with_overrides(env_items, env_count);
+  int32_t handle = fz_native_proc_spawn_argv(
+      command,
+      argv,
+      envp == NULL ? environ : envp,
+      (stdin_payload == NULL || stdin_payload[0] == '\0') ? NULL : stdin_payload);
+
+  fz_free_env(envp);
+  free(argv);
+  fz_free_string_list(arg_items, arg_count);
+  fz_free_string_list(env_items, env_count);
+  return handle;
+}
+
 int32_t fz_native_proc_spawnv(
     int32_t command_id,
     int32_t args_json_id,
@@ -9468,6 +9688,22 @@ int32_t fz_native_proc_runv(
     int32_t env_json_id,
     int32_t stdin_id) {
   int32_t handle = fz_native_proc_spawnv(command_id, args_json_id, env_json_id, stdin_id);
+  if (handle < 0) {
+    return -1;
+  }
+  int32_t waited = fz_native_proc_wait(handle, fz_proc_default_timeout_ms);
+  if (waited < 0) {
+    return -1;
+  }
+  return handle;
+}
+
+int32_t fz_native_proc_runl(
+    int32_t command_id,
+    int32_t args_list_id,
+    int32_t env_map_id,
+    int32_t stdin_id) {
+  int32_t handle = fz_native_proc_spawnl(command_id, args_list_id, env_map_id, stdin_id);
   if (handle < 0) {
     return -1;
   }
@@ -10419,6 +10655,8 @@ mod tests {
         assert!(shim.contains("posix_spawnp"));
         assert!(shim.contains("int32_t fz_native_proc_spawnv("));
         assert!(shim.contains("int32_t fz_native_proc_runv("));
+        assert!(shim.contains("int32_t fz_native_proc_spawnl("));
+        assert!(shim.contains("int32_t fz_native_proc_runl("));
         assert!(shim.contains("int32_t fz_native_proc_poll(int32_t handle)"));
         assert!(
             shim.contains("int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes)")
@@ -10431,6 +10669,7 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_time_tick(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_error_code(void)"));
         assert!(shim.contains("int32_t fz_native_log_info(int32_t message_id, int32_t fields_id)"));
+        assert!(shim.contains("int32_t fz_native_log_fields2("));
         assert!(shim.contains("FD_CLOEXEC"));
         assert!(shim.contains("int32_t fz_native_proc_exit_class(void)"));
         assert!(shim.contains("int32_t fz_native_time_now(void)"));

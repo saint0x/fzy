@@ -1,6 +1,4 @@
 mod health;
-
 fn boot_all() -> i32 {
-    health.check()
-    return 0
+    health.check() return 0
 }

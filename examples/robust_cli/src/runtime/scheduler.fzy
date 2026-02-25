@@ -1,8 +1,5 @@
 use core.thread;
 use core.time;
-
 fn tick() -> i32 {
-    checkpoint()
-    time.now()
-    return 0
+    checkpoint() time.now() return 0
 }

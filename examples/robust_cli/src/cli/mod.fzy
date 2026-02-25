@@ -1,6 +1,4 @@
 mod commands;
-
 fn boot() -> i32 {
-    commands.cmd_init()
-    return 0
+    commands.cmd_init() return 0
 }

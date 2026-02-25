@@ -1,7 +1,6 @@
 rpc GetUser(req: GetUserReq) -> GetUserRes;
 rpc UpsertUser(req: UpsertUserReq) -> UpsertUserRes;
-rpc StreamEvents(stream<WatchReq>) -> stream<WatchEvent>;
-
+rpc StreamEvents(stream < WatchReq > ) -> stream < WatchEvent > ;
 fn touch() -> i32 {
     return 0
 }

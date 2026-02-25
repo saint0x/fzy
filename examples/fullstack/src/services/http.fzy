@@ -1,8 +1,4 @@
 use core.net;
-
 fn start() -> i32 {
-    let listener = net.bind()
-    defer close(listener)
-    net.listen(listener)
-    return 0
+    let listener = net.bind() defer close(listener) net.listen(listener) return 0
 }

@@ -1,2 +1,4 @@
-test "det_boot" {}
-test "det_flow" {}
+test "det_boot" {
+}
+test "det_flow" {
+}

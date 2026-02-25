@@ -1,6 +1,4 @@
 use core.thread;
-
 fn run() -> i32 {
-    yield()
-    return 0
+    yield() return 0
 }

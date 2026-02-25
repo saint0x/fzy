@@ -1,8 +1,5 @@
 use core.fs;
 use core.mem;
-
 fn init() -> i32 {
-    let db = fs.open()
-    defer close(db)
-    return 0
+    let db = fs.open() defer close(db) return 0
 }

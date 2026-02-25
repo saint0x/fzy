@@ -1,17 +1,9 @@
 use core.time;
-
 mod acceptor;
 mod worker;
 mod scheduler;
 mod supervisor;
 mod stats;
-
 fn start() -> i32 {
-    time.now()
-    spawn(acceptor.run)
-    spawn(worker.run)
-    spawn(scheduler.tick)
-    spawn(supervisor.guard)
-    spawn(stats.sample)
-    return 0
+    time.now() spawn(acceptor.run) spawn(worker.run) spawn(scheduler.tick) spawn(supervisor.guard) spawn(stats.sample) return 0
 }

@@ -1,10 +1,5 @@
 use core.net;
 use core.time;
-
 fn start() -> i32 {
-    let listener = net.bind()
-    defer close(listener)
-    net.listen(listener)
-    time.now()
-    return 0
+    let listener = net.bind() defer close(listener) net.listen(listener) time.now() return 0
 }

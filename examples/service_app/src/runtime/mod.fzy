@@ -1,8 +1,5 @@
 mod scheduler;
 mod worker;
-
 fn start() -> i32 {
-    spawn(worker.run)
-    spawn(scheduler.tick)
-    return 0
+    spawn(worker.run) spawn(scheduler.tick) return 0
 }

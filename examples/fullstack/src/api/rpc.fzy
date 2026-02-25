@@ -1,7 +1,6 @@
 rpc GetUser(req: GetUserReq) -> GetUserRes;
 rpc UpdateUser(req: UpdateUserReq) -> UpdateUserRes;
-rpc WatchUsers(stream<WatchReq>) -> stream<WatchEvent>;
-
+rpc WatchUsers(stream < WatchReq > ) -> stream < WatchEvent > ;
 fn touch() -> i32 {
     return 0
 }

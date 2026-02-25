@@ -1,14 +1,7 @@
 use core.time;
-
 fn issue_token() -> i32 {
-    time.now()
-    log.info("sessions.issue", "{}")
-    time.now()
-    return 0
+    time.now() log.info("sessions.issue", log.fields2("component", "sessions", "phase", "issue")) time.now() return 0
 }
-
 fn validate_token() -> i32 {
-    pulse()
-    time.now()
-    return 0
+    pulse() time.now() return 0
 }

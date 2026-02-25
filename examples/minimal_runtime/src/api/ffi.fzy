@@ -1,7 +1,6 @@
 fn ping_value() -> i32 {
     return 1
 }
-
 fn ping() -> i32 {
     return 0
 }
