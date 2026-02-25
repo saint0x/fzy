@@ -3598,12 +3598,28 @@ fn infer_expr_type(
                     }
                 }
                 BinaryOp::Mod => {
-                    record_type_error(
-                        state.errors,
-                        state.type_error_details,
-                        "operator `%` is parsed but not yet supported by lowering".to_string(),
-                    );
-                    None
+                    if left_ty.as_ref().is_some_and(is_integer_type)
+                        && right_ty.as_ref().is_some_and(is_integer_type)
+                    {
+                        left_ty
+                    } else {
+                        let left = left_ty
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let right = right_ty
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!(
+                                "arithmetic operands must be integers, got left=`{left}` right=`{right}`"
+                            ),
+                        );
+                        None
+                    }
                 }
                 BinaryOp::BitAnd
                 | BinaryOp::BitOr
@@ -4712,9 +4728,31 @@ fn eval_expr<'a>(
             })
         }
         Expr::Binary { op, left, right } => {
-            let left = eval_expr(left, env, functions)?;
-            let right = eval_expr(right, env, functions)?;
-            eval_binary(*op, left, right)
+            match op {
+                BinaryOp::And => {
+                    let left = eval_expr(left, env, functions)?;
+                    if !truthy(&left) {
+                        Some(Value::Bool(false))
+                    } else {
+                        let right = eval_expr(right, env, functions)?;
+                        Some(Value::Bool(truthy(&right)))
+                    }
+                }
+                BinaryOp::Or => {
+                    let left = eval_expr(left, env, functions)?;
+                    if truthy(&left) {
+                        Some(Value::Bool(true))
+                    } else {
+                        let right = eval_expr(right, env, functions)?;
+                        Some(Value::Bool(truthy(&right)))
+                    }
+                }
+                _ => {
+                    let left = eval_expr(left, env, functions)?;
+                    let right = eval_expr(right, env, functions)?;
+                    eval_binary(*op, left, right)
+                }
+            }
         }
     }
 }
@@ -5301,6 +5339,37 @@ mod tests {
                     let _ = i;
                 }
                 return sum;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn logical_short_circuit_skips_rhs_side_effects() {
+        let source = r#"
+            fn main() -> i32 {
+                if false && (1 / 0 == 1) {
+                    return 1;
+                }
+                if true || (1 / 0 == 1) {
+                    return 0;
+                }
+                return 2;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert_eq!(typed.entry_return_const_i32, Some(0));
+    }
+
+    #[test]
+    fn unit_return_allowed_for_void_functions() {
+        let source = r#"
+            fn main() -> void {
+                return;
             }
         "#;
         let module = parser::parse(source, "main").expect("parse");

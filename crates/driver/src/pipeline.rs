@@ -2693,57 +2693,91 @@ fn llvm_emit_expr(
         }
         ast::Expr::Binary { op, left, right } => {
             let lhs = llvm_emit_expr(left, ctx, string_literal_ids, task_ref_ids);
-            let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
             let out = ctx.value();
             match op {
-                ast::BinaryOp::Add => ctx
-                    .code
-                    .push_str(&format!("  {out} = add i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::Sub => ctx
-                    .code
-                    .push_str(&format!("  {out} = sub i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::Mul => ctx
-                    .code
-                    .push_str(&format!("  {out} = mul i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::Div => ctx
-                    .code
-                    .push_str(&format!("  {out} = sdiv i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::Mod => ctx
-                    .code
-                    .push_str(&format!("  {out} = srem i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::BitAnd => ctx
-                    .code
-                    .push_str(&format!("  {out} = and i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::BitOr => ctx
-                    .code
-                    .push_str(&format!("  {out} = or i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::BitXor => ctx
-                    .code
-                    .push_str(&format!("  {out} = xor i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::Shl => ctx
-                    .code
-                    .push_str(&format!("  {out} = shl i32 {lhs}, {rhs}\n")),
-                ast::BinaryOp::Shr => ctx
-                    .code
-                    .push_str(&format!("  {out} = ashr i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Add => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = add i32 {lhs}, {rhs}\n"));
+                }
+                ast::BinaryOp::Sub => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = sub i32 {lhs}, {rhs}\n"));
+                }
+                ast::BinaryOp::Mul => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = mul i32 {lhs}, {rhs}\n"));
+                }
+                ast::BinaryOp::Div => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = sdiv i32 {lhs}, {rhs}\n"));
+                }
+                ast::BinaryOp::Mod => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = srem i32 {lhs}, {rhs}\n"));
+                }
+                ast::BinaryOp::BitAnd => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = and i32 {lhs}, {rhs}\n"));
+                }
+                ast::BinaryOp::BitOr => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = or i32 {lhs}, {rhs}\n"));
+                }
+                ast::BinaryOp::BitXor => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = xor i32 {lhs}, {rhs}\n"));
+                }
+                ast::BinaryOp::Shl => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = shl i32 {lhs}, {rhs}\n"));
+                }
+                ast::BinaryOp::Shr => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    ctx.code.push_str(&format!("  {out} = ashr i32 {lhs}, {rhs}\n"));
+                }
                 ast::BinaryOp::And | ast::BinaryOp::Or => {
                     let lhs_pred = ctx.value();
-                    let rhs_pred = ctx.value();
-                    let bool_out = ctx.value();
+                    let rhs_label = ctx.label("logical.rhs");
+                    let short_label = ctx.label("logical.short");
+                    let merge_label = ctx.label("logical.merge");
+                    let result_slot = format!("%slot_logical_{}", ctx.next_value);
+                    ctx.next_value += 1;
+                    ctx.code.push_str(&format!("  {result_slot} = alloca i32\n"));
                     ctx.code
                         .push_str(&format!("  {lhs_pred} = icmp ne i32 {lhs}, 0\n"));
+                    match op {
+                        ast::BinaryOp::And => {
+                            ctx.code.push_str(&format!(
+                                "  br i1 {lhs_pred}, label %{rhs_label}, label %{short_label}\n"
+                            ));
+                            ctx.code.push_str(&format!("{short_label}:\n"));
+                            ctx.code.push_str(&format!("  store i32 0, ptr {result_slot}\n"));
+                            ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+                        }
+                        ast::BinaryOp::Or => {
+                            ctx.code.push_str(&format!(
+                                "  br i1 {lhs_pred}, label %{short_label}, label %{rhs_label}\n"
+                            ));
+                            ctx.code.push_str(&format!("{short_label}:\n"));
+                            ctx.code.push_str(&format!("  store i32 1, ptr {result_slot}\n"));
+                            ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+                        }
+                        _ => unreachable!(),
+                    }
+                    ctx.code.push_str(&format!("{rhs_label}:\n"));
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    let rhs_pred = ctx.value();
+                    let rhs_i32 = ctx.value();
                     ctx.code
                         .push_str(&format!("  {rhs_pred} = icmp ne i32 {rhs}, 0\n"));
-                    let bool_op = match op {
-                        ast::BinaryOp::And => "and",
-                        ast::BinaryOp::Or => "or",
-                        _ => unreachable!(),
-                    };
-                    ctx.code.push_str(&format!(
-                        "  {bool_out} = {bool_op} i1 {lhs_pred}, {rhs_pred}\n"
-                    ));
                     ctx.code
-                        .push_str(&format!("  {out} = zext i1 {bool_out} to i32\n"));
+                        .push_str(&format!("  {rhs_i32} = zext i1 {rhs_pred} to i32\n"));
+                    ctx.code
+                        .push_str(&format!("  store i32 {rhs_i32}, ptr {result_slot}\n"));
+                    ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+                    ctx.code.push_str(&format!("{merge_label}:\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = load i32, ptr {result_slot}\n"));
                 }
                 ast::BinaryOp::Eq
                 | ast::BinaryOp::Neq
@@ -2751,6 +2785,7 @@ fn llvm_emit_expr(
                 | ast::BinaryOp::Lte
                 | ast::BinaryOp::Gt
                 | ast::BinaryOp::Gte => {
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
                     let pred = ctx.value();
                     let cmp = match op {
                         ast::BinaryOp::Eq => "eq",
@@ -5025,14 +5060,9 @@ fn clif_emit_expr(
                 left,
                 locals,
             )?;
-            let rhs = clif_emit_expr(
-                builder,
-                ctx,
-                right,
-                locals,
-            )?;
             match op {
                 ast::BinaryOp::Add => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         ClifValue {
@@ -5047,6 +5077,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Sub => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         ClifValue {
@@ -5061,6 +5092,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Mul => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         ClifValue {
@@ -5075,6 +5107,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Div => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         ClifValue {
@@ -5089,6 +5122,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Mod => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().srem(lhs.value, rhs.value),
@@ -5096,6 +5130,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::BitAnd => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().band(lhs.value, rhs.value),
@@ -5103,6 +5138,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::BitOr => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().bor(lhs.value, rhs.value),
@@ -5110,6 +5146,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::BitXor => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().bxor(lhs.value, rhs.value),
@@ -5117,6 +5154,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Shl => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().ishl(lhs.value, rhs.value),
@@ -5124,6 +5162,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Shr => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().sshr(lhs.value, rhs.value),
@@ -5132,31 +5171,80 @@ fn clif_emit_expr(
                 }
                 ast::BinaryOp::And => {
                     let lhs_zero = zero_for_type(builder, lhs.ty);
-                    let rhs_zero = zero_for_type(builder, rhs.ty);
                     let lhs_pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, lhs_zero);
+                    let rhs_block = builder.create_block();
+                    let short_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I8);
+                    builder
+                        .ins()
+                        .brif(lhs_pred, rhs_block, &[], short_block, &[]);
+
+                    builder.switch_to_block(short_block);
+                    let false_val = builder.ins().iconst(types::I8, 0);
+                    builder.ins().jump(merge_block, &[false_val]);
+
+                    builder.switch_to_block(rhs_block);
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs_zero = zero_for_type(builder, rhs.ty);
                     let rhs_pred = builder.ins().icmp(IntCC::NotEqual, rhs.value, rhs_zero);
-                    let pred = builder.ins().band(lhs_pred, rhs_pred);
-                    bool_to_i8(builder, pred)
+                    let rhs_bool = bool_to_i8(builder, rhs_pred);
+                    builder.ins().jump(merge_block, &[rhs_bool.value]);
+
+                    builder.seal_block(short_block);
+                    builder.seal_block(rhs_block);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    ClifValue {
+                        value: builder.block_params(merge_block)[0],
+                        ty: types::I8,
+                    }
                 }
                 ast::BinaryOp::Or => {
                     let lhs_zero = zero_for_type(builder, lhs.ty);
-                    let rhs_zero = zero_for_type(builder, rhs.ty);
                     let lhs_pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, lhs_zero);
+                    let rhs_block = builder.create_block();
+                    let short_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, types::I8);
+                    builder
+                        .ins()
+                        .brif(lhs_pred, short_block, &[], rhs_block, &[]);
+
+                    builder.switch_to_block(short_block);
+                    let true_val = builder.ins().iconst(types::I8, 1);
+                    builder.ins().jump(merge_block, &[true_val]);
+
+                    builder.switch_to_block(rhs_block);
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs_zero = zero_for_type(builder, rhs.ty);
                     let rhs_pred = builder.ins().icmp(IntCC::NotEqual, rhs.value, rhs_zero);
-                    let pred = builder.ins().bor(lhs_pred, rhs_pred);
-                    bool_to_i8(builder, pred)
+                    let rhs_bool = bool_to_i8(builder, rhs_pred);
+                    builder.ins().jump(merge_block, &[rhs_bool.value]);
+
+                    builder.seal_block(short_block);
+                    builder.seal_block(rhs_block);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    ClifValue {
+                        value: builder.block_params(merge_block)[0],
+                        ty: types::I8,
+                    }
                 }
                 ast::BinaryOp::Eq => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred = builder.ins().icmp(IntCC::Equal, lhs.value, rhs.value);
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Neq => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, rhs.value);
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Lt => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred = builder
                         .ins()
@@ -5164,6 +5252,7 @@ fn clif_emit_expr(
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Lte => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred =
                         builder
@@ -5172,6 +5261,7 @@ fn clif_emit_expr(
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Gt => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred = builder
                         .ins()
@@ -5179,6 +5269,7 @@ fn clif_emit_expr(
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Gte => {
+                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred =
                         builder

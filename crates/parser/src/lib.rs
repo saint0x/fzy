@@ -91,6 +91,7 @@ enum TokenKind {
     Amp,
     Apostrophe,
     Bang,
+    Tilde,
     Hash,
     Eof,
 }
@@ -932,8 +933,8 @@ impl Parser {
         } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_)))
             && self.compound_assign_op().is_some()
         {
-            let target = self.expect_ident("expected assignment target")?;
             let op = self.compound_assign_op()?;
+            let target = self.expect_ident("expected assignment target")?;
             let _ = self.advance();
             let value = self.parse_expr(0)?;
             Stmt::CompoundAssign { target, op, value }
@@ -964,7 +965,7 @@ impl Parser {
 
     fn parse_single_pattern(&mut self) -> Option<Pattern> {
         let token = self.peek()?.clone();
-        let expr = self.parse_expr(0)?;
+        let expr = self.parse_prefix_expr()?;
         match expr {
             Expr::Int(v) => Some(Pattern::Int(v)),
             Expr::Bool(v) => Some(Pattern::Bool(v)),
@@ -1094,6 +1095,13 @@ impl Parser {
             let expr = self.parse_prefix_expr()?;
             return Some(Expr::Unary {
                 op: UnaryOp::Plus,
+                expr: Box::new(expr),
+            });
+        }
+        if self.consume(&TokenKind::Tilde) {
+            let expr = self.parse_prefix_expr()?;
+            return Some(Expr::Unary {
+                op: UnaryOp::BitNot,
                 expr: Box::new(expr),
             });
         }
@@ -1450,21 +1458,22 @@ impl Parser {
         let (op, prec) = match kind {
             TokenKind::PipePipe => (BinaryOp::Or, 1),
             TokenKind::AmpAmp => (BinaryOp::And, 2),
-            TokenKind::EqEq => (BinaryOp::Eq, 3),
-            TokenKind::Neq => (BinaryOp::Neq, 3),
-            TokenKind::Lt => (BinaryOp::Lt, 4),
-            TokenKind::Lte => (BinaryOp::Lte, 4),
-            TokenKind::Gt => (BinaryOp::Gt, 4),
-            TokenKind::Gte => (BinaryOp::Gte, 4),
+            TokenKind::Pipe => (BinaryOp::BitOr, 3),
+            TokenKind::Caret => (BinaryOp::BitXor, 4),
             TokenKind::Amp => (BinaryOp::BitAnd, 5),
-            TokenKind::Caret => (BinaryOp::BitXor, 5),
-            TokenKind::LtLt => (BinaryOp::Shl, 5),
-            TokenKind::GtGt => (BinaryOp::Shr, 5),
-            TokenKind::Plus => (BinaryOp::Add, 6),
-            TokenKind::Minus => (BinaryOp::Sub, 6),
-            TokenKind::Star => (BinaryOp::Mul, 7),
-            TokenKind::Slash => (BinaryOp::Div, 7),
-            TokenKind::Percent => (BinaryOp::Mod, 7),
+            TokenKind::EqEq => (BinaryOp::Eq, 6),
+            TokenKind::Neq => (BinaryOp::Neq, 6),
+            TokenKind::Lt => (BinaryOp::Lt, 7),
+            TokenKind::Lte => (BinaryOp::Lte, 7),
+            TokenKind::Gt => (BinaryOp::Gt, 7),
+            TokenKind::Gte => (BinaryOp::Gte, 7),
+            TokenKind::LtLt => (BinaryOp::Shl, 8),
+            TokenKind::GtGt => (BinaryOp::Shr, 8),
+            TokenKind::Plus => (BinaryOp::Add, 9),
+            TokenKind::Minus => (BinaryOp::Sub, 9),
+            TokenKind::Star => (BinaryOp::Mul, 10),
+            TokenKind::Slash => (BinaryOp::Div, 10),
+            TokenKind::Percent => (BinaryOp::Mod, 10),
             _ => return None,
         };
         Some((op, prec))
@@ -1807,6 +1816,10 @@ impl<'a> Lexer<'a> {
                     } else {
                         TokenKind::Bang
                     }
+                }
+                '~' => {
+                    self.advance_char();
+                    TokenKind::Tilde
                 }
                 '<' => {
                     self.advance_char();
@@ -2524,5 +2537,87 @@ mod tests {
             .body
             .iter()
             .any(|stmt| matches!(stmt, ast::Stmt::Loop { .. })));
+    }
+
+    #[test]
+    fn parses_operator_completeness_and_unit_return() {
+        let source = r#"
+            fn main() -> void {
+                let flags: i32 = 7;
+                let ok: bool = !false && true || false;
+                let mix: i32 = (~flags) ^ (flags << 1) | (flags >> 1);
+                let value: i32 = +flags + (-1);
+                flags += 1;
+                flags &= 3;
+                flags |= 2;
+                flags ^= 1;
+                flags <<= 1;
+                flags >>= 1;
+                flags %= 3;
+                let _ = ok;
+                let _ = mix;
+                let _ = value;
+                return;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::CompoundAssign {
+                op: ast::BinaryOp::BitAnd,
+                ..
+            }
+        )));
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::Binary {
+                    op: ast::BinaryOp::Or,
+                    ..
+                },
+                ..
+            }
+        )));
+        assert!(main_fn
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, ast::Stmt::Return(None))));
+    }
+
+    #[test]
+    fn match_pattern_or_remains_supported() {
+        let source = r#"
+            fn main() -> i32 {
+                match 2 {
+                    1 | 2 => 7,
+                    _ => 0,
+                };
+                return 0;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Match {
+                arms,
+                ..
+            } if matches!(arms.first().map(|arm| &arm.pattern), Some(ast::Pattern::Or(_)))
+        )));
     }
 }
