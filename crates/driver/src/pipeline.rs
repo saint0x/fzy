@@ -2998,6 +2998,7 @@ fn render_native_runtime_shim(string_literals: &[String], task_symbols: &[String
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3008,6 +3009,8 @@ fn render_native_runtime_shim(string_literals: &[String], task_symbols: &[String
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+extern char** environ;
 
 "#,
     );
@@ -3098,6 +3101,8 @@ static pthread_once_t fz_spawn_atexit_once = PTHREAD_ONCE_INIT;
 typedef struct {
   fz_task_entry_fn entry;
 } fz_spawn_ctx;
+
+static int fz_mark_cloexec(int fd);
 
 
 static const char* fz_lookup_string(int32_t id) {
@@ -3232,6 +3237,7 @@ static int fz_fs_ensure_open(void) {
   if (fd < 0) {
     return -1;
   }
+  (void)fz_mark_cloexec(fd);
   fz_fs_fd = fd;
   return fd;
 }
@@ -3561,6 +3567,14 @@ static int fz_set_nonblocking(int fd) {
     return -1;
   }
   return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static int fz_mark_cloexec(int fd) {
+  int flags = fcntl(fd, F_GETFD, 0);
+  if (flags < 0) {
+    return -1;
+  }
+  return fcntl(fd, F_SETFD, flags | FD_CLOEXEC);
 }
 
 static fz_proc_state* fz_proc_state_get(int32_t handle) {
@@ -3945,6 +3959,7 @@ int32_t fz_native_net_bind(void) {
   if (fd < 0) {
     return -1;
   }
+  (void)fz_mark_cloexec(fd);
   int yes = 1;
   (void)setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
   struct sockaddr_in addr;
@@ -3989,6 +4004,7 @@ int32_t fz_native_net_accept(void) {
   if (conn_fd < 0) {
     return -1;
   }
+  (void)fz_mark_cloexec(conn_fd);
   pthread_mutex_lock(&fz_conn_lock);
   (void)fz_conn_state_for(conn_fd, 1);
   pthread_mutex_unlock(&fz_conn_lock);
@@ -4188,9 +4204,11 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
     fz_last_exit_class = 3;
     return -1;
   }
+  (void)fz_mark_cloexec(out_pipe[0]);
+  (void)fz_mark_cloexec(err_pipe[0]);
 
-  pid_t pid = fork();
-  if (pid < 0) {
+  posix_spawn_file_actions_t file_actions;
+  if (posix_spawn_file_actions_init(&file_actions) != 0) {
     close(out_pipe[0]);
     close(out_pipe[1]);
     close(err_pipe[0]);
@@ -4198,15 +4216,51 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
     fz_last_exit_class = 3;
     return -1;
   }
-  if (pid == 0) {
-    dup2(out_pipe[1], STDOUT_FILENO);
-    dup2(err_pipe[1], STDERR_FILENO);
+  int file_actions_ok = 1;
+  if (posix_spawn_file_actions_adddup2(&file_actions, out_pipe[1], STDOUT_FILENO) != 0) {
+    file_actions_ok = 0;
+  }
+  if (file_actions_ok
+      && posix_spawn_file_actions_adddup2(&file_actions, err_pipe[1], STDERR_FILENO) != 0) {
+    file_actions_ok = 0;
+  }
+  if (file_actions_ok
+      && posix_spawn_file_actions_addclose(&file_actions, out_pipe[0]) != 0) {
+    file_actions_ok = 0;
+  }
+  if (file_actions_ok
+      && posix_spawn_file_actions_addclose(&file_actions, out_pipe[1]) != 0) {
+    file_actions_ok = 0;
+  }
+  if (file_actions_ok
+      && posix_spawn_file_actions_addclose(&file_actions, err_pipe[0]) != 0) {
+    file_actions_ok = 0;
+  }
+  if (file_actions_ok
+      && posix_spawn_file_actions_addclose(&file_actions, err_pipe[1]) != 0) {
+    file_actions_ok = 0;
+  }
+  if (!file_actions_ok) {
+    (void)posix_spawn_file_actions_destroy(&file_actions);
     close(out_pipe[0]);
     close(out_pipe[1]);
     close(err_pipe[0]);
     close(err_pipe[1]);
-    execl("/bin/sh", "sh", "-lc", command, (char*)NULL);
-    _exit(127);
+    fz_last_exit_class = 3;
+    return -1;
+  }
+
+  char* const argv[] = {"sh", "-lc", (char*)command, NULL};
+  pid_t pid = 0;
+  int spawn_rc = posix_spawnp(&pid, "sh", &file_actions, NULL, argv, environ);
+  (void)posix_spawn_file_actions_destroy(&file_actions);
+  if (spawn_rc != 0 || pid <= 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[0]);
+    close(err_pipe[1]);
+    fz_last_exit_class = 3;
+    return -1;
   }
 
   close(out_pipe[1]);
@@ -4841,6 +4895,8 @@ mod tests {
         ));
         assert!(shim.contains("int32_t fz_native_json_object3("));
         assert!(shim.contains("int32_t fz_native_json_object4("));
+        assert!(shim.contains("posix_spawnp"));
+        assert!(shim.contains("FD_CLOEXEC"));
         assert!(shim.contains("int32_t fz_native_proc_exit_class(void)"));
         assert!(shim.contains("int32_t fz_native_time_now(void)"));
         assert!(shim.contains("int32_t fz_native_fs_open(void)"));
