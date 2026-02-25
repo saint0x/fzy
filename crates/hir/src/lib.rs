@@ -2985,12 +2985,21 @@ fn type_check_stmt(
             }
             scopes.pop();
         }
-        Stmt::Break | Stmt::Continue => {
+        Stmt::Break => {
             if loop_depth == 0 {
                 record_type_error(
                     errors,
                     type_error_details,
-                    "break/continue are only valid inside loop bodies".to_string(),
+                    "`break` is only valid inside loop bodies".to_string(),
+                );
+            }
+        }
+        Stmt::Continue => {
+            if loop_depth == 0 {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    "`continue` is only valid inside loop bodies".to_string(),
                 );
             }
         }
@@ -5326,7 +5335,11 @@ mod tests {
         assert!(typed
             .type_error_details
             .iter()
-            .any(|detail| detail.contains("break/continue are only valid inside loop bodies")));
+            .any(|detail| detail.contains("`break` is only valid inside loop bodies")));
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("`continue` is only valid inside loop bodies")));
     }
 
     #[test]

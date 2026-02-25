@@ -6164,8 +6164,35 @@ fn resolve_source(path: &Path) -> Result<ResolvedSource> {
         );
     }
     let manifest_path = path.join("fozzy.toml");
-    let manifest_text = std::fs::read_to_string(&manifest_path)
-        .with_context(|| format!("missing manifest: {}", manifest_path.display()))?;
+    let manifest_text = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let suggestions = discover_nested_project_roots(path);
+            let guidance = if suggestions.is_empty() {
+                format!(
+                    "directory `{}` is not a Fozzy project root (missing {}). initialize a project here with `fz init <name>` or run the command against a project directory/file explicitly",
+                    path.display(),
+                    manifest_path.display()
+                )
+            } else {
+                format!(
+                    "directory `{}` is not a Fozzy project root (missing {}). detected nested project(s): {}. run `fz audit unsafe <project-path>` for one of those roots",
+                    path.display(),
+                    manifest_path.display(),
+                    suggestions
+                        .iter()
+                        .map(|candidate| candidate.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            bail!(guidance);
+        }
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("failed reading manifest: {}", manifest_path.display()));
+        }
+    };
     let manifest = manifest::load(&manifest_text).context("failed parsing fozzy.toml")?;
     manifest
         .validate()
@@ -6187,6 +6214,24 @@ fn resolve_source(path: &Path) -> Result<ResolvedSource> {
         project_root: path.to_path_buf(),
         manifest: Some(manifest),
     })
+}
+
+fn discover_nested_project_roots(path: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let candidate = entry.path();
+        if !candidate.is_dir() {
+            continue;
+        }
+        if candidate.join("fozzy.toml").exists() {
+            out.push(candidate);
+        }
+    }
+    out.sort();
+    out
 }
 
 fn default_header_path(resolved: &ResolvedSource) -> PathBuf {
@@ -6537,6 +6582,38 @@ mod tests {
         assert!(output.contains("ffi boundary"));
 
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn audit_unsafe_non_project_root_reports_target_guidance() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-audit-root-guidance-{suffix}"));
+        let nested = root.join("app");
+        let nested_src = nested.join("src");
+        std::fs::create_dir_all(&nested_src).expect("nested project tree should be created");
+        std::fs::write(
+            nested.join("fozzy.toml"),
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"app\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            nested_src.join("main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let err = run(Command::AuditUnsafe { path: root.clone() }, Format::Text)
+            .expect_err("audit should fail for non-project root path");
+        let msg = err.to_string();
+        assert!(msg.contains("not a Fozzy project root"));
+        assert!(msg.contains("detected nested project(s)"));
+        assert!(msg.contains(&nested.display().to_string()));
+        assert!(msg.contains("fz audit unsafe <project-path>"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

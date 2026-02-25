@@ -82,6 +82,10 @@
 - [✅] Publish one canonical "production workflow" doc path (author -> check -> verify -> gate -> release) and keep command outputs aligned.
 - [✅] Add strict smoke for `fozzyfmt` and `fozzydoc` into production gate.
 - [✅] Add structured failure triage playbook mapping common failures to exact fix workflows.
+- [ ] Harden LSP rename/references from identifier-token matching to scope-aware semantic symbol resolution so rename does not over-touch unrelated symbols.
+- [ ] Upgrade LSP completion from keyword/token aggregation to typed + scope-ranked semantic completion with stable ordering guarantees.
+- [ ] Add production LSP feature parity set expected by serious editor workflows: `textDocument/signatureHelp`, `textDocument/documentSymbol`, `workspace/symbol`, `textDocument/codeAction`, and inlay hints.
+- [ ] Add deterministic LSP conformance/golden tests for new semantic editor features (including no-regression checks for rename safety and completion ordering).
 
 ### Core Stdlib Expansion Priorities (`core`)
 - [✅] Add `core.bytes` primitives (byte buffers, endian encode/decode, safe slicing helpers).
@@ -238,6 +242,7 @@
 - [✅] Implement first-class loop surface: `for`, `for-in`, and `loop` forms with explicit AST/HIR/FIR/backend semantics.
 - [✅] Implement loop control primitives: `break` and `continue` with scope validation and deterministic lowering.
 - [✅] Add range/iterator primitives required for `for` ergonomics (syntax + type rules + runtime contracts).
+- [ ] Add explicit parser/verifier diagnostics for invalid loop control placement (`break`/`continue` outside loop scopes) and enforce consistently across interpreter/native backends.
 - [ ] Add full unary operator support (`!`, unary `-`, unary `+`) across parser/typechecker/lowering.
 - [ ] Add logical operator surface (`&&`, `||`) with short-circuit semantics and backend parity.
 - [ ] Add arithmetic/operator completeness expected by systems users: `%`, bitwise (`&`, `|`, `^`, `~`) and shifts (`<<`, `>>`) with signedness-correct typing.
@@ -259,6 +264,11 @@
 - [ ] Add host-backed production probes for primitive-heavy workloads where runtime behavior can diverge from deterministic mode.
 - [ ] Add language-spec drift gate: fail CI/release when documented primitives differ from implemented parser/AST/HIR capabilities.
 - [ ] Publish and freeze a "real-language primitive baseline" matrix (`implemented` / `partial` / `missing`) and make it release-blocking for advertised features.
+- [ ] Add completion/drift gate for `PLAN.md` claim accuracy (completed items must be evidenced by source+tests; stale completions fail release readiness).
+
+### Dependency + Project UX Maturity
+- [ ] Add first-class dependency lifecycle UX to `fz` (`dep add/remove/update`, lock refresh hints, and deterministic source pinning ergonomics).
+- [ ] Improve root-level command UX for mixed tool configs (for example `fz audit unsafe .`): detect non-project roots and emit actionable project-target guidance instead of raw manifest-parse failures.
 
 ### Release Flow
 - [✅] Phase 1: correctness fixes (listen, partial I/O, timeout correctness).

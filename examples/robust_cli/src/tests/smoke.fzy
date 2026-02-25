@@ -8,5 +8,15 @@ test "det_scan" {
     services.store.open_db() services.store.scan_kv() cli.commands.cmd_list() runtime.scheduler.tick()
 }
 test "chaos_cli" nondet {
-    spawn(runtime.worker.run) spawn(runtime.scheduler.tick) checkpoint() yield() timeout(10) cancel()
+    spawn(runtime.worker.run)
+    spawn(runtime.scheduler.tick)
+    for i in 0..3 {
+        if i == 1 {
+            checkpoint()
+            continue
+        }
+        yield()
+    }
+    timeout(10)
+    cancel()
 }

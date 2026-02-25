@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
@@ -48,6 +48,594 @@ struct WorkspaceState {
     root: Option<PathBuf>,
     docs: BTreeMap<String, Document>,
     shutting_down: bool,
+}
+
+#[derive(Debug, Clone)]
+struct IdentifierToken {
+    name: String,
+    line: usize,
+    col: usize,
+    len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct Scope {
+    parent: Option<usize>,
+    start_line: usize,
+    start_col: usize,
+    end_line: usize,
+    end_col: usize,
+    declared: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct SignatureParam {
+    name: String,
+    ty: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct FunctionSignature {
+    params: Vec<SignatureParam>,
+    return_type: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SemanticDecl {
+    name: String,
+    kind: String,
+    detail: String,
+    line: usize,
+    col: usize,
+    len: usize,
+    scope_id: usize,
+    signature: Option<FunctionSignature>,
+}
+
+#[derive(Debug, Clone)]
+struct SemanticRef {
+    decl_id: usize,
+    line: usize,
+    col: usize,
+    len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SemanticFile {
+    path: PathBuf,
+    text: String,
+    scopes: Vec<Scope>,
+    decls: Vec<SemanticDecl>,
+    refs: Vec<SemanticRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct GlobalDeclId {
+    file_idx: usize,
+    decl_idx: usize,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceSemantics {
+    files: Vec<SemanticFile>,
+}
+
+fn build_workspace_semantics(ws: &WorkspaceState) -> Result<WorkspaceSemantics> {
+    let mut docs = all_workspace_docs(ws)?;
+    docs.sort_by_key(|doc| doc.path.clone());
+    let mut files = Vec::new();
+    for doc in docs {
+        files.push(build_semantic_file(&doc.path, &doc.text));
+    }
+    Ok(WorkspaceSemantics { files })
+}
+
+fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
+    let identifiers = scan_identifier_tokens(text);
+    let mut positions = BTreeMap::<String, VecDeque<IdentifierToken>>::new();
+    for token in identifiers {
+        positions
+            .entry(token.name.clone())
+            .or_default()
+            .push_back(token);
+    }
+
+    let mut scopes = vec![Scope {
+        parent: None,
+        start_line: 0,
+        start_col: 0,
+        end_line: usize::MAX,
+        end_col: usize::MAX,
+        declared: Vec::new(),
+    }];
+    let mut decls = Vec::<SemanticDecl>::new();
+    let mut refs = Vec::<SemanticRef>::new();
+
+    let module_name = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("module");
+    let ast = parser::parse(text, module_name).ok();
+
+    if let Some(module) = ast {
+        for item in &module.items {
+            match item {
+                ast::Item::Function(function) => {
+                    let signature = FunctionSignature {
+                        params: function
+                            .params
+                            .iter()
+                            .map(|param| SignatureParam {
+                                name: param.name.clone(),
+                                ty: Some(param.ty.to_string()),
+                            })
+                            .collect(),
+                        return_type: Some(function.return_type.to_string()),
+                    };
+                    declare_symbol(
+                        &mut decls,
+                        &mut scopes,
+                        &mut positions,
+                        0,
+                        function.name.clone(),
+                        "function".to_string(),
+                        format!(
+                            "fn {}({}) -> {}",
+                            function.name,
+                            function
+                                .params
+                                .iter()
+                                .map(|param| format!("{}: {}", param.name, param.ty))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            function.return_type
+                        ),
+                        Some(signature.clone()),
+                    );
+
+                    let fn_scope = push_scope(&mut scopes, 0, 0, 0);
+                    for param in &function.params {
+                        declare_symbol(
+                            &mut decls,
+                            &mut scopes,
+                            &mut positions,
+                            fn_scope,
+                            param.name.clone(),
+                            "parameter".to_string(),
+                            format!("{}: {}", param.name, param.ty),
+                            None,
+                        );
+                    }
+                    for stmt in &function.body {
+                        collect_stmt_semantics(
+                            stmt,
+                            fn_scope,
+                            &mut scopes,
+                            &mut decls,
+                            &mut refs,
+                            &mut positions,
+                        );
+                    }
+                }
+                ast::Item::Struct(item) => {
+                    declare_symbol(
+                        &mut decls,
+                        &mut scopes,
+                        &mut positions,
+                        0,
+                        item.name.clone(),
+                        "struct".to_string(),
+                        format!("struct {}", item.name),
+                        None,
+                    );
+                }
+                ast::Item::Enum(item) => {
+                    declare_symbol(
+                        &mut decls,
+                        &mut scopes,
+                        &mut positions,
+                        0,
+                        item.name.clone(),
+                        "enum".to_string(),
+                        format!("enum {}", item.name),
+                        None,
+                    );
+                }
+                ast::Item::Trait(item) => {
+                    declare_symbol(
+                        &mut decls,
+                        &mut scopes,
+                        &mut positions,
+                        0,
+                        item.name.clone(),
+                        "trait".to_string(),
+                        format!("trait {}", item.name),
+                        None,
+                    );
+                }
+                ast::Item::Test(test) => {
+                    declare_symbol(
+                        &mut decls,
+                        &mut scopes,
+                        &mut positions,
+                        0,
+                        test.name.clone(),
+                        "test".to_string(),
+                        format!("test \"{}\"", test.name),
+                        None,
+                    );
+                }
+                ast::Item::Impl(_) => {}
+            }
+        }
+    }
+
+    scopes[0].end_line = text.lines().count().saturating_add(1);
+    scopes[0].end_col = 0;
+    SemanticFile {
+        path: path.to_path_buf(),
+        text: text.to_string(),
+        scopes,
+        decls,
+        refs,
+    }
+}
+
+fn push_scope(
+    scopes: &mut Vec<Scope>,
+    parent: usize,
+    start_line: usize,
+    start_col: usize,
+) -> usize {
+    scopes.push(Scope {
+        parent: Some(parent),
+        start_line,
+        start_col,
+        end_line: usize::MAX,
+        end_col: usize::MAX,
+        declared: Vec::new(),
+    });
+    scopes.len() - 1
+}
+
+#[allow(clippy::too_many_arguments)]
+fn declare_symbol(
+    decls: &mut Vec<SemanticDecl>,
+    scopes: &mut [Scope],
+    positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
+    scope_id: usize,
+    name: String,
+    kind: String,
+    detail: String,
+    signature: Option<FunctionSignature>,
+) -> usize {
+    let (line, col, len) = pop_symbol_position(positions, &name).unwrap_or((0, 0, name.len()));
+    let id = decls.len();
+    decls.push(SemanticDecl {
+        name,
+        kind,
+        detail,
+        line,
+        col,
+        len,
+        scope_id,
+        signature,
+    });
+    if let Some(scope) = scopes.get_mut(scope_id) {
+        scope.declared.push(id);
+    }
+    id
+}
+
+fn pop_symbol_position(
+    positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
+    name: &str,
+) -> Option<(usize, usize, usize)> {
+    let token = positions.get_mut(name)?.pop_front()?;
+    Some((token.line, token.col, token.len))
+}
+
+fn collect_stmt_semantics(
+    stmt: &ast::Stmt,
+    scope_id: usize,
+    scopes: &mut Vec<Scope>,
+    decls: &mut Vec<SemanticDecl>,
+    refs: &mut Vec<SemanticRef>,
+    positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
+) {
+    match stmt {
+        ast::Stmt::Let { name, value, .. } => {
+            collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
+            let _ = declare_symbol(
+                decls,
+                scopes,
+                positions,
+                scope_id,
+                name.clone(),
+                "variable".to_string(),
+                format!("let {name}"),
+                None,
+            );
+        }
+        ast::Stmt::Assign { target, value } => {
+            collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
+            resolve_reference(target, scope_id, scopes, decls, refs, positions);
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_expr_semantics(condition, scope_id, scopes, decls, refs, positions);
+            let then_scope = push_scope(scopes, scope_id, 0, 0);
+            for nested in then_body {
+                collect_stmt_semantics(nested, then_scope, scopes, decls, refs, positions);
+            }
+            let else_scope = push_scope(scopes, scope_id, 0, 0);
+            for nested in else_body {
+                collect_stmt_semantics(nested, else_scope, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_expr_semantics(condition, scope_id, scopes, decls, refs, positions);
+            let loop_scope = push_scope(scopes, scope_id, 0, 0);
+            for nested in body {
+                collect_stmt_semantics(nested, loop_scope, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            let for_scope = push_scope(scopes, scope_id, 0, 0);
+            if let Some(init) = init {
+                collect_stmt_semantics(init, for_scope, scopes, decls, refs, positions);
+            }
+            if let Some(condition) = condition {
+                collect_expr_semantics(condition, for_scope, scopes, decls, refs, positions);
+            }
+            if let Some(step) = step {
+                collect_stmt_semantics(step, for_scope, scopes, decls, refs, positions);
+            }
+            for nested in body {
+                collect_stmt_semantics(nested, for_scope, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::ForIn {
+            binding,
+            iterable,
+            body,
+        } => {
+            collect_expr_semantics(iterable, scope_id, scopes, decls, refs, positions);
+            let loop_scope = push_scope(scopes, scope_id, 0, 0);
+            let _ = declare_symbol(
+                decls,
+                scopes,
+                positions,
+                loop_scope,
+                binding.clone(),
+                "variable".to_string(),
+                format!("for {binding} in ..."),
+                None,
+            );
+            for nested in body {
+                collect_stmt_semantics(nested, loop_scope, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            let loop_scope = push_scope(scopes, scope_id, 0, 0);
+            for nested in body {
+                collect_stmt_semantics(nested, loop_scope, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::Return(expr)
+        | ast::Stmt::Defer(expr)
+        | ast::Stmt::Requires(expr)
+        | ast::Stmt::Ensures(expr)
+        | ast::Stmt::Expr(expr) => {
+            collect_expr_semantics(expr, scope_id, scopes, decls, refs, positions);
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_expr_semantics(scrutinee, scope_id, scopes, decls, refs, positions);
+            for arm in arms {
+                let arm_scope = push_scope(scopes, scope_id, 0, 0);
+                collect_pattern_bindings(&arm.pattern, arm_scope, scopes, decls, positions);
+                if let Some(guard) = &arm.guard {
+                    collect_expr_semantics(guard, arm_scope, scopes, decls, refs, positions);
+                }
+                collect_expr_semantics(&arm.value, arm_scope, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_pattern_bindings(
+    pattern: &ast::Pattern,
+    scope_id: usize,
+    scopes: &mut [Scope],
+    decls: &mut Vec<SemanticDecl>,
+    positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
+) {
+    match pattern {
+        ast::Pattern::Ident(name) => {
+            let _ = declare_symbol(
+                decls,
+                scopes,
+                positions,
+                scope_id,
+                name.clone(),
+                "variable".to_string(),
+                format!("match {name}"),
+                None,
+            );
+        }
+        ast::Pattern::Variant { bindings, .. } => {
+            for binding in bindings {
+                let _ = declare_symbol(
+                    decls,
+                    scopes,
+                    positions,
+                    scope_id,
+                    binding.clone(),
+                    "variable".to_string(),
+                    format!("match {binding}"),
+                    None,
+                );
+            }
+        }
+        ast::Pattern::Or(items) => {
+            for item in items {
+                collect_pattern_bindings(item, scope_id, scopes, decls, positions);
+            }
+        }
+        ast::Pattern::Wildcard | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => {}
+    }
+}
+
+fn collect_expr_semantics(
+    expr: &ast::Expr,
+    scope_id: usize,
+    scopes: &[Scope],
+    decls: &[SemanticDecl],
+    refs: &mut Vec<SemanticRef>,
+    positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
+) {
+    match expr {
+        ast::Expr::Ident(name) => resolve_reference(name, scope_id, scopes, decls, refs, positions),
+        ast::Expr::Call { callee, args } => {
+            if !callee.contains('.') {
+                resolve_reference(callee, scope_id, scopes, decls, refs, positions);
+            }
+            for arg in args {
+                collect_expr_semantics(arg, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Expr::FieldAccess { base, .. } => {
+            collect_expr_semantics(base, scope_id, scopes, decls, refs, positions);
+        }
+        ast::Expr::StructInit { name, fields } => {
+            resolve_reference(name, scope_id, scopes, decls, refs, positions);
+            for (_, value) in fields {
+                collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Expr::EnumInit {
+            enum_name, payload, ..
+        } => {
+            resolve_reference(enum_name, scope_id, scopes, decls, refs, positions);
+            for item in payload {
+                collect_expr_semantics(item, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+            collect_expr_semantics(inner, scope_id, scopes, decls, refs, positions)
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_expr_semantics(try_expr, scope_id, scopes, decls, refs, positions);
+            collect_expr_semantics(catch_expr, scope_id, scopes, decls, refs, positions);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_expr_semantics(left, scope_id, scopes, decls, refs, positions);
+            collect_expr_semantics(right, scope_id, scopes, decls, refs, positions);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_expr_semantics(start, scope_id, scopes, decls, refs, positions);
+            collect_expr_semantics(end, scope_id, scopes, decls, refs, positions);
+        }
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) => {}
+    }
+}
+
+fn resolve_reference(
+    name: &str,
+    scope_id: usize,
+    scopes: &[Scope],
+    decls: &[SemanticDecl],
+    refs: &mut Vec<SemanticRef>,
+    positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
+) {
+    let Some(decl_id) = resolve_decl_id(name, scope_id, scopes, decls) else {
+        let _ = pop_symbol_position(positions, name);
+        return;
+    };
+    if let Some((line, col, len)) = pop_symbol_position(positions, name) {
+        refs.push(SemanticRef {
+            decl_id,
+            line,
+            col,
+            len,
+        });
+    }
+}
+
+fn resolve_decl_id(name: &str, scope_id: usize, scopes: &[Scope], decls: &[SemanticDecl]) -> Option<usize> {
+    let mut scope = Some(scope_id);
+    while let Some(id) = scope {
+        if let Some(found) = scopes[id]
+            .declared
+            .iter()
+            .rev()
+            .find(|decl_id| decls[**decl_id].name == name)
+        {
+            return Some(*found);
+        }
+        scope = scopes[id].parent;
+    }
+    None
+}
+
+fn scan_identifier_tokens(source: &str) -> Vec<IdentifierToken> {
+    let mut out = Vec::new();
+    for (line_idx, line) in source.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        let mut in_string = false;
+        while i < bytes.len() {
+            let byte = bytes[i];
+            if in_string {
+                if byte == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if byte == b'"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            if byte == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                break;
+            }
+            if byte == b'"' {
+                in_string = true;
+                i += 1;
+                continue;
+            }
+            if is_ident_byte(byte) && byte != b'.' {
+                let start = i;
+                let mut end = i + 1;
+                while end < bytes.len() && is_ident_byte(bytes[end]) && bytes[end] != b'.' {
+                    end += 1;
+                }
+                out.push(IdentifierToken {
+                    name: line[start..end].to_string(),
+                    line: line_idx,
+                    col: start,
+                    len: end - start,
+                });
+                i = end;
+                continue;
+            }
+            i += 1;
+        }
+    }
+    out
 }
 
 pub fn diagnostics_for_path(path: &Path) -> Result<Value> {
@@ -208,6 +796,11 @@ pub fn smoke(path: &Path) -> Result<Value> {
             "completion",
             "references",
             "rename",
+            "signatureHelp",
+            "documentSymbol",
+            "workspaceSymbol",
+            "codeAction",
+            "inlayHint",
             "semanticTokens"
         ]
     }))
@@ -285,6 +878,13 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
                                 "completionProvider": {
                                     "triggerCharacters": ["."]
                                 },
+                                "signatureHelpProvider": {
+                                    "triggerCharacters": ["(", ","]
+                                },
+                                "documentSymbolProvider": true,
+                                "workspaceSymbolProvider": true,
+                                "codeActionProvider": true,
+                                "inlayHintProvider": true,
                                 "semanticTokensProvider": {
                                     "legend": {
                                         "tokenTypes": ["keyword", "function", "struct", "enum", "type", "variable", "string", "number", "comment", "operator"],
@@ -392,6 +992,51 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
                 )?;
             }
         }
+        "textDocument/signatureHelp" => {
+            if let Some(id) = id {
+                let result = lsp_signature_help(ws, &params)?;
+                write_lsp_message(
+                    writer,
+                    &json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                )?;
+            }
+        }
+        "textDocument/documentSymbol" => {
+            if let Some(id) = id {
+                let result = lsp_document_symbol(ws, &params)?;
+                write_lsp_message(
+                    writer,
+                    &json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                )?;
+            }
+        }
+        "workspace/symbol" => {
+            if let Some(id) = id {
+                let result = lsp_workspace_symbol(ws, &params)?;
+                write_lsp_message(
+                    writer,
+                    &json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                )?;
+            }
+        }
+        "textDocument/codeAction" => {
+            if let Some(id) = id {
+                let result = lsp_code_action(ws, &params)?;
+                write_lsp_message(
+                    writer,
+                    &json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                )?;
+            }
+        }
+        "textDocument/inlayHint" => {
+            if let Some(id) = id {
+                let result = lsp_inlay_hints(ws, &params)?;
+                write_lsp_message(
+                    writer,
+                    &json!({"jsonrpc": "2.0", "id": id, "result": result}),
+                )?;
+            }
+        }
         "textDocument/references" => {
             if let Some(id) = id {
                 let result = lsp_references(ws, &params)?;
@@ -441,61 +1086,32 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
 
 fn lsp_hover_at_position(ws: &WorkspaceState, params: &Value) -> Result<Value> {
     let (uri, line, character) = request_position(params)?;
-    let doc = workspace_doc(ws, &uri)?;
-    let token = identifier_at_position(&doc.text, line, character);
-    let Some(symbol) = token else {
+    let semantics = build_workspace_semantics(ws)?;
+    let Some((id, range)) = symbol_target_at_position(&semantics, &uri, line, character) else {
         return Ok(Value::Null);
     };
-    let occurrences = collect_symbol_occurrences(&doc.text, &doc.path);
-    let hover = occurrences
-        .iter()
-        .find(|occ| {
-            occ.name == symbol
-                && matches!(
-                    occ.kind.as_str(),
-                    "function" | "struct" | "enum" | "trait" | "rpc"
-                )
-        })
-        .map(|occ| {
-            json!({
-                "contents": {
-                    "kind": "markdown",
-                    "value": format!("```fzy\n{}\n```", occ.detail)
-                },
-                "range": symbol_range(line, occ.col, occ.len)
-            })
-        });
-    Ok(hover.unwrap_or(Value::Null))
+    let decl = &semantics.files[id.file_idx].decls[id.decl_idx];
+    Ok(json!({
+        "contents": {
+            "kind": "markdown",
+            "value": format!("```fzy\n{}\n```", decl.detail)
+        },
+        "range": symbol_range(range.0, range.1, range.2)
+    }))
 }
 
 fn lsp_definition_at_position(ws: &WorkspaceState, params: &Value) -> Result<Value> {
     let (uri, line, character) = request_position(params)?;
-    let doc = workspace_doc(ws, &uri)?;
-    let Some(symbol) = identifier_at_position(&doc.text, line, character) else {
+    let semantics = build_workspace_semantics(ws)?;
+    let Some((id, _)) = symbol_target_at_position(&semantics, &uri, line, character) else {
         return Ok(json!([]));
     };
-
-    let docs = all_workspace_docs(ws)?;
-    let paths = docs.into_iter().map(|doc| doc.path).collect::<Vec<_>>();
-    let mut locations = Vec::new();
-    for decl in index_semantic_symbols_from_paths(&paths)? {
-        if decl.symbol == symbol
-            && matches!(
-                decl.kind.as_str(),
-                "function" | "struct" | "enum" | "trait" | "test"
-            )
-        {
-            locations.push(json!({
-                "uri": path_to_uri(Path::new(&decl.file)),
-                "range": symbol_range(
-                    decl.line.saturating_sub(1),
-                    decl.col.saturating_sub(1),
-                    decl.symbol.len(),
-                ),
-            }));
-        }
-    }
-    Ok(json!(locations))
+    let file = &semantics.files[id.file_idx];
+    let decl = &file.decls[id.decl_idx];
+    Ok(json!([{
+        "uri": path_to_uri(&file.path),
+        "range": symbol_range(decl.line, decl.col, decl.len),
+    }]))
 }
 
 fn lsp_completion(ws: &WorkspaceState, params: &Value) -> Result<Value> {
@@ -504,43 +1120,277 @@ fn lsp_completion(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         .and_then(|td| td.get("uri"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("completion missing uri"))?;
-    let _doc = workspace_doc(ws, uri)?;
-
-    let mut seen = BTreeSet::new();
-    let mut items = Vec::new();
+    let line = params
+        .get("position")
+        .and_then(|p| p.get("line"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let semantics = build_workspace_semantics(ws)?;
+    let Some(file_idx) = file_index_for_uri(&semantics, uri) else {
+        return Ok(json!({"isIncomplete": false, "items": []}));
+    };
+    let file = &semantics.files[file_idx];
+    let mut ranked = Vec::<(usize, usize, String, usize, String)>::new();
+    let mut seen = BTreeSet::<String>::new();
+    for decl in &file.decls {
+        if decl.line > line {
+            continue;
+        }
+        if !seen.insert(decl.name.clone()) {
+            continue;
+        }
+        let kind_rank = match decl.kind.as_str() {
+            "parameter" => 0,
+            "variable" => 1,
+            "function" => 2,
+            "struct" | "enum" | "trait" => 3,
+            _ => 4,
+        };
+        ranked.push((
+            kind_rank,
+            line.saturating_sub(decl.line),
+            decl.name.clone(),
+            completion_kind(&decl.kind),
+            decl.detail.clone(),
+        ));
+    }
+    ranked.sort_by(|a, b| a.cmp(b));
+    let mut items = ranked
+        .into_iter()
+        .map(|(_, _, label, kind, detail)| {
+            json!({
+                "label": label,
+                "kind": kind,
+                "detail": detail,
+            })
+        })
+        .collect::<Vec<_>>();
 
     let keywords = [
         "fn", "struct", "enum", "trait", "impl", "test", "async", "return", "if", "else", "while",
         "match", "let", "requires", "ensures", "defer", "mod", "use", "rpc",
     ];
     for kw in keywords {
-        seen.insert(kw.to_string());
-        items.push(json!({"label": kw, "kind": 14}));
+        if seen.insert(kw.to_string()) {
+            items.push(json!({"label": kw, "kind": 14}));
+        }
     }
+    Ok(json!({"isIncomplete": false, "items": items}))
+}
 
-    for doc in all_workspace_docs(ws)? {
-        for occ in collect_symbol_occurrences(&doc.text, &doc.path) {
-            if seen.insert(occ.name.clone()) {
-                items.push(json!({
-                    "label": occ.name,
-                    "kind": completion_kind(&occ.kind),
-                    "detail": occ.detail,
-                }));
+fn lsp_signature_help(ws: &WorkspaceState, params: &Value) -> Result<Value> {
+    let (uri, line, character) = request_position(params)?;
+    let doc = workspace_doc(ws, &uri)?;
+    let Some((callee, arg_index)) = call_context_at_position(&doc.text, line, character) else {
+        return Ok(Value::Null);
+    };
+    let semantics = build_workspace_semantics(ws)?;
+    for file in &semantics.files {
+        for decl in &file.decls {
+            if decl.name != callee || decl.kind != "function" {
+                continue;
+            }
+            let Some(signature) = &decl.signature else {
+                continue;
+            };
+            let label = format!(
+                "fn {}({}){}",
+                decl.name,
+                signature
+                    .params
+                    .iter()
+                    .map(|param| match &param.ty {
+                        Some(ty) => format!("{}: {}", param.name, ty),
+                        None => param.name.clone(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                signature
+                    .return_type
+                    .as_ref()
+                    .map(|ty| format!(" -> {ty}"))
+                    .unwrap_or_default()
+            );
+            return Ok(json!({
+                "activeSignature": 0,
+                "activeParameter": arg_index,
+                "signatures": [{
+                    "label": label,
+                    "parameters": signature
+                        .params
+                        .iter()
+                        .map(|param| json!({
+                            "label": match &param.ty {
+                                Some(ty) => format!("{}: {}", param.name, ty),
+                                None => param.name.clone(),
+                            }
+                        }))
+                        .collect::<Vec<_>>()
+                }]
+            }));
+        }
+    }
+    Ok(Value::Null)
+}
+
+fn lsp_document_symbol(ws: &WorkspaceState, params: &Value) -> Result<Value> {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("documentSymbol missing uri"))?;
+    let semantics = build_workspace_semantics(ws)?;
+    let Some(file_idx) = file_index_for_uri(&semantics, uri) else {
+        return Ok(json!([]));
+    };
+    let file = &semantics.files[file_idx];
+    let symbols = file
+        .decls
+        .iter()
+        .filter(|decl| decl.scope_id == 0)
+        .map(|decl| {
+            json!({
+                "name": decl.name,
+                "kind": document_symbol_kind(&decl.kind),
+                "detail": decl.detail,
+                "range": symbol_range(decl.line, decl.col, decl.len.max(1)),
+                "selectionRange": symbol_range(decl.line, decl.col, decl.len.max(1)),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!(symbols))
+}
+
+fn lsp_workspace_symbol(ws: &WorkspaceState, params: &Value) -> Result<Value> {
+    let query = params
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let semantics = build_workspace_semantics(ws)?;
+    let mut out = Vec::new();
+    for file in &semantics.files {
+        for decl in &file.decls {
+            if decl.scope_id != 0 {
+                continue;
+            }
+            if !query.is_empty() && !decl.name.to_ascii_lowercase().contains(&query) {
+                continue;
+            }
+            out.push(json!({
+                "name": decl.name,
+                "kind": document_symbol_kind(&decl.kind),
+                "location": {
+                    "uri": path_to_uri(&file.path),
+                    "range": symbol_range(decl.line, decl.col, decl.len.max(1)),
+                },
+                "containerName": file
+                    .path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("module")
+            }));
+        }
+    }
+    out.sort_by(|a, b| a.to_string().cmp(&b.to_string()));
+    Ok(json!(out))
+}
+
+fn lsp_code_action(ws: &WorkspaceState, params: &Value) -> Result<Value> {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("codeAction missing uri"))?;
+    let diagnostics = params
+        .get("context")
+        .and_then(|ctx| ctx.get("diagnostics"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut actions = Vec::new();
+    for diag in diagnostics {
+        let Some(message) = diag.get("message").and_then(Value::as_str) else {
+            continue;
+        };
+        if !message.contains("expected `;`") {
+            continue;
+        }
+        let line = diag
+            .get("range")
+            .and_then(|v| v.get("end"))
+            .and_then(|v| v.get("line"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let col = diag
+            .get("range")
+            .and_then(|v| v.get("end"))
+            .and_then(|v| v.get("character"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        actions.push(json!({
+            "title": "Insert missing semicolon",
+            "kind": "quickfix",
+            "edit": {
+                "changes": {
+                    uri: [{
+                        "range": symbol_range(line, col, 0),
+                        "newText": ";"
+                    }]
+                }
+            }
+        }));
+    }
+    let _ = ws;
+    Ok(json!(actions))
+}
+
+fn lsp_inlay_hints(ws: &WorkspaceState, params: &Value) -> Result<Value> {
+    let uri = params
+        .get("textDocument")
+        .and_then(|td| td.get("uri"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("inlayHint missing uri"))?;
+    let doc = workspace_doc(ws, uri)?;
+    let semantics = build_workspace_semantics(ws)?;
+    let mut function_params = BTreeMap::<String, Vec<String>>::new();
+    for file in &semantics.files {
+        for decl in &file.decls {
+            if decl.kind != "function" {
+                continue;
+            }
+            if let Some(signature) = &decl.signature {
+                function_params.insert(
+                    decl.name.clone(),
+                    signature.params.iter().map(|param| param.name.clone()).collect(),
+                );
             }
         }
     }
-
-    Ok(json!({"isIncomplete": false, "items": items}))
+    let mut hints = Vec::new();
+    for (callee, arg_index, line, col) in call_arg_positions(&doc.text) {
+        let Some(params) = function_params.get(&callee) else {
+            continue;
+        };
+        let Some(name) = params.get(arg_index) else {
+            continue;
+        };
+        hints.push(json!({
+            "position": {"line": line, "character": col},
+            "label": format!("{name}:"),
+            "kind": 2
+        }));
+    }
+    Ok(json!(hints))
 }
 
 fn lsp_references(ws: &WorkspaceState, params: &Value) -> Result<Value> {
     let (uri, line, character) = request_position(params)?;
-    let doc = workspace_doc(ws, &uri)?;
-    let Some(symbol) = identifier_at_position(&doc.text, line, character) else {
+    let semantics = build_workspace_semantics(ws)?;
+    let Some((id, _)) = symbol_target_at_position(&semantics, &uri, line, character) else {
         return Ok(json!([]));
     };
-    let refs = collect_references(ws, &symbol)?;
-    Ok(json!(refs))
+    Ok(json!(locations_for_decl(&semantics, id)))
 }
 
 fn lsp_rename(ws: &WorkspaceState, params: &Value) -> Result<Value> {
@@ -549,30 +1399,211 @@ fn lsp_rename(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         .get("newName")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow!("rename missing newName"))?;
-    let doc = workspace_doc(ws, &uri)?;
-    let Some(symbol) = identifier_at_position(&doc.text, line, character) else {
+    if new_name.trim().is_empty() {
+        bail!("rename newName cannot be empty");
+    }
+    let semantics = build_workspace_semantics(ws)?;
+    let Some((id, _)) = symbol_target_at_position(&semantics, &uri, line, character) else {
         return Ok(Value::Null);
     };
-
     let mut changes = BTreeMap::<String, Vec<Value>>::new();
-    for doc in all_workspace_docs(ws)? {
-        let refs = symbol_spans_identifier_tokens(&doc.text, &symbol);
-        if refs.is_empty() {
+    for location in locations_for_decl(&semantics, id) {
+        let Some(uri) = location.get("uri").and_then(Value::as_str) else {
             continue;
-        }
-        changes.insert(
-            path_to_uri(&doc.path),
-            refs.into_iter()
-                .map(|(line, col, len)| {
-                    json!({
-                        "range": symbol_range(line, col, len),
-                        "newText": new_name,
-                    })
-                })
-                .collect::<Vec<_>>(),
-        );
+        };
+        let Some(range) = location.get("range").cloned() else {
+            continue;
+        };
+        changes.entry(uri.to_string()).or_default().push(json!({
+            "range": range,
+            "newText": new_name,
+        }));
     }
     Ok(json!({"changes": changes}))
+}
+
+fn file_index_for_uri(semantics: &WorkspaceSemantics, uri: &str) -> Option<usize> {
+    let path = uri_to_path(uri)?;
+    semantics.files.iter().position(|file| file.path == path)
+}
+
+fn symbol_target_at_position(
+    semantics: &WorkspaceSemantics,
+    uri: &str,
+    line: usize,
+    character: usize,
+) -> Option<(GlobalDeclId, (usize, usize, usize))> {
+    let file_idx = file_index_for_uri(semantics, uri)?;
+    let file = &semantics.files[file_idx];
+    for reference in &file.refs {
+        if reference.line == line
+            && character >= reference.col
+            && character <= reference.col + reference.len
+        {
+            return Some((
+                GlobalDeclId {
+                    file_idx,
+                    decl_idx: reference.decl_id,
+                },
+                (reference.line, reference.col, reference.len),
+            ));
+        }
+    }
+    for (decl_idx, decl) in file.decls.iter().enumerate() {
+        if decl.line == line && character >= decl.col && character <= decl.col + decl.len {
+            return Some((
+                GlobalDeclId { file_idx, decl_idx },
+                (decl.line, decl.col, decl.len),
+            ));
+        }
+    }
+    None
+}
+
+fn locations_for_decl(semantics: &WorkspaceSemantics, id: GlobalDeclId) -> Vec<Value> {
+    let mut out = Vec::new();
+    let decl_file = &semantics.files[id.file_idx];
+    let decl = &decl_file.decls[id.decl_idx];
+    out.push(json!({
+        "uri": path_to_uri(&decl_file.path),
+        "range": symbol_range(decl.line, decl.col, decl.len),
+    }));
+
+    for (file_idx, file) in semantics.files.iter().enumerate() {
+        for reference in &file.refs {
+            if reference.decl_id != id.decl_idx || file_idx != id.file_idx {
+                continue;
+            }
+            out.push(json!({
+                "uri": path_to_uri(&file.path),
+                "range": symbol_range(reference.line, reference.col, reference.len),
+            }));
+        }
+    }
+    out
+}
+
+fn document_symbol_kind(kind: &str) -> usize {
+    match kind {
+        "function" => 12,
+        "struct" => 23,
+        "enum" => 10,
+        "trait" => 11,
+        "test" => 6,
+        "variable" | "parameter" => 13,
+        _ => 13,
+    }
+}
+
+fn call_context_at_position(source: &str, line: usize, character: usize) -> Option<(String, usize)> {
+    let mut stack = Vec::<(String, usize, bool)>::new();
+    let mut last_ident = None::<String>;
+    for (line_idx, row) in source.lines().enumerate() {
+        if line_idx > line {
+            break;
+        }
+        let limit = if line_idx == line {
+            character.min(row.len())
+        } else {
+            row.len()
+        };
+        let segment = &row[..limit];
+        let mut i = 0usize;
+        let bytes = segment.as_bytes();
+        while i < bytes.len() {
+            let b = bytes[i];
+            if b == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                break;
+            }
+            if is_ident_byte(b) && b != b'.' {
+                let start = i;
+                let mut end = i + 1;
+                while end < bytes.len() && is_ident_byte(bytes[end]) && bytes[end] != b'.' {
+                    end += 1;
+                }
+                last_ident = Some(segment[start..end].to_string());
+                i = end;
+                continue;
+            }
+            match b {
+                b'(' => {
+                    if let Some(name) = last_ident.take() {
+                        stack.push((name, 0, true));
+                    } else {
+                        stack.push((String::new(), 0, false));
+                    }
+                }
+                b',' => {
+                    if let Some((_, idx, is_call)) = stack.last_mut() {
+                        if *is_call {
+                            *idx += 1;
+                        }
+                    }
+                }
+                b')' => {
+                    let _ = stack.pop();
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+    }
+    while let Some((name, idx, is_call)) = stack.pop() {
+        if is_call && !name.is_empty() {
+            return Some((name, idx));
+        }
+    }
+    None
+}
+
+fn call_arg_positions(source: &str) -> Vec<(String, usize, usize, usize)> {
+    let mut out = Vec::new();
+    for (line_idx, line) in source.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if !is_ident_byte(bytes[i]) || bytes[i] == b'.' {
+                i += 1;
+                continue;
+            }
+            let start = i;
+            let mut end = i + 1;
+            while end < bytes.len() && is_ident_byte(bytes[end]) && bytes[end] != b'.' {
+                end += 1;
+            }
+            let callee = line[start..end].to_string();
+            let mut cursor = end;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if cursor >= bytes.len() || bytes[cursor] != b'(' {
+                i = end;
+                continue;
+            }
+            cursor += 1;
+            let mut arg_index = 0usize;
+            let mut at_arg_start = true;
+            while cursor < bytes.len() {
+                let ch = bytes[cursor];
+                if ch == b')' {
+                    break;
+                }
+                if ch == b',' {
+                    arg_index += 1;
+                    at_arg_start = true;
+                    cursor += 1;
+                    continue;
+                }
+                if at_arg_start && !ch.is_ascii_whitespace() {
+                    out.push((callee.clone(), arg_index, line_idx, cursor));
+                    at_arg_start = false;
+                }
+                cursor += 1;
+            }
+            i = end;
+        }
+    }
+    out
 }
 
 fn lsp_semantic_tokens(ws: &WorkspaceState, params: &Value) -> Result<Value> {
