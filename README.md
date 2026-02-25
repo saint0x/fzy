@@ -7,6 +7,9 @@ fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, 
 ## Start Here
 
 - Full user manual: `USAGE.md`
+- Canonical production workflow: `docs/production-workflow-v1.md`
+- Production failure triage playbook: `docs/production-failure-triage-v1.md`
+- Exit criteria tracking policy: `docs/exit-criteria-v1.md`
 
 ## What This Repo Contains
 
@@ -162,10 +165,10 @@ fozzy ci artifacts/trace.fozzy --json
 fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
 ```
 
-Production gate (strict, no compatibility fallback):
+Ship release gate (strict, no compatibility fallback):
 
 ```bash
-./scripts/fozzy_production_gate.sh
+./scripts/ship_release_gate.sh
 ```
 
 ## Example: Native Test Lifecycle

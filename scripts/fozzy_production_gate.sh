@@ -59,6 +59,13 @@ fozzy report show latest --format json --json >/dev/null
 fozzy env --json >/dev/null
 fozzy usage --json >/dev/null
 ./scripts/lsp_editor_smoke.sh >/dev/null
+./scripts/lsp_determinism_smoke.sh >/dev/null
+
+echo "[gate] tooling DX strict smokes"
+RUSTFLAGS="-D warnings" cargo check -p driver --all-targets >/dev/null
+cargo run -q -p fozzyfmt -- examples/fullstack/src examples/robust_cli/src --check >/dev/null
+cargo run -q -p fozzydoc -- examples/fullstack/src --format markdown --out "$ARTIFACT_DIR/fullstack.api.md" >/dev/null
+test -s "$ARTIFACT_DIR/fullstack.api.md"
 
 echo "[gate] pedantic topology closure"
 MAP_JSON="$(fozzy map suites --root . --scenario-root tests --profile pedantic --json)"

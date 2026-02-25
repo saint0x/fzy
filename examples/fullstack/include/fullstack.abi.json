@@ -1,5 +1,7 @@
 {
   "abiRevision": 1,
+  "compilerIdentityHash": "2f94649a8a371971b258cab36540b6e23fb8dcfa574a9ad138f357b1aaa1c1d7",
+  "dataLayoutHash": "4ef19cf377b4271c24656e2451536d23b76c8d7e35289fdb42706f8eff5d7afa",
   "exports": [
     {
       "name": "fs_open",
@@ -7,11 +9,11 @@
         {
           "c": "const uint8_t*",
           "fzy": "*u8",
-          "name": "path"
+          "name": "path_borrowed"
         },
         {
-          "c": "uint64_t",
-          "fzy": "u64",
+          "c": "size_t",
+          "fzy": "usize",
           "name": "len"
         }
       ],
@@ -32,11 +34,11 @@
         {
           "c": "const uint8_t*",
           "fzy": "*u8",
-          "name": "ptr"
+          "name": "ptr_borrowed"
         },
         {
-          "c": "uint64_t",
-          "fzy": "u64",
+          "c": "size_t",
+          "fzy": "usize",
           "name": "len"
         }
       ],
@@ -52,11 +54,11 @@
         {
           "c": "const uint8_t*",
           "fzy": "*u8",
-          "name": "ptr"
+          "name": "ptr_borrowed"
         },
         {
-          "c": "uint64_t",
-          "fzy": "u64",
+          "c": "size_t",
+          "fzy": "usize",
           "name": "len"
         }
       ],
@@ -76,6 +78,15 @@
     "version": "0.1.0"
   },
   "panicBoundary": "error",
+  "reprCLayouts": [
+    {
+      "align": 1,
+      "kind": "struct",
+      "name": "UserRow",
+      "size": 0
+    }
+  ],
   "schemaVersion": "fozzylang.ffi_abi.v0",
-  "symbolVersioning": "strict-name-signature-v0"
+  "symbolVersioning": "strict-name-signature-v0",
+  "targetTriple": "aarch64-apple-darwin"
 }

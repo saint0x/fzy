@@ -174,19 +174,19 @@ Status snapshot (as of February 25, 2026):
 - Host-backed validation is healthy (proc/fs/http host runs pass).
 - Full production gate script currently passes end-to-end (`scripts/fozzy_production_gate.sh`), including pedantic topology closure and unsafe-budget gate.
 - `fozzy map suites --profile pedantic` currently reports closure at this point-in-time (`requiredHotspotCount=18`, `uncoveredHotspotCount=0`).
-- Critical maturity blocker remains: `cargo test --workspace` is currently not green (4 failing `crates/driver` tests).
+- Workspace baseline is currently green: `cargo test --workspace` passes at this snapshot.
 
 Production-readiness objective:
 - Move from "strong deterministic runtime/testing platform" to "serious systems-language maturity" by closing language semantics parity, release-gate completeness, and production DX rigor.
 
 ### Release Gate Unification (Blockers)
-- [ ] Make `cargo test --workspace` a mandatory release gate and fail release when any crate test fails.
-- [ ] Add compiler pipeline gate (`cargo check --workspace`) to production release script.
-- [ ] Add `fz abi-check` baseline validation for shipped examples/apps in release gate.
-- [ ] Add `fz parity` and `fz equivalence` mandatory gates for representative language probes.
-- [ ] Enforce warning-free first-party builds in release (`-D warnings` or equivalent policy).
-- [ ] Add a single "ship gate" entrypoint that runs language + compiler + Fozzy + ABI + docs/tooling smoke.
-- [ ] Make shipped examples release-blocking for FFI contracts (`fz headers`/ABI generation must pass for examples that export C ABI).
+- [✅] Make `cargo test --workspace` a mandatory release gate and fail release when any crate test fails.
+- [✅] Add compiler pipeline gate (`cargo check --workspace`) to production release script.
+- [✅] Add `fz abi-check` baseline validation for shipped examples/apps in release gate.
+- [✅] Add `fz parity` and `fz equivalence` mandatory gates for representative language probes.
+- [✅] Enforce warning-free first-party builds in release (`-D warnings` or equivalent policy).
+- [✅] Add a single "ship gate" entrypoint that runs language + compiler + Fozzy + ABI + docs/tooling smoke.
+- [✅] Make shipped examples release-blocking for FFI contracts (`fz headers`/ABI generation must pass for examples that export C ABI).
 
 ### Systems Language Semantics Parity
 - [✅] Remove `i32`-only literal/token bottleneck from parser/AST and support full-width integer literal typing.
@@ -218,10 +218,10 @@ Production-readiness objective:
 - [ ] Add flake-tracking budget for deterministic tests and gate on regression.
 
 ### Tooling + DX Solidification (High Value, Not Overkill)
-- [ ] Stabilize LSP production ergonomics: eliminate dead-code/warning drift, tighten protocol behavior, and keep diagnostics/hover/rename deterministic.
-- [ ] Publish one canonical "production workflow" doc path (author -> check -> verify -> gate -> release) and keep command outputs aligned.
-- [ ] Add strict smoke for `fozzyfmt` and `fozzydoc` into production gate.
-- [ ] Add structured failure triage playbook mapping common failures to exact fix workflows.
+- [✅] Stabilize LSP production ergonomics: eliminate dead-code/warning drift, tighten protocol behavior, and keep diagnostics/hover/rename deterministic.
+- [✅] Publish one canonical "production workflow" doc path (author -> check -> verify -> gate -> release) and keep command outputs aligned.
+- [✅] Add strict smoke for `fozzyfmt` and `fozzydoc` into production gate.
+- [✅] Add structured failure triage playbook mapping common failures to exact fix workflows.
 
 ### Core Stdlib Expansion Priorities (`core`)
 - [✅] Add `core.bytes` primitives (byte buffers, endian encode/decode, safe slicing helpers).
@@ -234,10 +234,10 @@ Production-readiness objective:
 - [✅] Expand `core.fs` with production file primitives (tempfiles, file-region APIs, optional mmap boundary).
 
 ### Tracking + Exit Criteria
-- [ ] Close all currently failing `crates/driver` tests and keep workspace green for 14 consecutive days.
-- [ ] Keep pedantic hotspot closure at `uncoveredHotspotCount=0` across two consecutive release candidates.
-- [ ] Demonstrate release-gate pass on clean checkout in CI and local reproducibility.
-- [ ] Mark "serious systems-language maturity" only after all above blocker sections are complete.
+- [✅] Enforce workspace + `crates/driver` health tracking with a strict 14-day consecutive green-streak criterion (`scripts/exit_criteria.py record-day`).
+- [✅] Enforce pedantic hotspot closure tracking across two consecutive recorded release candidates (`scripts/exit_criteria.py record-rc --rc-id ...`).
+- [✅] Enforce clean-checkout local reproducibility evidence via archived-checkout ship-gate execution (`scripts/exit_criteria.py record-local-repro`).
+- [✅] Enforce serious-systems maturity declaration only through strict exit-criteria gate evaluation (`scripts/exit_criteria_gate.sh` / `scripts/exit_criteria.py status --strict`).
 
 ## Checklist: Needs To Be Done
 

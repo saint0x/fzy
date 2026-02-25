@@ -1,0 +1,46 @@
+{
+  "daily": [
+    {
+      "checks": [
+        {
+          "label": "workspace",
+          "ok": true,
+          "returncode": 0,
+          "stderrTail": "     Running tests/http_live.rs (target/aarch64-apple-darwin/debug/deps/http_live-3bd21355e4be2410)\n     Running unittests src/lib.rs (target/aarch64-apple-darwin/debug/deps/manifest-3884349555792f30)\n     Running unittests src/lib.rs (target/aarch64-apple-darwin/debug/deps/parser-bc558a59d9b32af9)\n     Running unittests src/main.rs (target/aarch64-apple-darwin/debug/deps/robust_cli-289e8ca3a8f4d105)\n     Running unittests src/lib.rs (target/aarch64-apple-darwin/debug/deps/runtime-3dde6737d7188616)\n     Running unittests src/lib.rs (target/aarch64-apple-darwin/debug/deps/session-eda8b6883eae6385)\n     Running unittests src/lib.rs (target/aarch64-apple-darwin/debug/deps/stdlib-90bd8d386f72665b)\n     Running unittests src/lib.rs (target/aarch64-apple-darwin/debug/deps/verifier-409406947b809abb)\n   Doc-tests ast\n   Doc-tests capabilities\n   Doc-tests diagnostics\n   Doc-tests driver\n   Doc-tests fir\n   Doc-tests hir\n   Doc-tests manifest\n   Doc-tests parser\n   Doc-tests runtime\n   Doc-tests session\n   Doc-tests stdlib\n   Doc-tests verifier",
+          "stdoutTail": "\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+        },
+        {
+          "label": "driver",
+          "ok": true,
+          "returncode": 0,
+          "stderrTail": "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s\n     Running unittests src/lib.rs (target/aarch64-apple-darwin/debug/deps/driver-d302c2b61f5a3ce3)\n   Doc-tests driver",
+          "stdoutTail": "test pipeline::tests::verify_profile_rejects_unsafe_capabilities_even_if_declared ... ok\ntest pipeline::tests::verify_reports_unsupported_native_signature_types ... ok\ntest pipeline::tests::compile_project_directory_uses_manifest_target ... ok\ntest pipeline::tests::compile_project_fails_when_lockfile_drifts ... ok\ntest command::tests::run_supports_same_function_name_in_sibling_modules ... ok\ntest command::tests::run_spawn_executes_worker_side_effect ... ok\ntest pipeline::tests::compile_project_uses_capabilities_from_declared_modules ... ok\ntest pipeline::tests::profile_checks_can_be_disabled ... ok\ntest command::tests::run_command_executes_native_output ... ok\ntest pipeline::tests::cross_backend_non_i32_and_aggregate_signatures_compile ... ok\ntest pipeline::tests::refresh_lockfile_unblocks_drifted_project_build ... ok\ntest pipeline::tests::backend_defaults_dev_cranelift_release_llvm ... ok\n\ntest result: ok. 82 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.39s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+        }
+      ],
+      "date": "2026-02-25",
+      "driverGreen": true,
+      "recordedAt": "2026-02-25T15:03:25Z",
+      "workspaceGreen": true
+    }
+  ],
+  "localRepro": [
+    {
+      "commit": "fabece7b7a1741852f484513543ed2fb5ef15f11",
+      "date": "2026-02-25",
+      "ok": true,
+      "recordedAt": "2026-02-25T15:04:42Z",
+      "stderrTail": "   Compiling crc32fast v1.5.0\n   Compiling libc v0.2.182\n   Compiling ast v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/ast)\n   Compiling cfg-if v1.0.4\n   Compiling anyhow v1.0.102\n   Compiling syn v2.0.117\n   Compiling toml_write v0.1.2\n   Compiling capabilities v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/capabilities)\n   Compiling winnow v0.7.14\n   Compiling memchr v2.8.0\n   Compiling zmij v1.0.21\n   Compiling object v0.36.7\n   Compiling crypto-common v0.1.7\n   Compiling block-buffer v0.10.4\n   Compiling hir v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/hir)\n   Compiling serde_json v1.0.149\n   Compiling digest v0.10.7\n   Compiling itoa v1.0.17\n   Compiling runtime v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/runtime)\n   Compiling session v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/session)\n   Compiling cpufeatures v0.2.17\n   Compiling sha2 v0.10.9\n   Compiling fir v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/fir)\n   Compiling cranelift-codegen v0.116.1\n   Compiling serde_derive v1.0.228\n   Compiling toml_datetime v0.6.11\n   Compiling serde_spanned v0.6.9\n   Compiling diagnostics v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/diagnostics)\n   Compiling toml_edit v0.22.27\n   Compiling verifier v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/verifier)\n   Compiling parser v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/parser)\n   Compiling toml v0.8.23\n   Compiling manifest v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/manifest)\n   Compiling cranelift-module v0.116.1\n   Compiling cranelift-frontend v0.116.1\n   Compiling cranelift-native v0.116.1\n   Compiling cranelift-object v0.116.1\n   Compiling driver v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/crates/driver)\n   Compiling fz v0.1.0 (/private/var/folders/xn/zb2_wvj508d9vx1cr7grpzlm0000gn/T/fozzylang-clean-repro-v48k17xk/apps/fozzyc)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 16.60s",
+      "stdoutTail": "[gate] deterministic doctor\n[gate] deterministic strict tests\n[gate] deterministic memory doctor/tests\n[gate] record deterministic trace\n[gate] trace verify/replay/ci\n[gate] memory trace record/verify/replay/ci\n[gate] host-backed run\n[gate] host-backed C interop matrix\n[gate] full command-surface checks\n[gate] pedantic topology closure\nrequiredHotspotCount=18 uncoveredHotspotCount=0\n[gate] unsafe budget gate\nunsafe_entries=0 missing_reason=0 budget=0\n[gate] PASS"
+    }
+  ],
+  "releaseCandidates": [
+    {
+      "date": "2026-02-25",
+      "id": "rc-2026-02-25.1",
+      "recordedAt": "2026-02-25T15:03:35Z",
+      "requiredHotspotCount": 19,
+      "uncoveredHotspotCount": 1
+    }
+  ],
+  "schemaVersion": "fozzylang.exit_criteria.v1"
+}

@@ -11,6 +11,10 @@ It is optimized for onboarding and day-to-day developer experience:
 
 It intentionally avoids deep internal compiler/runtime implementation details.
 
+Canonical production workflow: `docs/production-workflow-v1.md`  
+Failure triage playbook: `docs/production-failure-triage-v1.md`
+Exit criteria tracking policy: `docs/exit-criteria-v1.md`
+
 ## 1. What You Use In Practice
 
 You will mainly use these tools:
@@ -240,10 +244,10 @@ fozzy replay artifacts/<name>.fozzy --json
 fozzy ci artifacts/<name>.fozzy --json
 ```
 
-Single-command strict production gate:
+Single-command strict ship release gate:
 
 ```bash
-./scripts/fozzy_production_gate.sh
+./scripts/ship_release_gate.sh
 ```
 
 ## 6.2 Host-backed confidence pass

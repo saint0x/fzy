@@ -243,6 +243,23 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
         return Ok(());
     };
 
+    if ws.shutting_down && method != "exit" {
+        if let Some(id) = id {
+            write_lsp_message(
+                writer,
+                &json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {
+                        "code": -32600,
+                        "message": "server is shutting down"
+                    }
+                }),
+            )?;
+        }
+        return Ok(());
+    }
+
     match method {
         "initialize" => {
             if let Some(root_uri) = params.get("rootUri").and_then(Value::as_str) {
@@ -1249,11 +1266,16 @@ fn all_workspace_docs(ws: &WorkspaceState) -> Result<Vec<Document>> {
 fn collect_docs_recursive(dir: &Path, out: &mut Vec<Document>) -> Result<()> {
     let entries = std::fs::read_dir(dir)
         .with_context(|| format!("failed reading workspace dir: {}", dir.display()))?;
+    let mut materialized = Vec::new();
     for entry in entries {
         let entry = entry.with_context(|| "failed iterating workspace entry".to_string())?;
-        let path = entry.path();
-        let file_type = entry
-            .file_type()
+        materialized.push(entry.path());
+    }
+    materialized.sort();
+
+    for path in materialized {
+        let file_type = std::fs::metadata(&path)
+            .map(|meta| meta.file_type())
             .with_context(|| format!("failed reading file type for {}", path.display()))?;
         if file_type.is_dir() {
             let name = path
@@ -1448,6 +1470,7 @@ fn uri_to_path(uri: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn incremental_edit_applies_range() {
@@ -1481,5 +1504,64 @@ mod tests {
         assert!(tokens.iter().any(|entry| entry.3 == 8));
         assert!(tokens.iter().any(|entry| entry.3 == 1));
         assert!(tokens.iter().any(|entry| entry.3 == 7));
+    }
+
+    #[test]
+    fn lsp_rejects_requests_after_shutdown() {
+        let mut ws = WorkspaceState::default();
+        ws.shutting_down = true;
+        let mut out = Vec::<u8>::new();
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "textDocument/hover",
+            "params": {}
+        });
+        handle_lsp_message(&mut ws, &msg, &mut out).expect("message handling should succeed");
+        let framed = decode_lsp_frame(&out).expect("frame should decode");
+        assert_eq!(framed.get("id").and_then(Value::as_i64), Some(7));
+        assert_eq!(
+            framed
+                .get("error")
+                .and_then(|v| v.get("code"))
+                .and_then(Value::as_i64),
+            Some(-32600)
+        );
+    }
+
+    #[test]
+    fn workspace_doc_walk_is_stably_sorted() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-lsp-doc-sort-{suffix}"));
+        std::fs::create_dir_all(root.join("z")).expect("subdir z");
+        std::fs::create_dir_all(root.join("a")).expect("subdir a");
+        std::fs::write(root.join("z/zeta.fzy"), "fn z() -> i32 { return 0 }\n").expect("zeta");
+        std::fs::write(root.join("a/alpha.fzy"), "fn a() -> i32 { return 0 }\n").expect("alpha");
+        std::fs::write(root.join("m.fzy"), "fn m() -> i32 { return 0 }\n").expect("mid");
+
+        let mut out = Vec::new();
+        collect_docs_recursive(&root, &mut out).expect("walk should succeed");
+        let names: Vec<String> = out
+            .iter()
+            .map(|doc| doc.path.display().to_string())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn decode_lsp_frame(bytes: &[u8]) -> Result<Value> {
+        let text = String::from_utf8(bytes.to_vec())?;
+        let marker = "\r\n\r\n";
+        let split = text
+            .find(marker)
+            .ok_or_else(|| anyhow!("missing lsp frame delimiter"))?;
+        let body = &text[(split + marker.len())..];
+        Ok(serde_json::from_str(body)?)
     }
 }
