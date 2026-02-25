@@ -254,6 +254,19 @@ Production-readiness objective:
 - [✅] Add focused regression suite for async semantics (spawn/join/cancel/deadline/recv/await interleavings) under strict deterministic replay.
 - [✅] USER-ADDED DEFINITIONS ITEM (AT BOTTOM OF ASYNC): definition of yield points (what can interleave) and a normalization rule for equivalence gates (what “matches” means across engines); implemented and used by equivalence normalization contract.
 
+### Parallelism + Concurrency First-Class (Production Quality)
+- [✅] Upgrade `spawn` target semantics to support qualified task references (`spawn(worker.run)` and module-qualified task symbols) with semantic resolution, not field-access fallback.
+- [✅] Preserve existing `spawn(worker)` behavior while adding qualified-target compatibility (no regressions in current task-spawn call sites).
+- [✅] Introduce first-class task handle semantics in language/runtime surface (join/cancel/detach/result lifecycle) with deterministic replay evidence.
+- [✅] Add closure/capture-capable spawn model (or explicit equivalent) with ownership/borrow validation across task boundaries.
+- [✅] Add structured-concurrency primitives (scoped task groups + bounded fan-out/fan-in contracts) and enforce deterministic teardown semantics.
+- [✅] Replace thread-per-spawn native behavior with production scheduler/runtime strategy (pool/work-stealing or equivalent) while preserving deterministic mode guarantees.
+- [✅] Add concurrency backpressure controls (queue depth, spawn saturation, cancellation propagation, timeout propagation) as mandatory runtime contracts.
+- [✅] Add fairness/starvation invariants and diagnostics for spawned workloads (explicit yieldpoint guidance + gate failures on starvation-risk patterns).
+- [✅] Add cross-backend spawn semantics conformance tests (native backends + deterministic/scenario models) with stable normalization in equivalence gates.
+- [✅] Add mandatory Fozzy-first concurrency gate for release: strict deterministic doctor/test, trace record/verify/replay/ci, plus host-backed concurrency stress scenarios.
+- [✅] Add production SLO/limits for parallel runtime behavior (max tasks, latency under load, spawn failure policy, graceful degradation policy) and enforce in ship gate.
+
 ### Systems-Compiler Readiness Gaps (New, Non-Duplicate)
 - [✅] Production update (no backwards compatibility): replaced lexical `fz audit unsafe` substring scanning with semantic AST-driven unsafe call analysis (real `unsafe(...)`/`unsafe_reason(...)` nodes only, comment/string false positives removed).
 - [✅] Production update (no backwards compatibility): added native signature lowerability contract enforcement so unsupported parameter/return types fail verification early instead of silently degrading in `i32`-only native lowering.

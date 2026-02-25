@@ -2707,6 +2707,40 @@ fn infer_expr_type(
     generic_specializations: &mut BTreeSet<String>,
     trait_violations: &mut Vec<String>,
 ) -> Option<Type> {
+    fn resolve_function_ref_name(
+        fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
+        candidate: &str,
+    ) -> Option<String> {
+        if fn_sigs.contains_key(candidate) {
+            return Some(candidate.to_string());
+        }
+        let suffix = format!(".{candidate}");
+        let mut matched: Option<String> = None;
+        for name in fn_sigs.keys() {
+            if name.ends_with(&suffix) {
+                if matched.is_some() {
+                    return None;
+                }
+                matched = Some(name.clone());
+            }
+        }
+        matched
+    }
+
+    fn expr_function_ref_name(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Ident(name) => Some(name.clone()),
+            Expr::Group(inner) => expr_function_ref_name(inner),
+            Expr::FieldAccess { base, field } => {
+                let mut base_name = expr_function_ref_name(base)?;
+                base_name.push('.');
+                base_name.push_str(field);
+                Some(base_name)
+            }
+            _ => None,
+        }
+    }
+
     match expr {
         Expr::Int(v) => {
             let bits = if i32::try_from(*v).is_ok() {
@@ -2724,7 +2758,7 @@ fn infer_expr_type(
             if let Some(found) = scopes.get(name) {
                 return Some(found);
             }
-            if fn_sigs.contains_key(name) {
+            if resolve_function_ref_name(fn_sigs, name).is_some() {
                 // Function symbols are first-class callable handles for scheduler/runtime intrinsics
                 // such as spawn(worker). They lower as opaque i32 handles in v1.
                 return Some(Type::Int {
@@ -2916,6 +2950,14 @@ fn infer_expr_type(
             Some(resolved_ret)
         }
         Expr::FieldAccess { base, field } => {
+            if let Some(function_ref) = expr_function_ref_name(expr) {
+                if resolve_function_ref_name(fn_sigs, &function_ref).is_some() {
+                    return Some(Type::Int {
+                        signed: true,
+                        bits: 32,
+                    });
+                }
+            }
             let Some(base_ty) = infer_expr_type(
                 base,
                 scopes,
@@ -3423,6 +3465,12 @@ pub fn is_runtime_intrinsic(name: &str) -> bool {
     matches!(
         name,
         "spawn"
+            | "thread.spawn"
+            | "spawn_ctx"
+            | "join"
+            | "detach"
+            | "cancel_task"
+            | "task_result"
             | "yield"
             | "checkpoint"
             | "timeout"
@@ -3430,6 +3478,11 @@ pub fn is_runtime_intrinsic(name: &str) -> bool {
             | "cancel"
             | "recv"
             | "pulse"
+            | "task.context"
+            | "task.group_begin"
+            | "task.group_spawn"
+            | "task.group_join"
+            | "task.group_cancel"
             | "alloc"
             | "free"
             | "close"
@@ -3456,9 +3509,14 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     };
     let str_ty = Type::Str;
     Some(match name {
-        "spawn" => (vec![i32.clone()], i32.clone()),
+        "spawn" | "thread.spawn" => (vec![i32.clone()], i32.clone()),
+        "spawn_ctx" => (vec![i32.clone(), i32.clone()], i32.clone()),
+        "join" | "detach" | "cancel_task" | "task_result" => (vec![i32.clone()], i32.clone()),
         "yield" | "checkpoint" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
         "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
+        "task.context" | "task.group_begin" => (vec![], i32.clone()),
+        "task.group_spawn" => (vec![i32.clone(), i32.clone()], i32.clone()),
+        "task.group_join" | "task.group_cancel" => (vec![i32.clone()], i32.clone()),
         "alloc" => (vec![usize_ty], ptr_u8.clone()),
         "free" => (vec![ptr_u8], Type::Void),
         "close" => (vec![i32.clone()], Type::Void),
@@ -3832,12 +3890,46 @@ fn eval_expr<'a>(
     env: &BTreeMap<String, Value>,
     functions: &HashMap<&'a str, &'a TypedFunction>,
 ) -> Option<Value> {
+    fn has_function_ref(
+        functions: &HashMap<&str, &TypedFunction>,
+        candidate: &str,
+    ) -> bool {
+        if functions.contains_key(candidate) {
+            return true;
+        }
+        let suffix = format!(".{candidate}");
+        let mut found = false;
+        for name in functions.keys() {
+            if name.ends_with(&suffix) {
+                if found {
+                    return false;
+                }
+                found = true;
+            }
+        }
+        found
+    }
+
+    fn expr_function_ref_name(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Ident(name) => Some(name.clone()),
+            Expr::Group(inner) => expr_function_ref_name(inner),
+            Expr::FieldAccess { base, field } => {
+                let mut base_name = expr_function_ref_name(base)?;
+                base_name.push('.');
+                base_name.push_str(field);
+                Some(base_name)
+            }
+            _ => None,
+        }
+    }
+
     match expr {
         Expr::Int(v) => i32::try_from(*v).ok().map(Value::I32),
         Expr::Bool(v) => Some(Value::Bool(*v)),
         Expr::Str(v) => Some(Value::Str(v.clone())),
         Expr::Ident(name) => env.get(name).cloned().or_else(|| {
-            if functions.contains_key(name.as_str()) {
+            if has_function_ref(functions, name.as_str()) {
                 Some(Value::I32(0))
             } else {
                 None
@@ -3866,6 +3958,11 @@ fn eval_expr<'a>(
             eval_block(&function.body, &mut local, functions)
         }
         Expr::FieldAccess { base, field } => {
+            if let Some(function_ref) = expr_function_ref_name(expr) {
+                if has_function_ref(functions, function_ref.as_str()) {
+                    return Some(Value::I32(0));
+                }
+            }
             let base = eval_expr(base, env, functions)?;
             match base {
                 Value::Struct { fields, .. } => fields.get(field).cloned(),

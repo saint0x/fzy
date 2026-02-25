@@ -3664,8 +3664,14 @@ fn analyze_workload_stmt(stmt: &ast::Stmt) -> (usize, usize) {
 fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
     match expr {
         ast::Expr::Call { callee, args } => {
-            let mut spawns = usize::from(matches!(callee.as_str(), "spawn" | "thread.spawn"));
-            let mut yields = usize::from(matches!(callee.as_str(), "yield" | "checkpoint"));
+            let mut spawns = usize::from(matches!(
+                callee.as_str(),
+                "spawn" | "spawn_ctx" | "thread.spawn" | "task.group_spawn"
+            ));
+            let mut yields = usize::from(matches!(
+                callee.as_str(),
+                "yield" | "checkpoint" | "join" | "task.group_join"
+            ));
             for arg in args {
                 let (nested_spawns, nested_yields) = analyze_workload_expr(arg);
                 spawns += nested_spawns;
@@ -4186,6 +4192,15 @@ fn thread_health_findings(
             "kind": "thread_starvation_risk",
             "severity": "warning",
             "message": "spawn observed without yield/checkpoint markers; starvation risk under host scheduler",
+        }));
+    } else if workload.spawn_markers > (workload.yield_markers.saturating_mul(8)).max(8) {
+        findings.push(serde_json::json!({
+            "kind": "thread_fairness_pressure",
+            "severity": "warning",
+            "message": format!(
+                "spawn/yield ratio is high (spawns={} yields={}); add join/checkpoint boundaries to reduce scheduler unfairness risk",
+                workload.spawn_markers, workload.yield_markers
+            ),
         }));
     }
     let lock_calls = call_sequence

@@ -584,6 +584,61 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "thread.spawn",
+        symbol: "fz_native_spawn",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "spawn_ctx",
+        symbol: "fz_native_spawn_ctx",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "join",
+        symbol: "fz_native_join",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "detach",
+        symbol: "fz_native_detach",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "cancel_task",
+        symbol: "fz_native_cancel_task",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "task_result",
+        symbol: "fz_native_task_result",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "task.context",
+        symbol: "fz_native_task_context",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "task.group_begin",
+        symbol: "fz_native_task_group_begin",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "task.group_spawn",
+        symbol: "fz_native_task_group_spawn",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "task.group_join",
+        symbol: "fz_native_task_group_join",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "task.group_cancel",
+        symbol: "fz_native_task_group_cancel",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "timeout",
         symbol: "fz_native_timeout",
         arity: 1,
@@ -1434,6 +1489,14 @@ fn canonicalize_expr_calls(
     match expr {
         ast::Expr::Call { callee, args } => {
             *callee = canonicalize_callee(callee, namespace, known_functions);
+            if matches!(
+                callee.as_str(),
+                "spawn" | "spawn_ctx" | "task.group_spawn" | "thread.spawn"
+            ) {
+                if let Some(task_ref) = args.first_mut() {
+                    canonicalize_task_ref_expr(task_ref, namespace, known_functions);
+                }
+            }
             for arg in args {
                 canonicalize_expr_calls(arg, namespace, known_functions);
             }
@@ -1495,6 +1558,34 @@ fn canonicalize_callee(callee: &str, namespace: &str, known_functions: &HashSet<
         }
     }
     callee.to_string()
+}
+
+fn canonicalize_task_ref_expr(
+    expr: &mut ast::Expr,
+    namespace: &str,
+    known_functions: &HashSet<String>,
+) {
+    let Some(task_ref) = expr_task_ref_name(expr) else {
+        return;
+    };
+    let canonical = canonicalize_callee(&task_ref, namespace, known_functions);
+    if canonical == task_ref {
+        return;
+    }
+    *expr = task_ref_expr_from_name(&canonical);
+}
+
+fn task_ref_expr_from_name(name: &str) -> ast::Expr {
+    let mut segments = name.split('.');
+    let head = segments.next().unwrap_or_default().to_string();
+    let mut expr = ast::Expr::Ident(head);
+    for segment in segments {
+        expr = ast::Expr::FieldAccess {
+            base: Box::new(expr),
+            field: segment.to_string(),
+        };
+    }
+    expr
 }
 
 fn collect_parse_diagnostics(source_path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
@@ -1853,6 +1944,11 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
         out.push('\n');
     }
     let string_literal_ids = build_string_literal_ids(&collect_string_literals(fir));
+    let spawn_task_symbols = collect_spawn_task_symbols(fir);
+    let mut task_ref_ids = HashMap::<String, i32>::new();
+    for (index, symbol) in spawn_task_symbols.iter().enumerate() {
+        task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
+    }
     for function in &fir.typed_functions {
         if is_extern_c_import_decl(function) {
             continue;
@@ -1861,6 +1957,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
             function,
             forced_main_return.filter(|_| function.name == "main"),
             &string_literal_ids,
+            &task_ref_ids,
         ));
         out.push('\n');
     }
@@ -1924,6 +2021,7 @@ fn llvm_emit_function(
     function: &hir::TypedFunction,
     forced_return: Option<i32>,
     string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
 ) -> String {
     let params = function
         .params
@@ -1941,7 +2039,7 @@ fn llvm_emit_function(
         ));
         ctx.slots.insert(param.name.clone(), slot);
     }
-    let terminated = llvm_emit_block(&function.body, &mut ctx, string_literal_ids);
+    let terminated = llvm_emit_block(&function.body, &mut ctx, string_literal_ids, task_ref_ids);
     out.push_str(&ctx.code);
     if !terminated {
         let fallback = forced_return.unwrap_or(0);
@@ -1955,11 +2053,12 @@ fn llvm_emit_block(
     body: &[ast::Stmt],
     ctx: &mut LlvmFuncCtx,
     string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
 ) -> bool {
     for stmt in body {
         match stmt {
             ast::Stmt::Let { name, value, .. } => {
-                let rendered = llvm_emit_expr(value, ctx, string_literal_ids);
+                let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
                 let slot = format!("%slot_{}_{}", name, ctx.next_value);
                 ctx.code.push_str(&format!(
                     "  {slot} = alloca i32\n  store i32 {rendered}, ptr {slot}\n"
@@ -1967,7 +2066,8 @@ fn llvm_emit_block(
                 ctx.slots.insert(name.clone(), slot);
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
-                        let field_value = llvm_emit_expr(field_expr, ctx, string_literal_ids);
+                        let field_value =
+                            llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
                         let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
                         ctx.code.push_str(&format!(
                             "  {field_slot} = alloca i32\n  store i32 {field_value}, ptr {field_slot}\n"
@@ -1977,7 +2077,7 @@ fn llvm_emit_block(
                 }
             }
             ast::Stmt::Assign { target, value } => {
-                let value = llvm_emit_expr(value, ctx, string_literal_ids);
+                let value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
                 let slot = ctx
                     .slots
                     .entry(target.clone())
@@ -1990,7 +2090,7 @@ fn llvm_emit_block(
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
             }
             ast::Stmt::Return(expr) => {
-                let value = llvm_emit_expr(expr, ctx, string_literal_ids);
+                let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
                 ctx.code.push_str(&format!("  ret i32 {value}\n"));
                 return true;
             }
@@ -1998,14 +2098,14 @@ fn llvm_emit_block(
             | ast::Stmt::Requires(expr)
             | ast::Stmt::Ensures(expr)
             | ast::Stmt::Defer(expr) => {
-                let _ = llvm_emit_expr(expr, ctx, string_literal_ids);
+                let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
             }
             ast::Stmt::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                let cond = llvm_emit_expr(condition, ctx, string_literal_ids);
+                let cond = llvm_emit_expr(condition, ctx, string_literal_ids, task_ref_ids);
                 let pred = ctx.value();
                 let then_label = ctx.label("then");
                 let else_label = ctx.label("else");
@@ -2013,12 +2113,14 @@ fn llvm_emit_block(
                 ctx.code.push_str(&format!(
                     "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{then_label}, label %{else_label}\n{then_label}:\n"
                 ));
-                let then_terminated = llvm_emit_block(then_body, ctx, string_literal_ids);
+                let then_terminated =
+                    llvm_emit_block(then_body, ctx, string_literal_ids, task_ref_ids);
                 if !then_terminated {
                     ctx.code.push_str(&format!("  br label %{cont_label}\n"));
                 }
                 ctx.code.push_str(&format!("{else_label}:\n"));
-                let else_terminated = llvm_emit_block(else_body, ctx, string_literal_ids);
+                let else_terminated =
+                    llvm_emit_block(else_body, ctx, string_literal_ids, task_ref_ids);
                 if !else_terminated {
                     ctx.code.push_str(&format!("  br label %{cont_label}\n"));
                 }
@@ -2033,19 +2135,20 @@ fn llvm_emit_block(
                 let end_label = ctx.label("while_end");
                 ctx.code
                     .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
-                let cond = llvm_emit_expr(condition, ctx, string_literal_ids);
+                let cond = llvm_emit_expr(condition, ctx, string_literal_ids, task_ref_ids);
                 let pred = ctx.value();
                 ctx.code.push_str(&format!(
                     "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{body_label}, label %{end_label}\n{body_label}:\n"
                 ));
-                let terminated = llvm_emit_block(body, ctx, string_literal_ids);
+                let terminated = llvm_emit_block(body, ctx, string_literal_ids, task_ref_ids);
                 if !terminated {
                     ctx.code.push_str(&format!("  br label %{head_label}\n"));
                 }
                 ctx.code.push_str(&format!("{end_label}:\n"));
             }
             ast::Stmt::Match { scrutinee, arms } => {
-                let scrutinee_value = llvm_emit_expr(scrutinee, ctx, string_literal_ids);
+                let scrutinee_value =
+                    llvm_emit_expr(scrutinee, ctx, string_literal_ids, task_ref_ids);
                 let end_label = ctx.label("match_end");
                 let mut next_label = ctx.label("match_next");
                 ctx.code.push_str(&format!("  br label %{next_label}\n"));
@@ -2054,7 +2157,8 @@ fn llvm_emit_block(
                     ctx.code.push_str(&format!("{next_label}:\n"));
                     let pred = llvm_emit_match_pattern_pred(&scrutinee_value, &arm.pattern, ctx);
                     let guarded_pred = if let Some(guard) = &arm.guard {
-                        let guard_value = llvm_emit_expr(guard, ctx, string_literal_ids);
+                        let guard_value =
+                            llvm_emit_expr(guard, ctx, string_literal_ids, task_ref_ids);
                         let guard_pred = ctx.value();
                         ctx.code
                             .push_str(&format!("  {guard_pred} = icmp ne i32 {guard_value}, 0\n"));
@@ -2076,7 +2180,7 @@ fn llvm_emit_block(
                         ));
                     }
                     ctx.code.push_str(&format!("{arm_label}:\n"));
-                    let _ = llvm_emit_expr(&arm.value, ctx, string_literal_ids);
+                    let _ = llvm_emit_expr(&arm.value, ctx, string_literal_ids, task_ref_ids);
                     ctx.code.push_str(&format!("  br label %{end_label}\n"));
                 }
                 ctx.code.push_str(&format!("{end_label}:\n"));
@@ -2150,6 +2254,7 @@ fn llvm_emit_expr(
     expr: &ast::Expr,
     ctx: &mut LlvmFuncCtx,
     string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
 ) -> String {
     match expr {
         ast::Expr::Int(v) => v.to_string(),
@@ -2171,12 +2276,14 @@ fn llvm_emit_expr(
                 ctx.code
                     .push_str(&format!("  {val} = load i32, ptr {slot}\n"));
                 val
+            } else if let Some(task_ref) = task_ref_ids.get(name).copied() {
+                task_ref.to_string()
             } else {
                 "0".to_string()
             }
         }
-        ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids),
-        ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids),
+        ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
+        ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
         ast::Expr::FieldAccess { base, field } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
@@ -2186,12 +2293,17 @@ fn llvm_emit_expr(
                     return val;
                 }
             }
-            llvm_emit_expr(base, ctx, string_literal_ids)
+            if let Some(task_ref_name) = expr_task_ref_name(expr) {
+                if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
+                    return task_ref.to_string();
+                }
+            }
+            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
         }
         ast::Expr::StructInit { fields, .. } => {
             let mut first = None;
             for (_, value) in fields {
-                let current = llvm_emit_expr(value, ctx, string_literal_ids);
+                let current = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
                 if first.is_none() {
                     first = Some(current);
                 }
@@ -2204,15 +2316,22 @@ fn llvm_emit_expr(
             payload,
         } => {
             for value in payload {
-                let _ = llvm_emit_expr(value, ctx, string_literal_ids);
+                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
             }
             variant_tag(variant).to_string()
         }
-        ast::Expr::TryCatch { try_expr, .. } => llvm_emit_expr(try_expr, ctx, string_literal_ids),
+        ast::Expr::TryCatch { try_expr, .. } => {
+            llvm_emit_expr(try_expr, ctx, string_literal_ids, task_ref_ids)
+        }
         ast::Expr::Call { callee, args } => {
             let args = args
                 .iter()
-                .map(|arg| format!("i32 {}", llvm_emit_expr(arg, ctx, string_literal_ids)))
+                .map(|arg| {
+                    format!(
+                        "i32 {}",
+                        llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             let symbol = native_runtime_import_for_callee(callee)
@@ -2224,8 +2343,8 @@ fn llvm_emit_expr(
             val
         }
         ast::Expr::Binary { op, left, right } => {
-            let lhs = llvm_emit_expr(left, ctx, string_literal_ids);
-            let rhs = llvm_emit_expr(right, ctx, string_literal_ids);
+            let lhs = llvm_emit_expr(left, ctx, string_literal_ids, task_ref_ids);
+            let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
             let out = ctx.value();
             match op {
                 ast::BinaryOp::Add => ctx
@@ -5000,10 +5119,36 @@ static int fz_fs_fd = -1;
 static char fz_fs_base_path[512] = {0};
 static char fz_fs_tmp_path[544] = {0};
 static pthread_mutex_t fz_fs_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_t fz_spawn_threads[FZ_MAX_SPAWN_THREADS];
-static int fz_spawn_thread_count = 0;
+typedef struct {
+  int in_use;
+  int32_t handle;
+  int32_t task_ref;
+  int32_t context_id;
+  int32_t group_id;
+  pthread_t thread;
+  int started;
+  int finished;
+  int detached;
+  int joined;
+  int cancelled;
+  int32_t result;
+} fz_spawn_state;
+
+typedef struct {
+  int in_use;
+  int32_t id;
+  int32_t active_count;
+} fz_task_group_state;
+
+static fz_spawn_state fz_spawn_states[FZ_MAX_SPAWN_THREADS];
+static fz_task_group_state fz_task_groups[256];
+static int32_t fz_next_spawn_handle = 1;
+static int32_t fz_next_task_group_id = 1;
+static int32_t fz_spawn_active_count = 0;
+static int32_t fz_spawn_max_active = 1024;
 static pthread_mutex_t fz_spawn_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t fz_spawn_atexit_once = PTHREAD_ONCE_INIT;
+static __thread int32_t fz_tls_task_context = 0;
 static int64_t fz_async_deadline_ms = 0;
 static int32_t fz_async_cancelled = 0;
 static fz_callback_i32_v0 fz_host_callbacks[64];
@@ -5012,7 +5157,7 @@ static pthread_mutex_t fz_host_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t fz_env_bootstrap_once = PTHREAD_ONCE_INIT;
 
 typedef struct {
-  fz_task_entry_fn entry;
+  int32_t handle;
 } fz_spawn_ctx;
 
 static int fz_mark_cloexec(int fd);
@@ -6113,25 +6258,68 @@ static void fz_proc_finalize(fz_proc_state* state, int exit_code) {
 }
 
 static void fz_spawn_join_all(void) {
-  for (;;) {
+  for (int i = 0; i < FZ_MAX_SPAWN_THREADS; i++) {
     pthread_t thread;
-    int has_thread = 0;
+    int should_join = 0;
     pthread_mutex_lock(&fz_spawn_lock);
-    if (fz_spawn_thread_count > 0) {
-      fz_spawn_thread_count--;
-      thread = fz_spawn_threads[fz_spawn_thread_count];
-      has_thread = 1;
+    fz_spawn_state* state = &fz_spawn_states[i];
+    if (state->in_use && !state->detached && !state->joined) {
+      state->joined = 1;
+      thread = state->thread;
+      should_join = 1;
     }
     pthread_mutex_unlock(&fz_spawn_lock);
-    if (!has_thread) {
-      break;
+    if (should_join) {
+      (void)pthread_join(thread, NULL);
     }
-    (void)pthread_join(thread, NULL);
   }
 }
 
 static void fz_spawn_register_atexit(void) {
+  const char* max_active = fz_env_get_bootstrapped("FZ_SPAWN_MAX_ACTIVE");
+  if (max_active != NULL && max_active[0] != '\0') {
+    int parsed = atoi(max_active);
+    if (parsed > 0 && parsed <= FZ_MAX_SPAWN_THREADS) {
+      fz_spawn_max_active = parsed;
+    }
+  }
   (void)atexit(fz_spawn_join_all);
+}
+
+static fz_spawn_state* fz_spawn_state_by_handle_locked(int32_t handle) {
+  for (int i = 0; i < FZ_MAX_SPAWN_THREADS; i++) {
+    if (fz_spawn_states[i].in_use && fz_spawn_states[i].handle == handle) {
+      return &fz_spawn_states[i];
+    }
+  }
+  return NULL;
+}
+
+static fz_spawn_state* fz_spawn_state_alloc_locked(void) {
+  for (int i = 0; i < FZ_MAX_SPAWN_THREADS; i++) {
+    if (!fz_spawn_states[i].in_use) {
+      return &fz_spawn_states[i];
+    }
+  }
+  return NULL;
+}
+
+static fz_task_group_state* fz_task_group_by_id_locked(int32_t group_id) {
+  for (int i = 0; i < 256; i++) {
+    if (fz_task_groups[i].in_use && fz_task_groups[i].id == group_id) {
+      return &fz_task_groups[i];
+    }
+  }
+  return NULL;
+}
+
+static fz_task_group_state* fz_task_group_alloc_locked(void) {
+  for (int i = 0; i < 256; i++) {
+    if (!fz_task_groups[i].in_use) {
+      return &fz_task_groups[i];
+    }
+  }
+  return NULL;
 }
 
 static void* fz_spawn_thread_main(void* arg) {
@@ -6139,12 +6327,142 @@ static void* fz_spawn_thread_main(void* arg) {
   if (ctx == NULL) {
     return NULL;
   }
-  fz_task_entry_fn entry = ctx->entry;
+  int32_t handle = ctx->handle;
   free(ctx);
-  if (entry != NULL) {
-    (void)entry();
+
+  fz_task_entry_fn entry = NULL;
+  int32_t context_id = 0;
+  int32_t group_id = 0;
+  int cancelled = 0;
+  pthread_mutex_lock(&fz_spawn_lock);
+  fz_spawn_state* state = fz_spawn_state_by_handle_locked(handle);
+  if (state != NULL) {
+    state->started = 1;
+    entry = fz_task_entries[state->task_ref - 1];
+    context_id = state->context_id;
+    group_id = state->group_id;
+    cancelled = state->cancelled;
   }
+  pthread_mutex_unlock(&fz_spawn_lock);
+
+  int32_t result = -1;
+  fz_tls_task_context = context_id;
+  if (!cancelled && entry != NULL) {
+    result = entry();
+  } else if (cancelled) {
+    result = -2;
+  }
+
+  pthread_mutex_lock(&fz_spawn_lock);
+  state = fz_spawn_state_by_handle_locked(handle);
+  if (state != NULL) {
+    state->finished = 1;
+    state->result = result;
+    if (fz_spawn_active_count > 0) {
+      fz_spawn_active_count--;
+    }
+    if (group_id > 0) {
+      fz_task_group_state* group = fz_task_group_by_id_locked(group_id);
+      if (group != NULL && group->active_count > 0) {
+        group->active_count--;
+      }
+    }
+    if (state->detached) {
+      memset(state, 0, sizeof(*state));
+    }
+  }
+  pthread_mutex_unlock(&fz_spawn_lock);
   return NULL;
+}
+
+static int32_t fz_native_spawn_impl(int32_t task_ref, int32_t context_id, int32_t group_id) {
+  if (task_ref <= 0 || task_ref > fz_task_entry_count) {
+    return -1;
+  }
+  if (fz_task_entries[task_ref - 1] == NULL) {
+    return -1;
+  }
+
+  pthread_once(&fz_spawn_atexit_once, fz_spawn_register_atexit);
+  pthread_mutex_lock(&fz_spawn_lock);
+  if (fz_spawn_active_count >= fz_spawn_max_active) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  if (group_id > 0 && fz_task_group_by_id_locked(group_id) == NULL) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  fz_spawn_state* state = fz_spawn_state_alloc_locked();
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  memset(state, 0, sizeof(*state));
+  state->in_use = 1;
+  state->handle = fz_next_spawn_handle++;
+  state->task_ref = task_ref;
+  state->context_id = context_id;
+  state->group_id = group_id;
+  if (group_id > 0) {
+    fz_task_group_state* group = fz_task_group_by_id_locked(group_id);
+    if (group != NULL) {
+      group->active_count++;
+    }
+  }
+  fz_spawn_active_count++;
+  int32_t handle = state->handle;
+  pthread_mutex_unlock(&fz_spawn_lock);
+
+  fz_spawn_ctx* ctx = (fz_spawn_ctx*)malloc(sizeof(fz_spawn_ctx));
+  if (ctx == NULL) {
+    pthread_mutex_lock(&fz_spawn_lock);
+    state = fz_spawn_state_by_handle_locked(handle);
+    if (state != NULL) {
+      if (state->group_id > 0) {
+        fz_task_group_state* group = fz_task_group_by_id_locked(state->group_id);
+        if (group != NULL && group->active_count > 0) {
+          group->active_count--;
+        }
+      }
+      memset(state, 0, sizeof(*state));
+    }
+    if (fz_spawn_active_count > 0) {
+      fz_spawn_active_count--;
+    }
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  ctx->handle = handle;
+
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, fz_spawn_thread_main, ctx) != 0) {
+    free(ctx);
+    pthread_mutex_lock(&fz_spawn_lock);
+    state = fz_spawn_state_by_handle_locked(handle);
+    if (state != NULL) {
+      if (state->group_id > 0) {
+        fz_task_group_state* group = fz_task_group_by_id_locked(state->group_id);
+        if (group != NULL && group->active_count > 0) {
+          group->active_count--;
+        }
+      }
+      memset(state, 0, sizeof(*state));
+    }
+    if (fz_spawn_active_count > 0) {
+      fz_spawn_active_count--;
+    }
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+
+  pthread_mutex_lock(&fz_spawn_lock);
+  state = fz_spawn_state_by_handle_locked(handle);
+  if (state != NULL) {
+    state->thread = thread;
+  }
+  pthread_mutex_unlock(&fz_spawn_lock);
+  return handle;
 }
 
 int32_t fz_native_env_get(int32_t key_id) {
@@ -9153,33 +9471,170 @@ int32_t fz_native_proc_exit_class(void) {
 }
 
 int32_t fz_native_spawn(int32_t task_ref) {
-  if (task_ref <= 0 || task_ref > fz_task_entry_count) {
-    return -1;
-  }
-  fz_task_entry_fn entry = fz_task_entries[task_ref - 1];
-  if (entry == NULL) {
-    return -1;
-  }
-  fz_spawn_ctx* ctx = (fz_spawn_ctx*)malloc(sizeof(fz_spawn_ctx));
-  if (ctx == NULL) {
-    return -1;
-  }
-  ctx->entry = entry;
+  return fz_native_spawn_impl(task_ref, 0, 0);
+}
+
+int32_t fz_native_spawn_ctx(int32_t task_ref, int32_t context_id) {
+  return fz_native_spawn_impl(task_ref, context_id, 0);
+}
+
+int32_t fz_native_join(int32_t handle) {
   pthread_t thread;
-  if (pthread_create(&thread, NULL, fz_spawn_thread_main, ctx) != 0) {
-    free(ctx);
-    return -1;
-  }
-  pthread_once(&fz_spawn_atexit_once, fz_spawn_register_atexit);
   pthread_mutex_lock(&fz_spawn_lock);
-  if (fz_spawn_thread_count >= FZ_MAX_SPAWN_THREADS) {
+  fz_spawn_state* state = fz_spawn_state_by_handle_locked(handle);
+  if (state == NULL || !state->in_use) {
     pthread_mutex_unlock(&fz_spawn_lock);
-    (void)pthread_join(thread, NULL);
     return -1;
   }
-  fz_spawn_threads[fz_spawn_thread_count++] = thread;
+  if (state->detached) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -2;
+  }
+  if (state->joined && state->finished) {
+    int32_t result = state->result;
+    memset(state, 0, sizeof(*state));
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return result;
+  }
+  state->joined = 1;
+  thread = state->thread;
   pthread_mutex_unlock(&fz_spawn_lock);
-  return task_ref;
+
+  (void)pthread_join(thread, NULL);
+
+  pthread_mutex_lock(&fz_spawn_lock);
+  state = fz_spawn_state_by_handle_locked(handle);
+  if (state == NULL || !state->in_use) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  int32_t result = state->result;
+  memset(state, 0, sizeof(*state));
+  pthread_mutex_unlock(&fz_spawn_lock);
+  return result;
+}
+
+int32_t fz_native_detach(int32_t handle) {
+  pthread_t thread;
+  int should_detach = 0;
+  pthread_mutex_lock(&fz_spawn_lock);
+  fz_spawn_state* state = fz_spawn_state_by_handle_locked(handle);
+  if (state == NULL || !state->in_use) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  if (state->detached) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return 0;
+  }
+  state->detached = 1;
+  if (state->finished) {
+    memset(state, 0, sizeof(*state));
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return 0;
+  }
+  thread = state->thread;
+  should_detach = 1;
+  pthread_mutex_unlock(&fz_spawn_lock);
+  if (should_detach) {
+    (void)pthread_detach(thread);
+  }
+  return 0;
+}
+
+int32_t fz_native_cancel_task(int32_t handle) {
+  pthread_mutex_lock(&fz_spawn_lock);
+  fz_spawn_state* state = fz_spawn_state_by_handle_locked(handle);
+  if (state == NULL || !state->in_use) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  state->cancelled = 1;
+  pthread_mutex_unlock(&fz_spawn_lock);
+  return 0;
+}
+
+int32_t fz_native_task_result(int32_t handle) {
+  pthread_mutex_lock(&fz_spawn_lock);
+  fz_spawn_state* state = fz_spawn_state_by_handle_locked(handle);
+  if (state == NULL || !state->in_use) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  int32_t result = state->finished ? state->result : -2;
+  pthread_mutex_unlock(&fz_spawn_lock);
+  return result;
+}
+
+int32_t fz_native_task_context(void) {
+  return fz_tls_task_context;
+}
+
+int32_t fz_native_task_group_begin(void) {
+  pthread_mutex_lock(&fz_spawn_lock);
+  fz_task_group_state* group = fz_task_group_alloc_locked();
+  if (group == NULL) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  memset(group, 0, sizeof(*group));
+  group->in_use = 1;
+  group->id = fz_next_task_group_id++;
+  int32_t group_id = group->id;
+  pthread_mutex_unlock(&fz_spawn_lock);
+  return group_id;
+}
+
+int32_t fz_native_task_group_spawn(int32_t group_id, int32_t task_ref) {
+  return fz_native_spawn_impl(task_ref, 0, group_id);
+}
+
+int32_t fz_native_task_group_join(int32_t group_id) {
+  for (;;) {
+    int32_t next_handle = 0;
+    pthread_mutex_lock(&fz_spawn_lock);
+    fz_task_group_state* group = fz_task_group_by_id_locked(group_id);
+    if (group == NULL || !group->in_use) {
+      pthread_mutex_unlock(&fz_spawn_lock);
+      return -1;
+    }
+    for (int i = 0; i < FZ_MAX_SPAWN_THREADS; i++) {
+      fz_spawn_state* state = &fz_spawn_states[i];
+      if (state->in_use && state->group_id == group_id && !state->detached) {
+        next_handle = state->handle;
+        break;
+      }
+    }
+    if (next_handle == 0) {
+      group->in_use = 0;
+      pthread_mutex_unlock(&fz_spawn_lock);
+      return 0;
+    }
+    pthread_mutex_unlock(&fz_spawn_lock);
+    int32_t joined = fz_native_join(next_handle);
+    if (joined < 0) {
+      return joined;
+    }
+  }
+}
+
+int32_t fz_native_task_group_cancel(int32_t group_id) {
+  pthread_mutex_lock(&fz_spawn_lock);
+  fz_task_group_state* group = fz_task_group_by_id_locked(group_id);
+  if (group == NULL || !group->in_use) {
+    pthread_mutex_unlock(&fz_spawn_lock);
+    return -1;
+  }
+  for (int i = 0; i < FZ_MAX_SPAWN_THREADS; i++) {
+    fz_spawn_state* state = &fz_spawn_states[i];
+    if (state->in_use && state->group_id == group_id) {
+      state->cancelled = 1;
+    }
+  }
+  group->in_use = 0;
+  group->active_count = 0;
+  pthread_mutex_unlock(&fz_spawn_lock);
+  return 0;
 }
 
 int32_t fz_native_timeout(int32_t timeout_ms) {
