@@ -27,6 +27,10 @@ enum TokenKind {
     KwTrait,
     KwImpl,
     KwFor,
+    KwIn,
+    KwLoop,
+    KwBreak,
+    KwContinue,
     KwTest,
     KwNondet,
     KwLet,
@@ -52,11 +56,14 @@ enum TokenKind {
     Colon,
     Semi,
     Dot,
+    DotDot,
+    DotDotEq,
     Pipe,
     Plus,
     Minus,
     Star,
     Slash,
+    Percent,
     Eq,
     EqEq,
     Neq,
@@ -711,6 +718,25 @@ impl Parser {
             return Some(Stmt::While { condition, body });
         }
 
+        if self.consume(&TokenKind::KwFor) {
+            return self.parse_for_stmt();
+        }
+
+        if self.consume(&TokenKind::KwLoop) {
+            let body = self.parse_block()?;
+            return Some(Stmt::Loop { body });
+        }
+
+        if self.consume(&TokenKind::KwBreak) {
+            let _ = self.consume(&TokenKind::Semi);
+            return Some(Stmt::Break);
+        }
+
+        if self.consume(&TokenKind::KwContinue) {
+            let _ = self.consume(&TokenKind::Semi);
+            return Some(Stmt::Continue);
+        }
+
         if self.consume(&TokenKind::KwRequires) {
             let expr = self.parse_expr(0)?;
             let _ = self.consume(&TokenKind::Semi);
@@ -812,6 +838,83 @@ impl Parser {
         Some(body)
     }
 
+    fn parse_for_stmt(&mut self) -> Option<Stmt> {
+        if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_)))
+            && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::KwIn)
+        {
+            let binding = self.expect_ident("expected loop binding name after `for`")?;
+            let _ = self.consume(&TokenKind::KwIn);
+            let iterable = self.parse_expr(0)?;
+            let body = self.parse_block()?;
+            return Some(Stmt::ForIn {
+                binding,
+                iterable,
+                body,
+            });
+        }
+
+        let init = if self.consume(&TokenKind::Semi) {
+            None
+        } else {
+            Some(Box::new(self.parse_for_clause_stmt(true)?))
+        };
+        let condition = if self.consume(&TokenKind::Semi) {
+            None
+        } else {
+            let condition = self.parse_expr(0)?;
+            if !self.consume(&TokenKind::Semi) {
+                self.push_diag_here("expected `;` after for-loop condition");
+                return None;
+            }
+            Some(condition)
+        };
+        let step = if self.at(&TokenKind::LBrace) {
+            None
+        } else {
+            Some(Box::new(self.parse_for_clause_stmt(false)?))
+        };
+        let body = self.parse_block()?;
+        Some(Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        })
+    }
+
+    fn parse_for_clause_stmt(&mut self, expect_trailing_semi: bool) -> Option<Stmt> {
+        let stmt = if self.consume(&TokenKind::KwLet) {
+            let name = self.expect_ident("expected let binding name")?;
+            let ty = if self.consume(&TokenKind::Colon) {
+                self.parse_type()
+            } else {
+                None
+            };
+            if !self.consume(&TokenKind::Eq) {
+                self.push_diag_here("expected `=` in let binding");
+                return None;
+            }
+            let value = self.parse_expr(0)?;
+            Stmt::Let { name, ty, value }
+        } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_)))
+            && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Eq)
+        {
+            let target = self.expect_ident("expected assignment target")?;
+            let _ = self.consume(&TokenKind::Eq);
+            let value = self.parse_expr(0)?;
+            Stmt::Assign { target, value }
+        } else {
+            let value = self.parse_expr(0)?;
+            Stmt::Expr(value)
+        };
+
+        if expect_trailing_semi && !self.consume(&TokenKind::Semi) {
+            self.push_diag_here("expected `;` in for-loop header");
+            return None;
+        }
+        Some(stmt)
+    }
+
     fn parse_pattern(&mut self) -> Option<Pattern> {
         let mut patterns = Vec::new();
         patterns.push(self.parse_single_pattern()?);
@@ -885,6 +988,34 @@ impl Parser {
     fn parse_expr(&mut self, min_prec: u8) -> Option<Expr> {
         let mut left = self.parse_prefix_expr()?;
         loop {
+            if min_prec == 0 {
+                if self.consume(&TokenKind::DotDot) {
+                    let right = self.parse_expr(1)?;
+                    left = Expr::Range {
+                        start: Box::new(left),
+                        end: Box::new(right),
+                        inclusive: false,
+                    };
+                    continue;
+                }
+                if self.consume(&TokenKind::DotDotEq) {
+                    let right = self.parse_expr(1)?;
+                    left = Expr::Range {
+                        start: Box::new(left),
+                        end: Box::new(right),
+                        inclusive: true,
+                    };
+                    continue;
+                }
+            }
+            if self.at(&TokenKind::Percent) {
+                self.push_diag_here(
+                    "operator `%` is not supported yet; use a helper function until lowering support lands",
+                );
+                let _ = self.advance();
+                let _ = self.parse_expr(5);
+                return None;
+            }
             let Some((op, prec)) = self.current_binary_op() else {
                 break;
             };
@@ -1282,6 +1413,7 @@ impl Parser {
             TokenKind::Minus => (BinaryOp::Sub, 3),
             TokenKind::Star => (BinaryOp::Mul, 4),
             TokenKind::Slash => (BinaryOp::Div, 4),
+            TokenKind::Percent => (BinaryOp::Mod, 4),
             _ => return None,
         };
         Some((op, prec))
@@ -1354,6 +1486,10 @@ impl Parser {
             TokenKind::KwTrait => Some("trait".to_string()),
             TokenKind::KwImpl => Some("impl".to_string()),
             TokenKind::KwFor => Some("for".to_string()),
+            TokenKind::KwIn => Some("in".to_string()),
+            TokenKind::KwLoop => Some("loop".to_string()),
+            TokenKind::KwBreak => Some("break".to_string()),
+            TokenKind::KwContinue => Some("continue".to_string()),
             TokenKind::KwTest => Some("test".to_string()),
             TokenKind::KwNondet => Some("nondet".to_string()),
             TokenKind::KwLet => Some("let".to_string()),
@@ -1436,6 +1572,10 @@ impl Parser {
             TokenKind::KwLet,
             TokenKind::KwIf,
             TokenKind::KwWhile,
+            TokenKind::KwFor,
+            TokenKind::KwLoop,
+            TokenKind::KwBreak,
+            TokenKind::KwContinue,
             TokenKind::KwReturn,
             TokenKind::KwMatch,
             TokenKind::Eof,
@@ -1521,7 +1661,15 @@ impl<'a> Lexer<'a> {
                 }
                 '.' => {
                     self.advance_char();
-                    TokenKind::Dot
+                    if self.match_char('.') {
+                        if self.match_char('=') {
+                            TokenKind::DotDotEq
+                        } else {
+                            TokenKind::DotDot
+                        }
+                    } else {
+                        TokenKind::Dot
+                    }
                 }
                 '|' => {
                     self.advance_char();
@@ -1546,6 +1694,10 @@ impl<'a> Lexer<'a> {
                 '/' => {
                     self.advance_char();
                     TokenKind::Slash
+                }
+                '%' => {
+                    self.advance_char();
+                    TokenKind::Percent
                 }
                 '=' => {
                     self.advance_char();
@@ -1636,6 +1788,15 @@ impl<'a> Lexer<'a> {
                     keyword_or_ident(&self.source[start..end])
                 }
                 _ => {
+                    let message = format!("unknown token `{ch}`");
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            message,
+                            Some("remove or replace unsupported symbol".to_string()),
+                        )
+                        .with_span(line, col, line, col + 1),
+                    );
                     self.advance_char();
                     continue;
                 }
@@ -1788,6 +1949,10 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "trait" => TokenKind::KwTrait,
         "impl" => TokenKind::KwImpl,
         "for" => TokenKind::KwFor,
+        "in" => TokenKind::KwIn,
+        "loop" => TokenKind::KwLoop,
+        "break" => TokenKind::KwBreak,
+        "continue" => TokenKind::KwContinue,
         "test" => TokenKind::KwTest,
         "nondet" => TokenKind::KwNondet,
         "let" => TokenKind::KwLet,
@@ -2160,5 +2325,72 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn unknown_token_is_hard_error() {
+        let source = r#"
+            fn main() -> i32 {
+                let x = 1 @ 2;
+                return x;
+            }
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("unknown token `@`")));
+    }
+
+    #[test]
+    fn percent_operator_reports_explicit_diagnostic() {
+        let source = r#"
+            fn main() -> i32 {
+                let x = 7 % 3;
+                return x;
+            }
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("operator `%` is not supported yet")));
+    }
+
+    #[test]
+    fn parses_loop_for_for_in_and_control_flow() {
+        let source = r#"
+            fn main() -> i32 {
+                let total: i32 = 0;
+                for let i: i32 = 0; i < 10; i = i + 1 {
+                    if i == 3 { continue; }
+                    if i == 8 { break; }
+                }
+                for n in 0..=3 {
+                    let _ = n;
+                }
+                loop { break; }
+                return total;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, ast::Stmt::For { .. })));
+        assert!(main_fn
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, ast::Stmt::ForIn { .. })));
+        assert!(main_fn
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, ast::Stmt::Loop { .. })));
     }
 }

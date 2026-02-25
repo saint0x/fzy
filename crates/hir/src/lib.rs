@@ -214,6 +214,7 @@ pub fn lower(module: &Module) -> TypedModule {
                 &struct_defs,
                 &enum_defs,
                 &trait_impls,
+                0,
                 &function.return_type,
                 &mut type_errors,
                 &mut type_error_details,
@@ -468,6 +469,9 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
             Expr::Binary { left, right, .. } => {
                 expr_has_cap_intrinsic(left) || expr_has_cap_intrinsic(right)
             }
+            Expr::Range { start, end, .. } => {
+                expr_has_cap_intrinsic(start) || expr_has_cap_intrinsic(end)
+            }
             Expr::Group(inner) => expr_has_cap_intrinsic(inner),
             Expr::Await(inner) => expr_has_cap_intrinsic(inner),
             Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => false,
@@ -494,6 +498,25 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
         Stmt::While { condition, body } => {
             expr_has_cap_intrinsic(condition) || body.iter().any(statement_uses_cap_token_intrinsic)
         }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(statement_uses_cap_token_intrinsic)
+                || condition.as_ref().is_some_and(expr_has_cap_intrinsic)
+                || step
+                    .as_deref()
+                    .is_some_and(statement_uses_cap_token_intrinsic)
+                || body.iter().any(statement_uses_cap_token_intrinsic)
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            expr_has_cap_intrinsic(iterable) || body.iter().any(statement_uses_cap_token_intrinsic)
+        }
+        Stmt::Loop { body } => body.iter().any(statement_uses_cap_token_intrinsic),
+        Stmt::Break | Stmt::Continue => false,
         Stmt::Match { scrutinee, arms } => {
             expr_has_cap_intrinsic(scrutinee)
                 || arms.iter().any(|arm| {
@@ -571,6 +594,71 @@ fn analyze_call_token_propagation(
                     violations,
                 );
             }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    analyze_call_token_propagation(
+                        function_name,
+                        std::slice::from_ref(init.as_ref()),
+                        local_types,
+                        requirement_map,
+                        violations,
+                    );
+                }
+                analyze_expr_call_tokens(
+                    function_name,
+                    condition.as_ref(),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+                if let Some(step) = step {
+                    analyze_call_token_propagation(
+                        function_name,
+                        std::slice::from_ref(step.as_ref()),
+                        local_types,
+                        requirement_map,
+                        violations,
+                    );
+                }
+                analyze_call_token_propagation(
+                    function_name,
+                    body,
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+            Stmt::ForIn { iterable, body, .. } => {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(iterable),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+                analyze_call_token_propagation(
+                    function_name,
+                    body,
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+            Stmt::Loop { body } => {
+                analyze_call_token_propagation(
+                    function_name,
+                    body,
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+            Stmt::Break | Stmt::Continue => {}
             Stmt::Match { scrutinee, arms } => {
                 analyze_expr_call_tokens(
                     function_name,
@@ -611,7 +699,14 @@ fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
         | Stmt::Ensures(value)
         | Stmt::Expr(value)
         | Stmt::Assign { value, .. } => Some(value),
-        Stmt::If { .. } | Stmt::While { .. } | Stmt::Match { .. } => None,
+        Stmt::If { .. }
+        | Stmt::While { .. }
+        | Stmt::For { .. }
+        | Stmt::ForIn { .. }
+        | Stmt::Loop { .. }
+        | Stmt::Break
+        | Stmt::Continue
+        | Stmt::Match { .. } => None,
     }
 }
 
@@ -726,6 +821,22 @@ fn analyze_expr_call_tokens(
             analyze_expr_call_tokens(
                 function_name,
                 Some(right),
+                local_types,
+                requirement_map,
+                violations,
+            );
+        }
+        Expr::Range { start, end, .. } => {
+            analyze_expr_call_tokens(
+                function_name,
+                Some(start),
+                local_types,
+                requirement_map,
+                violations,
+            );
+            analyze_expr_call_tokens(
+                function_name,
+                Some(end),
                 local_types,
                 requirement_map,
                 violations,
@@ -951,6 +1062,22 @@ fn stmt_has_await(stmt: &Stmt) -> bool {
         Stmt::While { condition, body } => {
             expr_has_await(condition) || body.iter().any(stmt_has_await)
         }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().is_some_and(stmt_has_await)
+                || condition.as_ref().is_some_and(expr_has_await)
+                || step.as_deref().is_some_and(stmt_has_await)
+                || body.iter().any(stmt_has_await)
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            expr_has_await(iterable) || body.iter().any(stmt_has_await)
+        }
+        Stmt::Loop { body } => body.iter().any(stmt_has_await),
+        Stmt::Break | Stmt::Continue => false,
         Stmt::Match { scrutinee, arms } => {
             expr_has_await(scrutinee)
                 || arms.iter().any(|arm| {
@@ -973,6 +1100,7 @@ fn expr_has_await(expr: &Expr) -> bool {
             catch_expr,
         } => expr_has_await(try_expr) || expr_has_await(catch_expr),
         Expr::Binary { left, right, .. } => expr_has_await(left) || expr_has_await(right),
+        Expr::Range { start, end, .. } => expr_has_await(start) || expr_has_await(end),
         Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => false,
     }
 }
@@ -1344,6 +1472,42 @@ fn analyze_ownership_block(
             Stmt::While { body, .. } => {
                 analyze_ownership_block(body, owners, moved, next_alloc, violations, function_name);
             }
+            Stmt::For {
+                init,
+                condition: _,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    analyze_ownership_block(
+                        std::slice::from_ref(init.as_ref()),
+                        owners,
+                        moved,
+                        next_alloc,
+                        violations,
+                        function_name,
+                    );
+                }
+                analyze_ownership_block(body, owners, moved, next_alloc, violations, function_name);
+                if let Some(step) = step {
+                    analyze_ownership_block(
+                        std::slice::from_ref(step.as_ref()),
+                        owners,
+                        moved,
+                        next_alloc,
+                        violations,
+                        function_name,
+                    );
+                }
+            }
+            Stmt::ForIn { binding, body, .. } => {
+                moved.remove(binding);
+                analyze_ownership_block(body, owners, moved, next_alloc, violations, function_name);
+            }
+            Stmt::Loop { body } => {
+                analyze_ownership_block(body, owners, moved, next_alloc, violations, function_name);
+            }
+            Stmt::Break | Stmt::Continue => {}
             Stmt::Match { arms, .. } => {
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
@@ -1496,6 +1660,28 @@ fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
             expr_uses_ident(condition, target)
                 || body.iter().any(|nested| stmt_uses_ident(nested, target))
         }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(|stmt| stmt_uses_ident(stmt, target))
+                || condition
+                    .as_ref()
+                    .is_some_and(|expr| expr_uses_ident(expr, target))
+                || step
+                    .as_deref()
+                    .is_some_and(|stmt| stmt_uses_ident(stmt, target))
+                || body.iter().any(|nested| stmt_uses_ident(nested, target))
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            expr_uses_ident(iterable, target)
+                || body.iter().any(|nested| stmt_uses_ident(nested, target))
+        }
+        Stmt::Loop { body } => body.iter().any(|nested| stmt_uses_ident(nested, target)),
+        Stmt::Break | Stmt::Continue => false,
         Stmt::Match { scrutinee, arms } => {
             expr_uses_ident(scrutinee, target)
                 || arms.iter().any(|arm| {
@@ -1526,6 +1712,9 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
         } => expr_uses_ident(try_expr, target) || expr_uses_ident(catch_expr, target),
         Expr::Binary { left, right, .. } => {
             expr_uses_ident(left, target) || expr_uses_ident(right, target)
+        }
+        Expr::Range { start, end, .. } => {
+            expr_uses_ident(start, target) || expr_uses_ident(end, target)
         }
         Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) => false,
     }
@@ -1844,6 +2033,37 @@ fn collect_stmt_idents(stmt: &Stmt) -> Vec<String> {
                 out.extend(collect_stmt_idents(nested));
             }
         }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                out.extend(collect_stmt_idents(init));
+            }
+            if let Some(condition) = condition {
+                collect_expr_idents(condition, &mut out);
+            }
+            if let Some(step) = step {
+                out.extend(collect_stmt_idents(step));
+            }
+            for nested in body {
+                out.extend(collect_stmt_idents(nested));
+            }
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            collect_expr_idents(iterable, &mut out);
+            for nested in body {
+                out.extend(collect_stmt_idents(nested));
+            }
+        }
+        Stmt::Loop { body } => {
+            for nested in body {
+                out.extend(collect_stmt_idents(nested));
+            }
+        }
+        Stmt::Break | Stmt::Continue => {}
         Stmt::Match { scrutinee, arms } => {
             collect_expr_idents(scrutinee, &mut out);
             for arm in arms {
@@ -1887,6 +2107,10 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
         Expr::Binary { left, right, .. } => {
             collect_expr_idents(left, out);
             collect_expr_idents(right, out);
+        }
+        Expr::Range { start, end, .. } => {
+            collect_expr_idents(start, out);
+            collect_expr_idents(end, out);
         }
         Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) => {}
     }
@@ -2285,6 +2509,7 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
         ast::Expr::Int(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
+        | ast::Expr::Range { .. }
         | ast::Expr::Binary { .. }
         | ast::Expr::Group(_) => None,
     }
@@ -2398,6 +2623,7 @@ fn type_check_stmt(
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
     trait_impls: &HashMap<String, Vec<Type>>,
+    loop_depth: usize,
     expected_return: &Type,
     errors: &mut usize,
     type_error_details: &mut Vec<String>,
@@ -2516,6 +2742,7 @@ fn type_check_stmt(
                     struct_defs,
                     enum_defs,
                     trait_impls,
+                    loop_depth,
                     expected_return,
                     errors,
                     type_error_details,
@@ -2534,6 +2761,7 @@ fn type_check_stmt(
                     struct_defs,
                     enum_defs,
                     trait_impls,
+                    loop_depth,
                     expected_return,
                     errors,
                     type_error_details,
@@ -2578,6 +2806,7 @@ fn type_check_stmt(
                     struct_defs,
                     enum_defs,
                     trait_impls,
+                    loop_depth + 1,
                     expected_return,
                     errors,
                     type_error_details,
@@ -2586,6 +2815,184 @@ fn type_check_stmt(
                 );
             }
             scopes.pop();
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            scopes.push();
+            if let Some(init) = init {
+                type_check_stmt(
+                    init,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    loop_depth + 1,
+                    expected_return,
+                    errors,
+                    type_error_details,
+                    generic_specializations,
+                    trait_violations,
+                );
+            }
+            if let Some(condition) = condition {
+                let cond_ty = infer_expr_type(
+                    condition,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    errors,
+                    type_error_details,
+                    generic_specializations,
+                    trait_violations,
+                );
+                if !is_bool_or_integer(cond_ty.as_ref()) {
+                    let found = cond_ty
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!("for-condition must be bool/integer-compatible, got `{found}`"),
+                    );
+                }
+            }
+            for stmt in body {
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    loop_depth + 1,
+                    expected_return,
+                    errors,
+                    type_error_details,
+                    generic_specializations,
+                    trait_violations,
+                );
+            }
+            if let Some(step) = step {
+                type_check_stmt(
+                    step,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    loop_depth + 1,
+                    expected_return,
+                    errors,
+                    type_error_details,
+                    generic_specializations,
+                    trait_violations,
+                );
+            }
+            scopes.pop();
+        }
+        Stmt::ForIn {
+            binding,
+            iterable,
+            body,
+        } => {
+            let iterable_ty = infer_expr_type(
+                iterable,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                type_error_details,
+                generic_specializations,
+                trait_violations,
+            );
+            let binding_ty = match iterable_ty {
+                Some(Type::Named { name, args }) if name == "Range" && args.len() == 1 => {
+                    args[0].clone()
+                }
+                Some(other) => {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "for-in iterable must be a range expression, got `{}`",
+                            other
+                        ),
+                    );
+                    Type::Int {
+                        signed: true,
+                        bits: 32,
+                    }
+                }
+                None => Type::Int {
+                    signed: true,
+                    bits: 32,
+                },
+            };
+            scopes.push();
+            scopes.insert(binding.clone(), binding_ty);
+            for stmt in body {
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    loop_depth + 1,
+                    expected_return,
+                    errors,
+                    type_error_details,
+                    generic_specializations,
+                    trait_violations,
+                );
+            }
+            scopes.pop();
+        }
+        Stmt::Loop { body } => {
+            scopes.push();
+            for stmt in body {
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    fn_sigs,
+                    fn_generics,
+                    struct_defs,
+                    enum_defs,
+                    trait_impls,
+                    loop_depth + 1,
+                    expected_return,
+                    errors,
+                    type_error_details,
+                    generic_specializations,
+                    trait_violations,
+                );
+            }
+            scopes.pop();
+        }
+        Stmt::Break | Stmt::Continue => {
+            if loop_depth == 0 {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    "break/continue are only valid inside loop bodies".to_string(),
+                );
+            }
         }
         Stmt::Return(expr) => {
             if let Some(actual) = infer_expr_type(
@@ -3187,6 +3594,62 @@ fn infer_expr_type(
                 (None, None) => None,
             }
         }
+        Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } => {
+            let left_ty = infer_expr_type(
+                start,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                type_error_details,
+                generic_specializations,
+                trait_violations,
+            );
+            let right_ty = infer_expr_type(
+                end,
+                scopes,
+                fn_sigs,
+                fn_generics,
+                struct_defs,
+                enum_defs,
+                trait_impls,
+                errors,
+                type_error_details,
+                generic_specializations,
+                trait_violations,
+            );
+            match (left_ty, right_ty) {
+                (Some(left), Some(right))
+                    if is_integer_type(&left)
+                        && is_integer_type(&right)
+                        && type_compatible(&left, &right) =>
+                {
+                    Some(Type::Named {
+                        name: "Range".to_string(),
+                        args: vec![left],
+                    })
+                }
+                (Some(left), Some(right)) => {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "range bounds must be compatible integers, got `{}` and `{}`",
+                            left, right
+                        ),
+                    );
+                    None
+                }
+                _ => None,
+            }
+        }
         Expr::Binary { op, left, right } => {
             let left_ty = infer_expr_type(
                 left,
@@ -3238,6 +3701,14 @@ fn infer_expr_type(
                         );
                         None
                     }
+                }
+                BinaryOp::Mod => {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        "operator `%` is parsed but not yet supported by lowering".to_string(),
+                    );
+                    None
                 }
                 BinaryOp::Eq
                 | BinaryOp::Neq
@@ -3925,6 +4396,18 @@ fn stmt_has_explicit_return(stmt: &Stmt) -> bool {
                 || else_body.iter().any(stmt_has_explicit_return)
         }
         Stmt::While { body, .. } => body.iter().any(stmt_has_explicit_return),
+        Stmt::For {
+            init,
+            condition: _,
+            step,
+            body,
+        } => {
+            init.as_deref().is_some_and(stmt_has_explicit_return)
+                || step.as_deref().is_some_and(stmt_has_explicit_return)
+                || body.iter().any(stmt_has_explicit_return)
+        }
+        Stmt::ForIn { body, .. } | Stmt::Loop { body } => body.iter().any(stmt_has_explicit_return),
+        Stmt::Break | Stmt::Continue => false,
         Stmt::Match { arms, .. } => arms
             .iter()
             .any(|arm| arm.returns || expr_has_nested_return(&arm.value)),
@@ -3941,19 +4424,41 @@ fn expr_has_nested_return(_expr: &Expr) -> bool {
     false
 }
 
+enum EvalOutcome {
+    Continue,
+    Break,
+    ContinueLoop,
+    Return(Value),
+}
+
 fn eval_block<'a>(
     body: &[Stmt],
     env: &mut BTreeMap<String, Value>,
     functions: &HashMap<&'a str, &'a TypedFunction>,
 ) -> Option<Value> {
+    match eval_block_control(body, env, functions) {
+        EvalOutcome::Return(value) => Some(value),
+        EvalOutcome::Continue | EvalOutcome::Break | EvalOutcome::ContinueLoop => None,
+    }
+}
+
+fn eval_block_control<'a>(
+    body: &[Stmt],
+    env: &mut BTreeMap<String, Value>,
+    functions: &HashMap<&'a str, &'a TypedFunction>,
+) -> EvalOutcome {
     for stmt in body {
         match stmt {
             Stmt::Let { name, value, .. } => {
-                let val = eval_expr(value, env, functions)?;
+                let Some(val) = eval_expr(value, env, functions) else {
+                    return EvalOutcome::Continue;
+                };
                 env.insert(name.clone(), val);
             }
             Stmt::Assign { target, value } => {
-                let val = eval_expr(value, env, functions)?;
+                let Some(val) = eval_expr(value, env, functions) else {
+                    return EvalOutcome::Continue;
+                };
                 env.insert(target.clone(), val);
             }
             Stmt::If {
@@ -3961,41 +4466,160 @@ fn eval_block<'a>(
                 then_body,
                 else_body,
             } => {
-                let cond = eval_expr(condition, env, functions)?;
+                let Some(cond) = eval_expr(condition, env, functions) else {
+                    return EvalOutcome::Continue;
+                };
                 let branch = if truthy(&cond) { then_body } else { else_body };
-                if let Some(v) = eval_block(branch, env, functions) {
-                    return Some(v);
+                match eval_block_control(branch, env, functions) {
+                    EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                    EvalOutcome::Break => return EvalOutcome::Break,
+                    EvalOutcome::ContinueLoop => return EvalOutcome::ContinueLoop,
+                    EvalOutcome::Continue => {}
                 }
             }
             Stmt::While { condition, body } => {
                 let mut guard = 0usize;
-                while truthy(&eval_expr(condition, env, functions)?) {
-                    if let Some(v) = eval_block(body, env, functions) {
-                        return Some(v);
+                while truthy(&match eval_expr(condition, env, functions) {
+                    Some(value) => value,
+                    None => return EvalOutcome::Continue,
+                }) {
+                    match eval_block_control(body, env, functions) {
+                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Break => break,
+                        EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
                     }
                     guard += 1;
                     if guard > 1_000_000 {
-                        return None;
+                        return EvalOutcome::Continue;
                     }
                 }
             }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    match eval_block_control(std::slice::from_ref(init.as_ref()), env, functions) {
+                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Break | EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
+                    }
+                }
+                let mut guard = 0usize;
+                loop {
+                    if let Some(condition) = condition {
+                        let Some(value) = eval_expr(condition, env, functions) else {
+                            return EvalOutcome::Continue;
+                        };
+                        if !truthy(&value) {
+                            break;
+                        }
+                    }
+                    match eval_block_control(body, env, functions) {
+                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Break => break,
+                        EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
+                    }
+                    if let Some(step) = step {
+                        match eval_block_control(
+                            std::slice::from_ref(step.as_ref()),
+                            env,
+                            functions,
+                        ) {
+                            EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                            EvalOutcome::Break
+                            | EvalOutcome::ContinueLoop
+                            | EvalOutcome::Continue => {}
+                        }
+                    }
+                    guard += 1;
+                    if guard > 1_000_000 {
+                        return EvalOutcome::Continue;
+                    }
+                }
+            }
+            Stmt::ForIn {
+                binding,
+                iterable,
+                body,
+            } => {
+                let Some(range) = eval_expr(iterable, env, functions) else {
+                    return EvalOutcome::Continue;
+                };
+                let Value::Struct { fields, .. } = range else {
+                    continue;
+                };
+                let Some(Value::I32(mut current)) = fields.get("start").cloned() else {
+                    continue;
+                };
+                let Some(Value::I32(end)) = fields.get("end").cloned() else {
+                    continue;
+                };
+                let inclusive = matches!(fields.get("inclusive"), Some(Value::Bool(true)));
+                let mut guard = 0usize;
+                while if inclusive {
+                    current <= end
+                } else {
+                    current < end
+                } {
+                    env.insert(binding.clone(), Value::I32(current));
+                    match eval_block_control(body, env, functions) {
+                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Break => break,
+                        EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
+                    }
+                    current += 1;
+                    guard += 1;
+                    if guard > 1_000_000 {
+                        return EvalOutcome::Continue;
+                    }
+                }
+            }
+            Stmt::Loop { body } => {
+                let mut guard = 0usize;
+                loop {
+                    match eval_block_control(body, env, functions) {
+                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Break => break,
+                        EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
+                    }
+                    guard += 1;
+                    if guard > 1_000_000 {
+                        return EvalOutcome::Continue;
+                    }
+                }
+            }
+            Stmt::Break => return EvalOutcome::Break,
+            Stmt::Continue => return EvalOutcome::ContinueLoop,
             Stmt::Return(expr) => {
-                let val = eval_expr(expr, env, functions)?;
-                return Some(val);
+                let Some(val) = eval_expr(expr, env, functions) else {
+                    return EvalOutcome::Continue;
+                };
+                return EvalOutcome::Return(val);
             }
             Stmt::Match { scrutinee, arms } => {
-                let value = eval_expr(scrutinee, env, functions)?;
+                let Some(value) = eval_expr(scrutinee, env, functions) else {
+                    return EvalOutcome::Continue;
+                };
                 for arm in arms {
                     let guard_ok = match &arm.guard {
-                        Some(guard) => truthy(&eval_expr(guard, env, functions)?),
+                        Some(guard) => {
+                            let Some(guard_val) = eval_expr(guard, env, functions) else {
+                                return EvalOutcome::Continue;
+                            };
+                            truthy(&guard_val)
+                        }
                         None => true,
                     };
                     if guard_ok && pattern_matches(&arm.pattern, &value) {
                         if arm.returns {
-                            let out = eval_expr(&arm.value, env, functions)?;
-                            return Some(out);
+                            let Some(out) = eval_expr(&arm.value, env, functions) else {
+                                return EvalOutcome::Continue;
+                            };
+                            return EvalOutcome::Return(out);
                         }
-                        let _ = eval_expr(&arm.value, env, functions)?;
+                        let _ = eval_expr(&arm.value, env, functions);
                         break;
                     }
                 }
@@ -4003,7 +4627,7 @@ fn eval_block<'a>(
             Stmt::Defer(_) | Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Expr(_) => {}
         }
     }
-    None
+    EvalOutcome::Continue
 }
 
 fn eval_expr<'a>(
@@ -4116,6 +4740,25 @@ fn eval_expr<'a>(
             try_expr,
             catch_expr,
         } => eval_expr(try_expr, env, functions).or_else(|| eval_expr(catch_expr, env, functions)),
+        Expr::Range {
+            start,
+            end,
+            inclusive,
+        } => {
+            let start = eval_expr(start, env, functions)?;
+            let end = eval_expr(end, env, functions)?;
+            let (Value::I32(start), Value::I32(end)) = (start, end) else {
+                return None;
+            };
+            let mut fields = BTreeMap::new();
+            fields.insert("start".to_string(), Value::I32(start));
+            fields.insert("end".to_string(), Value::I32(end));
+            fields.insert("inclusive".to_string(), Value::Bool(*inclusive));
+            Some(Value::Struct {
+                _name: "Range".to_string(),
+                fields,
+            })
+        }
         Expr::Binary { op, left, right } => {
             let left = eval_expr(left, env, functions)?;
             let right = eval_expr(right, env, functions)?;
@@ -4130,6 +4773,7 @@ fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Option<Value> {
         (BinaryOp::Sub, Value::I32(a), Value::I32(b)) => Some(Value::I32(a - b)),
         (BinaryOp::Mul, Value::I32(a), Value::I32(b)) => Some(Value::I32(a * b)),
         (BinaryOp::Div, Value::I32(a), Value::I32(b)) => Some(Value::I32(a / b)),
+        (BinaryOp::Mod, Value::I32(a), Value::I32(b)) => Some(Value::I32(a % b)),
         (BinaryOp::Eq, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a == b)),
         (BinaryOp::Neq, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a != b)),
         (BinaryOp::Lt, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a < b)),
@@ -4665,5 +5309,39 @@ mod tests {
         assert!(typed.ownership_violations.iter().any(|detail| {
             detail.contains("generic/trait-heavy with borrowed parameters across await")
         }));
+    }
+
+    #[test]
+    fn break_continue_outside_loop_reports_type_error() {
+        let source = r#"
+            fn main() -> i32 {
+                break;
+                continue;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("break/continue are only valid inside loop bodies")));
+    }
+
+    #[test]
+    fn for_in_range_typechecks() {
+        let source = r#"
+            fn main() -> i32 {
+                let sum: i32 = 0;
+                for i in 0..5 {
+                    let _ = i;
+                }
+                return sum;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
     }
 }

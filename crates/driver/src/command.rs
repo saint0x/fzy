@@ -2038,6 +2038,72 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 );
             }
         }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_semantic_unsafe_entries_from_stmt(
+                    init,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+            if let Some(condition) = condition {
+                collect_semantic_unsafe_entries_from_expr(
+                    condition,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+            if let Some(step) = step {
+                collect_semantic_unsafe_entries_from_stmt(
+                    step,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+            for nested in body {
+                collect_semantic_unsafe_entries_from_stmt(
+                    nested,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_semantic_unsafe_entries_from_expr(
+                iterable,
+                module_path,
+                function_name,
+                entries,
+            );
+            for nested in body {
+                collect_semantic_unsafe_entries_from_stmt(
+                    nested,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_semantic_unsafe_entries_from_stmt(
+                    nested,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_semantic_unsafe_entries_from_expr(
                 scrutinee,
@@ -2132,6 +2198,10 @@ fn collect_semantic_unsafe_entries_from_expr(
         ast::Expr::Binary { left, right, .. } => {
             collect_semantic_unsafe_entries_from_expr(left, module_path, function_name, entries);
             collect_semantic_unsafe_entries_from_expr(right, module_path, function_name, entries);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_semantic_unsafe_entries_from_expr(start, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(end, module_path, function_name, entries);
         }
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
     }
@@ -3730,6 +3800,26 @@ fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
             count_async_hooks_in_expr(condition)
                 + body.iter().map(count_async_hooks_in_stmt).sum::<usize>()
         }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().map(count_async_hooks_in_stmt).unwrap_or(0)
+                + condition
+                    .as_ref()
+                    .map(count_async_hooks_in_expr)
+                    .unwrap_or(0)
+                + step.as_deref().map(count_async_hooks_in_stmt).unwrap_or(0)
+                + body.iter().map(count_async_hooks_in_stmt).sum::<usize>()
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            count_async_hooks_in_expr(iterable)
+                + body.iter().map(count_async_hooks_in_stmt).sum::<usize>()
+        }
+        ast::Stmt::Loop { body } => body.iter().map(count_async_hooks_in_stmt).sum::<usize>(),
+        ast::Stmt::Break | ast::Stmt::Continue => 0,
         ast::Stmt::Match { scrutinee, arms } => {
             let mut total = count_async_hooks_in_expr(scrutinee);
             for arm in arms {
@@ -3763,6 +3853,9 @@ fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
         } => count_async_hooks_in_expr(try_expr) + count_async_hooks_in_expr(catch_expr),
         ast::Expr::Binary { left, right, .. } => {
             count_async_hooks_in_expr(left) + count_async_hooks_in_expr(right)
+        }
+        ast::Expr::Range { start, end, .. } => {
+            count_async_hooks_in_expr(start) + count_async_hooks_in_expr(end)
         }
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => 0,
     }
@@ -3828,6 +3921,54 @@ fn analyze_workload_stmt(stmt: &ast::Stmt) -> (usize, usize) {
             }
             totals
         }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            let mut totals = (0usize, 0usize);
+            if let Some(init) = init {
+                let (spawns, yields) = analyze_workload_stmt(init);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            if let Some(condition) = condition {
+                let (spawns, yields) = analyze_workload_expr(condition);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            if let Some(step) = step {
+                let (spawns, yields) = analyze_workload_stmt(step);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            for stmt in body {
+                let (spawns, yields) = analyze_workload_stmt(stmt);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            totals
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            let mut totals = analyze_workload_expr(iterable);
+            for stmt in body {
+                let (spawns, yields) = analyze_workload_stmt(stmt);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            totals
+        }
+        ast::Stmt::Loop { body } => {
+            let mut totals = (0usize, 0usize);
+            for stmt in body {
+                let (spawns, yields) = analyze_workload_stmt(stmt);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            totals
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => (0, 0),
         ast::Stmt::Match { scrutinee, arms } => {
             let mut totals = analyze_workload_expr(scrutinee);
             for arm in arms {
@@ -3890,6 +4031,11 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
         ast::Expr::Binary { left, right, .. } => {
             let (l_spawns, l_yields) = analyze_workload_expr(left);
             let (r_spawns, r_yields) = analyze_workload_expr(right);
+            (l_spawns + r_spawns, l_yields + r_yields)
+        }
+        ast::Expr::Range { start, end, .. } => {
+            let (l_spawns, l_yields) = analyze_workload_expr(start);
+            let (r_spawns, r_yields) = analyze_workload_expr(end);
             (l_spawns + r_spawns, l_yields + r_yields)
         }
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => (0, 0),
@@ -4178,6 +4324,37 @@ fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
                 collect_call_names_from_stmt(stmt, out);
             }
         }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_call_names_from_stmt(init, out);
+            }
+            if let Some(condition) = condition {
+                collect_call_names_from_expr(condition, out);
+            }
+            if let Some(step) = step {
+                collect_call_names_from_stmt(step, out);
+            }
+            for stmt in body {
+                collect_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_call_names_from_expr(iterable, out);
+            for stmt in body {
+                collect_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for stmt in body {
+                collect_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_call_names_from_expr(scrutinee, out);
             for arm in arms {
@@ -4219,6 +4396,10 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
         ast::Expr::Binary { left, right, .. } => {
             collect_call_names_from_expr(left, out);
             collect_call_names_from_expr(right, out);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_call_names_from_expr(start, out);
+            collect_call_names_from_expr(end, out);
         }
         ast::Expr::Group(inner) => collect_call_names_from_expr(inner, out),
         ast::Expr::Await(inner) => collect_call_names_from_expr(inner, out),

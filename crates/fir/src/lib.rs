@@ -38,6 +38,8 @@ pub enum Instruction {
     Match {
         arm_count: usize,
     },
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone)]
@@ -306,6 +308,48 @@ fn lower_stmts_into_block(
                 lower_stmts_into_block(body, &mut loop_block, blocks);
                 blocks.push(loop_block);
             }
+            ast::Stmt::For {
+                init, step, body, ..
+            } => {
+                if let Some(init) = init {
+                    lower_stmts_into_block(std::slice::from_ref(init.as_ref()), current, blocks);
+                }
+                let loop_id = blocks.len() + 1;
+                current
+                    .instructions
+                    .push(Instruction::Jump { target: loop_id });
+                current.successors.push(loop_id);
+                let mut loop_block = BasicBlock {
+                    id: loop_id,
+                    instructions: Vec::new(),
+                    successors: vec![loop_id],
+                };
+                lower_stmts_into_block(body, &mut loop_block, blocks);
+                if let Some(step) = step {
+                    lower_stmts_into_block(
+                        std::slice::from_ref(step.as_ref()),
+                        &mut loop_block,
+                        blocks,
+                    );
+                }
+                blocks.push(loop_block);
+            }
+            ast::Stmt::ForIn { body, .. } | ast::Stmt::Loop { body } => {
+                let loop_id = blocks.len() + 1;
+                current
+                    .instructions
+                    .push(Instruction::Jump { target: loop_id });
+                current.successors.push(loop_id);
+                let mut loop_block = BasicBlock {
+                    id: loop_id,
+                    instructions: Vec::new(),
+                    successors: vec![loop_id],
+                };
+                lower_stmts_into_block(body, &mut loop_block, blocks);
+                blocks.push(loop_block);
+            }
+            ast::Stmt::Break => current.instructions.push(Instruction::Break),
+            ast::Stmt::Continue => current.instructions.push(Instruction::Continue),
         }
     }
 }
@@ -357,7 +401,9 @@ fn compute_def_use(blocks: &[BasicBlock]) -> Vec<DefUseBlock> {
                 | Instruction::Return
                 | Instruction::Branch { .. }
                 | Instruction::Jump { .. }
-                | Instruction::Match { .. } => {}
+                | Instruction::Match { .. }
+                | Instruction::Break
+                | Instruction::Continue => {}
             }
         }
         out.push(DefUseBlock {

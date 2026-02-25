@@ -232,6 +232,34 @@
 - [✅] Add diagnostics-focused Fozzy gates using strict deterministic first (`doctor --deep`, `test --det --strict`) plus trace record/verify/replay/ci and host-backed checks where feasible.
 - [✅] Publish production diagnostics guide and error-code reference with examples and remediation playbooks.
 
+### Language Primitive Completeness (Production Reality, Real-Language Baseline)
+- [✅] Eliminate silent lexer token skipping for unknown operators/symbols; unknown tokens must produce hard diagnostics, never semantic fallback.
+- [✅] Close parser/runtime miscompile risk for unsupported operators (for example `%`) by enforcing explicit parse/type errors until full lowering exists.
+- [✅] Implement first-class loop surface: `for`, `for-in`, and `loop` forms with explicit AST/HIR/FIR/backend semantics.
+- [✅] Implement loop control primitives: `break` and `continue` with scope validation and deterministic lowering.
+- [✅] Add range/iterator primitives required for `for` ergonomics (syntax + type rules + runtime contracts).
+- [ ] Add full unary operator support (`!`, unary `-`, unary `+`) across parser/typechecker/lowering.
+- [ ] Add logical operator surface (`&&`, `||`) with short-circuit semantics and backend parity.
+- [ ] Add arithmetic/operator completeness expected by systems users: `%`, bitwise (`&`, `|`, `^`, `~`) and shifts (`<<`, `>>`) with signedness-correct typing.
+- [ ] Add compound assignment family (`+=`, `-=`, `*=`, `/=`, `%=` and bitwise/shift assignment forms) with strict type and mutability checks.
+- [ ] Add float literal parsing and typing (`f32`/`f64` literals), including diagnostics for precision/overflow edge cases.
+- [ ] Add char literal parsing and typing (`char` literals and escapes) with strict lexical validation.
+- [ ] Add collection literals expected in core language surface (array literal support at minimum; tuple literal support if tuples are declared in-scope for v1.x).
+- [ ] Add indexing/subscript expression support (`arr[i]`, map/list index rules) with bounds/type diagnostics and deterministic lowering.
+- [ ] Add `return;` support for unit/void-return functions and align verifier expectations with unit-return semantics.
+- [ ] Formalize and implement unit/void operational-function conventions to remove forced `-> i32` scaffolding in normal code paths.
+- [ ] Add function-value primitives expected by modern language users (closures/lambdas or an explicitly documented equivalent model), including capture/ownership rules.
+- [ ] Add function-type surface and callability checks for higher-order use cases (if closures/function values are in scope for release target).
+- [ ] Implement test-block body semantics as first-class compiled statements (no body discard), aligned with documented test semantics.
+- [ ] Expand module/import ergonomics expected by production users (import aliases/re-exports/wildcards, or document explicit non-support with hard diagnostics).
+- [ ] Expand visibility model beyond minimal function-level `pub` where required by production modularity contracts.
+- [ ] Add exhaustive parser/type/lowering conformance suite for each primitive family above (positive + negative + ambiguity cases).
+- [ ] Add cross-backend parity tests (LLVM/Cranelift) for all new primitives and edge-case semantics.
+- [ ] Add deterministic replay/equivalence coverage specifically for new control-flow and operator semantics.
+- [ ] Add host-backed production probes for primitive-heavy workloads where runtime behavior can diverge from deterministic mode.
+- [ ] Add language-spec drift gate: fail CI/release when documented primitives differ from implemented parser/AST/HIR capabilities.
+- [ ] Publish and freeze a "real-language primitive baseline" matrix (`implemented` / `partial` / `missing`) and make it release-blocking for advertised features.
+
 ### Release Flow
 - [✅] Phase 1: correctness fixes (listen, partial I/O, timeout correctness).
 - [✅] Phase 2: runtime hot-path performance fixes (network/executor scope completed).

@@ -121,6 +121,22 @@ pub enum Stmt {
         condition: Expr,
         body: Vec<Stmt>,
     },
+    For {
+        init: Option<Box<Stmt>>,
+        condition: Option<Expr>,
+        step: Option<Box<Stmt>>,
+        body: Vec<Stmt>,
+    },
+    ForIn {
+        binding: String,
+        iterable: Expr,
+        body: Vec<Stmt>,
+    },
+    Loop {
+        body: Vec<Stmt>,
+    },
+    Break,
+    Continue,
     Return(Expr),
     Defer(Expr),
     Requires(Expr),
@@ -161,6 +177,11 @@ pub enum Expr {
         try_expr: Box<Expr>,
         catch_expr: Box<Expr>,
     },
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+    },
     Binary {
         op: BinaryOp,
         left: Box<Expr>,
@@ -174,6 +195,7 @@ pub enum BinaryOp {
     Sub,
     Mul,
     Div,
+    Mod,
     Lt,
     Lte,
     Gt,
@@ -355,6 +377,37 @@ pub fn walk_stmt<V: AstVisitor + ?Sized>(visitor: &mut V, stmt: &Stmt) {
                 visitor.visit_stmt(nested);
             }
         }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                visitor.visit_stmt(init);
+            }
+            if let Some(condition) = condition {
+                visitor.visit_expr(condition);
+            }
+            if let Some(step) = step {
+                visitor.visit_stmt(step);
+            }
+            for nested in body {
+                visitor.visit_stmt(nested);
+            }
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            visitor.visit_expr(iterable);
+            for nested in body {
+                visitor.visit_stmt(nested);
+            }
+        }
+        Stmt::Loop { body } => {
+            for nested in body {
+                visitor.visit_stmt(nested);
+            }
+        }
+        Stmt::Break | Stmt::Continue => {}
         Stmt::Match { scrutinee, arms } => {
             visitor.visit_expr(scrutinee);
             for arm in arms {
@@ -391,6 +444,14 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
         } => {
             visitor.visit_expr(try_expr);
             visitor.visit_expr(catch_expr);
+        }
+        Expr::Range {
+            start,
+            end,
+            inclusive: _,
+        } => {
+            visitor.visit_expr(start);
+            visitor.visit_expr(end);
         }
         Expr::Await(inner) => visitor.visit_expr(inner),
         Expr::Binary { left, right, .. } => {

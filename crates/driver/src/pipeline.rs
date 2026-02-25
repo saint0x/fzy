@@ -1383,6 +1383,37 @@ fn qualify_stmt(
                 qualify_stmt(nested, namespace, local_functions, module_aliases);
             }
         }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                qualify_stmt(init, namespace, local_functions, module_aliases);
+            }
+            if let Some(condition) = condition {
+                qualify_expr(condition, namespace, local_functions, module_aliases);
+            }
+            if let Some(step) = step {
+                qualify_stmt(step, namespace, local_functions, module_aliases);
+            }
+            for nested in body {
+                qualify_stmt(nested, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            qualify_expr(iterable, namespace, local_functions, module_aliases);
+            for nested in body {
+                qualify_stmt(nested, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                qualify_stmt(nested, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             qualify_expr(scrutinee, namespace, local_functions, module_aliases);
             for arm in arms {
@@ -1437,6 +1468,10 @@ fn qualify_expr(
         ast::Expr::Binary { left, right, .. } => {
             qualify_expr(left, namespace, local_functions, module_aliases);
             qualify_expr(right, namespace, local_functions, module_aliases);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            qualify_expr(start, namespace, local_functions, module_aliases);
+            qualify_expr(end, namespace, local_functions, module_aliases);
         }
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
     }
@@ -1534,6 +1569,37 @@ fn canonicalize_stmt_calls(
                 canonicalize_stmt_calls(nested, namespace, known_functions);
             }
         }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                canonicalize_stmt_calls(init, namespace, known_functions);
+            }
+            if let Some(condition) = condition {
+                canonicalize_expr_calls(condition, namespace, known_functions);
+            }
+            if let Some(step) = step {
+                canonicalize_stmt_calls(step, namespace, known_functions);
+            }
+            for nested in body {
+                canonicalize_stmt_calls(nested, namespace, known_functions);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            canonicalize_expr_calls(iterable, namespace, known_functions);
+            for nested in body {
+                canonicalize_stmt_calls(nested, namespace, known_functions);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                canonicalize_stmt_calls(nested, namespace, known_functions);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             canonicalize_expr_calls(scrutinee, namespace, known_functions);
             for arm in arms {
@@ -1595,6 +1661,10 @@ fn canonicalize_expr_calls(
         ast::Expr::Binary { left, right, .. } => {
             canonicalize_expr_calls(left, namespace, known_functions);
             canonicalize_expr_calls(right, namespace, known_functions);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            canonicalize_expr_calls(start, namespace, known_functions);
+            canonicalize_expr_calls(end, namespace, known_functions);
         }
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
     }
@@ -2057,6 +2127,7 @@ struct LlvmFuncCtx {
     next_label: usize,
     slots: HashMap<String, String>,
     code: String,
+    loop_targets: Vec<(String, String)>,
 }
 
 impl LlvmFuncCtx {
@@ -2066,6 +2137,7 @@ impl LlvmFuncCtx {
             next_label: 0,
             slots: HashMap::new(),
             code: String::new(),
+            loop_targets: Vec::new(),
         }
     }
 
@@ -2205,11 +2277,147 @@ fn llvm_emit_block(
                 ctx.code.push_str(&format!(
                     "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{body_label}, label %{end_label}\n{body_label}:\n"
                 ));
+                ctx.loop_targets
+                    .push((end_label.clone(), head_label.clone()));
                 let terminated = llvm_emit_block(body, ctx, string_literal_ids, task_ref_ids);
+                let _ = ctx.loop_targets.pop();
                 if !terminated {
                     ctx.code.push_str(&format!("  br label %{head_label}\n"));
                 }
                 ctx.code.push_str(&format!("{end_label}:\n"));
+            }
+            ast::Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    let _ = llvm_emit_block(
+                        std::slice::from_ref(init.as_ref()),
+                        ctx,
+                        string_literal_ids,
+                        task_ref_ids,
+                    );
+                }
+                let head_label = ctx.label("for_head");
+                let body_label = ctx.label("for_body");
+                let step_label = ctx.label("for_step");
+                let end_label = ctx.label("for_end");
+                ctx.code
+                    .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
+                if let Some(condition) = condition {
+                    let cond = llvm_emit_expr(condition, ctx, string_literal_ids, task_ref_ids);
+                    let pred = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{body_label}, label %{end_label}\n"
+                    ));
+                } else {
+                    ctx.code.push_str(&format!("  br label %{body_label}\n"));
+                }
+                ctx.code.push_str(&format!("{body_label}:\n"));
+                ctx.loop_targets
+                    .push((end_label.clone(), step_label.clone()));
+                let body_terminated = llvm_emit_block(body, ctx, string_literal_ids, task_ref_ids);
+                let _ = ctx.loop_targets.pop();
+                if !body_terminated {
+                    ctx.code.push_str(&format!("  br label %{step_label}\n"));
+                }
+                ctx.code.push_str(&format!("{step_label}:\n"));
+                if let Some(step) = step {
+                    let _ = llvm_emit_block(
+                        std::slice::from_ref(step.as_ref()),
+                        ctx,
+                        string_literal_ids,
+                        task_ref_ids,
+                    );
+                }
+                ctx.code.push_str(&format!("  br label %{head_label}\n"));
+                ctx.code.push_str(&format!("{end_label}:\n"));
+            }
+            ast::Stmt::ForIn {
+                binding,
+                iterable,
+                body,
+            } => {
+                if let ast::Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = iterable
+                {
+                    let start_value = llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids);
+                    let end_value = llvm_emit_expr(end, ctx, string_literal_ids, task_ref_ids);
+                    let slot = format!("%slot_{}_{}", binding, ctx.next_value);
+                    ctx.code.push_str(&format!(
+                        "  {slot} = alloca i32\n  store i32 {start_value}, ptr {slot}\n"
+                    ));
+                    ctx.slots.insert(binding.clone(), slot.clone());
+                    let head_label = ctx.label("forin_head");
+                    let body_label = ctx.label("forin_body");
+                    let step_label = ctx.label("forin_step");
+                    let end_label = ctx.label("forin_end");
+                    ctx.code
+                        .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
+                    let current = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {current} = load i32, ptr {slot}\n"));
+                    let pred = ctx.value();
+                    let cmp = if *inclusive { "sle" } else { "slt" };
+                    ctx.code.push_str(&format!(
+                        "  {pred} = icmp {cmp} i32 {current}, {end_value}\n  br i1 {pred}, label %{body_label}, label %{end_label}\n{body_label}:\n"
+                    ));
+                    ctx.loop_targets
+                        .push((end_label.clone(), step_label.clone()));
+                    let body_terminated =
+                        llvm_emit_block(body, ctx, string_literal_ids, task_ref_ids);
+                    let _ = ctx.loop_targets.pop();
+                    if !body_terminated {
+                        ctx.code.push_str(&format!("  br label %{step_label}\n"));
+                    }
+                    ctx.code.push_str(&format!("{step_label}:\n"));
+                    let current = ctx.value();
+                    let next = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {current} = load i32, ptr {slot}\n  {next} = add i32 {current}, 1\n  store i32 {next}, ptr {slot}\n  br label %{head_label}\n{end_label}:\n"
+                    ));
+                } else {
+                    for nested in body {
+                        let _ = llvm_emit_block(
+                            std::slice::from_ref(nested),
+                            ctx,
+                            string_literal_ids,
+                            task_ref_ids,
+                        );
+                    }
+                }
+            }
+            ast::Stmt::Loop { body } => {
+                let head_label = ctx.label("loop_head");
+                let end_label = ctx.label("loop_end");
+                ctx.code
+                    .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
+                ctx.loop_targets
+                    .push((end_label.clone(), head_label.clone()));
+                let body_terminated = llvm_emit_block(body, ctx, string_literal_ids, task_ref_ids);
+                let _ = ctx.loop_targets.pop();
+                if !body_terminated {
+                    ctx.code.push_str(&format!("  br label %{head_label}\n"));
+                }
+                ctx.code.push_str(&format!("{end_label}:\n"));
+            }
+            ast::Stmt::Break => {
+                if let Some((break_label, _)) = ctx.loop_targets.last() {
+                    ctx.code.push_str(&format!("  br label %{break_label}\n"));
+                    return true;
+                }
+            }
+            ast::Stmt::Continue => {
+                if let Some((_, continue_label)) = ctx.loop_targets.last() {
+                    ctx.code
+                        .push_str(&format!("  br label %{continue_label}\n"));
+                    return true;
+                }
             }
             ast::Stmt::Match { scrutinee, arms } => {
                 let scrutinee_value =
@@ -2397,6 +2605,9 @@ fn llvm_emit_expr(
         ast::Expr::TryCatch { try_expr, .. } => {
             llvm_emit_expr(try_expr, ctx, string_literal_ids, task_ref_ids)
         }
+        ast::Expr::Range { start, .. } => {
+            llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids)
+        }
         ast::Expr::Call { callee, args } => {
             let args = args
                 .iter()
@@ -2433,6 +2644,9 @@ fn llvm_emit_expr(
                 ast::BinaryOp::Div => ctx
                     .code
                     .push_str(&format!("  {out} = sdiv i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Mod => ctx
+                    .code
+                    .push_str(&format!("  {out} = srem i32 {lhs}, {rhs}\n")),
                 ast::BinaryOp::Eq
                 | ast::BinaryOp::Neq
                 | ast::BinaryOp::Lt
@@ -2533,6 +2747,37 @@ fn collect_string_literals_from_stmt(stmt: &ast::Stmt, literals: &mut HashSet<St
                 collect_string_literals_from_stmt(nested, literals);
             }
         }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_string_literals_from_stmt(init, literals);
+            }
+            if let Some(condition) = condition {
+                collect_string_literals_from_expr(condition, literals);
+            }
+            if let Some(step) = step {
+                collect_string_literals_from_stmt(step, literals);
+            }
+            for nested in body {
+                collect_string_literals_from_stmt(nested, literals);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_string_literals_from_expr(iterable, literals);
+            for nested in body {
+                collect_string_literals_from_stmt(nested, literals);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_string_literals_from_stmt(nested, literals);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_string_literals_from_expr(scrutinee, literals);
             for arm in arms {
@@ -2578,6 +2823,10 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
         ast::Expr::Binary { left, right, .. } => {
             collect_string_literals_from_expr(left, literals);
             collect_string_literals_from_expr(right, literals);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_string_literals_from_expr(start, literals);
+            collect_string_literals_from_expr(end, literals);
         }
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Ident(_) => {}
     }
@@ -2660,6 +2909,37 @@ fn collect_used_runtime_imports_from_stmt(
                 collect_used_runtime_imports_from_stmt(nested, seen, used);
             }
         }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_used_runtime_imports_from_stmt(init, seen, used);
+            }
+            if let Some(condition) = condition {
+                collect_used_runtime_imports_from_expr(condition, seen, used);
+            }
+            if let Some(step) = step {
+                collect_used_runtime_imports_from_stmt(step, seen, used);
+            }
+            for nested in body {
+                collect_used_runtime_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_used_runtime_imports_from_expr(iterable, seen, used);
+            for nested in body {
+                collect_used_runtime_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_used_runtime_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_used_runtime_imports_from_expr(scrutinee, seen, used);
             for arm in arms {
@@ -2717,6 +2997,10 @@ fn collect_used_runtime_imports_from_expr(
         ast::Expr::Binary { left, right, .. } => {
             collect_used_runtime_imports_from_expr(left, seen, used);
             collect_used_runtime_imports_from_expr(right, seen, used);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_used_runtime_imports_from_expr(start, seen, used);
+            collect_used_runtime_imports_from_expr(end, seen, used);
         }
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
     }
@@ -4127,6 +4411,218 @@ fn clif_emit_block(
                 builder.switch_to_block(exit);
                 builder.seal_block(exit);
             }
+            ast::Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    let _ = clif_emit_block(
+                        builder,
+                        module,
+                        function_ids,
+                        function_signatures,
+                        std::slice::from_ref(init.as_ref()),
+                        locals,
+                        return_ty,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                }
+                let head = builder.create_block();
+                let loop_body = builder.create_block();
+                let step_block = builder.create_block();
+                let exit = builder.create_block();
+                builder.ins().jump(head, &[]);
+                builder.switch_to_block(head);
+                if let Some(condition) = condition {
+                    let cond_val = clif_emit_expr(
+                        builder,
+                        module,
+                        function_ids,
+                        function_signatures,
+                        condition,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                    let zero = zero_for_type(builder, cond_val.ty);
+                    let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
+                    builder.ins().brif(cond, loop_body, &[], exit, &[]);
+                } else {
+                    builder.ins().jump(loop_body, &[]);
+                }
+                builder.switch_to_block(loop_body);
+                let body_terminated = clif_emit_block(
+                    builder,
+                    module,
+                    function_ids,
+                    function_signatures,
+                    body,
+                    locals,
+                    return_ty,
+                    next_var,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?;
+                if !body_terminated {
+                    builder.ins().jump(step_block, &[]);
+                }
+                builder.seal_block(loop_body);
+                builder.switch_to_block(step_block);
+                if let Some(step) = step {
+                    let _ = clif_emit_block(
+                        builder,
+                        module,
+                        function_ids,
+                        function_signatures,
+                        std::slice::from_ref(step.as_ref()),
+                        locals,
+                        return_ty,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                }
+                builder.ins().jump(head, &[]);
+                builder.seal_block(step_block);
+                builder.seal_block(head);
+                builder.switch_to_block(exit);
+                builder.seal_block(exit);
+            }
+            ast::Stmt::ForIn {
+                binding,
+                iterable,
+                body,
+            } => {
+                if let ast::Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = iterable
+                {
+                    let start_val = clif_emit_expr(
+                        builder,
+                        module,
+                        function_ids,
+                        function_signatures,
+                        start,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                    let end_val = clif_emit_expr(
+                        builder,
+                        module,
+                        function_ids,
+                        function_signatures,
+                        end,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                    let binding_var = if let Some(existing) = locals.get(binding).copied() {
+                        existing
+                    } else {
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, default_int_clif_type());
+                        let binding_ref = LocalBinding {
+                            var,
+                            ty: default_int_clif_type(),
+                        };
+                        locals.insert(binding.clone(), binding_ref);
+                        binding_ref
+                    };
+                    let start_val = cast_clif_value(builder, start_val, binding_var.ty)?;
+                    let end_val = cast_clif_value(builder, end_val, binding_var.ty)?;
+                    builder.def_var(binding_var.var, start_val.value);
+                    let head = builder.create_block();
+                    let loop_body = builder.create_block();
+                    let step_block = builder.create_block();
+                    let exit = builder.create_block();
+                    builder.ins().jump(head, &[]);
+                    builder.switch_to_block(head);
+                    let current = builder.use_var(binding_var.var);
+                    let pred = if *inclusive {
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedLessThanOrEqual, current, end_val.value)
+                    } else {
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedLessThan, current, end_val.value)
+                    };
+                    builder.ins().brif(pred, loop_body, &[], exit, &[]);
+                    builder.switch_to_block(loop_body);
+                    let body_terminated = clif_emit_block(
+                        builder,
+                        module,
+                        function_ids,
+                        function_signatures,
+                        body,
+                        locals,
+                        return_ty,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                    if !body_terminated {
+                        builder.ins().jump(step_block, &[]);
+                    }
+                    builder.seal_block(loop_body);
+                    builder.switch_to_block(step_block);
+                    let one = builder.ins().iconst(binding_var.ty, 1);
+                    let current = builder.use_var(binding_var.var);
+                    let next = builder.ins().iadd(current, one);
+                    builder.def_var(binding_var.var, next);
+                    builder.ins().jump(head, &[]);
+                    builder.seal_block(step_block);
+                    builder.seal_block(head);
+                    builder.switch_to_block(exit);
+                    builder.seal_block(exit);
+                } else {
+                    let _ = clif_emit_block(
+                        builder,
+                        module,
+                        function_ids,
+                        function_signatures,
+                        body,
+                        locals,
+                        return_ty,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                }
+            }
+            ast::Stmt::Loop { body } => {
+                let head = builder.create_block();
+                builder.ins().jump(head, &[]);
+                builder.switch_to_block(head);
+                let body_terminated = clif_emit_block(
+                    builder,
+                    module,
+                    function_ids,
+                    function_signatures,
+                    body,
+                    locals,
+                    return_ty,
+                    next_var,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?;
+                if !body_terminated {
+                    builder.ins().jump(head, &[]);
+                }
+                builder.seal_block(head);
+            }
+            ast::Stmt::Break | ast::Stmt::Continue => {}
             ast::Stmt::Match { scrutinee, arms } => {
                 let scrutinee_val = clif_emit_expr(
                     builder,
@@ -4461,6 +4957,17 @@ fn clif_emit_expr(
                 task_ref_ids,
             )
         })?,
+        ast::Expr::Range { start, .. } => clif_emit_expr(
+            builder,
+            module,
+            function_ids,
+            function_signatures,
+            start,
+            locals,
+            next_var,
+            string_literal_ids,
+            task_ref_ids,
+        )?,
         ast::Expr::Binary { op, left, right } => {
             let lhs = clif_emit_expr(
                 builder,
@@ -4539,6 +5046,13 @@ fn clif_emit_expr(
                             value: builder.ins().sdiv(lhs.value, rhs.value),
                             ty: lhs.ty,
                         }
+                    }
+                }
+                ast::BinaryOp::Mod => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    ClifValue {
+                        value: builder.ins().srem(lhs.value, rhs.value),
+                        ty: lhs.ty,
                     }
                 }
                 ast::BinaryOp::Eq => {
@@ -4875,6 +5389,37 @@ fn collect_unresolved_calls_from_stmt(
                 collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
             }
         }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_unresolved_calls_from_stmt(init, defined_functions, unresolved);
+            }
+            if let Some(condition) = condition {
+                collect_unresolved_calls_from_expr(condition, defined_functions, unresolved);
+            }
+            if let Some(step) = step {
+                collect_unresolved_calls_from_stmt(step, defined_functions, unresolved);
+            }
+            for nested in body {
+                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_unresolved_calls_from_expr(iterable, defined_functions, unresolved);
+            for nested in body {
+                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_unresolved_calls_from_expr(scrutinee, defined_functions, unresolved);
             for arm in arms {
@@ -4930,6 +5475,10 @@ fn collect_unresolved_calls_from_expr(
         ast::Expr::Binary { left, right, .. } => {
             collect_unresolved_calls_from_expr(left, defined_functions, unresolved);
             collect_unresolved_calls_from_expr(right, defined_functions, unresolved);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_unresolved_calls_from_expr(start, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(end, defined_functions, unresolved);
         }
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
     }
