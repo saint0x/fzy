@@ -3079,6 +3079,7 @@ typedef struct {
 static fz_proc_state fz_proc_states[FZ_MAX_PROC_STATES];
 static pthread_mutex_t fz_proc_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_proc_default_timeout_ms = 30000;
+static int32_t fz_proc_last_error_id = 0;
 static int32_t fz_last_exit_class = 0;
 
 typedef struct {
@@ -3586,6 +3587,13 @@ static fz_proc_state* fz_proc_state_get(int32_t handle) {
     return NULL;
   }
   return state;
+}
+
+static void fz_proc_set_last_error(const char* msg) {
+  if (msg == NULL) {
+    msg = "proc error";
+  }
+  fz_proc_last_error_id = fz_intern_slice(msg, strlen(msg));
 }
 
 static int32_t fz_proc_state_alloc(pid_t pid, int stdout_fd, int stderr_fd) {
@@ -4189,6 +4197,7 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
   const char* command = fz_lookup_string(command_id);
   if (command == NULL || command[0] == '\0') {
     fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawn: empty command");
     return -1;
   }
 
@@ -4196,12 +4205,14 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
   int err_pipe[2];
   if (pipe(out_pipe) != 0) {
     fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawn: stdout pipe failed");
     return -1;
   }
   if (pipe(err_pipe) != 0) {
     close(out_pipe[0]);
     close(out_pipe[1]);
     fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawn: stderr pipe failed");
     return -1;
   }
   (void)fz_mark_cloexec(out_pipe[0]);
@@ -4214,6 +4225,7 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
     close(err_pipe[0]);
     close(err_pipe[1]);
     fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawn: file actions init failed");
     return -1;
   }
   int file_actions_ok = 1;
@@ -4247,6 +4259,7 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
     close(err_pipe[0]);
     close(err_pipe[1]);
     fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawn: file actions setup failed");
     return -1;
   }
 
@@ -4260,6 +4273,7 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
     close(err_pipe[0]);
     close(err_pipe[1]);
     fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawn: posix_spawnp failed");
     return -1;
   }
 
@@ -4276,8 +4290,10 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
     close(out_pipe[0]);
     close(err_pipe[0]);
     fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawn: state allocation failed");
     return -1;
   }
+  fz_proc_set_last_error("");
   return handle;
 }
 
@@ -4286,6 +4302,7 @@ int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms) {
   fz_proc_state* state = fz_proc_state_get(handle);
   if (state == NULL) {
     pthread_mutex_unlock(&fz_proc_lock);
+    fz_proc_set_last_error("proc_wait: invalid handle");
     return -1;
   }
   if (state->done) {
@@ -4299,10 +4316,12 @@ int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms) {
   for (;;) {
     if (fz_drain_fd(state->stdout_fd, &state->stdout_buf) < 0) {
       pthread_mutex_unlock(&fz_proc_lock);
+      fz_proc_set_last_error("proc_wait: stdout drain failed");
       return -1;
     }
     if (fz_drain_fd(state->stderr_fd, &state->stderr_buf) < 0) {
       pthread_mutex_unlock(&fz_proc_lock);
+      fz_proc_set_last_error("proc_wait: stderr drain failed");
       return -1;
     }
 
@@ -4312,6 +4331,7 @@ int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms) {
     }
     if (waited < 0) {
       pthread_mutex_unlock(&fz_proc_lock);
+      fz_proc_set_last_error("proc_wait: waitpid failed");
       return -1;
     }
     if (timeout_ms == 0) {
@@ -4338,6 +4358,7 @@ int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms) {
   fz_last_exit_class = fz_exit_class_from_status(timed_out, status, 0);
   fz_proc_finalize(state, exit_code);
   pthread_mutex_unlock(&fz_proc_lock);
+  fz_proc_set_last_error("");
   return 0;
 }
 
@@ -4356,7 +4377,7 @@ int32_t fz_native_proc_run(int32_t command_id) {
 int32_t fz_native_proc_stdout(int32_t handle) {
   int wait_result = fz_native_proc_wait(handle, 0);
   if (wait_result < 0) {
-    return 0;
+    return fz_proc_last_error_id;
   }
   pthread_mutex_lock(&fz_proc_lock);
   fz_proc_state* state = fz_proc_state_get(handle);
@@ -4368,7 +4389,7 @@ int32_t fz_native_proc_stdout(int32_t handle) {
 int32_t fz_native_proc_stderr(int32_t handle) {
   int wait_result = fz_native_proc_wait(handle, 0);
   if (wait_result < 0) {
-    return 0;
+    return fz_proc_last_error_id;
   }
   pthread_mutex_lock(&fz_proc_lock);
   fz_proc_state* state = fz_proc_state_get(handle);
