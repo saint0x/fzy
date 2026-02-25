@@ -773,7 +773,7 @@ pub fn compile_file_with_backend(
     let parsed = parse_program(&resolved.source_path)?;
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let typed = hir::lower(&parsed.module);
-    let fir = fir::build(&typed);
+    let fir = fir::build_owned(typed);
     let report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
@@ -853,7 +853,7 @@ pub fn verify_file(path: &Path) -> Result<Output> {
     };
     let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
     let typed = hir::lower(&parsed.module);
-    let fir = fir::build(&typed);
+    let fir = fir::build_owned(typed);
     let report = verifier::verify(&fir);
     diagnostics.extend(report.diagnostics);
     for diagnostic in &mut diagnostics {
@@ -905,7 +905,7 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
     };
     let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
     let typed = hir::lower(&parsed.module);
-    let fir = fir::build(&typed);
+    let fir = fir::build_owned(typed);
     let report = verifier::verify(&fir);
     diagnostics.extend(report.diagnostics);
     for diagnostic in &mut diagnostics {
@@ -935,33 +935,34 @@ pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
     let mut state = ModuleLoadState::default();
     load_module_recursive(&canonical, &canonical, &mut state)?;
 
-    let root = state
-        .loaded
-        .get(&canonical)
-        .ok_or_else(|| anyhow!("failed to load root module {}", canonical.display()))?;
-    let mut merged = root.ast.clone();
     let mut combined_source = String::new();
-
     for path in &state.load_order {
         let loaded = state
             .loaded
             .get(path)
             .ok_or_else(|| anyhow!("internal module cache miss for {}", path.display()))?;
         combined_source.push_str("// module: ");
-        combined_source.push_str(&loaded.path.display().to_string());
+        combined_source.push_str(&path.display().to_string());
         combined_source.push('\n');
         combined_source.push_str(&loaded.source);
         if !loaded.source.ends_with('\n') {
             combined_source.push('\n');
         }
     }
-
-    for path in state.load_order.iter().filter(|path| **path != canonical) {
+    let mut merged = state
+        .loaded
+        .remove(&canonical)
+        .map(|module| module.ast)
+        .ok_or_else(|| anyhow!("failed to load root module {}", canonical.display()))?;
+    for path in &state.load_order {
+        if path == &canonical {
+            continue;
+        }
         let loaded = state
             .loaded
-            .get(path)
+            .remove(path)
             .ok_or_else(|| anyhow!("internal module cache miss for {}", path.display()))?;
-        merge_module(&mut merged, &loaded.ast);
+        merge_module_owned(&mut merged, loaded.ast);
     }
     canonicalize_call_targets(&mut merged);
 
@@ -976,7 +977,6 @@ pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
 struct LoadedModule {
     ast: ast::Module,
     source: String,
-    path: PathBuf,
 }
 
 #[derive(Debug, Default)]
@@ -1039,7 +1039,6 @@ fn load_module_recursive(
         LoadedModule {
             ast,
             source,
-            path: canonical,
         },
     );
     Ok(())
@@ -1552,12 +1551,11 @@ fn resolve_declared_module(base_dir: &Path, module_decl: &str) -> Result<PathBuf
     ))
 }
 
-fn merge_module(root: &mut ast::Module, module: &ast::Module) {
-    root.items.extend(module.items.iter().cloned());
-    root.modules.extend(module.modules.iter().cloned());
-    root.imports.extend(module.imports.iter().cloned());
-    root.capabilities
-        .extend(module.capabilities.iter().cloned());
+fn merge_module_owned(root: &mut ast::Module, mut module: ast::Module) {
+    root.items.append(&mut module.items);
+    root.modules.append(&mut module.modules);
+    root.imports.append(&mut module.imports);
+    root.capabilities.append(&mut module.capabilities);
     root.host_syscall_sites += module.host_syscall_sites;
     root.unsafe_reasoned_sites += module.unsafe_reasoned_sites;
 }

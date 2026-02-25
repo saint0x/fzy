@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "name": "shrink-exercised-pass",
+  "steps": [
+    { "type": "trace_event", "name": "shrink_target", "fields": { "suite": "shrink" } },
+    { "type": "rand_u64", "key": "seed" },
+    { "type": "assert_eq_int", "a": 7, "b": 7 }
+  ]
+}

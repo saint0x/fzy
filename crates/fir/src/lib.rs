@@ -101,62 +101,98 @@ pub struct FirModule {
 }
 
 pub fn build(typed: &TypedModule) -> FirModule {
+    build_owned(typed.clone())
+}
+
+pub fn build_owned(typed: TypedModule) -> FirModule {
+    let TypedModule {
+        name,
+        symbol_count,
+        capabilities,
+        inferred_capabilities,
+        entry_return_type,
+        entry_return_const_i32,
+        linear_resources,
+        deferred_resources,
+        matches_without_wildcard,
+        entry_requires,
+        entry_ensures,
+        host_syscall_sites,
+        unsafe_sites,
+        unsafe_reasoned_sites,
+        reference_sites,
+        alloc_sites,
+        free_sites,
+        extern_c_abi_functions,
+        repr_c_layout_items,
+        generic_instantiations,
+        generic_specializations,
+        call_graph,
+        typed_functions,
+        type_errors,
+        type_error_details,
+        function_capability_requirements,
+        ownership_violations,
+        capability_token_violations,
+        trait_violations,
+        reference_lifetime_violations,
+        linear_type_violations,
+    } = typed;
+
     let mut effects = CapabilitySet::default();
     let mut required_effects = CapabilitySet::default();
     let mut unknown_effects = Vec::new();
-    for capability in &typed.capabilities {
-        if let Some(parsed) = capabilities::Capability::parse(capability) {
+    for capability in capabilities {
+        if let Some(parsed) = capabilities::Capability::parse(&capability) {
             effects.insert(parsed);
         } else {
-            unknown_effects.push(capability.clone());
+            unknown_effects.push(capability);
         }
     }
-    for capability in &typed.inferred_capabilities {
-        if let Some(parsed) = capabilities::Capability::parse(capability) {
+    for capability in inferred_capabilities {
+        if let Some(parsed) = capabilities::Capability::parse(&capability) {
             required_effects.insert(parsed);
         } else {
-            unknown_effects.push(capability.clone());
+            unknown_effects.push(capability);
         }
     }
 
+    let functions = typed_functions.iter().map(lower_function).collect::<Vec<_>>();
+
     FirModule {
-        name: typed.name.clone(),
+        name,
         effects,
         required_effects,
         unknown_effects,
-        nodes: typed.symbol_count,
-        entry_return_type: typed.entry_return_type.clone(),
-        entry_return_const_i32: typed.entry_return_const_i32,
-        linear_resources: typed.linear_resources.clone(),
-        deferred_resources: typed.deferred_resources.clone(),
-        matches_without_wildcard: typed.matches_without_wildcard,
-        entry_requires: typed.entry_requires.clone(),
-        entry_ensures: typed.entry_ensures.clone(),
-        host_syscall_sites: typed.host_syscall_sites,
-        unsafe_sites: typed.unsafe_sites,
-        unsafe_reasoned_sites: typed.unsafe_reasoned_sites,
-        reference_sites: typed.reference_sites,
-        alloc_sites: typed.alloc_sites,
-        free_sites: typed.free_sites,
-        extern_c_abi_functions: typed.extern_c_abi_functions,
-        repr_c_layout_items: typed.repr_c_layout_items,
-        generic_instantiations: typed.generic_instantiations.clone(),
-        generic_specializations: typed.generic_specializations.clone(),
-        call_graph: typed.call_graph.clone(),
-        functions: typed
-            .typed_functions
-            .iter()
-            .map(lower_function)
-            .collect::<Vec<_>>(),
-        typed_functions: typed.typed_functions.clone(),
-        type_errors: typed.type_errors,
-        type_error_details: typed.type_error_details.clone(),
-        function_capability_requirements: typed.function_capability_requirements.clone(),
-        ownership_violations: typed.ownership_violations.clone(),
-        capability_token_violations: typed.capability_token_violations.clone(),
-        trait_violations: typed.trait_violations.clone(),
-        reference_lifetime_violations: typed.reference_lifetime_violations.clone(),
-        linear_type_violations: typed.linear_type_violations.clone(),
+        nodes: symbol_count,
+        entry_return_type,
+        entry_return_const_i32,
+        linear_resources,
+        deferred_resources,
+        matches_without_wildcard,
+        entry_requires,
+        entry_ensures,
+        host_syscall_sites,
+        unsafe_sites,
+        unsafe_reasoned_sites,
+        reference_sites,
+        alloc_sites,
+        free_sites,
+        extern_c_abi_functions,
+        repr_c_layout_items,
+        generic_instantiations,
+        generic_specializations,
+        call_graph,
+        functions,
+        typed_functions,
+        type_errors,
+        type_error_details,
+        function_capability_requirements,
+        ownership_violations,
+        capability_token_violations,
+        trait_violations,
+        reference_lifetime_violations,
+        linear_type_violations,
     }
 }
 

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "memory-graph-diff-top-pass",
+  "steps": [
+    { "type": "memory_alloc", "bytes": 256, "key": "buf_a", "tag": "req" },
+    { "type": "memory_alloc", "bytes": 128, "key": "buf_b", "tag": "req" },
+    { "type": "memory_assert_in_use_bytes", "equals": 384 },
+    { "type": "memory_free", "key": "buf_b" },
+    { "type": "memory_free", "key": "buf_a" },
+    { "type": "memory_assert_in_use_bytes", "equals": 0 }
+  ]
+}

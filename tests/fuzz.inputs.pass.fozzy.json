@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "name": "fuzz-inputs-pass",
+  "steps": [
+    { "type": "trace_event", "name": "fuzz_seed_start", "fields": {} },
+    { "type": "rand_u64", "key": "rand" },
+    { "type": "sleep", "duration": "1ms" },
+    { "type": "assert_eq_int", "a": 1, "b": 1 }
+  ]
+}

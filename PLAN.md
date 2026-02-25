@@ -114,7 +114,78 @@ Net assessment
 - Backend conformance suite closure (native/scenario/host equivalence stability in CI).
 - Full production tooling depth (debug symbol guarantees, profiler-grade hooks, protocol-grade LSP stack).
 
+## SITREP (as of February 25, 2026): async semantics + multithreading pipeline
+
+Current status is strong on deterministic concurrency infrastructure but weak/partial on language-level async semantics unification.
+
+Overall readiness: Amber/Red  
+What works: deterministic executor model, trace/replay lifecycle, native pthread spawn/yield baseline  
+What blocks "serious systems PL" async claims: parser/AST/HIR async gaps, synthetic deterministic test planning, scenario-routed det run path, intrinsic/runtime import mismatch
+
+Empirical validation run (Fozzy-first + native probes)
+- `fozzy doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json` passed with deterministic signatures across all runs.
+- `fozzy test --det --strict tests/run.pass.fozzy.json --json` passed.
+- Trace lifecycle passed: `fozzy run --det --record` -> `fozzy trace verify --strict` -> `fozzy replay` -> `fozzy ci`.
+- Host-backed run passed: `fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`.
+- Native deterministic test probe on `.fzy` produced synthetic async artifacts (`asyncCheckpointCount`, `asyncExecution`, timeline `async.schedule` entries).
+- Native deterministic run probe on `.fzy` confirmed routing mode `deterministic-capability-scenario` with generated `.fozzy.json` scenario payload.
+- Native intrinsic probes for `timeout`, `deadline`, `cancel`, `recv` confirmed unresolved native-call diagnostics under `.fzy` native path.
+
+Language async semantics gap
+- `async` is tokenized and consumed in parser but not semantically carried into AST/HIR function models.
+- AST/HIR currently have no explicit async-function field and no await expression node.
+- Await-like behavior is currently inferred via call-name heuristics (for example `callee.contains("await")`) rather than first-class syntax/IR semantics.
+
+Deterministic test-model gap
+- Non-scenario `fz test --det` async behavior is currently derived by source marker counting (`async fn`, `yield`, `checkpoint`, `await` string forms).
+- Deterministic execution plan is synthesized from marker counts (`test`/`async`/`spawn`/`rpc` ops), then executed as placeholder tasks.
+- Resulting runtime semantic evidence is model-driven and useful, but not proof of execution of language async semantics.
+
+Run-path gap (`fz run --det` for `.fzy`)
+- Deterministic native run of `.fzy` routes through emitted capability scenarios (`trace_event` steps), then runs via Fozzy.
+- This path validates capability/event orchestration but does not execute a unified language-level async state machine end to end.
+
+Intrinsic/runtime mismatch gap
+- HIR runtime intrinsic set recognizes `spawn`, `yield`, `checkpoint`, `timeout`, `deadline`, `cancel`, `recv`, `pulse`.
+- Native backend import table exposes only `spawn`, `yield`, `checkpoint`, `pulse` for thread intrinsics.
+- Observed result: unresolved native call diagnostics for `timeout`, `deadline`, `cancel`, `recv`.
+- Additional contract mismatch observed: docs present `timeout(ms)` while current runtime-call signature expects zero args for `timeout`.
+
+What is already strong and production-useful
+- Deterministic executor in Rust includes queueing policies, seeded scheduler behavior, cancellation, timeout handling, deadlock join-cycle detection, IO wait/ready events, and trace event collection.
+- Native runtime shim includes real pthread spawn and process-lifetime join-on-exit, with `yield`/`checkpoint`/`pulse` mapped to `sched_yield`.
+- Deterministic test/replay artifact ecosystem is broad (`trace`, `timeline`, `report`, `explore`, `shrink`, generated scenarios, goal trace).
+
+Net assessment
+- Production-appropriate now: deterministic orchestration/testing infrastructure and replay tooling.
+- Not production-appropriate yet for full async semantics claims expected of a serious systems PL.
+- Highest-priority async path to change that:
+- Carry async semantics from parser -> AST -> HIR (and downstream lowering).
+- Add first-class await representation and type/semantic checks.
+- Eliminate synthetic-only async planning as the primary non-scenario det model.
+- Unify deterministic model and native runtime semantics with end-to-end equivalence gates.
+- Close intrinsic/runtime import gaps and signature mismatches (`timeout`, `deadline`, `cancel`, `recv`).
+
 ## Checklist: Needs To Be Done
+
+### Async Semantics + Concurrency Unification
+- [ ] Carry `async` as first-class semantics from parser through AST/HIR function models.
+- [ ] Add first-class await syntax + AST/HIR representation (not call-name heuristic).
+- [ ] Replace marker-count async planning with semantics-driven scheduling evidence for non-scenario deterministic tests.
+- [ ] Unify `.fzy` deterministic run semantics with language async execution model (not capability scenario-only routing).
+- [ ] Add native/runtime implementations and imports for `timeout`, `deadline`, `cancel`, and `recv`.
+- [ ] Align intrinsic call signatures and docs (`timeout(ms)` and related deadline/cancel contracts).
+- [ ] Add end-to-end async equivalence gate: parser/HIR/FIR/runtime/native vs deterministic model vs scenario/host outputs.
+- [ ] Add focused regression suite for async semantics (spawn/join/cancel/deadline/recv/await interleavings) under strict deterministic replay.
+
+### Systems-Compiler Readiness Gaps (New, Non-Duplicate)
+- [ ] Expand verifier/backend type support beyond `void`/`i32` baseline and enforce end-to-end width/sign correctness (`u*/i*/f*`, pointers, aggregates) across FIR and both native emitters.
+- [ ] Implement real native lowering for `match`/enum/ADT control flow in LLVM + Cranelift (remove no-op behavior in native emit paths).
+- [ ] Add exhaustive pattern diagnostics and semantic checks tied to match lowering (coverage, unreachable arms, guard behavior).
+- [ ] Replace lexical `unsafe` audit scanning with AST/HIR/FIR-backed semantic unsafe-site analysis.
+- [ ] Replace text/index heuristic rename/definition flow with semantic symbol resolution and scope-aware workspace edits.
+- [ ] Extend dependency model beyond path-only dependencies with versioned/remote sources and lockfile-enforced reproducibility.
+- [ ] Replace RPC/FFI TODO stubs for transport/cancellation/deadline with concrete runtime contracts and host/native parity tests.
 
 ### Runtime Networking + HTTP
 - [✅] Enforce real OS `listen()` semantics in host backend.
@@ -132,16 +203,16 @@ Net assessment
 - [✅] Preserve deterministic replay while reducing hot-path latency.
 
 ### Compiler Throughput (FIR + Driver)
-- [ ] Remove repeated clone-heavy FIR/data-flow work.
-- [ ] Reduce clone-heavy module merge/qualification/canonicalization in driver.
-- [ ] Move to shared/interned/arena-backed structures where practical.
-- [ ] Add compile-time perf regression gates for large projects.
+- [✅] Remove repeated clone-heavy FIR/data-flow work.
+- [✅] Reduce clone-heavy module merge/qualification/canonicalization in driver.
+- [✅] Move to ownership-driven/shared data movement where practical.
+- [✅] Add compile-time throughput gating in CI and production gate workflow.
 
 ### Fozzy Production Gates
-- [ ] Close pedantic topology coverage gaps (`uncoveredHotspotCount: 17 -> 0`).
+- [✅] Close pedantic topology coverage gaps (`uncoveredHotspotCount: 17 -> 0`).
 - [✅] Require strict record/verify/replay/ci traces per changed subsystem.
 - [✅] Add required host-backed scenarios for runtime/network HTTP correctness.
-- [ ] Make full Fozzy production gate mandatory in release pipeline.
+- [✅] Make full Fozzy production gate mandatory in release pipeline.
 
 ### Bidirectional C Compatibility
 - [ ] Add imported `extern "C"` lowering for true linker imports.
@@ -175,9 +246,9 @@ Net assessment
 ### Release Flow
 - [✅] Phase 1: correctness fixes (listen, partial I/O, timeout correctness).
 - [✅] Phase 2: runtime hot-path performance fixes (network/executor scope completed).
-- [ ] Phase 3: compiler throughput fixes.
-- [ ] Phase 4: topology closure (`17 -> 0`).
-- [ ] Phase 5: release hardening + strict gate + perf non-regression.
+- [✅] Phase 3: compiler throughput fixes.
+- [✅] Phase 4: topology closure (`17 -> 0`).
+- [✅] Phase 5: release hardening + strict gate + perf non-regression.
 - [ ] Merge remaining production implementation slices.
 - [✅] Remove compatibility shims from runtime hot paths for replaced networking/executor architecture.
 - [✅] Keep deterministic replay stable after scheduler/network redesign.
@@ -238,6 +309,15 @@ Net assessment
 - [✅] `fz abi-check` exists.
 - [✅] FFI panic-boundary policy/checking exists.
 - [✅] Baseline C-export compatibility path is functional.
+
+### Async + Multithreading Baseline
+- [✅] Parser tokenizes `async` keyword.
+- [✅] Deterministic executor provides seeded scheduling policies (`fifo`, `random`, `coverage_guided`).
+- [✅] Deterministic executor includes cancellation, timeout, join-cycle deadlock detection, IO wait/ready, and tracing hooks.
+- [✅] Native runtime shim provides pthread-backed `spawn` and process-lifecycle join-on-exit.
+- [✅] Native runtime shim maps `yield`/`checkpoint`/`pulse` to scheduler yield behavior.
+- [✅] Non-scenario deterministic test artifacts include thread/async schedule traces and timeline/report/explore/shrink manifests.
+- [✅] Fozzy strict deterministic doctor/test and trace verify/replay/ci lifecycle are passing on baseline scenarios.
 
 ### Plan Status
 - [✅] Plan is checklist-only.

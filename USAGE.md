@@ -235,6 +235,12 @@ fozzy replay artifacts/<name>.fozzy --json
 fozzy ci artifacts/<name>.fozzy --json
 ```
 
+Single-command strict production gate:
+
+```bash
+./scripts/fozzy_production_gate.sh
+```
+
 ## 6.2 Host-backed confidence pass
 
 Use host backends when you want real OS/process/fs/http behavior in addition to deterministic scripted checks:

@@ -154,6 +154,12 @@ fozzy ci artifacts/trace.fozzy --json
 fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
 ```
 
+Production gate (strict, no compatibility fallback):
+
+```bash
+./scripts/fozzy_production_gate.sh
+```
+
 ## Example: Native Test Lifecycle
 
 ```bash

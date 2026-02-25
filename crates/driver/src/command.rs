@@ -240,7 +240,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 let resolved = resolve_source(&path)?;
                 let parsed = parse_program(&resolved.source_path)?;
                 let typed = hir::lower(&parsed.module);
-                let fir = fir::build(&typed);
+                let fir = fir::build_owned(typed);
                 let verify_report = verifier::verify(&fir);
                 let diagnostics = verify_report.diagnostics.len();
                 let has_errors = verify_report
@@ -2519,7 +2519,7 @@ fn run_non_scenario_test_plan(
     }
 
     let typed = hir::lower(&parsed.module);
-    let fir = fir::build(&typed);
+    let fir = fir::build_owned(typed);
     let verify_report = verifier::verify_with_policy(&fir, verifier::VerifyPolicy { safe_profile });
     let diagnostics = verify_report.diagnostics.len();
     let has_errors = verify_report

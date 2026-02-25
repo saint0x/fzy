@@ -1,0 +1,28 @@
+name: fozzy-production-gate
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  production-gate:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Workspace tests
+        run: cargo test --workspace
+
+      - name: Fozzy production gate
+        env:
+          SEED: "4242"
+        run: ./scripts/fozzy_production_gate.sh
