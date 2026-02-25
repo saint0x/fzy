@@ -79,14 +79,14 @@ Callback signature is validated by C type contract (`fz_callback_i32_v0`).
 - Unsupported `repr(C)` payload layouts are rejected.
 
 ## Production Matrix Gate
-Run the production gate (includes host-backed C interop matrix):
+Run the canonical ship gate (includes compiler/workspace/FFI + host-backed C interop matrix):
 
 ```bash
-scripts/fozzy_production_gate.sh
+./scripts/ship_release_gate.sh
 ```
 
 Standalone matrix probe:
 
 ```bash
-scripts/c_ffi_matrix.sh
+./scripts/c_ffi_matrix.sh
 ```

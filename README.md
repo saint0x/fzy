@@ -264,9 +264,9 @@ fozzy run tests/live.server.internet.fozzy.json --proc-backend host --fs-backend
 
 ## Plan Tracking
 
-Execution planning docs are maintained locally and intentionally gitignored:
+Execution planning docs are tracked in-repo and versioned:
 
 - `PLAN.md`
 - `FEATURES-TO-SHIP.md`
 
-Keep these updated during implementation, but they are not committed.
+Keep these updated during implementation as release and delivery source-of-truth documents.

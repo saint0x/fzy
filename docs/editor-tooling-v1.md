@@ -39,4 +39,4 @@ Required checks:
 
 - `fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json`
 - `fozzy test --det --strict tests/*.fozzy.json --seed 4242 --json`
-- `./scripts/fozzy_production_gate.sh`
+- `./scripts/ship_release_gate.sh`

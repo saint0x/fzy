@@ -8,6 +8,14 @@ All examples assume you are in repo root:
 cd /Users/deepsaint/Desktop/fozzylang
 ```
 
+If `fz` is not installed globally, define a local fallback once in your shell:
+
+```bash
+if ! command -v fz >/dev/null 2>&1; then
+  fz() { cargo run -q -p fz -- "$@"; }
+fi
+```
+
 ## 1) Minimal fzy file: check/build/test
 
 Create a tiny `.fzy` program:

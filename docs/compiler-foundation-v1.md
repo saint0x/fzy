@@ -16,14 +16,12 @@ Implemented:
 - Call graph construction and reusable AST visitor/walker traversal.
 - Extended match patterns with variant-destructuring form, guard clauses, and or-patterns.
 - Added FIR def-use and liveness analysis output per basic block.
-- Started 1.6 capability/memory work: function-scoped capability requirement propagation and ownership-transfer violation detection.
+- Production verifier integration for capability and memory-safety contracts (including ownership-transfer and lowerability diagnostics).
 
 Current known limits:
-- Full Cranelift and LLVM instruction selection for all expression/statement forms.
-- Full function ABI lowering (stack frames/calling convention details beyond current baseline).
-- Advanced pattern match lowering (destructuring/guards/or-patterns).
-- Dataflow/liveness/def-use analyses and DCE-quality optimization passes.
-- Generic specialization and trait/interface-bounded polymorphism.
+- Optimization depth is intentionally conservative (no aggressive SSA-level optimization pipeline in v1).
+- Generic specialization and trait/interface-bounded polymorphism remain baseline-only.
+- Native lowering is production-hardened for supported signatures; unsupported native signatures are verifier-rejected by policy.
 
 ## Architecture
 
