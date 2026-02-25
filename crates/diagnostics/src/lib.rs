@@ -30,6 +30,7 @@ pub struct Diagnostic {
     pub span: Option<Span>,
     pub fix: Option<String>,
     pub path: Option<String>,
+    pub snippet: Option<String>,
     #[serde(default)]
     pub labels: Vec<Label>,
     #[serde(default)]
@@ -47,6 +48,7 @@ impl Diagnostic {
             span: None,
             fix: None,
             path: None,
+            snippet: None,
             labels: Vec::new(),
             notes: Vec::new(),
             suggested_fixes: Vec::new(),
@@ -78,6 +80,11 @@ impl Diagnostic {
 
     pub fn with_path(mut self, path: impl Into<String>) -> Self {
         self.path = Some(path.into());
+        self
+    }
+
+    pub fn with_snippet(mut self, snippet: impl Into<String>) -> Self {
+        self.snippet = Some(snippet.into());
         self
     }
 

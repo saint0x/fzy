@@ -71,6 +71,16 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 4,
     },
     NativeRuntimeImport {
+        callee: "json.object3",
+        symbol: "fz_native_json_object3",
+        arity: 6,
+    },
+    NativeRuntimeImport {
+        callee: "json.object4",
+        symbol: "fz_native_json_object4",
+        arity: 8,
+    },
+    NativeRuntimeImport {
         callee: "net.method",
         symbol: "fz_native_net_method",
         arity: 1,
@@ -366,6 +376,7 @@ pub fn verify_file(path: &Path) -> Result<Output> {
                     diagnostic.path = Some(resolved.source_path.display().to_string());
                 }
             }
+            enrich_diagnostics_context(&mut diagnostics);
             return Ok(Output {
                 module: module_name.to_string(),
                 nodes: 0,
@@ -385,6 +396,7 @@ pub fn verify_file(path: &Path) -> Result<Output> {
             diagnostic.path = Some(resolved.source_path.display().to_string());
         }
     }
+    enrich_diagnostics_context(&mut diagnostics);
 
     Ok(Output {
         module: fir.name,
@@ -416,6 +428,7 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
                     diagnostic.path = Some(source_path.display().to_string());
                 }
             }
+            enrich_diagnostics_context(&mut diagnostics);
             return Ok(Output {
                 module: module_name.to_string(),
                 nodes: 0,
@@ -435,6 +448,7 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
             diagnostic.path = Some(source_path.display().to_string());
         }
     }
+    enrich_diagnostics_context(&mut diagnostics);
     let llvm = lower_backend_ir(&fir, BackendKind::Llvm);
     let cranelift = lower_backend_ir(&fir, BackendKind::Cranelift);
 
@@ -1004,6 +1018,42 @@ fn render_parse_failure(path: &Path, diagnostics: &[diagnostics::Diagnostic]) ->
     summary.push_str(": ");
     summary.push_str(&details);
     summary
+}
+
+fn enrich_diagnostics_context(diagnostics: &mut [diagnostics::Diagnostic]) {
+    let mut source_cache = HashMap::<String, Vec<String>>::new();
+    for diagnostic in diagnostics {
+        if let Some(path) = &diagnostic.path {
+            let lines = if let Some(lines) = source_cache.get(path) {
+                lines
+            } else if let Ok(source) = std::fs::read_to_string(path) {
+                source_cache.insert(
+                    path.clone(),
+                    source.lines().map(ToString::to_string).collect::<Vec<_>>(),
+                );
+                source_cache
+                    .get(path)
+                    .expect("inserted path is retrievable")
+            } else {
+                continue;
+            };
+            if let Some(span) = &diagnostic.span {
+                if span.start_line > 0
+                    && span.start_line <= lines.len()
+                    && diagnostic.snippet.is_none()
+                {
+                    diagnostic.snippet = Some(lines[span.start_line - 1].clone());
+                }
+                if diagnostic.labels.is_empty() {
+                    diagnostic.labels.push(diagnostics::Label {
+                        message: diagnostic.message.clone(),
+                        primary: true,
+                        span: Some(span.clone()),
+                    });
+                }
+            }
+        }
+    }
 }
 
 fn resolve_declared_module(base_dir: &Path, module_decl: &str) -> Result<PathBuf> {
@@ -3642,37 +3692,91 @@ int32_t fz_native_json_escape(int32_t input_id) {
   return fz_intern_owned(escaped);
 }
 
-int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id) {
-  const char* k1 = fz_lookup_string(k1_id);
-  const char* v1 = fz_lookup_string(v1_id);
-  const char* k2 = fz_lookup_string(k2_id);
-  const char* v2 = fz_lookup_string(v2_id);
-  char* ek1 = fz_json_escape_owned(k1);
-  char* ev1 = fz_json_escape_owned(v1);
-  char* ek2 = fz_json_escape_owned(k2);
-  char* ev2 = fz_json_escape_owned(v2);
-  if (ek1 == NULL || ev1 == NULL || ek2 == NULL || ev2 == NULL) {
-    free(ek1);
-    free(ev1);
-    free(ek2);
-    free(ev2);
+static int32_t fz_native_json_object_from_pairs(const int32_t* ids, int pair_count) {
+  if (ids == NULL || pair_count <= 0) {
+    return fz_intern_slice("{}", 2);
+  }
+  char** escaped = (char**)calloc((size_t)pair_count * 2, sizeof(char*));
+  if (escaped == NULL) {
     return 0;
   }
-  size_t len = strlen(ek1) + strlen(ev1) + strlen(ek2) + strlen(ev2) + 23;
-  char* body = (char*)malloc(len);
+  size_t total = 3;
+  for (int i = 0; i < pair_count; i++) {
+    const char* key = fz_lookup_string(ids[i * 2]);
+    const char* value = fz_lookup_string(ids[(i * 2) + 1]);
+    escaped[i * 2] = fz_json_escape_owned(key);
+    escaped[(i * 2) + 1] = fz_json_escape_owned(value);
+    if (escaped[i * 2] == NULL || escaped[(i * 2) + 1] == NULL) {
+      for (int j = 0; j <= (i * 2) + 1; j++) {
+        free(escaped[j]);
+      }
+      free(escaped);
+      return 0;
+    }
+    total += strlen(escaped[i * 2]) + strlen(escaped[(i * 2) + 1]) + 7;
+  }
+  char* body = (char*)malloc(total);
   if (body == NULL) {
-    free(ek1);
-    free(ev1);
-    free(ek2);
-    free(ev2);
+    for (int i = 0; i < pair_count * 2; i++) {
+      free(escaped[i]);
+    }
+    free(escaped);
     return 0;
   }
-  snprintf(body, len, "{\"%s\":\"%s\",\"%s\":\"%s\"}", ek1, ev1, ek2, ev2);
-  free(ek1);
-  free(ev1);
-  free(ek2);
-  free(ev2);
+  size_t used = 0;
+  body[used++] = '{';
+  for (int i = 0; i < pair_count; i++) {
+    if (i > 0) {
+      body[used++] = ',';
+    }
+    body[used++] = '\"';
+    size_t key_len = strlen(escaped[i * 2]);
+    memcpy(body + used, escaped[i * 2], key_len);
+    used += key_len;
+    body[used++] = '\"';
+    body[used++] = ':';
+    body[used++] = '\"';
+    size_t value_len = strlen(escaped[(i * 2) + 1]);
+    memcpy(body + used, escaped[(i * 2) + 1], value_len);
+    used += value_len;
+    body[used++] = '\"';
+  }
+  body[used++] = '}';
+  body[used] = '\0';
+  for (int i = 0; i < pair_count * 2; i++) {
+    free(escaped[i]);
+  }
+  free(escaped);
   return fz_intern_owned(body);
+}
+
+int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id) {
+  int32_t ids[] = {k1_id, v1_id, k2_id, v2_id};
+  return fz_native_json_object_from_pairs(ids, 2);
+}
+
+int32_t fz_native_json_object3(
+    int32_t k1_id,
+    int32_t v1_id,
+    int32_t k2_id,
+    int32_t v2_id,
+    int32_t k3_id,
+    int32_t v3_id) {
+  int32_t ids[] = {k1_id, v1_id, k2_id, v2_id, k3_id, v3_id};
+  return fz_native_json_object_from_pairs(ids, 3);
+}
+
+int32_t fz_native_json_object4(
+    int32_t k1_id,
+    int32_t v1_id,
+    int32_t k2_id,
+    int32_t v2_id,
+    int32_t k3_id,
+    int32_t v3_id,
+    int32_t k4_id,
+    int32_t v4_id) {
+  int32_t ids[] = {k1_id, v1_id, k2_id, v2_id, k3_id, v3_id, k4_id, v4_id};
+  return fz_native_json_object_from_pairs(ids, 4);
 }
 
 int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id) {
@@ -4735,6 +4839,8 @@ mod tests {
         assert!(shim.contains(
             "int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id)"
         ));
+        assert!(shim.contains("int32_t fz_native_json_object3("));
+        assert!(shim.contains("int32_t fz_native_json_object4("));
         assert!(shim.contains("int32_t fz_native_proc_exit_class(void)"));
         assert!(shim.contains("int32_t fz_native_time_now(void)"));
         assert!(shim.contains("int32_t fz_native_fs_open(void)"));

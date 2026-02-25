@@ -2334,6 +2334,30 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             ],
             str_ty.clone(),
         ),
+        "json.object3" => (
+            vec![
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+            ],
+            str_ty.clone(),
+        ),
+        "json.object4" => (
+            vec![
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+            ],
+            str_ty.clone(),
+        ),
         "time.now" => (vec![], i32.clone()),
         "fs.open" | "fs.write" | "fs.flush" | "fs.atomic_write" | "fs.rename_atomic"
         | "fs.fsync" | "fs.lock" | "fs.read" => (vec![], i32.clone()),

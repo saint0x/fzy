@@ -872,6 +872,9 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
             }
         } else if let Some(path) = &diagnostic.path {
             out.push_str(&format!(" --> {path}\n"));
+            if let Some(snippet) = &diagnostic.snippet {
+                out.push_str(&format!(" snippet: {snippet}\n"));
+            }
         }
         for label in &diagnostic.labels {
             let role = if label.primary { "primary" } else { "related" };
@@ -916,7 +919,8 @@ fn render_code_frame(
     if span.start_line == 0 || span.start_line > lines.len() {
         return None;
     }
-    let line = &lines[span.start_line - 1];
+    let line_idx = span.start_line - 1;
+    let line = &lines[line_idx];
     let gutter = span.start_line.to_string();
     let highlight_start = span.start_col.max(1);
     let highlight_end = if span.end_line == span.start_line {
@@ -927,10 +931,18 @@ fn render_code_frame(
     let mut marker = String::new();
     marker.push_str(&" ".repeat(highlight_start.saturating_sub(1)));
     marker.push_str(&"^".repeat(highlight_end.saturating_sub(highlight_start) + 1));
-    Some(format!(
-        " {gutter} | {line}\n {} | {marker}\n",
-        " ".repeat(gutter.len())
-    ))
+    let mut frame = String::new();
+    if line_idx > 0 {
+        let prev_line_no = span.start_line - 1;
+        frame.push_str(&format!(" {prev_line_no} | {}\n", lines[line_idx - 1]));
+    }
+    frame.push_str(&format!(" {gutter} | {line}\n"));
+    frame.push_str(&format!(" {} | {marker}\n", " ".repeat(gutter.len())));
+    if line_idx + 1 < lines.len() {
+        let next_line_no = span.start_line + 1;
+        frame.push_str(&format!(" {next_line_no} | {}\n", lines[line_idx + 1]));
+    }
+    Some(frame)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -6612,6 +6624,30 @@ mod tests {
         )
         .expect("lsp smoke should succeed");
         assert!(smoke.contains("\"features\""));
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn lsp_diagnostics_json_includes_snippet_and_labels() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-lsp-diagnostics-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    let payload: str = \"unterminated\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        let diagnostics = run(
+            Command::LspDiagnostics {
+                path: source.clone(),
+            },
+            Format::Json,
+        )
+        .expect("lsp diagnostics should succeed");
+        assert!(diagnostics.contains("\"snippet\""));
+        assert!(diagnostics.contains("\"labels\""));
         let _ = std::fs::remove_file(source);
     }
 
