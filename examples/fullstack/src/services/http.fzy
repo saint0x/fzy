@@ -1,7 +1,8 @@
 use core.net;
 
 fn start() -> i32 {
-    let conn = net.connect()
-    defer close(conn)
+    let listener = net.bind()
+    defer close(listener)
+    net.listen(listener)
     return 0
 }

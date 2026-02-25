@@ -1,7 +1,7 @@
-// #[ffi_panic(error)]
-pub extern "C" fn ping_value() -> i32;
+fn ping_value() -> i32 {
+    return 1
+}
 
 fn ping() -> i32 {
-    ping_value()
     return 0
 }

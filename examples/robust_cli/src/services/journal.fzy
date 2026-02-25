@@ -4,7 +4,6 @@ use core.time;
 fn append_event() -> i32 {
     let h = fs.open()
     defer close(h)
-    stream.writer_bound(4096)
     fs.write()
     fs.flush()
     return 0

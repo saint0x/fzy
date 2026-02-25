@@ -1,9 +1,12 @@
+use core.time;
+use core.proc;
+use core.thread;
+
 mod scheduler;
 mod worker;
 
 fn configure_profile() -> i32 {
-    env.load_typed_config()
-    runtime.profile()
+    time.now()
     return 0
 }
 
@@ -14,9 +17,7 @@ fn start() -> i32 {
 }
 
 fn begin_shutdown_drain() -> i32 {
-    signal.watch()
-    runtime.shutdown_begin(2000)
-    runtime.shutdown_drain()
-    runtime.shutdown_ready()
+    process.exec_timeout(2000)
+    checkpoint()
     return 0
 }

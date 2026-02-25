@@ -1,5 +1,4 @@
 use core.time;
-use core.rng;
 use core.fs;
 use core.net;
 use core.thread;
@@ -20,7 +19,7 @@ fn main() -> i32 {
     runtime.start()
     api.touch()
 
-    let seed = try rng.seed() catch 7
+    let seed = time.now()
     match seed { 0 => pulse(), _ => pulse() }
 
     ensures true

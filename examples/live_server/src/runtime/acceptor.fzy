@@ -4,8 +4,8 @@ use core.net;
 fn run() -> i32 {
     let listener = net.bind()
     net.listen(listener)
-    let conn = net.accept(listener)
-    net.poll_register(conn)
+    let conn = net.accept()
+    net.read(conn)
     checkpoint()
     return 0
 }

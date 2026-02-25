@@ -1,14 +1,9 @@
 use core.thread;
-use core.mem;
+use core.time;
 
 fn run() -> i32 {
-    mutex.lock()
-    channel.send()
-    channel.recv()
-    pool.buffer_checkout()
-    pool.buffer_checkin()
-    condvar.signal()
+    time.now()
+    checkpoint()
     yield()
-    mutex.unlock()
     return 0
 }

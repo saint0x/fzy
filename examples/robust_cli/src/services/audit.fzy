@@ -5,12 +5,12 @@ fn log_access() -> i32 {
     process.exec_timeout(200)
     let h = fs.open()
     defer close(h)
-    log.info()
+    log.info("audit.access", "{}")
     return 0
 }
 
 fn audit_privileged_op() -> i32 {
-    capability.audit()
-    secret.redact()
+    process.exit_class()
+    log.warn("audit.privileged", "{}")
     return 0
 }

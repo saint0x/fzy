@@ -2,16 +2,13 @@ use core.proc;
 use core.time;
 
 fn guard() -> i32 {
-    signal.watch()
-    signal.watch()
     process.exec_timeout(500)
     time.now()
     return 0
 }
 
 fn begin_graceful_shutdown() -> i32 {
-    runtime.shutdown_begin(5000)
-    runtime.shutdown_drain()
-    runtime.shutdown_ready()
+    process.exec_timeout(5000)
+    checkpoint()
     return 0
 }

@@ -2,7 +2,6 @@ use core.thread;
 use core.time;
 
 fn tick() -> i32 {
-    queue.bound(1024)
     checkpoint()
     time.now()
     return 0

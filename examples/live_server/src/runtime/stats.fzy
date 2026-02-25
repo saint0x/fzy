@@ -4,9 +4,9 @@ use core.fs;
 
 fn sample() -> i32 {
     checkpoint()
-    metrics.gauge()
-    metrics.gauge()
-    metrics.gauge()
+    log.info("runtime.stats", "{}")
+    log.info("runtime.stats", "{}")
+    log.info("runtime.stats", "{}")
     time.now()
     fs.write()
     yield()

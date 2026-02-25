@@ -1,8 +1,7 @@
 fn boot() -> i32 {
-    env.get()
-    env.get()
-    env.get()
-    manifest.validate()
-    health.contract()
+    env.get("FZ_HOST")
+    env.get("FZ_PORT")
+    env.get("SERVICE_ENV")
+    log.info("cli.boot", "{}")
     return 0
 }

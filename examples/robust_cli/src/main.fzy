@@ -1,5 +1,4 @@
 use core.time;
-use core.rng;
 use core.fs;
 use core.net;
 use core.proc;
@@ -23,10 +22,7 @@ fn main() -> i32 {
     runtime.start()
     api.touch()
 
-    let arena: *u8 = alloc(256)
-    defer free(arena)
-
-    let session_seed: i32 = try rng.seed() catch 101
+    let session_seed: i32 = time.now()
     match session_seed { 0 => pulse(), 1 => pulse(), _ => pulse() }
 
     cli.commands.cmd_init()
@@ -54,8 +50,8 @@ fn main() -> i32 {
     spawn(runtime.scheduler.tick)
 
     runtime.begin_shutdown_drain()
-    syscall.sync()
+    pulse()
 
     ensures true
-    return 64
+    return 0
 }

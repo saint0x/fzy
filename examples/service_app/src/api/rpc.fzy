@@ -1,6 +1,5 @@
 rpc Ping(req: PingReq) -> PingRes;
 
 fn touch() -> i32 {
-    Ping(req)
     return 0
 }

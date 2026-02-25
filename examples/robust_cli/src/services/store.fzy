@@ -5,7 +5,7 @@ use core.time;
 fn open_db() -> i32 {
     let handle = fs.open()
     defer close(handle)
-    fs.lock()
+    fs.flush()
     return 0
 }
 
@@ -23,14 +23,11 @@ fn write_kv() -> i32 {
 fn read_kv() -> i32 {
     let h = fs.open()
     defer close(h)
-    stream.reader_bound(4096)
     fs.read()
     return 0
 }
 
 fn scan_kv() -> i32 {
-    let p: *u8 = alloc(64)
-    defer free(p)
-    queue.bound(128)
+    time.now()
     return 0
 }

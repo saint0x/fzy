@@ -2,8 +2,6 @@ use core.thread;
 use core.net;
 
 fn run() -> i32 {
-    channel.send()
-    channel.recv()
     net.poll_next()
     yield()
     return 0
