@@ -835,7 +835,7 @@ impl Parser {
 
         loop {
             if self.consume(&TokenKind::Dot) {
-                let Some(seg) = self.expect_ident("expected member name after `.`") else {
+                let Some(seg) = self.expect_member_name("expected member name after `.`") else {
                     return None;
                 };
                 expr = Expr::FieldAccess {
@@ -1166,6 +1166,45 @@ impl Parser {
             // `rpc` is a contextual keyword: declarations use keyword position, but
             // module names and paths may still legally use `rpc`.
             TokenKind::KwRpc => Some("rpc".to_string()),
+            _ => {
+                self.push_diag_at(token.line, token.col, message);
+                None
+            }
+        }
+    }
+
+    fn expect_member_name(&mut self, message: &str) -> Option<String> {
+        let token = self.advance()?;
+        match token.kind {
+            TokenKind::Ident(value) => Some(value),
+            TokenKind::KwFn => Some("fn".to_string()),
+            TokenKind::KwPub => Some("pub".to_string()),
+            TokenKind::KwExtern => Some("extern".to_string()),
+            TokenKind::KwAsync => Some("async".to_string()),
+            TokenKind::KwRpc => Some("rpc".to_string()),
+            TokenKind::KwUse => Some("use".to_string()),
+            TokenKind::KwCap => Some("cap".to_string()),
+            TokenKind::KwMod => Some("mod".to_string()),
+            TokenKind::KwStruct => Some("struct".to_string()),
+            TokenKind::KwEnum => Some("enum".to_string()),
+            TokenKind::KwTrait => Some("trait".to_string()),
+            TokenKind::KwImpl => Some("impl".to_string()),
+            TokenKind::KwFor => Some("for".to_string()),
+            TokenKind::KwTest => Some("test".to_string()),
+            TokenKind::KwNondet => Some("nondet".to_string()),
+            TokenKind::KwLet => Some("let".to_string()),
+            TokenKind::KwRequires => Some("requires".to_string()),
+            TokenKind::KwEnsures => Some("ensures".to_string()),
+            TokenKind::KwReturn => Some("return".to_string()),
+            TokenKind::KwDefer => Some("defer".to_string()),
+            TokenKind::KwMatch => Some("match".to_string()),
+            TokenKind::KwIf => Some("if".to_string()),
+            TokenKind::KwElse => Some("else".to_string()),
+            TokenKind::KwWhile => Some("while".to_string()),
+            TokenKind::KwTry => Some("try".to_string()),
+            TokenKind::KwCatch => Some("catch".to_string()),
+            TokenKind::KwTrue => Some("true".to_string()),
+            TokenKind::KwFalse => Some("false".to_string()),
             _ => {
                 self.push_diag_at(token.line, token.col, message);
                 None

@@ -51,6 +51,66 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
+        callee: "str.concat",
+        symbol: "fz_native_str_concat2",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.concat2",
+        symbol: "fz_native_str_concat2",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.concat3",
+        symbol: "fz_native_str_concat3",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "str.concat4",
+        symbol: "fz_native_str_concat4",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "str.contains",
+        symbol: "fz_native_str_contains",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.starts_with",
+        symbol: "fz_native_str_starts_with",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.ends_with",
+        symbol: "fz_native_str_ends_with",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.replace",
+        symbol: "fz_native_str_replace",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "str.trim",
+        symbol: "fz_native_str_trim",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "str.split",
+        symbol: "fz_native_str_split",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.len",
+        symbol: "fz_native_str_len",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "str.slice",
+        symbol: "fz_native_str_slice",
+        arity: 3,
+    },
+    NativeRuntimeImport {
         callee: "http.header",
         symbol: "fz_native_http_header",
         arity: 2,
@@ -61,9 +121,54 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
+        callee: "http.post_json_capture",
+        symbol: "fz_native_http_post_json_capture",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "http.last_status",
+        symbol: "fz_native_http_last_status",
+        arity: 0,
+    },
+    NativeRuntimeImport {
         callee: "json.escape",
         symbol: "fz_native_json_escape",
         arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.str",
+        symbol: "fz_native_json_str",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.raw",
+        symbol: "fz_native_json_raw",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.array1",
+        symbol: "fz_native_json_array1",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.array2",
+        symbol: "fz_native_json_array2",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "json.array3",
+        symbol: "fz_native_json_array3",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "json.array4",
+        symbol: "fz_native_json_array4",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "json.object1",
+        symbol: "fz_native_json_object1",
+        arity: 2,
     },
     NativeRuntimeImport {
         callee: "json.object2",
@@ -81,6 +186,26 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 8,
     },
     NativeRuntimeImport {
+        callee: "json.from_list",
+        symbol: "fz_native_json_from_list",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.from_map",
+        symbol: "fz_native_json_from_map",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.to_list",
+        symbol: "fz_native_json_to_list",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.to_map",
+        symbol: "fz_native_json_to_map",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "net.method",
         symbol: "fz_native_net_method",
         arity: 1,
@@ -93,6 +218,36 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "net.body",
         symbol: "fz_native_net_body",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.header",
+        symbol: "fz_native_net_header",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "net.query",
+        symbol: "fz_native_net_query",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "net.param",
+        symbol: "fz_native_net_param",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "net.headers",
+        symbol: "fz_native_net_headers",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.request_id",
+        symbol: "fz_native_net_request_id",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.remote_addr",
+        symbol: "fz_native_net_remote_addr",
         arity: 1,
     },
     NativeRuntimeImport {
@@ -113,6 +268,21 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "net.close",
         symbol: "fz_native_close",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "route.match",
+        symbol: "fz_native_route_match",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "route.write_404",
+        symbol: "fz_native_route_write_404",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "route.write_405",
+        symbol: "fz_native_route_write_405",
         arity: 1,
     },
     NativeRuntimeImport {
@@ -149,6 +319,206 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         callee: "fs.rename_atomic",
         symbol: "fz_native_fs_rename_atomic",
         arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "fs.read_file",
+        symbol: "fz_native_fs_read_file",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.write_file",
+        symbol: "fz_native_fs_write_file",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "fs.mkdir",
+        symbol: "fz_native_fs_mkdir",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.exists",
+        symbol: "fz_native_fs_exists",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.stat_size",
+        symbol: "fz_native_fs_stat_size",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.listdir",
+        symbol: "fz_native_fs_listdir",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.remove_file",
+        symbol: "fz_native_fs_remove_file",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.temp_file",
+        symbol: "fz_native_fs_temp_file",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "path.join",
+        symbol: "fz_native_path_join",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "path.normalize",
+        symbol: "fz_native_path_normalize",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.new",
+        symbol: "fz_native_list_new",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "list.push",
+        symbol: "fz_native_list_push",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "list.pop",
+        symbol: "fz_native_list_pop",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.len",
+        symbol: "fz_native_list_len",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.get",
+        symbol: "fz_native_list_get",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "list.set",
+        symbol: "fz_native_list_set",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "list.clear",
+        symbol: "fz_native_list_clear",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.join",
+        symbol: "fz_native_list_join",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.new",
+        symbol: "fz_native_map_new",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "map.set",
+        symbol: "fz_native_map_set",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "map.get",
+        symbol: "fz_native_map_get",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.has",
+        symbol: "fz_native_map_has",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.delete",
+        symbol: "fz_native_map_delete",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.keys",
+        symbol: "fz_native_map_keys",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "map.len",
+        symbol: "fz_native_map_len",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "log.info",
+        symbol: "fz_native_log_info",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "log.warn",
+        symbol: "fz_native_log_warn",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "log.error",
+        symbol: "fz_native_log_error",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "log.set_json",
+        symbol: "fz_native_log_set_json",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "log.correlation_id",
+        symbol: "fz_native_log_correlation_id",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "error.code",
+        symbol: "fz_native_error_code",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "error.class",
+        symbol: "fz_native_error_class",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "error.message",
+        symbol: "fz_native_error_message",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "error.context",
+        symbol: "fz_native_error_context",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "time.monotonic_ms",
+        symbol: "fz_native_time_now",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "time.sleep_ms",
+        symbol: "fz_native_time_sleep_ms",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "time.interval",
+        symbol: "fz_native_time_interval",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "time.tick",
+        symbol: "fz_native_time_tick",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "time.elapsed_ms",
+        symbol: "fz_native_time_elapsed_ms",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "time.deadline_after",
+        symbol: "fz_native_time_deadline_after",
+        arity: 1,
     },
     NativeRuntimeImport {
         callee: "close",
@@ -196,6 +566,26 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "process.runv",
+        symbol: "fz_native_proc_runv",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "proc.runv",
+        symbol: "fz_native_proc_runv",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "process.spawnv",
+        symbol: "fz_native_proc_spawnv",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "proc.spawnv",
+        symbol: "fz_native_proc_spawnv",
+        arity: 4,
+    },
+    NativeRuntimeImport {
         callee: "proc.spawn",
         symbol: "fz_native_proc_spawn",
         arity: 1,
@@ -228,6 +618,46 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "proc.wait",
         symbol: "fz_native_proc_wait",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "process.poll",
+        symbol: "fz_native_proc_poll",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "proc.poll",
+        symbol: "fz_native_proc_poll",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "process.event",
+        symbol: "fz_native_proc_event",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "proc.event",
+        symbol: "fz_native_proc_event",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "process.read_stdout",
+        symbol: "fz_native_proc_read_stdout",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "proc.read_stdout",
+        symbol: "fz_native_proc_read_stdout",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "process.read_stderr",
+        symbol: "fz_native_proc_read_stderr",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "proc.read_stderr",
+        symbol: "fz_native_proc_read_stderr",
         arity: 2,
     },
     NativeRuntimeImport {
@@ -2992,6 +3422,7 @@ fn render_native_runtime_shim(string_literals: &[String], task_symbols: &[String
     c.push_str(
         r#"#include <arpa/inet.h>
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -3004,6 +3435,7 @@ fn render_native_runtime_shim(string_literals: &[String], task_symbols: &[String
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -3037,6 +3469,13 @@ extern char** environ;
 #define FZ_MAX_PROC_STATES 1024
 #define FZ_MAX_HTTP_HEADERS 128
 #define FZ_MAX_SPAWN_THREADS 4096
+#define FZ_MAX_CONN_META 128
+#define FZ_MAX_ROUTE_PARAMS 64
+#define FZ_MAX_LISTS 2048
+#define FZ_MAX_LIST_ITEMS 4096
+#define FZ_MAX_MAPS 2048
+#define FZ_MAX_MAP_ENTRIES 4096
+#define FZ_MAX_INTERVALS 512
 
 static char* fz_dynamic_strings[FZ_MAX_DYNAMIC_STRINGS];
 static int fz_dynamic_string_count = 0;
@@ -3051,7 +3490,18 @@ typedef struct {
   int32_t method_id;
   int32_t path_id;
   int32_t body_id;
+  int32_t request_id;
+  int32_t remote_addr_id;
   int keep_alive;
+  int header_count;
+  int32_t header_key_ids[FZ_MAX_CONN_META];
+  int32_t header_value_ids[FZ_MAX_CONN_META];
+  int query_count;
+  int32_t query_key_ids[FZ_MAX_CONN_META];
+  int32_t query_value_ids[FZ_MAX_CONN_META];
+  int param_count;
+  int32_t param_key_ids[FZ_MAX_ROUTE_PARAMS];
+  int32_t param_value_ids[FZ_MAX_ROUTE_PARAMS];
 } fz_conn_state;
 
 static fz_conn_state fz_conn_states[FZ_MAX_CONN_STATES];
@@ -3069,18 +3519,50 @@ typedef struct {
   int stdout_fd;
   int stderr_fd;
   int done;
+  int exit_notified;
   int exit_code;
+  size_t stdout_read_pos;
+  size_t stderr_read_pos;
   int32_t stdout_id;
   int32_t stderr_id;
   fz_bytes_buf stdout_buf;
   fz_bytes_buf stderr_buf;
 } fz_proc_state;
 
+typedef struct {
+  int in_use;
+  int count;
+  char* items[FZ_MAX_LIST_ITEMS];
+} fz_list_state;
+
+typedef struct {
+  int in_use;
+  int count;
+  char* keys[FZ_MAX_MAP_ENTRIES];
+  char* values[FZ_MAX_MAP_ENTRIES];
+} fz_map_state;
+
+typedef struct {
+  int in_use;
+  int32_t period_ms;
+  int64_t next_ms;
+} fz_interval_state;
+
 static fz_proc_state fz_proc_states[FZ_MAX_PROC_STATES];
 static pthread_mutex_t fz_proc_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_proc_default_timeout_ms = 30000;
 static int32_t fz_proc_last_error_id = 0;
 static int32_t fz_last_exit_class = 0;
+static fz_list_state fz_lists[FZ_MAX_LISTS];
+static fz_map_state fz_maps[FZ_MAX_MAPS];
+static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
+static pthread_mutex_t fz_collections_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t fz_time_lock = PTHREAD_MUTEX_INITIALIZER;
+static int32_t fz_conn_request_counter = 0;
+static int32_t fz_last_error_code = 0;
+static int32_t fz_last_error_class = 0;
+static int32_t fz_last_error_message_id = 0;
+static int fz_log_json = 0;
 
 typedef struct {
   int32_t key_id;
@@ -3090,6 +3572,9 @@ typedef struct {
 static fz_http_header_pair fz_http_headers[FZ_MAX_HTTP_HEADERS];
 static int fz_http_header_count = 0;
 static pthread_mutex_t fz_http_lock = PTHREAD_MUTEX_INITIALIZER;
+static int32_t fz_http_last_status = 0;
+static int32_t fz_http_last_body_id = 0;
+static int32_t fz_http_last_error_id = 0;
 static int fz_fs_fd = -1;
 static char fz_fs_base_path[512] = {0};
 static char fz_fs_tmp_path[544] = {0};
@@ -3104,6 +3589,12 @@ typedef struct {
 } fz_spawn_ctx;
 
 static int fz_mark_cloexec(int fd);
+static void fz_proc_set_last_error(const char* msg);
+static int fz_parse_json_string_array(const char* raw, char*** out_items, int* out_count);
+static int fz_parse_json_env_object(const char* raw, char*** out_items, int* out_count);
+static void fz_free_string_list(char** items, int count);
+int32_t fz_native_net_request_id(int32_t conn_fd);
+int32_t fz_native_net_write(int32_t conn_fd, int32_t status_code, int32_t body_id);
 
 
 static const char* fz_lookup_string(int32_t id) {
@@ -3164,6 +3655,80 @@ static int32_t fz_intern_slice(const char* data, size_t len) {
   }
   owned[len] = '\0';
   return fz_intern_owned(owned);
+}
+
+static void fz_set_last_error(int32_t code, int32_t class_id, const char* message) {
+  if (message == NULL) {
+    message = "";
+  }
+  fz_last_error_code = code;
+  fz_last_error_class = class_id;
+  fz_last_error_message_id = fz_intern_slice(message, strlen(message));
+}
+
+static int32_t fz_list_alloc(void) {
+  for (int i = 0; i < FZ_MAX_LISTS; i++) {
+    if (!fz_lists[i].in_use) {
+      memset(&fz_lists[i], 0, sizeof(fz_lists[i]));
+      fz_lists[i].in_use = 1;
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+static fz_list_state* fz_list_get(int32_t handle) {
+  if (handle <= 0 || handle > FZ_MAX_LISTS) {
+    return NULL;
+  }
+  fz_list_state* list = &fz_lists[handle - 1];
+  return list->in_use ? list : NULL;
+}
+
+static int fz_list_push_cstr(fz_list_state* list, const char* value) {
+  if (list == NULL || list->count >= FZ_MAX_LIST_ITEMS) {
+    return -1;
+  }
+  if (value == NULL) {
+    value = "";
+  }
+  char* dup = strdup(value);
+  if (dup == NULL) {
+    return -1;
+  }
+  list->items[list->count++] = dup;
+  return 0;
+}
+
+static int32_t fz_map_alloc(void) {
+  for (int i = 0; i < FZ_MAX_MAPS; i++) {
+    if (!fz_maps[i].in_use) {
+      memset(&fz_maps[i], 0, sizeof(fz_maps[i]));
+      fz_maps[i].in_use = 1;
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+static fz_map_state* fz_map_get(int32_t handle) {
+  if (handle <= 0 || handle > FZ_MAX_MAPS) {
+    return NULL;
+  }
+  fz_map_state* map = &fz_maps[handle - 1];
+  return map->in_use ? map : NULL;
+}
+
+static int fz_map_find_index(fz_map_state* map, const char* key) {
+  if (map == NULL || key == NULL) {
+    return -1;
+  }
+  for (int i = 0; i < map->count; i++) {
+    if (map->keys[i] != NULL && strcmp(map->keys[i], key) == 0) {
+      return i;
+    }
+  }
+  return -1;
 }
 
 static int fz_default_port(void) {
@@ -3604,7 +4169,10 @@ static int32_t fz_proc_state_alloc(pid_t pid, int stdout_fd, int stderr_fd) {
       fz_proc_states[i].stdout_fd = stdout_fd;
       fz_proc_states[i].stderr_fd = stderr_fd;
       fz_proc_states[i].done = 0;
+      fz_proc_states[i].exit_notified = 0;
       fz_proc_states[i].exit_code = -1;
+      fz_proc_states[i].stdout_read_pos = 0;
+      fz_proc_states[i].stderr_read_pos = 0;
       fz_proc_states[i].stdout_id = 0;
       fz_proc_states[i].stderr_id = 0;
       fz_bytes_buf_init(&fz_proc_states[i].stdout_buf);
@@ -3632,8 +4200,6 @@ static void fz_proc_finalize(fz_proc_state* state, int exit_code) {
   state->stderr_id = fz_intern_slice(
       state->stderr_buf.data == NULL ? "" : state->stderr_buf.data,
       state->stderr_buf.data == NULL ? 0 : state->stderr_buf.len);
-  fz_bytes_buf_free(&state->stdout_buf);
-  fz_bytes_buf_free(&state->stderr_buf);
   state->exit_code = exit_code;
   state->done = 1;
 }
@@ -3689,6 +4255,211 @@ int32_t fz_native_time_now(void) {
   return (int32_t)fz_now_ms();
 }
 
+static int32_t fz_native_str_concat(const int32_t* ids, int count) {
+  if (ids == NULL || count <= 0) {
+    return fz_intern_slice("", 0);
+  }
+  size_t total = 0;
+  for (int i = 0; i < count; i++) {
+    total += strlen(fz_lookup_string(ids[i]));
+  }
+  char* out = (char*)malloc(total + 1);
+  if (out == NULL) {
+    return 0;
+  }
+  size_t used = 0;
+  for (int i = 0; i < count; i++) {
+    const char* part = fz_lookup_string(ids[i]);
+    size_t len = strlen(part);
+    if (len > 0) {
+      memcpy(out + used, part, len);
+      used += len;
+    }
+  }
+  out[used] = '\0';
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id) {
+  int32_t ids[] = {a_id, b_id};
+  return fz_native_str_concat(ids, 2);
+}
+
+int32_t fz_native_str_concat3(int32_t a_id, int32_t b_id, int32_t c_id) {
+  int32_t ids[] = {a_id, b_id, c_id};
+  return fz_native_str_concat(ids, 3);
+}
+
+int32_t fz_native_str_concat4(int32_t a_id, int32_t b_id, int32_t c_id, int32_t d_id) {
+  int32_t ids[] = {a_id, b_id, c_id, d_id};
+  return fz_native_str_concat(ids, 4);
+}
+
+int32_t fz_native_str_contains(int32_t haystack_id, int32_t needle_id) {
+  const char* hay = fz_lookup_string(haystack_id);
+  const char* needle = fz_lookup_string(needle_id);
+  if (needle == NULL || needle[0] == '\0') {
+    return 1;
+  }
+  return strstr(hay == NULL ? "" : hay, needle) != NULL ? 1 : 0;
+}
+
+int32_t fz_native_str_starts_with(int32_t value_id, int32_t prefix_id) {
+  const char* value = fz_lookup_string(value_id);
+  const char* prefix = fz_lookup_string(prefix_id);
+  size_t value_len = strlen(value == NULL ? "" : value);
+  size_t prefix_len = strlen(prefix == NULL ? "" : prefix);
+  if (prefix_len > value_len) {
+    return 0;
+  }
+  return strncmp(value == NULL ? "" : value, prefix == NULL ? "" : prefix, prefix_len) == 0 ? 1 : 0;
+}
+
+int32_t fz_native_str_ends_with(int32_t value_id, int32_t suffix_id) {
+  const char* value = fz_lookup_string(value_id);
+  const char* suffix = fz_lookup_string(suffix_id);
+  size_t value_len = strlen(value == NULL ? "" : value);
+  size_t suffix_len = strlen(suffix == NULL ? "" : suffix);
+  if (suffix_len > value_len) {
+    return 0;
+  }
+  return strcmp((value == NULL ? "" : value) + (value_len - suffix_len), suffix == NULL ? "" : suffix) == 0 ? 1 : 0;
+}
+
+int32_t fz_native_str_len(int32_t value_id) {
+  const char* value = fz_lookup_string(value_id);
+  return (int32_t)strlen(value == NULL ? "" : value);
+}
+
+int32_t fz_native_str_trim(int32_t value_id) {
+  const char* value = fz_lookup_string(value_id);
+  if (value == NULL) {
+    return fz_intern_slice("", 0);
+  }
+  size_t len = strlen(value);
+  size_t start = 0;
+  while (start < len && isspace((unsigned char)value[start])) {
+    start++;
+  }
+  size_t end = len;
+  while (end > start && isspace((unsigned char)value[end - 1])) {
+    end--;
+  }
+  return fz_intern_slice(value + start, end - start);
+}
+
+int32_t fz_native_str_slice(int32_t value_id, int32_t start, int32_t span_len) {
+  const char* value = fz_lookup_string(value_id);
+  if (value == NULL) {
+    return fz_intern_slice("", 0);
+  }
+  size_t len = strlen(value);
+  size_t s = (start < 0) ? 0 : (size_t)start;
+  if (s > len) {
+    s = len;
+  }
+  size_t n = span_len < 0 ? 0 : (size_t)span_len;
+  if (s + n > len) {
+    n = len - s;
+  }
+  return fz_intern_slice(value + s, n);
+}
+
+int32_t fz_native_str_replace(int32_t value_id, int32_t from_id, int32_t to_id) {
+  const char* value = fz_lookup_string(value_id);
+  const char* from = fz_lookup_string(from_id);
+  const char* to = fz_lookup_string(to_id);
+  if (value == NULL) value = "";
+  if (from == NULL || from[0] == '\0') {
+    return fz_intern_slice(value, strlen(value));
+  }
+  if (to == NULL) {
+    to = "";
+  }
+  size_t from_len = strlen(from);
+  size_t to_len = strlen(to);
+  size_t value_len = strlen(value);
+  size_t cap = value_len + 1;
+  char* out = (char*)malloc(cap);
+  if (out == NULL) {
+    return 0;
+  }
+  size_t out_len = 0;
+  const char* cursor = value;
+  const char* hit = NULL;
+  while ((hit = strstr(cursor, from)) != NULL) {
+    size_t prefix = (size_t)(hit - cursor);
+    size_t needed = out_len + prefix + to_len + 1;
+    if (needed > cap) {
+      while (cap < needed) cap *= 2;
+      char* next = (char*)realloc(out, cap);
+      if (next == NULL) {
+        free(out);
+        return 0;
+      }
+      out = next;
+    }
+    memcpy(out + out_len, cursor, prefix);
+    out_len += prefix;
+    memcpy(out + out_len, to, to_len);
+    out_len += to_len;
+    cursor = hit + from_len;
+  }
+  size_t tail = strlen(cursor);
+  if (out_len + tail + 1 > cap) {
+    cap = out_len + tail + 1;
+    char* next = (char*)realloc(out, cap);
+    if (next == NULL) {
+      free(out);
+      return 0;
+    }
+    out = next;
+  }
+  memcpy(out + out_len, cursor, tail);
+  out_len += tail;
+  out[out_len] = '\0';
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_str_split(int32_t value_id, int32_t sep_id) {
+  const char* value = fz_lookup_string(value_id);
+  const char* sep = fz_lookup_string(sep_id);
+  if (value == NULL) value = "";
+  if (sep == NULL) sep = "";
+  int32_t handle = fz_list_alloc();
+  if (handle < 0) {
+    return -1;
+  }
+  fz_list_state* list = fz_list_get(handle);
+  if (list == NULL) {
+    return -1;
+  }
+  size_t sep_len = strlen(sep);
+  if (sep_len == 0) {
+    (void)fz_list_push_cstr(list, value);
+    return handle;
+  }
+  const char* cursor = value;
+  const char* hit = NULL;
+  while ((hit = strstr(cursor, sep)) != NULL) {
+    size_t n = (size_t)(hit - cursor);
+    char* part = (char*)malloc(n + 1);
+    if (part == NULL) {
+      break;
+    }
+    memcpy(part, cursor, n);
+    part[n] = '\0';
+    if (fz_list_push_cstr(list, part) != 0) {
+      free(part);
+      break;
+    }
+    free(part);
+    cursor = hit + sep_len;
+  }
+  (void)fz_list_push_cstr(list, cursor);
+  return handle;
+}
+
 int32_t fz_native_http_header(int32_t key_id, int32_t value_id) {
   if (key_id <= 0 || value_id <= 0) {
     return -1;
@@ -3714,35 +4485,101 @@ int32_t fz_native_json_escape(int32_t input_id) {
   return fz_intern_owned(escaped);
 }
 
+int32_t fz_native_json_str(int32_t input_id) {
+  const char* input = fz_lookup_string(input_id);
+  char* escaped = fz_json_escape_owned(input);
+  if (escaped == NULL) {
+    return 0;
+  }
+  size_t len = strlen(escaped);
+  char* wrapped = (char*)malloc(len + 3);
+  if (wrapped == NULL) {
+    free(escaped);
+    return 0;
+  }
+  wrapped[0] = '\"';
+  if (len > 0) {
+    memcpy(wrapped + 1, escaped, len);
+  }
+  wrapped[len + 1] = '\"';
+  wrapped[len + 2] = '\0';
+  free(escaped);
+  return fz_intern_owned(wrapped);
+}
+
+int32_t fz_native_json_raw(int32_t input_id) {
+  const char* input = fz_lookup_string(input_id);
+  if (input == NULL || input[0] == '\0') {
+    return fz_intern_slice("null", 4);
+  }
+  return fz_intern_slice(input, strlen(input));
+}
+
+static int32_t fz_native_json_array_from_values(const int32_t* ids, int value_count) {
+  if (ids == NULL || value_count <= 0) {
+    return fz_intern_slice("[]", 2);
+  }
+  size_t total = 3;
+  for (int i = 0; i < value_count; i++) {
+    const char* value = fz_lookup_string(ids[i]);
+    total += strlen(value == NULL || value[0] == '\0' ? "null" : value) + 1;
+  }
+  char* out = (char*)malloc(total);
+  if (out == NULL) {
+    return 0;
+  }
+  size_t used = 0;
+  out[used++] = '[';
+  for (int i = 0; i < value_count; i++) {
+    if (i > 0) {
+      out[used++] = ',';
+    }
+    const char* value = fz_lookup_string(ids[i]);
+    if (value == NULL || value[0] == '\0') {
+      value = "null";
+    }
+    size_t len = strlen(value);
+    if (len > 0) {
+      memcpy(out + used, value, len);
+      used += len;
+    }
+  }
+  out[used++] = ']';
+  out[used] = '\0';
+  return fz_intern_owned(out);
+}
+
 static int32_t fz_native_json_object_from_pairs(const int32_t* ids, int pair_count) {
   if (ids == NULL || pair_count <= 0) {
     return fz_intern_slice("{}", 2);
   }
-  char** escaped = (char**)calloc((size_t)pair_count * 2, sizeof(char*));
-  if (escaped == NULL) {
+  char** escaped_keys = (char**)calloc((size_t)pair_count, sizeof(char*));
+  if (escaped_keys == NULL) {
     return 0;
   }
   size_t total = 3;
   for (int i = 0; i < pair_count; i++) {
     const char* key = fz_lookup_string(ids[i * 2]);
-    const char* value = fz_lookup_string(ids[(i * 2) + 1]);
-    escaped[i * 2] = fz_json_escape_owned(key);
-    escaped[(i * 2) + 1] = fz_json_escape_owned(value);
-    if (escaped[i * 2] == NULL || escaped[(i * 2) + 1] == NULL) {
-      for (int j = 0; j <= (i * 2) + 1; j++) {
-        free(escaped[j]);
+    const char* raw_value = fz_lookup_string(ids[(i * 2) + 1]);
+    if (raw_value == NULL || raw_value[0] == '\0') {
+      raw_value = "null";
+    }
+    escaped_keys[i] = fz_json_escape_owned(key);
+    if (escaped_keys[i] == NULL) {
+      for (int j = 0; j <= i; j++) {
+        free(escaped_keys[j]);
       }
-      free(escaped);
+      free(escaped_keys);
       return 0;
     }
-    total += strlen(escaped[i * 2]) + strlen(escaped[(i * 2) + 1]) + 7;
+    total += strlen(escaped_keys[i]) + strlen(raw_value) + 5;
   }
   char* body = (char*)malloc(total);
   if (body == NULL) {
-    for (int i = 0; i < pair_count * 2; i++) {
-      free(escaped[i]);
+    for (int i = 0; i < pair_count; i++) {
+      free(escaped_keys[i]);
     }
-    free(escaped);
+    free(escaped_keys);
     return 0;
   }
   size_t used = 0;
@@ -3752,24 +4589,51 @@ static int32_t fz_native_json_object_from_pairs(const int32_t* ids, int pair_cou
       body[used++] = ',';
     }
     body[used++] = '\"';
-    size_t key_len = strlen(escaped[i * 2]);
-    memcpy(body + used, escaped[i * 2], key_len);
+    size_t key_len = strlen(escaped_keys[i]);
+    memcpy(body + used, escaped_keys[i], key_len);
     used += key_len;
     body[used++] = '\"';
     body[used++] = ':';
-    body[used++] = '\"';
-    size_t value_len = strlen(escaped[(i * 2) + 1]);
-    memcpy(body + used, escaped[(i * 2) + 1], value_len);
+    const char* raw_value = fz_lookup_string(ids[(i * 2) + 1]);
+    if (raw_value == NULL || raw_value[0] == '\0') {
+      raw_value = "null";
+    }
+    size_t value_len = strlen(raw_value);
+    memcpy(body + used, raw_value, value_len);
     used += value_len;
-    body[used++] = '\"';
   }
   body[used++] = '}';
   body[used] = '\0';
-  for (int i = 0; i < pair_count * 2; i++) {
-    free(escaped[i]);
+  for (int i = 0; i < pair_count; i++) {
+    free(escaped_keys[i]);
   }
-  free(escaped);
+  free(escaped_keys);
   return fz_intern_owned(body);
+}
+
+int32_t fz_native_json_array1(int32_t v1_id) {
+  int32_t ids[] = {v1_id};
+  return fz_native_json_array_from_values(ids, 1);
+}
+
+int32_t fz_native_json_array2(int32_t v1_id, int32_t v2_id) {
+  int32_t ids[] = {v1_id, v2_id};
+  return fz_native_json_array_from_values(ids, 2);
+}
+
+int32_t fz_native_json_array3(int32_t v1_id, int32_t v2_id, int32_t v3_id) {
+  int32_t ids[] = {v1_id, v2_id, v3_id};
+  return fz_native_json_array_from_values(ids, 3);
+}
+
+int32_t fz_native_json_array4(int32_t v1_id, int32_t v2_id, int32_t v3_id, int32_t v4_id) {
+  int32_t ids[] = {v1_id, v2_id, v3_id, v4_id};
+  return fz_native_json_array_from_values(ids, 4);
+}
+
+int32_t fz_native_json_object1(int32_t k1_id, int32_t v1_id) {
+  int32_t ids[] = {k1_id, v1_id};
+  return fz_native_json_object_from_pairs(ids, 1);
 }
 
 int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id) {
@@ -3801,14 +4665,466 @@ int32_t fz_native_json_object4(
   return fz_native_json_object_from_pairs(ids, 4);
 }
 
-int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id) {
+int32_t fz_native_list_new(void) {
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_list_alloc();
+  pthread_mutex_unlock(&fz_collections_lock);
+  return handle;
+}
+
+int32_t fz_native_list_push(int32_t handle, int32_t value_id) {
+  const char* value = fz_lookup_string(value_id);
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_list_state* list = fz_list_get(handle);
+  int ok = list != NULL && fz_list_push_cstr(list, value) == 0 ? 0 : -1;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return ok;
+}
+
+int32_t fz_native_list_pop(int32_t handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_list_state* list = fz_list_get(handle);
+  if (list == NULL || list->count <= 0) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return fz_intern_slice("", 0);
+  }
+  char* item = list->items[list->count - 1];
+  list->items[list->count - 1] = NULL;
+  list->count--;
+  int32_t id = fz_intern_slice(item == NULL ? "" : item, item == NULL ? 0 : strlen(item));
+  free(item);
+  pthread_mutex_unlock(&fz_collections_lock);
+  return id;
+}
+
+int32_t fz_native_list_len(int32_t handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_list_state* list = fz_list_get(handle);
+  int32_t len = list == NULL ? -1 : list->count;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return len;
+}
+
+int32_t fz_native_list_get(int32_t handle, int32_t index) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_list_state* list = fz_list_get(handle);
+  if (list == NULL || index < 0 || index >= list->count) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return fz_intern_slice("", 0);
+  }
+  const char* item = list->items[index] == NULL ? "" : list->items[index];
+  int32_t id = fz_intern_slice(item, strlen(item));
+  pthread_mutex_unlock(&fz_collections_lock);
+  return id;
+}
+
+int32_t fz_native_list_set(int32_t handle, int32_t index, int32_t value_id) {
+  const char* value = fz_lookup_string(value_id);
+  if (value == NULL) value = "";
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_list_state* list = fz_list_get(handle);
+  if (list == NULL || index < 0 || index >= list->count) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  char* dup = strdup(value);
+  if (dup == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  free(list->items[index]);
+  list->items[index] = dup;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return 0;
+}
+
+int32_t fz_native_list_clear(int32_t handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_list_state* list = fz_list_get(handle);
+  if (list == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  for (int i = 0; i < list->count; i++) {
+    free(list->items[i]);
+    list->items[i] = NULL;
+  }
+  list->count = 0;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return 0;
+}
+
+int32_t fz_native_list_join(int32_t handle, int32_t sep_id) {
+  const char* sep = fz_lookup_string(sep_id);
+  if (sep == NULL) sep = "";
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_list_state* list = fz_list_get(handle);
+  if (list == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return fz_intern_slice("", 0);
+  }
+  size_t sep_len = strlen(sep);
+  size_t total = 1;
+  for (int i = 0; i < list->count; i++) {
+    total += strlen(list->items[i] == NULL ? "" : list->items[i]);
+    if (i > 0) total += sep_len;
+  }
+  char* out = (char*)malloc(total);
+  if (out == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  size_t used = 0;
+  for (int i = 0; i < list->count; i++) {
+    if (i > 0 && sep_len > 0) {
+      memcpy(out + used, sep, sep_len);
+      used += sep_len;
+    }
+    const char* item = list->items[i] == NULL ? "" : list->items[i];
+    size_t len = strlen(item);
+    if (len > 0) {
+      memcpy(out + used, item, len);
+      used += len;
+    }
+  }
+  out[used] = '\0';
+  pthread_mutex_unlock(&fz_collections_lock);
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_map_new(void) {
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_map_alloc();
+  pthread_mutex_unlock(&fz_collections_lock);
+  return handle;
+}
+
+int32_t fz_native_map_set(int32_t handle, int32_t key_id, int32_t value_id) {
+  const char* key = fz_lookup_string(key_id);
+  const char* value = fz_lookup_string(value_id);
+  if (key == NULL || key[0] == '\0') {
+    return -1;
+  }
+  if (value == NULL) value = "";
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_map_state* map = fz_map_get(handle);
+  if (map == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  int idx = fz_map_find_index(map, key);
+  if (idx >= 0) {
+    char* dup = strdup(value);
+    if (dup == NULL) {
+      pthread_mutex_unlock(&fz_collections_lock);
+      return -1;
+    }
+    free(map->values[idx]);
+    map->values[idx] = dup;
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  if (map->count >= FZ_MAX_MAP_ENTRIES) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  map->keys[map->count] = strdup(key);
+  map->values[map->count] = strdup(value);
+  if (map->keys[map->count] == NULL || map->values[map->count] == NULL) {
+    free(map->keys[map->count]);
+    free(map->values[map->count]);
+    map->keys[map->count] = NULL;
+    map->values[map->count] = NULL;
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  map->count++;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return 0;
+}
+
+int32_t fz_native_map_get(int32_t handle, int32_t key_id) {
+  const char* key = fz_lookup_string(key_id);
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_map_state* map = fz_map_get(handle);
+  if (map == NULL || key == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return fz_intern_slice("", 0);
+  }
+  int idx = fz_map_find_index(map, key);
+  const char* value = (idx >= 0 && map->values[idx] != NULL) ? map->values[idx] : "";
+  int32_t out = fz_intern_slice(value, strlen(value));
+  pthread_mutex_unlock(&fz_collections_lock);
+  return out;
+}
+
+int32_t fz_native_map_has(int32_t handle, int32_t key_id) {
+  const char* key = fz_lookup_string(key_id);
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_map_state* map = fz_map_get(handle);
+  int ok = (map != NULL && key != NULL && fz_map_find_index(map, key) >= 0) ? 1 : 0;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return ok;
+}
+
+int32_t fz_native_map_delete(int32_t handle, int32_t key_id) {
+  const char* key = fz_lookup_string(key_id);
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_map_state* map = fz_map_get(handle);
+  if (map == NULL || key == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  int idx = fz_map_find_index(map, key);
+  if (idx < 0) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  free(map->keys[idx]);
+  free(map->values[idx]);
+  for (int i = idx; i + 1 < map->count; i++) {
+    map->keys[i] = map->keys[i + 1];
+    map->values[i] = map->values[i + 1];
+  }
+  map->count--;
+  map->keys[map->count] = NULL;
+  map->values[map->count] = NULL;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return 1;
+}
+
+int32_t fz_native_map_keys(int32_t handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_map_state* map = fz_map_get(handle);
+  if (map == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  int32_t list_handle = fz_list_alloc();
+  fz_list_state* list = fz_list_get(list_handle);
+  if (list == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  for (int i = 0; i < map->count; i++) {
+    (void)fz_list_push_cstr(list, map->keys[i] == NULL ? "" : map->keys[i]);
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  return list_handle;
+}
+
+int32_t fz_native_map_len(int32_t handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_map_state* map = fz_map_get(handle);
+  int32_t len = map == NULL ? -1 : map->count;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return len;
+}
+
+int32_t fz_native_json_from_list(int32_t list_handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_list_state* list = fz_list_get(list_handle);
+  if (list == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return fz_intern_slice("[]", 2);
+  }
+  size_t total = 3;
+  for (int i = 0; i < list->count; i++) {
+    char* escaped = fz_json_escape_owned(list->items[i] == NULL ? "" : list->items[i]);
+    if (escaped == NULL) continue;
+    total += strlen(escaped) + 3;
+    free(escaped);
+  }
+  char* out = (char*)malloc(total);
+  if (out == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  size_t used = 0;
+  out[used++] = '[';
+  for (int i = 0; i < list->count; i++) {
+    if (i > 0) out[used++] = ',';
+    char* escaped = fz_json_escape_owned(list->items[i] == NULL ? "" : list->items[i]);
+    if (escaped == NULL) {
+      out[used++] = '\"';
+      out[used++] = '\"';
+      continue;
+    }
+    out[used++] = '\"';
+    size_t n = strlen(escaped);
+    memcpy(out + used, escaped, n);
+    used += n;
+    out[used++] = '\"';
+    free(escaped);
+  }
+  out[used++] = ']';
+  out[used] = '\0';
+  pthread_mutex_unlock(&fz_collections_lock);
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_json_from_map(int32_t map_handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_map_state* map = fz_map_get(map_handle);
+  if (map == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return fz_intern_slice("{}", 2);
+  }
+  size_t total = 3;
+  for (int i = 0; i < map->count; i++) {
+    char* k = fz_json_escape_owned(map->keys[i] == NULL ? "" : map->keys[i]);
+    char* v = fz_json_escape_owned(map->values[i] == NULL ? "" : map->values[i]);
+    if (k != NULL && v != NULL) {
+      total += strlen(k) + strlen(v) + 7;
+    }
+    free(k);
+    free(v);
+  }
+  char* out = (char*)malloc(total);
+  if (out == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  size_t used = 0;
+  out[used++] = '{';
+  for (int i = 0; i < map->count; i++) {
+    if (i > 0) out[used++] = ',';
+    char* k = fz_json_escape_owned(map->keys[i] == NULL ? "" : map->keys[i]);
+    char* v = fz_json_escape_owned(map->values[i] == NULL ? "" : map->values[i]);
+    if (k == NULL || v == NULL) {
+      free(k);
+      free(v);
+      out[used++] = '\"';
+      out[used++] = '\"';
+      out[used++] = ':';
+      out[used++] = '\"';
+      out[used++] = '\"';
+      continue;
+    }
+    out[used++] = '\"';
+    size_t kn = strlen(k);
+    memcpy(out + used, k, kn);
+    used += kn;
+    out[used++] = '\"';
+    out[used++] = ':';
+    out[used++] = '\"';
+    size_t vn = strlen(v);
+    memcpy(out + used, v, vn);
+    used += vn;
+    out[used++] = '\"';
+    free(k);
+    free(v);
+  }
+  out[used++] = '}';
+  out[used] = '\0';
+  pthread_mutex_unlock(&fz_collections_lock);
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_json_to_list(int32_t json_id) {
+  const char* raw = fz_lookup_string(json_id);
+  char** items = NULL;
+  int count = 0;
+  if (fz_parse_json_string_array(raw, &items, &count) != 0) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_list_alloc();
+  fz_list_state* list = fz_list_get(handle);
+  if (list != NULL) {
+    for (int i = 0; i < count; i++) {
+      (void)fz_list_push_cstr(list, items[i] == NULL ? "" : items[i]);
+    }
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  fz_free_string_list(items, count);
+  return handle;
+}
+
+int32_t fz_native_json_to_map(int32_t json_id) {
+  const char* raw = fz_lookup_string(json_id);
+  char** pairs = NULL;
+  int count = 0;
+  if (fz_parse_json_env_object(raw, &pairs, &count) != 0) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_map_alloc();
+  fz_map_state* map = fz_map_get(handle);
+  if (map != NULL) {
+    for (int i = 0; i < count && map->count < FZ_MAX_MAP_ENTRIES; i++) {
+      char* eq = strchr(pairs[i], '=');
+      if (eq == NULL) continue;
+      *eq = '\0';
+      map->keys[map->count] = strdup(pairs[i]);
+      map->values[map->count] = strdup(eq + 1);
+      if (map->keys[map->count] != NULL && map->values[map->count] != NULL) {
+        map->count++;
+      }
+    }
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  fz_free_string_list(pairs, count);
+  return handle;
+}
+
+static void fz_http_set_last_result(int status_code, const char* body, const char* err) {
+  if (body == NULL) {
+    body = "";
+  }
+  if (err == NULL) {
+    err = "";
+  }
+  pthread_mutex_lock(&fz_http_lock);
+  fz_http_last_status = status_code;
+  fz_http_last_body_id = fz_intern_slice(body, strlen(body));
+  fz_http_last_error_id = fz_intern_slice(err, strlen(err));
+  pthread_mutex_unlock(&fz_http_lock);
+}
+
+static int fz_http_extract_status(char* payload, size_t payload_len, int* status_code, size_t* body_len) {
+  if (status_code != NULL) {
+    *status_code = 0;
+  }
+  if (body_len != NULL) {
+    *body_len = payload_len;
+  }
+  if (payload == NULL || payload_len == 0) {
+    return -1;
+  }
+  ssize_t i = (ssize_t)payload_len - 1;
+  while (i >= 0 && (payload[i] == '\n' || payload[i] == '\r' || payload[i] == ' ' || payload[i] == '\t')) {
+    i--;
+  }
+  if (i < 2) {
+    return -1;
+  }
+  if (!isdigit((unsigned char)payload[i]) || !isdigit((unsigned char)payload[i - 1]) || !isdigit((unsigned char)payload[i - 2])) {
+    return -1;
+  }
+  int parsed = (payload[i - 2] - '0') * 100 + (payload[i - 1] - '0') * 10 + (payload[i] - '0');
+  ssize_t j = i - 3;
+  while (j >= 0 && (payload[j] == '\n' || payload[j] == '\r')) {
+    j--;
+  }
+  if (status_code != NULL) {
+    *status_code = parsed;
+  }
+  if (body_len != NULL) {
+    *body_len = (size_t)(j + 1);
+  }
+  return 0;
+}
+
+static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_id, int return_body) {
   const char* endpoint = fz_lookup_string(endpoint_id);
   const char* body = fz_lookup_string(body_id);
   if (endpoint == NULL || endpoint[0] == '\0') {
     fz_last_exit_class = 3;
-    return -1;
+    fz_http_set_last_result(0, "", "http_post_json: empty endpoint");
+    return return_body ? fz_intern_slice("", 0) : -1;
   }
-  if (body == NULL) {
+  if (body == NULL || body[0] == '\0') {
     body = "{}";
   }
 
@@ -3835,12 +5151,13 @@ int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id) {
   fz_http_header_count = 0;
   pthread_mutex_unlock(&fz_http_lock);
 
-  int max_args = 16 + (header_count * 2);
+  int max_args = 20 + (header_count * 2);
   char** argv = (char**)calloc((size_t)max_args, sizeof(char*));
   if (argv == NULL) {
     for (int i = 0; i < header_count; i++) free(header_buf[i]);
     fz_last_exit_class = 3;
-    return -1;
+    fz_http_set_last_result(0, "", "http_post_json: alloc failed");
+    return return_body ? fz_intern_slice("", 0) : -1;
   }
   int ai = 0;
   argv[ai++] = "curl";
@@ -3854,19 +5171,59 @@ int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id) {
   }
   argv[ai++] = "--data";
   argv[ai++] = (char*)body;
+  argv[ai++] = "-w";
+  argv[ai++] = "\n%{http_code}";
   argv[ai++] = NULL;
 
-  pid_t pid = fork();
-  if (pid < 0) {
+  int out_pipe[2];
+  if (pipe(out_pipe) != 0) {
     free(argv);
     for (int i = 0; i < header_count; i++) free(header_buf[i]);
     fz_last_exit_class = 3;
-    return -1;
+    fz_http_set_last_result(0, "", "http_post_json: pipe failed");
+    return return_body ? fz_intern_slice("", 0) : -1;
   }
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    free(argv);
+    for (int i = 0; i < header_count; i++) free(header_buf[i]);
+    fz_last_exit_class = 3;
+    fz_http_set_last_result(0, "", "http_post_json: fork failed");
+    return return_body ? fz_intern_slice("", 0) : -1;
+  }
+
   if (pid == 0) {
+    (void)dup2(out_pipe[1], STDOUT_FILENO);
+    close(out_pipe[0]);
+    close(out_pipe[1]);
     execvp("curl", argv);
     _exit(127);
   }
+
+  close(out_pipe[1]);
+  fz_bytes_buf out;
+  fz_bytes_buf_init(&out);
+  for (;;) {
+    char tmp[4096];
+    ssize_t got = read(out_pipe[0], tmp, sizeof(tmp));
+    if (got > 0) {
+      if (fz_bytes_buf_append(&out, tmp, (size_t)got) != 0) {
+        break;
+      }
+      continue;
+    }
+    if (got == 0) {
+      break;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    break;
+  }
+  close(out_pipe[0]);
 
   int status = 0;
   int waited = waitpid(pid, &status, 0);
@@ -3874,9 +5231,34 @@ int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id) {
   for (int i = 0; i < header_count; i++) free(header_buf[i]);
   if (waited < 0) {
     fz_last_exit_class = 3;
-    return -1;
+    fz_http_set_last_result(0, "", "http_post_json: waitpid failed");
+    fz_bytes_buf_free(&out);
+    return return_body ? fz_intern_slice("", 0) : -1;
   }
   fz_last_exit_class = fz_exit_class_from_status(0, status, 0);
+
+  int status_code = 0;
+  size_t body_len = out.len;
+  (void)fz_http_extract_status(out.data, out.len, &status_code, &body_len);
+  const char* body_text = out.data == NULL ? "" : out.data;
+  char saved = '\0';
+  if (out.data != NULL && body_len < out.len) {
+    saved = out.data[body_len];
+    out.data[body_len] = '\0';
+  }
+  fz_http_set_last_result(status_code, body_text, "");
+  int32_t body_value_id = fz_intern_slice(body_text, strlen(body_text));
+  if (out.data != NULL && body_len < out.len) {
+    out.data[body_len] = saved;
+  }
+  fz_bytes_buf_free(&out);
+
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+    return return_body ? body_value_id : 0;
+  }
+  if (return_body) {
+    return body_value_id;
+  }
   if (WIFEXITED(status)) {
     return WEXITSTATUS(status);
   }
@@ -3884,6 +5266,166 @@ int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id) {
     return 128 + WTERMSIG(status);
   }
   return -1;
+}
+
+int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id) {
+  return fz_native_http_post_json_inner(endpoint_id, body_id, 0);
+}
+
+int32_t fz_native_http_post_json_capture(int32_t endpoint_id, int32_t body_id) {
+  return fz_native_http_post_json_inner(endpoint_id, body_id, 1);
+}
+
+int32_t fz_native_http_last_status(void) {
+  pthread_mutex_lock(&fz_http_lock);
+  int32_t value = fz_http_last_status;
+  pthread_mutex_unlock(&fz_http_lock);
+  return value;
+}
+
+int32_t fz_native_http_last_body(void) {
+  pthread_mutex_lock(&fz_http_lock);
+  int32_t value = fz_http_last_body_id;
+  pthread_mutex_unlock(&fz_http_lock);
+  return value;
+}
+
+int32_t fz_native_http_last_error(void) {
+  pthread_mutex_lock(&fz_http_lock);
+  int32_t value = fz_http_last_error_id;
+  pthread_mutex_unlock(&fz_http_lock);
+  return value;
+}
+
+int32_t fz_native_error_code(void) {
+  return fz_last_error_code;
+}
+
+int32_t fz_native_error_class(void) {
+  return fz_last_error_class;
+}
+
+int32_t fz_native_error_message(void) {
+  return fz_last_error_message_id;
+}
+
+int32_t fz_native_error_context(int32_t ctx_id) {
+  const char* ctx = fz_lookup_string(ctx_id);
+  const char* msg = fz_lookup_string(fz_last_error_message_id);
+  if (ctx == NULL || ctx[0] == '\0') {
+    return 0;
+  }
+  if (msg == NULL) {
+    msg = "";
+  }
+  size_t n = strlen(msg) + strlen(ctx) + 4;
+  char* out = (char*)malloc(n);
+  if (out == NULL) {
+    return -1;
+  }
+  snprintf(out, n, "%s: %s", msg, ctx);
+  fz_last_error_message_id = fz_intern_owned(out);
+  return 0;
+}
+
+static int32_t fz_log_emit(const char* level, const char* message, const char* fields) {
+  if (level == NULL) level = "info";
+  if (message == NULL) message = "";
+  if (fields == NULL) fields = "{}";
+  int64_t ts = fz_now_ms();
+  if (fz_log_json || fields[0] != '\0') {
+    fprintf(stdout, "{\"ts\":%lld,\"level\":\"%s\",\"msg\":\"", (long long)ts, level);
+    for (const char* p = message; *p; p++) {
+      if (*p == '"' || *p == '\\') fputc('\\', stdout);
+      fputc(*p, stdout);
+    }
+    fprintf(stdout, "\",\"fields\":%s}\n", fields[0] == '\0' ? "{}" : fields);
+  } else {
+    fprintf(stdout, "[%lld] %s %s\n", (long long)ts, level, message);
+  }
+  fflush(stdout);
+  return 0;
+}
+
+int32_t fz_native_log_info(int32_t message_id, int32_t fields_id) {
+  return fz_log_emit("info", fz_lookup_string(message_id), fz_lookup_string(fields_id));
+}
+
+int32_t fz_native_log_warn(int32_t message_id, int32_t fields_id) {
+  return fz_log_emit("warn", fz_lookup_string(message_id), fz_lookup_string(fields_id));
+}
+
+int32_t fz_native_log_error(int32_t message_id, int32_t fields_id) {
+  return fz_log_emit("error", fz_lookup_string(message_id), fz_lookup_string(fields_id));
+}
+
+int32_t fz_native_log_set_json(int32_t enabled) {
+  fz_log_json = enabled != 0 ? 1 : 0;
+  return 0;
+}
+
+int32_t fz_native_log_correlation_id(int32_t conn_fd) {
+  return fz_native_net_request_id(conn_fd);
+}
+
+int32_t fz_native_time_sleep_ms(int32_t ms) {
+  if (ms > 0) {
+    usleep((useconds_t)ms * 1000);
+  }
+  return 0;
+}
+
+int32_t fz_native_time_elapsed_ms(int32_t start_ms) {
+  int64_t now = fz_now_ms();
+  return (int32_t)(now - (int64_t)start_ms);
+}
+
+int32_t fz_native_time_deadline_after(int32_t delta_ms) {
+  int64_t now = fz_now_ms();
+  return (int32_t)(now + (int64_t)delta_ms);
+}
+
+int32_t fz_native_time_interval(int32_t period_ms) {
+  if (period_ms <= 0) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_time_lock);
+  int32_t handle = -1;
+  for (int i = 0; i < FZ_MAX_INTERVALS; i++) {
+    if (!fz_intervals[i].in_use) {
+      fz_intervals[i].in_use = 1;
+      fz_intervals[i].period_ms = period_ms;
+      fz_intervals[i].next_ms = fz_now_ms() + period_ms;
+      handle = i + 1;
+      break;
+    }
+  }
+  pthread_mutex_unlock(&fz_time_lock);
+  return handle;
+}
+
+int32_t fz_native_time_tick(int32_t handle) {
+  if (handle <= 0 || handle > FZ_MAX_INTERVALS) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_time_lock);
+  fz_interval_state* interval = &fz_intervals[handle - 1];
+  if (!interval->in_use) {
+    pthread_mutex_unlock(&fz_time_lock);
+    return -1;
+  }
+  int64_t now = fz_now_ms();
+  int64_t wait_ms = interval->next_ms - now;
+  if (wait_ms > 0) {
+    pthread_mutex_unlock(&fz_time_lock);
+    usleep((useconds_t)wait_ms * 1000);
+    pthread_mutex_lock(&fz_time_lock);
+    interval = &fz_intervals[handle - 1];
+  }
+  now = fz_now_ms();
+  interval->next_ms = now + interval->period_ms;
+  pthread_mutex_unlock(&fz_time_lock);
+  return 0;
 }
 
 int32_t fz_native_fs_open(void) {
@@ -3962,6 +5504,157 @@ int32_t fz_native_fs_rename_atomic(void) {
   return rc == 0 ? 0 : -1;
 }
 
+int32_t fz_native_fs_read_file(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL || path[0] == '\0') {
+    return fz_intern_slice("", 0);
+  }
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) {
+    fz_set_last_error(errno, 3, "fs.read_file failed");
+    return fz_intern_slice("", 0);
+  }
+  fz_bytes_buf buf;
+  fz_bytes_buf_init(&buf);
+  char tmp[4096];
+  for (;;) {
+    ssize_t got = read(fd, tmp, sizeof(tmp));
+    if (got > 0) {
+      if (fz_bytes_buf_append(&buf, tmp, (size_t)got) != 0) {
+        break;
+      }
+      continue;
+    }
+    if (got == 0) break;
+    if (errno == EINTR) continue;
+    break;
+  }
+  close(fd);
+  int32_t out = fz_intern_slice(buf.data == NULL ? "" : buf.data, buf.len);
+  fz_bytes_buf_free(&buf);
+  return out;
+}
+
+int32_t fz_native_fs_write_file(int32_t path_id, int32_t content_id) {
+  const char* path = fz_lookup_string(path_id);
+  const char* content = fz_lookup_string(content_id);
+  if (path == NULL || path[0] == '\0') {
+    return -1;
+  }
+  if (content == NULL) content = "";
+  int fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (fd < 0) {
+    fz_set_last_error(errno, 3, "fs.write_file open failed");
+    return -1;
+  }
+  size_t left = strlen(content);
+  const char* p = content;
+  while (left > 0) {
+    ssize_t wrote = write(fd, p, left);
+    if (wrote < 0) {
+      if (errno == EINTR) continue;
+      close(fd);
+      fz_set_last_error(errno, 3, "fs.write_file write failed");
+      return -1;
+    }
+    if (wrote == 0) break;
+    p += wrote;
+    left -= (size_t)wrote;
+  }
+  close(fd);
+  return 0;
+}
+
+int32_t fz_native_fs_mkdir(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL || path[0] == '\0') return -1;
+  if (mkdir(path, 0755) == 0 || errno == EEXIST) return 0;
+  return -1;
+}
+
+int32_t fz_native_fs_exists(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL || path[0] == '\0') return 0;
+  struct stat st;
+  return stat(path, &st) == 0 ? 1 : 0;
+}
+
+int32_t fz_native_fs_stat_size(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL || path[0] == '\0') return -1;
+  struct stat st;
+  if (stat(path, &st) != 0) return -1;
+  return (int32_t)st.st_size;
+}
+
+int32_t fz_native_fs_listdir(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL || path[0] == '\0') return -1;
+  DIR* dir = opendir(path);
+  if (dir == NULL) return -1;
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t list_handle = fz_list_alloc();
+  fz_list_state* list = fz_list_get(list_handle);
+  if (list != NULL) {
+    struct dirent* ent = NULL;
+    while ((ent = readdir(dir)) != NULL) {
+      if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+      (void)fz_list_push_cstr(list, ent->d_name);
+    }
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  closedir(dir);
+  return list_handle;
+}
+
+int32_t fz_native_fs_remove_file(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL || path[0] == '\0') return -1;
+  return unlink(path) == 0 ? 0 : -1;
+}
+
+int32_t fz_native_fs_temp_file(int32_t prefix_id) {
+  const char* prefix = fz_lookup_string(prefix_id);
+  if (prefix == NULL || prefix[0] == '\0') prefix = "fz";
+  char tmpl[512];
+  snprintf(tmpl, sizeof(tmpl), "/tmp/%s-XXXXXX", prefix);
+  int fd = mkstemp(tmpl);
+  if (fd < 0) return fz_intern_slice("", 0);
+  close(fd);
+  return fz_intern_slice(tmpl, strlen(tmpl));
+}
+
+int32_t fz_native_path_join(int32_t left_id, int32_t right_id) {
+  const char* left = fz_lookup_string(left_id);
+  const char* right = fz_lookup_string(right_id);
+  if (left == NULL) left = "";
+  if (right == NULL) right = "";
+  size_t left_len = strlen(left);
+  size_t right_len = strlen(right);
+  int need_sep = left_len > 0 && left[left_len - 1] != '/';
+  char* out = (char*)malloc(left_len + right_len + (need_sep ? 2 : 1));
+  if (out == NULL) return 0;
+  strcpy(out, left);
+  if (need_sep) strcat(out, "/");
+  strcat(out, right);
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_path_normalize(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL) path = "";
+  char* out = strdup(path);
+  if (out == NULL) return 0;
+  size_t w = 0;
+  for (size_t r = 0; out[r] != '\0'; r++) {
+    if (out[r] == '/' && w > 0 && out[w - 1] == '/') continue;
+    out[w++] = out[r];
+  }
+  if (w > 1 && out[w - 1] == '/') w--;
+  out[w] = '\0';
+  return fz_intern_owned(out);
+}
+
 int32_t fz_native_net_bind(void) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
@@ -4013,8 +5706,20 @@ int32_t fz_native_net_accept(void) {
     return -1;
   }
   (void)fz_mark_cloexec(conn_fd);
+  char peer_addr[64];
+  const char* rendered = inet_ntop(AF_INET, &peer.sin_addr, peer_addr, sizeof(peer_addr));
+  if (rendered == NULL) {
+    rendered = "";
+  }
   pthread_mutex_lock(&fz_conn_lock);
-  (void)fz_conn_state_for(conn_fd, 1);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 1);
+  if (state != NULL) {
+    state->remote_addr_id = fz_intern_slice(rendered, strlen(rendered));
+    state->request_id = 0;
+    state->header_count = 0;
+    state->query_count = 0;
+    state->param_count = 0;
+  }
   pthread_mutex_unlock(&fz_conn_lock);
   return conn_fd;
 }
@@ -4098,8 +5803,12 @@ int32_t fz_native_net_read(int32_t conn_fd) {
     body_len = 0;
   }
 
+  const char* raw_path = sp1 + 1;
+  const char* query_mark = memchr(raw_path, '?', path_len);
+  size_t clean_path_len = query_mark == NULL ? path_len : (size_t)(query_mark - raw_path);
+
   int32_t method_id = fz_intern_slice(req, method_len);
-  int32_t path_id = fz_intern_slice(sp1 + 1, path_len);
+  int32_t path_id = fz_intern_slice(raw_path, clean_path_len);
   int32_t body_id = fz_intern_slice(req + header_end, (size_t)body_len);
   int keep_alive = fz_parse_keep_alive(req, header_end, version, version_len);
 
@@ -4110,6 +5819,47 @@ int32_t fz_native_net_read(int32_t conn_fd) {
     state->path_id = path_id;
     state->body_id = body_id;
     state->keep_alive = keep_alive;
+    state->header_count = 0;
+    state->query_count = 0;
+    state->param_count = 0;
+    fz_conn_request_counter += 1;
+    char rid[64];
+    snprintf(rid, sizeof(rid), "req-%d", fz_conn_request_counter);
+    state->request_id = fz_intern_slice(rid, strlen(rid));
+    const char* cursor = line_end + 2;
+    while (cursor < req + header_end && state->header_count < FZ_MAX_CONN_META) {
+      const char* next = strstr(cursor, "\r\n");
+      if (next == NULL || next <= cursor) break;
+      const char* colon = memchr(cursor, ':', (size_t)(next - cursor));
+      if (colon != NULL) {
+        const char* v = colon + 1;
+        while (v < next && (*v == ' ' || *v == '\t')) v++;
+        state->header_key_ids[state->header_count] = fz_intern_slice(cursor, (size_t)(colon - cursor));
+        state->header_value_ids[state->header_count] = fz_intern_slice(v, (size_t)(next - v));
+        state->header_count++;
+      }
+      cursor = next + 2;
+    }
+    if (query_mark != NULL) {
+      const char* q = query_mark + 1;
+      const char* q_end = raw_path + path_len;
+      while (q < q_end && state->query_count < FZ_MAX_CONN_META) {
+        const char* amp = memchr(q, '&', (size_t)(q_end - q));
+        const char* token_end = amp == NULL ? q_end : amp;
+        const char* eq = memchr(q, '=', (size_t)(token_end - q));
+        if (eq == NULL) {
+          state->query_key_ids[state->query_count] = fz_intern_slice(q, (size_t)(token_end - q));
+          state->query_value_ids[state->query_count] = fz_intern_slice("", 0);
+          state->query_count++;
+        } else {
+          state->query_key_ids[state->query_count] = fz_intern_slice(q, (size_t)(eq - q));
+          state->query_value_ids[state->query_count] = fz_intern_slice(eq + 1, (size_t)(token_end - (eq + 1)));
+          state->query_count++;
+        }
+        if (amp == NULL) break;
+        q = amp + 1;
+      }
+    }
   }
   pthread_mutex_unlock(&fz_conn_lock);
 
@@ -4139,6 +5889,172 @@ int32_t fz_native_net_body(int32_t conn_fd) {
   int32_t value = state == NULL ? 0 : state->body_id;
   pthread_mutex_unlock(&fz_conn_lock);
   return value;
+}
+
+int32_t fz_native_net_header(int32_t conn_fd, int32_t key_id) {
+  const char* key = fz_lookup_string(key_id);
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL || key == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return fz_intern_slice("", 0);
+  }
+  for (int i = 0; i < state->header_count; i++) {
+    const char* k = fz_lookup_string(state->header_key_ids[i]);
+    if (k != NULL && strcasecmp(k, key) == 0) {
+      int32_t value = state->header_value_ids[i];
+      pthread_mutex_unlock(&fz_conn_lock);
+      return value;
+    }
+  }
+  pthread_mutex_unlock(&fz_conn_lock);
+  return fz_intern_slice("", 0);
+}
+
+int32_t fz_native_net_query(int32_t conn_fd, int32_t key_id) {
+  const char* key = fz_lookup_string(key_id);
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL || key == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return fz_intern_slice("", 0);
+  }
+  for (int i = 0; i < state->query_count; i++) {
+    const char* k = fz_lookup_string(state->query_key_ids[i]);
+    if (k != NULL && strcmp(k, key) == 0) {
+      int32_t value = state->query_value_ids[i];
+      pthread_mutex_unlock(&fz_conn_lock);
+      return value;
+    }
+  }
+  pthread_mutex_unlock(&fz_conn_lock);
+  return fz_intern_slice("", 0);
+}
+
+int32_t fz_native_net_param(int32_t conn_fd, int32_t key_id) {
+  const char* key = fz_lookup_string(key_id);
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL || key == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return fz_intern_slice("", 0);
+  }
+  for (int i = 0; i < state->param_count; i++) {
+    const char* k = fz_lookup_string(state->param_key_ids[i]);
+    if (k != NULL && strcmp(k, key) == 0) {
+      int32_t value = state->param_value_ids[i];
+      pthread_mutex_unlock(&fz_conn_lock);
+      return value;
+    }
+  }
+  pthread_mutex_unlock(&fz_conn_lock);
+  return fz_intern_slice("", 0);
+}
+
+int32_t fz_native_net_headers(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return -1;
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t list_handle = fz_list_alloc();
+  fz_list_state* list = fz_list_get(list_handle);
+  if (list != NULL) {
+    for (int i = 0; i < state->header_count; i++) {
+      const char* k = fz_lookup_string(state->header_key_ids[i]);
+      const char* v = fz_lookup_string(state->header_value_ids[i]);
+      size_t n = strlen(k == NULL ? "" : k) + strlen(v == NULL ? "" : v) + 3;
+      char* kv = (char*)malloc(n);
+      if (kv == NULL) continue;
+      snprintf(kv, n, "%s:%s", k == NULL ? "" : k, v == NULL ? "" : v);
+      (void)fz_list_push_cstr(list, kv);
+      free(kv);
+    }
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  pthread_mutex_unlock(&fz_conn_lock);
+  return list_handle;
+}
+
+int32_t fz_native_net_request_id(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  int32_t value = state == NULL ? 0 : state->request_id;
+  pthread_mutex_unlock(&fz_conn_lock);
+  return value;
+}
+
+int32_t fz_native_net_remote_addr(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  int32_t value = state == NULL ? 0 : state->remote_addr_id;
+  pthread_mutex_unlock(&fz_conn_lock);
+  return value;
+}
+
+static int fz_route_match_path_and_capture(fz_conn_state* state, const char* pattern) {
+  if (state == NULL || pattern == NULL) {
+    return 0;
+  }
+  const char* path = fz_lookup_string(state->path_id);
+  if (path == NULL) path = "";
+  state->param_count = 0;
+  const char* p = path;
+  const char* t = pattern;
+  while (*p == '/') p++;
+  while (*t == '/') t++;
+  for (;;) {
+    const char* p_end = strchr(p, '/');
+    const char* t_end = strchr(t, '/');
+    size_t p_len = p_end == NULL ? strlen(p) : (size_t)(p_end - p);
+    size_t t_len = t_end == NULL ? strlen(t) : (size_t)(t_end - t);
+    if (p_len == 0 && t_len == 0) return 1;
+    if (p_len == 0 || t_len == 0) return 0;
+    if (t[0] == ':') {
+      if (state->param_count < FZ_MAX_ROUTE_PARAMS) {
+        state->param_key_ids[state->param_count] = fz_intern_slice(t + 1, t_len - 1);
+        state->param_value_ids[state->param_count] = fz_intern_slice(p, p_len);
+        state->param_count++;
+      }
+    } else if (p_len != t_len || strncmp(p, t, p_len) != 0) {
+      return 0;
+    }
+    if (p_end == NULL && t_end == NULL) return 1;
+    if (p_end == NULL || t_end == NULL) return 0;
+    p = p_end + 1;
+    t = t_end + 1;
+  }
+}
+
+int32_t fz_native_route_match(int32_t conn_fd, int32_t method_id, int32_t pattern_id) {
+  const char* method = fz_lookup_string(method_id);
+  const char* pattern = fz_lookup_string(pattern_id);
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return 0;
+  }
+  if (method != NULL && method[0] != '\0') {
+    const char* req_method = fz_lookup_string(state->method_id);
+    if (req_method == NULL || strcmp(req_method, method) != 0) {
+      pthread_mutex_unlock(&fz_conn_lock);
+      return 0;
+    }
+  }
+  int ok = fz_route_match_path_and_capture(state, pattern == NULL ? "" : pattern);
+  pthread_mutex_unlock(&fz_conn_lock);
+  return ok ? 1 : 0;
+}
+
+int32_t fz_native_route_write_404(int32_t conn_fd) {
+  return fz_native_net_write(conn_fd, 404, fz_intern_slice("not found", 9));
+}
+
+int32_t fz_native_route_write_405(int32_t conn_fd) {
+  return fz_native_net_write(conn_fd, 405, fz_intern_slice("method not allowed", 18));
 }
 
 int32_t fz_native_net_write_response(
@@ -4193,16 +6109,322 @@ int32_t fz_native_close(int32_t fd) {
   return 0;
 }
 
-int32_t fz_native_proc_spawn(int32_t command_id) {
-  const char* command = fz_lookup_string(command_id);
-  if (command == NULL || command[0] == '\0') {
+static const char* fz_json_skip_ws(const char* p) {
+  while (p != NULL && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) {
+    p++;
+  }
+  return p;
+}
+
+static int fz_json_parse_string(const char** cursor, char** out) {
+  if (cursor == NULL || *cursor == NULL || out == NULL) {
+    return -1;
+  }
+  const char* p = fz_json_skip_ws(*cursor);
+  if (p == NULL || *p != '\"') {
+    return -1;
+  }
+  p++;
+  size_t cap = 32;
+  size_t len = 0;
+  char* buf = (char*)malloc(cap);
+  if (buf == NULL) {
+    return -1;
+  }
+  while (*p != '\0') {
+    char ch = *p++;
+    if (ch == '\"') {
+      buf[len] = '\0';
+      *out = buf;
+      *cursor = p;
+      return 0;
+    }
+    if (ch == '\\') {
+      char esc = *p++;
+      if (esc == '\0') {
+        free(buf);
+        return -1;
+      }
+      switch (esc) {
+        case '\"': ch = '\"'; break;
+        case '\\': ch = '\\'; break;
+        case '/': ch = '/'; break;
+        case 'b': ch = '\b'; break;
+        case 'f': ch = '\f'; break;
+        case 'n': ch = '\n'; break;
+        case 'r': ch = '\r'; break;
+        case 't': ch = '\t'; break;
+        case 'u':
+          for (int i = 0; i < 4; i++) {
+            if (!isxdigit((unsigned char)p[i])) {
+              free(buf);
+              return -1;
+            }
+          }
+          p += 4;
+          ch = '?';
+          break;
+        default:
+          free(buf);
+          return -1;
+      }
+    }
+    if (len + 2 > cap) {
+      cap *= 2;
+      char* next = (char*)realloc(buf, cap);
+      if (next == NULL) {
+        free(buf);
+        return -1;
+      }
+      buf = next;
+    }
+    buf[len++] = ch;
+  }
+  free(buf);
+  return -1;
+}
+
+static int fz_parse_json_string_array(const char* raw, char*** out_items, int* out_count) {
+  if (out_items == NULL || out_count == NULL) {
+    return -1;
+  }
+  *out_items = NULL;
+  *out_count = 0;
+  if (raw == NULL || raw[0] == '\0') {
+    return 0;
+  }
+  const char* p = fz_json_skip_ws(raw);
+  if (*p != '[') {
+    return -1;
+  }
+  p = fz_json_skip_ws(p + 1);
+  int cap = 4;
+  int count = 0;
+  char** items = (char**)calloc((size_t)cap, sizeof(char*));
+  if (items == NULL) {
+    return -1;
+  }
+  if (*p == ']') {
+    *out_items = items;
+    *out_count = 0;
+    return 0;
+  }
+  for (;;) {
+    char* item = NULL;
+    if (fz_json_parse_string(&p, &item) != 0) {
+      for (int i = 0; i < count; i++) free(items[i]);
+      free(items);
+      return -1;
+    }
+    if (count >= cap) {
+      cap *= 2;
+      char** next = (char**)realloc(items, (size_t)cap * sizeof(char*));
+      if (next == NULL) {
+        free(item);
+        for (int i = 0; i < count; i++) free(items[i]);
+        free(items);
+        return -1;
+      }
+      items = next;
+    }
+    items[count++] = item;
+    p = fz_json_skip_ws(p);
+    if (*p == ',') {
+      p = fz_json_skip_ws(p + 1);
+      continue;
+    }
+    if (*p == ']') {
+      break;
+    }
+    for (int i = 0; i < count; i++) free(items[i]);
+    free(items);
+    return -1;
+  }
+  *out_items = items;
+  *out_count = count;
+  return 0;
+}
+
+static int fz_parse_json_env_object(const char* raw, char*** out_items, int* out_count) {
+  if (out_items == NULL || out_count == NULL) {
+    return -1;
+  }
+  *out_items = NULL;
+  *out_count = 0;
+  if (raw == NULL || raw[0] == '\0') {
+    return 0;
+  }
+  const char* p = fz_json_skip_ws(raw);
+  if (*p != '{') {
+    return -1;
+  }
+  p = fz_json_skip_ws(p + 1);
+  int cap = 4;
+  int count = 0;
+  char** entries = (char**)calloc((size_t)cap, sizeof(char*));
+  if (entries == NULL) {
+    return -1;
+  }
+  if (*p == '}') {
+    *out_items = entries;
+    *out_count = 0;
+    return 0;
+  }
+  for (;;) {
+    char* key = NULL;
+    char* value = NULL;
+    if (fz_json_parse_string(&p, &key) != 0) {
+      for (int i = 0; i < count; i++) free(entries[i]);
+      free(entries);
+      return -1;
+    }
+    p = fz_json_skip_ws(p);
+    if (*p != ':') {
+      free(key);
+      for (int i = 0; i < count; i++) free(entries[i]);
+      free(entries);
+      return -1;
+    }
+    p = fz_json_skip_ws(p + 1);
+    if (fz_json_parse_string(&p, &value) != 0) {
+      free(key);
+      for (int i = 0; i < count; i++) free(entries[i]);
+      free(entries);
+      return -1;
+    }
+    size_t n = strlen(key) + strlen(value) + 2;
+    char* joined = (char*)malloc(n);
+    if (joined == NULL) {
+      free(key);
+      free(value);
+      for (int i = 0; i < count; i++) free(entries[i]);
+      free(entries);
+      return -1;
+    }
+    snprintf(joined, n, "%s=%s", key, value);
+    free(key);
+    free(value);
+    if (count >= cap) {
+      cap *= 2;
+      char** next = (char**)realloc(entries, (size_t)cap * sizeof(char*));
+      if (next == NULL) {
+        free(joined);
+        for (int i = 0; i < count; i++) free(entries[i]);
+        free(entries);
+        return -1;
+      }
+      entries = next;
+    }
+    entries[count++] = joined;
+    p = fz_json_skip_ws(p);
+    if (*p == ',') {
+      p = fz_json_skip_ws(p + 1);
+      continue;
+    }
+    if (*p == '}') {
+      break;
+    }
+    for (int i = 0; i < count; i++) free(entries[i]);
+    free(entries);
+    return -1;
+  }
+  *out_items = entries;
+  *out_count = count;
+  return 0;
+}
+
+static void fz_free_string_list(char** items, int count) {
+  if (items == NULL) {
+    return;
+  }
+  for (int i = 0; i < count; i++) {
+    free(items[i]);
+  }
+  free(items);
+}
+
+static int fz_env_key_match(const char* entry, const char* key, size_t key_len) {
+  if (entry == NULL || key == NULL) {
+    return 0;
+  }
+  return strncmp(entry, key, key_len) == 0 && entry[key_len] == '=';
+}
+
+static char** fz_clone_env_with_overrides(char** overrides, int override_count) {
+  int base_count = 0;
+  while (environ != NULL && environ[base_count] != NULL) {
+    base_count++;
+  }
+  int cap = base_count + override_count + 1;
+  char** envp = (char**)calloc((size_t)cap, sizeof(char*));
+  if (envp == NULL) {
+    return NULL;
+  }
+  int count = 0;
+  for (int i = 0; i < base_count; i++) {
+    envp[count] = strdup(environ[i]);
+    if (envp[count] == NULL) {
+      for (int j = 0; j < count; j++) free(envp[j]);
+      free(envp);
+      return NULL;
+    }
+    count++;
+  }
+  for (int i = 0; i < override_count; i++) {
+    const char* item = overrides[i];
+    const char* eq = item == NULL ? NULL : strchr(item, '=');
+    if (eq == NULL || eq == item) {
+      continue;
+    }
+    size_t key_len = (size_t)(eq - item);
+    int replaced = 0;
+    for (int j = 0; j < count; j++) {
+      if (fz_env_key_match(envp[j], item, key_len)) {
+        char* dup = strdup(item);
+        if (dup == NULL) {
+          continue;
+        }
+        free(envp[j]);
+        envp[j] = dup;
+        replaced = 1;
+        break;
+      }
+    }
+    if (!replaced && count < cap - 1) {
+      envp[count] = strdup(item);
+      if (envp[count] != NULL) {
+        count++;
+      }
+    }
+  }
+  envp[count] = NULL;
+  return envp;
+}
+
+static void fz_free_env(char** envp) {
+  if (envp == NULL) {
+    return;
+  }
+  for (int i = 0; envp[i] != NULL; i++) {
+    free(envp[i]);
+  }
+  free(envp);
+}
+
+static int32_t fz_native_proc_spawn_argv(
+    const char* executable,
+    char* const* argv,
+    char* const* envp,
+    const char* stdin_payload) {
+  if (executable == NULL || executable[0] == '\0' || argv == NULL || argv[0] == NULL) {
     fz_last_exit_class = 3;
-    fz_proc_set_last_error("proc_spawn: empty command");
+    fz_proc_set_last_error("proc_spawn: invalid argv");
     return -1;
   }
 
   int out_pipe[2];
   int err_pipe[2];
+  int in_pipe[2] = {-1, -1};
   if (pipe(out_pipe) != 0) {
     fz_last_exit_class = 3;
     fz_proc_set_last_error("proc_spawn: stdout pipe failed");
@@ -4215,6 +6437,15 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
     fz_proc_set_last_error("proc_spawn: stderr pipe failed");
     return -1;
   }
+  if (stdin_payload != NULL && pipe(in_pipe) != 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    close(err_pipe[0]);
+    close(err_pipe[1]);
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawn: stdin pipe failed");
+    return -1;
+  }
   (void)fz_mark_cloexec(out_pipe[0]);
   (void)fz_mark_cloexec(err_pipe[0]);
 
@@ -4224,6 +6455,10 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
     close(out_pipe[1]);
     close(err_pipe[0]);
     close(err_pipe[1]);
+    if (in_pipe[0] >= 0) {
+      close(in_pipe[0]);
+      close(in_pipe[1]);
+    }
     fz_last_exit_class = 3;
     fz_proc_set_last_error("proc_spawn: file actions init failed");
     return -1;
@@ -4234,6 +6469,10 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
   }
   if (file_actions_ok
       && posix_spawn_file_actions_adddup2(&file_actions, err_pipe[1], STDERR_FILENO) != 0) {
+    file_actions_ok = 0;
+  }
+  if (file_actions_ok && in_pipe[0] >= 0
+      && posix_spawn_file_actions_adddup2(&file_actions, in_pipe[0], STDIN_FILENO) != 0) {
     file_actions_ok = 0;
   }
   if (file_actions_ok
@@ -4252,29 +6491,71 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
       && posix_spawn_file_actions_addclose(&file_actions, err_pipe[1]) != 0) {
     file_actions_ok = 0;
   }
+  if (file_actions_ok && in_pipe[0] >= 0
+      && posix_spawn_file_actions_addclose(&file_actions, in_pipe[0]) != 0) {
+    file_actions_ok = 0;
+  }
+  if (file_actions_ok && in_pipe[1] >= 0
+      && posix_spawn_file_actions_addclose(&file_actions, in_pipe[1]) != 0) {
+    file_actions_ok = 0;
+  }
   if (!file_actions_ok) {
     (void)posix_spawn_file_actions_destroy(&file_actions);
     close(out_pipe[0]);
     close(out_pipe[1]);
     close(err_pipe[0]);
     close(err_pipe[1]);
+    if (in_pipe[0] >= 0) {
+      close(in_pipe[0]);
+      close(in_pipe[1]);
+    }
     fz_last_exit_class = 3;
     fz_proc_set_last_error("proc_spawn: file actions setup failed");
     return -1;
   }
 
-  char* const argv[] = {"sh", "-lc", (char*)command, NULL};
   pid_t pid = 0;
-  int spawn_rc = posix_spawnp(&pid, "sh", &file_actions, NULL, argv, environ);
+  int spawn_rc = posix_spawnp(
+      &pid,
+      executable,
+      &file_actions,
+      NULL,
+      argv,
+      envp == NULL ? environ : envp);
   (void)posix_spawn_file_actions_destroy(&file_actions);
   if (spawn_rc != 0 || pid <= 0) {
     close(out_pipe[0]);
     close(out_pipe[1]);
     close(err_pipe[0]);
     close(err_pipe[1]);
+    if (in_pipe[0] >= 0) {
+      close(in_pipe[0]);
+      close(in_pipe[1]);
+    }
     fz_last_exit_class = 3;
     fz_proc_set_last_error("proc_spawn: posix_spawnp failed");
     return -1;
+  }
+
+  if (in_pipe[0] >= 0) {
+    close(in_pipe[0]);
+    size_t remaining = strlen(stdin_payload);
+    const char* cursor = stdin_payload;
+    while (remaining > 0) {
+      ssize_t wrote = write(in_pipe[1], cursor, remaining);
+      if (wrote < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        break;
+      }
+      if (wrote == 0) {
+        break;
+      }
+      cursor += wrote;
+      remaining -= (size_t)wrote;
+    }
+    close(in_pipe[1]);
   }
 
   close(out_pipe[1]);
@@ -4294,6 +6575,77 @@ int32_t fz_native_proc_spawn(int32_t command_id) {
     return -1;
   }
   fz_proc_set_last_error("");
+  return handle;
+}
+
+int32_t fz_native_proc_spawn(int32_t command_id) {
+  const char* command = fz_lookup_string(command_id);
+  if (command == NULL || command[0] == '\0') {
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawn: empty command");
+    return -1;
+  }
+  char* const argv[] = {"sh", "-lc", (char*)command, NULL};
+  return fz_native_proc_spawn_argv("sh", argv, environ, NULL);
+}
+
+int32_t fz_native_proc_spawnv(
+    int32_t command_id,
+    int32_t args_json_id,
+    int32_t env_json_id,
+    int32_t stdin_id) {
+  const char* command = fz_lookup_string(command_id);
+  const char* args_json = fz_lookup_string(args_json_id);
+  const char* env_json = fz_lookup_string(env_json_id);
+  const char* stdin_payload = fz_lookup_string(stdin_id);
+  if (command == NULL || command[0] == '\0') {
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawnv: empty command");
+    return -1;
+  }
+
+  char** arg_items = NULL;
+  int arg_count = 0;
+  if (fz_parse_json_string_array(args_json, &arg_items, &arg_count) != 0) {
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawnv: args_json must be a JSON string array");
+    return -1;
+  }
+  char** env_items = NULL;
+  int env_count = 0;
+  if (fz_parse_json_env_object(env_json, &env_items, &env_count) != 0) {
+    fz_free_string_list(arg_items, arg_count);
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawnv: env_json must be a JSON object<string,string>");
+    return -1;
+  }
+
+  int argv_count = arg_count + 2;
+  char** argv = (char**)calloc((size_t)argv_count, sizeof(char*));
+  if (argv == NULL) {
+    fz_free_string_list(arg_items, arg_count);
+    fz_free_string_list(env_items, env_count);
+    fz_last_exit_class = 3;
+    fz_proc_set_last_error("proc_spawnv: argv alloc failed");
+    return -1;
+  }
+  argv[0] = (char*)command;
+  for (int i = 0; i < arg_count; i++) {
+    argv[i + 1] = arg_items[i];
+  }
+  argv[argv_count - 1] = NULL;
+
+  char** envp = fz_clone_env_with_overrides(env_items, env_count);
+  int32_t handle = fz_native_proc_spawn_argv(
+      command,
+      argv,
+      envp == NULL ? environ : envp,
+      (stdin_payload == NULL || stdin_payload[0] == '\0') ? NULL : stdin_payload);
+
+  fz_free_env(envp);
+  free(argv);
+  fz_free_string_list(arg_items, arg_count);
+  fz_free_string_list(env_items, env_count);
   return handle;
 }
 
@@ -4372,6 +6724,82 @@ int32_t fz_native_proc_run(int32_t command_id) {
     return -1;
   }
   return handle;
+}
+
+int32_t fz_native_proc_runv(
+    int32_t command_id,
+    int32_t args_json_id,
+    int32_t env_json_id,
+    int32_t stdin_id) {
+  int32_t handle = fz_native_proc_spawnv(command_id, args_json_id, env_json_id, stdin_id);
+  if (handle < 0) {
+    return -1;
+  }
+  int32_t waited = fz_native_proc_wait(handle, fz_proc_default_timeout_ms);
+  if (waited < 0) {
+    return -1;
+  }
+  return handle;
+}
+
+int32_t fz_native_proc_poll(int32_t handle) {
+  int wait_result = fz_native_proc_wait(handle, 0);
+  if (wait_result < 0) {
+    return -1;
+  }
+  return wait_result == 0 ? 1 : 0;
+}
+
+static int32_t fz_native_proc_read_stream_chunk(int32_t handle, int32_t max_bytes, int use_stdout) {
+  if (max_bytes <= 0) {
+    max_bytes = 4096;
+  }
+  pthread_mutex_lock(&fz_proc_lock);
+  fz_proc_state* state = fz_proc_state_get(handle);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_proc_lock);
+    return fz_intern_slice("", 0);
+  }
+  if (!state->done) {
+    (void)fz_drain_fd(state->stdout_fd, &state->stdout_buf);
+    (void)fz_drain_fd(state->stderr_fd, &state->stderr_buf);
+  }
+  fz_bytes_buf* buf = use_stdout ? &state->stdout_buf : &state->stderr_buf;
+  size_t* cursor = use_stdout ? &state->stdout_read_pos : &state->stderr_read_pos;
+  size_t remaining = buf->len > *cursor ? (buf->len - *cursor) : 0;
+  size_t take = remaining < (size_t)max_bytes ? remaining : (size_t)max_bytes;
+  int32_t out = fz_intern_slice(buf->data == NULL ? "" : (buf->data + *cursor), take);
+  *cursor += take;
+  pthread_mutex_unlock(&fz_proc_lock);
+  return out;
+}
+
+int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes) {
+  return fz_native_proc_read_stream_chunk(handle, max_bytes, 1);
+}
+
+int32_t fz_native_proc_read_stderr(int32_t handle, int32_t max_bytes) {
+  return fz_native_proc_read_stream_chunk(handle, max_bytes, 0);
+}
+
+int32_t fz_native_proc_event(int32_t handle) {
+  int wait_result = fz_native_proc_wait(handle, 0);
+  if (wait_result < 0) {
+    return -1;
+  }
+  if (wait_result > 0) {
+    return 0;
+  }
+  pthread_mutex_lock(&fz_proc_lock);
+  fz_proc_state* state = fz_proc_state_get(handle);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_proc_lock);
+    return -1;
+  }
+  int emit = state->exit_notified ? 0 : 1;
+  state->exit_notified = 1;
+  pthread_mutex_unlock(&fz_proc_lock);
+  return emit;
 }
 
 int32_t fz_native_proc_stdout(int32_t handle) {
@@ -4906,17 +7334,40 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_proc_stderr(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_proc_exit_code(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_env_get(int32_t key_id)"));
+        assert!(shim.contains("int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id)"));
+        assert!(shim.contains("int32_t fz_native_str_contains(int32_t haystack_id, int32_t needle_id)"));
         assert!(shim.contains("int32_t fz_native_http_header(int32_t key_id, int32_t value_id)"));
         assert!(
             shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)")
         );
+        assert!(shim.contains(
+            "int32_t fz_native_http_post_json_capture(int32_t endpoint_id, int32_t body_id)"
+        ));
+        assert!(shim.contains("int32_t fz_native_http_last_status(void)"));
         assert!(shim.contains("int32_t fz_native_json_escape(int32_t input_id)"));
+        assert!(shim.contains("int32_t fz_native_json_str(int32_t input_id)"));
+        assert!(shim.contains("int32_t fz_native_json_raw(int32_t input_id)"));
+        assert!(shim.contains("int32_t fz_native_json_array4("));
+        assert!(shim.contains("int32_t fz_native_json_from_map(int32_t map_handle)"));
+        assert!(
+            shim.contains("int32_t fz_native_json_object1(int32_t k1_id, int32_t v1_id)")
+        );
         assert!(shim.contains(
             "int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id)"
         ));
         assert!(shim.contains("int32_t fz_native_json_object3("));
         assert!(shim.contains("int32_t fz_native_json_object4("));
         assert!(shim.contains("posix_spawnp"));
+        assert!(shim.contains("int32_t fz_native_proc_spawnv("));
+        assert!(shim.contains("int32_t fz_native_proc_runv("));
+        assert!(shim.contains("int32_t fz_native_proc_poll(int32_t handle)"));
+        assert!(shim.contains("int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes)"));
+        assert!(shim.contains("int32_t fz_native_net_header(int32_t conn_fd, int32_t key_id)"));
+        assert!(shim.contains("int32_t fz_native_route_match(int32_t conn_fd, int32_t method_id, int32_t pattern_id)"));
+        assert!(shim.contains("int32_t fz_native_fs_read_file(int32_t path_id)"));
+        assert!(shim.contains("int32_t fz_native_time_tick(int32_t handle)"));
+        assert!(shim.contains("int32_t fz_native_error_code(void)"));
+        assert!(shim.contains("int32_t fz_native_log_info(int32_t message_id, int32_t fields_id)"));
         assert!(shim.contains("FD_CLOEXEC"));
         assert!(shim.contains("int32_t fz_native_proc_exit_class(void)"));
         assert!(shim.contains("int32_t fz_native_time_now(void)"));

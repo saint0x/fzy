@@ -2308,6 +2308,11 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             (vec![i32.clone()], i32.clone())
         }
         "net.method" | "net.path" | "net.body" => (vec![i32.clone()], str_ty.clone()),
+        "net.header" | "net.query" | "net.param" => {
+            (vec![i32.clone(), str_ty.clone()], str_ty.clone())
+        }
+        "net.headers" => (vec![i32.clone()], i32.clone()),
+        "net.request_id" | "net.remote_addr" => (vec![i32.clone()], str_ty.clone()),
         "net.write" | "net.write_json" => {
             (vec![i32.clone(), i32.clone(), str_ty.clone()], i32.clone())
         }
@@ -2322,9 +2327,62 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             i32.clone(),
         ),
         "env.get" => (vec![str_ty.clone()], str_ty.clone()),
+        "str.concat" | "str.concat2" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
+        "str.concat3" => (
+            vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+            str_ty.clone(),
+        ),
+        "str.concat4" => (
+            vec![
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+            ],
+            str_ty.clone(),
+        ),
+        "str.contains" | "str.starts_with" | "str.ends_with" => (
+            vec![str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
+        "str.replace" => (
+            vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+            str_ty.clone(),
+        ),
+        "str.trim" => (vec![str_ty.clone()], str_ty.clone()),
+        "str.split" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "str.len" => (vec![str_ty.clone()], i32.clone()),
+        "str.slice" => (
+            vec![str_ty.clone(), i32.clone(), i32.clone()],
+            str_ty.clone(),
+        ),
         "http.header" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "http.post_json" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "http.post_json_capture" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
+        "http.last_status" => (vec![], i32.clone()),
         "json.escape" => (vec![str_ty.clone()], str_ty.clone()),
+        "json.str" => (vec![str_ty.clone()], str_ty.clone()),
+        "json.raw" => (vec![str_ty.clone()], str_ty.clone()),
+        "json.array1" => (vec![str_ty.clone()], str_ty.clone()),
+        "json.array2" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
+        "json.array3" => (
+            vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+            str_ty.clone(),
+        ),
+        "json.array4" => (
+            vec![
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+            ],
+            str_ty.clone(),
+        ),
+        "json.from_list" => (vec![i32.clone()], str_ty.clone()),
+        "json.from_map" => (vec![i32.clone()], str_ty.clone()),
+        "json.to_list" => (vec![str_ty.clone()], i32.clone()),
+        "json.to_map" => (vec![str_ty.clone()], i32.clone()),
+        "json.object1" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "json.object2" => (
             vec![
                 str_ty.clone(),
@@ -2358,14 +2416,64 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             ],
             str_ty.clone(),
         ),
-        "time.now" => (vec![], i32.clone()),
+        "time.now" | "time.monotonic_ms" => (vec![], i32.clone()),
+        "time.sleep_ms" => (vec![i32.clone()], i32.clone()),
+        "time.interval" | "time.tick" => (vec![i32.clone()], i32.clone()),
+        "time.elapsed_ms" | "time.deadline_after" => (vec![i32.clone()], i32.clone()),
         "fs.open" | "fs.write" | "fs.flush" | "fs.atomic_write" | "fs.rename_atomic"
         | "fs.fsync" | "fs.lock" | "fs.read" => (vec![], i32.clone()),
+        "fs.read_file" => (vec![str_ty.clone()], str_ty.clone()),
+        "fs.write_file" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "fs.mkdir" | "fs.exists" | "fs.remove_file" => (vec![str_ty.clone()], i32.clone()),
+        "fs.stat_size" => (vec![str_ty.clone()], i32.clone()),
+        "fs.listdir" => (vec![str_ty.clone()], i32.clone()),
+        "fs.temp_file" => (vec![str_ty.clone()], str_ty.clone()),
+        "path.join" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
+        "path.normalize" => (vec![str_ty.clone()], str_ty.clone()),
+        "list.new" => (vec![], i32.clone()),
+        "list.push" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "list.pop" => (vec![i32.clone()], str_ty.clone()),
+        "list.len" => (vec![i32.clone()], i32.clone()),
+        "list.get" => (vec![i32.clone(), i32.clone()], str_ty.clone()),
+        "list.set" => (vec![i32.clone(), i32.clone(), str_ty.clone()], i32.clone()),
+        "list.clear" => (vec![i32.clone()], i32.clone()),
+        "list.join" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
+        "map.new" => (vec![], i32.clone()),
+        "map.set" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "map.get" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
+        "map.has" | "map.delete" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "map.keys" => (vec![i32.clone()], i32.clone()),
+        "map.len" => (vec![i32.clone()], i32.clone()),
+        "route.match" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "route.write_404" | "route.write_405" => (vec![i32.clone()], i32.clone()),
+        "log.info" | "log.warn" | "log.error" => {
+            (vec![str_ty.clone(), str_ty.clone()], i32.clone())
+        }
+        "log.set_json" => (vec![i32.clone()], i32.clone()),
+        "log.correlation_id" => (vec![i32.clone()], str_ty.clone()),
+        "error.code" | "error.class" => (vec![], i32.clone()),
+        "error.message" => (vec![], str_ty.clone()),
+        "error.context" => (vec![str_ty.clone()], i32.clone()),
         "process.run" | "proc.run" | "process.spawn" | "proc.spawn" => {
             (vec![str_ty.clone()], i32.clone())
         }
+        "process.runv" | "proc.runv" | "process.spawnv" | "proc.spawnv" => (
+            vec![
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+            ],
+            i32.clone(),
+        ),
         "process.exec_timeout" | "proc.exec_timeout" => (vec![i32.clone()], i32.clone()),
         "process.wait" | "proc.wait" => (vec![i32.clone(), i32.clone()], i32.clone()),
+        "process.poll" | "proc.poll" | "process.event" | "proc.event" => {
+            (vec![i32.clone()], i32.clone())
+        }
+        "process.read_stdout" | "proc.read_stdout" | "process.read_stderr" | "proc.read_stderr" => {
+            (vec![i32.clone(), i32.clone()], str_ty.clone())
+        }
         "process.stdout" | "proc.stdout" | "process.stderr" | "proc.stderr" => {
             (vec![i32.clone()], str_ty.clone())
         }
@@ -2766,5 +2874,64 @@ mod tests {
             .type_error_details
             .iter()
             .any(|detail| detail.contains("process.spawn") && detail.contains("expected `str`")));
+    }
+
+    #[test]
+    fn process_spawnv_with_json_args_typechecks() {
+        let source = r#"
+            use cap.proc;
+            fn main() -> i32 {
+                process.spawnv("echo", "[\"hi\"]", "{\"K\":\"V\"}", "stdin");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn http_capture_and_json_builders_typecheck() {
+        let source = r#"
+            use cap.net;
+            fn main() -> i32 {
+                let user = json.str("hello");
+                let msg = json.object2("role", json.str("user"), "content", user);
+                let messages = json.array1(msg);
+                let payload = json.object2("model", json.str("claude"), "messages", messages);
+                let _ = http.post_json_capture("https://example.com", payload);
+                let _ = http.last_status();
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn extended_runtime_primitives_typecheck() {
+        let source = r#"
+            use cap.net;
+            use cap.proc;
+            fn main() -> i32 {
+                let l = list.new();
+                list.push(l, "a");
+                let m = map.new();
+                map.set(m, "k", "v");
+                let _ = str.contains("abc", "a");
+                let _ = fs.exists("/tmp");
+                let _ = time.monotonic_ms();
+                let _ = process.poll(process.spawn("echo hi"));
+                let c = net.accept();
+                let _ = net.header(c, "content-type");
+                let _ = route.match(c, "GET", "/sessions/:id/messages");
+                let _ = log.info("x", "{}");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
     }
 }

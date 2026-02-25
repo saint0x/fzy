@@ -25,6 +25,8 @@ pub struct Label {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Diagnostic {
     pub severity: Severity,
+    #[serde(default)]
+    pub code: Option<String>,
     pub message: String,
     pub help: Option<String>,
     pub span: Option<Span>,
@@ -43,6 +45,7 @@ impl Diagnostic {
     pub fn new(severity: Severity, message: impl Into<String>, help: Option<String>) -> Self {
         Self {
             severity,
+            code: None,
             message: message.into(),
             help,
             span: None,
@@ -109,6 +112,11 @@ impl Diagnostic {
 
     pub fn with_suggested_fix(mut self, fix: impl Into<String>) -> Self {
         self.suggested_fixes.push(fix.into());
+        self
+    }
+
+    pub fn with_code(mut self, code: impl Into<String>) -> Self {
+        self.code = Some(code.into());
         self
     }
 }

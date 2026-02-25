@@ -861,7 +861,11 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
             diagnostics::Severity::Warning => "warning",
             diagnostics::Severity::Note => "note",
         };
-        out.push_str(&format!("{severity}: {}\n", diagnostic.message));
+        if let Some(code) = &diagnostic.code {
+            out.push_str(&format!("{severity}[{code}]: {}\n", diagnostic.message));
+        } else {
+            out.push_str(&format!("{severity}: {}\n", diagnostic.message));
+        }
         if let (Some(path), Some(span)) = (&diagnostic.path, &diagnostic.span) {
             out.push_str(&format!(
                 " --> {path}:{}:{}\n",

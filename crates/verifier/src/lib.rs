@@ -329,6 +329,33 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         }
     }
 
+    let mut error_idx = 1usize;
+    let mut warn_idx = 1usize;
+    let mut note_idx = 1usize;
+    for diagnostic in &mut report.diagnostics {
+        if diagnostic.code.is_some() {
+            continue;
+        }
+        let code = match diagnostic.severity {
+            Severity::Error => {
+                let value = format!("E-VER-{error_idx:03}");
+                error_idx += 1;
+                value
+            }
+            Severity::Warning => {
+                let value = format!("W-VER-{warn_idx:03}");
+                warn_idx += 1;
+                value
+            }
+            Severity::Note => {
+                let value = format!("N-VER-{note_idx:03}");
+                note_idx += 1;
+                value
+            }
+        };
+        diagnostic.code = Some(code);
+    }
+
     report
 }
 
