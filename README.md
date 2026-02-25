@@ -102,7 +102,6 @@ With `fz test <file.fzy> --det --record artifacts/name.trace.json --json`, the d
 - Only two native compiler paths are supported:
   - `cranelift` (dev-default)
   - `llvm` (release-default)
-- `c_shim` backend is removed and unsupported.
 - Backend selection order:
   - explicit `--backend`
   - `FZ_NATIVE_BACKEND`
