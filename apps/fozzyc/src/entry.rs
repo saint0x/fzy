@@ -152,7 +152,12 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("run") => {
             let path = arg_path(args, 1)?;
             if has_flag(args, "--strict") {
-                bail!("`--strict` was removed; use `--strict-verify` and/or `--safe-profile`");
+                bail!("`--strict` was removed; use `--strict-verify`");
+            }
+            if has_flag(args, "--safe-profile") {
+                bail!(
+                    "`--safe-profile` was removed; production memory safety is always enabled for `run`"
+                );
             }
             let split = args.iter().position(|a| a == "--").unwrap_or(args.len());
             let passthrough = if split < args.len() {
@@ -162,7 +167,6 @@ fn parse_command(args: &[String]) -> Result<Command> {
             };
             let deterministic = has_flag(args, "--det");
             let strict_verify = has_flag(args, "--strict-verify");
-            let safe_profile = has_flag(args, "--safe-profile");
             let seed = parse_u64_flag(args, "--seed")?;
             let record = parse_path_flag(args, "--record")?;
             let host_backends = has_flag(args, "--host-backends");
@@ -172,7 +176,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 args: passthrough,
                 deterministic,
                 strict_verify,
-                safe_profile,
+                safe_profile: false,
                 seed,
                 record,
                 host_backends,
@@ -182,11 +186,15 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("test") => {
             let path = arg_path(args, 1)?;
             if has_flag(args, "--strict") {
-                bail!("`--strict` was removed; use `--strict-verify` and/or `--safe-profile`");
+                bail!("`--strict` was removed; use `--strict-verify`");
+            }
+            if has_flag(args, "--safe-profile") {
+                bail!(
+                    "`--safe-profile` was removed; production memory safety is always enabled for `test`"
+                );
             }
             let deterministic = has_flag(args, "--det");
             let strict_verify = has_flag(args, "--strict-verify");
-            let safe_profile = has_flag(args, "--safe-profile");
             let seed = parse_u64_flag(args, "--seed")?;
             let record = parse_path_flag(args, "--record")?;
             let host_backends = has_flag(args, "--host-backends");
@@ -198,7 +206,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 path,
                 deterministic,
                 strict_verify,
-                safe_profile,
+                safe_profile: false,
                 seed,
                 record,
                 host_backends,
@@ -344,8 +352,8 @@ fn print_help() {
 commands:\n\
   init <name>\n\
   build <path> [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name]\n\
-  run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [-- <args>]\n\
-  test <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
+  run <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [-- <args>]\n\
+  test <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
   fmt <path>\n\
   check <path>\n\
   verify <path>\n\
@@ -376,7 +384,6 @@ flags:\n\
   --json\n\
   --det\n\
   --strict-verify\n\
-  --safe-profile\n\
   --seed <u64>\n\
   --record <path>\n\
   --host-backends\n\
@@ -495,5 +502,27 @@ mod tests {
         let args = vec!["version".to_string()];
         let command = parse_command(&args).expect("`version` should parse");
         assert!(matches!(command, Command::Version));
+    }
+
+    #[test]
+    fn parse_run_rejects_removed_safe_profile_flag() {
+        let args = vec![
+            "run".to_string(),
+            "main.fzy".to_string(),
+            "--safe-profile".to_string(),
+        ];
+        let err = parse_command(&args).expect_err("safe profile flag must be rejected");
+        assert!(err.to_string().contains("production memory safety is always enabled"));
+    }
+
+    #[test]
+    fn parse_test_rejects_removed_safe_profile_flag() {
+        let args = vec![
+            "test".to_string(),
+            "main.fzy".to_string(),
+            "--safe-profile".to_string(),
+        ];
+        let err = parse_command(&args).expect_err("safe profile flag must be rejected");
+        assert!(err.to_string().contains("production memory safety is always enabled"));
     }
 }

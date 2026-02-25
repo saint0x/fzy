@@ -114,8 +114,8 @@ Use for new projects.
 
 ```bash
 fz build <path> [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
-fz run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
-fz test <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
+fz run <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz test <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
 ```
 
 Use cases:
@@ -124,6 +124,7 @@ Use cases:
 - `build --lib`: emit `.a` + shared library (`.so`/`.dylib`) plus C header + ABI manifest
 - `run`: execute a project or scenario once
 - `test`: execute discovered tests with optional deterministic scheduler policy
+- production memory safety verification is always enabled for `run` and `test`
 
 Native host-backed runtime defaults:
 - bind host default is `127.0.0.1` (`FZ_HOST` > `AGENT_HOST` > default)

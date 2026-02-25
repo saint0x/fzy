@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "pedantic-apps-fozzyc-entry-memory-graph-diff-top-pass",
+  "steps": [
+    { "type": "memory_alloc", "bytes": 256, "key": "cli_buf_a", "tag": "entry" },
+    { "type": "memory_alloc", "bytes": 128, "key": "cli_buf_b", "tag": "entry" },
+    { "type": "memory_assert_in_use_bytes", "equals": 384 },
+    { "type": "memory_free", "key": "cli_buf_b" },
+    { "type": "memory_free", "key": "cli_buf_a" },
+    { "type": "memory_assert_in_use_bytes", "equals": 0 }
+  ]
+}

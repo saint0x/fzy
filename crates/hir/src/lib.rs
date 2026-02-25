@@ -280,12 +280,13 @@ pub fn lower(module: &Module) -> TypedModule {
         .count();
     let generic_instantiations = collect_generic_instantiations(module);
     let call_graph = build_call_graph(module);
-    let ownership_violations = analyze_ownership(&typed_functions);
-    let capability_token_violations = if capability_token_mode_enabled(&typed_functions) {
+    let ownership_violations = analyze_ownership(&typed_functions, &call_graph);
+    let mut capability_token_violations = if capability_token_mode_enabled(&typed_functions) {
         analyze_capability_token_contracts(&typed_functions, &function_capability_requirements)
     } else {
         Vec::new()
     };
+    capability_token_violations.extend(analyze_send_sync_contracts(&typed_functions));
     let reference_lifetime_violations = analyze_reference_lifetimes(&typed_functions);
     let linear_type_violations = analyze_linear_types(&typed_functions);
 
@@ -784,6 +785,7 @@ fn capability_name_from_type(ty: &Type) -> Option<String> {
 fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     for function in functions {
+        let has_await = function_body_has_await(&function.body);
         let mut ref_bindings = BTreeMap::<String, Option<String>>::new();
         for param in &function.params {
             if let Type::Ref { lifetime, .. } = &param.ty {
@@ -794,6 +796,12 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
                     ));
                 }
                 ref_bindings.insert(param.name.clone(), lifetime.clone());
+                if function.is_async && has_await {
+                    violations.push(format!(
+                        "function `{}` cannot hold parameter reference `{}` across await points",
+                        function.name, param.name
+                    ));
+                }
             }
         }
         let return_lifetime = match &function.return_type {
@@ -822,6 +830,12 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
                     ));
                 }
                 ref_bindings.insert(name.clone(), lifetime.clone());
+                if function.is_async && has_await {
+                    violations.push(format!(
+                        "function `{}` cannot hold local reference `{}` across await points",
+                        function.name, name
+                    ));
+                }
             }
             if let Stmt::Return(Expr::Ident(name)) = stmt {
                 if let Some(bound_lifetime) = ref_bindings.get(name) {
@@ -841,6 +855,87 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
         }
     }
     violations
+}
+
+fn analyze_send_sync_contracts(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for function in functions {
+        let requires_thread = function.is_async
+            || function
+                .required_capabilities
+                .iter()
+                .any(|cap| cap == "thread");
+        if !requires_thread {
+            continue;
+        }
+        for param in &function.params {
+            if matches!(
+                param.ty,
+                Type::Ptr { mutable: true, .. } | Type::Ref { mutable: true, .. }
+            ) {
+                violations.push(format!(
+                    "function `{}` parameter `{}` requires Send/Sync-safe wrapper before thread crossing",
+                    function.name, param.name
+                ));
+            }
+        }
+        if matches!(function.return_type, Type::Ref { .. }) {
+            violations.push(format!(
+                "function `{}` returns borrowed reference across thread-capable boundary; return owned/Send-safe handle instead",
+                function.name
+            ));
+        }
+    }
+    violations
+}
+
+fn function_body_has_await(body: &[Stmt]) -> bool {
+    body.iter().any(stmt_has_await)
+}
+
+fn stmt_has_await(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::Return(value)
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => expr_has_await(value),
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_has_await(condition)
+                || then_body.iter().any(stmt_has_await)
+                || else_body.iter().any(stmt_has_await)
+        }
+        Stmt::While { condition, body } => expr_has_await(condition) || body.iter().any(stmt_has_await),
+        Stmt::Match { scrutinee, arms } => {
+            expr_has_await(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_has_await) || expr_has_await(&arm.value)
+                })
+        }
+    }
+}
+
+fn expr_has_await(expr: &Expr) -> bool {
+    match expr {
+        Expr::Await(_) => true,
+        Expr::Call { args, .. } => args.iter().any(expr_has_await),
+        Expr::FieldAccess { base, .. } => expr_has_await(base),
+        Expr::StructInit { fields, .. } => fields.iter().any(|(_, value)| expr_has_await(value)),
+        Expr::EnumInit { payload, .. } => payload.iter().any(expr_has_await),
+        Expr::Group(inner) => expr_has_await(inner),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => expr_has_await(try_expr) || expr_has_await(catch_expr),
+        Expr::Binary { left, right, .. } => expr_has_await(left) || expr_has_await(right),
+        Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => false,
+    }
 }
 
 fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
@@ -1014,14 +1109,17 @@ fn collect_function_caps_and_calls(
     }
 }
 
-fn analyze_ownership(functions: &[TypedFunction]) -> Vec<String> {
+fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)]) -> Vec<String> {
     let mut violations = Vec::new();
+    let summaries = build_function_memory_summaries(functions);
     for function in functions {
         let mut owners = BTreeMap::<String, usize>::new();
+        let mut moved = BTreeSet::<String>::new();
         let mut next_alloc = 1usize;
         analyze_ownership_block(
             &function.body,
             &mut owners,
+            &mut moved,
             &mut next_alloc,
             &mut violations,
             &function.name,
@@ -1033,50 +1131,122 @@ fn analyze_ownership(functions: &[TypedFunction]) -> Vec<String> {
             ));
         }
     }
+    for (caller, callee) in call_graph {
+        let Some(callee_summary) = summaries.get(callee) else {
+            continue;
+        };
+        let Some(caller_summary) = summaries.get(caller) else {
+            continue;
+        };
+        if callee_summary.unsafe_sites > 0 && callee_summary.unsafe_reasoned_sites == 0 {
+            violations.push(format!(
+                "call edge `{caller} -> {callee}` reaches unsafe code without invariant proof/reasoned contract",
+            ));
+        }
+        if callee_summary.alloc_sites > callee_summary.free_sites + callee_summary.close_sites {
+            violations.push(format!(
+                "call edge `{caller} -> {callee}` crosses function with potential resource escape (alloc/free+close imbalance)",
+            ));
+        }
+        if caller_summary.is_async && caller_summary.has_await && callee_summary.has_mut_ref_params {
+            violations.push(format!(
+                "call edge `{caller} -> {callee}` can hold mutable borrows across await boundary",
+            ));
+        }
+    }
     violations
 }
 
 fn analyze_ownership_block(
     body: &[Stmt],
     owners: &mut BTreeMap<String, usize>,
+    moved: &mut BTreeSet<String>,
     next_alloc: &mut usize,
     violations: &mut Vec<String>,
     function_name: &str,
 ) {
     for stmt in body {
+        for name in moved.iter() {
+            if stmt_uses_ident(stmt, name) {
+                violations.push(format!(
+                    "function `{}` uses moved value `{}` after move/consume",
+                    function_name, name
+                ));
+            }
+        }
         match stmt {
             Stmt::Let { name, value, .. } => {
                 if is_alloc_expr(value) {
                     owners.insert(name.clone(), *next_alloc);
                     *next_alloc += 1;
+                    moved.remove(name);
                 }
                 if let Expr::Ident(from) = value {
                     if let Some(owner) = owners.remove(from) {
                         owners.insert(name.clone(), owner);
+                        moved.insert(from.clone());
+                        moved.remove(name);
                     }
+                }
+                if is_partial_move_expr(value, owners) {
+                    violations.push(format!(
+                        "function `{}` performs partial move from owned aggregate; partial moves are forbidden in v0",
+                        function_name
+                    ));
                 }
             }
             Stmt::Assign { target, value } => {
                 if let Expr::Ident(from) = value {
                     if let Some(owner) = owners.remove(from) {
                         owners.insert(target.clone(), owner);
+                        moved.insert(from.clone());
                     }
+                }
+                moved.remove(target);
+                if is_partial_move_expr(value, owners) {
+                    violations.push(format!(
+                        "function `{}` performs partial move assignment from owned aggregate; partial moves are forbidden in v0",
+                        function_name
+                    ));
                 }
             }
             Stmt::Expr(Expr::Call { callee, args }) => {
-                if callee == "free" || callee.ends_with(".free") {
+                if callee == "free"
+                    || callee.ends_with(".free")
+                    || callee == "close"
+                    || callee.ends_with(".close")
+                {
                     if let Some(Expr::Ident(name)) = args.first() {
                         if owners.remove(name).is_none() {
                             violations.push(format!(
-                                "function `{}` frees non-owned or already-freed value `{}`",
-                                function_name, name
+                                "function `{}` consumes non-owned or already-consumed value `{}` via `{}`",
+                                function_name, name, callee
                             ));
+                        } else {
+                            moved.insert(name.clone());
                         }
                     }
+                }
+                if matches!(callee.as_str(), "unsafe" | "unsafe_reason")
+                    && !unsafe_has_reason(args)
+                {
+                    violations.push(format!(
+                        "function `{}` has unsafe site without required reason string",
+                        function_name
+                    ));
+                }
+                if matches!(callee.as_str(), "unsafe" | "unsafe_reason")
+                    && !unsafe_has_invariant_and_owner(args)
+                {
+                    violations.push(format!(
+                        "function `{}` has unsafe site missing invariant and ownership tags (`invariant:...`, `owner:...`)",
+                        function_name
+                    ));
                 }
             }
             Stmt::Return(Expr::Ident(name)) => {
                 owners.remove(name);
+                moved.insert(name.clone());
             }
             Stmt::If {
                 then_body,
@@ -1085,9 +1255,12 @@ fn analyze_ownership_block(
             } => {
                 let mut then_owners = owners.clone();
                 let mut else_owners = owners.clone();
+                let mut then_moved = moved.clone();
+                let mut else_moved = moved.clone();
                 analyze_ownership_block(
                     then_body,
                     &mut then_owners,
+                    &mut then_moved,
                     next_alloc,
                     violations,
                     function_name,
@@ -1095,6 +1268,7 @@ fn analyze_ownership_block(
                 analyze_ownership_block(
                     else_body,
                     &mut else_owners,
+                    &mut else_moved,
                     next_alloc,
                     violations,
                     function_name,
@@ -1103,9 +1277,13 @@ fn analyze_ownership_block(
                     .into_iter()
                     .filter(|(name, id)| else_owners.get(name).is_some_and(|other| other == id))
                     .collect();
+                *moved = then_moved
+                    .intersection(&else_moved)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
             }
             Stmt::While { body, .. } => {
-                analyze_ownership_block(body, owners, next_alloc, violations, function_name);
+                analyze_ownership_block(body, owners, moved, next_alloc, violations, function_name);
             }
             Stmt::Match { arms, .. } => {
                 for arm in arms {
@@ -1121,6 +1299,202 @@ fn analyze_ownership_block(
             | Stmt::Return(_) => {}
         }
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FunctionMemorySummary {
+    alloc_sites: usize,
+    free_sites: usize,
+    close_sites: usize,
+    unsafe_sites: usize,
+    unsafe_reasoned_sites: usize,
+    has_mut_ref_params: bool,
+    has_await: bool,
+    is_async: bool,
+}
+
+fn build_function_memory_summaries(
+    functions: &[TypedFunction],
+) -> BTreeMap<String, FunctionMemorySummary> {
+    let mut out = BTreeMap::new();
+    for function in functions {
+        let mut alloc_sites = 0usize;
+        let mut free_sites = 0usize;
+        let mut close_sites = 0usize;
+        let mut unsafe_sites = 0usize;
+        let mut unsafe_reasoned_sites = 0usize;
+        let mut has_await = false;
+        struct Collector<'a> {
+            alloc_sites: &'a mut usize,
+            free_sites: &'a mut usize,
+            close_sites: &'a mut usize,
+            unsafe_sites: &'a mut usize,
+            unsafe_reasoned_sites: &'a mut usize,
+            has_await: &'a mut bool,
+        }
+        impl AstVisitor for Collector<'_> {
+            fn visit_expr(&mut self, expr: &Expr) {
+                match expr {
+                    Expr::Call { callee, args } => {
+                        if is_alloc_callee(callee) {
+                            *self.alloc_sites += 1;
+                        }
+                        if is_free_callee(callee) {
+                            *self.free_sites += 1;
+                        }
+                        if is_close_callee(callee) {
+                            *self.close_sites += 1;
+                        }
+                        if matches!(callee.as_str(), "unsafe" | "unsafe_reason") {
+                            *self.unsafe_sites += 1;
+                            if unsafe_has_reason(args) {
+                                *self.unsafe_reasoned_sites += 1;
+                            }
+                        }
+                    }
+                    Expr::Await(_) => {
+                        *self.has_await = true;
+                    }
+                    _ => {}
+                }
+                ast::walk_expr(self, expr);
+            }
+        }
+        let mut collector = Collector {
+            alloc_sites: &mut alloc_sites,
+            free_sites: &mut free_sites,
+            close_sites: &mut close_sites,
+            unsafe_sites: &mut unsafe_sites,
+            unsafe_reasoned_sites: &mut unsafe_reasoned_sites,
+            has_await: &mut has_await,
+        };
+        for stmt in &function.body {
+            collector.visit_stmt(stmt);
+        }
+        let has_mut_ref_params = function.params.iter().any(|param| {
+            matches!(
+                param.ty,
+                Type::Ref {
+                    mutable: true,
+                    ..
+                }
+            )
+        });
+        out.insert(
+            function.name.clone(),
+            FunctionMemorySummary {
+                alloc_sites,
+                free_sites,
+                close_sites,
+                unsafe_sites,
+                unsafe_reasoned_sites,
+                has_mut_ref_params,
+                has_await,
+                is_async: function.is_async,
+            },
+        );
+    }
+    out
+}
+
+fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::Return(value)
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => expr_uses_ident(value, target),
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_uses_ident(condition, target)
+                || then_body.iter().any(|nested| stmt_uses_ident(nested, target))
+                || else_body.iter().any(|nested| stmt_uses_ident(nested, target))
+        }
+        Stmt::While { condition, body } => {
+            expr_uses_ident(condition, target)
+                || body.iter().any(|nested| stmt_uses_ident(nested, target))
+        }
+        Stmt::Match { scrutinee, arms } => {
+            expr_uses_ident(scrutinee, target)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|guard| expr_uses_ident(guard, target))
+                        || expr_uses_ident(&arm.value, target)
+                })
+        }
+    }
+}
+
+fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
+    match expr {
+        Expr::Ident(name) => name == target,
+        Expr::Call { args, .. } => args.iter().any(|arg| expr_uses_ident(arg, target)),
+        Expr::FieldAccess { base, .. } => expr_uses_ident(base, target),
+        Expr::StructInit { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| expr_uses_ident(value, target)),
+        Expr::EnumInit { payload, .. } => payload.iter().any(|value| expr_uses_ident(value, target)),
+        Expr::Group(inner) | Expr::Await(inner) => expr_uses_ident(inner, target),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => expr_uses_ident(try_expr, target) || expr_uses_ident(catch_expr, target),
+        Expr::Binary { left, right, .. } => {
+            expr_uses_ident(left, target) || expr_uses_ident(right, target)
+        }
+        Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) => false,
+    }
+}
+
+fn is_partial_move_expr(expr: &Expr, owners: &BTreeMap<String, usize>) -> bool {
+    matches!(
+        expr,
+        Expr::FieldAccess {
+            base,
+            ..
+        } if matches!(base.as_ref(), Expr::Ident(name) if owners.contains_key(name))
+    )
+}
+
+fn is_alloc_callee(callee: &str) -> bool {
+    callee == "alloc" || callee.ends_with(".alloc")
+}
+
+fn is_free_callee(callee: &str) -> bool {
+    callee == "free" || callee.ends_with(".free")
+}
+
+fn is_close_callee(callee: &str) -> bool {
+    callee == "close" || callee.ends_with(".close")
+}
+
+fn unsafe_has_reason(args: &[Expr]) -> bool {
+    args.first()
+        .is_some_and(|expr| matches!(expr, Expr::Str(value) if !value.trim().is_empty()))
+}
+
+fn unsafe_has_invariant_and_owner(args: &[Expr]) -> bool {
+    let mut has_invariant = false;
+    let mut has_owner = false;
+    for arg in args {
+        let Expr::Str(value) = arg else {
+            continue;
+        };
+        let normalized = value.to_ascii_lowercase();
+        if normalized.contains("invariant:") {
+            has_invariant = true;
+        }
+        if normalized.contains("owner:") {
+            has_owner = true;
+        }
+    }
+    has_invariant && has_owner
 }
 
 fn is_alloc_expr(expr: &Expr) -> bool {
@@ -1448,18 +1822,20 @@ fn collect_effect_markers(
         }
         impl AstVisitor for Counter {
             fn visit_expr(&mut self, expr: &Expr) {
-                if let Expr::Call { callee, .. } = expr {
+                if let Expr::Call { callee, args } = expr {
                     if callee.starts_with("syscall.") {
                         self.host_syscall_sites += 1;
                     }
-                    if callee == "unsafe" {
+                    if matches!(callee.as_str(), "unsafe" | "unsafe_reason") {
                         self.unsafe_sites += 1;
-                        self.unsafe_reasoned_sites += 1;
+                        if unsafe_has_reason(args) {
+                            self.unsafe_reasoned_sites += 1;
+                        }
                     }
-                    if callee.starts_with("alloc") {
+                    if is_alloc_callee(callee) {
                         self.alloc_sites += 1;
                     }
-                    if callee.starts_with("free") {
+                    if is_free_callee(callee) {
                         self.free_sites += 1;
                     }
                 }
@@ -2504,13 +2880,26 @@ fn i32_type() -> Type {
 
 fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let i32 = i32_type();
+    let usize_ty = Type::Int {
+        signed: false,
+        bits: 64,
+    };
+    let u8_ty = Type::Int {
+        signed: false,
+        bits: 8,
+    };
+    let ptr_u8 = Type::Ptr {
+        mutable: true,
+        to: Box::new(u8_ty),
+    };
     let str_ty = Type::Str;
     Some(match name {
         "spawn" => (vec![i32.clone()], i32.clone()),
         "yield" | "checkpoint" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
         "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
-        "alloc" => (vec![i32.clone()], i32.clone()),
-        "free" | "close" => (vec![i32.clone()], i32.clone()),
+        "alloc" => (vec![usize_ty], ptr_u8.clone()),
+        "free" => (vec![ptr_u8], Type::Void),
+        "close" => (vec![i32.clone()], Type::Void),
         "net.bind" | "net.accept" | "net.connect" | "net.poll_next" => (vec![], i32.clone()),
         "net.listen" | "net.read" | "net.close" | "net.poll_register" => {
             (vec![i32.clone()], i32.clone())

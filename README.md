@@ -47,10 +47,10 @@ cargo test --workspace
 fz build <path> [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
 
 # Run source/project or .fozzy scenario
-fz run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz run <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 
 # Test source/project or .fozzy scenario
-fz test <path> [--det] [--strict-verify] [--safe-profile] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz test <path> [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 
 # Verify/check/IR
 fz check <path> [--json]

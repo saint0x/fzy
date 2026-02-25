@@ -809,6 +809,7 @@ pub fn compile_file_with_backend(
         &fir,
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
+            production_memory_safety: true,
         },
     );
 
@@ -863,6 +864,7 @@ pub fn compile_library_with_backend(
         &fir,
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
+            production_memory_safety: true,
         },
     );
 

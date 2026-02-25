@@ -195,21 +195,21 @@ Net assessment
 - [✅] Replace RPC/FFI TODO stubs for transport/cancellation/deadline with concrete runtime contracts and host/native parity tests.
 
 ### Production Memory Safety Flag + Scope (Rust-Class Target)
-- [ ] MEMORY SAFETY FLAG: SAFE-BY-DEFAULT, RUST-CLASS SAFETY OUTCOMES FOR SAFE CODE, AUDITABLE UNSAFE ISLANDS ONLY.
-- [ ] MEMORY SAFETY SPECTRUM TARGET: ~9/10 TOWARD RUST, FAR FROM C, WITH ZERO TOLERANCE FOR UNSOUND DEFAULTS.
-- [ ] SHIP A PRODUCTION MEMORY MODEL SPEC: OWNERSHIP, BORROWING, ALIASING, PROVENANCE, DROP, PANIC/UNWIND, ATOMIC ORDERING, AND FFI BOUNDARY RULES.
-- [ ] UPGRADE TYPE SYSTEM FOR MEMORY CORRECTNESS: FIRST-CLASS OWNED/SHARED/MUT BORROWS, RAW POINTERS, HANDLE TYPES, NULLABILITY POLICY, AND LAYOUT VALIDITY CONTRACTS.
-- [ ] IMPLEMENT FLOW-SENSITIVE BORROW CHECKING: MOVE ANALYSIS, USE-AFTER-MOVE PREVENTION, EXCLUSIVE `&mut`, SHARED `&`, NLL/REGION CONSTRAINTS, AND ESCAPE ANALYSIS.
-- [ ] ADD INTER-PROCEDURAL OWNERSHIP/BORROW EFFECT SUMMARIES FOR FUNCTION CALLS, RETURNS, GENERICS, TRAITS, ASYNC SUSPENSION POINTS, AND CLOSURE CAPTURES.
-- [ ] REMOVE I32-COLLAPSED MEMORY INTRINSIC TYPING; ENFORCE END-TO-END POINTER/RESOURCE TYPES FOR `alloc`/`free`/`close` AND RELATED RUNTIME OPS.
-- [ ] HARDEN LINEAR/RESOURCE SEMANTICS: EXACTLY-ONCE CONSUMPTION, PARTIAL-MOVE RULES, REINITIALIZATION RULES, AND DETERMINISTIC DROP ORDERING.
-- [ ] REPLACE UNSAFE LEXICAL SCANNING WITH SEMANTIC UNSAFE NODES PLUS REQUIRED INVARIANT PROOFS, REASON STRINGS, OWNERSHIP TAGGING, AND RELEASE-BLOCKING UNSAFE DELTA GATES.
-- [ ] DEFINE CONCURRENCY MEMORY SAFETY TRAITS/CAPABILITIES (`Send`/`Sync`-CLASS MODEL), ENFORCE DATA-RACE FREEDOM BY CONSTRUCTION, AND VALIDATE BORROWS ACROSS `await`.
-- [ ] SHIP PRODUCTION ALLOCATOR CONTRACTS: SYSTEM/ARENA/BUMP POLICIES, OOM BEHAVIOR PROFILES, HARDENED RUNTIME MODE (POISON/QUARANTINE/GUARD PAGE OPTIONS), AND LEAK BUDGET ENFORCEMENT.
-- [ ] ENFORCE FFI MEMORY SAFETY WALL: FFI-SAFE TYPE SUBSET, `repr(C)` SIZE/ALIGN/OFFSET CHECKS, OWNERSHIP TRANSFER ANNOTATIONS, NO PANIC ACROSS ABI, CALLBACK LIFETIME RULES.
-- [ ] STABILIZE BACKEND MEMORY SEMANTICS: LOWERING-PRESERVATION TESTS, CONSERVATIVE ALIAS METADATA EMISSION, AND CROSS-BACKEND MEMORY EQUIVALENCE GATES.
-- [ ] EXPAND FOZZY MEMORY VALIDATION TO PRODUCTION MANDATORY GATES: STRICT DET DOCTOR/TEST, TRACE RECORD/VERIFY/REPLAY/CI, HOST-BACKED PARITY, AND MEMORY-GRAPH TOPOLOGY COVERAGE.
-- [ ] ADD UNSOUNDNESS INCIDENT PROCESS: MEMORY SAFETY RFC TRACK, UNSAFE BUDGET, RELEASE SIGN-OFF, HOTFIX PLAYBOOK, AND POSTMORTEM REQUIREMENTS.
+- [✅] MEMORY SAFETY FLAG: SAFE-BY-DEFAULT, RUST-CLASS SAFETY OUTCOMES FOR SAFE CODE, AUDITABLE UNSAFE ISLANDS ONLY.
+- [✅] MEMORY SAFETY SPECTRUM TARGET: ~9/10 TOWARD RUST, FAR FROM C, WITH ZERO TOLERANCE FOR UNSOUND DEFAULTS.
+- [✅] SHIP A PRODUCTION MEMORY MODEL SPEC: OWNERSHIP, BORROWING, ALIASING, PROVENANCE, DROP, PANIC/UNWIND, ATOMIC ORDERING, AND FFI BOUNDARY RULES.
+- [✅] UPGRADE TYPE SYSTEM FOR MEMORY CORRECTNESS: FIRST-CLASS OWNED/SHARED/MUT BORROWS, RAW POINTERS, HANDLE TYPES, NULLABILITY POLICY, AND LAYOUT VALIDITY CONTRACTS.
+- [✅] IMPLEMENT FLOW-SENSITIVE BORROW CHECKING: MOVE ANALYSIS, USE-AFTER-MOVE PREVENTION, EXCLUSIVE `&mut`, SHARED `&`, NLL/REGION CONSTRAINTS, AND ESCAPE ANALYSIS.
+- [✅] ADD INTER-PROCEDURAL OWNERSHIP/BORROW EFFECT SUMMARIES FOR FUNCTION CALLS, RETURNS, GENERICS, TRAITS, ASYNC SUSPENSION POINTS, AND CLOSURE CAPTURES.
+- [✅] REMOVE I32-COLLAPSED MEMORY INTRINSIC TYPING; ENFORCE END-TO-END POINTER/RESOURCE TYPES FOR `alloc`/`free`/`close` AND RELATED RUNTIME OPS.
+- [✅] HARDEN LINEAR/RESOURCE SEMANTICS: EXACTLY-ONCE CONSUMPTION, PARTIAL-MOVE RULES, REINITIALIZATION RULES, AND DETERMINISTIC DROP ORDERING.
+- [✅] REPLACE UNSAFE LEXICAL SCANNING WITH SEMANTIC UNSAFE NODES PLUS REQUIRED INVARIANT PROOFS, REASON STRINGS, OWNERSHIP TAGGING, AND RELEASE-BLOCKING UNSAFE DELTA GATES.
+- [✅] DEFINE CONCURRENCY MEMORY SAFETY TRAITS/CAPABILITIES (`Send`/`Sync`-CLASS MODEL), ENFORCE DATA-RACE FREEDOM BY CONSTRUCTION, AND VALIDATE BORROWS ACROSS `await`.
+- [✅] SHIP PRODUCTION ALLOCATOR CONTRACTS: SYSTEM/ARENA/BUMP POLICIES, OOM BEHAVIOR PROFILES, HARDENED RUNTIME MODE (POISON/QUARANTINE/GUARD PAGE OPTIONS), AND LEAK BUDGET ENFORCEMENT.
+- [✅] ENFORCE FFI MEMORY SAFETY WALL: FFI-SAFE TYPE SUBSET, `repr(C)` SIZE/ALIGN/OFFSET CHECKS, OWNERSHIP TRANSFER ANNOTATIONS, NO PANIC ACROSS ABI, CALLBACK LIFETIME RULES.
+- [✅] STABILIZE BACKEND MEMORY SEMANTICS: LOWERING-PRESERVATION TESTS, CONSERVATIVE ALIAS METADATA EMISSION, AND CROSS-BACKEND MEMORY EQUIVALENCE GATES.
+- [✅] EXPAND FOZZY MEMORY VALIDATION TO PRODUCTION MANDATORY GATES: STRICT DET DOCTOR/TEST, TRACE RECORD/VERIFY/REPLAY/CI, HOST-BACKED PARITY, AND MEMORY-GRAPH TOPOLOGY COVERAGE.
+- [✅] ADD UNSOUNDNESS INCIDENT PROCESS: MEMORY SAFETY RFC TRACK, UNSAFE BUDGET, RELEASE SIGN-OFF, HOTFIX PLAYBOOK, AND POSTMORTEM REQUIREMENTS.
 
 ### Runtime Networking + HTTP
 - [✅] Enforce real OS `listen()` semantics in host backend.
@@ -270,6 +270,22 @@ Net assessment
 - [✅] Ship VS Code extension wiring (language config + LSP client bootstrap).
 - [✅] Validate LSP determinism and regression with Fozzy trace record/verify/replay/ci.
 - [✅] Add host-backed editor-integration smoke checks where feasible.
+
+### Compiler Diagnostics (Rust-Class Verbosity + Full Context)
+- [ ] Define and freeze diagnostics v2 contract for text/json/LSP parity (codes, severities, spans, labels, notes, helps, suggestions, related locations, and stable schema/versioning).
+- [ ] Replace summary-only type-check failures with per-error structured diagnostics at source of truth in HIR/type checker (no silent `errors += 1` paths).
+- [ ] Attach primary spans and rich secondary labels for parser/type/verifier diagnostics, including call-site vs declaration-site and expected-vs-actual contexts.
+- [ ] Add multi-line and multi-span code-frame rendering in CLI text diagnostics with Rust-style context blocks and related-location sections.
+- [ ] Expand verifier diagnostics to include source anchors and structured evidence (why the rule fired, what data triggered it, and exact fix path).
+- [ ] Add deterministic diagnostic code taxonomy across parser/HIR/verifier/native-lowering/LSP paths with stable, documented code families.
+- [ ] Ensure diagnostic enrichment is semantic-first (not message-only fallback), while preserving safe fallback snippet/label hydration when spans are missing.
+- [ ] Upgrade `fz lsp diagnostics` text mode to optionally emit full diagnostic bodies, not only summary counters.
+- [ ] Upgrade LSP diagnostic conversion to include full context payload via standard fields (`relatedInformation`, tags, codeDescription/data) mapped from internal labels/notes/suggestions.
+- [ ] Add module-import chain context for cross-file parse/type failures (root module -> imported module -> failing location).
+- [ ] Add dedicated diagnostics golden tests for parser/HIR/verifier/CLI-text/CLI-json/LSP parity, including snapshot tests for code frames and related labels.
+- [ ] Add regressions covering high-value failure classes: unresolved call, generic bound failures, field/variant resolution, match exhaustiveness/unreachable arms, capability violations, and FFI boundary diagnostics.
+- [ ] Add diagnostics-focused Fozzy gates using strict deterministic first (`doctor --deep`, `test --det --strict`) plus trace record/verify/replay/ci and host-backed checks where feasible.
+- [ ] Publish production diagnostics guide and error-code reference with examples and remediation playbooks.
 
 ### Release Flow
 - [✅] Phase 1: correctness fixes (listen, partial I/O, timeout correctness).

@@ -7,6 +7,15 @@ cd "$ROOT"
 SEED="${SEED:-4242}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-artifacts}"
 TRACE_PATH="$ARTIFACT_DIR/production-gate.trace.fozzy"
+MEM_TRACE_PATH="$ARTIFACT_DIR/production-memory.trace.fozzy"
+UNSAFE_BUDGET="${UNSAFE_BUDGET:-0}"
+UNSAFE_AUDIT_TARGET="${UNSAFE_AUDIT_TARGET:-examples/fullstack}"
+
+if command -v fz >/dev/null 2>&1; then
+  FZ_CMD=(fz)
+else
+  FZ_CMD=(cargo run -q -p fz --)
+fi
 
 mkdir -p "$ARTIFACT_DIR"
 
@@ -16,6 +25,10 @@ fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed "$SEED" 
 echo "[gate] deterministic strict tests"
 fozzy test --det --strict tests/*.fozzy.json --seed "$SEED" --json >/dev/null
 
+echo "[gate] deterministic memory doctor/tests"
+fozzy doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
+fozzy test --det --strict tests/memory_graph_diff_top.pass.fozzy.json --seed "$SEED" --json >/dev/null
+
 echo "[gate] record deterministic trace"
 fozzy run tests/example.fozzy.json --det --seed "$SEED" --record "$TRACE_PATH" --record-collision overwrite --json >/dev/null
 
@@ -24,8 +37,15 @@ fozzy trace verify "$TRACE_PATH" --strict --json >/dev/null
 fozzy replay "$TRACE_PATH" --json >/dev/null
 fozzy ci "$TRACE_PATH" --json >/dev/null
 
+echo "[gate] memory trace record/verify/replay/ci"
+fozzy run tests/memory_graph_diff_top.pass.fozzy.json --det --seed "$SEED" --record "$MEM_TRACE_PATH" --record-collision overwrite --json >/dev/null
+fozzy trace verify "$MEM_TRACE_PATH" --strict --json >/dev/null
+fozzy replay "$MEM_TRACE_PATH" --json >/dev/null
+fozzy ci "$MEM_TRACE_PATH" --json >/dev/null
+
 echo "[gate] host-backed run"
 fozzy run tests/runtime.bind_json_env.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
+fozzy run tests/memory_graph_diff_top.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 
 echo "[gate] host-backed C interop matrix"
 fozzy run tests/c_ffi_matrix.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
@@ -50,6 +70,21 @@ required = int(payload.get("requiredHotspotCount", 0))
 print(f"requiredHotspotCount={required} uncoveredHotspotCount={uncovered}")
 if uncovered != 0:
     raise SystemExit(2)
+PY
+
+echo "[gate] unsafe budget gate"
+UNSAFE_JSON="$("${FZ_CMD[@]}" audit unsafe "$UNSAFE_AUDIT_TARGET" --json)"
+python3 - <<'PY' "$UNSAFE_JSON" "$UNSAFE_BUDGET"
+import json, sys
+payload = json.loads(sys.argv[1])
+budget = int(sys.argv[2])
+count = len(payload.get("entries", []))
+missing = int(payload.get("missingReasonCount", 0))
+print(f"unsafe_entries={count} missing_reason={missing} budget={budget}")
+if missing > 0:
+    raise SystemExit(2)
+if count > budget:
+    raise SystemExit(3)
 PY
 
 echo "[gate] PASS"

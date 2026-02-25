@@ -4,6 +4,7 @@ use fir::FirModule;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VerifyPolicy {
     pub safe_profile: bool,
+    pub production_memory_safety: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -25,6 +26,7 @@ pub fn verify(module: &FirModule) -> VerifyReport {
 
 pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyReport {
     let mut report = VerifyReport::default();
+    let memory_safety_enforced = policy.safe_profile || policy.production_memory_safety;
 
     if module.name.trim().is_empty() {
         report.diagnostics.push(Diagnostic::new(
@@ -113,11 +115,11 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 Some("declare syscall wrappers as `extern \"C\" fn ...;`".to_string()),
             ));
         }
-        if policy.safe_profile {
+        if memory_safety_enforced {
             report.diagnostics.push(Diagnostic::new(
                 Severity::Error,
-                "host syscall usage is forbidden in safe profile",
-                Some("move syscall code behind non-safe profile targets".to_string()),
+                "host syscall usage is forbidden under production memory safety",
+                Some("move syscall code behind audited FFI boundaries".to_string()),
             ));
         }
     }
@@ -127,7 +129,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             .unsafe_sites
             .saturating_sub(module.unsafe_reasoned_sites);
         report.diagnostics.push(Diagnostic::new(
-            if policy.safe_profile {
+            if memory_safety_enforced {
                 Severity::Error
             } else {
                 Severity::Warning
@@ -136,11 +138,14 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 "detected {} explicit unsafe escape marker(s)",
                 module.unsafe_sites
             ),
-            Some("unsafe escapes must be isolated and are rejected in safe profile".to_string()),
+            Some(
+                "unsafe escapes must be isolated and are rejected under production memory safety"
+                    .to_string(),
+            ),
         ));
         if missing_reasons > 0 {
             report.diagnostics.push(Diagnostic::new(
-                if policy.safe_profile {
+                if memory_safety_enforced {
                     Severity::Error
                 } else {
                     Severity::Warning
@@ -154,7 +159,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         }
     }
     if module.reference_sites > 0
-        && policy.safe_profile
+        && memory_safety_enforced
         && module.reference_lifetime_violations.is_empty()
     {
         report.diagnostics.push(Diagnostic::new(
@@ -167,7 +172,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         ));
     }
     if module.alloc_sites > module.free_sites {
-        let severity = if policy.safe_profile {
+        let severity = if memory_safety_enforced {
             Severity::Error
         } else {
             Severity::Warning
@@ -183,7 +188,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
     for violation in &module.ownership_violations {
         report.diagnostics.push(Diagnostic::new(
-            if policy.safe_profile {
+            if memory_safety_enforced {
                 Severity::Error
             } else {
                 Severity::Warning
@@ -214,7 +219,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
     for violation in &module.reference_lifetime_violations {
         report.diagnostics.push(Diagnostic::new(
-            if policy.safe_profile {
+            if memory_safety_enforced {
                 Severity::Error
             } else {
                 Severity::Warning
@@ -769,7 +774,13 @@ mod tests {
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
-        let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                safe_profile: true,
+                ..VerifyPolicy::default()
+            },
+        );
         assert!(report
             .diagnostics
             .iter()
@@ -833,7 +844,13 @@ mod tests {
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
-        let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                safe_profile: true,
+                ..VerifyPolicy::default()
+            },
+        );
         for expected in ["time", "rng", "fs", "net", "proc", "mem", "thread"] {
             assert!(report.diagnostics.iter().any(|d| d
                 .message
@@ -985,10 +1002,128 @@ mod tests {
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
         };
-        let report = verify_with_policy(&module, VerifyPolicy { safe_profile: true });
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                safe_profile: true,
+                ..VerifyPolicy::default()
+            },
+        );
         assert!(report
             .diagnostics
             .iter()
             .any(|d| d.message.contains("memory lifecycle imbalance")));
+    }
+
+    #[test]
+    fn production_memory_safety_rejects_alloc_free_imbalance_without_safe_profile() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: capabilities::CapabilitySet::default(),
+            required_effects: capabilities::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: vec![],
+            entry_ensures: vec![],
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            reference_sites: 0,
+            alloc_sites: 2,
+            free_sites: 1,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                production_memory_safety: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("memory lifecycle imbalance")));
+    }
+
+    #[test]
+    fn production_memory_safety_does_not_forbid_runtime_capability_set() {
+        let mut effects = capabilities::CapabilitySet::default();
+        effects.insert(Capability::Network);
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects,
+            required_effects: capabilities::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: vec![],
+            entry_ensures: vec![],
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                production_memory_safety: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(!report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("safe profile forbids capability")));
     }
 }

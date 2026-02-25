@@ -292,6 +292,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "deterministicApplied": true,
                         "strictVerify": strict_verify,
                         "safeProfile": safe_profile,
+                        "productionMemorySafety": true,
                         "seed": seed,
                         "hostBackends": host_backends,
                         "routing": {
@@ -385,6 +386,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "deterministic": deterministic,
                     "strictVerify": strict_verify,
                     "safeProfile": safe_profile,
+                    "productionMemorySafety": true,
                     "seed": seed,
                     "hostBackends": host_backends,
                     "deterministicApplied": deterministic && !host_backends,
@@ -501,6 +503,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "deterministic": deterministic,
                     "strictVerify": strict_verify,
                     "safeProfile": safe_profile,
+                    "productionMemorySafety": true,
                     "mode": test_plan.mode,
                     "scheduler": test_plan.scheduler,
                     "diagnostics": test_plan.diagnostics,
@@ -2746,15 +2749,22 @@ fn run_non_scenario_test_plan(
 
     let typed = hir::lower(&parsed.module);
     let fir = fir::build_owned(typed);
-    let verify_report = verifier::verify_with_policy(&fir, verifier::VerifyPolicy { safe_profile });
+    let production_memory_safety = true;
+    let verify_report = verifier::verify_with_policy(
+        &fir,
+        verifier::VerifyPolicy {
+            safe_profile,
+            production_memory_safety,
+        },
+    );
     let diagnostics = verify_report.diagnostics.len();
     let has_errors = verify_report
         .diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
-    if safe_profile && has_errors {
+    if production_memory_safety && has_errors {
         bail!(
-            "safe profile rejected module `{}` with {} diagnostics",
+            "production memory safety rejected module `{}` with {} diagnostics",
             fir.name,
             diagnostics
         );
@@ -5430,6 +5440,8 @@ fn validate_ffi_contract(
                 function.return_type
             );
         }
+        let mut has_callback_param = false;
+        let mut has_callback_context = false;
         for param in &function.params {
             if !is_ffi_stable_type(&param.ty) {
                 bail!(
@@ -5439,6 +5451,31 @@ fn validate_ffi_contract(
                     param.ty
                 );
             }
+            if matches!(param.ty, ast::Type::Ptr { .. }) {
+                let tagged = param.name.ends_with("_owned")
+                    || param.name.ends_with("_borrowed")
+                    || param.name.ends_with("_out");
+                if !tagged {
+                    bail!(
+                        "extern export `{}` pointer param `{}` must declare ownership transfer tag suffix (`_owned`, `_borrowed`, `_out`)",
+                        function.name,
+                        param.name
+                    );
+                }
+            }
+            let name_lc = param.name.to_ascii_lowercase();
+            if name_lc.contains("callback") || name_lc.starts_with("cb") {
+                has_callback_param = true;
+            }
+            if name_lc.ends_with("_ctx") || name_lc.ends_with("_context") {
+                has_callback_context = true;
+            }
+        }
+        if has_callback_param && !has_callback_context {
+            bail!(
+                "extern export `{}` defines callback param but missing lifetime context param (`*_ctx` or `*_context`)",
+                function.name
+            );
         }
     }
     Ok(())
