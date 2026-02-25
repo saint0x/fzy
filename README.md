@@ -69,11 +69,14 @@ fz lsp definition <path> <symbol> [--json]
 fz lsp hover <path> <symbol> [--json]
 fz lsp rename <path> <from> <to> [--json]
 fz lsp smoke <path> [--json]
+fz lsp serve [--path <workspace>] [--json]
 
 # FFI / RPC outputs
 fz headers <path> [--out path] [--json]
 fz rpc gen <path> [--out-dir dir] [--json]
 ```
+
+VS Code editor integration is available under `tooling/vscode` (language config, TextMate grammar, LSP client bootstrap to `fz lsp serve`).
 
 Runtime defaults for native host-backed HTTP:
 - bind host default: `127.0.0.1` (`FZ_HOST` > `AGENT_HOST` > default)

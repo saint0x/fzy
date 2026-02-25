@@ -246,6 +246,9 @@ fn parse_command(args: &[String]) -> Result<Command> {
             path: arg_path(args, 1)?,
         }),
         Some("lsp") => match args.get(1).map(String::as_str) {
+            Some("serve") => Ok(Command::LspServe {
+                path: parse_path_flag(args, "--path")?,
+            }),
             Some("diagnostics") => Ok(Command::LspDiagnostics {
                 path: arg_path(args, 2)?,
             }),
@@ -347,6 +350,7 @@ commands:\n\
   vendor <project>\n\
   abi-check <current.abi.json> --baseline <baseline.abi.json>\n\
   debug-check <path>\n\
+  lsp serve [--path workspace]\n\
   lsp diagnostics <path>\n\
   lsp definition <path> <symbol>\n\
   lsp hover <path> <symbol>\n\

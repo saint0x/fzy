@@ -35,6 +35,7 @@ fozzy artifacts ls latest --json >/dev/null
 fozzy report show latest --format json --json >/dev/null
 fozzy env --json >/dev/null
 fozzy usage --json >/dev/null
+./scripts/lsp_editor_smoke.sh >/dev/null
 
 echo "[gate] pedantic topology closure"
 MAP_JSON="$(fozzy map suites --root . --scenario-root tests --profile pedantic --json)"

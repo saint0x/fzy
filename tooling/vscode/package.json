@@ -1,0 +1,50 @@
+{
+  "name": "fozzy-language-tools",
+  "displayName": "Fozzy Language Tools",
+  "description": "Syntax highlighting and LSP tooling for Fozzy",
+  "version": "1.0.0",
+  "publisher": "fozzy",
+  "engines": {
+    "vscode": "^1.86.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:fzy"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "fzy",
+        "aliases": ["Fozzy", "fzy"],
+        "extensions": [".fzy"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fzy",
+        "scopeName": "source.fzy",
+        "path": "./syntaxes/fozzy.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Fozzy",
+      "properties": {
+        "fozzy.fzPath": {
+          "type": "string",
+          "default": "fz",
+          "description": "Absolute path to the fz binary used for language server startup."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "lint": "echo 'no lint configured'"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
+}

@@ -168,6 +168,7 @@ fz lsp definition <path> <symbol>
 fz lsp hover <path> <symbol>
 fz lsp rename <path> <from> <to>
 fz lsp smoke <path>
+fz lsp serve [--path <workspace>]
 ```
 
 Use these for scripted editor-like operations and refactoring checks.
@@ -421,7 +422,7 @@ For meaningful changes, run at least:
 - `fmt`, `check`, `verify`, `dx-check`, `spec-check`
 - `emit-ir`, `parity`, `equivalence`, `audit unsafe`, `debug-check`
 - `vendor`, `abi-check`
-- `lsp diagnostics|definition|hover|rename|smoke`
+- `lsp diagnostics|definition|hover|rename|smoke|serve`
 - `headers`, `rpc gen`
 - `fuzz`, `explore`, `replay`, `shrink`, `ci`, `version`
 

@@ -9,6 +9,7 @@ use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEven
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::lsp;
 use crate::pipeline::{
     compile_file_with_backend, emit_ir, parse_program, refresh_lockfile, verify_file,
     BuildArtifact, BuildProfile, Output,
@@ -125,6 +126,9 @@ pub enum Command {
     },
     LspSmoke {
         path: PathBuf,
+    },
+    LspServe {
+        path: Option<PathBuf>,
     },
     Fuzz {
         target: PathBuf,
@@ -574,6 +578,10 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::LspHover { path, symbol } => lsp_hover_command(&path, &symbol, format),
         Command::LspRename { path, from, to } => lsp_rename_command(&path, &from, &to, format),
         Command::LspSmoke { path } => lsp_smoke_command(&path, format),
+        Command::LspServe { path } => {
+            lsp::serve_stdio(path.as_deref())?;
+            Ok(render(format, "lsp server exited cleanly"))
+        }
         Command::Fuzz { target } => passthrough_fozzy("fuzz", &target, format),
         Command::Explore { target } => {
             if is_native_trace_or_manifest(&target) {
@@ -2012,15 +2020,6 @@ fn hex_encode(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct LspSymbol {
-    symbol: String,
-    kind: String,
-    file: String,
-    line: usize,
-    detail: String,
-}
-
 fn debug_check_command(path: &Path, format: Format) -> Result<String> {
     let artifact = compile_file_with_backend(path, BuildProfile::Dev, None)?;
     if artifact.status != "ok" {
@@ -2086,42 +2085,37 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
 }
 
 fn lsp_diagnostics_command(path: &Path, format: Format) -> Result<String> {
-    let output = verify_file(path)?;
-    let ok = !output_has_errors(&output);
+    let payload = lsp::diagnostics_for_path(path)?;
+    let ok = payload
+        .get("ok")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let module = payload
+        .get("module")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let diagnostics = payload
+        .get("diagnostics")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     match format {
-        Format::Text => {
-            let mut rendered = format!(
-                "lsp diagnostics module={} diagnostics={} ok={}",
-                output.module, output.diagnostics, ok
-            );
-            let details = render_diagnostics_text(&output.diagnostic_details);
-            if !details.is_empty() {
-                rendered.push('\n');
-                rendered.push_str(&details);
-            }
-            Ok(rendered)
-        }
-        Format::Json => Ok(serde_json::json!({
-            "ok": ok,
-            "module": output.module,
-            "diagnostics": output.diagnostic_details,
-        })
-        .to_string()),
+        Format::Text => Ok(format!(
+            "lsp diagnostics module={} diagnostics={} ok={}",
+            module,
+            diagnostics.len(),
+            ok
+        )),
+        Format::Json => Ok(payload.to_string()),
     }
 }
 
 fn lsp_definition_command(path: &Path, symbol: &str, format: Format) -> Result<String> {
-    let resolved = resolve_source(path)?;
-    let parsed = parse_program(&resolved.source_path)?;
-    let symbols = index_lsp_symbols(&parsed)?;
-    let hit = symbols
-        .into_iter()
-        .find(|entry| entry.symbol == symbol)
-        .ok_or_else(|| anyhow!("symbol `{}` not found", symbol))?;
+    let hit = lsp::definition_for_symbol(path, symbol)?;
     match format {
         Format::Text => Ok(format!(
-            "definition {} {}:{} {}",
-            hit.kind, hit.file, hit.line, hit.detail
+            "definition {} {}:{}:{} {}",
+            hit.kind, hit.file, hit.line, hit.col, hit.detail
         )),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
@@ -2132,34 +2126,7 @@ fn lsp_definition_command(path: &Path, symbol: &str, format: Format) -> Result<S
 }
 
 fn lsp_hover_command(path: &Path, symbol: &str, format: Format) -> Result<String> {
-    let resolved = resolve_source(path)?;
-    let parsed = parse_program(&resolved.source_path)?;
-    let info = parsed.module.items.iter().find_map(|item| match item {
-        ast::Item::Function(function) if function.name == symbol => Some(serde_json::json!({
-            "symbol": symbol,
-            "kind": "function",
-            "signature": format!("fn {}({}) -> {}", function.name, function.params.iter().map(|param| format!("{}: {}", param.name, param.ty)).collect::<Vec<_>>().join(", "), function.return_type),
-        })),
-        ast::Item::Struct(s) if s.name == symbol => Some(serde_json::json!({
-            "symbol": symbol,
-            "kind": "struct",
-            "signature": format!("struct {}", s.name),
-        })),
-        ast::Item::Enum(e) if e.name == symbol => Some(serde_json::json!({
-            "symbol": symbol,
-            "kind": "enum",
-            "signature": format!("enum {}", e.name),
-        })),
-        ast::Item::Test(test) if test.name == symbol => Some(serde_json::json!({
-            "symbol": symbol,
-            "kind": "test",
-            "signature": format!("test \"{}\" {}", test.name, if test.deterministic { "{}" } else { "nondet {}" }),
-        })),
-        _ => None,
-    });
-    let Some(info) = info else {
-        bail!("symbol `{}` not found", symbol);
-    };
+    let info = lsp::hover_for_symbol(path, symbol)?;
     match format {
         Format::Text => Ok(format!(
             "hover {} {}",
@@ -2179,168 +2146,42 @@ fn lsp_hover_command(path: &Path, symbol: &str, format: Format) -> Result<String
 }
 
 fn lsp_rename_command(path: &Path, from: &str, to: &str, format: Format) -> Result<String> {
-    if from.trim().is_empty() || to.trim().is_empty() {
-        bail!("rename requires non-empty symbols");
-    }
-    let resolved = resolve_source(path)?;
-    let parsed = parse_program(&resolved.source_path)?;
-    let mut changed_files = Vec::new();
-    let mut replacements = 0usize;
-    for module_path in &parsed.module_paths {
-        let original = std::fs::read_to_string(module_path).with_context(|| {
-            format!(
-                "failed reading module for rename: {}",
-                module_path.display()
-            )
-        })?;
-        let (updated, count) = replace_symbol_whole_word(&original, from, to);
-        if count > 0 {
-            std::fs::write(module_path, updated.as_bytes()).with_context(|| {
-                format!("failed writing renamed module: {}", module_path.display())
-            })?;
-            replacements += count;
-            changed_files.push(module_path.display().to_string());
-        }
-    }
+    let summary = lsp::rename_on_disk(path, from, to)?;
     match format {
         Format::Text => Ok(format!(
             "rename {} -> {} replacements={} files={}",
-            from,
-            to,
-            replacements,
-            changed_files.len()
+            summary.from,
+            summary.to,
+            summary.replacements,
+            summary.files.len()
         )),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
-            "from": from,
-            "to": to,
-            "replacements": replacements,
-            "files": changed_files,
+            "from": summary.from,
+            "to": summary.to,
+            "replacements": summary.replacements,
+            "files": summary.files,
         })
         .to_string()),
     }
 }
 
 fn lsp_smoke_command(path: &Path, format: Format) -> Result<String> {
-    let diagnostics = verify_file(path)?;
-    let resolved = resolve_source(path)?;
-    let parsed = parse_program(&resolved.source_path)?;
-    let symbols = index_lsp_symbols(&parsed)?;
-    let has_main = symbols.iter().any(|entry| entry.symbol == "main");
-    let ok = has_main;
-    if !ok {
-        bail!("lsp smoke failed: no `main` definition found");
-    }
+    let payload = lsp::smoke(path)?;
     match format {
         Format::Text => Ok(format!(
             "lsp smoke ok symbols={} diagnostics={}",
-            symbols.len(),
-            diagnostics.diagnostics
+            payload
+                .get("symbols")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            payload
+                .get("diagnostics")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0)
         )),
-        Format::Json => Ok(serde_json::json!({
-            "ok": true,
-            "symbols": symbols.len(),
-            "diagnostics": diagnostics.diagnostics,
-            "features": ["diagnostics", "definition", "hover", "rename"],
-        })
-        .to_string()),
+        Format::Json => Ok(payload.to_string()),
     }
-}
-
-fn index_lsp_symbols(parsed: &crate::pipeline::ParsedProgram) -> Result<Vec<LspSymbol>> {
-    let mut symbols = Vec::new();
-    for module_path in &parsed.module_paths {
-        let source = std::fs::read_to_string(module_path).with_context(|| {
-            format!(
-                "failed reading module for lsp index: {}",
-                module_path.display()
-            )
-        })?;
-        for (line_number, raw_line) in source.lines().enumerate() {
-            let line = raw_line.trim();
-            if line.is_empty() || line.starts_with("//") {
-                continue;
-            }
-            if let Some(name) = parse_symbol_from_decl(line, "fn ") {
-                symbols.push(LspSymbol {
-                    symbol: name.clone(),
-                    kind: "function".to_string(),
-                    file: module_path.display().to_string(),
-                    line: line_number + 1,
-                    detail: line.to_string(),
-                });
-            } else if let Some(name) = parse_symbol_from_decl(line, "struct ") {
-                symbols.push(LspSymbol {
-                    symbol: name.clone(),
-                    kind: "struct".to_string(),
-                    file: module_path.display().to_string(),
-                    line: line_number + 1,
-                    detail: line.to_string(),
-                });
-            } else if let Some(name) = parse_symbol_from_decl(line, "enum ") {
-                symbols.push(LspSymbol {
-                    symbol: name.clone(),
-                    kind: "enum".to_string(),
-                    file: module_path.display().to_string(),
-                    line: line_number + 1,
-                    detail: line.to_string(),
-                });
-            } else if line.starts_with("test \"") {
-                if let Some((_, tail)) = line.split_once('"') {
-                    if let Some((name, _)) = tail.split_once('"') {
-                        symbols.push(LspSymbol {
-                            symbol: name.to_string(),
-                            kind: "test".to_string(),
-                            file: module_path.display().to_string(),
-                            line: line_number + 1,
-                            detail: line.to_string(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-    Ok(symbols)
-}
-
-fn parse_symbol_from_decl(line: &str, token: &str) -> Option<String> {
-    let normalized = line.strip_prefix("pub ").unwrap_or(line);
-    let rest = normalized.strip_prefix(token)?.trim();
-    let name = rest
-        .split(|ch: char| ch == '(' || ch == '{' || ch.is_whitespace())
-        .next()
-        .map(str::trim)
-        .filter(|name| !name.is_empty())?;
-    Some(name.to_string())
-}
-
-fn replace_symbol_whole_word(input: &str, from: &str, to: &str) -> (String, usize) {
-    let mut out = String::with_capacity(input.len());
-    let mut count = 0usize;
-    let mut i = 0usize;
-    let chars = input.as_bytes();
-    while i < chars.len() {
-        if input[i..].starts_with(from)
-            && is_symbol_boundary(input, i.saturating_sub(1))
-            && is_symbol_boundary(input, i + from.len())
-        {
-            out.push_str(to);
-            i += from.len();
-            count += 1;
-        } else {
-            out.push(input.as_bytes()[i] as char);
-            i += 1;
-        }
-    }
-    (out, count)
-}
-
-fn is_symbol_boundary(input: &str, index: usize) -> bool {
-    if index >= input.len() {
-        return true;
-    }
-    let ch = input.as_bytes()[index] as char;
-    !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
 }
 
 fn ensure_exists(path: &Path) -> Result<()> {
@@ -5340,13 +5181,6 @@ fn format_source_target(path: &Path) -> Result<usize> {
     }
 
     Ok(usize::from(format_source_file(path)?))
-}
-
-fn output_has_errors(output: &Output) -> bool {
-    output
-        .diagnostic_details
-        .iter()
-        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error))
 }
 
 #[cfg(test)]

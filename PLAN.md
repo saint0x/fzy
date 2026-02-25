@@ -7,8 +7,8 @@
 
 Current status is partial bidirectional, with major gaps in coverage and at least one concrete ABI-break risk.
 
-Overall readiness: Amber/Red  
-What works: C-facing header/ABI generation, ABI baseline checking, native trace + Fozzy trace lifecycle  
+Overall readiness: Amber/Red
+What works: C-facing header/ABI generation, ABI baseline checking, native trace + Fozzy trace lifecycle
 What blocks “full bidirectional compatibility”: missing reverse bridges, coverage debt, ABI drift risk
 
 What is shipped
@@ -58,8 +58,8 @@ Operational note
 
 Current status is strong for deterministic runtime/orchestration DSL usage, but not yet at serious general-purpose systems language readiness.
 
-Overall readiness: Amber/Red  
-What works: deterministic orchestration/testing lifecycle, ABI policy/check gates, native backend policy, baseline safety diagnostics  
+Overall readiness: Amber/Red
+What works: deterministic orchestration/testing lifecycle, ABI policy/check gates, native backend policy, baseline safety diagnostics
 What blocks "serious systems PL": end-to-end type semantics parity, enforceable memory-safety depth, backend conformance maturity, full production tooling depth
 
 Empirical validation run (Fozzy-first)
@@ -118,8 +118,8 @@ Net assessment
 
 Current status is strong on deterministic concurrency infrastructure but weak/partial on language-level async semantics unification.
 
-Overall readiness: Amber/Red  
-What works: deterministic executor model, trace/replay lifecycle, native pthread spawn/yield baseline  
+Overall readiness: Amber/Red
+What works: deterministic executor model, trace/replay lifecycle, native pthread spawn/yield baseline
 What blocks "serious systems PL" async claims: parser/AST/HIR async gaps, synthetic deterministic test planning, scenario-routed det run path, intrinsic/runtime import mismatch
 
 Empirical validation run (Fozzy-first + native probes)
@@ -228,20 +228,20 @@ Net assessment
 - [ ] Publish production interop guide.
 
 ### Editor Tooling (Syntax Highlighting + LSP)
-- [ ] Define and freeze grammar/token classes for editor-facing syntax categories.
-- [ ] Ship baseline syntax highlighting grammar (Tree-sitter/TextMate) for `.fz` files.
-- [ ] Add editor injection/query rules for strings, comments, keywords, types, literals, and operators.
-- [ ] Stand up minimal LSP server transport (`initialize`, `shutdown`, `exit`) over stdio JSON-RPC.
-- [ ] Add document sync (`didOpen`, `didChange`, `didClose`) with incremental parse/update pipeline.
-- [ ] Publish diagnostics from parse/name/type validation with stable ranges and severities.
-- [ ] Implement hover with symbol/type/doc info.
-- [ ] Implement go-to-definition for local/module symbols.
-- [ ] Implement completion baseline for keywords, locals, modules, and members.
-- [ ] Add find-references and rename with workspace-safe edits.
-- [ ] Add semantic tokens support to complement grammar highlighting.
-- [ ] Ship VS Code extension wiring (language config + LSP client bootstrap).
-- [ ] Validate LSP determinism and regression with Fozzy trace record/verify/replay/ci.
-- [ ] Add host-backed editor-integration smoke checks where feasible.
+- [✅] Define and freeze grammar/token classes for editor-facing syntax categories.
+- [✅] Ship baseline syntax highlighting grammar (Tree-sitter/TextMate) for `.fz` files.
+- [✅] Add editor injection/query rules for strings, comments, keywords, types, literals, and operators.
+- [✅] Stand up minimal LSP server transport (`initialize`, `shutdown`, `exit`) over stdio JSON-RPC.
+- [✅] Add document sync (`didOpen`, `didChange`, `didClose`) with incremental parse/update pipeline.
+- [✅] Publish diagnostics from parse/name/type validation with stable ranges and severities.
+- [✅] Implement hover with symbol/type/doc info.
+- [✅] Implement go-to-definition for local/module symbols.
+- [✅] Implement completion baseline for keywords, locals, modules, and members.
+- [✅] Add find-references and rename with workspace-safe edits.
+- [✅] Add semantic tokens support to complement grammar highlighting.
+- [✅] Ship VS Code extension wiring (language config + LSP client bootstrap).
+- [✅] Validate LSP determinism and regression with Fozzy trace record/verify/replay/ci.
+- [✅] Add host-backed editor-integration smoke checks where feasible.
 
 ### Release Flow
 - [✅] Phase 1: correctness fixes (listen, partial I/O, timeout correctness).
@@ -255,12 +255,12 @@ Net assessment
 - [✅] Meet runtime perf non-regression thresholds for runtime/networking test paths.
 
 ### PR Plan
-- [ ] PR-A: listen contract + event-driven poll path.
-- [ ] PR-B: HTTP partial-I/O correctness + low-allocation codec.
-- [ ] PR-C: timeout redesign + O(1) queue operations.
-- [ ] PR-D: decision-log API redesign.
-- [ ] PR-E: FIR/driver clone reduction.
-- [ ] PR-F: pedantic coverage closure + CI enforcement.
+- [✅] PR-A: listen contract + event-driven poll path.
+- [✅] PR-B: HTTP partial-I/O correctness + low-allocation codec.
+- [✅] PR-C: timeout redesign + O(1) queue operations.
+- [✅] PR-D: decision-log API redesign.
+- [✅] PR-E: FIR/driver clone reduction.
+- [✅] PR-F: pedantic coverage closure + production gate enforcement.
 
 ## Checklist: Done
 

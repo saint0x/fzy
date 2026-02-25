@@ -1,0 +1,79 @@
+{
+  "scopeName": "source.fzy",
+  "name": "Fozzy",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#functions" },
+    { "include": "#operators" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.fzy",
+          "match": "//.*$"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.fzy",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            { "name": "constant.character.escape.fzy", "match": "\\\\." }
+          ]
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.fzy",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.fzy",
+          "match": "\\b(fn|async|test|nondet|let|if|else|while|match|return|defer|requires|ensures|mod|use|rpc|trait|impl|for|struct|enum|pub|extern)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.fzy",
+          "match": "\\b(void|bool|str|char|i(8|16|32|64|128)|u(8|16|32|64|128)|f(32|64))\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.fzy",
+          "match": "\\bfn\\s+([A-Za-z_][A-Za-z0-9_]*)"
+        },
+        {
+          "name": "entity.name.function.fzy",
+          "match": "\\brpc\\s+([A-Za-z_][A-Za-z0-9_]*)"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.fzy",
+          "match": "(->|=>|==|!=|<=|>=|\\+|-|\\*|/|=|<|>)"
+        }
+      ]
+    }
+  }
+}
