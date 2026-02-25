@@ -2308,6 +2308,8 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             (vec![i32.clone()], i32.clone())
         }
         "net.method" | "net.path" | "net.body" => (vec![i32.clone()], str_ty.clone()),
+        "net.body_json" => (vec![i32.clone()], i32.clone()),
+        "net.body_bind" => (vec![i32.clone()], i32.clone()),
         "net.header" | "net.query" | "net.param" => {
             (vec![i32.clone(), str_ty.clone()], str_ty.clone())
         }
@@ -2382,6 +2384,11 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "json.from_map" => (vec![i32.clone()], str_ty.clone()),
         "json.to_list" => (vec![str_ty.clone()], i32.clone()),
         "json.to_map" => (vec![str_ty.clone()], i32.clone()),
+        "json.parse" => (vec![str_ty.clone()], i32.clone()),
+        "json.get" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "json.get_str" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
+        "json.has" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "json.path" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
         "json.object1" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "json.object2" => (
             vec![
@@ -2927,6 +2934,31 @@ mod tests {
                 let _ = net.header(c, "content-type");
                 let _ = route.match(c, "GET", "/sessions/:id/messages");
                 let _ = log.info("x", "{}");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn json_parse_and_body_json_primitives_typecheck() {
+        let source = r#"
+            use core.net;
+            fn main() -> i32 {
+                let c = net.accept();
+                let body = net.body_json(c);
+                let bound = net.body_bind(c);
+                let _ = map.get(bound, "message");
+                let _ = json.has(body, "message");
+                let msg = json.get_str(body, "message");
+                let nested = json.path(body, "meta.user.id");
+                let _ = json.get(nested, "raw");
+                let _ = json.parse("{\"ok\":true}");
+                if str.len(msg) > 0 {
+                    net.write(c, 200, msg);
+                }
                 return 0;
             }
         "#;

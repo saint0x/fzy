@@ -206,6 +206,31 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "json.parse",
+        symbol: "fz_native_json_parse",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.get",
+        symbol: "fz_native_json_get",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "json.get_str",
+        symbol: "fz_native_json_get_str",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "json.has",
+        symbol: "fz_native_json_has",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "json.path",
+        symbol: "fz_native_json_path",
+        arity: 2,
+    },
+    NativeRuntimeImport {
         callee: "net.method",
         symbol: "fz_native_net_method",
         arity: 1,
@@ -218,6 +243,16 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "net.body",
         symbol: "fz_native_net_body",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.body_json",
+        symbol: "fz_native_net_body_json",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "net.body_bind",
+        symbol: "fz_native_net_body_bind",
         arity: 1,
     },
     NativeRuntimeImport {
@@ -3476,6 +3511,7 @@ extern char** environ;
 #define FZ_MAX_MAPS 2048
 #define FZ_MAX_MAP_ENTRIES 4096
 #define FZ_MAX_INTERVALS 512
+#define FZ_MAX_JSON_VALUES 16384
 
 static char* fz_dynamic_strings[FZ_MAX_DYNAMIC_STRINGS];
 static int fz_dynamic_string_count = 0;
@@ -3548,6 +3584,11 @@ typedef struct {
   int64_t next_ms;
 } fz_interval_state;
 
+typedef struct {
+  int in_use;
+  int32_t value_id;
+} fz_json_value_state;
+
 static fz_proc_state fz_proc_states[FZ_MAX_PROC_STATES];
 static pthread_mutex_t fz_proc_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_proc_default_timeout_ms = 30000;
@@ -3556,8 +3597,10 @@ static int32_t fz_last_exit_class = 0;
 static fz_list_state fz_lists[FZ_MAX_LISTS];
 static fz_map_state fz_maps[FZ_MAX_MAPS];
 static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
+static fz_json_value_state fz_json_values[FZ_MAX_JSON_VALUES];
 static pthread_mutex_t fz_collections_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_time_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t fz_json_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_conn_request_counter = 0;
 static int32_t fz_last_error_code = 0;
 static int32_t fz_last_error_class = 0;
@@ -3590,9 +3633,11 @@ typedef struct {
 
 static int fz_mark_cloexec(int fd);
 static void fz_proc_set_last_error(const char* msg);
+static int fz_json_parse_string(const char** cursor, char** out);
 static int fz_parse_json_string_array(const char* raw, char*** out_items, int* out_count);
 static int fz_parse_json_env_object(const char* raw, char*** out_items, int* out_count);
 static void fz_free_string_list(char** items, int count);
+static int fz_json_parse_value_slice(const char* raw, const char** out_start, const char** out_end);
 int32_t fz_native_net_request_id(int32_t conn_fd);
 int32_t fz_native_net_write(int32_t conn_fd, int32_t status_code, int32_t body_id);
 
@@ -3852,6 +3897,326 @@ static char* fz_json_escape_owned(const char* input) {
   }
   out[j] = '\0';
   return out;
+}
+
+static int32_t fz_json_value_alloc(int32_t value_id) {
+  if (value_id <= 0) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_json_lock);
+  for (int i = 0; i < FZ_MAX_JSON_VALUES; i++) {
+    if (!fz_json_values[i].in_use) {
+      fz_json_values[i].in_use = 1;
+      fz_json_values[i].value_id = value_id;
+      pthread_mutex_unlock(&fz_json_lock);
+      return i + 1;
+    }
+  }
+  pthread_mutex_unlock(&fz_json_lock);
+  return -1;
+}
+
+static int32_t fz_json_value_get_id(int32_t handle) {
+  if (handle <= 0 || handle > FZ_MAX_JSON_VALUES) {
+    return 0;
+  }
+  pthread_mutex_lock(&fz_json_lock);
+  fz_json_value_state* slot = &fz_json_values[handle - 1];
+  int32_t value_id = slot->in_use ? slot->value_id : 0;
+  pthread_mutex_unlock(&fz_json_lock);
+  return value_id;
+}
+
+static int32_t fz_json_value_alloc_from_slice(const char* start, const char* end) {
+  if (start == NULL || end == NULL || end < start) {
+    return -1;
+  }
+  int32_t value_id = fz_intern_slice(start, (size_t)(end - start));
+  if (value_id <= 0) {
+    return -1;
+  }
+  return fz_json_value_alloc(value_id);
+}
+
+static const char* fz_json_ws(const char* p) {
+  while (p != NULL && (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t')) {
+    p++;
+  }
+  return p;
+}
+
+static int fz_json_match_lit(const char** cursor, const char* lit) {
+  const char* p = fz_json_ws(*cursor);
+  size_t n = strlen(lit);
+  if (strncmp(p, lit, n) != 0) {
+    return -1;
+  }
+  *cursor = p + n;
+  return 0;
+}
+
+static int fz_json_skip_string_token(const char** cursor) {
+  const char* p = fz_json_ws(*cursor);
+  if (p == NULL || *p != '\"') {
+    return -1;
+  }
+  p++;
+  while (*p != '\0') {
+    if (*p == '\"') {
+      *cursor = p + 1;
+      return 0;
+    }
+    if (*p == '\\') {
+      p++;
+      if (*p == '\0') {
+        return -1;
+      }
+      if (*p == 'u') {
+        p++;
+        for (int i = 0; i < 4; i++) {
+          if (!isxdigit((unsigned char)p[i])) {
+            return -1;
+          }
+        }
+        p += 4;
+        continue;
+      }
+      p++;
+      continue;
+    }
+    p++;
+  }
+  return -1;
+}
+
+static int fz_json_skip_number_token(const char** cursor) {
+  const char* p = fz_json_ws(*cursor);
+  if (p == NULL) {
+    return -1;
+  }
+  if (*p == '-') {
+    p++;
+  }
+  if (*p == '0') {
+    p++;
+  } else if (isdigit((unsigned char)*p)) {
+    while (isdigit((unsigned char)*p)) p++;
+  } else {
+    return -1;
+  }
+  if (*p == '.') {
+    p++;
+    if (!isdigit((unsigned char)*p)) {
+      return -1;
+    }
+    while (isdigit((unsigned char)*p)) p++;
+  }
+  if (*p == 'e' || *p == 'E') {
+    p++;
+    if (*p == '+' || *p == '-') {
+      p++;
+    }
+    if (!isdigit((unsigned char)*p)) {
+      return -1;
+    }
+    while (isdigit((unsigned char)*p)) p++;
+  }
+  *cursor = p;
+  return 0;
+}
+
+static int fz_json_skip_value_token(const char** cursor, int depth);
+
+static int fz_json_skip_array_token(const char** cursor, int depth) {
+  if (depth > 256) {
+    return -1;
+  }
+  const char* p = fz_json_ws(*cursor);
+  if (p == NULL || *p != '[') {
+    return -1;
+  }
+  p = fz_json_ws(p + 1);
+  if (*p == ']') {
+    *cursor = p + 1;
+    return 0;
+  }
+  for (;;) {
+    if (fz_json_skip_value_token(&p, depth + 1) != 0) {
+      return -1;
+    }
+    p = fz_json_ws(p);
+    if (*p == ',') {
+      p = fz_json_ws(p + 1);
+      continue;
+    }
+    if (*p == ']') {
+      *cursor = p + 1;
+      return 0;
+    }
+    return -1;
+  }
+}
+
+static int fz_json_skip_object_token(const char** cursor, int depth) {
+  if (depth > 256) {
+    return -1;
+  }
+  const char* p = fz_json_ws(*cursor);
+  if (p == NULL || *p != '{') {
+    return -1;
+  }
+  p = fz_json_ws(p + 1);
+  if (*p == '}') {
+    *cursor = p + 1;
+    return 0;
+  }
+  for (;;) {
+    if (fz_json_skip_string_token(&p) != 0) {
+      return -1;
+    }
+    p = fz_json_ws(p);
+    if (*p != ':') {
+      return -1;
+    }
+    p = fz_json_ws(p + 1);
+    if (fz_json_skip_value_token(&p, depth + 1) != 0) {
+      return -1;
+    }
+    p = fz_json_ws(p);
+    if (*p == ',') {
+      p = fz_json_ws(p + 1);
+      continue;
+    }
+    if (*p == '}') {
+      *cursor = p + 1;
+      return 0;
+    }
+    return -1;
+  }
+}
+
+static int fz_json_skip_value_token(const char** cursor, int depth) {
+  const char* p = fz_json_ws(*cursor);
+  if (p == NULL || *p == '\0') {
+    return -1;
+  }
+  int rc = -1;
+  switch (*p) {
+    case '\"': rc = fz_json_skip_string_token(&p); break;
+    case '{': rc = fz_json_skip_object_token(&p, depth); break;
+    case '[': rc = fz_json_skip_array_token(&p, depth); break;
+    case 't': rc = fz_json_match_lit(&p, "true"); break;
+    case 'f': rc = fz_json_match_lit(&p, "false"); break;
+    case 'n': rc = fz_json_match_lit(&p, "null"); break;
+    default: rc = fz_json_skip_number_token(&p); break;
+  }
+  if (rc == 0) {
+    *cursor = p;
+  }
+  return rc;
+}
+
+static int fz_json_parse_value_slice(const char* raw, const char** out_start, const char** out_end) {
+  if (raw == NULL || out_start == NULL || out_end == NULL) {
+    return -1;
+  }
+  const char* start = fz_json_ws(raw);
+  const char* p = start;
+  if (fz_json_skip_value_token(&p, 0) != 0) {
+    return -1;
+  }
+  p = fz_json_ws(p);
+  if (*p != '\0') {
+    return -1;
+  }
+  *out_start = start;
+  *out_end = p;
+  return 0;
+}
+
+static int fz_json_object_lookup(const char* raw, const char* key, const char** out_start, const char** out_end) {
+  if (raw == NULL || key == NULL || out_start == NULL || out_end == NULL) {
+    return -1;
+  }
+  const char* p = fz_json_ws(raw);
+  if (*p != '{') {
+    return -1;
+  }
+  p = fz_json_ws(p + 1);
+  if (*p == '}') {
+    return 0;
+  }
+  for (;;) {
+    char* candidate = NULL;
+    if (fz_json_parse_string(&p, &candidate) != 0) {
+      return -1;
+    }
+    p = fz_json_ws(p);
+    if (*p != ':') {
+      free(candidate);
+      return -1;
+    }
+    p = fz_json_ws(p + 1);
+    const char* value_start = p;
+    if (fz_json_skip_value_token(&p, 0) != 0) {
+      free(candidate);
+      return -1;
+    }
+    const char* value_end = p;
+    int matches = strcmp(candidate == NULL ? "" : candidate, key) == 0;
+    free(candidate);
+    if (matches) {
+      *out_start = value_start;
+      *out_end = value_end;
+      return 1;
+    }
+    p = fz_json_ws(p);
+    if (*p == ',') {
+      p = fz_json_ws(p + 1);
+      continue;
+    }
+    if (*p == '}') {
+      return 0;
+    }
+    return -1;
+  }
+}
+
+static int fz_json_array_lookup(const char* raw, int index, const char** out_start, const char** out_end) {
+  if (raw == NULL || index < 0 || out_start == NULL || out_end == NULL) {
+    return -1;
+  }
+  const char* p = fz_json_ws(raw);
+  if (*p != '[') {
+    return -1;
+  }
+  p = fz_json_ws(p + 1);
+  if (*p == ']') {
+    return 0;
+  }
+  int at = 0;
+  for (;;) {
+    const char* value_start = p;
+    if (fz_json_skip_value_token(&p, 0) != 0) {
+      return -1;
+    }
+    const char* value_end = p;
+    if (at == index) {
+      *out_start = value_start;
+      *out_end = value_end;
+      return 1;
+    }
+    at++;
+    p = fz_json_ws(p);
+    if (*p == ',') {
+      p = fz_json_ws(p + 1);
+      continue;
+    }
+    if (*p == ']') {
+      return 0;
+    }
+    return -1;
+  }
 }
 
 
@@ -5068,6 +5433,127 @@ int32_t fz_native_json_to_map(int32_t json_id) {
   return handle;
 }
 
+int32_t fz_native_json_parse(int32_t json_id) {
+  const char* raw = fz_lookup_string(json_id);
+  const char* start = NULL;
+  const char* end = NULL;
+  if (fz_json_parse_value_slice(raw, &start, &end) != 0) {
+    return -1;
+  }
+  return fz_json_value_alloc_from_slice(start, end);
+}
+
+int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id) {
+  int32_t value_id = fz_json_value_get_id(json_value_handle);
+  const char* raw = fz_lookup_string(value_id);
+  const char* key = fz_lookup_string(key_id);
+  const char* start = NULL;
+  const char* end = NULL;
+  int rc = fz_json_object_lookup(raw, key == NULL ? "" : key, &start, &end);
+  if (rc <= 0) {
+    return -1;
+  }
+  return fz_json_value_alloc_from_slice(start, end);
+}
+
+int32_t fz_native_json_get_str(int32_t json_value_handle, int32_t key_id) {
+  int32_t child = fz_native_json_get(json_value_handle, key_id);
+  int32_t value_id = fz_json_value_get_id(child);
+  const char* raw = fz_lookup_string(value_id);
+  if (raw == NULL) {
+    return fz_intern_slice("", 0);
+  }
+  const char* p = raw;
+  char* out = NULL;
+  if (fz_json_parse_string(&p, &out) != 0) {
+    return fz_intern_slice("", 0);
+  }
+  p = fz_json_ws(p);
+  if (*p != '\0' || out == NULL) {
+    free(out);
+    return fz_intern_slice("", 0);
+  }
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_json_has(int32_t json_value_handle, int32_t key_id) {
+  int32_t value_id = fz_json_value_get_id(json_value_handle);
+  const char* raw = fz_lookup_string(value_id);
+  const char* key = fz_lookup_string(key_id);
+  const char* start = NULL;
+  const char* end = NULL;
+  int rc = fz_json_object_lookup(raw, key == NULL ? "" : key, &start, &end);
+  return rc > 0 ? 1 : 0;
+}
+
+int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id) {
+  int32_t current = json_value_handle;
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL || path[0] == '\0') {
+    return current;
+  }
+  const char* p = fz_json_ws(path);
+  if (*p == '$') {
+    p++;
+  }
+  if (*p == '.') {
+    p++;
+  }
+
+  while (*p != '\0') {
+    p = fz_json_ws(p);
+    if (*p == '\0') {
+      break;
+    }
+    if (*p == '.') {
+      p++;
+      continue;
+    }
+    if (*p == '[') {
+      p++;
+      int idx = 0;
+      if (!isdigit((unsigned char)*p)) {
+        return -1;
+      }
+      while (isdigit((unsigned char)*p)) {
+        idx = (idx * 10) + (*p - '0');
+        p++;
+      }
+      if (*p != ']') {
+        return -1;
+      }
+      p++;
+      int32_t value_id = fz_json_value_get_id(current);
+      const char* raw = fz_lookup_string(value_id);
+      const char* start = NULL;
+      const char* end = NULL;
+      int rc = fz_json_array_lookup(raw, idx, &start, &end);
+      if (rc <= 0) {
+        return -1;
+      }
+      current = fz_json_value_alloc_from_slice(start, end);
+      if (current <= 0) {
+        return -1;
+      }
+      continue;
+    }
+    const char* key_start = p;
+    while (*p != '\0' && *p != '.' && *p != '[' && !isspace((unsigned char)*p)) {
+      p++;
+    }
+    if (p == key_start) {
+      return -1;
+    }
+    int32_t key_id = fz_intern_slice(key_start, (size_t)(p - key_start));
+    current = fz_native_json_get(current, key_id);
+    if (current <= 0) {
+      return -1;
+    }
+  }
+
+  return current;
+}
+
 static void fz_http_set_last_result(int status_code, const char* body, const char* err) {
   if (body == NULL) {
     body = "";
@@ -5889,6 +6375,99 @@ int32_t fz_native_net_body(int32_t conn_fd) {
   int32_t value = state == NULL ? 0 : state->body_id;
   pthread_mutex_unlock(&fz_conn_lock);
   return value;
+}
+
+int32_t fz_native_net_body_json(int32_t conn_fd) {
+  int32_t body_id = fz_native_net_body(conn_fd);
+  return fz_native_json_parse(body_id);
+}
+
+int32_t fz_native_net_body_bind(int32_t conn_fd) {
+  int32_t out_map = fz_native_map_new();
+  if (out_map < 0) {
+    return -1;
+  }
+  int32_t body = fz_native_net_body_json(conn_fd);
+  if (body <= 0) {
+    (void)fz_native_map_set(
+        out_map,
+        fz_intern_slice("__error", 7),
+        fz_intern_slice("invalid JSON body", 17));
+    return out_map;
+  }
+  int32_t body_id = fz_json_value_get_id(body);
+  const char* raw = fz_lookup_string(body_id);
+  const char* p = fz_json_ws(raw);
+  if (p == NULL || *p != '{') {
+    (void)fz_native_map_set(
+        out_map,
+        fz_intern_slice("__error", 7),
+        fz_intern_slice("body must be JSON object", 24));
+    return out_map;
+  }
+  p = fz_json_ws(p + 1);
+  if (*p == '}') {
+    return out_map;
+  }
+  for (;;) {
+    char* key = NULL;
+    if (fz_json_parse_string(&p, &key) != 0) {
+      (void)fz_native_map_set(
+          out_map,
+          fz_intern_slice("__error", 7),
+          fz_intern_slice("invalid JSON object key", 23));
+      free(key);
+      return out_map;
+    }
+    p = fz_json_ws(p);
+    if (*p != ':') {
+      (void)fz_native_map_set(
+          out_map,
+          fz_intern_slice("__error", 7),
+          fz_intern_slice("invalid JSON object syntax", 26));
+      free(key);
+      return out_map;
+    }
+    p = fz_json_ws(p + 1);
+    const char* value_start = p;
+    if (fz_json_skip_value_token(&p, 0) != 0) {
+      (void)fz_native_map_set(
+          out_map,
+          fz_intern_slice("__error", 7),
+          fz_intern_slice("invalid JSON object value", 25));
+      free(key);
+      return out_map;
+    }
+    const char* value_end = p;
+    int32_t key_id = fz_intern_slice(key == NULL ? "" : key, strlen(key == NULL ? "" : key));
+    free(key);
+
+    const char* q = value_start;
+    char* string_value = NULL;
+    int decoded = fz_json_parse_string(&q, &string_value) == 0 && fz_json_ws(q) == value_end;
+    if (decoded) {
+      int32_t value_id = fz_intern_slice(string_value == NULL ? "" : string_value, strlen(string_value == NULL ? "" : string_value));
+      free(string_value);
+      (void)fz_native_map_set(out_map, key_id, value_id);
+    } else {
+      free(string_value);
+      int32_t value_id = fz_intern_slice(value_start, (size_t)(value_end - value_start));
+      (void)fz_native_map_set(out_map, key_id, value_id);
+    }
+    p = fz_json_ws(p);
+    if (*p == ',') {
+      p = fz_json_ws(p + 1);
+      continue;
+    }
+    if (*p == '}') {
+      return out_map;
+    }
+    (void)fz_native_map_set(
+        out_map,
+        fz_intern_slice("__error", 7),
+        fz_intern_slice("invalid JSON object terminator", 30));
+    return out_map;
+  }
 }
 
 int32_t fz_native_net_header(int32_t conn_fd, int32_t key_id) {
@@ -7328,6 +7907,8 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_net_method(int32_t conn_fd)"));
         assert!(shim.contains("int32_t fz_native_net_path(int32_t conn_fd)"));
         assert!(shim.contains("int32_t fz_native_net_body(int32_t conn_fd)"));
+        assert!(shim.contains("int32_t fz_native_net_body_json(int32_t conn_fd)"));
+        assert!(shim.contains("int32_t fz_native_net_body_bind(int32_t conn_fd)"));
         assert!(shim.contains("int32_t fz_native_net_write_response("));
         assert!(shim.contains("int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms)"));
         assert!(shim.contains("int32_t fz_native_proc_stdout(int32_t handle)"));
@@ -7349,6 +7930,11 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_json_raw(int32_t input_id)"));
         assert!(shim.contains("int32_t fz_native_json_array4("));
         assert!(shim.contains("int32_t fz_native_json_from_map(int32_t map_handle)"));
+        assert!(shim.contains("int32_t fz_native_json_parse(int32_t json_id)"));
+        assert!(shim.contains("int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id)"));
+        assert!(shim.contains("int32_t fz_native_json_get_str(int32_t json_value_handle, int32_t key_id)"));
+        assert!(shim.contains("int32_t fz_native_json_has(int32_t json_value_handle, int32_t key_id)"));
+        assert!(shim.contains("int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id)"));
         assert!(
             shim.contains("int32_t fz_native_json_object1(int32_t k1_id, int32_t v1_id)")
         );
