@@ -3579,6 +3579,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "http.post_json" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "http.post_json_capture" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "http.last_status" => (vec![], i32.clone()),
+        "http.last_error" => (vec![], str_ty.clone()),
         "json.escape" => (vec![str_ty.clone()], str_ty.clone()),
         "json.str" => (vec![str_ty.clone()], str_ty.clone()),
         "json.raw" => (vec![str_ty.clone()], str_ty.clone()),

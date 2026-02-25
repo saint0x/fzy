@@ -149,6 +149,11 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
+        callee: "http.last_error",
+        symbol: "fz_native_http_last_error",
+        arity: 0,
+    },
+    NativeRuntimeImport {
         callee: "json.escape",
         symbol: "fz_native_json_escape",
         arity: 1,
@@ -7566,11 +7571,16 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
   }
   argv[ai++] = "--data";
   argv[ai++] = (char*)body;
+  argv[ai++] = "--connect-timeout";
+  argv[ai++] = "10";
+  argv[ai++] = "--max-time";
+  argv[ai++] = "60";
   argv[ai++] = "-w";
   argv[ai++] = "\n%{http_code}";
   argv[ai++] = NULL;
 
   int out_pipe[2];
+  int err_pipe[2];
   if (pipe(out_pipe) != 0) {
     free(argv);
     for (int i = 0; i < header_count; i++) free(header_buf[i]);
@@ -7579,11 +7589,23 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
     fz_http_set_last_result(0, "", "http_post_json: pipe failed");
     return return_body ? fz_intern_slice("", 0) : -1;
   }
+  if (pipe(err_pipe) != 0) {
+    close(out_pipe[0]);
+    close(out_pipe[1]);
+    free(argv);
+    for (int i = 0; i < header_count; i++) free(header_buf[i]);
+    fz_last_exit_class = 3;
+    fz_set_last_error(errno, 3, "http_post_json failed: stderr pipe failed");
+    fz_http_set_last_result(0, "", "http_post_json: stderr pipe failed");
+    return return_body ? fz_intern_slice("", 0) : -1;
+  }
 
   pid_t pid = fork();
   if (pid < 0) {
     close(out_pipe[0]);
     close(out_pipe[1]);
+    close(err_pipe[0]);
+    close(err_pipe[1]);
     free(argv);
     for (int i = 0; i < header_count; i++) free(header_buf[i]);
     fz_last_exit_class = 3;
@@ -7594,15 +7616,26 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
 
   if (pid == 0) {
     (void)dup2(out_pipe[1], STDOUT_FILENO);
+    (void)dup2(err_pipe[1], STDERR_FILENO);
     close(out_pipe[0]);
     close(out_pipe[1]);
+    close(err_pipe[0]);
+    close(err_pipe[1]);
     execvp("curl", argv);
+    argv[0] = "/usr/bin/curl";
+    execv("/usr/bin/curl", argv);
+    argv[0] = "/opt/homebrew/bin/curl";
+    execv("/opt/homebrew/bin/curl", argv);
+    dprintf(STDERR_FILENO, "http_post_json failed: unable to exec curl (%s)\n", strerror(errno));
     _exit(127);
   }
 
   close(out_pipe[1]);
+  close(err_pipe[1]);
   fz_bytes_buf out;
   fz_bytes_buf_init(&out);
+  fz_bytes_buf err;
+  fz_bytes_buf_init(&err);
   for (;;) {
     char tmp[4096];
     ssize_t got = read(out_pipe[0], tmp, sizeof(tmp));
@@ -7621,6 +7654,24 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
     break;
   }
   close(out_pipe[0]);
+  for (;;) {
+    char tmp[4096];
+    ssize_t got = read(err_pipe[0], tmp, sizeof(tmp));
+    if (got > 0) {
+      if (fz_bytes_buf_append(&err, tmp, (size_t)got) != 0) {
+        break;
+      }
+      continue;
+    }
+    if (got == 0) {
+      break;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    break;
+  }
+  close(err_pipe[0]);
 
   int status = 0;
   int waited = waitpid(pid, &status, 0);
@@ -7631,32 +7682,42 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
     fz_set_last_error(errno, 3, "http_post_json failed: waitpid failed");
     fz_http_set_last_result(0, "", "http_post_json: waitpid failed");
     fz_bytes_buf_free(&out);
+    fz_bytes_buf_free(&err);
     return return_body ? fz_intern_slice("", 0) : -1;
   }
   fz_last_exit_class = fz_exit_class_from_status(0, status, 0);
 
   int status_code = 0;
   size_t body_len = out.len;
-  (void)fz_http_extract_status(out.data, out.len, &status_code, &body_len);
+  int parsed_status = fz_http_extract_status(out.data, out.len, &status_code, &body_len);
   const char* body_text = out.data == NULL ? "" : out.data;
+  const char* err_text = err.data == NULL ? "" : err.data;
   char saved = '\0';
   if (out.data != NULL && body_len < out.len) {
     saved = out.data[body_len];
     out.data[body_len] = '\0';
   }
-  fz_http_set_last_result(status_code, body_text, "");
   int32_t body_value_id = fz_intern_slice(body_text, strlen(body_text));
   if (out.data != NULL && body_len < out.len) {
     out.data[body_len] = saved;
   }
-  fz_bytes_buf_free(&out);
-
-  if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+  int transport_status = status_code > 0 ? status_code : 599;
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 0 && parsed_status == 0) {
+    fz_http_set_last_result(status_code, body_text, err_text);
     fz_set_last_error(0, 0, "");
+    fz_bytes_buf_free(&out);
+    fz_bytes_buf_free(&err);
     return return_body ? body_value_id : 0;
   }
-  if (return_body) {
-    return body_value_id;
+
+  if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+    const char* msg = "http_post_json failed: missing HTTP status trailer from transport";
+    fz_http_set_last_result(transport_status, body_text, msg);
+    fz_set_last_error(transport_status, 3, msg);
+    int32_t fallback = strlen(body_text) > 0 ? body_value_id : fz_intern_slice(msg, strlen(msg));
+    fz_bytes_buf_free(&out);
+    fz_bytes_buf_free(&err);
+    return return_body ? fallback : transport_status;
   }
   if (WIFEXITED(status)) {
     char msg[256];
@@ -7666,8 +7727,14 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
         "http_post_json failed: curl exit=%d endpoint=%s",
         WEXITSTATUS(status),
         endpoint);
+    const char* err_msg = (err_text[0] != '\0') ? err_text : msg;
+    const char* body_for_failure = (body_text[0] != '\0') ? body_text : err_msg;
+    int32_t failure_body_id = fz_intern_slice(body_for_failure, strlen(body_for_failure));
+    fz_http_set_last_result(transport_status, body_for_failure, err_msg);
     fz_set_last_error(WEXITSTATUS(status), 3, msg);
-    return WEXITSTATUS(status);
+    fz_bytes_buf_free(&out);
+    fz_bytes_buf_free(&err);
+    return return_body ? failure_body_id : WEXITSTATUS(status);
   }
   if (WIFSIGNALED(status)) {
     char msg[256];
@@ -7677,11 +7744,26 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
         "http_post_json failed: curl terminated by signal=%d endpoint=%s",
         WTERMSIG(status),
         endpoint);
+    const char* err_msg = (err_text[0] != '\0') ? err_text : msg;
+    const char* body_for_failure = (body_text[0] != '\0') ? body_text : err_msg;
+    int32_t failure_body_id = fz_intern_slice(body_for_failure, strlen(body_for_failure));
+    fz_http_set_last_result(transport_status, body_for_failure, err_msg);
     fz_set_last_error(128 + WTERMSIG(status), 3, msg);
-    return 128 + WTERMSIG(status);
+    fz_bytes_buf_free(&out);
+    fz_bytes_buf_free(&err);
+    return return_body ? failure_body_id : (128 + WTERMSIG(status));
   }
-  fz_set_last_error(-1, 3, "http_post_json failed: unknown child status");
-  return -1;
+  {
+    const char* msg = "http_post_json failed: unknown child status";
+    const char* err_msg = (err_text[0] != '\0') ? err_text : msg;
+    const char* body_for_failure = (body_text[0] != '\0') ? body_text : err_msg;
+    int32_t failure_body_id = fz_intern_slice(body_for_failure, strlen(body_for_failure));
+    fz_http_set_last_result(transport_status, body_for_failure, err_msg);
+    fz_set_last_error(-1, 3, msg);
+    fz_bytes_buf_free(&out);
+    fz_bytes_buf_free(&err);
+    return return_body ? failure_body_id : -1;
+  }
 }
 
 int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id) {
@@ -10311,6 +10393,7 @@ mod tests {
             "int32_t fz_native_http_post_json_capture(int32_t endpoint_id, int32_t body_id)"
         ));
         assert!(shim.contains("int32_t fz_native_http_last_status(void)"));
+        assert!(shim.contains("int32_t fz_native_http_last_error(void)"));
         assert!(shim.contains("int32_t fz_native_json_escape(int32_t input_id)"));
         assert!(shim.contains("int32_t fz_native_json_str(int32_t input_id)"));
         assert!(shim.contains("int32_t fz_native_json_raw(int32_t input_id)"));
@@ -10385,6 +10468,9 @@ mod tests {
         let shim = render_native_runtime_shim(&[], &[]);
         assert!(shim.contains("FZ_DOTENV_PATH"));
         assert!(shim.contains("ANTHROPIC_API_KEY missing"));
+        assert!(shim.contains("--connect-timeout"));
+        assert!(shim.contains("--max-time"));
+        assert!(shim.contains("unable to exec curl"));
     }
 
     #[test]
