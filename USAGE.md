@@ -117,9 +117,9 @@ Use for new projects.
 ## 5.2 Build, run, test
 
 ```bash
-fz build <path> [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
-fz run <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
-fz test <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
+fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
+fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
 ```
 
 Use cases:
@@ -127,6 +127,8 @@ Use cases:
 - `build`: compile only
 - `build --lib`: emit `.a` + shared library (`.so`/`.dylib`) plus C header + ABI manifest
 - `run`: execute a project or scenario once
+  - text mode streams child stdout/stderr live
+  - json mode captures `exitCode/stdout/stderr`
 - `test`: execute discovered tests with optional deterministic scheduler policy
 - production memory safety verification is always enabled for `run` and `test`
 
@@ -135,14 +137,20 @@ Native host-backed runtime defaults:
 - bind port default is `8787` (`FZ_PORT` > `AGENT_PORT` > `PORT` > default)
 - runtime emits effective bind `addr/port` on successful `listen`
 - runtime bootstraps env from `.env` (or `FZ_DOTENV_PATH`) before env/http calls
+- HTTP transport diagnostics are available through `http.last_error`
+
+Runtime logging defaults:
+- human-readable logs by default (`[ts] level message`)
+- structured fields appended as `| fields={...}`
+- JSON logging is opt-in (`log.set_json(1)`)
 
 ## 5.3 Quality and verification
 
 ```bash
-fz fmt <path>
-fz check <path>
-fz verify <path>
-fz dx-check <project> [--strict]
+fz fmt [path]
+fz check [path]
+fz verify [path]
+fz dx-check [project] [--strict]
 fz spec-check
 ```
 
@@ -157,11 +165,11 @@ Recommended order for feature work:
 ## 5.4 Analysis and debugging commands
 
 ```bash
-fz emit-ir <path>
-fz parity <path> [--seed N]
-fz equivalence <path> [--seed N]
-fz audit unsafe <path>
-fz debug-check <path>
+fz emit-ir [path]
+fz parity [path] [--seed N]
+fz equivalence [path] [--seed N]
+fz audit unsafe [path]
+fz debug-check [path]
 ```
 
 Use these when behavior is correct in one mode but drifts in another, or when hardening safety properties.
@@ -169,11 +177,11 @@ Use these when behavior is correct in one mode but drifts in another, or when ha
 ## 5.5 LSP helpers
 
 ```bash
-fz lsp diagnostics <path>
+fz lsp diagnostics [path]
 fz lsp definition <path> <symbol>
 fz lsp hover <path> <symbol>
 fz lsp rename <path> <from> <to>
-fz lsp smoke <path>
+fz lsp smoke [path]
 fz lsp serve [--path <workspace>]
 ```
 
@@ -182,8 +190,8 @@ Use these for scripted editor-like operations and refactoring checks.
 ## 5.6 FFI / RPC outputs and ABI checks
 
 ```bash
-fz headers <path> [--out path]
-fz rpc gen <path> [--out-dir dir]
+fz headers [path] [--out path]
+fz rpc gen [path] [--out-dir dir]
 fz abi-check <current.abi.json> --baseline <baseline.abi.json>
 ```
 
@@ -197,7 +205,7 @@ Typical use:
 ## 5.7 Dependency locking and vendor
 
 ```bash
-fz vendor <project>
+fz vendor [project]
 ```
 
 When to run:
@@ -330,7 +338,7 @@ Project layout:
 Always run:
 
 ```bash
-fz dx-check <project> --strict
+fz dx-check [project] --strict
 ```
 
 ## 9. Day-to-Day Workflows
@@ -339,9 +347,9 @@ fz dx-check <project> --strict
 
 1. Edit source.
 2. `fozzyfmt <paths>`
-3. `fz check <project> --json`
-4. `fz dx-check <project> --strict --json`
-5. `fz test <project> --det --seed <seed> --json`
+3. `fz check [project] --json`
+4. `fz dx-check [project] --strict --json`
+5. `fz test [project] --det --seed <seed> --json`
 6. For high confidence: record + replay a trace with `fozzy`.
 
 ## 9.2 Investigate flaky or nondeterministic failures
@@ -356,14 +364,14 @@ fz dx-check <project> --strict
 ## 9.3 Prepare ABI-sensitive changes
 
 1. Run/update generation:
-   - `fz headers <path>`
-   - `fz rpc gen <path>`
+   - `fz headers [path]`
+   - `fz rpc gen [path]`
 2. Compare ABI:
    - `fz abi-check <current.abi.json> --baseline <baseline.abi.json> --json`
 
 ## 9.4 Refresh dependency lock/vendor state
 
-1. `fz vendor <project> --json`
+1. `fz vendor [project] --json`
 2. rerun build/test pipeline
 
 ## 10. Artifacts and How To Read Them
@@ -400,8 +408,8 @@ Use human output when:
 For meaningful changes, run at least:
 
 1. `cargo test --workspace`
-2. `fz dx-check <project> --strict --json`
-3. `fz test <project> --det --seed <seed> --json`
+2. `fz dx-check [project] --strict --json`
+3. `fz test [project] --det --seed <seed> --json`
 4. `fozzy doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json`
 5. trace lifecycle:
    - `fozzy run ... --det --record ... --json`
@@ -416,7 +424,7 @@ For meaningful changes, run at least:
 - `dx-check` failure:
   - usually layout/order/tests placement mismatch; align with section 8.
 - lock drift/build blocked:
-  - run `fz vendor <project>`.
+  - run `fz vendor [project]`.
 - deterministic replay mismatch:
   - verify trace file integrity with `fozzy trace verify --strict`.
 - host-backend discrepancies:

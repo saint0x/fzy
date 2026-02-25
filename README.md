@@ -8,8 +8,6 @@ fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, 
 
 - Full user manual: `USAGE.md`
 - Canonical production workflow: `docs/production-workflow-v1.md`
-- Production failure triage playbook: `docs/production-failure-triage-v1.md`
-- Exit criteria tracking policy: `docs/exit-criteria-v1.md`
 
 ## What This Repo Contains
 
@@ -34,7 +32,13 @@ Implemented and verified in this repo:
 - Recursive multi-file module loading from `mod` declarations (`foo.fzy`, `foo/mod.fzy`, `foo::bar`)
 - C header generation from exported `pub extern "C" fn` signatures
 - RPC schema/client/server stub generation (`fz rpc gen`)
-- `fz run` executes compiled native output and reports real process exit/stdout/stderr
+- `fz run` executes compiled native output:
+  - text mode streams child stdout/stderr live (server-friendly)
+  - json mode captures `exitCode/stdout/stderr` payloads
+- Native HTTP runtime hardening:
+  - transport failures preserve diagnostics through `http.last_error`
+  - deterministic fallback failure status when HTTP status cannot be parsed
+  - curl execution fallback paths (`curl`, `/usr/bin/curl`, `/opt/homebrew/bin/curl`)
 
 ## Build And Test
 
@@ -46,37 +50,37 @@ cargo test --workspace
 ## Core CLI
 
 ```bash
-# Build source/project
-fz build <path> [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
+# Build source/project (path defaults to current working directory)
+fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
 
-# Run source/project or .fozzy scenario
-fz run <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+# Run source/project or .fozzy scenario (path defaults to current working directory)
+fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 
-# Test source/project or .fozzy scenario
-fz test <path> [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+# Test source/project or .fozzy scenario (path defaults to current working directory)
+fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 
 # Verify/check/IR
-fz check <path> [--json]
-fz verify <path> [--json]
-fz dx-check <project> [--strict] [--json]
+fz check [path] [--json]
+fz verify [path] [--json]
+fz dx-check [project] [--strict] [--json]
 fz spec-check [--json]
-fz emit-ir <path> [--json]
-fz parity <path> [--seed N] [--json]
-fz equivalence <path> [--seed N] [--json]
-fz audit unsafe <path> [--json]
-fz vendor <project> [--json]
+fz emit-ir [path] [--json]
+fz parity [path] [--seed N] [--json]
+fz equivalence [path] [--seed N] [--json]
+fz audit unsafe [path] [--json]
+fz vendor [project] [--json]
 fz abi-check <current.abi.json> --baseline <baseline.abi.json> [--json]
-fz debug-check <path> [--json]
-fz lsp diagnostics <path> [--json]
+fz debug-check [path] [--json]
+fz lsp diagnostics [path] [--json]
 fz lsp definition <path> <symbol> [--json]
 fz lsp hover <path> <symbol> [--json]
 fz lsp rename <path> <from> <to> [--json]
-fz lsp smoke <path> [--json]
+fz lsp smoke [path] [--json]
 fz lsp serve [--path <workspace>] [--json]
 
 # FFI / RPC outputs
-fz headers <path> [--out path] [--json]
-fz rpc gen <path> [--out-dir dir] [--json]
+fz headers [path] [--out path] [--json]
+fz rpc gen [path] [--out-dir dir] [--json]
 ```
 
 VS Code editor integration is available under `tooling/vscode` (language config, TextMate grammar, LSP client bootstrap to `fz lsp serve`).
@@ -86,6 +90,11 @@ Runtime defaults for native host-backed HTTP:
 - bind port default: `8787` (`FZ_PORT` > `AGENT_PORT` > `PORT` > default)
 - startup visibility: runtime prints effective bind target on successful `listen`
 - env bootstrap: runtime loads `.env` (or `FZ_DOTENV_PATH`) once before env/http operations
+
+Runtime logging defaults:
+- default log format is human-readable text (`[ts] level message`)
+- structured fields are appended as `| fields={...}`
+- JSON log mode is opt-in via `log.set_json(1)`
 
 ## Deterministic Artifacts
 
@@ -117,7 +126,7 @@ With `fz test <file.fzy> --det --record artifacts/name.trace.json --json`, the d
 - Refresh lock + snapshot dependencies:
 
 ```bash
-fz vendor <project> --json
+fz vendor [project] --json
 ```
 
 - Vendor command writes:

@@ -44,5 +44,5 @@
 
 ## Enforcement
 
-- Run `fz dx-check <project> --strict`.
+- Run `fz dx-check [project] --strict` (defaults to current working directory when omitted).
 - `dx-check` fails when conventions are violated.

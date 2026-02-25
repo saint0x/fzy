@@ -2,7 +2,7 @@
 
 ## Contract
 
-- Project builds (`fz build|run|test <project>`) enforce a deterministic dependency graph lock.
+- Project builds (`fz build|run|test [project]`) enforce a deterministic dependency graph lock.
 - Lockfile path: `fozzy.lock`.
 - Schema: `fozzylang.lock.v0`.
 - Graph hash covers:
@@ -18,11 +18,11 @@
 - If `fozzy.lock` is missing, it is created automatically.
 - If `fozzy.lock` exists and does not match the current dependency graph hash+graph payload, build fails with lockfile drift.
 - Drift must be resolved explicitly via:
-  - `fz vendor <project>`
+  - `fz vendor [project]`
 
 ## Vendor Workflow
 
-- `fz vendor <project>` is the explicit lock refresh and dependency snapshot step.
+- `fz vendor [project]` is the explicit lock refresh and dependency snapshot step.
 - It rewrites `fozzy.lock` from current manifests + dependency source hashes.
 - It copies path dependencies into `vendor/<dep_name>`.
 - It records version/git dependencies in `vendor/fozzy-vendor.json` as lock-pinned, non-vendored sources.

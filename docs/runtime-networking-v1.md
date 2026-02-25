@@ -31,6 +31,15 @@
 
 - Native runtime bootstraps process env from `.env` (or `FZ_DOTENV_PATH`) once before env/http lookups.
 - Provider-bound HTTP primitives should fail early with explicit missing-key diagnostics before transport invocation.
+- Native HTTP transport must preserve transport diagnostics via `http.last_error`.
+- On malformed transport output (missing HTTP status trailer), runtime sets deterministic failure status (`599`) instead of silent `0` status.
+- Native HTTP transport uses robust curl execution fallback paths (`curl`, `/usr/bin/curl`, `/opt/homebrew/bin/curl`) with bounded timeout defaults.
+
+## Runtime Logging Defaults
+
+- Default log output is human-readable text lines (`[ts] level message`).
+- Structured log fields are appended as `| fields={...}`.
+- JSON log mode is opt-in only (`log.set_json(1)`).
 
 ## TLS Boundary Strategy
 

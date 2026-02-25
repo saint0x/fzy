@@ -16,6 +16,10 @@ if ! command -v fz >/dev/null 2>&1; then
 fi
 ```
 
+CLI behavior notes (current):
+- Most path-based `fz` commands default to current working directory when `[path]` is omitted.
+- `fz run` text mode streams child stdout/stderr live; `--json` captures structured `exitCode/stdout/stderr`.
+
 ## 1) Minimal fzy file: check/build/test
 
 Create a tiny `.fzy` program:

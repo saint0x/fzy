@@ -82,6 +82,20 @@ Fix workflow:
 3. Reproduce with single host-backed scenario.
 4. Fix host adapter behavior and add scenario regression.
 
+### `anthropic_invalid_status` / upstream HTTP status `0` or empty body
+
+Symptoms:
+
+- app route returns `anthropic_invalid_status`
+- `http.last_status()` is `0`/`599` and response body is empty or transport-level error text
+
+Fix workflow:
+
+1. Confirm env bootstrap path (`.env` or `FZ_DOTENV_PATH`) and required key presence.
+2. Inspect `http.last_error()` in the failing handler path and include it in response/log payloads.
+3. Validate direct upstream connectivity with an equivalent out-of-band curl probe.
+4. If direct probe succeeds but runtime path fails, treat as runtime HTTP adapter regression and capture stderr diagnostics from `http.last_error`.
+
 ### LSP editor/protocol/determinism smoke failure
 
 Symptoms:
@@ -156,7 +170,7 @@ Symptoms:
 
 Fix workflow:
 
-1. Run `fz audit unsafe <target> --json`.
+1. Run `fz audit unsafe [target] --json`.
 2. Add missing unsafe reason metadata.
 3. Remove unnecessary unsafe usage or explicitly approve budget changes.
 4. Re-run gate and confirm budget compliance.
