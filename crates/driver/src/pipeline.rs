@@ -1841,10 +1841,106 @@ fn llvm_emit_block(
                 }
                 ctx.code.push_str(&format!("{end_label}:\n"));
             }
-            ast::Stmt::Match { .. } => {}
+            ast::Stmt::Match { scrutinee, arms } => {
+                let scrutinee_value = llvm_emit_expr(scrutinee, ctx, string_literal_ids);
+                let end_label = ctx.label("match_end");
+                let mut next_label = ctx.label("match_next");
+                ctx.code.push_str(&format!("  br label %{next_label}\n"));
+                for (index, arm) in arms.iter().enumerate() {
+                    let arm_label = ctx.label("match_arm");
+                    ctx.code.push_str(&format!("{next_label}:\n"));
+                    let pred = llvm_emit_match_pattern_pred(&scrutinee_value, &arm.pattern, ctx);
+                    let guarded_pred = if let Some(guard) = &arm.guard {
+                        let guard_value = llvm_emit_expr(guard, ctx, string_literal_ids);
+                        let guard_pred = ctx.value();
+                        ctx.code
+                            .push_str(&format!("  {guard_pred} = icmp ne i32 {guard_value}, 0\n"));
+                        let both = ctx.value();
+                        ctx.code
+                            .push_str(&format!("  {both} = and i1 {pred}, {guard_pred}\n"));
+                        both
+                    } else {
+                        pred
+                    };
+                    if index + 1 == arms.len() {
+                        ctx.code.push_str(&format!(
+                            "  br i1 {guarded_pred}, label %{arm_label}, label %{end_label}\n"
+                        ));
+                    } else {
+                        next_label = ctx.label("match_next");
+                        ctx.code.push_str(&format!(
+                            "  br i1 {guarded_pred}, label %{arm_label}, label %{next_label}\n"
+                        ));
+                    }
+                    ctx.code.push_str(&format!("{arm_label}:\n"));
+                    let _ = llvm_emit_expr(&arm.value, ctx, string_literal_ids);
+                    ctx.code.push_str(&format!("  br label %{end_label}\n"));
+                }
+                ctx.code.push_str(&format!("{end_label}:\n"));
+            }
         }
     }
     false
+}
+
+fn llvm_emit_match_pattern_pred(
+    scrutinee_value: &str,
+    pattern: &ast::Pattern,
+    ctx: &mut LlvmFuncCtx,
+) -> String {
+    match pattern {
+        ast::Pattern::Wildcard | ast::Pattern::Ident(_) => {
+            let pred = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {pred} = icmp eq i32 {scrutinee_value}, {scrutinee_value}\n"
+            ));
+            pred
+        }
+        ast::Pattern::Int(v) => {
+            let pred = ctx.value();
+            ctx.code
+                .push_str(&format!("  {pred} = icmp eq i32 {scrutinee_value}, {v}\n"));
+            pred
+        }
+        ast::Pattern::Bool(v) => {
+            let as_i32 = if *v { 1 } else { 0 };
+            let pred = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {pred} = icmp eq i32 {scrutinee_value}, {as_i32}\n"
+            ));
+            pred
+        }
+        ast::Pattern::Variant { name, .. } => {
+            let tag = variant_tag(name);
+            let pred = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {pred} = icmp eq i32 {scrutinee_value}, {tag}\n"
+            ));
+            pred
+        }
+        ast::Pattern::Or(patterns) => {
+            let mut merged: Option<String> = None;
+            for sub in patterns {
+                let pred = llvm_emit_match_pattern_pred(scrutinee_value, sub, ctx);
+                merged = Some(match merged {
+                    Some(existing) => {
+                        let out = ctx.value();
+                        ctx.code
+                            .push_str(&format!("  {out} = or i1 {existing}, {pred}\n"));
+                        out
+                    }
+                    None => pred,
+                });
+            }
+            merged.unwrap_or_else(|| {
+                let pred = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {pred} = icmp eq i32 {scrutinee_value}, {scrutinee_value}\n"
+                ));
+                pred
+            })
+        }
+    }
 }
 
 fn llvm_emit_expr(
@@ -1907,10 +2003,7 @@ fn llvm_emit_expr(
             for value in payload {
                 let _ = llvm_emit_expr(value, ctx, string_literal_ids);
             }
-            (variant.bytes().fold(0u32, |acc, byte| {
-                acc.wrapping_mul(33).wrapping_add(byte as u32)
-            }) & 0x7fff_ffff)
-                .to_string()
+            variant_tag(variant).to_string()
         }
         ast::Expr::TryCatch { try_expr, .. } => llvm_emit_expr(try_expr, ctx, string_literal_ids),
         ast::Expr::Call { callee, args } => {
@@ -2282,14 +2375,15 @@ fn load_manifest(
 
 fn validate_dependency_paths(dir: &Path, manifest: &manifest::Manifest) -> Result<()> {
     for (name, dependency) in &manifest.deps {
-        let manifest::Dependency::Path { path } = dependency;
-        let resolved = dir.join(path);
-        if !resolved.exists() {
-            return Err(anyhow!(
-                "path dependency `{}` not found at {}",
-                name,
-                resolved.display()
-            ));
+        if let manifest::Dependency::Path { path } = dependency {
+            let resolved = dir.join(path);
+            if !resolved.exists() {
+                return Err(anyhow!(
+                    "path dependency `{}` not found at {}",
+                    name,
+                    resolved.display()
+                ));
+            }
         }
     }
     Ok(())
@@ -2365,50 +2459,79 @@ fn build_dependency_graph(
 ) -> Result<serde_json::Value> {
     let mut dep_entries = Vec::new();
     for (name, dependency) in &manifest.deps {
-        let manifest::Dependency::Path { path } = dependency;
-        let resolved = dir.join(path);
-        let canonical = resolved.canonicalize().with_context(|| {
-            format!(
-                "failed canonicalizing path dependency `{}` at {}",
-                name,
-                resolved.display()
-            )
-        })?;
-        let dep_manifest_path = canonical.join("fozzy.toml");
-        let dep_manifest_text = std::fs::read_to_string(&dep_manifest_path).with_context(|| {
-            format!(
-                "path dependency `{}` missing manifest at {}",
-                name,
-                dep_manifest_path.display()
-            )
-        })?;
-        let dep_manifest = manifest::load(&dep_manifest_text).with_context(|| {
-            format!(
-                "failed parsing dependency manifest for `{}` at {}",
-                name,
-                dep_manifest_path.display()
-            )
-        })?;
-        dep_manifest.validate().map_err(|err| {
-            anyhow!(
-                "invalid dependency manifest for `{}` at {}: {}",
-                name,
-                dep_manifest_path.display(),
-                err
-            )
-        })?;
-        let dep_source_hash = hash_directory_tree(&canonical)?;
-        dep_entries.push(serde_json::json!({
-            "name": name,
-            "path": normalize_rel_path(path),
-            "canonicalPath": canonical.display().to_string(),
-            "package": {
-                "name": dep_manifest.package.name,
-                "version": dep_manifest.package.version,
-            },
-            "manifestHash": sha256_hex(dep_manifest_text.as_bytes()),
-            "sourceHash": dep_source_hash,
-        }));
+        match dependency {
+            manifest::Dependency::Path { path } => {
+                let resolved = dir.join(path);
+                let canonical = resolved.canonicalize().with_context(|| {
+                    format!(
+                        "failed canonicalizing path dependency `{}` at {}",
+                        name,
+                        resolved.display()
+                    )
+                })?;
+                let dep_manifest_path = canonical.join("fozzy.toml");
+                let dep_manifest_text =
+                    std::fs::read_to_string(&dep_manifest_path).with_context(|| {
+                        format!(
+                            "path dependency `{}` missing manifest at {}",
+                            name,
+                            dep_manifest_path.display()
+                        )
+                    })?;
+                let dep_manifest = manifest::load(&dep_manifest_text).with_context(|| {
+                    format!(
+                        "failed parsing dependency manifest for `{}` at {}",
+                        name,
+                        dep_manifest_path.display()
+                    )
+                })?;
+                dep_manifest.validate().map_err(|err| {
+                    anyhow!(
+                        "invalid dependency manifest for `{}` at {}: {}",
+                        name,
+                        dep_manifest_path.display(),
+                        err
+                    )
+                })?;
+                let dep_source_hash = hash_directory_tree(&canonical)?;
+                dep_entries.push(serde_json::json!({
+                    "name": name,
+                    "sourceType": "path",
+                    "path": normalize_rel_path(path),
+                    "canonicalPath": canonical.display().to_string(),
+                    "package": {
+                        "name": dep_manifest.package.name,
+                        "version": dep_manifest.package.version,
+                    },
+                    "manifestHash": sha256_hex(dep_manifest_text.as_bytes()),
+                    "sourceHash": dep_source_hash,
+                }));
+            }
+            manifest::Dependency::Version { version, source } => {
+                let source_locator = source
+                    .clone()
+                    .unwrap_or_else(|| "registry+https://crates.io".to_string());
+                let source_hash =
+                    sha256_hex(format!("version:{name}:{version}:{source_locator}").as_bytes());
+                dep_entries.push(serde_json::json!({
+                    "name": name,
+                    "sourceType": "version",
+                    "version": version,
+                    "source": source_locator,
+                    "sourceHash": source_hash,
+                }));
+            }
+            manifest::Dependency::Git { git, rev } => {
+                let source_hash = sha256_hex(format!("git:{name}:{git}:{rev}").as_bytes());
+                dep_entries.push(serde_json::json!({
+                    "name": name,
+                    "sourceType": "git",
+                    "git": git,
+                    "rev": rev,
+                    "sourceHash": source_hash,
+                }));
+            }
+        }
     }
     Ok(serde_json::json!({
         "package": {
@@ -3026,10 +3149,115 @@ fn clif_emit_block(
                 builder.switch_to_block(exit);
                 builder.seal_block(exit);
             }
-            ast::Stmt::Match { .. } => {}
+            ast::Stmt::Match { scrutinee, arms } => {
+                let scrutinee_val = clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    scrutinee,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?;
+                let end_block = builder.create_block();
+                let mut next_block = builder.create_block();
+                builder.ins().jump(next_block, &[]);
+                for (index, arm) in arms.iter().enumerate() {
+                    let arm_block = builder.create_block();
+                    builder.switch_to_block(next_block);
+                    builder.seal_block(next_block);
+                    let pred = clif_emit_match_pattern_pred(builder, scrutinee_val, &arm.pattern);
+                    let guarded_pred = if let Some(guard) = &arm.guard {
+                        let guard_val = clif_emit_expr(
+                            builder,
+                            module,
+                            function_ids,
+                            guard,
+                            locals,
+                            next_var,
+                            string_literal_ids,
+                            task_ref_ids,
+                        )?;
+                        let zero = builder.ins().iconst(types::I32, 0);
+                        let guard_pred = builder.ins().icmp(IntCC::NotEqual, guard_val, zero);
+                        builder.ins().band(pred, guard_pred)
+                    } else {
+                        pred
+                    };
+                    if index + 1 == arms.len() {
+                        builder
+                            .ins()
+                            .brif(guarded_pred, arm_block, &[], end_block, &[]);
+                    } else {
+                        let else_block = builder.create_block();
+                        builder
+                            .ins()
+                            .brif(guarded_pred, arm_block, &[], else_block, &[]);
+                        next_block = else_block;
+                    }
+
+                    builder.switch_to_block(arm_block);
+                    let _ = clif_emit_expr(
+                        builder,
+                        module,
+                        function_ids,
+                        &arm.value,
+                        locals,
+                        next_var,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                    builder.ins().jump(end_block, &[]);
+                    builder.seal_block(arm_block);
+                }
+                builder.switch_to_block(end_block);
+                builder.seal_block(end_block);
+            }
         }
     }
     Ok(false)
+}
+
+fn clif_emit_match_pattern_pred(
+    builder: &mut FunctionBuilder,
+    scrutinee: cranelift_codegen::ir::Value,
+    pattern: &ast::Pattern,
+) -> cranelift_codegen::ir::Value {
+    match pattern {
+        ast::Pattern::Wildcard | ast::Pattern::Ident(_) => {
+            builder.ins().icmp(IntCC::Equal, scrutinee, scrutinee)
+        }
+        ast::Pattern::Int(v) => {
+            let rhs = builder.ins().iconst(types::I32, *v as i64);
+            builder.ins().icmp(IntCC::Equal, scrutinee, rhs)
+        }
+        ast::Pattern::Bool(v) => {
+            let rhs = builder.ins().iconst(types::I32, if *v { 1 } else { 0 });
+            builder.ins().icmp(IntCC::Equal, scrutinee, rhs)
+        }
+        ast::Pattern::Variant { name, .. } => {
+            let rhs = builder.ins().iconst(types::I32, variant_tag(name) as i64);
+            builder.ins().icmp(IntCC::Equal, scrutinee, rhs)
+        }
+        ast::Pattern::Or(patterns) => {
+            let mut merged: Option<cranelift_codegen::ir::Value> = None;
+            for sub in patterns {
+                let pred = clif_emit_match_pattern_pred(builder, scrutinee, sub);
+                merged = Some(match merged {
+                    Some(existing) => builder.ins().bor(existing, pred),
+                    None => pred,
+                });
+            }
+            merged.unwrap_or_else(|| builder.ins().icmp(IntCC::Equal, scrutinee, scrutinee))
+        }
+    }
+}
+
+fn variant_tag(variant: &str) -> i32 {
+    (variant.bytes().fold(0u32, |acc, byte| {
+        acc.wrapping_mul(33).wrapping_add(byte as u32)
+    }) & 0x7fff_ffff) as i32
 }
 
 fn clif_emit_expr(
@@ -3156,10 +3384,9 @@ fn clif_emit_expr(
                     task_ref_ids,
                 )?;
             }
-            let tag = variant.bytes().fold(0u32, |acc, byte| {
-                acc.wrapping_mul(33).wrapping_add(byte as u32)
-            });
-            builder.ins().iconst(types::I32, (tag & 0x7fff_ffff) as i64)
+            builder
+                .ins()
+                .iconst(types::I32, variant_tag(variant) as i64)
         }
         ast::Expr::TryCatch {
             try_expr,
@@ -3285,6 +3512,41 @@ fn clif_emit_expr(
 }
 
 fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for item in &module.items {
+        let ast::Item::Function(function) = item else {
+            continue;
+        };
+        for param in &function.params {
+            if !native_backend_supports_signature_type(&param.ty) {
+                diagnostics.push(diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Error,
+                    format!(
+                        "native backend does not support parameter type `{}` in function `{}`",
+                        param.ty, function.name
+                    ),
+                    Some(
+                        "v0 native backend function signatures support only `i32` and `void`"
+                            .to_string(),
+                    ),
+                ));
+            }
+        }
+        if !native_backend_supports_signature_type(&function.return_type) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend does not support return type `{}` in function `{}`",
+                    function.return_type, function.name
+                ),
+                Some(
+                    "v0 native backend function signatures support only `i32` and `void`"
+                        .to_string(),
+                ),
+            ));
+        }
+    }
+
     let defined_functions = module
         .items
         .iter()
@@ -3303,19 +3565,29 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
     }
     let mut unresolved = unresolved.into_iter().collect::<Vec<_>>();
     unresolved.sort();
-    unresolved
-        .into_iter()
-        .map(|callee| {
-            diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!("native backend cannot execute unresolved call `{callee}`"),
-                Some(
-                    "run via Fozzy scenario/host backends or provide a real native implementation for this symbol"
-                        .to_string(),
-                ),
-            )
-        })
-        .collect()
+    diagnostics.extend(unresolved.into_iter().map(|callee| {
+        diagnostics::Diagnostic::new(
+            diagnostics::Severity::Error,
+            format!("native backend cannot execute unresolved call `{callee}`"),
+            Some(
+                "run via Fozzy scenario/host backends or provide a real native implementation for this symbol"
+                    .to_string(),
+            ),
+        )
+    }));
+
+    diagnostics
+}
+
+fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {
+    matches!(
+        ty,
+        ast::Type::Void
+            | ast::Type::Int {
+                signed: true,
+                bits: 32
+            }
+    )
 }
 
 fn collect_unresolved_calls_from_stmt(
@@ -8464,6 +8736,31 @@ mod tests {
         assert!(!output.diagnostic_details.iter().any(|diag| diag
             .message
             .contains("native backend cannot execute unresolved call")));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_reports_unsupported_native_signature_types() {
+        let file_name = format!(
+            "fozzylang-native-signature-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn helper(flag: bool) -> i32 {\n    if flag {\n        return 1\n    }\n    return 0\n}\nfn main() -> i32 {\n    return helper(true)\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("native backend does not support parameter type `bool`")
+        }));
 
         let _ = std::fs::remove_file(path);
     }

@@ -41,7 +41,18 @@ pub struct LibTarget {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Dependency {
-    Path { path: String },
+    Path {
+        path: String,
+    },
+    Version {
+        version: String,
+        #[serde(default)]
+        source: Option<String>,
+    },
+    Git {
+        git: String,
+        rev: String,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -67,6 +78,33 @@ impl Manifest {
         }
         if self.target.bin.is_empty() && self.target.lib.is_none() {
             return Err("manifest must define at least one target".to_string());
+        }
+        for (name, dep) in &self.deps {
+            match dep {
+                Dependency::Path { path } => {
+                    if path.trim().is_empty() {
+                        return Err(format!("deps.{name}.path cannot be empty"));
+                    }
+                }
+                Dependency::Version { version, source } => {
+                    if version.trim().is_empty() {
+                        return Err(format!("deps.{name}.version cannot be empty"));
+                    }
+                    if let Some(source) = source {
+                        if source.trim().is_empty() {
+                            return Err(format!("deps.{name}.source cannot be empty when set"));
+                        }
+                    }
+                }
+                Dependency::Git { git, rev } => {
+                    if git.trim().is_empty() {
+                        return Err(format!("deps.{name}.git cannot be empty"));
+                    }
+                    if rev.trim().is_empty() {
+                        return Err(format!("deps.{name}.rev cannot be empty"));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -101,5 +139,34 @@ mod tests {
             .validate()
             .expect("manifest should pass validation");
         assert_eq!(manifest.primary_bin_path(), Some("src/main.fzy"));
+    }
+
+    #[test]
+    fn loads_remote_dependency_variants() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [deps]
+            stable={version="1.2.3",source="registry+https://registry.example.test"}
+            parser={git="https://github.com/example/parser.git",rev="abc123"}
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        manifest
+            .validate()
+            .expect("manifest should pass validation");
+        assert!(matches!(
+            manifest.deps.get("stable"),
+            Some(super::Dependency::Version { .. })
+        ));
+        assert!(matches!(
+            manifest.deps.get("parser"),
+            Some(super::Dependency::Git { .. })
+        ));
     }
 }

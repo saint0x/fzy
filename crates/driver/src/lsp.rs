@@ -88,7 +88,7 @@ pub fn diagnostics_for_path(path: &Path) -> Result<Value> {
 pub fn definition_for_symbol(path: &Path, symbol: &str) -> Result<LspSymbol> {
     let resolved = resolve_source(path)?;
     let parsed = parse_program(&resolved.source_path)?;
-    let symbols = index_symbols_from_paths(&parsed.module_paths)?;
+    let symbols = index_semantic_symbols_from_paths(&parsed.module_paths)?;
     symbols
         .into_iter()
         .find(|entry| entry.symbol == symbol)
@@ -146,6 +146,11 @@ pub fn rename_on_disk(path: &Path, from: &str, to: &str) -> Result<RenameSummary
     }
     let resolved = resolve_source(path)?;
     let parsed = parse_program(&resolved.source_path)?;
+    let symbols = index_semantic_symbols_from_paths(&parsed.module_paths)?;
+    let is_declared = symbols.iter().any(|entry| entry.symbol == from);
+    if !is_declared {
+        bail!("rename target `{from}` is not a declared semantic symbol");
+    }
     let mut changed_files = Vec::new();
     let mut replacements = 0usize;
 
@@ -156,7 +161,7 @@ pub fn rename_on_disk(path: &Path, from: &str, to: &str) -> Result<RenameSummary
                 module_path.display()
             )
         })?;
-        let (updated, count) = replace_symbol_whole_word(&original, from, to);
+        let (updated, count) = replace_symbol_identifier_tokens(&original, from, to);
         if count > 0 {
             std::fs::write(module_path, updated.as_bytes()).with_context(|| {
                 format!("failed writing renamed module: {}", module_path.display())
@@ -447,20 +452,24 @@ fn lsp_definition_at_position(ws: &WorkspaceState, params: &Value) -> Result<Val
         return Ok(json!([]));
     };
 
+    let docs = all_workspace_docs(ws)?;
+    let paths = docs.into_iter().map(|doc| doc.path).collect::<Vec<_>>();
     let mut locations = Vec::new();
-    for doc in all_workspace_docs(ws)? {
-        for occ in collect_symbol_occurrences(&doc.text, &doc.path) {
-            if occ.name == symbol
-                && matches!(
-                    occ.kind.as_str(),
-                    "function" | "struct" | "enum" | "trait" | "rpc"
-                )
-            {
-                locations.push(json!({
-                    "uri": path_to_uri(&doc.path),
-                    "range": symbol_range(occ.line, occ.col, occ.len),
-                }));
-            }
+    for decl in index_semantic_symbols_from_paths(&paths)? {
+        if decl.symbol == symbol
+            && matches!(
+                decl.kind.as_str(),
+                "function" | "struct" | "enum" | "trait" | "test"
+            )
+        {
+            locations.push(json!({
+                "uri": path_to_uri(Path::new(&decl.file)),
+                "range": symbol_range(
+                    decl.line.saturating_sub(1),
+                    decl.col.saturating_sub(1),
+                    decl.symbol.len(),
+                ),
+            }));
         }
     }
     Ok(json!(locations))
@@ -524,7 +533,7 @@ fn lsp_rename(ws: &WorkspaceState, params: &Value) -> Result<Value> {
 
     let mut changes = BTreeMap::<String, Vec<Value>>::new();
     for doc in all_workspace_docs(ws)? {
-        let refs = symbol_spans(&doc.text, &symbol);
+        let refs = symbol_spans_identifier_tokens(&doc.text, &symbol);
         if refs.is_empty() {
             continue;
         }
@@ -614,7 +623,7 @@ fn publish_diagnostics(ws: &WorkspaceState, uri: &str, writer: &mut dyn Write) -
 fn collect_references(ws: &WorkspaceState, symbol: &str) -> Result<Vec<Value>> {
     let mut refs = Vec::new();
     for doc in all_workspace_docs(ws)? {
-        for (line, col, len) in symbol_spans(&doc.text, symbol) {
+        for (line, col, len) in symbol_spans_identifier_tokens(&doc.text, symbol) {
             refs.push(json!({
                 "uri": path_to_uri(&doc.path),
                 "range": symbol_range(line, col, len),
@@ -622,6 +631,96 @@ fn collect_references(ws: &WorkspaceState, symbol: &str) -> Result<Vec<Value>> {
         }
     }
     Ok(refs)
+}
+
+fn index_semantic_symbols_from_paths(paths: &[PathBuf]) -> Result<Vec<LspSymbol>> {
+    let mut symbols = Vec::new();
+    for module_path in paths {
+        let source = std::fs::read_to_string(module_path).with_context(|| {
+            format!(
+                "failed reading module for semantic lsp index: {}",
+                module_path.display()
+            )
+        })?;
+        let module_name = module_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("module");
+        let module = parser::parse(&source, module_name).map_err(|_| {
+            anyhow!(
+                "failed parsing module for semantic lsp index: {}",
+                module_path.display()
+            )
+        })?;
+        for (kind, name, detail) in semantic_decl_symbols(&module) {
+            let (line, col) = find_decl_position(&source, &kind, &name).unwrap_or((0, 0));
+            symbols.push(LspSymbol {
+                symbol: name,
+                kind,
+                file: module_path.display().to_string(),
+                line: line + 1,
+                col: col + 1,
+                detail,
+            });
+        }
+    }
+    Ok(symbols)
+}
+
+fn semantic_decl_symbols(module: &ast::Module) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for item in &module.items {
+        match item {
+            ast::Item::Function(function) => out.push((
+                "function".to_string(),
+                function.name.clone(),
+                format!(
+                    "fn {}({}) -> {}",
+                    function.name,
+                    function
+                        .params
+                        .iter()
+                        .map(|param| format!("{}: {}", param.name, param.ty))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    function.return_type
+                ),
+            )),
+            ast::Item::Struct(item) => out.push((
+                "struct".to_string(),
+                item.name.clone(),
+                format!("struct {}", item.name),
+            )),
+            ast::Item::Enum(item) => out.push((
+                "enum".to_string(),
+                item.name.clone(),
+                format!("enum {}", item.name),
+            )),
+            ast::Item::Trait(item) => out.push((
+                "trait".to_string(),
+                item.name.clone(),
+                format!("trait {}", item.name),
+            )),
+            ast::Item::Test(item) => out.push((
+                "test".to_string(),
+                item.name.clone(),
+                format!("test \"{}\"", item.name),
+            )),
+            ast::Item::Impl(_) => {}
+        }
+    }
+    out
+}
+
+fn find_decl_position(source: &str, kind: &str, symbol: &str) -> Option<(usize, usize)> {
+    for (line_idx, raw_line) in source.lines().enumerate() {
+        if let Some((found_kind, found_name, col)) = parse_decl_symbol(raw_line) {
+            if found_kind == kind && found_name == symbol {
+                return Some((line_idx, col));
+            }
+        }
+    }
+    None
 }
 
 fn index_symbols_from_paths(paths: &[PathBuf]) -> Result<Vec<LspSymbol>> {
@@ -768,6 +867,126 @@ fn symbol_spans(source: &str, symbol: &str) -> Vec<(usize, usize, usize)> {
         }
     }
     spans
+}
+
+fn symbol_spans_identifier_tokens(source: &str, symbol: &str) -> Vec<(usize, usize, usize)> {
+    let mut spans = Vec::new();
+    if symbol.is_empty() {
+        return spans;
+    }
+    for (line_idx, line) in source.lines().enumerate() {
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        let mut in_string = false;
+        while i < bytes.len() {
+            let byte = bytes[i];
+            if in_string {
+                if byte == b'\\' && i + 1 < bytes.len() {
+                    i += 2;
+                    continue;
+                }
+                if byte == b'"' {
+                    in_string = false;
+                }
+                i += 1;
+                continue;
+            }
+            if byte == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+                break;
+            }
+            if byte == b'"' {
+                in_string = true;
+                i += 1;
+                continue;
+            }
+            if is_ident_byte(byte) {
+                let start = i;
+                let mut end = i + 1;
+                while end < bytes.len() && is_ident_byte(bytes[end]) {
+                    end += 1;
+                }
+                if &line[start..end] == symbol {
+                    spans.push((line_idx, start, symbol.len()));
+                }
+                i = end;
+                continue;
+            }
+            i += 1;
+        }
+    }
+    spans
+}
+
+fn replace_symbol_identifier_tokens(source: &str, from: &str, to: &str) -> (String, usize) {
+    if from == to || from.is_empty() {
+        return (source.to_string(), 0);
+    }
+
+    let mut out = String::with_capacity(source.len());
+    let mut replacements = 0usize;
+    let bytes = source.as_bytes();
+    let mut i = 0usize;
+    let mut in_string = false;
+    let mut in_comment = false;
+
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_comment {
+            out.push(byte as char);
+            if byte == b'\n' {
+                in_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+        if in_string {
+            out.push(byte as char);
+            if byte == b'\\' && i + 1 < bytes.len() {
+                out.push(bytes[i + 1] as char);
+                i += 2;
+                continue;
+            }
+            if byte == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if byte == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            out.push('/');
+            out.push('/');
+            in_comment = true;
+            i += 2;
+            continue;
+        }
+        if byte == b'"' {
+            out.push('"');
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if is_ident_byte(byte) {
+            let start = i;
+            let mut end = i + 1;
+            while end < bytes.len() && is_ident_byte(bytes[end]) {
+                end += 1;
+            }
+            let token = &source[start..end];
+            if token == from {
+                out.push_str(to);
+                replacements += 1;
+            } else {
+                out.push_str(token);
+            }
+            i = end;
+            continue;
+        }
+
+        out.push(byte as char);
+        i += 1;
+    }
+
+    (out, replacements)
 }
 
 fn symbol_range(line: usize, col: usize, len: usize) -> Value {
@@ -1169,26 +1388,6 @@ fn resolve_source(path: &Path) -> Result<ResolvedSource> {
 #[derive(Debug, Clone)]
 struct ResolvedSource {
     source_path: PathBuf,
-}
-
-fn replace_symbol_whole_word(input: &str, from: &str, to: &str) -> (String, usize) {
-    let mut out = String::with_capacity(input.len());
-    let mut count = 0usize;
-    let mut i = 0usize;
-    while i < input.len() {
-        if input[i..].starts_with(from)
-            && is_word_boundary(input, i.saturating_sub(1))
-            && is_word_boundary(input, i + from.len())
-        {
-            out.push_str(to);
-            i += from.len();
-            count += 1;
-        } else {
-            out.push(input.as_bytes()[i] as char);
-            i += 1;
-        }
-    }
-    (out, count)
 }
 
 fn path_to_uri(path: &Path) -> String {

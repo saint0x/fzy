@@ -4,8 +4,15 @@ use hir::{FunctionCapabilityRequirement, TypedFunction, TypedModule};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueType {
-    I32,
+    Int { signed: bool, bits: u16 },
+    Float { bits: u16 },
     Bool,
+    Ptr,
+    Ref,
+    Slice,
+    Array,
+    Str,
+    Aggregate,
     Void,
     Unknown,
 }
@@ -75,6 +82,8 @@ pub struct FirModule {
     pub linear_resources: Vec<String>,
     pub deferred_resources: Vec<String>,
     pub matches_without_wildcard: usize,
+    pub match_unreachable_arms: usize,
+    pub match_duplicate_catchall_arms: usize,
     pub entry_requires: Vec<Option<bool>>,
     pub entry_ensures: Vec<Option<bool>>,
     pub host_syscall_sites: usize,
@@ -115,6 +124,8 @@ pub fn build_owned(typed: TypedModule) -> FirModule {
         linear_resources,
         deferred_resources,
         matches_without_wildcard,
+        match_unreachable_arms,
+        match_duplicate_catchall_arms,
         entry_requires,
         entry_ensures,
         host_syscall_sites,
@@ -157,7 +168,10 @@ pub fn build_owned(typed: TypedModule) -> FirModule {
         }
     }
 
-    let functions = typed_functions.iter().map(lower_function).collect::<Vec<_>>();
+    let functions = typed_functions
+        .iter()
+        .map(lower_function)
+        .collect::<Vec<_>>();
 
     FirModule {
         name,
@@ -170,6 +184,8 @@ pub fn build_owned(typed: TypedModule) -> FirModule {
         linear_resources,
         deferred_resources,
         matches_without_wildcard,
+        match_unreachable_arms,
+        match_duplicate_catchall_arms,
         entry_requires,
         entry_ensures,
         host_syscall_sites,
@@ -294,9 +310,23 @@ fn lower_stmts_into_block(
 fn to_value_type(ty: &Type) -> ValueType {
     match ty {
         Type::Bool => ValueType::Bool,
-        Type::Int { .. } => ValueType::I32,
+        Type::Int { signed, bits } => ValueType::Int {
+            signed: *signed,
+            bits: *bits,
+        },
+        Type::Float { bits } => ValueType::Float { bits: *bits },
+        Type::Ptr { .. } => ValueType::Ptr,
+        Type::Ref { .. } => ValueType::Ref,
+        Type::Slice(_) => ValueType::Slice,
+        Type::Array { .. } => ValueType::Array,
+        Type::Str => ValueType::Str,
+        Type::Named { .. }
+        | Type::Option(_)
+        | Type::Result { .. }
+        | Type::Vec(_)
+        | Type::Char
+        | Type::TypeVar(_) => ValueType::Aggregate,
         Type::Void => ValueType::Void,
-        _ => ValueType::Unknown,
     }
 }
 

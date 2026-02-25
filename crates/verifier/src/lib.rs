@@ -261,6 +261,26 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             Some("add `_ => ...` wildcard arm for deterministic behavior".to_string()),
         ));
     }
+    if module.match_unreachable_arms > 0 {
+        report.diagnostics.push(Diagnostic::new(
+            Severity::Error,
+            format!(
+                "{} match arm(s) are unreachable due to earlier catch-all arms",
+                module.match_unreachable_arms
+            ),
+            Some("remove unreachable arms or place catch-all arm last".to_string()),
+        ));
+    }
+    if module.match_duplicate_catchall_arms > 0 {
+        report.diagnostics.push(Diagnostic::new(
+            Severity::Error,
+            format!(
+                "{} duplicate catch-all match arm(s) detected",
+                module.match_duplicate_catchall_arms
+            ),
+            Some("keep exactly one unguarded catch-all arm (`_` or binding pattern)".to_string()),
+        ));
+    }
 
     if module.type_errors > 0 {
         report.diagnostics.push(
@@ -378,6 +398,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
@@ -421,6 +443,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
@@ -467,6 +491,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
@@ -514,6 +540,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
@@ -561,6 +589,8 @@ mod tests {
             linear_resources: vec!["socket_res".to_string()],
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
@@ -608,6 +638,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 1,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
@@ -640,6 +672,59 @@ mod tests {
     }
 
     #[test]
+    fn errors_for_unreachable_and_duplicate_match_catchalls() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: capabilities::CapabilitySet::default(),
+            required_effects: capabilities::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 2,
+            match_duplicate_catchall_arms: 1,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify(&module);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unreachable")));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("duplicate catch-all")));
+    }
+
+    #[test]
     fn safe_profile_rejects_unsafe_capabilities() {
         let mut effects = capabilities::CapabilitySet::default();
         effects.insert(Capability::Network);
@@ -658,6 +743,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
@@ -720,6 +807,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: Vec::new(),
             entry_ensures: Vec::new(),
             host_syscall_sites: 0,
@@ -768,6 +857,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: vec![Some(false)],
             entry_ensures: vec![Some(false)],
             host_syscall_sites: 0,
@@ -819,6 +910,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: vec![],
             entry_ensures: vec![],
             host_syscall_sites: 1,
@@ -866,6 +959,8 @@ mod tests {
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
             entry_requires: vec![],
             entry_ensures: vec![],
             host_syscall_sites: 0,

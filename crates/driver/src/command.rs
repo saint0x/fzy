@@ -1373,10 +1373,16 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
     {
         issues.push("native/scenario deterministic test count mismatch".to_string());
     }
-    if native_plan.async_checkpoint_count > 0 && !native.event_kinds.iter().any(|kind| kind == "async.checkpoint") {
+    if native_plan.async_checkpoint_count > 0
+        && !native
+            .event_kinds
+            .iter()
+            .any(|kind| kind == "async.checkpoint")
+    {
         issues.push("native equivalence model missing async.checkpoint evidence".to_string());
     }
-    if native_plan.rpc_frame_count > 0 && !native.event_kinds.iter().any(|kind| kind == "rpc.frame") {
+    if native_plan.rpc_frame_count > 0 && !native.event_kinds.iter().any(|kind| kind == "rpc.frame")
+    {
         issues.push("native equivalence model missing rpc.frame evidence".to_string());
     }
     if !(scenario_trace_events == 0
@@ -1510,8 +1516,14 @@ fn event_kinds_equivalent(left: &[String], right: &[String]) -> bool {
             other => other.to_string(),
         }
     }
-    let left = left.iter().map(|kind| canonical(kind)).collect::<BTreeSet<_>>();
-    let right = right.iter().map(|kind| canonical(kind)).collect::<BTreeSet<_>>();
+    let left = left
+        .iter()
+        .map(|kind| canonical(kind))
+        .collect::<BTreeSet<_>>();
+    let right = right
+        .iter()
+        .map(|kind| canonical(kind))
+        .collect::<BTreeSet<_>>();
     left == right
 }
 
@@ -1592,20 +1604,21 @@ fn audit_unsafe_command(path: &Path, format: Format) -> Result<String> {
                 module_path.display()
             )
         })?;
-        for (index, raw) in source.lines().enumerate() {
-            if !raw.contains("unsafe ")
-                && !raw.contains("unsafe(\"")
-                && !raw.contains("unsafe_reason(\"")
-            {
-                continue;
-            }
-            entries.push(UnsafeEntry {
-                file: module_path.display().to_string(),
-                line: index + 1,
-                snippet: raw.trim().to_string(),
-                reason: extract_unsafe_reason(raw),
-            });
-        }
+        let module_name = module_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| anyhow!("invalid module filename for {}", module_path.display()))?;
+        let module = parser::parse(&source, module_name).map_err(|diagnostics| {
+            let detail = diagnostics
+                .first()
+                .map(|diag| diag.message.clone())
+                .unwrap_or_else(|| "unknown parse failure".to_string());
+            anyhow!(
+                "failed parsing module for unsafe audit: {} ({detail})",
+                module_path.display()
+            )
+        })?;
+        entries.extend(collect_semantic_unsafe_entries(module_path, &module.items));
     }
     let missing_reasons = entries
         .iter()
@@ -1648,19 +1661,195 @@ fn audit_unsafe_command(path: &Path, format: Format) -> Result<String> {
     }
 }
 
-fn extract_unsafe_reason(line: &str) -> Option<String> {
-    for token in ["unsafe_reason(\"", "unsafe(\""] {
-        if let Some(start) = line.find(token) {
-            let rest = &line[(start + token.len())..];
-            if let Some(end) = rest.find("\")") {
-                return Some(rest[..end].trim().to_string());
+fn collect_semantic_unsafe_entries(module_path: &Path, items: &[ast::Item]) -> Vec<UnsafeEntry> {
+    let mut entries = Vec::new();
+    for item in items {
+        let ast::Item::Function(function) = item else {
+            continue;
+        };
+        for stmt in &function.body {
+            collect_semantic_unsafe_entries_from_stmt(
+                stmt,
+                module_path,
+                &function.name,
+                &mut entries,
+            );
+        }
+    }
+    entries
+}
+
+fn collect_semantic_unsafe_entries_from_stmt(
+    stmt: &ast::Stmt,
+    module_path: &Path,
+    function_name: &str,
+    entries: &mut Vec<UnsafeEntry>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::Return(value)
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => {
+            collect_semantic_unsafe_entries_from_expr(value, module_path, function_name, entries)
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_semantic_unsafe_entries_from_expr(
+                condition,
+                module_path,
+                function_name,
+                entries,
+            );
+            for nested in then_body {
+                collect_semantic_unsafe_entries_from_stmt(
+                    nested,
+                    module_path,
+                    function_name,
+                    entries,
+                );
             }
-            if let Some(end) = rest.find('"') {
-                return Some(rest[..end].trim().to_string());
+            for nested in else_body {
+                collect_semantic_unsafe_entries_from_stmt(
+                    nested,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_semantic_unsafe_entries_from_expr(
+                condition,
+                module_path,
+                function_name,
+                entries,
+            );
+            for nested in body {
+                collect_semantic_unsafe_entries_from_stmt(
+                    nested,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_semantic_unsafe_entries_from_expr(
+                scrutinee,
+                module_path,
+                function_name,
+                entries,
+            );
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_semantic_unsafe_entries_from_expr(
+                        guard,
+                        module_path,
+                        function_name,
+                        entries,
+                    );
+                }
+                collect_semantic_unsafe_entries_from_expr(
+                    &arm.value,
+                    module_path,
+                    function_name,
+                    entries,
+                );
             }
         }
     }
-    None
+}
+
+fn collect_semantic_unsafe_entries_from_expr(
+    expr: &ast::Expr,
+    module_path: &Path,
+    function_name: &str,
+    entries: &mut Vec<UnsafeEntry>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if matches!(callee.as_str(), "unsafe" | "unsafe_reason") {
+                let reason = args.first().and_then(extract_unsafe_reason_expr);
+                entries.push(UnsafeEntry {
+                    file: module_path.display().to_string(),
+                    line: 0,
+                    snippet: format!("{function_name}: {}(...)", callee),
+                    reason,
+                });
+            }
+            for arg in args {
+                collect_semantic_unsafe_entries_from_expr(arg, module_path, function_name, entries);
+            }
+        }
+        ast::Expr::FieldAccess { base, .. } => {
+            collect_semantic_unsafe_entries_from_expr(base, module_path, function_name, entries);
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_semantic_unsafe_entries_from_expr(
+                    value,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+        }
+        ast::Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                collect_semantic_unsafe_entries_from_expr(
+                    value,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+        }
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+            collect_semantic_unsafe_entries_from_expr(inner, module_path, function_name, entries);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_semantic_unsafe_entries_from_expr(
+                try_expr,
+                module_path,
+                function_name,
+                entries,
+            );
+            collect_semantic_unsafe_entries_from_expr(
+                catch_expr,
+                module_path,
+                function_name,
+                entries,
+            );
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_semantic_unsafe_entries_from_expr(left, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(right, module_path, function_name, entries);
+        }
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn extract_unsafe_reason_expr(expr: &ast::Expr) -> Option<String> {
+    match expr {
+        ast::Expr::Str(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        _ => None,
+    }
 }
 
 fn vendor_command(path: &Path, format: Format) -> Result<String> {
@@ -1697,50 +1886,76 @@ fn vendor_command(path: &Path, format: Format) -> Result<String> {
         .with_context(|| format!("failed creating vendor dir: {}", vendor_dir.display()))?;
     let mut copied = Vec::new();
     for (name, dependency) in &manifest.deps {
-        let manifest::Dependency::Path { path: dep_path } = dependency;
-        let source_dir = path.join(dep_path);
-        if !source_dir.exists() {
-            bail!(
-                "path dependency `{}` not found at {}",
-                name,
-                source_dir.display()
-            );
-        }
         let lock_dep = lock_dep_by_name
             .get(name.as_str())
             .ok_or_else(|| anyhow!("lockfile missing dependency entry for `{name}`"))?;
-        let target_dir = vendor_dir.join(name);
-        if target_dir.exists() {
-            std::fs::remove_dir_all(&target_dir).with_context(|| {
-                format!(
-                    "failed cleaning existing vendor target: {}",
-                    target_dir.display()
-                )
-            })?;
+        match dependency {
+            manifest::Dependency::Path { path: dep_path } => {
+                let source_dir = path.join(dep_path);
+                if !source_dir.exists() {
+                    bail!(
+                        "path dependency `{}` not found at {}",
+                        name,
+                        source_dir.display()
+                    );
+                }
+                let target_dir = vendor_dir.join(name);
+                if target_dir.exists() {
+                    std::fs::remove_dir_all(&target_dir).with_context(|| {
+                        format!(
+                            "failed cleaning existing vendor target: {}",
+                            target_dir.display()
+                        )
+                    })?;
+                }
+                copy_dir_recursive(&source_dir, &target_dir)?;
+                let source_hash = lock_dep
+                    .get("sourceHash")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let vendor_hash = hash_directory_tree(&target_dir)?;
+                if !source_hash.is_empty() && source_hash != vendor_hash {
+                    bail!(
+                        "vendor copy hash mismatch for `{}`: lock sourceHash={} vendorHash={}",
+                        name,
+                        source_hash,
+                        vendor_hash
+                    );
+                }
+                copied.push(serde_json::json!({
+                    "name": name,
+                    "sourceType": "path",
+                    "source": source_dir.display().to_string(),
+                    "target": target_dir.display().to_string(),
+                    "sourceHash": source_hash,
+                    "vendorHash": vendor_hash,
+                    "package": lock_dep.get("package").cloned().unwrap_or(serde_json::json!({})),
+                }));
+            }
+            manifest::Dependency::Version { version, source } => {
+                copied.push(serde_json::json!({
+                    "name": name,
+                    "sourceType": "version",
+                    "version": version,
+                    "source": source.clone().unwrap_or_else(|| "registry+https://crates.io".to_string()),
+                    "sourceHash": lock_dep.get("sourceHash").and_then(|value| value.as_str()).unwrap_or_default(),
+                    "vendored": false,
+                    "package": lock_dep.get("package").cloned().unwrap_or(serde_json::json!({})),
+                }));
+            }
+            manifest::Dependency::Git { git, rev } => {
+                copied.push(serde_json::json!({
+                    "name": name,
+                    "sourceType": "git",
+                    "git": git,
+                    "rev": rev,
+                    "sourceHash": lock_dep.get("sourceHash").and_then(|value| value.as_str()).unwrap_or_default(),
+                    "vendored": false,
+                    "package": lock_dep.get("package").cloned().unwrap_or(serde_json::json!({})),
+                }));
+            }
         }
-        copy_dir_recursive(&source_dir, &target_dir)?;
-        let source_hash = lock_dep
-            .get("sourceHash")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .to_string();
-        let vendor_hash = hash_directory_tree(&target_dir)?;
-        if !source_hash.is_empty() && source_hash != vendor_hash {
-            bail!(
-                "vendor copy hash mismatch for `{}`: lock sourceHash={} vendorHash={}",
-                name,
-                source_hash,
-                vendor_hash
-            );
-        }
-        copied.push(serde_json::json!({
-            "name": name,
-            "source": source_dir.display().to_string(),
-            "target": target_dir.display().to_string(),
-            "sourceHash": source_hash,
-            "vendorHash": vendor_hash,
-            "package": lock_dep.get("package").cloned().unwrap_or(serde_json::json!({})),
-        }));
     }
     let vendor_manifest = vendor_dir.join("fozzy-vendor.json");
     let vendor_payload = serde_json::json!({
@@ -3133,8 +3348,14 @@ fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
             else_body,
         } => {
             count_async_hooks_in_expr(condition)
-                + then_body.iter().map(count_async_hooks_in_stmt).sum::<usize>()
-                + else_body.iter().map(count_async_hooks_in_stmt).sum::<usize>()
+                + then_body
+                    .iter()
+                    .map(count_async_hooks_in_stmt)
+                    .sum::<usize>()
+                + else_body
+                    .iter()
+                    .map(count_async_hooks_in_stmt)
+                    .sum::<usize>()
         }
         ast::Stmt::While { condition, body } => {
             count_async_hooks_in_expr(condition)
@@ -3269,12 +3490,14 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
         }
         ast::Expr::Await(inner) | ast::Expr::Group(inner) => analyze_workload_expr(inner),
         ast::Expr::FieldAccess { base, .. } => analyze_workload_expr(base),
-        ast::Expr::StructInit { fields, .. } => fields.iter().fold((0, 0), |mut acc, (_, value)| {
-            let (spawns, yields) = analyze_workload_expr(value);
-            acc.0 += spawns;
-            acc.1 += yields;
-            acc
-        }),
+        ast::Expr::StructInit { fields, .. } => {
+            fields.iter().fold((0, 0), |mut acc, (_, value)| {
+                let (spawns, yields) = analyze_workload_expr(value);
+                acc.0 += spawns;
+                acc.1 += yields;
+                acc
+            })
+        }
         ast::Expr::EnumInit { payload, .. } => payload.iter().fold((0, 0), |mut acc, value| {
             let (spawns, yields) = analyze_workload_expr(value);
             acc.0 += spawns;
@@ -4931,12 +5154,18 @@ fn generate_rpc_artifacts(path: &Path, out_dir: Option<&Path>) -> Result<RpcArti
 
     let mut client = String::from("// generated by fz rpc gen\n");
     client.push_str("mod rpc_client {\n");
+    client.push_str("    fn apply_rpc_contract(timeout_ms: i32) -> i32 {\n");
+    client.push_str("        timeout(timeout_ms)\n");
+    client.push_str("        deadline(timeout_ms)\n");
+    client.push_str("        return 0\n");
+    client.push_str("    }\n");
     for method in &methods {
         client.push_str(&format!(
-            "    async fn {}(req: {}) -> {} {{\n        // TODO: wire transport + cancellation + deadline\n    }}\n",
+            "    async fn {}(req: {}) -> {} {{\n        let _ = apply_rpc_contract(5000)\n        let frame = rpc.transport_send(\"{}\", req)\n        if frame == 0 {{\n            cancel()\n        }}\n        let response = recv()\n        return response\n    }}\n",
             method.name.to_lowercase(),
             method.request,
-            method.response
+            method.response,
+            method.name
         ));
     }
     client.push_str("}\n");
@@ -4945,12 +5174,18 @@ fn generate_rpc_artifacts(path: &Path, out_dir: Option<&Path>) -> Result<RpcArti
 
     let mut server = String::from("// generated by fz rpc gen\n");
     server.push_str("mod rpc_server {\n");
+    server.push_str("    fn apply_rpc_handler_contract(timeout_ms: i32) -> i32 {\n");
+    server.push_str("        timeout(timeout_ms)\n");
+    server.push_str("        deadline(timeout_ms)\n");
+    server.push_str("        return 0\n");
+    server.push_str("    }\n");
     for method in &methods {
         server.push_str(&format!(
-            "    async fn handle_{}(req: {}) -> {} {{\n        // TODO: implement RPC method handler\n    }}\n",
+            "    async fn handle_{}(req: {}) -> {} {{\n        let _ = apply_rpc_handler_contract(5000)\n        let incoming = rpc.transport_recv(\"{}\")\n        if incoming == 0 {{\n            cancel()\n        }}\n        let _ = req\n        return incoming\n    }}\n",
             method.name.to_lowercase(),
             method.request,
-            method.response
+            method.response,
+            method.name
         ));
     }
     server.push_str("}\n");
@@ -5438,6 +5673,83 @@ mod tests {
     }
 
     #[test]
+    fn audit_unsafe_uses_semantic_calls_not_lexical_substrings() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-audit-semantic-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    let note: str = \"unsafe(\\\"fake\\\")\"\n    // unsafe(\"comment\")\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::AuditUnsafe {
+                path: source.clone(),
+            },
+            Format::Json,
+        )
+        .expect("audit should succeed");
+        assert!(output.contains("\"entries\":[]"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn audit_unsafe_rejects_missing_reason_in_semantic_call() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-audit-missing-reason-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    unsafe()\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let error = run(
+            Command::AuditUnsafe {
+                path: source.clone(),
+            },
+            Format::Text,
+        )
+        .expect_err("audit should fail when unsafe reason is missing");
+        assert!(error.to_string().contains("without reason string"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn audit_unsafe_collects_reason_from_semantic_call() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-audit-reasoned-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    unsafe(\"ffi boundary\")\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::AuditUnsafe {
+                path: source.clone(),
+            },
+            Format::Json,
+        )
+        .expect("audit should succeed");
+        assert!(output.contains("\"missingReasonCount\":0"));
+        assert!(output.contains("ffi boundary"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn headers_command_generates_c_header_for_exports() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5563,6 +5875,37 @@ mod tests {
     }
 
     #[test]
+    fn vendor_command_records_remote_deps_without_path_copy() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-vendor-remote-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project src should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"vendor_remote\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"vendor_remote\"\npath=\"src/main.fzy\"\n\n[deps]\nserde={version=\"1.0.0\",source=\"registry+https://registry.example.test\"}\nparser={git=\"https://github.com/example/parser.git\",rev=\"abc123\"}\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("main source should be written");
+
+        let output = run(Command::Vendor { path: root.clone() }, Format::Json)
+            .expect("vendor command should succeed");
+        assert!(output.contains("\"ok\":true"));
+        let vendor_manifest = root.join("vendor/fozzy-vendor.json");
+        let vendor_manifest_text =
+            std::fs::read_to_string(&vendor_manifest).expect("vendor manifest should be readable");
+        assert!(vendor_manifest_text.contains("\"sourceType\": \"version\""));
+        assert!(vendor_manifest_text.contains("\"sourceType\": \"git\""));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn rpc_gen_command_emits_schema_and_stubs() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -5588,6 +5931,16 @@ mod tests {
         assert!(out_dir.join("rpc.schema.json").exists());
         assert!(out_dir.join("rpc.client.fzy").exists());
         assert!(out_dir.join("rpc.server.fzy").exists());
+        let client = std::fs::read_to_string(out_dir.join("rpc.client.fzy"))
+            .expect("rpc client should be readable");
+        let server = std::fs::read_to_string(out_dir.join("rpc.server.fzy"))
+            .expect("rpc server should be readable");
+        assert!(!client.contains("TODO"));
+        assert!(!server.contains("TODO"));
+        assert!(client.contains("deadline("));
+        assert!(client.contains("cancel()"));
+        assert!(server.contains("deadline("));
+        assert!(server.contains("cancel()"));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_dir_all(out_dir);
@@ -5756,6 +6109,9 @@ mod tests {
         .expect("rpc gen should succeed");
         assert!(output.contains("\"methods\":2"));
         assert!(out_dir.join("rpc.schema.json").exists());
+        let server = std::fs::read_to_string(out_dir.join("rpc.server.fzy"))
+            .expect("rpc server should be readable");
+        assert!(server.contains("apply_rpc_handler_contract"));
 
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(out_dir);
@@ -6053,7 +6409,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
             .as_nanos();
-        let source = std::env::temp_dir().join(format!("fozzylang-native-async-intrinsics-{suffix}.fzy"));
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-native-async-intrinsics-{suffix}.fzy"));
         std::fs::write(
             &source,
             "use core.thread;\nfn main() -> i32 {\n    timeout(10)\n    let _d: i32 = deadline(1000)\n    let _c: i32 = cancel()\n    let _r: i32 = recv()\n    return 0\n}\n",

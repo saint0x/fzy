@@ -8,8 +8,10 @@
 - Graph hash covers:
   - root package name/version + manifest hash
   - each path dependency name/path/canonical path
-  - each dependency package name/version + manifest hash
-  - deterministic source tree hash of each dependency
+  - each dependency package name/version + manifest hash (path dependencies)
+  - deterministic source tree hash of each path dependency
+  - version/source identity hash for versioned dependencies
+  - git/rev identity hash for git dependencies
 
 ## Drift Policy
 
@@ -23,6 +25,7 @@
 - `fz vendor <project>` is the explicit lock refresh and dependency snapshot step.
 - It rewrites `fozzy.lock` from current manifests + dependency source hashes.
 - It copies path dependencies into `vendor/<dep_name>`.
+- It records version/git dependencies in `vendor/fozzy-vendor.json` as lock-pinned, non-vendored sources.
 - It writes `vendor/fozzy-vendor.json` with:
   - `lockHash`
   - lockfile path

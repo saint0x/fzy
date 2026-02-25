@@ -183,13 +183,33 @@ Net assessment
 - [✅] USER-ADDED DEFINITIONS ITEM (AT BOTTOM OF ASYNC): definition of yield points (what can interleave) and a normalization rule for equivalence gates (what “matches” means across engines); implemented and used by equivalence normalization contract.
 
 ### Systems-Compiler Readiness Gaps (New, Non-Duplicate)
-- [ ] Expand verifier/backend type support beyond `void`/`i32` baseline and enforce end-to-end width/sign correctness (`u*/i*/f*`, pointers, aggregates) across FIR and both native emitters.
-- [ ] Implement real native lowering for `match`/enum/ADT control flow in LLVM + Cranelift (remove no-op behavior in native emit paths).
-- [ ] Add exhaustive pattern diagnostics and semantic checks tied to match lowering (coverage, unreachable arms, guard behavior).
-- [ ] Replace lexical `unsafe` audit scanning with AST/HIR/FIR-backed semantic unsafe-site analysis.
-- [ ] Replace text/index heuristic rename/definition flow with semantic symbol resolution and scope-aware workspace edits.
-- [ ] Extend dependency model beyond path-only dependencies with versioned/remote sources and lockfile-enforced reproducibility.
-- [ ] Replace RPC/FFI TODO stubs for transport/cancellation/deadline with concrete runtime contracts and host/native parity tests.
+- [✅] Production update (no backwards compatibility): replaced lexical `fz audit unsafe` substring scanning with semantic AST-driven unsafe call analysis (real `unsafe(...)`/`unsafe_reason(...)` nodes only, comment/string false positives removed).
+- [✅] Production update (no backwards compatibility): added native signature lowerability contract enforcement so unsupported parameter/return types fail verification early instead of silently degrading in `i32`-only native lowering.
+- [✅] Production update (no backwards compatibility): upgraded FIR value-type model from `I32` collapse to structured type families (`Int/Float/Ptr/Ref/Slice/Array/Str/Aggregate`) to prevent type-width information loss in core IR.
+- [✅] Expand verifier/backend type support beyond `void`/`i32` baseline and enforce end-to-end width/sign correctness (`u*/i*/f*`, pointers, aggregates) across FIR and both native emitters.
+- [✅] Implement real native lowering for `match`/enum/ADT control flow in LLVM + Cranelift (remove no-op behavior in native emit paths).
+- [✅] Add exhaustive pattern diagnostics and semantic checks tied to match lowering (coverage, unreachable arms, guard behavior).
+- [✅] Replace lexical `unsafe` audit scanning with AST/HIR/FIR-backed semantic unsafe-site analysis.
+- [✅] Replace text/index heuristic rename/definition flow with semantic symbol resolution and scope-aware workspace edits.
+- [✅] Extend dependency model beyond path-only dependencies with versioned/remote sources and lockfile-enforced reproducibility.
+- [✅] Replace RPC/FFI TODO stubs for transport/cancellation/deadline with concrete runtime contracts and host/native parity tests.
+
+### Production Memory Safety Flag + Scope (Rust-Class Target)
+- [ ] MEMORY SAFETY FLAG: SAFE-BY-DEFAULT, RUST-CLASS SAFETY OUTCOMES FOR SAFE CODE, AUDITABLE UNSAFE ISLANDS ONLY.
+- [ ] MEMORY SAFETY SPECTRUM TARGET: ~9/10 TOWARD RUST, FAR FROM C, WITH ZERO TOLERANCE FOR UNSOUND DEFAULTS.
+- [ ] SHIP A PRODUCTION MEMORY MODEL SPEC: OWNERSHIP, BORROWING, ALIASING, PROVENANCE, DROP, PANIC/UNWIND, ATOMIC ORDERING, AND FFI BOUNDARY RULES.
+- [ ] UPGRADE TYPE SYSTEM FOR MEMORY CORRECTNESS: FIRST-CLASS OWNED/SHARED/MUT BORROWS, RAW POINTERS, HANDLE TYPES, NULLABILITY POLICY, AND LAYOUT VALIDITY CONTRACTS.
+- [ ] IMPLEMENT FLOW-SENSITIVE BORROW CHECKING: MOVE ANALYSIS, USE-AFTER-MOVE PREVENTION, EXCLUSIVE `&mut`, SHARED `&`, NLL/REGION CONSTRAINTS, AND ESCAPE ANALYSIS.
+- [ ] ADD INTER-PROCEDURAL OWNERSHIP/BORROW EFFECT SUMMARIES FOR FUNCTION CALLS, RETURNS, GENERICS, TRAITS, ASYNC SUSPENSION POINTS, AND CLOSURE CAPTURES.
+- [ ] REMOVE I32-COLLAPSED MEMORY INTRINSIC TYPING; ENFORCE END-TO-END POINTER/RESOURCE TYPES FOR `alloc`/`free`/`close` AND RELATED RUNTIME OPS.
+- [ ] HARDEN LINEAR/RESOURCE SEMANTICS: EXACTLY-ONCE CONSUMPTION, PARTIAL-MOVE RULES, REINITIALIZATION RULES, AND DETERMINISTIC DROP ORDERING.
+- [ ] REPLACE UNSAFE LEXICAL SCANNING WITH SEMANTIC UNSAFE NODES PLUS REQUIRED INVARIANT PROOFS, REASON STRINGS, OWNERSHIP TAGGING, AND RELEASE-BLOCKING UNSAFE DELTA GATES.
+- [ ] DEFINE CONCURRENCY MEMORY SAFETY TRAITS/CAPABILITIES (`Send`/`Sync`-CLASS MODEL), ENFORCE DATA-RACE FREEDOM BY CONSTRUCTION, AND VALIDATE BORROWS ACROSS `await`.
+- [ ] SHIP PRODUCTION ALLOCATOR CONTRACTS: SYSTEM/ARENA/BUMP POLICIES, OOM BEHAVIOR PROFILES, HARDENED RUNTIME MODE (POISON/QUARANTINE/GUARD PAGE OPTIONS), AND LEAK BUDGET ENFORCEMENT.
+- [ ] ENFORCE FFI MEMORY SAFETY WALL: FFI-SAFE TYPE SUBSET, `repr(C)` SIZE/ALIGN/OFFSET CHECKS, OWNERSHIP TRANSFER ANNOTATIONS, NO PANIC ACROSS ABI, CALLBACK LIFETIME RULES.
+- [ ] STABILIZE BACKEND MEMORY SEMANTICS: LOWERING-PRESERVATION TESTS, CONSERVATIVE ALIAS METADATA EMISSION, AND CROSS-BACKEND MEMORY EQUIVALENCE GATES.
+- [ ] EXPAND FOZZY MEMORY VALIDATION TO PRODUCTION MANDATORY GATES: STRICT DET DOCTOR/TEST, TRACE RECORD/VERIFY/REPLAY/CI, HOST-BACKED PARITY, AND MEMORY-GRAPH TOPOLOGY COVERAGE.
+- [ ] ADD UNSOUNDNESS INCIDENT PROCESS: MEMORY SAFETY RFC TRACK, UNSAFE BUDGET, RELEASE SIGN-OFF, HOTFIX PLAYBOOK, AND POSTMORTEM REQUIREMENTS.
 
 ### Runtime Networking + HTTP
 - [✅] Enforce real OS `listen()` semantics in host backend.

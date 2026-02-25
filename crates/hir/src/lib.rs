@@ -24,6 +24,8 @@ pub struct TypedModule {
     pub linear_resources: Vec<String>,
     pub deferred_resources: Vec<String>,
     pub matches_without_wildcard: usize,
+    pub match_unreachable_arms: usize,
+    pub match_duplicate_catchall_arms: usize,
     pub entry_requires: Vec<Option<bool>>,
     pub entry_ensures: Vec<Option<bool>>,
     pub host_syscall_sites: usize,
@@ -226,8 +228,13 @@ pub fn lower(module: &Module) -> TypedModule {
         .map(|f| f.return_type.clone());
     let entry_return_const_i32 = interpret_entry_i32(&typed_functions);
 
-    let (linear_resources, deferred_resources, matches_without_wildcard) =
-        collect_semantic_hints(&typed_functions);
+    let (
+        linear_resources,
+        deferred_resources,
+        matches_without_wildcard,
+        match_unreachable_arms,
+        match_duplicate_catchall_arms,
+    ) = collect_semantic_hints(&typed_functions);
     let (entry_requires, entry_ensures) = collect_entry_contracts(&typed_functions, &fn_sigs);
     let (
         host_syscall_sites,
@@ -286,6 +293,8 @@ pub fn lower(module: &Module) -> TypedModule {
         linear_resources,
         deferred_resources,
         matches_without_wildcard,
+        match_unreachable_arms,
+        match_duplicate_catchall_arms,
         entry_requires,
         entry_ensures,
         host_syscall_sites,
@@ -1295,31 +1304,25 @@ fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
     }
 }
 
-fn collect_semantic_hints(functions: &[TypedFunction]) -> (Vec<String>, Vec<String>, usize) {
+fn collect_semantic_hints(
+    functions: &[TypedFunction],
+) -> (Vec<String>, Vec<String>, usize, usize, usize) {
     let mut linear_resources = Vec::new();
     let mut deferred_resources = Vec::new();
     let mut matches_without_wildcard = 0usize;
+    let mut match_unreachable_arms = 0usize;
+    let mut match_duplicate_catchall_arms = 0usize;
 
     for function in functions {
         for statement in &function.body {
-            match statement {
-                Stmt::Let {
-                    name, ty: Some(ty), ..
-                } if ty.is_pointer_like() => {
-                    linear_resources.push(name.clone());
-                }
-                Stmt::Defer(expr) => {
-                    if let Some(resource) = deferred_resource(expr) {
-                        deferred_resources.push(resource);
-                    }
-                }
-                Stmt::Match { arms, .. } => {
-                    if !arms.iter().any(|arm| pattern_has_wildcard(&arm.pattern)) {
-                        matches_without_wildcard += 1;
-                    }
-                }
-                _ => {}
-            }
+            collect_semantic_hints_from_stmt(
+                statement,
+                &mut linear_resources,
+                &mut deferred_resources,
+                &mut matches_without_wildcard,
+                &mut match_unreachable_arms,
+                &mut match_duplicate_catchall_arms,
+            );
         }
     }
 
@@ -1327,7 +1330,90 @@ fn collect_semantic_hints(functions: &[TypedFunction]) -> (Vec<String>, Vec<Stri
         linear_resources,
         deferred_resources,
         matches_without_wildcard,
+        match_unreachable_arms,
+        match_duplicate_catchall_arms,
     )
+}
+
+fn collect_semantic_hints_from_stmt(
+    statement: &Stmt,
+    linear_resources: &mut Vec<String>,
+    deferred_resources: &mut Vec<String>,
+    matches_without_wildcard: &mut usize,
+    match_unreachable_arms: &mut usize,
+    match_duplicate_catchall_arms: &mut usize,
+) {
+    match statement {
+        Stmt::Let {
+            name, ty: Some(ty), ..
+        } if ty.is_pointer_like() => {
+            linear_resources.push(name.clone());
+        }
+        Stmt::Defer(expr) => {
+            if let Some(resource) = deferred_resource(expr) {
+                deferred_resources.push(resource);
+            }
+        }
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for nested in then_body {
+                collect_semantic_hints_from_stmt(
+                    nested,
+                    linear_resources,
+                    deferred_resources,
+                    matches_without_wildcard,
+                    match_unreachable_arms,
+                    match_duplicate_catchall_arms,
+                );
+            }
+            for nested in else_body {
+                collect_semantic_hints_from_stmt(
+                    nested,
+                    linear_resources,
+                    deferred_resources,
+                    matches_without_wildcard,
+                    match_unreachable_arms,
+                    match_duplicate_catchall_arms,
+                );
+            }
+        }
+        Stmt::While { body, .. } => {
+            for nested in body {
+                collect_semantic_hints_from_stmt(
+                    nested,
+                    linear_resources,
+                    deferred_resources,
+                    matches_without_wildcard,
+                    match_unreachable_arms,
+                    match_duplicate_catchall_arms,
+                );
+            }
+        }
+        Stmt::Match { arms, .. } => {
+            if !arms
+                .iter()
+                .any(|arm| pattern_is_catchall(&arm.pattern) && arm.guard.is_none())
+            {
+                *matches_without_wildcard += 1;
+            }
+            let mut seen_catchall = false;
+            for arm in arms {
+                let is_catchall = pattern_is_catchall(&arm.pattern) && arm.guard.is_none();
+                if seen_catchall {
+                    *match_unreachable_arms += 1;
+                    if is_catchall {
+                        *match_duplicate_catchall_arms += 1;
+                    }
+                } else if is_catchall {
+                    seen_catchall = true;
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn collect_effect_markers(
@@ -2459,10 +2545,9 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             ],
             str_ty.clone(),
         ),
-        "str.contains" | "str.starts_with" | "str.ends_with" => (
-            vec![str_ty.clone(), str_ty.clone()],
-            i32.clone(),
-        ),
+        "str.contains" | "str.starts_with" | "str.ends_with" => {
+            (vec![str_ty.clone(), str_ty.clone()], i32.clone())
+        }
         "str.replace" => (
             vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
             str_ty.clone(),
@@ -2562,12 +2647,18 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "list.clear" => (vec![i32.clone()], i32.clone()),
         "list.join" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
         "map.new" => (vec![], i32.clone()),
-        "map.set" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "map.set" => (
+            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "map.get" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
         "map.has" | "map.delete" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
         "map.keys" => (vec![i32.clone()], i32.clone()),
         "map.len" => (vec![i32.clone()], i32.clone()),
-        "route.match" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "route.match" => (
+            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "route.write_404" | "route.write_405" => (vec![i32.clone()], i32.clone()),
         "log.info" | "log.warn" | "log.error" => {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
@@ -2845,14 +2936,11 @@ fn pattern_matches(pattern: &ast::Pattern, value: &Value) -> bool {
     }
 }
 
-fn pattern_has_wildcard(pattern: &ast::Pattern) -> bool {
+fn pattern_is_catchall(pattern: &ast::Pattern) -> bool {
     match pattern {
-        ast::Pattern::Wildcard => true,
-        ast::Pattern::Or(patterns) => patterns.iter().any(pattern_has_wildcard),
-        ast::Pattern::Int(_)
-        | ast::Pattern::Bool(_)
-        | ast::Pattern::Ident(_)
-        | ast::Pattern::Variant { .. } => false,
+        ast::Pattern::Wildcard | ast::Pattern::Ident(_) => true,
+        ast::Pattern::Or(patterns) => patterns.iter().any(pattern_is_catchall),
+        ast::Pattern::Int(_) | ast::Pattern::Bool(_) | ast::Pattern::Variant { .. } => false,
     }
 }
 
@@ -3082,6 +3170,25 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn match_semantic_hints_track_unreachable_and_duplicate_catchalls() {
+        let source = r#"
+            fn main() -> i32 {
+                let v: i32 = 1;
+                match v {
+                    _ => 1,
+                    2 => 2,
+                    x => x,
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.match_unreachable_arms, 2);
+        assert_eq!(typed.match_duplicate_catchall_arms, 1);
     }
 
     #[test]

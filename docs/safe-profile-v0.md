@@ -35,4 +35,4 @@ Preferred forms for auditable unsafe reasons:
 - `unsafe("reason text")`
 - `unsafe_reason("reason text")`
 
-`fz audit unsafe` emits `.fz/unsafe-map.json` and fails if any unsafe site is missing a reason.
+`fz audit unsafe` emits `.fz/unsafe-map.json` using semantic AST call analysis and fails if any unsafe site is missing a reason.
