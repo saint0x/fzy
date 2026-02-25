@@ -347,11 +347,12 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 backend.as_deref(),
             )?;
             if artifact.status != "ok" || artifact.output.is_none() {
-                bail!(
-                    "run aborted: build status={} diagnostics={}",
-                    artifact.status,
-                    artifact.diagnostics
-                );
+                let rendered = render_run_compile_abort(format, &artifact);
+                return Err(CommandFailure {
+                    exit_code: 1,
+                    output: rendered,
+                }
+                .into());
             }
             let binary = artifact
                 .output
@@ -367,24 +368,35 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let rendered = match format {
-                Format::Text => format!(
-                    "compiled {} and executed {} with args: {}; exit_code={}; stdout={}; stderr={}; routing={}",
-                    artifact.module,
-                    binary.display(),
-                    args.join(" "),
-                    exit_code,
-                    stdout,
-                    stderr,
-                    if host_backends {
-                        "native-host-runtime"
-                    } else {
-                        "native"
-                    }
-                ),
+                Format::Text => {
+                    let mut message = format!(
+                        "compiled {} and executed {} (routing={})\n args: {}\n exit_code: {}",
+                        artifact.module,
+                        binary.display(),
+                        if host_backends {
+                            "native-host-runtime"
+                        } else {
+                            "native"
+                        },
+                        if args.is_empty() {
+                            "<none>".to_string()
+                        } else {
+                            args.join(" ")
+                        },
+                        exit_code
+                    );
+                    message.push_str(&format!(
+                        "\n stdout:\n{}\n stderr:\n{}",
+                        if stdout.is_empty() { "<empty>" } else { &stdout },
+                        if stderr.is_empty() { "<empty>" } else { &stderr }
+                    ));
+                    message
+                }
                 Format::Json => serde_json::json!({
                     "module": artifact.module,
                     "status": artifact.status,
                     "diagnostics": artifact.diagnostics,
+                    "items": artifact.diagnostic_details,
                     "binary": binary.display().to_string(),
                     "args": args,
                     "deterministic": deterministic,
@@ -832,34 +844,43 @@ fn render_artifact(
     runtime_config: Option<PathBuf>,
 ) -> String {
     match format {
-        Format::Text => format!(
-            "module={} profile={:?} status={} diagnostics={} output={} threads={} runtime_config={} dep_graph_hash={}",
-            artifact.module,
-            artifact.profile,
-            artifact.status,
-            artifact.diagnostics,
-            artifact
-                .output
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string()),
-            threads
-                .map(|threads| threads.to_string())
-                .unwrap_or_else(|| "default".to_string()),
-            runtime_config
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string()),
-            artifact
-                .dependency_graph_hash
-                .clone()
-                .unwrap_or_else(|| "<none>".to_string())
-        ),
+        Format::Text => {
+            let mut rendered = format!(
+                "module={} profile={:?} status={} diagnostics={} output={} threads={} runtime_config={} dep_graph_hash={}",
+                artifact.module,
+                artifact.profile,
+                artifact.status,
+                artifact.diagnostics,
+                artifact
+                    .output
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                threads
+                    .map(|threads| threads.to_string())
+                    .unwrap_or_else(|| "default".to_string()),
+                runtime_config
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                artifact
+                    .dependency_graph_hash
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string())
+            );
+            let details = render_diagnostics_text(&artifact.diagnostic_details);
+            if !details.is_empty() {
+                rendered.push('\n');
+                rendered.push_str(&details);
+            }
+            rendered
+        }
         Format::Json => serde_json::json!({
             "module": artifact.module,
             "profile": format!("{:?}", artifact.profile),
             "status": artifact.status,
             "diagnostics": artifact.diagnostics,
+            "items": artifact.diagnostic_details,
             "dependencyGraphHash": artifact.dependency_graph_hash,
             "threads": threads,
             "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
@@ -880,41 +901,50 @@ fn render_library_artifact(
     runtime_config: Option<PathBuf>,
 ) -> String {
     match format {
-        Format::Text => format!(
-            "module={} profile={:?} status={} diagnostics={} static_lib={} shared_lib={} header={} abi_manifest={} threads={} runtime_config={} dep_graph_hash={}",
-            artifact.module,
-            artifact.profile,
-            artifact.status,
-            artifact.diagnostics,
-            artifact
-                .static_lib
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string()),
-            artifact
-                .shared_lib
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string()),
-            headers.path.display(),
-            headers.abi_manifest.display(),
-            threads
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "default".to_string()),
-            runtime_config
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<none>".to_string()),
-            artifact
-                .dependency_graph_hash
-                .clone()
-                .unwrap_or_else(|| "<none>".to_string())
-        ),
+        Format::Text => {
+            let mut rendered = format!(
+                "module={} profile={:?} status={} diagnostics={} static_lib={} shared_lib={} header={} abi_manifest={} threads={} runtime_config={} dep_graph_hash={}",
+                artifact.module,
+                artifact.profile,
+                artifact.status,
+                artifact.diagnostics,
+                artifact
+                    .static_lib
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                artifact
+                    .shared_lib
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                headers.path.display(),
+                headers.abi_manifest.display(),
+                threads
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "default".to_string()),
+                runtime_config
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+                artifact
+                    .dependency_graph_hash
+                    .clone()
+                    .unwrap_or_else(|| "<none>".to_string())
+            );
+            let details = render_diagnostics_text(&artifact.diagnostic_details);
+            if !details.is_empty() {
+                rendered.push('\n');
+                rendered.push_str(&details);
+            }
+            rendered
+        }
         Format::Json => serde_json::json!({
             "module": artifact.module,
             "profile": format!("{:?}", artifact.profile),
             "status": artifact.status,
             "diagnostics": artifact.diagnostics,
+            "items": artifact.diagnostic_details,
             "dependencyGraphHash": artifact.dependency_graph_hash,
             "threads": threads,
             "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
@@ -972,6 +1002,33 @@ fn render_output(format: Format, output: Output) -> String {
             "warnings": warnings,
             "items": output.diagnostic_details,
             "backendIr": output.backend_ir,
+        })
+        .to_string(),
+    }
+}
+
+fn render_run_compile_abort(format: Format, artifact: &BuildArtifact) -> String {
+    match format {
+        Format::Text => {
+            let mut rendered = String::from("run aborted before execution due to compile-time diagnostics\n");
+            rendered.push_str(&render_artifact(
+                Format::Text,
+                artifact.clone(),
+                None,
+                None,
+            ));
+            rendered
+        }
+        Format::Json => serde_json::json!({
+            "status": "error",
+            "phase": "compile",
+            "message": "run aborted before execution due to compile-time diagnostics",
+            "module": artifact.module,
+            "profile": format!("{:?}", artifact.profile),
+            "diagnostics": artifact.diagnostics,
+            "items": artifact.diagnostic_details,
+            "output": artifact.output.as_ref().map(|path| path.display().to_string()),
+            "dependencyGraphHash": artifact.dependency_graph_hash,
         })
         .to_string(),
     }
@@ -2423,11 +2480,8 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn debug_check_command(path: &Path, format: Format) -> Result<String> {
     let artifact = compile_file_with_backend(path, BuildProfile::Dev, None)?;
     if artifact.status != "ok" {
-        bail!(
-            "debug-check failed to build module: status={} diagnostics={}",
-            artifact.status,
-            artifact.diagnostics
-        );
+        let rendered = render_artifact(Format::Text, artifact, None, None);
+        bail!("debug-check failed to build module\n{rendered}");
     }
     let binary = artifact
         .output
@@ -2788,23 +2842,46 @@ fn run_non_scenario_test_plan(
             production_memory_safety,
         },
     );
-    let diagnostics = verify_report.diagnostics.len();
-    let has_errors = verify_report
-        .diagnostics
+    let mut verify_diagnostics = verify_report.diagnostics;
+    for diagnostic in &mut verify_diagnostics {
+        if diagnostic.path.is_none() {
+            diagnostic.path = Some(resolved.source_path.display().to_string());
+        }
+    }
+    diagnostics::assign_stable_codes(&mut verify_diagnostics, diagnostics::DiagnosticDomain::Driver);
+    let diagnostics = verify_diagnostics.len();
+    let has_errors = verify_diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let diagnostic_details = render_diagnostics_text(&verify_diagnostics);
     if production_memory_safety && has_errors {
+        if diagnostic_details.is_empty() {
+            bail!(
+                "production memory safety rejected module `{}` with {} diagnostics",
+                fir.name,
+                diagnostics
+            );
+        }
         bail!(
-            "production memory safety rejected module `{}` with {} diagnostics",
+            "production memory safety rejected module `{}` with {} diagnostics\n{}",
             fir.name,
-            diagnostics
+            diagnostics,
+            diagnostic_details
         );
     }
     if strict_verify && has_errors {
+        if diagnostic_details.is_empty() {
+            bail!(
+                "strict verify rejected module `{}` with {} diagnostics",
+                fir.name,
+                diagnostics
+            );
+        }
         bail!(
-            "strict verify rejected module `{}` with {} diagnostics",
+            "strict verify rejected module `{}` with {} diagnostics\n{}",
             fir.name,
-            diagnostics
+            diagnostics,
+            diagnostic_details
         );
     }
 

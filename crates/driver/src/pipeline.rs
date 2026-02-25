@@ -833,6 +833,7 @@ pub struct BuildArtifact {
     pub profile: BuildProfile,
     pub status: &'static str,
     pub diagnostics: usize,
+    pub diagnostic_details: Vec<diagnostics::Diagnostic>,
     pub output: Option<PathBuf>,
     pub dependency_graph_hash: Option<String>,
 }
@@ -843,6 +844,7 @@ pub struct LibraryArtifact {
     pub profile: BuildProfile,
     pub status: &'static str,
     pub diagnostics: usize,
+    pub diagnostic_details: Vec<diagnostics::Diagnostic>,
     pub static_lib: Option<PathBuf>,
     pub shared_lib: Option<PathBuf>,
     pub dependency_graph_hash: Option<String>,
@@ -901,6 +903,9 @@ pub fn compile_file_with_backend(
     } else {
         "ok"
     };
+    let mut diagnostic_details = native_lowerability_errors;
+    diagnostic_details.extend(report.diagnostics);
+    normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let output = if status == "ok" {
         Some(emit_native_artifact(
             &fir,
@@ -917,7 +922,8 @@ pub fn compile_file_with_backend(
         module: fir.name,
         profile,
         status,
-        diagnostics: report.diagnostics.len() + native_lowerability_errors.len(),
+        diagnostics: diagnostic_details.len(),
+        diagnostic_details,
         output,
         dependency_graph_hash: resolved.dependency_graph_hash,
     })
@@ -956,6 +962,9 @@ pub fn compile_library_with_backend(
     } else {
         "ok"
     };
+    let mut diagnostic_details = native_lowerability_errors;
+    diagnostic_details.extend(report.diagnostics);
+    normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let (static_lib, shared_lib) = if status == "ok" {
         emit_native_libraries(
             &fir,
@@ -972,7 +981,8 @@ pub fn compile_library_with_backend(
         module: fir.name,
         profile,
         status,
-        diagnostics: report.diagnostics.len() + native_lowerability_errors.len(),
+        diagnostics: diagnostic_details.len(),
+        diagnostic_details,
         static_lib,
         shared_lib,
         dependency_graph_hash: resolved.dependency_graph_hash,
@@ -1036,6 +1046,16 @@ pub fn verify_file(path: &Path) -> Result<Output> {
         diagnostic_details: diagnostics,
         backend_ir: None,
     })
+}
+
+fn normalize_diagnostics_for_path(path: &Path, diagnostics: &mut Vec<diagnostics::Diagnostic>) {
+    for diagnostic in diagnostics.iter_mut() {
+        if diagnostic.path.is_none() {
+            diagnostic.path = Some(path.display().to_string());
+        }
+    }
+    enrich_diagnostics_context(diagnostics);
+    diagnostics::assign_stable_codes(diagnostics, diagnostics::DiagnosticDomain::Driver);
 }
 
 pub fn emit_ir(path: &Path) -> Result<Output> {
