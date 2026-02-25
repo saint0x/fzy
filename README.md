@@ -1,4 +1,4 @@
-# fzy
+# fzy (fozzylang)
 
 Correctness-first systems language toolchain with deterministic verification workflows.
 
