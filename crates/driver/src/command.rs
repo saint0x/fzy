@@ -243,14 +243,15 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 }
                 let routed = fozzy_invoke(&fozzy_args)?;
                 return match format {
-                    Format::Text => Ok(format!(
-                        "scenario run routed via {} (deterministic_requested={} deterministic_applied={} host_backends={}) status={}",
-                        path.display(),
-                        deterministic,
-                        deterministic_applied,
-                        host_backends,
-                        routed
-                    )),
+                    Format::Text => Ok(render_text_fields(&[
+                        ("status", "ok".to_string()),
+                        ("mode", "scenario-run".to_string()),
+                        ("scenario", path.display().to_string()),
+                        ("deterministic_requested", deterministic.to_string()),
+                        ("deterministic_applied", deterministic_applied.to_string()),
+                        ("host_backends", host_backends.to_string()),
+                        ("fozzy", routed),
+                    ])),
                     Format::Json => Ok(serde_json::json!({
                         "scenario": path.display().to_string(),
                         "deterministicRequested": deterministic,
@@ -278,16 +279,21 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     None,
                 )?;
                 return match format {
-                    Format::Text => Ok(format!(
-                        "deterministic run module={} mode={} scheduler={} diagnostics={} tasks={} async_checkpoints={} rpc_frames={} routing=deterministic-language-async-model",
-                        plan.module,
-                        plan.mode,
-                        plan.scheduler,
-                        plan.diagnostics,
-                        plan.executed_tasks,
-                        plan.async_checkpoint_count,
-                        plan.rpc_frame_count
-                    )),
+                    Format::Text => Ok(render_text_fields(&[
+                        ("status", "ok".to_string()),
+                        ("mode", "deterministic-run".to_string()),
+                        ("module", plan.module.clone()),
+                        ("scheduler", plan.scheduler.clone()),
+                        ("deterministic", "true".to_string()),
+                        ("routing", "deterministic-language-async-model".to_string()),
+                        ("diagnostics", plan.diagnostics.to_string()),
+                        ("tasks", plan.executed_tasks.to_string()),
+                        (
+                            "async_checkpoints",
+                            plan.async_checkpoint_count.to_string(),
+                        ),
+                        ("rpc_frames", plan.rpc_frame_count.to_string()),
+                    ])),
                     Format::Json => Ok(serde_json::json!({
                         "module": plan.module,
                         "status": "ok",
@@ -369,27 +375,35 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
             let rendered = match format {
                 Format::Text => {
-                    let mut message = format!(
-                        "compiled {} and executed {} (routing={})\n args: {}\n exit_code: {}",
-                        artifact.module,
-                        binary.display(),
-                        if host_backends {
-                            "native-host-runtime"
-                        } else {
-                            "native"
-                        },
-                        if args.is_empty() {
-                            "<none>".to_string()
-                        } else {
-                            args.join(" ")
-                        },
-                        exit_code
-                    );
-                    message.push_str(&format!(
-                        "\n stdout:\n{}\n stderr:\n{}",
-                        if stdout.is_empty() { "<empty>" } else { &stdout },
-                        if stderr.is_empty() { "<empty>" } else { &stderr }
-                    ));
+                    let mut message = render_text_fields(&[
+                        ("status", "ok".to_string()),
+                        ("mode", "run".to_string()),
+                        ("module", artifact.module.clone()),
+                        ("binary", binary.display().to_string()),
+                        (
+                            "routing",
+                            if host_backends {
+                                "native-host-runtime".to_string()
+                            } else {
+                                "native".to_string()
+                            },
+                        ),
+                        (
+                            "args",
+                            if args.is_empty() {
+                                "<none>".to_string()
+                            } else {
+                                args.join(" ")
+                            },
+                        ),
+                        ("exit_code", exit_code.to_string()),
+                    ]);
+                    message.push_str("\nstdout:");
+                    message.push('\n');
+                    message.push_str(if stdout.is_empty() { "<empty>" } else { &stdout });
+                    message.push_str("\nstderr:");
+                    message.push('\n');
+                    message.push_str(if stderr.is_empty() { "<empty>" } else { &stderr });
                     message
                 }
                 Format::Json => serde_json::json!({
@@ -498,20 +512,24 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 rich_artifacts,
                 filter.as_deref(),
             )?;
-            let message = format!(
-                "test harness built for {} (deterministic={}, strict_verify={}, scheduler={}, executed_tasks={}, order={:?}, artifacts={})",
-                test_plan.module,
-                deterministic,
-                strict_verify,
-                test_plan.scheduler,
-                test_plan.executed_tasks,
-                test_plan.execution_order,
-                test_plan
-                    .artifacts
-                    .as_ref()
-                    .map(|artifacts| artifacts.trace_path.display().to_string())
-                    .unwrap_or_else(|| "<none>".to_string())
-            );
+            let message = render_text_fields(&[
+                ("status", "ok".to_string()),
+                ("mode", "test".to_string()),
+                ("module", test_plan.module.clone()),
+                ("deterministic", deterministic.to_string()),
+                ("strict_verify", strict_verify.to_string()),
+                ("scheduler", test_plan.scheduler.clone()),
+                ("executed_tasks", test_plan.executed_tasks.to_string()),
+                ("order", format!("{:?}", test_plan.execution_order)),
+                (
+                    "artifacts",
+                    test_plan
+                        .artifacts
+                        .as_ref()
+                        .map(|artifacts| artifacts.trace_path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+            ]);
             match format {
                 Format::Text => Ok(message),
                 Format::Json => Ok(serde_json::json!({
@@ -837,6 +855,14 @@ fn render(format: Format, message: &str) -> String {
     }
 }
 
+fn render_text_fields(fields: &[(&str, String)]) -> String {
+    fields
+        .iter()
+        .map(|(key, value)| format!("{key}: {value}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn render_artifact(
     format: Format,
     artifact: BuildArtifact,
@@ -845,29 +871,40 @@ fn render_artifact(
 ) -> String {
     match format {
         Format::Text => {
-            let mut rendered = format!(
-                "module={} profile={:?} status={} diagnostics={} output={} threads={} runtime_config={} dep_graph_hash={}",
-                artifact.module,
-                artifact.profile,
-                artifact.status,
-                artifact.diagnostics,
-                artifact
-                    .output
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "<none>".to_string()),
-                threads
-                    .map(|threads| threads.to_string())
-                    .unwrap_or_else(|| "default".to_string()),
-                runtime_config
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "<none>".to_string()),
-                artifact
-                    .dependency_graph_hash
-                    .clone()
-                    .unwrap_or_else(|| "<none>".to_string())
-            );
+            let mut rendered = render_text_fields(&[
+                ("status", artifact.status.to_string()),
+                ("module", artifact.module.clone()),
+                ("profile", format!("{:?}", artifact.profile)),
+                ("diagnostics", artifact.diagnostics.to_string()),
+                (
+                    "output",
+                    artifact
+                        .output
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "threads",
+                    threads
+                        .map(|threads| threads.to_string())
+                        .unwrap_or_else(|| "default".to_string()),
+                ),
+                (
+                    "runtime_config",
+                    runtime_config
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "dep_graph_hash",
+                    artifact
+                        .dependency_graph_hash
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+            ]);
             let details = render_diagnostics_text(&artifact.diagnostic_details);
             if !details.is_empty() {
                 rendered.push('\n');
@@ -902,36 +939,50 @@ fn render_library_artifact(
 ) -> String {
     match format {
         Format::Text => {
-            let mut rendered = format!(
-                "module={} profile={:?} status={} diagnostics={} static_lib={} shared_lib={} header={} abi_manifest={} threads={} runtime_config={} dep_graph_hash={}",
-                artifact.module,
-                artifact.profile,
-                artifact.status,
-                artifact.diagnostics,
-                artifact
-                    .static_lib
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "<none>".to_string()),
-                artifact
-                    .shared_lib
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "<none>".to_string()),
-                headers.path.display(),
-                headers.abi_manifest.display(),
-                threads
-                    .map(|value| value.to_string())
-                    .unwrap_or_else(|| "default".to_string()),
-                runtime_config
-                    .as_ref()
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "<none>".to_string()),
-                artifact
-                    .dependency_graph_hash
-                    .clone()
-                    .unwrap_or_else(|| "<none>".to_string())
-            );
+            let mut rendered = render_text_fields(&[
+                ("status", artifact.status.to_string()),
+                ("module", artifact.module.clone()),
+                ("profile", format!("{:?}", artifact.profile)),
+                ("diagnostics", artifact.diagnostics.to_string()),
+                (
+                    "static_lib",
+                    artifact
+                        .static_lib
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "shared_lib",
+                    artifact
+                        .shared_lib
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                ("header", headers.path.display().to_string()),
+                ("abi_manifest", headers.abi_manifest.display().to_string()),
+                (
+                    "threads",
+                    threads
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "default".to_string()),
+                ),
+                (
+                    "runtime_config",
+                    runtime_config
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "dep_graph_hash",
+                    artifact
+                        .dependency_graph_hash
+                        .clone()
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+            ]);
             let details = render_diagnostics_text(&artifact.diagnostic_details);
             if !details.is_empty() {
                 rendered.push('\n');
@@ -978,10 +1029,13 @@ fn render_output(format: Format, output: Output) -> String {
         .count();
     match format {
         Format::Text => {
-            let mut rendered = format!(
-                "module={} nodes={} diagnostics={} errors={} warnings={}",
-                output.module, output.nodes, output.diagnostics, errors, warnings
-            );
+            let mut rendered = render_text_fields(&[
+                ("module", output.module.clone()),
+                ("nodes", output.nodes.to_string()),
+                ("diagnostics", output.diagnostics.to_string()),
+                ("errors", errors.to_string()),
+                ("warnings", warnings.to_string()),
+            ]);
             let details = render_diagnostics_text(&output.diagnostic_details);
             if !details.is_empty() {
                 rendered.push('\n');
@@ -1322,12 +1376,13 @@ fn dx_check_command(path: &Path, strict: bool, format: Format) -> Result<String>
         );
     }
     match format {
-        Format::Text => Ok(format!(
-            "dx-check ok project={} strict={} issues={}",
-            path.display(),
-            strict,
-            issues.len()
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "dx-check".to_string()),
+            ("project", path.display().to_string()),
+            ("strict", strict.to_string()),
+            ("issues", issues.len().to_string()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
             "project": path.display().to_string(),
@@ -1387,11 +1442,12 @@ fn spec_check(format: Format) -> Result<String> {
         );
     }
     match format {
-        Format::Text => Ok(format!(
-            "spec-check ok path={} sections={}",
-            path.display(),
-            required.len()
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "spec-check".to_string()),
+            ("path", path.display().to_string()),
+            ("sections", required.len().to_string()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": ok,
             "path": path.display().to_string(),
@@ -1479,12 +1535,13 @@ fn parity_command(path: &Path, seed: u64, format: Format) -> Result<String> {
         );
     }
     match format {
-        Format::Text => Ok(format!(
-            "parity ok path={} signature={} modes={}",
-            path.display(),
-            signature,
-            outcomes.len()
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "parity".to_string()),
+            ("path", path.display().to_string()),
+            ("signature", signature),
+            ("modes", outcomes.len().to_string()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
             "path": path.display().to_string(),
@@ -1620,12 +1677,13 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
         );
     }
     match format {
-        Format::Text => Ok(format!(
-            "equivalence ok path={} signature={} scenario={}",
-            path.display(),
-            signature,
-            scenario.display()
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "equivalence".to_string()),
+            ("path", path.display().to_string()),
+            ("signature", signature),
+            ("scenario", scenario.display().to_string()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
             "path": path.display().to_string(),
@@ -1859,14 +1917,19 @@ fn audit_unsafe_command(path: &Path, format: Format) -> Result<String> {
         );
     }
     match format {
-        Format::Text => Ok(format!(
-            "unsafe audit ok entries={} map={}",
-            payload["entries"]
-                .as_array()
-                .map(|items| items.len())
-                .unwrap_or(0),
-            unsafe_map.display()
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "unsafe-audit".to_string()),
+            (
+                "entries",
+                payload["entries"]
+                    .as_array()
+                    .map(|items| items.len())
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            ("map", unsafe_map.display().to_string()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
             "entries": payload["entries"],
@@ -2191,12 +2254,13 @@ fn vendor_command(path: &Path, format: Format) -> Result<String> {
         )
     })?;
     match format {
-        Format::Text => Ok(format!(
-            "vendor ok dependencies={} dir={} lock_hash={}",
-            copied.len(),
-            vendor_dir.display(),
-            lock_hash
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "vendor".to_string()),
+            ("dependencies", copied.len().to_string()),
+            ("dir", vendor_dir.display().to_string()),
+            ("lock_hash", lock_hash.clone()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
             "vendorDir": vendor_dir.display().to_string(),
@@ -2305,13 +2369,17 @@ fn abi_check_command(current: &Path, baseline: &Path, format: Format) -> Result<
         );
     }
     match format {
-        Format::Text => Ok(format!(
-            "abi-check ok current={} baseline={} compared_exports={} added_exports={}",
-            current.display(),
-            baseline.display(),
-            baseline_manifest.exports.len(),
-            added_exports.len()
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "abi-check".to_string()),
+            ("current", current.display().to_string()),
+            ("baseline", baseline.display().to_string()),
+            (
+                "compared_exports",
+                baseline_manifest.exports.len().to_string(),
+            ),
+            ("added_exports", added_exports.len().to_string()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
             "current": current.display().to_string(),
@@ -2516,14 +2584,14 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
     let async_backtrace_ready = async_hooks == 0 || async_plan.runtime_event_count > 0;
     let ok = debug_symbols && async_backtrace_ready;
     match format {
-        Format::Text => Ok(format!(
-            "debug-check binary={} debug_symbols={} async_backtrace_ready={} async_hooks={} ok={}",
-            binary.display(),
-            debug_symbols,
-            async_backtrace_ready,
-            async_hooks,
-            ok
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", if ok { "ok" } else { "warn" }.to_string()),
+            ("mode", "debug-check".to_string()),
+            ("binary", binary.display().to_string()),
+            ("debug_symbols", debug_symbols.to_string()),
+            ("async_backtrace_ready", async_backtrace_ready.to_string()),
+            ("async_hooks", async_hooks.to_string()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": ok,
             "binary": binary.display().to_string(),
@@ -2562,21 +2630,18 @@ fn lsp_diagnostics_command(path: &Path, format: Format) -> Result<String> {
                 })
                 .collect::<Vec<_>>();
             let details = render_diagnostics_text(&parsed_items);
+            let mut rendered = render_text_fields(&[
+                ("status", if ok { "ok" } else { "error" }.to_string()),
+                ("mode", "lsp-diagnostics".to_string()),
+                ("module", module.to_string()),
+                ("diagnostics", diagnostics.len().to_string()),
+            ]);
             if details.is_empty() {
-                Ok(format!(
-                    "lsp diagnostics module={} diagnostics={} ok={}",
-                    module,
-                    diagnostics.len(),
-                    ok
-                ))
+                Ok(rendered)
             } else {
-                Ok(format!(
-                    "lsp diagnostics module={} diagnostics={} ok={}\n{}",
-                    module,
-                    diagnostics.len(),
-                    ok,
-                    details
-                ))
+                rendered.push('\n');
+                rendered.push_str(&details);
+                Ok(rendered)
             }
         }
         Format::Json => Ok(payload.to_string()),
@@ -2586,10 +2651,16 @@ fn lsp_diagnostics_command(path: &Path, format: Format) -> Result<String> {
 fn lsp_definition_command(path: &Path, symbol: &str, format: Format) -> Result<String> {
     let hit = lsp::definition_for_symbol(path, symbol)?;
     match format {
-        Format::Text => Ok(format!(
-            "definition {} {}:{}:{} {}",
-            hit.kind, hit.file, hit.line, hit.col, hit.detail
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "lsp-definition".to_string()),
+            ("symbol", symbol.to_string()),
+            ("kind", hit.kind.clone()),
+            ("file", hit.file.clone()),
+            ("line", hit.line.to_string()),
+            ("col", hit.col.to_string()),
+            ("detail", hit.detail.clone()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
             "symbol": hit,
@@ -2601,15 +2672,25 @@ fn lsp_definition_command(path: &Path, symbol: &str, format: Format) -> Result<S
 fn lsp_hover_command(path: &Path, symbol: &str, format: Format) -> Result<String> {
     let info = lsp::hover_for_symbol(path, symbol)?;
     match format {
-        Format::Text => Ok(format!(
-            "hover {} {}",
-            info.get("kind")
-                .and_then(|value| value.as_str())
-                .unwrap_or("unknown"),
-            info.get("signature")
-                .and_then(|value| value.as_str())
-                .unwrap_or("unknown")
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "lsp-hover".to_string()),
+            ("symbol", symbol.to_string()),
+            (
+                "kind",
+                info.get("kind")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+            ),
+            (
+                "signature",
+                info.get("signature")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+            ),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
             "hover": info,
@@ -2621,13 +2702,14 @@ fn lsp_hover_command(path: &Path, symbol: &str, format: Format) -> Result<String
 fn lsp_rename_command(path: &Path, from: &str, to: &str, format: Format) -> Result<String> {
     let summary = lsp::rename_on_disk(path, from, to)?;
     match format {
-        Format::Text => Ok(format!(
-            "rename {} -> {} replacements={} files={}",
-            summary.from,
-            summary.to,
-            summary.replacements,
-            summary.files.len()
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "lsp-rename".to_string()),
+            ("from", summary.from.clone()),
+            ("to", summary.to.clone()),
+            ("replacements", summary.replacements.to_string()),
+            ("files", summary.files.len().to_string()),
+        ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
             "from": summary.from,
@@ -2642,17 +2724,26 @@ fn lsp_rename_command(path: &Path, from: &str, to: &str, format: Format) -> Resu
 fn lsp_smoke_command(path: &Path, format: Format) -> Result<String> {
     let payload = lsp::smoke(path)?;
     match format {
-        Format::Text => Ok(format!(
-            "lsp smoke ok symbols={} diagnostics={}",
-            payload
-                .get("symbols")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0),
-            payload
-                .get("diagnostics")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0)
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "lsp-smoke".to_string()),
+            (
+                "symbols",
+                payload
+                    .get("symbols")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
+                "diagnostics",
+                payload
+                    .get("diagnostics")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+        ])),
         Format::Json => Ok(payload.to_string()),
     }
 }
@@ -5003,13 +5094,14 @@ fn native_explore(target: &Path, format: Format) -> Result<String> {
         "failureClasses": classify_failure_classes(&rpc_frames, &trace.async_schedule, &trace.execution_order),
     });
     match format {
-        Format::Text => Ok(format!(
-            "native explore generated for trace={} schedules={} async_schedules={} rpc_frames={}",
-            trace_path.display(),
-            trace.execution_order.len(),
-            trace.async_schedule.len(),
-            trace.rpc_frames.len()
-        )),
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "native-explore".to_string()),
+            ("trace", trace_path.display().to_string()),
+            ("schedules", trace.execution_order.len().to_string()),
+            ("async_schedules", trace.async_schedule.len().to_string()),
+            ("rpc_frames", trace.rpc_frames.len().to_string()),
+        ])),
         Format::Json => Ok(payload.to_string()),
     }
 }
@@ -5241,12 +5333,13 @@ struct RpcArtifacts {
 
 fn render_headers(format: Format, artifact: HeaderArtifact) -> String {
     match format {
-        Format::Text => format!(
-            "generated header={} exports={} abi_manifest={}",
-            artifact.path.display(),
-            artifact.exports,
-            artifact.abi_manifest.display()
-        ),
+        Format::Text => render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "headers".to_string()),
+            ("header", artifact.path.display().to_string()),
+            ("exports", artifact.exports.to_string()),
+            ("abi_manifest", artifact.abi_manifest.display().to_string()),
+        ]),
         Format::Json => serde_json::json!({
             "header": artifact.path.display().to_string(),
             "exports": artifact.exports,
@@ -5258,13 +5351,14 @@ fn render_headers(format: Format, artifact: HeaderArtifact) -> String {
 
 fn render_rpc_artifacts(format: Format, artifacts: RpcArtifacts) -> String {
     match format {
-        Format::Text => format!(
-            "generated rpc schema={} client={} server={} methods={}",
-            artifacts.schema.display(),
-            artifacts.client_stub.display(),
-            artifacts.server_stub.display(),
-            artifacts.methods
-        ),
+        Format::Text => render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "rpc-gen".to_string()),
+            ("schema", artifacts.schema.display().to_string()),
+            ("client", artifacts.client_stub.display().to_string()),
+            ("server", artifacts.server_stub.display().to_string()),
+            ("methods", artifacts.methods.to_string()),
+        ]),
         Format::Json => serde_json::json!({
             "schema": artifacts.schema.display().to_string(),
             "client": artifacts.client_stub.display().to_string(),
@@ -5277,15 +5371,16 @@ fn render_rpc_artifacts(format: Format, artifacts: RpcArtifacts) -> String {
 
 fn render_trace_native_artifacts(format: Format, artifacts: TraceNativeArtifacts) -> String {
     match format {
-        Format::Text => format!(
-            "generated native_trace={} manifest={} decisions={} events={} rpc_frames={} seed={}",
-            artifacts.trace_path.display(),
-            artifacts.manifest_path.display(),
-            artifacts.decision_count,
-            artifacts.event_count,
-            artifacts.rpc_frame_count,
-            artifacts.seed
-        ),
+        Format::Text => render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "trace-native".to_string()),
+            ("native_trace", artifacts.trace_path.display().to_string()),
+            ("manifest", artifacts.manifest_path.display().to_string()),
+            ("decisions", artifacts.decision_count.to_string()),
+            ("events", artifacts.event_count.to_string()),
+            ("rpc_frames", artifacts.rpc_frame_count.to_string()),
+            ("seed", artifacts.seed.to_string()),
+        ]),
         Format::Json => serde_json::json!({
             "trace": artifacts.trace_path.display().to_string(),
             "manifest": artifacts.manifest_path.display().to_string(),
@@ -6280,8 +6375,8 @@ mod tests {
             Format::Text,
         )
         .expect("headers command should succeed");
-        assert!(output.contains("generated header="));
-        assert!(output.contains("abi_manifest="));
+        assert!(output.contains("mode: headers"));
+        assert!(output.contains("abi_manifest:"));
         let header_text = std::fs::read_to_string(&header).expect("header should be created");
         assert!(header_text.contains("int32_t add(int32_t left, int32_t right);"));
         assert!(header_text.contains("int32_t fz_host_init(void);"));
@@ -6410,7 +6505,7 @@ mod tests {
             Format::Text,
         )
         .expect("headers command should succeed");
-        assert!(output.contains("exports=1"));
+        assert!(output.contains("exports: 1"));
         let header = root.join("include/headers_project.h");
         let header_text = std::fs::read_to_string(&header).expect("header should be created");
         assert!(header_text.contains("int32_t add(int32_t left, int32_t right);"));
@@ -7768,7 +7863,7 @@ mod tests {
             Format::Text,
         )
         .expect("lsp diagnostics should succeed");
-        assert!(diagnostics.contains("lsp diagnostics module="));
+        assert!(diagnostics.contains("mode: lsp-diagnostics"));
         assert!(diagnostics.contains("error["));
         assert!(diagnostics.contains("help:"));
         let _ = std::fs::remove_file(source);
