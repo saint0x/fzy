@@ -263,17 +263,26 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     if module.type_errors > 0 {
-        report.diagnostics.push(Diagnostic::new(
-            Severity::Error,
-            format!("type checking failed with {} error(s)", module.type_errors),
-            Some("fix invalid types, unresolved functions, and bad call signatures".to_string()),
-        ));
-        for detail in &module.type_error_details {
-            report.diagnostics.push(Diagnostic::new(
+        report.diagnostics.push(
+            Diagnostic::new(
                 Severity::Error,
-                detail.clone(),
-                Some("type-check detail".to_string()),
-            ));
+                format!("type checking failed with {} error(s)", module.type_errors),
+                Some(
+                    "fix invalid types, unresolved functions, and bad call signatures".to_string(),
+                ),
+            )
+            .with_note("detailed type-check diagnostics are emitted below")
+            .with_suggested_fix("resolve the first detailed error, then re-run `fz check --json`"),
+        );
+        for (index, detail) in module.type_error_details.iter().enumerate() {
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    detail.clone(),
+                    Some("type-check detail".to_string()),
+                )
+                .with_note(format!("detail_index={index}")),
+            );
         }
     }
 

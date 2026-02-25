@@ -61,6 +61,16 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
+        callee: "json.escape",
+        symbol: "fz_native_json_escape",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.object2",
+        symbol: "fz_native_json_object2",
+        arity: 4,
+    },
+    NativeRuntimeImport {
         callee: "net.method",
         symbol: "fz_native_net_method",
         arity: 1,
@@ -343,7 +353,7 @@ pub fn verify_file(path: &Path) -> Result<Output> {
     let parsed = match parse_program(&resolved.source_path) {
         Ok(parsed) => parsed,
         Err(error) => {
-            let diagnostics =
+            let mut diagnostics =
                 collect_parse_diagnostics(&resolved.source_path).unwrap_or_else(|_| {
                     vec![diagnostics::Diagnostic::new(
                         diagnostics::Severity::Error,
@@ -351,6 +361,11 @@ pub fn verify_file(path: &Path) -> Result<Output> {
                         None,
                     )]
                 });
+            for diagnostic in &mut diagnostics {
+                if diagnostic.path.is_none() {
+                    diagnostic.path = Some(resolved.source_path.display().to_string());
+                }
+            }
             return Ok(Output {
                 module: module_name.to_string(),
                 nodes: 0,
@@ -365,6 +380,11 @@ pub fn verify_file(path: &Path) -> Result<Output> {
     let fir = fir::build(&typed);
     let report = verifier::verify(&fir);
     diagnostics.extend(report.diagnostics);
+    for diagnostic in &mut diagnostics {
+        if diagnostic.path.is_none() {
+            diagnostic.path = Some(resolved.source_path.display().to_string());
+        }
+    }
 
     Ok(Output {
         module: fir.name,
@@ -386,15 +406,21 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
     let parsed = match parse_program(&source_path) {
         Ok(parsed) => parsed,
         Err(error) => {
+            let mut diagnostics = vec![diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                error.to_string(),
+                None,
+            )];
+            for diagnostic in &mut diagnostics {
+                if diagnostic.path.is_none() {
+                    diagnostic.path = Some(source_path.display().to_string());
+                }
+            }
             return Ok(Output {
                 module: module_name.to_string(),
                 nodes: 0,
-                diagnostics: 1,
-                diagnostic_details: vec![diagnostics::Diagnostic::new(
-                    diagnostics::Severity::Error,
-                    error.to_string(),
-                    None,
-                )],
+                diagnostics: diagnostics.len(),
+                diagnostic_details: diagnostics,
                 backend_ir: None,
             });
         }
@@ -404,6 +430,11 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
     let fir = fir::build(&typed);
     let report = verifier::verify(&fir);
     diagnostics.extend(report.diagnostics);
+    for diagnostic in &mut diagnostics {
+        if diagnostic.path.is_none() {
+            diagnostic.path = Some(source_path.display().to_string());
+        }
+    }
     let llvm = lower_backend_ir(&fir, BackendKind::Llvm);
     let cranelift = lower_backend_ir(&fir, BackendKind::Cranelift);
 
@@ -758,7 +789,11 @@ fn canonicalize_call_targets(module: &mut ast::Module) {
     }
 }
 
-fn canonicalize_stmt_calls(stmt: &mut ast::Stmt, namespace: &str, known_functions: &HashSet<String>) {
+fn canonicalize_stmt_calls(
+    stmt: &mut ast::Stmt,
+    namespace: &str,
+    known_functions: &HashSet<String>,
+) {
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
@@ -798,7 +833,11 @@ fn canonicalize_stmt_calls(stmt: &mut ast::Stmt, namespace: &str, known_function
     }
 }
 
-fn canonicalize_expr_calls(expr: &mut ast::Expr, namespace: &str, known_functions: &HashSet<String>) {
+fn canonicalize_expr_calls(
+    expr: &mut ast::Expr,
+    namespace: &str,
+    known_functions: &HashSet<String>,
+) {
     match expr {
         ast::Expr::Call { callee, args } => {
             *callee = canonicalize_callee(callee, namespace, known_functions);
@@ -925,6 +964,7 @@ fn annotate_parse_diagnostic(
     mut diagnostic: diagnostics::Diagnostic,
     module_path: &Path,
 ) -> diagnostics::Diagnostic {
+    diagnostic.path = Some(module_path.display().to_string());
     let mut help = diagnostic.help.unwrap_or_default();
     if !help.is_empty() {
         help.push(' ');
@@ -1286,7 +1326,11 @@ fn llvm_emit_expr(
                 "0".to_string()
             }
         }
-        ast::Expr::Str(value) => string_literal_ids.get(value).copied().unwrap_or(0).to_string(),
+        ast::Expr::Str(value) => string_literal_ids
+            .get(value)
+            .copied()
+            .unwrap_or(0)
+            .to_string(),
         ast::Expr::Ident(name) => {
             if let Some(slot) = ctx.slots.get(name).cloned() {
                 let val = ctx.value();
@@ -1397,9 +1441,7 @@ fn native_runtime_import_for_callee(callee: &str) -> Option<&'static NativeRunti
         .find(|import| import.callee == callee)
 }
 
-fn collect_used_native_runtime_imports(
-    fir: &fir::FirModule,
-) -> Vec<&'static NativeRuntimeImport> {
+fn collect_used_native_runtime_imports(fir: &fir::FirModule) -> Vec<&'static NativeRuntimeImport> {
     let mut seen = HashSet::<&'static str>::new();
     let mut used = Vec::<&'static NativeRuntimeImport>::new();
     for function in &fir.typed_functions {
@@ -2349,17 +2391,16 @@ fn clif_emit_block(
                 then_body,
                 else_body,
             } => {
-                let cond_val =
-                    clif_emit_expr(
-                        builder,
-                        module,
-                        function_ids,
-                        condition,
-                        locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
-                    )?;
+                let cond_val = clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    condition,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?;
                 let zero = builder.ins().iconst(types::I32, 0);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
                 let then_block = builder.create_block();
@@ -2368,34 +2409,32 @@ fn clif_emit_block(
                 builder.ins().brif(cond, then_block, &[], else_block, &[]);
 
                 builder.switch_to_block(then_block);
-                let then_terminated =
-                    clif_emit_block(
-                        builder,
-                        module,
-                        function_ids,
-                        then_body,
-                        locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
-                    )?;
+                let then_terminated = clif_emit_block(
+                    builder,
+                    module,
+                    function_ids,
+                    then_body,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?;
                 if !then_terminated {
                     builder.ins().jump(cont_block, &[]);
                 }
                 builder.seal_block(then_block);
 
                 builder.switch_to_block(else_block);
-                let else_terminated =
-                    clif_emit_block(
-                        builder,
-                        module,
-                        function_ids,
-                        else_body,
-                        locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
-                    )?;
+                let else_terminated = clif_emit_block(
+                    builder,
+                    module,
+                    function_ids,
+                    else_body,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?;
                 if !else_terminated {
                     builder.ins().jump(cont_block, &[]);
                 }
@@ -2413,33 +2452,31 @@ fn clif_emit_block(
                 let exit = builder.create_block();
                 builder.ins().jump(head, &[]);
                 builder.switch_to_block(head);
-                let cond_val =
-                    clif_emit_expr(
-                        builder,
-                        module,
-                        function_ids,
-                        condition,
-                        locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
-                    )?;
+                let cond_val = clif_emit_expr(
+                    builder,
+                    module,
+                    function_ids,
+                    condition,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?;
                 let zero = builder.ins().iconst(types::I32, 0);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val, zero);
                 builder.ins().brif(cond, loop_body, &[], exit, &[]);
 
                 builder.switch_to_block(loop_body);
-                let body_terminated =
-                    clif_emit_block(
-                        builder,
-                        module,
-                        function_ids,
-                        body,
-                        locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
-                    )?;
+                let body_terminated = clif_emit_block(
+                    builder,
+                    module,
+                    function_ids,
+                    body,
+                    locals,
+                    next_var,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?;
                 if !body_terminated {
                     builder.ins().jump(head, &[]);
                 }
@@ -2468,9 +2505,10 @@ fn clif_emit_expr(
     Ok(match expr {
         ast::Expr::Int(v) => builder.ins().iconst(types::I32, *v as i64),
         ast::Expr::Bool(v) => builder.ins().iconst(types::I32, if *v { 1 } else { 0 }),
-        ast::Expr::Str(value) => builder
-            .ins()
-            .iconst(types::I32, string_literal_ids.get(value).copied().unwrap_or(0) as i64),
+        ast::Expr::Str(value) => builder.ins().iconst(
+            types::I32,
+            string_literal_ids.get(value).copied().unwrap_or(0) as i64,
+        ),
         ast::Expr::Ident(name) => {
             if let Some(var) = locals.get(name).copied() {
                 builder.use_var(var)
@@ -2480,18 +2518,16 @@ fn clif_emit_expr(
                 builder.ins().iconst(types::I32, 0)
             }
         }
-        ast::Expr::Group(inner) => {
-            clif_emit_expr(
-                builder,
-                module,
-                function_ids,
-                inner,
-                locals,
-                next_var,
-                string_literal_ids,
-                task_ref_ids,
-            )?
-        }
+        ast::Expr::Group(inner) => clif_emit_expr(
+            builder,
+            module,
+            function_ids,
+            inner,
+            locals,
+            next_var,
+            string_literal_ids,
+            task_ref_ids,
+        )?,
         ast::Expr::FieldAccess { base, field } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(var) = locals.get(&format!("{name}.{field}")).copied() {
@@ -2864,14 +2900,12 @@ fn ensure_native_runtime_shim(
         &runtime_shim_path,
         render_native_runtime_shim(string_literals, task_symbols),
     )
-    .with_context(
-        || {
+    .with_context(|| {
         format!(
             "failed writing native runtime shim source: {}",
             runtime_shim_path.display()
         )
-    },
-    )?;
+    })?;
     Ok(runtime_shim_path)
 }
 
@@ -3156,6 +3190,46 @@ static void fz_http_headers_clear(void) {
   pthread_mutex_lock(&fz_http_lock);
   fz_http_header_count = 0;
   pthread_mutex_unlock(&fz_http_lock);
+}
+
+static char* fz_json_escape_owned(const char* input) {
+  if (input == NULL) {
+    input = "";
+  }
+  size_t in_len = strlen(input);
+  size_t cap = (in_len * 6) + 1;
+  char* out = (char*)malloc(cap);
+  if (out == NULL) {
+    return NULL;
+  }
+  size_t j = 0;
+  for (size_t i = 0; i < in_len; i++) {
+    unsigned char ch = (unsigned char)input[i];
+    switch (ch) {
+      case '\"': out[j++] = '\\'; out[j++] = '\"'; break;
+      case '\\': out[j++] = '\\'; out[j++] = '\\'; break;
+      case '\b': out[j++] = '\\'; out[j++] = 'b'; break;
+      case '\f': out[j++] = '\\'; out[j++] = 'f'; break;
+      case '\n': out[j++] = '\\'; out[j++] = 'n'; break;
+      case '\r': out[j++] = '\\'; out[j++] = 'r'; break;
+      case '\t': out[j++] = '\\'; out[j++] = 't'; break;
+      default:
+        if (ch < 0x20) {
+          static const char* hex = "0123456789abcdef";
+          out[j++] = '\\';
+          out[j++] = 'u';
+          out[j++] = '0';
+          out[j++] = '0';
+          out[j++] = hex[(ch >> 4) & 0xF];
+          out[j++] = hex[ch & 0xF];
+        } else {
+          out[j++] = (char)ch;
+        }
+        break;
+    }
+  }
+  out[j] = '\0';
+  return out;
 }
 
 
@@ -3557,6 +3631,48 @@ int32_t fz_native_http_header(int32_t key_id, int32_t value_id) {
   fz_http_header_count++;
   pthread_mutex_unlock(&fz_http_lock);
   return 0;
+}
+
+int32_t fz_native_json_escape(int32_t input_id) {
+  const char* input = fz_lookup_string(input_id);
+  char* escaped = fz_json_escape_owned(input);
+  if (escaped == NULL) {
+    return 0;
+  }
+  return fz_intern_owned(escaped);
+}
+
+int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id) {
+  const char* k1 = fz_lookup_string(k1_id);
+  const char* v1 = fz_lookup_string(v1_id);
+  const char* k2 = fz_lookup_string(k2_id);
+  const char* v2 = fz_lookup_string(v2_id);
+  char* ek1 = fz_json_escape_owned(k1);
+  char* ev1 = fz_json_escape_owned(v1);
+  char* ek2 = fz_json_escape_owned(k2);
+  char* ev2 = fz_json_escape_owned(v2);
+  if (ek1 == NULL || ev1 == NULL || ek2 == NULL || ev2 == NULL) {
+    free(ek1);
+    free(ev1);
+    free(ek2);
+    free(ev2);
+    return 0;
+  }
+  size_t len = strlen(ek1) + strlen(ev1) + strlen(ek2) + strlen(ev2) + 23;
+  char* body = (char*)malloc(len);
+  if (body == NULL) {
+    free(ek1);
+    free(ev1);
+    free(ek2);
+    free(ev2);
+    return 0;
+  }
+  snprintf(body, len, "{\"%s\":\"%s\",\"%s\":\"%s\"}", ek1, ev1, ek2, ev2);
+  free(ek1);
+  free(ev1);
+  free(ek2);
+  free(ev2);
+  return fz_intern_owned(body);
 }
 
 int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id) {
@@ -4612,7 +4728,13 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_proc_exit_code(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_env_get(int32_t key_id)"));
         assert!(shim.contains("int32_t fz_native_http_header(int32_t key_id, int32_t value_id)"));
-        assert!(shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)"));
+        assert!(
+            shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)")
+        );
+        assert!(shim.contains("int32_t fz_native_json_escape(int32_t input_id)"));
+        assert!(shim.contains(
+            "int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id)"
+        ));
         assert!(shim.contains("int32_t fz_native_proc_exit_class(void)"));
         assert!(shim.contains("int32_t fz_native_time_now(void)"));
         assert!(shim.contains("int32_t fz_native_fs_open(void)"));
@@ -4755,11 +4877,8 @@ mod tests {
             "mod services;\nfn main() -> i32 {\n    services.http.start_server()\n    return 0\n}\n",
         )
         .expect("main source should be written");
-        std::fs::write(
-            root.join("src/services/mod.fzy"),
-            "mod web;\nmod http;\n",
-        )
-        .expect("services mod should be written");
+        std::fs::write(root.join("src/services/mod.fzy"), "mod web;\nmod http;\n")
+            .expect("services mod should be written");
         std::fs::write(
             root.join("src/services/web.fzy"),
             "fn start_listener() -> i32 {\n    return 0\n}\n",

@@ -83,12 +83,14 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
 
     let mut lexer = Lexer::new(source);
     let tokens = lexer.lex();
+    let mut diagnostics = lexer.diagnostics;
     let mut parser = Parser::new(tokens, module_name);
     let module = parser.parse_module();
-    if parser.diagnostics.is_empty() {
+    diagnostics.extend(parser.diagnostics);
+    if diagnostics.is_empty() {
         Ok(module)
     } else {
-        Err(parser.diagnostics)
+        Err(diagnostics)
     }
 }
 
@@ -1244,6 +1246,7 @@ struct Lexer<'a> {
     source: &'a str,
     line: usize,
     col: usize,
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl<'a> Lexer<'a> {
@@ -1253,6 +1256,7 @@ impl<'a> Lexer<'a> {
             source,
             line: 1,
             col: 1,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -1388,16 +1392,7 @@ impl<'a> Lexer<'a> {
                 }
                 '"' => {
                     self.advance_char();
-                    let start = idx + 1;
-                    let mut end = start;
-                    while let Some((i, c)) = self.peek_char() {
-                        self.advance_char();
-                        if c == '"' {
-                            end = i;
-                            break;
-                        }
-                    }
-                    TokenKind::Str(self.source[start..end].to_string())
+                    TokenKind::Str(self.lex_string_literal(line, col, idx))
                 }
                 c if c.is_ascii_digit() => {
                     let start = idx;
@@ -1471,6 +1466,89 @@ impl<'a> Lexer<'a> {
                 self.col += 1;
             }
         }
+    }
+
+    fn lex_string_literal(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        opening_quote_idx: usize,
+    ) -> String {
+        let mut value = String::new();
+        let mut terminated = false;
+        while let Some((_, ch)) = self.peek_char() {
+            self.advance_char();
+            match ch {
+                '"' => {
+                    terminated = true;
+                    break;
+                }
+                '\\' => {
+                    let Some((_, escape)) = self.peek_char() else {
+                        self.diagnostics.push(
+                            Diagnostic::new(
+                                Severity::Error,
+                                "unterminated string escape",
+                                Some(
+                                    "complete the escape sequence or close the string".to_string(),
+                                ),
+                            )
+                            .with_span(start_line, start_col, self.line, self.col),
+                        );
+                        break;
+                    };
+                    self.advance_char();
+                    match escape {
+                        '"' => value.push('"'),
+                        '\\' => value.push('\\'),
+                        'n' => value.push('\n'),
+                        'r' => value.push('\r'),
+                        't' => value.push('\t'),
+                        '0' => value.push('\0'),
+                        _ => {
+                            self.diagnostics.push(
+                                Diagnostic::new(
+                                    Severity::Error,
+                                    format!("unsupported string escape `\\{escape}`"),
+                                    Some(
+                                        "supported escapes: \\\\, \\\", \\n, \\r, \\t, \\0"
+                                            .to_string(),
+                                    ),
+                                )
+                                .with_span(
+                                    self.line,
+                                    self.col.saturating_sub(1),
+                                    self.line,
+                                    self.col,
+                                ),
+                            );
+                            value.push(escape);
+                        }
+                    }
+                }
+                _ => value.push(ch),
+            }
+        }
+
+        if !terminated {
+            let string_start = opening_quote_idx + 1;
+            let end_idx = self.peek_char().map_or(self.source.len(), |(idx, _)| idx);
+            let fallback = if string_start < end_idx {
+                self.source[string_start..end_idx].to_string()
+            } else {
+                String::new()
+            };
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "unterminated string literal",
+                    Some("add a closing `\"`".to_string()),
+                )
+                .with_span(start_line, start_col, self.line, self.col),
+            );
+            return if value.is_empty() { fallback } else { value };
+        }
+        value
     }
 }
 
@@ -1663,5 +1741,40 @@ mod tests {
         "#;
         let module = parse(source, "main").expect("parse should succeed");
         assert!(module.modules.iter().any(|decl| decl == "rpc"));
+    }
+
+    #[test]
+    fn escaped_json_string_round_trips_and_remains_lexically_inert() {
+        let source = r#"
+            fn main() -> i32 {
+                let body: str = "{\"model\":\"claude-sonnet-4-6\",\"msg\":\"x:y\"}";
+                return 0;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function");
+        let ast::Stmt::Let { value, .. } = &main_fn.body[0] else {
+            panic!("expected first statement to be let");
+        };
+        let ast::Expr::Str(value) = value else {
+            panic!("expected string literal");
+        };
+        assert_eq!(value, "{\"model\":\"claude-sonnet-4-6\",\"msg\":\"x:y\"}");
+    }
+
+    #[test]
+    fn reports_unterminated_string_literal_with_span() {
+        let source = "fn main() -> i32 { let body: str = \"abc; return 0; }";
+        let diagnostics = parse(source, "main").expect_err("should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("unterminated string literal") && d.span.is_some()));
     }
 }

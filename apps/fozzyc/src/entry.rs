@@ -13,6 +13,11 @@ pub fn run() -> Result<()> {
         print_help();
         return Ok(());
     }
+    if args.len() == 1 && args[0] == "--version" {
+        let output = driver_run(Command::Version, Format::Text)?;
+        println!("{output}");
+        return Ok(());
+    }
 
     let json = args.iter().any(|a| a == "--json");
     let format = if json { Format::Json } else { Format::Text };
@@ -307,6 +312,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             }
         },
         Some("version") => Ok(Command::Version),
+        Some("--version") => Ok(Command::Version),
         _ => {
             print_help();
             bail!("unknown command")
@@ -353,7 +359,7 @@ commands:\n\
   replay <trace>\n\
   shrink <trace>\n\
   ci <trace>\n\
-  version\n\
+  version|--version\n\
 flags:\n\
   --json\n\
   --det\n\
@@ -436,5 +442,25 @@ fn parse_backend_flag(args: &[String]) -> Result<Option<String>> {
     match normalized.as_str() {
         "llvm" | "cranelift" => Ok(Some(normalized)),
         _ => bail!("invalid --backend `{value}`; expected `llvm` or `cranelift`"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_command;
+    use driver::Command;
+
+    #[test]
+    fn parse_command_accepts_long_version_flag_alias() {
+        let args = vec!["--version".to_string()];
+        let command = parse_command(&args).expect("`--version` should parse");
+        assert!(matches!(command, Command::Version));
+    }
+
+    #[test]
+    fn parse_command_keeps_version_subcommand() {
+        let args = vec!["version".to_string()];
+        let command = parse_command(&args).expect("`version` should parse");
+        assert!(matches!(command, Command::Version));
     }
 }

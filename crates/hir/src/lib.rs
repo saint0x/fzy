@@ -1738,8 +1738,9 @@ fn infer_expr_type(
                     trait_violations,
                 ));
             }
-            let (resolved_params, resolved_ret, bindings, skip_post_call_validation) =
-                if fn_sigs.contains_key(base_callee) {
+            let (resolved_params, resolved_ret, bindings, skip_post_call_validation) = if fn_sigs
+                .contains_key(base_callee)
+            {
                 let Some((resolved_params, resolved_ret, bindings)) = resolve_call_signature(
                     &params,
                     &ret,
@@ -2298,9 +2299,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let str_ty = Type::Str;
     Some(match name {
         "spawn" => (vec![i32.clone()], i32.clone()),
-        "yield" | "checkpoint" | "timeout" | "cancel" | "recv" | "pulse" => {
-            (vec![], i32.clone())
-        }
+        "yield" | "checkpoint" | "timeout" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
         "deadline" => (vec![i32.clone()], i32.clone()),
         "alloc" => (vec![i32.clone()], i32.clone()),
         "free" | "close" => (vec![i32.clone()], i32.clone()),
@@ -2325,15 +2324,19 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "env.get" => (vec![str_ty.clone()], str_ty.clone()),
         "http.header" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "http.post_json" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "json.escape" => (vec![str_ty.clone()], str_ty.clone()),
+        "json.object2" => (
+            vec![
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+            ],
+            str_ty.clone(),
+        ),
         "time.now" => (vec![], i32.clone()),
-        "fs.open"
-        | "fs.write"
-        | "fs.flush"
-        | "fs.atomic_write"
-        | "fs.rename_atomic"
-        | "fs.fsync"
-        | "fs.lock"
-        | "fs.read" => (vec![], i32.clone()),
+        "fs.open" | "fs.write" | "fs.flush" | "fs.atomic_write" | "fs.rename_atomic"
+        | "fs.fsync" | "fs.lock" | "fs.read" => (vec![], i32.clone()),
         "process.run" | "proc.run" | "process.spawn" | "proc.spawn" => {
             (vec![str_ty.clone()], i32.clone())
         }

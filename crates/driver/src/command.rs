@@ -821,6 +821,11 @@ fn render_output(format: Format, output: Output) -> String {
                 "module={} nodes={} diagnostics={} errors={} warnings={}",
                 output.module, output.nodes, output.diagnostics, errors, warnings
             );
+            let details = render_diagnostics_text(&output.diagnostic_details);
+            if !details.is_empty() {
+                rendered.push('\n');
+                rendered.push_str(&details);
+            }
             if let Some(ir) = &output.backend_ir {
                 rendered.push('\n');
                 rendered.push_str(ir);
@@ -839,6 +844,93 @@ fn render_output(format: Format, output: Output) -> String {
         })
         .to_string(),
     }
+}
+
+fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
+    if items.is_empty() {
+        return String::new();
+    }
+    let mut source_cache: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut out = String::new();
+    for (index, diagnostic) in items.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        let severity = match diagnostic.severity {
+            diagnostics::Severity::Error => "error",
+            diagnostics::Severity::Warning => "warning",
+            diagnostics::Severity::Note => "note",
+        };
+        out.push_str(&format!("{severity}: {}\n", diagnostic.message));
+        if let (Some(path), Some(span)) = (&diagnostic.path, &diagnostic.span) {
+            out.push_str(&format!(
+                " --> {path}:{}:{}\n",
+                span.start_line, span.start_col
+            ));
+            if let Some(frame) = render_code_frame(path, span, &mut source_cache) {
+                out.push_str(&frame);
+            }
+        } else if let Some(path) = &diagnostic.path {
+            out.push_str(&format!(" --> {path}\n"));
+        }
+        for label in &diagnostic.labels {
+            let role = if label.primary { "primary" } else { "related" };
+            if let Some(span) = &label.span {
+                out.push_str(&format!(
+                    " {role}: {} ({}:{}-{}:{})\n",
+                    label.message, span.start_line, span.start_col, span.end_line, span.end_col
+                ));
+            } else {
+                out.push_str(&format!(" {role}: {}\n", label.message));
+            }
+        }
+        if let Some(help) = &diagnostic.help {
+            out.push_str(&format!(" help: {help}\n"));
+        }
+        if let Some(fix) = &diagnostic.fix {
+            out.push_str(&format!(" fix: {fix}\n"));
+        }
+        for note in &diagnostic.notes {
+            out.push_str(&format!(" note: {note}\n"));
+        }
+        for suggestion in &diagnostic.suggested_fixes {
+            out.push_str(&format!(" suggestion: {suggestion}\n"));
+        }
+    }
+    out.trim_end().to_string()
+}
+
+fn render_code_frame(
+    path: &str,
+    span: &diagnostics::Span,
+    cache: &mut BTreeMap<String, Vec<String>>,
+) -> Option<String> {
+    let lines = if let Some(lines) = cache.get(path) {
+        lines
+    } else {
+        let source = std::fs::read_to_string(path).ok()?;
+        let loaded = source.lines().map(ToString::to_string).collect::<Vec<_>>();
+        cache.insert(path.to_string(), loaded);
+        cache.get(path)?
+    };
+    if span.start_line == 0 || span.start_line > lines.len() {
+        return None;
+    }
+    let line = &lines[span.start_line - 1];
+    let gutter = span.start_line.to_string();
+    let highlight_start = span.start_col.max(1);
+    let highlight_end = if span.end_line == span.start_line {
+        span.end_col.max(highlight_start)
+    } else {
+        line.chars().count().max(highlight_start)
+    };
+    let mut marker = String::new();
+    marker.push_str(&" ".repeat(highlight_start.saturating_sub(1)));
+    marker.push_str(&"^".repeat(highlight_end.saturating_sub(highlight_start) + 1));
+    Some(format!(
+        " {gutter} | {line}\n {} | {marker}\n",
+        " ".repeat(gutter.len())
+    ))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1981,10 +2073,18 @@ fn lsp_diagnostics_command(path: &Path, format: Format) -> Result<String> {
     let output = verify_file(path)?;
     let ok = !output_has_errors(&output);
     match format {
-        Format::Text => Ok(format!(
-            "lsp diagnostics module={} diagnostics={} ok={}",
-            output.module, output.diagnostics, ok
-        )),
+        Format::Text => {
+            let mut rendered = format!(
+                "lsp diagnostics module={} diagnostics={} ok={}",
+                output.module, output.diagnostics, ok
+            );
+            let details = render_diagnostics_text(&output.diagnostic_details);
+            if !details.is_empty() {
+                rendered.push('\n');
+                rendered.push_str(&details);
+            }
+            Ok(rendered)
+        }
         Format::Json => Ok(serde_json::json!({
             "ok": ok,
             "module": output.module,
