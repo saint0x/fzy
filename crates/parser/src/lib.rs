@@ -17,6 +17,7 @@ enum TokenKind {
     KwPub,
     KwExtern,
     KwAsync,
+    KwAwait,
     KwRpc,
     KwUse,
     KwCore,
@@ -468,7 +469,7 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Option<ast::Item> {
-        let _is_async = self.consume(&TokenKind::KwAsync);
+        let is_async = self.consume(&TokenKind::KwAsync);
         let is_pub = self.consume(&TokenKind::KwPub);
         let is_extern = self.consume(&TokenKind::KwExtern);
         let abi = if is_extern {
@@ -549,6 +550,7 @@ impl Parser {
             params,
             return_type,
             body,
+            is_async,
             is_pub,
             is_extern,
             abi,
@@ -769,6 +771,10 @@ impl Parser {
                 try_expr: Box::new(try_expr),
                 catch_expr: Box::new(catch_expr),
             });
+        }
+        if self.consume(&TokenKind::KwAwait) {
+            let awaited = self.parse_prefix_expr()?;
+            return Some(Expr::Await(Box::new(awaited)));
         }
 
         let token = self.advance()?;
@@ -1181,6 +1187,7 @@ impl Parser {
             TokenKind::KwPub => Some("pub".to_string()),
             TokenKind::KwExtern => Some("extern".to_string()),
             TokenKind::KwAsync => Some("async".to_string()),
+            TokenKind::KwAwait => Some("await".to_string()),
             TokenKind::KwRpc => Some("rpc".to_string()),
             TokenKind::KwUse => Some("use".to_string()),
             TokenKind::KwCore => Some("core".to_string()),
@@ -1605,6 +1612,7 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "pub" => TokenKind::KwPub,
         "extern" => TokenKind::KwExtern,
         "async" => TokenKind::KwAsync,
+        "await" => TokenKind::KwAwait,
         "rpc" => TokenKind::KwRpc,
         "use" => TokenKind::KwUse,
         "core" => TokenKind::KwCore,
@@ -1815,5 +1823,33 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|d| d.message.contains("unterminated string literal") && d.span.is_some()));
+    }
+
+    #[test]
+    fn parses_async_function_and_await_expression() {
+        let source = r#"
+            async fn worker() -> i32 { return 7; }
+            async fn main() -> i32 {
+                let v = await worker();
+                return v;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.is_async);
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::Await(_),
+                ..
+            }
+        )));
     }
 }

@@ -566,6 +566,26 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "timeout",
+        symbol: "fz_native_timeout",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "deadline",
+        symbol: "fz_native_deadline",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "cancel",
+        symbol: "fz_native_cancel",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "recv",
+        symbol: "fz_native_recv",
+        arity: 0,
+    },
+    NativeRuntimeImport {
         callee: "yield",
         symbol: "fz_native_yield",
         arity: 0,
@@ -1034,13 +1054,9 @@ fn load_module_recursive(
     state.visiting.pop();
     state.visiting_set.remove(&canonical);
     state.load_order.push(canonical.clone());
-    state.loaded.insert(
-        canonical.clone(),
-        LoadedModule {
-            ast,
-            source,
-        },
-    );
+    state
+        .loaded
+        .insert(canonical.clone(), LoadedModule { ast, source });
     Ok(())
 }
 
@@ -1192,6 +1208,9 @@ fn qualify_expr(
         ast::Expr::Group(inner) => {
             qualify_expr(inner, namespace, local_functions, module_aliases);
         }
+        ast::Expr::Await(inner) => {
+            qualify_expr(inner, namespace, local_functions, module_aliases);
+        }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -1337,6 +1356,9 @@ fn canonicalize_expr_calls(
             }
         }
         ast::Expr::Group(inner) => {
+            canonicalize_expr_calls(inner, namespace, known_functions);
+        }
+        ast::Expr::Await(inner) => {
             canonicalize_expr_calls(inner, namespace, known_functions);
         }
         ast::Expr::TryCatch {
@@ -1855,6 +1877,7 @@ fn llvm_emit_expr(
             }
         }
         ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids),
+        ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids),
         ast::Expr::FieldAccess { base, field } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
@@ -2039,6 +2062,7 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
             }
         }
         ast::Expr::Group(inner) => collect_string_literals_from_expr(inner, literals),
+        ast::Expr::Await(inner) => collect_string_literals_from_expr(inner, literals),
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -2173,6 +2197,9 @@ fn collect_used_runtime_imports_from_expr(
             }
         }
         ast::Expr::Group(inner) => {
+            collect_used_runtime_imports_from_expr(inner, seen, used);
+        }
+        ast::Expr::Await(inner) => {
             collect_used_runtime_imports_from_expr(inner, seen, used);
         }
         ast::Expr::TryCatch {
@@ -3041,6 +3068,16 @@ fn clif_emit_expr(
             string_literal_ids,
             task_ref_ids,
         )?,
+        ast::Expr::Await(inner) => clif_emit_expr(
+            builder,
+            module,
+            function_ids,
+            inner,
+            locals,
+            next_var,
+            string_literal_ids,
+            task_ref_ids,
+        )?,
         ast::Expr::FieldAccess { base, field } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(var) = locals.get(&format!("{name}.{field}")).copied() {
@@ -3357,6 +3394,9 @@ fn collect_unresolved_calls_from_expr(
         ast::Expr::Group(inner) => {
             collect_unresolved_calls_from_expr(inner, defined_functions, unresolved);
         }
+        ast::Expr::Await(inner) => {
+            collect_unresolved_calls_from_expr(inner, defined_functions, unresolved);
+        }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -3624,6 +3664,8 @@ static pthread_t fz_spawn_threads[FZ_MAX_SPAWN_THREADS];
 static int fz_spawn_thread_count = 0;
 static pthread_mutex_t fz_spawn_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t fz_spawn_atexit_once = PTHREAD_ONCE_INIT;
+static int64_t fz_async_deadline_ms = 0;
+static int32_t fz_async_cancelled = 0;
 static pthread_once_t fz_env_bootstrap_once = PTHREAD_ONCE_INIT;
 
 typedef struct {
@@ -7795,6 +7837,34 @@ int32_t fz_native_spawn(int32_t task_ref) {
   fz_spawn_threads[fz_spawn_thread_count++] = thread;
   pthread_mutex_unlock(&fz_spawn_lock);
   return task_ref;
+}
+
+int32_t fz_native_timeout(int32_t timeout_ms) {
+  if (timeout_ms < 0) {
+    return -1;
+  }
+  fz_async_deadline_ms = fz_now_ms() + (int64_t)timeout_ms;
+  return 0;
+}
+
+int32_t fz_native_deadline(int32_t deadline_ms) {
+  fz_async_deadline_ms = (int64_t)deadline_ms;
+  return 0;
+}
+
+int32_t fz_native_cancel(void) {
+  fz_async_cancelled = 1;
+  return 0;
+}
+
+int32_t fz_native_recv(void) {
+  if (fz_async_cancelled) {
+    return -1;
+  }
+  if (fz_async_deadline_ms > 0 && fz_now_ms() > fz_async_deadline_ms) {
+    return -1;
+  }
+  return 0;
 }
 
 int32_t fz_native_yield(void) {

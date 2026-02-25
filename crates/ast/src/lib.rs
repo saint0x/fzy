@@ -30,6 +30,7 @@ pub struct Function {
     pub params: Vec<Param>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
+    pub is_async: bool,
     pub is_pub: bool,
     pub is_extern: bool,
     pub abi: Option<String>,
@@ -154,6 +155,7 @@ pub enum Expr {
         payload: Vec<Expr>,
     },
     Group(Box<Expr>),
+    Await(Box<Expr>),
     TryCatch {
         try_expr: Box<Expr>,
         catch_expr: Box<Expr>,
@@ -380,6 +382,7 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
             visitor.visit_expr(try_expr);
             visitor.visit_expr(catch_expr);
         }
+        Expr::Await(inner) => visitor.visit_expr(inner),
         Expr::Binary { left, right, .. } => {
             visitor.visit_expr(left);
             visitor.visit_expr(right);

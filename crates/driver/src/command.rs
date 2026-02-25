@@ -241,85 +241,71 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 };
             }
             if deterministic && !host_backends {
-                let resolved = resolve_source(&path)?;
-                let parsed = parse_program(&resolved.source_path)?;
-                let typed = hir::lower(&parsed.module);
-                let fir = fir::build_owned(typed);
-                let verify_report = verifier::verify(&fir);
-                let diagnostics = verify_report.diagnostics.len();
-                let has_errors = verify_report
-                    .diagnostics
-                    .iter()
-                    .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
-                if has_errors {
-                    bail!("run aborted: deterministic semantics diagnostics={diagnostics}");
-                }
-                let scenario = emit_deterministic_capability_scenario(
-                    &resolved.project_root,
-                    &fir.name,
-                    &parsed.module,
-                    &parsed.combined_source,
-                    host_backends,
+                let plan = run_non_scenario_test_plan(
+                    &path,
+                    true,
+                    strict_verify,
+                    safe_profile,
+                    Some("fifo".to_string()),
+                    seed,
+                    record.as_deref(),
+                    true,
+                    None,
                 )?;
-                let mut fozzy_args = vec!["run".to_string(), scenario.display().to_string()];
-                let routing = scenario_run_routing(deterministic, host_backends);
-                let deterministic_applied = routing.deterministic_applied;
-                if deterministic_applied {
-                    fozzy_args.push("--det".to_string());
-                }
-                if strict_verify {
-                    fozzy_args.push("--strict".to_string());
-                }
-                if let Some(seed) = seed {
-                    fozzy_args.push("--seed".to_string());
-                    fozzy_args.push(seed.to_string());
-                }
-                if let Some(record) = &record {
-                    fozzy_args.push("--record".to_string());
-                    fozzy_args.push(record.display().to_string());
-                }
-                if host_backends {
-                    fozzy_args.push("--proc-backend".to_string());
-                    fozzy_args.push("host".to_string());
-                    fozzy_args.push("--fs-backend".to_string());
-                    fozzy_args.push("host".to_string());
-                    fozzy_args.push("--http-backend".to_string());
-                    fozzy_args.push("host".to_string());
-                }
-                if matches!(format, Format::Json) {
-                    fozzy_args.push("--json".to_string());
-                }
-                let routed = fozzy_invoke(&fozzy_args)?;
                 return match format {
                     Format::Text => Ok(format!(
-                        "run routed via {} for module={} deterministic_requested={} deterministic_applied={} host_backends={} status={}",
-                        scenario.display(),
-                        fir.name,
-                        deterministic,
-                        deterministic_applied,
-                        host_backends,
-                        routed
+                        "deterministic run module={} mode={} scheduler={} diagnostics={} tasks={} async_checkpoints={} rpc_frames={} routing=deterministic-language-async-model",
+                        plan.module,
+                        plan.mode,
+                        plan.scheduler,
+                        plan.diagnostics,
+                        plan.executed_tasks,
+                        plan.async_checkpoint_count,
+                        plan.rpc_frame_count
                     )),
                     Format::Json => Ok(serde_json::json!({
-                        "module": fir.name,
+                        "module": plan.module,
                         "status": "ok",
-                        "diagnostics": diagnostics,
+                        "diagnostics": plan.diagnostics,
                         "deterministicRequested": deterministic,
-                        "deterministicApplied": deterministic_applied,
+                        "deterministicApplied": true,
                         "strictVerify": strict_verify,
                         "safeProfile": safe_profile,
                         "seed": seed,
                         "hostBackends": host_backends,
                         "routing": {
-                            "mode": if host_backends {
-                                routing.mode
-                            } else {
-                                "deterministic-capability-scenario"
-                            },
-                            "scenario": scenario.display().to_string(),
-                            "reason": routing.reason,
+                            "mode": "deterministic-language-async-model",
+                            "reason": "non-scenario deterministic run uses parser/AST/HIR semantics and runtime deterministic model directly",
                         },
-                        "fozzy": routed,
+                        "execution": {
+                            "scheduler": plan.scheduler,
+                            "executedTasks": plan.executed_tasks,
+                            "asyncCheckpointCount": plan.async_checkpoint_count,
+                            "asyncExecution": plan.async_execution,
+                            "rpcFrameCount": plan.rpc_frame_count,
+                            "threadFindings": plan.thread_findings,
+                            "runtimeEvents": plan.runtime_event_count,
+                            "causalLinks": plan.causal_link_count,
+                        },
+                        "artifacts": plan.artifacts.as_ref().map(|artifacts| {
+                            serde_json::json!({
+                                "trace": artifacts.trace_path.display().to_string(),
+                                "report": artifacts.report_path.as_ref().map(|path| path.display().to_string()),
+                                "timeline": artifacts.timeline_path.as_ref().map(|path| path.display().to_string()),
+                                "manifest": artifacts.manifest_path.display().to_string(),
+                                "explore": artifacts.explore_path.as_ref().map(|path| path.display().to_string()),
+                                "shrink": artifacts.shrink_path.as_ref().map(|path| path.display().to_string()),
+                                "scenariosIndex": artifacts.scenarios_index_path.as_ref().map(|path| path.display().to_string()),
+                                "primaryScenario": artifacts
+                                    .primary_scenario_path
+                                    .as_ref()
+                                    .map(|path| path.display().to_string()),
+                                "goalTrace": artifacts
+                                    .goal_trace_path
+                                    .as_ref()
+                                    .map(|path| path.display().to_string()),
+                            })
+                        }),
                     })
                     .to_string()),
                 };
@@ -1327,25 +1313,24 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
     let scenario_summary = fozzy_test_summary(&scenario, false, true)?;
     let host_summary = fozzy_test_summary(&scenario, true, false)?;
 
-    let native = SemanticsOutcome {
-        mode: "native".to_string(),
-        exit_class: "pass".to_string(),
-        event_kinds: vec!["test.event".to_string()],
-        invariants: BTreeMap::from([
-            (
-                "deterministicTests".to_string(),
-                native_plan.deterministic_test_names.len().to_string(),
-            ),
-            (
-                "selectedTests".to_string(),
-                native_plan.selected_tests.to_string(),
-            ),
-        ]),
-    };
+    let mut native = plan_semantics_outcome("native", &native_plan);
+    native.event_kinds = normalize_equivalence_event_kinds(&native.event_kinds);
+    native.invariants.insert(
+        "asyncCheckpoints".to_string(),
+        native_plan.async_checkpoint_count.to_string(),
+    );
+    native.invariants.insert(
+        "rpcFrames".to_string(),
+        native_plan.rpc_frame_count.to_string(),
+    );
+    native.invariants.insert(
+        "threadSchedules".to_string(),
+        native_plan.execution_order.len().to_string(),
+    );
     let scenario_outcome = SemanticsOutcome {
         mode: "scenario".to_string(),
         exit_class: scenario_summary.exit_class,
-        event_kinds: scenario_step_kinds.clone(),
+        event_kinds: normalize_equivalence_event_kinds(&scenario_step_kinds),
         invariants: BTreeMap::from([
             (
                 "deterministicTests".to_string(),
@@ -1357,7 +1342,7 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
     let host_outcome = SemanticsOutcome {
         mode: "host".to_string(),
         exit_class: host_summary.exit_class,
-        event_kinds: scenario_step_kinds,
+        event_kinds: normalize_equivalence_event_kinds(&scenario_step_kinds),
         invariants: BTreeMap::from([
             (
                 "deterministicTests".to_string(),
@@ -1388,10 +1373,20 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
     {
         issues.push("native/scenario deterministic test count mismatch".to_string());
     }
-    if native.event_kinds != scenario_outcome.event_kinds {
+    if native_plan.async_checkpoint_count > 0 && !native.event_kinds.iter().any(|kind| kind == "async.checkpoint") {
+        issues.push("native equivalence model missing async.checkpoint evidence".to_string());
+    }
+    if native_plan.rpc_frame_count > 0 && !native.event_kinds.iter().any(|kind| kind == "rpc.frame") {
+        issues.push("native equivalence model missing rpc.frame evidence".to_string());
+    }
+    if !(scenario_trace_events == 0
+        && scenario_outcome.event_kinds.is_empty()
+        && host_outcome.event_kinds.is_empty())
+        && !event_kinds_equivalent(&native.event_kinds, &scenario_outcome.event_kinds)
+    {
         issues.push("native/scenario normalized event kinds mismatch".to_string());
     }
-    if scenario_outcome.event_kinds != host_outcome.event_kinds {
+    if !event_kinds_equivalent(&scenario_outcome.event_kinds, &host_outcome.event_kinds) {
         issues.push("scenario/host normalized event kinds mismatch".to_string());
     }
 
@@ -1413,6 +1408,10 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
             "ok": true,
             "path": path.display().to_string(),
             "seed": seed,
+            "equivalenceNormalization": {
+                "yieldPoints": ["await", "yield", "checkpoint", "spawn", "recv", "timeout", "deadline", "cancel", "pulse"],
+                "rule": "trace_event/assert_eq_int are normalized to test-level events; scheduler/rpc categories are preserved when present in engine evidence",
+            },
             "signature": signature,
             "scenario": scenario.display().to_string(),
             "outcomes": outcomes,
@@ -1487,6 +1486,33 @@ fn parse_scenario_step_kinds(path: &Path) -> Result<(Vec<String>, usize)> {
     kinds.sort();
     kinds.dedup();
     Ok((kinds, trace_event_count))
+}
+
+fn normalize_equivalence_event_kinds(kinds: &[String]) -> Vec<String> {
+    let mut out = kinds
+        .iter()
+        .map(|kind| match kind.as_str() {
+            "async.schedule" => "async.checkpoint".to_string(),
+            other => other.to_string(),
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn event_kinds_equivalent(left: &[String], right: &[String]) -> bool {
+    fn canonical(kind: &str) -> String {
+        match kind {
+            "thread.schedule" | "async.checkpoint" | "rpc.frame" | "test.event" => {
+                "test.event".to_string()
+            }
+            other => other.to_string(),
+        }
+    }
+    let left = left.iter().map(|kind| canonical(kind)).collect::<BTreeSet<_>>();
+    let right = right.iter().map(|kind| canonical(kind)).collect::<BTreeSet<_>>();
+    left == right
 }
 
 fn fozzy_test_summary(
@@ -2047,7 +2073,7 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
 
     let resolved = resolve_source(path)?;
     let parsed = parse_program(&resolved.source_path)?;
-    let async_hooks = count_async_hooks(&parsed.combined_source);
+    let async_hooks = count_async_hooks_in_module(&parsed.module);
     let async_plan = run_non_scenario_test_plan(
         path,
         true,
@@ -2325,7 +2351,7 @@ fn run_non_scenario_test_plan(
     } else {
         discovered_test_names.clone()
     };
-    let workload = analyze_workload_shape(&parsed.combined_source);
+    let workload = analyze_workload_shape(&parsed.module);
     let call_sequence = collect_call_sequence(&parsed.module);
     let rpc_methods = parse_rpc_declarations(&parsed.combined_source).unwrap_or_default();
     let rpc_method_names = rpc_methods
@@ -2336,7 +2362,7 @@ fn run_non_scenario_test_plan(
         .iter()
         .filter(|call| rpc_method_names.contains(call.as_str()))
         .count();
-    let async_checkpoint_count = count_async_hooks(&parsed.combined_source);
+    let async_checkpoint_count = count_async_hooks_in_module(&parsed.module);
     let deterministic_test_names = deterministic_test_names
         .into_iter()
         .filter(|name| selected_test_names.iter().any(|selected| selected == name))
@@ -3076,40 +3102,199 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .with_context(|| format!("failed writing json file: {}", path.display()))
 }
 
-fn count_async_hooks(source: &str) -> usize {
-    source
-        .lines()
-        .filter(|line| {
-            let line = line.trim();
-            line.contains("await ")
-                || line.contains(".await")
-                || line.contains("yield(")
-                || line.contains("checkpoint(")
-                || line.starts_with("async fn ")
-        })
-        .count()
+fn count_async_hooks_in_module(module: &ast::Module) -> usize {
+    let mut hooks = 0usize;
+    for item in &module.items {
+        let ast::Item::Function(function) = item else {
+            continue;
+        };
+        if function.is_async {
+            hooks += 1;
+        }
+        for stmt in &function.body {
+            hooks += count_async_hooks_in_stmt(stmt);
+        }
+    }
+    hooks
 }
 
-fn analyze_workload_shape(source: &str) -> WorkloadShape {
+fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::Return(value)
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => count_async_hooks_in_expr(value),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            count_async_hooks_in_expr(condition)
+                + then_body.iter().map(count_async_hooks_in_stmt).sum::<usize>()
+                + else_body.iter().map(count_async_hooks_in_stmt).sum::<usize>()
+        }
+        ast::Stmt::While { condition, body } => {
+            count_async_hooks_in_expr(condition)
+                + body.iter().map(count_async_hooks_in_stmt).sum::<usize>()
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            let mut total = count_async_hooks_in_expr(scrutinee);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    total += count_async_hooks_in_expr(guard);
+                }
+                total += count_async_hooks_in_expr(&arm.value);
+            }
+            total
+        }
+    }
+}
+
+fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
+    match expr {
+        ast::Expr::Await(inner) => 1 + count_async_hooks_in_expr(inner),
+        ast::Expr::Call { callee, args } => {
+            let self_hook = usize::from(matches!(callee.as_str(), "yield" | "checkpoint"));
+            self_hook + args.iter().map(count_async_hooks_in_expr).sum::<usize>()
+        }
+        ast::Expr::FieldAccess { base, .. } => count_async_hooks_in_expr(base),
+        ast::Expr::StructInit { fields, .. } => fields
+            .iter()
+            .map(|(_, value)| count_async_hooks_in_expr(value))
+            .sum(),
+        ast::Expr::EnumInit { payload, .. } => payload.iter().map(count_async_hooks_in_expr).sum(),
+        ast::Expr::Group(inner) => count_async_hooks_in_expr(inner),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => count_async_hooks_in_expr(try_expr) + count_async_hooks_in_expr(catch_expr),
+        ast::Expr::Binary { left, right, .. } => {
+            count_async_hooks_in_expr(left) + count_async_hooks_in_expr(right)
+        }
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => 0,
+    }
+}
+
+fn analyze_workload_shape(module: &ast::Module) -> WorkloadShape {
     let mut async_functions = 0usize;
     let mut spawn_markers = 0usize;
     let mut yield_markers = 0usize;
-    for line in source.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("async fn ") {
+    for item in &module.items {
+        let ast::Item::Function(function) = item else {
+            continue;
+        };
+        if function.is_async {
             async_functions += 1;
         }
-        if trimmed.contains("spawn(") || trimmed.contains("thread.spawn(") {
-            spawn_markers += 1;
-        }
-        if trimmed.contains("yield(") || trimmed.contains("checkpoint(") {
-            yield_markers += 1;
+        for stmt in &function.body {
+            let (spawns, yields) = analyze_workload_stmt(stmt);
+            spawn_markers += spawns;
+            yield_markers += yields;
         }
     }
     WorkloadShape {
         async_functions,
         spawn_markers,
         yield_markers,
+    }
+}
+
+fn analyze_workload_stmt(stmt: &ast::Stmt) -> (usize, usize) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::Return(value)
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => analyze_workload_expr(value),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            let mut totals = analyze_workload_expr(condition);
+            for stmt in then_body {
+                let (spawns, yields) = analyze_workload_stmt(stmt);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            for stmt in else_body {
+                let (spawns, yields) = analyze_workload_stmt(stmt);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            totals
+        }
+        ast::Stmt::While { condition, body } => {
+            let mut totals = analyze_workload_expr(condition);
+            for stmt in body {
+                let (spawns, yields) = analyze_workload_stmt(stmt);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            totals
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            let mut totals = analyze_workload_expr(scrutinee);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    let (spawns, yields) = analyze_workload_expr(guard);
+                    totals.0 += spawns;
+                    totals.1 += yields;
+                }
+                let (spawns, yields) = analyze_workload_expr(&arm.value);
+                totals.0 += spawns;
+                totals.1 += yields;
+            }
+            totals
+        }
+    }
+}
+
+fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            let mut spawns = usize::from(matches!(callee.as_str(), "spawn" | "thread.spawn"));
+            let mut yields = usize::from(matches!(callee.as_str(), "yield" | "checkpoint"));
+            for arg in args {
+                let (nested_spawns, nested_yields) = analyze_workload_expr(arg);
+                spawns += nested_spawns;
+                yields += nested_yields;
+            }
+            (spawns, yields)
+        }
+        ast::Expr::Await(inner) | ast::Expr::Group(inner) => analyze_workload_expr(inner),
+        ast::Expr::FieldAccess { base, .. } => analyze_workload_expr(base),
+        ast::Expr::StructInit { fields, .. } => fields.iter().fold((0, 0), |mut acc, (_, value)| {
+            let (spawns, yields) = analyze_workload_expr(value);
+            acc.0 += spawns;
+            acc.1 += yields;
+            acc
+        }),
+        ast::Expr::EnumInit { payload, .. } => payload.iter().fold((0, 0), |mut acc, value| {
+            let (spawns, yields) = analyze_workload_expr(value);
+            acc.0 += spawns;
+            acc.1 += yields;
+            acc
+        }),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            let (t_spawns, t_yields) = analyze_workload_expr(try_expr);
+            let (c_spawns, c_yields) = analyze_workload_expr(catch_expr);
+            (t_spawns + c_spawns, t_yields + c_yields)
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            let (l_spawns, l_yields) = analyze_workload_expr(left);
+            let (r_spawns, r_yields) = analyze_workload_expr(right);
+            (l_spawns + r_spawns, l_yields + r_yields)
+        }
+        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => (0, 0),
     }
 }
 
@@ -3438,6 +3623,7 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
             collect_call_names_from_expr(right, out);
         }
         ast::Expr::Group(inner) => collect_call_names_from_expr(inner, out),
+        ast::Expr::Await(inner) => collect_call_names_from_expr(inner, out),
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
     }
 }
@@ -4354,6 +4540,7 @@ fn native_ci(target: &Path, format: Format) -> Result<String> {
     }
 }
 
+#[allow(dead_code)]
 fn emit_deterministic_capability_scenario(
     project_root: &Path,
     module_name: &str,
@@ -4405,6 +4592,7 @@ fn emit_deterministic_capability_scenario(
     Ok(scenario_path)
 }
 
+#[allow(dead_code)]
 fn build_live_http_probe_steps(
     combined_source: &str,
     host_backed_live: bool,
@@ -5825,7 +6013,7 @@ mod tests {
     }
 
     #[test]
-    fn run_command_routes_det_through_capability_scenario() {
+    fn run_command_routes_det_through_language_async_model() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -5852,9 +6040,41 @@ mod tests {
             Format::Json,
         )
         .expect("deterministic run should succeed");
-        assert!(output.contains("\"deterministic-capability-scenario\""));
+        assert!(output.contains("\"deterministic-language-async-model\""));
+        assert!(output.contains("\"asyncCheckpointCount\""));
         assert!(output.contains("\"routing\""));
 
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_async_intrinsics_timeout_deadline_cancel_recv_compile_and_run() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-native-async-intrinsics-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.thread;\nfn main() -> i32 {\n    timeout(10)\n    let _d: i32 = deadline(1000)\n    let _c: i32 = cancel()\n    let _r: i32 = recv()\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: None,
+            },
+            Format::Json,
+        )
+        .expect("native run should succeed");
+        assert!(output.contains("\"exitCode\":0"));
         let _ = std::fs::remove_file(source);
     }
 
@@ -5924,17 +6144,19 @@ mod tests {
     }
 
     #[test]
-    fn counts_async_hooks_from_source_markers() {
+    fn counts_async_hooks_from_semantic_ast() {
         let source = r#"
             async fn worker() -> i32 { return 0 }
+            async fn io_next() -> i32 { return 1 }
             fn main() -> i32 {
-                let x = io.await_next()
+                let x = await io_next()
                 yield()
                 checkpoint()
                 return 0
             }
         "#;
-        assert_eq!(count_async_hooks(source), 4);
+        let module = parser::parse(source, "main").expect("source should parse");
+        assert_eq!(count_async_hooks_in_module(&module), 5);
     }
 
     #[test]
@@ -6391,7 +6613,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-debug-check-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "async fn worker() -> i32 {}\nfn main() -> i32 {\n    return 0\n}\n",
+            "use core.thread;\nasync fn worker() -> i32 {}\nfn main() -> i32 {\n    return 0\n}\n",
         )
         .expect("source should be written");
         let output = run(

@@ -9,6 +9,7 @@ pub struct TypedFunction {
     pub params: Vec<ast::Param>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
+    pub is_async: bool,
     pub required_capabilities: Vec<String>,
 }
 
@@ -105,6 +106,7 @@ impl SymbolScopes {
 
 pub fn lower(module: &Module) -> TypedModule {
     let mut fn_sigs = HashMap::<String, (Vec<Type>, Type)>::new();
+    let mut fn_async = HashMap::<String, bool>::new();
     let mut fn_generics = HashMap::<String, Vec<ast::GenericParam>>::new();
     let mut typed_functions = Vec::new();
     let mut type_errors = 0usize;
@@ -162,6 +164,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     function.return_type.clone(),
                 ),
             );
+            fn_async.insert(function.name.clone(), function.is_async);
             fn_generics.insert(function.name.clone(), function.generics.clone());
             typed_functions.push(TypedFunction {
                 name: function.name.clone(),
@@ -169,6 +172,7 @@ pub fn lower(module: &Module) -> TypedModule {
                 params: function.params.clone(),
                 return_type: function.return_type.clone(),
                 body: function.body.clone(),
+                is_async: function.is_async,
                 required_capabilities: Vec::new(),
             });
         }
@@ -209,6 +213,12 @@ pub fn lower(module: &Module) -> TypedModule {
             );
         }
     }
+    validate_async_semantics(
+        &typed_functions,
+        &fn_async,
+        &mut type_errors,
+        &mut type_error_details,
+    );
 
     let entry_return_type = typed_functions
         .iter()
@@ -437,6 +447,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 expr_has_cap_intrinsic(left) || expr_has_cap_intrinsic(right)
             }
             Expr::Group(inner) => expr_has_cap_intrinsic(inner),
+            Expr::Await(inner) => expr_has_cap_intrinsic(inner),
             Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => false,
         }
     }
@@ -705,6 +716,13 @@ fn analyze_expr_call_tokens(
             requirement_map,
             violations,
         ),
+        Expr::Await(inner) => analyze_expr_call_tokens(
+            function_name,
+            Some(inner),
+            local_types,
+            requirement_map,
+            violations,
+        ),
         Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => {}
     }
 }
@@ -925,6 +943,9 @@ fn collect_function_caps_and_calls(
     caps: &mut BTreeSet<String>,
     calls: &mut BTreeSet<String>,
 ) {
+    if function.is_async {
+        caps.insert("thread".to_string());
+    }
     struct Collector<'a> {
         caps: &'a mut BTreeSet<String>,
         calls: &'a mut BTreeSet<String>,
@@ -959,12 +980,14 @@ fn collect_function_caps_and_calls(
                         _ => {}
                     }
                 }
-                if callee == "spawn" || callee.contains("await") {
+                if callee == "spawn" {
                     self.caps.insert("thread".to_string());
                 }
                 if matches!(callee.as_str(), "timeout" | "deadline" | "cancel") {
                     self.caps.insert("thread".to_string());
                 }
+            } else if matches!(expr, Expr::Await(_)) {
+                self.caps.insert("thread".to_string());
             }
             ast::walk_expr(self, expr);
         }
@@ -1122,6 +1145,9 @@ fn build_call_graph(module: &Module) -> Vec<(String, String)> {
 fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
     let mut caps = BTreeSet::new();
     for function in functions {
+        if function.is_async {
+            caps.insert("thread".to_string());
+        }
         struct Collector<'a> {
             caps: &'a mut BTreeSet<String>,
         }
@@ -1154,12 +1180,14 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                             _ => {}
                         }
                     }
-                    if callee == "spawn" || callee.contains("await") {
+                    if callee == "spawn" {
                         self.caps.insert("thread".to_string());
                     }
                     if matches!(callee.as_str(), "timeout" | "deadline" | "cancel") {
                         self.caps.insert("thread".to_string());
                     }
+                } else if matches!(expr, Expr::Await(_)) {
+                    self.caps.insert("thread".to_string());
                 }
                 ast::walk_expr(self, expr);
             }
@@ -1391,6 +1419,7 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             .iter()
             .find_map(|(_, value)| deferred_resource(value)),
         ast::Expr::EnumInit { payload, .. } => payload.iter().find_map(deferred_resource),
+        ast::Expr::Await(inner) => deferred_resource(inner),
         ast::Expr::Int(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
@@ -1423,6 +1452,80 @@ fn collect_entry_contracts(
         }
     }
     (requires, ensures)
+}
+
+fn validate_async_semantics(
+    functions: &[TypedFunction],
+    fn_async: &HashMap<String, bool>,
+    errors: &mut usize,
+    type_error_details: &mut Vec<String>,
+) {
+    for function in functions {
+        struct AsyncVisitor<'a> {
+            function_name: &'a str,
+            function_is_async: bool,
+            fn_async: &'a HashMap<String, bool>,
+            errors: &'a mut usize,
+            type_error_details: &'a mut Vec<String>,
+        }
+        impl AstVisitor for AsyncVisitor<'_> {
+            fn visit_expr(&mut self, expr: &Expr) {
+                if let Expr::Await(inner) = expr {
+                    if !self.function_is_async {
+                        record_type_error(
+                            self.errors,
+                            self.type_error_details,
+                            format!(
+                                "function `{}` uses `await` but is not declared async",
+                                self.function_name
+                            ),
+                        );
+                    }
+                    match inner.as_ref() {
+                        Expr::Call { callee, .. } => {
+                            let (base_callee, _) = split_generic_callee(callee);
+                            if self
+                                .fn_async
+                                .get(base_callee)
+                                .is_some_and(|is_async| !*is_async)
+                            {
+                                record_type_error(
+                                    self.errors,
+                                    self.type_error_details,
+                                    format!(
+                                        "function `{}` awaits non-async call `{}`",
+                                        self.function_name, base_callee
+                                    ),
+                                );
+                            }
+                        }
+                        _ => {
+                            record_type_error(
+                                self.errors,
+                                self.type_error_details,
+                                format!(
+                                    "function `{}` can only await call expressions",
+                                    self.function_name
+                                ),
+                            );
+                        }
+                    }
+                }
+                ast::walk_expr(self, expr);
+            }
+        }
+
+        let mut visitor = AsyncVisitor {
+            function_name: &function.name,
+            function_is_async: function.is_async,
+            fn_async,
+            errors,
+            type_error_details,
+        };
+        for stmt in &function.body {
+            visitor.visit_stmt(stmt);
+        }
+    }
 }
 
 fn type_check_stmt(
@@ -1694,6 +1797,19 @@ fn infer_expr_type(
         Expr::Str(_) => Some(Type::Str),
         Expr::Ident(name) => scopes.get(name),
         Expr::Group(inner) => infer_expr_type(
+            inner,
+            scopes,
+            fn_sigs,
+            fn_generics,
+            struct_defs,
+            enum_defs,
+            trait_impls,
+            errors,
+            type_error_details,
+            generic_specializations,
+            trait_violations,
+        ),
+        Expr::Await(inner) => infer_expr_type(
             inner,
             scopes,
             fn_sigs,
@@ -2299,8 +2415,8 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let str_ty = Type::Str;
     Some(match name {
         "spawn" => (vec![i32.clone()], i32.clone()),
-        "yield" | "checkpoint" | "timeout" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
-        "deadline" => (vec![i32.clone()], i32.clone()),
+        "yield" | "checkpoint" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
+        "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
         "alloc" => (vec![i32.clone()], i32.clone()),
         "free" | "close" => (vec![i32.clone()], i32.clone()),
         "net.bind" | "net.accept" | "net.connect" | "net.poll_next" => (vec![], i32.clone()),
@@ -2622,6 +2738,7 @@ fn eval_expr<'a>(
         Expr::Str(v) => Some(Value::Str(v.clone())),
         Expr::Ident(name) => env.get(name).cloned(),
         Expr::Group(inner) => eval_expr(inner, env, functions),
+        Expr::Await(inner) => eval_expr(inner, env, functions),
         Expr::Call { callee, args } => {
             let (callee_name, _) = split_generic_callee(callee);
             let Some(function) = functions.get(callee_name) else {
@@ -2959,6 +3076,65 @@ mod tests {
                 if str.len(msg) > 0 {
                     net.write(c, 200, msg);
                 }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn async_await_typechecks_in_async_function() {
+        let source = r#"
+            async fn worker() -> i32 { return 1; }
+            async fn main() -> i32 {
+                let v: i32 = await worker();
+                return v;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn await_in_non_async_function_reports_semantic_error() {
+        let source = r#"
+            async fn worker() -> i32 { return 1; }
+            fn main() -> i32 {
+                let v: i32 = await worker();
+                return v;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("uses `await` but is not declared async")));
+    }
+
+    #[test]
+    fn timeout_requires_millis_argument() {
+        let source = r#"
+            fn main() -> i32 {
+                timeout();
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+    }
+
+    #[test]
+    fn timeout_with_millis_argument_typechecks() {
+        let source = r#"
+            fn main() -> i32 {
+                timeout(25);
+                let _ = deadline(100);
                 return 0;
             }
         "#;

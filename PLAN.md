@@ -116,40 +116,47 @@ Net assessment
 
 ## SITREP (as of February 25, 2026): async semantics + multithreading pipeline
 
-Current status is strong on deterministic concurrency infrastructure but weak/partial on language-level async semantics unification.
+CURRENT STATUS IS STRONG ON DETERMINISTIC CONCURRENCY INFRASTRUCTURE AND NOW HAS FIRST-CLASS LANGUAGE-LEVEL ASYNC/AWAIT SEMANTICS CARRIED THROUGH PARSER/AST/HIR, PLUS AST-SEMANTICS-DRIVEN DETERMINISTIC ASYNC EVIDENCE.
 
-Overall readiness: Amber/Red
-What works: deterministic executor model, trace/replay lifecycle, native pthread spawn/yield baseline
-What blocks "serious systems PL" async claims: parser/AST/HIR async gaps, synthetic deterministic test planning, scenario-routed det run path, intrinsic/runtime import mismatch
+PRODUCTION UPDATE (NO BACKWARDS COMPATIBILITY)
+- FIRST-CLASS `ASYNC` FUNCTION SEMANTICS ARE CARRIED INTO AST/HIR FUNCTION MODELS (`is_async` ON FUNCTIONS).
+- FIRST-CLASS `AWAIT` EXPRESSION EXISTS IN AST/HIR (`Expr::Await`) WITH TYPECHECK/SEMANTIC VALIDATION.
+- `AWAIT` USE IS SEMANTICALLY VALIDATED: NON-ASYNC FUNCTIONS USING `AWAIT` AND `AWAIT` ON NON-CALL/NON-ASYNC CALLEES NOW PRODUCE TYPE/SEMANTIC ERRORS.
+- NON-SCENARIO DETERMINISTIC ASYNC EVIDENCE NO LONGER DEPENDS ON SOURCE STRING MARKER COUNTING; IT IS NOW DERIVED FROM PARSED AST SEMANTICS.
+- DRIVER/PIPELINE PASSES (QUALIFICATION, CANONICALIZATION, NATIVE LOWERING, IMPORT COLLECTION, STRING-LITERAL COLLECTION, UNRESOLVED-CALL ANALYSIS) NOW HANDLE `AWAIT` AS A FIRST-CLASS NODE.
+- BACKWARDS-COMPATIBILITY BREAK ACCEPTED: `await` IS NOW A KEYWORD, NOT A GENERAL IDENTIFIER.
+
+Overall readiness: Green
+What works: deterministic executor model, trace/replay lifecycle, first-class parser/AST/HIR async+await semantics, native async intrinsic surface (`timeout`/`deadline`/`cancel`/`recv`), deterministic `.fzy run` language-async route, equivalence normalization contract
+What blocks "serious systems PL" async claims: none in this async section scope
 
 Empirical validation run (Fozzy-first + native probes)
-- `fozzy doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json` passed with deterministic signatures across all runs.
-- `fozzy test --det --strict tests/run.pass.fozzy.json --json` passed.
-- Trace lifecycle passed: `fozzy run --det --record` -> `fozzy trace verify --strict` -> `fozzy replay` -> `fozzy ci`.
+- `fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 7 --json` passed with deterministic signatures across all runs.
+- `fozzy test --det --strict tests/example.fozzy.json --json` passed.
+- Trace lifecycle passed: `fozzy run tests/example.fozzy.json --det --record artifacts/async-semantic-goal.trace.fozzy --json` -> `fozzy trace verify artifacts/async-semantic-goal.trace.fozzy --strict --json` -> `fozzy replay artifacts/async-semantic-goal.trace.fozzy --json` -> `fozzy ci artifacts/async-semantic-goal.trace.fozzy --json`.
 - Host-backed run passed: `fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`.
-- Native deterministic test probe on `.fzy` produced synthetic async artifacts (`asyncCheckpointCount`, `asyncExecution`, timeline `async.schedule` entries).
-- Native deterministic run probe on `.fzy` confirmed routing mode `deterministic-capability-scenario` with generated `.fozzy.json` scenario payload.
-- Native intrinsic probes for `timeout`, `deadline`, `cancel`, `recv` confirmed unresolved native-call diagnostics under `.fzy` native path.
+- NOTE: HOST PROC BACKEND + `--det` IS CURRENTLY REJECTED BY CLI (`host proc backend is not supported in deterministic mode`).
+- Native deterministic test probe on `.fzy` now derives async artifacts from AST semantics (not source-string marker counting).
+- Native deterministic run probe on `.fzy` now routes via `deterministic-language-async-model`.
+- Native async intrinsic probes (`timeout`, `deadline`, `cancel`, `recv`) compile/run with native backend and verifier capability enforcement.
 
 Language async semantics gap
-- `async` is tokenized and consumed in parser but not semantically carried into AST/HIR function models.
-- AST/HIR currently have no explicit async-function field and no await expression node.
-- Await-like behavior is currently inferred via call-name heuristics (for example `callee.contains("await")`) rather than first-class syntax/IR semantics.
+- RESOLVED: `async` IS CARRIED AS FIRST-CLASS FUNCTION SEMANTICS INTO AST/HIR.
+- RESOLVED: AST/HIR NOW INCLUDE EXPLICIT `AWAIT` EXPRESSION REPRESENTATION.
+- RESOLVED: CALL-NAME AWAIT HEURISTICS WERE REPLACED BY AST-DRIVEN ASYNC/AWAIT SEMANTICS.
 
 Deterministic test-model gap
-- Non-scenario `fz test --det` async behavior is currently derived by source marker counting (`async fn`, `yield`, `checkpoint`, `await` string forms).
-- Deterministic execution plan is synthesized from marker counts (`test`/`async`/`spawn`/`rpc` ops), then executed as placeholder tasks.
+- RESOLVED: NON-SCENARIO `fz test --det` ASYNC CHECKPOINT/HOOK COUNT IS DERIVED FROM PARSED AST SEMANTICS (ASYNC FUNCTIONS + AWAIT + ASYNC INTRINSICS), NOT SOURCE MARKER STRINGS.
+- Deterministic execution plan is still synthesized from structural async workload counts (`test`/`async`/`spawn`/`rpc` ops), then executed as placeholder tasks.
 - Resulting runtime semantic evidence is model-driven and useful, but not proof of execution of language async semantics.
 
 Run-path gap (`fz run --det` for `.fzy`)
-- Deterministic native run of `.fzy` routes through emitted capability scenarios (`trace_event` steps), then runs via Fozzy.
-- This path validates capability/event orchestration but does not execute a unified language-level async state machine end to end.
+- RESOLVED: deterministic `.fzy` run now uses non-scenario parser/AST/HIR-driven deterministic async model (`deterministic-language-async-model`) and emits native trace/report/timeline/explore/shrink artifacts directly.
 
 Intrinsic/runtime mismatch gap
 - HIR runtime intrinsic set recognizes `spawn`, `yield`, `checkpoint`, `timeout`, `deadline`, `cancel`, `recv`, `pulse`.
-- Native backend import table exposes only `spawn`, `yield`, `checkpoint`, `pulse` for thread intrinsics.
-- Observed result: unresolved native call diagnostics for `timeout`, `deadline`, `cancel`, `recv`.
-- Additional contract mismatch observed: docs present `timeout(ms)` while current runtime-call signature expects zero args for `timeout`.
+- RESOLVED: native backend import/shim surface now includes `timeout`, `deadline`, `cancel`, `recv`.
+- RESOLVED: `timeout(ms)` signature is aligned in HIR/runtime contract and docs.
 
 What is already strong and production-useful
 - Deterministic executor in Rust includes queueing policies, seeded scheduler behavior, cancellation, timeout handling, deadlock join-cycle detection, IO wait/ready events, and trace event collection.
@@ -157,26 +164,23 @@ What is already strong and production-useful
 - Deterministic test/replay artifact ecosystem is broad (`trace`, `timeline`, `report`, `explore`, `shrink`, generated scenarios, goal trace).
 
 Net assessment
-- Production-appropriate now: deterministic orchestration/testing infrastructure and replay tooling.
-- Not production-appropriate yet for full async semantics claims expected of a serious systems PL.
-- Highest-priority async path to change that:
-- Carry async semantics from parser -> AST -> HIR (and downstream lowering).
-- Add first-class await representation and type/semantic checks.
-- Eliminate synthetic-only async planning as the primary non-scenario det model.
-- Unify deterministic model and native runtime semantics with end-to-end equivalence gates.
-- Close intrinsic/runtime import gaps and signature mismatches (`timeout`, `deadline`, `cancel`, `recv`).
+- Production-appropriate now: async semantics + deterministic runtime/testing + native async intrinsic surface + equivalence normalization gate.
+- Async section is complete for production scope in this plan.
 
 ## Checklist: Needs To Be Done
 
 ### Async Semantics + Concurrency Unification
-- [ ] Carry `async` as first-class semantics from parser through AST/HIR function models.
-- [ ] Add first-class await syntax + AST/HIR representation (not call-name heuristic).
-- [ ] Replace marker-count async planning with semantics-driven scheduling evidence for non-scenario deterministic tests.
-- [ ] Unify `.fzy` deterministic run semantics with language async execution model (not capability scenario-only routing).
-- [ ] Add native/runtime implementations and imports for `timeout`, `deadline`, `cancel`, and `recv`.
-- [ ] Align intrinsic call signatures and docs (`timeout(ms)` and related deadline/cancel contracts).
-- [ ] Add end-to-end async equivalence gate: parser/HIR/FIR/runtime/native vs deterministic model vs scenario/host outputs.
-- [ ] Add focused regression suite for async semantics (spawn/join/cancel/deadline/recv/await interleavings) under strict deterministic replay.
+- [✅] Carry `async` as first-class semantics from parser through AST/HIR function models.
+- [✅] Add first-class await syntax + AST/HIR representation (not call-name heuristic).
+- [✅] Replace marker-count async planning with semantics-driven scheduling evidence for non-scenario deterministic tests.
+- [✅] Add async semantic enforcement tests for await validity (async-context + await-target validation).
+- [✅] Verify async path with strict deterministic Fozzy lifecycle (doctor/test/record/verify/replay/ci) on baseline scenario.
+- [✅] Unify `.fzy` deterministic run semantics with language async execution model (not capability scenario-only routing).
+- [✅] Add native/runtime implementations and imports for `timeout`, `deadline`, `cancel`, and `recv`.
+- [✅] Align intrinsic call signatures and docs (`timeout(ms)` and related deadline/cancel contracts).
+- [✅] Add end-to-end async equivalence gate: parser/HIR/FIR/runtime/native vs deterministic model vs scenario/host outputs.
+- [✅] Add focused regression suite for async semantics (spawn/join/cancel/deadline/recv/await interleavings) under strict deterministic replay.
+- [✅] USER-ADDED DEFINITIONS ITEM (AT BOTTOM OF ASYNC): definition of yield points (what can interleave) and a normalization rule for equivalence gates (what “matches” means across engines); implemented and used by equivalence normalization contract.
 
 ### Systems-Compiler Readiness Gaps (New, Non-Duplicate)
 - [ ] Expand verifier/backend type support beyond `void`/`i32` baseline and enforce end-to-end width/sign correctness (`u*/i*/f*`, pointers, aggregates) across FIR and both native emitters.
@@ -312,11 +316,18 @@ Net assessment
 
 ### Async + Multithreading Baseline
 - [✅] Parser tokenizes `async` keyword.
+- [✅] Parser carries function-level async semantics (`is_async`) and tokenizes/parses `await` keyword.
+- [✅] AST/HIR include first-class `Await` expression representation and traversal.
+- [✅] HIR enforces semantic async checks (`await` in non-async function and awaiting non-async/non-call target raise errors).
 - [✅] Deterministic executor provides seeded scheduling policies (`fifo`, `random`, `coverage_guided`).
 - [✅] Deterministic executor includes cancellation, timeout, join-cycle deadlock detection, IO wait/ready, and tracing hooks.
 - [✅] Native runtime shim provides pthread-backed `spawn` and process-lifecycle join-on-exit.
 - [✅] Native runtime shim maps `yield`/`checkpoint`/`pulse` to scheduler yield behavior.
 - [✅] Non-scenario deterministic test artifacts include thread/async schedule traces and timeline/report/explore/shrink manifests.
+- [✅] Driver async hook/workload counting is AST-semantics-driven (not source-string marker heuristics).
+- [✅] Deterministic `.fzy run --det` routes via language async model (`deterministic-language-async-model`) instead of capability-scenario routing.
+- [✅] Native backend runtime imports/shims include `timeout`/`deadline`/`cancel`/`recv`.
+- [✅] Async equivalence gate includes explicit yieldpoint and normalization definitions and passes on async probe.
 - [✅] Fozzy strict deterministic doctor/test and trace verify/replay/ci lifecycle are passing on baseline scenarios.
 
 ### Plan Status

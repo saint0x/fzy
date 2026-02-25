@@ -26,6 +26,12 @@ This document defines the v0 observable semantics contract used by the toolchain
 
 ## Async And Scheduling Constructs
 
+### `await <call>`
+
+- Awaits an async call and yields control at an explicit async yieldpoint.
+- `await` is valid only inside `async fn` bodies.
+- Awaiting non-call expressions or known non-async calls is invalid.
+
 ### `spawn(task)`
 
 - Creates a new schedulable task.
@@ -46,6 +52,7 @@ This document defines the v0 observable semantics contract used by the toolchain
 
 - Declares timeout/deadline behavior for the enclosing operation scope.
 - Timeout decisions are observable deterministic events.
+- `ms` argument is required.
 
 ### `cancel()`
 
@@ -134,6 +141,17 @@ test "chaos_case" nondet {
 - Scheduling decisions are recorded as replay-critical trace data.
 - Async checkpoints and RPC frame decisions are represented as deterministic events.
 - v0 model controls explicit runtime scheduling points and does not claim arbitrary OS-preemptive interleaving coverage.
+
+### Yieldpoint Definitions (Equivalence Contract)
+
+- The following constructs are explicit yield/interleaving points for async equivalence: `await`, `yield()`, `checkpoint()`, `spawn(...)`, `recv()`, `timeout(ms)`, `deadline(ms)`, `cancel()`, `pulse()`.
+- Cross-engine equivalence normalization uses deterministic event categories:
+  - `thread.schedule`
+  - `async.checkpoint`
+  - `rpc.frame`
+  - `test.event`
+  - `test.assert`
+- Normalization rule: engine-specific `async.schedule` is normalized to `async.checkpoint` before equivalence comparison.
 
 ## Memory Safety And UB Model
 
