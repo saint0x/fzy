@@ -1,4 +1,4 @@
-use ast::{BinaryOp, Expr, MatchArm, Module, Pattern, Stmt, Type};
+use ast::{BinaryOp, Expr, MatchArm, Module, Pattern, Stmt, Type, UnaryOp};
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
 
 #[derive(Debug, Clone)]
@@ -59,18 +59,33 @@ enum TokenKind {
     DotDot,
     DotDotEq,
     Pipe,
+    PipePipe,
     Plus,
+    PlusEq,
     Minus,
+    MinusEq,
     Star,
+    StarEq,
     Slash,
+    SlashEq,
     Percent,
+    PercentEq,
     Eq,
     EqEq,
     Neq,
     Lt,
+    LtLt,
+    LtLtEq,
     Lte,
     Gt,
+    GtGt,
+    GtGtEq,
     Gte,
+    AmpAmp,
+    AmpEq,
+    Caret,
+    CaretEq,
+    PipeEq,
     Arrow,
     FatArrow,
     Amp,
@@ -750,7 +765,11 @@ impl Parser {
         }
 
         if self.consume(&TokenKind::KwReturn) {
-            let expr = self.parse_expr(0)?;
+            let expr = if self.at(&TokenKind::Semi) {
+                None
+            } else {
+                Some(self.parse_expr(0)?)
+            };
             let _ = self.consume(&TokenKind::Semi);
             return Some(Stmt::Return(expr));
         }
@@ -806,14 +825,21 @@ impl Parser {
             return Some(Stmt::Match { scrutinee, arms });
         }
 
-        if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_)))
-            && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Eq)
-        {
-            let target = self.expect_ident("expected assignment target")?;
-            let _ = self.consume(&TokenKind::Eq);
-            let value = self.parse_expr(0)?;
-            let _ = self.consume(&TokenKind::Semi);
-            return Some(Stmt::Assign { target, value });
+        if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_))) {
+            if self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Eq) {
+                let target = self.expect_ident("expected assignment target")?;
+                let _ = self.consume(&TokenKind::Eq);
+                let value = self.parse_expr(0)?;
+                let _ = self.consume(&TokenKind::Semi);
+                return Some(Stmt::Assign { target, value });
+            }
+            if let Some(op) = self.compound_assign_op() {
+                let target = self.expect_ident("expected assignment target")?;
+                let _ = self.advance();
+                let value = self.parse_expr(0)?;
+                let _ = self.consume(&TokenKind::Semi);
+                return Some(Stmt::CompoundAssign { target, op, value });
+            }
         }
 
         let expr = self.parse_expr(0)?;
@@ -903,6 +929,14 @@ impl Parser {
             let _ = self.consume(&TokenKind::Eq);
             let value = self.parse_expr(0)?;
             Stmt::Assign { target, value }
+        } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_)))
+            && self.compound_assign_op().is_some()
+        {
+            let target = self.expect_ident("expected assignment target")?;
+            let op = self.compound_assign_op()?;
+            let _ = self.advance();
+            let value = self.parse_expr(0)?;
+            Stmt::CompoundAssign { target, op, value }
         } else {
             let value = self.parse_expr(0)?;
             Stmt::Expr(value)
@@ -1008,14 +1042,6 @@ impl Parser {
                     continue;
                 }
             }
-            if self.at(&TokenKind::Percent) {
-                self.push_diag_here(
-                    "operator `%` is not supported yet; use a helper function until lowering support lands",
-                );
-                let _ = self.advance();
-                let _ = self.parse_expr(5);
-                return None;
-            }
             let Some((op, prec)) = self.current_binary_op() else {
                 break;
             };
@@ -1049,6 +1075,27 @@ impl Parser {
         if self.consume(&TokenKind::KwAwait) {
             let awaited = self.parse_prefix_expr()?;
             return Some(Expr::Await(Box::new(awaited)));
+        }
+        if self.consume(&TokenKind::Bang) {
+            let expr = self.parse_prefix_expr()?;
+            return Some(Expr::Unary {
+                op: UnaryOp::Not,
+                expr: Box::new(expr),
+            });
+        }
+        if self.consume(&TokenKind::Minus) {
+            let expr = self.parse_prefix_expr()?;
+            return Some(Expr::Unary {
+                op: UnaryOp::Neg,
+                expr: Box::new(expr),
+            });
+        }
+        if self.consume(&TokenKind::Plus) {
+            let expr = self.parse_prefix_expr()?;
+            return Some(Expr::Unary {
+                op: UnaryOp::Plus,
+                expr: Box::new(expr),
+            });
         }
 
         let token = self.advance()?;
@@ -1115,9 +1162,7 @@ impl Parser {
 
         loop {
             if self.consume(&TokenKind::Dot) {
-                let Some(seg) = self.expect_member_name("expected member name after `.`") else {
-                    return None;
-                };
+                let seg = self.expect_member_name("expected member name after `.`")?;
                 expr = Expr::FieldAccess {
                     base: Box::new(expr),
                     field: seg,
@@ -1403,20 +1448,42 @@ impl Parser {
     fn current_binary_op(&self) -> Option<(BinaryOp, u8)> {
         let kind = &self.peek()?.kind;
         let (op, prec) = match kind {
-            TokenKind::EqEq => (BinaryOp::Eq, 1),
-            TokenKind::Neq => (BinaryOp::Neq, 1),
-            TokenKind::Lt => (BinaryOp::Lt, 2),
-            TokenKind::Lte => (BinaryOp::Lte, 2),
-            TokenKind::Gt => (BinaryOp::Gt, 2),
-            TokenKind::Gte => (BinaryOp::Gte, 2),
-            TokenKind::Plus => (BinaryOp::Add, 3),
-            TokenKind::Minus => (BinaryOp::Sub, 3),
-            TokenKind::Star => (BinaryOp::Mul, 4),
-            TokenKind::Slash => (BinaryOp::Div, 4),
-            TokenKind::Percent => (BinaryOp::Mod, 4),
+            TokenKind::PipePipe => (BinaryOp::Or, 1),
+            TokenKind::AmpAmp => (BinaryOp::And, 2),
+            TokenKind::EqEq => (BinaryOp::Eq, 3),
+            TokenKind::Neq => (BinaryOp::Neq, 3),
+            TokenKind::Lt => (BinaryOp::Lt, 4),
+            TokenKind::Lte => (BinaryOp::Lte, 4),
+            TokenKind::Gt => (BinaryOp::Gt, 4),
+            TokenKind::Gte => (BinaryOp::Gte, 4),
+            TokenKind::Amp => (BinaryOp::BitAnd, 5),
+            TokenKind::Caret => (BinaryOp::BitXor, 5),
+            TokenKind::LtLt => (BinaryOp::Shl, 5),
+            TokenKind::GtGt => (BinaryOp::Shr, 5),
+            TokenKind::Plus => (BinaryOp::Add, 6),
+            TokenKind::Minus => (BinaryOp::Sub, 6),
+            TokenKind::Star => (BinaryOp::Mul, 7),
+            TokenKind::Slash => (BinaryOp::Div, 7),
+            TokenKind::Percent => (BinaryOp::Mod, 7),
             _ => return None,
         };
         Some((op, prec))
+    }
+
+    fn compound_assign_op(&self) -> Option<BinaryOp> {
+        match self.peek_n(1).map(|token| &token.kind) {
+            Some(TokenKind::PlusEq) => Some(BinaryOp::Add),
+            Some(TokenKind::MinusEq) => Some(BinaryOp::Sub),
+            Some(TokenKind::StarEq) => Some(BinaryOp::Mul),
+            Some(TokenKind::SlashEq) => Some(BinaryOp::Div),
+            Some(TokenKind::PercentEq) => Some(BinaryOp::Mod),
+            Some(TokenKind::LtLtEq) => Some(BinaryOp::Shl),
+            Some(TokenKind::GtGtEq) => Some(BinaryOp::Shr),
+            Some(TokenKind::AmpEq) => Some(BinaryOp::BitAnd),
+            Some(TokenKind::CaretEq) => Some(BinaryOp::BitXor),
+            Some(TokenKind::PipeEq) => Some(BinaryOp::BitOr),
+            _ => None,
+        }
     }
 
     fn at(&self, kind: &TokenKind) -> bool {
@@ -1673,31 +1740,55 @@ impl<'a> Lexer<'a> {
                 }
                 '|' => {
                     self.advance_char();
-                    TokenKind::Pipe
+                    if self.match_char('|') {
+                        TokenKind::PipePipe
+                    } else if self.match_char('=') {
+                        TokenKind::PipeEq
+                    } else {
+                        TokenKind::Pipe
+                    }
                 }
                 '+' => {
                     self.advance_char();
-                    TokenKind::Plus
+                    if self.match_char('=') {
+                        TokenKind::PlusEq
+                    } else {
+                        TokenKind::Plus
+                    }
                 }
                 '-' => {
                     self.advance_char();
                     if self.match_char('>') {
                         TokenKind::Arrow
+                    } else if self.match_char('=') {
+                        TokenKind::MinusEq
                     } else {
                         TokenKind::Minus
                     }
                 }
                 '*' => {
                     self.advance_char();
-                    TokenKind::Star
+                    if self.match_char('=') {
+                        TokenKind::StarEq
+                    } else {
+                        TokenKind::Star
+                    }
                 }
                 '/' => {
                     self.advance_char();
-                    TokenKind::Slash
+                    if self.match_char('=') {
+                        TokenKind::SlashEq
+                    } else {
+                        TokenKind::Slash
+                    }
                 }
                 '%' => {
                     self.advance_char();
-                    TokenKind::Percent
+                    if self.match_char('=') {
+                        TokenKind::PercentEq
+                    } else {
+                        TokenKind::Percent
+                    }
                 }
                 '=' => {
                     self.advance_char();
@@ -1719,7 +1810,13 @@ impl<'a> Lexer<'a> {
                 }
                 '<' => {
                     self.advance_char();
-                    if self.match_char('=') {
+                    if self.match_char('<') {
+                        if self.match_char('=') {
+                            TokenKind::LtLtEq
+                        } else {
+                            TokenKind::LtLt
+                        }
+                    } else if self.match_char('=') {
                         TokenKind::Lte
                     } else {
                         TokenKind::Lt
@@ -1727,7 +1824,13 @@ impl<'a> Lexer<'a> {
                 }
                 '>' => {
                     self.advance_char();
-                    if self.match_char('=') {
+                    if self.match_char('>') {
+                        if self.match_char('=') {
+                            TokenKind::GtGtEq
+                        } else {
+                            TokenKind::GtGt
+                        }
+                    } else if self.match_char('=') {
                         TokenKind::Gte
                     } else {
                         TokenKind::Gt
@@ -1735,7 +1838,21 @@ impl<'a> Lexer<'a> {
                 }
                 '&' => {
                     self.advance_char();
-                    TokenKind::Amp
+                    if self.match_char('&') {
+                        TokenKind::AmpAmp
+                    } else if self.match_char('=') {
+                        TokenKind::AmpEq
+                    } else {
+                        TokenKind::Amp
+                    }
+                }
+                '^' => {
+                    self.advance_char();
+                    if self.match_char('=') {
+                        TokenKind::CaretEq
+                    } else {
+                        TokenKind::Caret
+                    }
                 }
                 '\'' => {
                     self.advance_char();
@@ -2342,17 +2459,32 @@ mod tests {
     }
 
     #[test]
-    fn percent_operator_reports_explicit_diagnostic() {
+    fn parses_percent_operator_expression() {
         let source = r#"
             fn main() -> i32 {
                 let x = 7 % 3;
                 return x;
             }
         "#;
-        let diagnostics = parse(source, "main").expect_err("parse should fail");
-        assert!(diagnostics
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
             .iter()
-            .any(|d| d.message.contains("operator `%` is not supported yet")));
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::Binary {
+                    op: ast::BinaryOp::Mod,
+                    ..
+                },
+                ..
+            }
+        )));
     }
 
     #[test]

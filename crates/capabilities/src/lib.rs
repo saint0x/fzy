@@ -56,6 +56,10 @@ impl CapabilitySet {
         self.values.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = Capability> + '_ {
         self.values.iter().copied()
     }

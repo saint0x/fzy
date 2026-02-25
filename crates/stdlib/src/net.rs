@@ -186,23 +186,12 @@ impl RequestContext {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GracefulShutdown {
     pub draining: bool,
     pub in_flight: usize,
     pub timeout_ms: u64,
     pub started_at_ms: Option<u64>,
-}
-
-impl Default for GracefulShutdown {
-    fn default() -> Self {
-        Self {
-            draining: false,
-            in_flight: 0,
-            timeout_ms: 0,
-            started_at_ms: None,
-        }
-    }
 }
 
 impl GracefulShutdown {
@@ -1412,7 +1401,7 @@ impl Default for HttpServerLimits {
     fn default() -> Self {
         Self {
             max_header_bytes: 16 * 1024,
-            max_body_bytes: 1 * 1024 * 1024,
+            max_body_bytes: 1024 * 1024,
             max_connections: 1024,
             read_timeout_ms: 5_000,
             write_timeout_ms: 5_000,

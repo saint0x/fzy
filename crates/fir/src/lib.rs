@@ -254,6 +254,11 @@ fn lower_stmts_into_block(
                     name: target.clone(),
                 });
             }
+            ast::Stmt::CompoundAssign { target, .. } => {
+                current.instructions.push(Instruction::Assign {
+                    name: target.clone(),
+                });
+            }
             ast::Stmt::Expr(_)
             | ast::Stmt::Requires(_)
             | ast::Stmt::Ensures(_)

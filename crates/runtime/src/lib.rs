@@ -68,17 +68,12 @@ pub enum Scheduler {
     CoverageGuided,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TraceMode {
     Off,
     ReplayCritical,
+    #[default]
     Full,
-}
-
-impl Default for TraceMode {
-    fn default() -> Self {
-        Self::Full
-    }
 }
 
 pub fn plan_async_checkpoints(
@@ -213,19 +208,10 @@ pub enum TaskEvent {
     },
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ExecutorConfig {
     pub max_queue_depth: Option<usize>,
     pub task_timeout: Option<Duration>,
-}
-
-impl Default for ExecutorConfig {
-    fn default() -> Self {
-        Self {
-            max_queue_depth: None,
-            task_timeout: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

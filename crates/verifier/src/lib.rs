@@ -36,7 +36,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         ));
     }
 
-    if module.nodes > 0 && module.effects.len() == 0 {
+    if module.nodes > 0 && module.effects.is_empty() {
         report.diagnostics.push(Diagnostic::new(
             Severity::Warning,
             "module has declarations but no explicit capabilities",

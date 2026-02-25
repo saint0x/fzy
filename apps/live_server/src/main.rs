@@ -101,9 +101,11 @@ struct SharedState {
 
 impl SharedState {
     fn new(cfg: AppConfig, store: StoreData, flush_tx: SyncSender<FlushCommand>) -> Self {
-        let mut logger = Logger::default();
-        logger.min_level = LogLevel::Info;
-        logger.policy = RedactionPolicy::RedactKnownSecrets;
+        let logger = Logger {
+            min_level: LogLevel::Info,
+            policy: RedactionPolicy::RedactKnownSecrets,
+            ..Logger::default()
+        };
 
         Self {
             cfg,

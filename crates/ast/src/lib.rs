@@ -112,6 +112,11 @@ pub enum Stmt {
         target: String,
         value: Expr,
     },
+    CompoundAssign {
+        target: String,
+        op: BinaryOp,
+        value: Expr,
+    },
     If {
         condition: Expr,
         then_body: Vec<Stmt>,
@@ -137,7 +142,7 @@ pub enum Stmt {
     },
     Break,
     Continue,
-    Return(Expr),
+    Return(Option<Expr>),
     Defer(Expr),
     Requires(Expr),
     Ensures(Expr),
@@ -182,11 +187,23 @@ pub enum Expr {
         end: Box<Expr>,
         inclusive: bool,
     },
+    Unary {
+        op: UnaryOp,
+        expr: Box<Expr>,
+    },
     Binary {
         op: BinaryOp,
         left: Box<Expr>,
         right: Box<Expr>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnaryOp {
+    Not,
+    Plus,
+    Neg,
+    BitNot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +213,13 @@ pub enum BinaryOp {
     Mul,
     Div,
     Mod,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
+    And,
+    Or,
     Lt,
     Lte,
     Gt,
@@ -307,12 +331,10 @@ impl std::fmt::Display for Type {
                     } else {
                         write!(f, "&mut {to}")
                     }
+                } else if let Some(lifetime) = lifetime {
+                    write!(f, "&'{lifetime} {to}")
                 } else {
-                    if let Some(lifetime) = lifetime {
-                        write!(f, "&'{lifetime} {to}")
-                    } else {
-                        write!(f, "&{to}")
-                    }
+                    write!(f, "&{to}")
                 }
             }
             Type::Slice(elem) => write!(f, "[]{elem}"),
@@ -352,12 +374,16 @@ pub trait AstVisitor {
 pub fn walk_stmt<V: AstVisitor + ?Sized>(visitor: &mut V, stmt: &Stmt) {
     match stmt {
         Stmt::Let { value, .. }
-        | Stmt::Return(value)
         | Stmt::Defer(value)
         | Stmt::Requires(value)
         | Stmt::Ensures(value)
         | Stmt::Expr(value) => visitor.visit_expr(value),
-        Stmt::Assign { value, .. } => visitor.visit_expr(value),
+        Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => visitor.visit_expr(value),
+        Stmt::Return(value) => {
+            if let Some(value) = value {
+                visitor.visit_expr(value);
+            }
+        }
         Stmt::If {
             condition,
             then_body,
@@ -454,6 +480,7 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
             visitor.visit_expr(end);
         }
         Expr::Await(inner) => visitor.visit_expr(inner),
+        Expr::Unary { expr, .. } => visitor.visit_expr(expr),
         Expr::Binary { left, right, .. } => {
             visitor.visit_expr(left);
             visitor.visit_expr(right);

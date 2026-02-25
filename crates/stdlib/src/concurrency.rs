@@ -203,6 +203,10 @@ impl<T> BoundedChannel<T> {
             .unwrap_or_default()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     fn fire_overflow(&self, event: OverflowEvent) {
         if let Some(cb) = &self.overflow_cb {
             cb(event);
@@ -478,6 +482,10 @@ impl<T> ObjectPool<T> {
 
     pub fn len(&self) -> usize {
         self.values.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.values.is_empty()
     }
 
     pub fn evictions(&self) -> usize {

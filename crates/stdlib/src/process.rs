@@ -190,10 +190,8 @@ pub fn run_child_process(spec: &ProcessSpec, cancelled: bool) -> ProcessResult {
     // Safety: pre_exec only performs async-signal-safe libc calls to configure child process.
     unsafe {
         command.pre_exec(move || {
-            if set_process_group {
-                if libc::setpgid(0, 0) != 0 {
-                    return Err(std::io::Error::last_os_error());
-                }
+            if set_process_group && libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
             }
             if let Some(max) = limits.max_open_files {
                 let lim = libc::rlimit {

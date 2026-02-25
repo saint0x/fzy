@@ -76,25 +76,13 @@ pub enum ShutdownSignal {
     Sigint,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ShutdownState {
     pub draining: bool,
     pub in_flight_requests: usize,
     pub started_at_ms: Option<u64>,
     pub timeout_ms: u64,
     pub signal: Option<ShutdownSignal>,
-}
-
-impl Default for ShutdownState {
-    fn default() -> Self {
-        Self {
-            draining: false,
-            in_flight_requests: 0,
-            started_at_ms: None,
-            timeout_ms: 0,
-            signal: None,
-        }
-    }
 }
 
 impl ShutdownState {
@@ -130,7 +118,7 @@ impl ShutdownState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RuntimeStats {
     pub task_queue_depth: usize,
     pub scheduler_lag_ms: u64,
@@ -144,18 +132,6 @@ pub struct ServiceRuntime {
     queue: VecDeque<String>,
     pub shutdown: ShutdownState,
     stats: RuntimeStats,
-}
-
-impl Default for RuntimeStats {
-    fn default() -> Self {
-        Self {
-            task_queue_depth: 0,
-            scheduler_lag_ms: 0,
-            allocation_pressure_bytes: 0,
-            open_file_count: 0,
-            open_socket_count: 0,
-        }
-    }
 }
 
 impl ServiceRuntime {

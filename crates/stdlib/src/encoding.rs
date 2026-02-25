@@ -46,7 +46,7 @@ pub fn hex_encode(bytes: &[u8]) -> String {
 }
 
 pub fn hex_decode(text: &str) -> Result<Vec<u8>, EncodingError> {
-    if text.len() % 2 != 0 {
+    if !text.len().is_multiple_of(2) {
         return Err(EncodingError::InvalidHexLength);
     }
 
@@ -98,7 +98,7 @@ pub fn base64_decode(text: &str) -> Result<Vec<u8>, EncodingError> {
     if text.is_empty() {
         return Ok(Vec::new());
     }
-    if text.len() % 4 != 0 {
+    if !text.len().is_multiple_of(4) {
         return Err(EncodingError::InvalidBase64Length);
     }
 

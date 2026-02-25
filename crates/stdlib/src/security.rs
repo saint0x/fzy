@@ -24,7 +24,7 @@ impl Default for ServerHardeningDefaults {
     fn default() -> Self {
         Self {
             max_header_bytes: 16 * 1024,
-            max_body_bytes: 1 * 1024 * 1024,
+            max_body_bytes: 1024 * 1024,
             max_connections: 1024,
             request_timeout_ms: 5_000,
             idle_timeout_ms: 15_000,

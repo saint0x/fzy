@@ -270,14 +270,16 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             if deterministic && !host_backends {
                 let plan = run_non_scenario_test_plan(
                     &path,
-                    true,
-                    strict_verify,
-                    safe_profile,
-                    Some("fifo".to_string()),
-                    seed,
-                    record.as_deref(),
-                    true,
-                    None,
+                    NonScenarioPlanRequest {
+                        deterministic: true,
+                        strict_verify,
+                        safe_profile,
+                        scheduler: Some("fifo".to_string()),
+                        seed,
+                        record: record.as_deref(),
+                        rich_artifacts: true,
+                        filter: None,
+                    },
                 )?;
                 return match format {
                     Format::Text => Ok(render_text_fields(&[
@@ -527,14 +529,16 @@ pub fn run(command: Command, format: Format) -> Result<String> {
 
             let test_plan = run_non_scenario_test_plan(
                 &path,
-                deterministic,
-                strict_verify,
-                safe_profile,
-                scheduler.clone(),
-                seed,
-                record.as_deref(),
-                rich_artifacts,
-                filter.as_deref(),
+                NonScenarioPlanRequest {
+                    deterministic,
+                    strict_verify,
+                    safe_profile,
+                    scheduler: scheduler.clone(),
+                    seed,
+                    record: record.as_deref(),
+                    rich_artifacts,
+                    filter: filter.as_deref(),
+                },
             )?;
             let message = render_text_fields(&[
                 ("status", "ok".to_string()),
@@ -1478,40 +1482,138 @@ fn spec_check(format: Format) -> Result<String> {
     }
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct PlanClaimGate {
+    completed: usize,
+    checked: usize,
+    missing_evidence: Vec<String>,
+}
+
+fn validate_plan_claim_accuracy() -> Result<PlanClaimGate> {
+    let plan_path = PathBuf::from("PLAN.md");
+    if !plan_path.exists() {
+        return Ok(PlanClaimGate {
+            completed: 0,
+            checked: 0,
+            missing_evidence: Vec::new(),
+        });
+    }
+    let plan_text = std::fs::read_to_string(&plan_path)
+        .with_context(|| format!("failed reading plan file: {}", plan_path.display()))?;
+    let mut files = Vec::new();
+    collect_files_recursive(Path::new("."), Path::new("."), &mut files)?;
+    let corpus = files
+        .into_iter()
+        .filter(|(rel, _)| rel.ends_with(".rs"))
+        .filter_map(|(rel, full)| {
+            let text = std::fs::read_to_string(&full).ok()?;
+            Some((rel, text))
+        })
+        .collect::<Vec<_>>();
+    Ok(analyze_plan_claim_accuracy(&plan_text, &corpus))
+}
+
+fn analyze_plan_claim_accuracy(plan_text: &str, corpus: &[(String, String)]) -> PlanClaimGate {
+    let mut completed = 0usize;
+    let mut checked = 0usize;
+    let mut claims = Vec::<(String, Vec<String>)>::new();
+    for line in plan_text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("- [✅]") {
+            continue;
+        }
+        completed += 1;
+        let mut tokens = Vec::new();
+        let mut rest = trimmed;
+        while let Some(start) = rest.find('`') {
+            let tail = &rest[(start + 1)..];
+            let Some(end) = tail.find('`') else {
+                break;
+            };
+            let token = tail[..end].trim();
+            if !token.is_empty() {
+                tokens.push(token.to_string());
+            }
+            rest = &tail[(end + 1)..];
+        }
+        if !tokens.is_empty() {
+            checked += 1;
+            claims.push((trimmed.to_string(), tokens));
+        }
+    }
+    let mut missing = Vec::new();
+    for (claim, tokens) in claims {
+        let mut has_source = false;
+        let mut has_test = false;
+        for token in &tokens {
+            for (rel, text) in corpus {
+                if !text.contains(token) {
+                    continue;
+                }
+                if rel.contains("/tests/") || text.contains("#[test]") {
+                    has_test = true;
+                } else {
+                    has_source = true;
+                }
+                if has_source && has_test {
+                    break;
+                }
+            }
+            if has_source && has_test {
+                break;
+            }
+        }
+        if !(has_source && has_test) {
+            missing.push(claim);
+        }
+    }
+    PlanClaimGate {
+        completed,
+        checked,
+        missing_evidence: missing,
+    }
+}
+
 fn parity_command(path: &Path, seed: u64, format: Format) -> Result<String> {
     ensure_exists(path)?;
     let fast = run_non_scenario_test_plan(
         path,
-        false,
-        false,
-        false,
-        None,
-        Some(seed),
-        None,
-        false,
-        None,
+        NonScenarioPlanRequest {
+            deterministic: false,
+            strict_verify: false,
+            safe_profile: false,
+            scheduler: None,
+            seed: Some(seed),
+            record: None,
+            rich_artifacts: false,
+            filter: None,
+        },
     )?;
     let det = run_non_scenario_test_plan(
         path,
-        true,
-        false,
-        false,
-        Some("fifo".to_string()),
-        Some(seed),
-        None,
-        false,
-        None,
+        NonScenarioPlanRequest {
+            deterministic: true,
+            strict_verify: false,
+            safe_profile: false,
+            scheduler: Some("fifo".to_string()),
+            seed: Some(seed),
+            record: None,
+            rich_artifacts: false,
+            filter: None,
+        },
     )?;
     let verify = run_non_scenario_test_plan(
         path,
-        true,
-        false,
-        true,
-        Some("fifo".to_string()),
-        Some(seed),
-        None,
-        false,
-        None,
+        NonScenarioPlanRequest {
+            deterministic: true,
+            strict_verify: false,
+            safe_profile: true,
+            scheduler: Some("fifo".to_string()),
+            seed: Some(seed),
+            record: None,
+            rich_artifacts: false,
+            filter: None,
+        },
     );
 
     let mut outcomes = vec![
@@ -1585,14 +1687,16 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
         std::env::temp_dir().join(format!("fozzylang-equivalence-{suffix}.trace.json"));
     let native_plan = run_non_scenario_test_plan(
         path,
-        true,
-        true,
-        false,
-        Some("fifo".to_string()),
-        Some(seed),
-        Some(&temp_trace),
-        true,
-        None,
+        NonScenarioPlanRequest {
+            deterministic: true,
+            strict_verify: true,
+            safe_profile: false,
+            scheduler: Some("fifo".to_string()),
+            seed: Some(seed),
+            record: Some(&temp_trace),
+            rich_artifacts: true,
+            filter: None,
+        },
     )?;
     let artifacts = native_plan
         .artifacts
@@ -1678,9 +1782,10 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
     {
         issues.push("native equivalence model missing rpc.frame evidence".to_string());
     }
-    if !(scenario_trace_events == 0
+    let scenario_events_empty = scenario_trace_events == 0
         && scenario_outcome.event_kinds.is_empty()
-        && host_outcome.event_kinds.is_empty())
+        && host_outcome.event_kinds.is_empty();
+    if !scenario_events_empty
         && !event_kinds_equivalent(&native.event_kinds, &scenario_outcome.event_kinds)
     {
         issues.push("native/scenario normalized event kinds mismatch".to_string());
@@ -1987,12 +2092,22 @@ fn collect_semantic_unsafe_entries_from_stmt(
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::Return(value)
+        | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => {
             collect_semantic_unsafe_entries_from_expr(value, module_path, function_name, entries)
+        }
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_semantic_unsafe_entries_from_expr(
+                    value,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
         }
         ast::Stmt::If {
             condition,
@@ -2177,6 +2292,9 @@ fn collect_semantic_unsafe_entries_from_expr(
         }
         ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
             collect_semantic_unsafe_entries_from_expr(inner, module_path, function_name, entries);
+        }
+        ast::Expr::Unary { expr, .. } => {
+            collect_semantic_unsafe_entries_from_expr(expr, module_path, function_name, entries);
         }
         ast::Expr::TryCatch {
             try_expr,
@@ -2662,17 +2780,21 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
     let async_hooks = count_async_hooks_in_module(&parsed.module);
     let async_plan = run_non_scenario_test_plan(
         path,
-        true,
-        false,
-        false,
-        Some("fifo".to_string()),
-        Some(1),
-        None,
-        false,
-        None,
+        NonScenarioPlanRequest {
+            deterministic: true,
+            strict_verify: false,
+            safe_profile: false,
+            scheduler: Some("fifo".to_string()),
+            seed: Some(1),
+            record: None,
+            rich_artifacts: false,
+            filter: None,
+        },
     )?;
     let async_backtrace_ready = async_hooks == 0 || async_plan.runtime_event_count > 0;
-    let ok = debug_symbols && async_backtrace_ready;
+    let plan_claim_gate = validate_plan_claim_accuracy()?;
+    let plan_claims_ok = plan_claim_gate.missing_evidence.is_empty();
+    let ok = debug_symbols && async_backtrace_ready && plan_claims_ok;
     match format {
         Format::Text => Ok(render_text_fields(&[
             ("status", if ok { "ok" } else { "warn" }.to_string()),
@@ -2681,6 +2803,11 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
             ("debug_symbols", debug_symbols.to_string()),
             ("async_backtrace_ready", async_backtrace_ready.to_string()),
             ("async_hooks", async_hooks.to_string()),
+            ("plan_claims_checked", plan_claim_gate.checked.to_string()),
+            (
+                "plan_claims_missing_evidence",
+                plan_claim_gate.missing_evidence.len().to_string(),
+            ),
         ])),
         Format::Json => Ok(serde_json::json!({
             "ok": ok,
@@ -2690,6 +2817,11 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
             "asyncHooks": async_hooks,
             "runtimeEvents": async_plan.runtime_event_count,
             "causalLinks": async_plan.causal_link_count,
+            "planClaimGate": {
+                "completed": plan_claim_gate.completed,
+                "checked": plan_claim_gate.checked,
+                "missingEvidence": plan_claim_gate.missing_evidence,
+            },
             "fileInfo": file_text.trim(),
         })
         .to_string()),
@@ -2894,6 +3026,35 @@ enum ArtifactDetail {
     Rich,
 }
 
+#[derive(Debug, Clone)]
+struct NonScenarioPlanRequest<'a> {
+    deterministic: bool,
+    strict_verify: bool,
+    safe_profile: bool,
+    scheduler: Option<String>,
+    seed: Option<u64>,
+    record: Option<&'a Path>,
+    rich_artifacts: bool,
+    filter: Option<&'a str>,
+}
+
+struct NonScenarioTraceInputs<'a> {
+    detail: ArtifactDetail,
+    scheduler: &'a str,
+    seed: u64,
+    discovered_tests: usize,
+    discovered_test_names: &'a [String],
+    deterministic_test_names: &'a [String],
+    async_execution: &'a [u64],
+    rpc_frames: &'a [RpcFrameEvent],
+    rpc_validation: &'a [RpcValidationFinding],
+    execution_order: &'a [u64],
+    events: &'a [TaskEvent],
+    runtime_events: &'a [RuntimeSemanticEvent],
+    causal_links: &'a [CausalLink],
+    thread_findings: &'a [serde_json::Value],
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct RpcFrameEvent {
     #[serde(rename = "event")]
@@ -2948,14 +3109,7 @@ struct RpcValidationFinding {
 
 fn run_non_scenario_test_plan(
     path: &Path,
-    deterministic: bool,
-    strict_verify: bool,
-    safe_profile: bool,
-    scheduler: Option<String>,
-    seed: Option<u64>,
-    record: Option<&Path>,
-    rich_artifacts: bool,
-    filter: Option<&str>,
+    request: NonScenarioPlanRequest<'_>,
 ) -> Result<NonScenarioTestPlan> {
     let resolved = resolve_source(path)?;
     let parsed = parse_program(&resolved.source_path)?;
@@ -2970,7 +3124,7 @@ fn run_non_scenario_test_plan(
         }
     }
     let discovered_tests = discovered_test_names.len();
-    let selected_test_names = if let Some(filter) = filter {
+    let selected_test_names = if let Some(filter) = request.filter {
         discovered_test_names
             .iter()
             .filter(|name| name.contains(filter))
@@ -3004,12 +3158,12 @@ fn run_non_scenario_test_plan(
         rpc_call_count,
     );
     let task_count = execution_plan.len().max(1);
-    let mode = if deterministic {
+    let mode = if request.deterministic {
         ExecMode::Det
     } else {
         ExecMode::Fast
     };
-    if record.is_some() && mode == ExecMode::Fast {
+    if request.record.is_some() && mode == ExecMode::Fast {
         bail!("--record requires --det");
     }
 
@@ -3019,7 +3173,7 @@ fn run_non_scenario_test_plan(
     let verify_report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
-            safe_profile,
+            safe_profile: request.safe_profile,
             production_memory_safety,
         },
     );
@@ -3053,7 +3207,7 @@ fn run_non_scenario_test_plan(
             diagnostic_details
         );
     }
-    if strict_verify && has_errors {
+    if request.strict_verify && has_errors {
         if diagnostic_details.is_empty() {
             bail!(
                 "strict verify rejected module `{}` with {} diagnostics",
@@ -3070,7 +3224,7 @@ fn run_non_scenario_test_plan(
     }
 
     let scheduler = if mode == ExecMode::Det {
-        parse_scheduler(scheduler.as_deref().unwrap_or("fifo"))?
+        parse_scheduler(request.scheduler.as_deref().unwrap_or("fifo"))?
     } else {
         Scheduler::Fifo
     };
@@ -3084,7 +3238,7 @@ fn run_non_scenario_test_plan(
     let mut runtime_events = Vec::new();
     let mut causal_links = Vec::new();
     if mode == ExecMode::Det {
-        let trace_mode = if strict_verify || rich_artifacts {
+        let trace_mode = if request.strict_verify || request.rich_artifacts {
             runtime::TraceMode::Full
         } else {
             runtime::TraceMode::ReplayCritical
@@ -3101,7 +3255,8 @@ fn run_non_scenario_test_plan(
             }));
             task_ops.insert(task_id, op.clone());
         }
-        execution_order = executor.run_until_idle_with_scheduler(scheduler, seed.unwrap_or(1));
+        execution_order =
+            executor.run_until_idle_with_scheduler(scheduler, request.seed.unwrap_or(1));
         events = executor.trace().to_vec();
         let (derived_runtime_events, derived_causal_links) =
             derive_runtime_semantic_evidence(&events, &execution_order, &task_ops);
@@ -3112,7 +3267,7 @@ fn run_non_scenario_test_plan(
         plan_async_checkpoints(
             &execution_order,
             scheduler,
-            seed.unwrap_or(1),
+            request.seed.unwrap_or(1),
             async_checkpoint_count,
         )
     } else {
@@ -3129,7 +3284,7 @@ fn run_non_scenario_test_plan(
         Vec::new()
     };
     let rpc_validation = validate_rpc_frames(&rpc_frames);
-    if strict_verify
+    if request.strict_verify
         && mode == ExecMode::Det
         && rpc_validation
             .iter()
@@ -3145,29 +3300,32 @@ fn run_non_scenario_test_plan(
         &call_sequence,
     );
     let artifacts = if mode == ExecMode::Det {
-        let detail = if strict_verify || rich_artifacts {
+        let detail = if request.strict_verify || request.rich_artifacts {
             ArtifactDetail::Rich
         } else {
             ArtifactDetail::Minimal
         };
-        record
+        request
+            .record
             .map(|record| {
                 write_non_scenario_trace_artifacts(
                     record,
-                    detail,
-                    &scheduler_label,
-                    seed.unwrap_or(1),
-                    discovered_tests,
-                    &selected_test_names,
-                    &deterministic_test_names,
-                    &async_execution,
-                    &rpc_frames,
-                    &rpc_validation,
-                    &execution_order,
-                    &events,
-                    &runtime_events,
-                    &causal_links,
-                    &thread_findings,
+                    NonScenarioTraceInputs {
+                        detail,
+                        scheduler: &scheduler_label,
+                        seed: request.seed.unwrap_or(1),
+                        discovered_tests,
+                        discovered_test_names: &selected_test_names,
+                        deterministic_test_names: &deterministic_test_names,
+                        async_execution: &async_execution,
+                        rpc_frames: &rpc_frames,
+                        rpc_validation: &rpc_validation,
+                        execution_order: &execution_order,
+                        events: &events,
+                        runtime_events: &runtime_events,
+                        causal_links: &causal_links,
+                        thread_findings: &thread_findings,
+                    },
                 )
             })
             .transpose()?
@@ -3211,20 +3369,7 @@ fn run_non_scenario_test_plan(
 
 fn write_non_scenario_trace_artifacts(
     trace_path: &Path,
-    detail: ArtifactDetail,
-    scheduler: &str,
-    seed: u64,
-    discovered_tests: usize,
-    discovered_test_names: &[String],
-    deterministic_test_names: &[String],
-    async_execution: &[u64],
-    rpc_frames: &[RpcFrameEvent],
-    rpc_validation: &[RpcValidationFinding],
-    execution_order: &[u64],
-    events: &[TaskEvent],
-    runtime_events: &[RuntimeSemanticEvent],
-    causal_links: &[CausalLink],
-    thread_findings: &[serde_json::Value],
+    inputs: NonScenarioTraceInputs<'_>,
 ) -> Result<NonScenarioTraceArtifacts> {
     if let Some(parent) = trace_path.parent() {
         std::fs::create_dir_all(parent).with_context(|| {
@@ -3253,17 +3398,18 @@ fn write_non_scenario_trace_artifacts(
     let trace_payload = TracePayload {
         schema_version: "fozzylang.thread_trace.v0",
         capability: "thread",
-        scheduler,
-        seed,
-        execution_order,
-        async_schedule: async_execution,
-        rpc_frames: rpc_frames.to_vec(),
-        events: events
+        scheduler: inputs.scheduler,
+        seed: inputs.seed,
+        execution_order: inputs.execution_order,
+        async_schedule: inputs.async_execution,
+        rpc_frames: inputs.rpc_frames.to_vec(),
+        events: inputs
+            .events
             .iter()
             .map(TaskEventRecord::from)
             .collect::<Vec<TaskEventRecord>>(),
-        runtime_events: runtime_events.to_vec(),
-        causal_links: causal_links.to_vec(),
+        runtime_events: inputs.runtime_events.to_vec(),
+        causal_links: inputs.causal_links.to_vec(),
     };
     write_json_file(&native_trace_path, &trace_payload).with_context(|| {
         format!(
@@ -3279,48 +3425,50 @@ fn write_non_scenario_trace_artifacts(
     let mut scenarios_written = None;
     let mut goal_trace_written = None;
     let (primary_scenario_path, generated_scenarios) =
-        generate_language_test_scenarios(&base_dir, stem, deterministic_test_names)?;
+        generate_language_test_scenarios(&base_dir, stem, inputs.deterministic_test_names)?;
     if let Some(primary_scenario) = &primary_scenario_path {
-        ensure_goal_trace_from_scenario(primary_scenario, trace_path, seed).with_context(|| {
-            format!(
-                "failed generating goal trace from scenario {}",
-                primary_scenario.display()
-            )
-        })?;
+        ensure_goal_trace_from_scenario(primary_scenario, trace_path, inputs.seed)
+            .with_context(|| {
+                format!(
+                    "failed generating goal trace from scenario {}",
+                    primary_scenario.display()
+                )
+            })?;
         goal_trace_written = Some(trace_path.to_path_buf());
     }
 
-    if detail == ArtifactDetail::Rich {
-        let mut timeline_entries =
-            Vec::with_capacity(execution_order.len() + async_execution.len() + rpc_frames.len());
-        for (index, task_id) in execution_order.iter().enumerate() {
+    if inputs.detail == ArtifactDetail::Rich {
+        let mut timeline_entries = Vec::with_capacity(
+            inputs.execution_order.len() + inputs.async_execution.len() + inputs.rpc_frames.len(),
+        );
+        for (index, task_id) in inputs.execution_order.iter().enumerate() {
             timeline_entries.push(TimelineEntry {
                 step: index,
                 decision: "thread.schedule",
                 task_id: *task_id,
-                scheduler,
+                scheduler: inputs.scheduler,
                 event: None,
                 method: None,
             });
         }
         let thread_steps = timeline_entries.len();
-        for (index, task_id) in async_execution.iter().enumerate() {
+        for (index, task_id) in inputs.async_execution.iter().enumerate() {
             timeline_entries.push(TimelineEntry {
                 step: thread_steps + index,
                 decision: "async.schedule",
                 task_id: *task_id,
-                scheduler,
+                scheduler: inputs.scheduler,
                 event: None,
                 method: None,
             });
         }
         let async_steps = timeline_entries.len();
-        for (index, frame) in rpc_frames.iter().enumerate() {
+        for (index, frame) in inputs.rpc_frames.iter().enumerate() {
             timeline_entries.push(TimelineEntry {
                 step: async_steps + index,
                 decision: "rpc.frame",
                 task_id: frame.task_id,
-                scheduler,
+                scheduler: inputs.scheduler,
                 event: Some(frame.kind),
                 method: Some(frame.method.clone()),
             });
@@ -3346,45 +3494,49 @@ fn write_non_scenario_trace_artifacts(
                 schema_version: "fozzylang.report.v0",
                 status: "pass",
                 capabilities: vec!["thread"],
-                scheduler: scheduler.to_string(),
-                seed,
-                discovered_tests,
-                deterministic_tests: deterministic_test_names.len(),
-                executed_tasks: execution_order.len(),
-                async_checkpoints: async_execution.len(),
-                rpc_frames: rpc_frames.len(),
+                scheduler: inputs.scheduler.to_string(),
+                seed: inputs.seed,
+                discovered_tests: inputs.discovered_tests,
+                deterministic_tests: inputs.deterministic_test_names.len(),
+                executed_tasks: inputs.execution_order.len(),
+                async_checkpoints: inputs.async_execution.len(),
+                rpc_frames: inputs.rpc_frames.len(),
                 generated_scenarios: generated_scenarios.len(),
-                events: events.len(),
+                events: inputs.events.len(),
                 failure_classes: classify_failure_classes(
-                    rpc_frames,
-                    async_execution,
-                    execution_order,
+                    inputs.rpc_frames,
+                    inputs.async_execution,
+                    inputs.execution_order,
                 ),
-                findings: rpc_failure_findings(rpc_frames),
-                rpc_validation: rpc_validation
+                findings: rpc_failure_findings(inputs.rpc_frames),
+                rpc_validation: inputs
+                    .rpc_validation
                     .iter()
                     .map(rpc_validation_json)
                     .collect::<Vec<_>>(),
-                thread_findings: thread_findings.to_vec(),
+                thread_findings: inputs.thread_findings.to_vec(),
             },
         )
         .with_context(|| format!("failed writing report artifact: {}", report_path.display()))?;
         report_written = Some(report_path.clone());
 
         let scenario_priorities =
-            build_scenario_priorities(&generated_scenarios, rpc_frames, async_execution);
+            build_scenario_priorities(&generated_scenarios, inputs.rpc_frames, inputs.async_execution);
         write_json_file(
             &explore_path,
             &ExplorePayload {
                 schema_version: "fozzylang.explore.v0",
-                schedules: build_schedule_candidates(execution_order),
-                rpc_frame_permutations: build_rpc_frame_permutations(execution_order, rpc_frames),
+                schedules: build_schedule_candidates(inputs.execution_order),
+                rpc_frame_permutations: build_rpc_frame_permutations(
+                    inputs.execution_order,
+                    inputs.rpc_frames,
+                ),
                 scenario_priorities: scenario_priorities.clone(),
                 shrink_hints: build_shrink_hints(
-                    discovered_test_names,
-                    execution_order,
-                    rpc_frames,
-                    async_execution,
+                    inputs.discovered_test_names,
+                    inputs.execution_order,
+                    inputs.rpc_frames,
+                    inputs.async_execution,
                 ),
                 focus: "rpc_failure_repro",
             },
@@ -3403,12 +3555,12 @@ fn write_non_scenario_trace_artifacts(
                 schema_version: "fozzylang.shrink.v0",
                 scenario_priorities,
                 hints: build_shrink_hints(
-                    discovered_test_names,
-                    execution_order,
-                    rpc_frames,
-                    async_execution,
+                    inputs.discovered_test_names,
+                    inputs.execution_order,
+                    inputs.rpc_frames,
+                    inputs.async_execution,
                 ),
-                minimal_rpc_repro: minimize_rpc_failure_frames(rpc_frames),
+                minimal_rpc_repro: minimize_rpc_failure_frames(inputs.rpc_frames),
             },
         )
         .with_context(|| format!("failed writing shrink artifact: {}", shrink_path.display()))?;
@@ -3462,7 +3614,7 @@ fn write_non_scenario_trace_artifacts(
             goal_trace: goal_trace_written
                 .as_ref()
                 .map(|path| path.display().to_string()),
-            detail: match detail {
+            detail: match inputs.detail {
                 ArtifactDetail::Minimal => "minimal",
                 ArtifactDetail::Rich => "rich",
             },
@@ -3776,11 +3928,12 @@ fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::Return(value)
+        | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => count_async_hooks_in_expr(value),
+        ast::Stmt::Return(value) => value.as_ref().map(count_async_hooks_in_expr).unwrap_or(0),
         ast::Stmt::If {
             condition,
             then_body,
@@ -3847,6 +4000,7 @@ fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
             .sum(),
         ast::Expr::EnumInit { payload, .. } => payload.iter().map(count_async_hooks_in_expr).sum(),
         ast::Expr::Group(inner) => count_async_hooks_in_expr(inner),
+        ast::Expr::Unary { expr, .. } => count_async_hooks_in_expr(expr),
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -3889,11 +4043,12 @@ fn analyze_workload_stmt(stmt: &ast::Stmt) -> (usize, usize) {
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::Return(value)
+        | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => analyze_workload_expr(value),
+        ast::Stmt::Return(value) => value.as_ref().map(analyze_workload_expr).unwrap_or((0, 0)),
         ast::Stmt::If {
             condition,
             then_body,
@@ -4005,6 +4160,7 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
             (spawns, yields)
         }
         ast::Expr::Await(inner) | ast::Expr::Group(inner) => analyze_workload_expr(inner),
+        ast::Expr::Unary { expr, .. } => analyze_workload_expr(expr),
         ast::Expr::FieldAccess { base, .. } => analyze_workload_expr(base),
         ast::Expr::StructInit { fields, .. } => {
             fields.iter().fold((0, 0), |mut acc, (_, value)| {
@@ -4300,11 +4456,16 @@ fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
     match statement {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::Return(value)
+        | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => collect_call_names_from_expr(value, out),
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_call_names_from_expr(value, out);
+            }
+        }
         ast::Stmt::If {
             condition,
             then_body,
@@ -4401,6 +4562,7 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
             collect_call_names_from_expr(start, out);
             collect_call_names_from_expr(end, out);
         }
+        ast::Expr::Unary { expr, .. } => collect_call_names_from_expr(expr, out),
         ast::Expr::Group(inner) => collect_call_names_from_expr(inner, out),
         ast::Expr::Await(inner) => collect_call_names_from_expr(inner, out),
         ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
@@ -8033,6 +8195,20 @@ mod tests {
         assert!(output.contains("\"debugSymbols\""));
         assert!(output.contains("\"asyncBacktraceReady\""));
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn plan_claim_accuracy_gate_detects_missing_evidence() {
+        let plan = "- [✅] Added `lsp_rename`\n- [✅] Updated docs\n";
+        let corpus = vec![(
+            "crates/driver/src/lsp.rs".to_string(),
+            "fn lsp_rename() {}".to_string(),
+        )];
+        let gate = analyze_plan_claim_accuracy(plan, &corpus);
+        assert_eq!(gate.completed, 2);
+        assert_eq!(gate.checked, 1);
+        assert_eq!(gate.missing_evidence.len(), 1);
+        assert!(gate.missing_evidence[0].contains("`lsp_rename`"));
     }
 
     #[test]

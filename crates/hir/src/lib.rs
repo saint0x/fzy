@@ -202,6 +202,19 @@ pub fn lower(module: &Module) -> TypedModule {
             continue;
         }
         let mut scopes = SymbolScopes::new();
+        let env = TypeCheckEnv {
+            fn_sigs: &fn_sigs,
+            fn_generics: &fn_generics,
+            struct_defs: &struct_defs,
+            enum_defs: &enum_defs,
+            trait_impls: &trait_impls,
+        };
+        let mut state = TypeCheckState {
+            errors: &mut type_errors,
+            type_error_details: &mut type_error_details,
+            generic_specializations: &mut generic_specializations,
+            trait_violations: &mut trait_violations,
+        };
         for param in &function.params {
             scopes.insert(param.name.clone(), param.ty.clone());
         }
@@ -209,17 +222,10 @@ pub fn lower(module: &Module) -> TypedModule {
             type_check_stmt(
                 stmt,
                 &mut scopes,
-                &fn_sigs,
-                &fn_generics,
-                &struct_defs,
-                &enum_defs,
-                &trait_impls,
+                &env,
                 0,
                 &function.return_type,
-                &mut type_errors,
-                &mut type_error_details,
-                &mut generic_specializations,
-                &mut trait_violations,
+                &mut state,
             );
         }
     }
@@ -474,6 +480,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
             }
             Expr::Group(inner) => expr_has_cap_intrinsic(inner),
             Expr::Await(inner) => expr_has_cap_intrinsic(inner),
+            Expr::Unary { expr, .. } => expr_has_cap_intrinsic(expr),
             Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => false,
         }
     }
@@ -481,11 +488,13 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::Return(value)
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Return(Some(value))
         | Stmt::Defer(value)
         | Stmt::Requires(value)
         | Stmt::Ensures(value)
         | Stmt::Expr(value) => expr_has_cap_intrinsic(value),
+        Stmt::Return(None) => false,
         Stmt::If {
             condition,
             then_body,
@@ -538,6 +547,7 @@ fn analyze_call_token_propagation(
         match stmt {
             Stmt::Let { .. }
             | Stmt::Assign { .. }
+            | Stmt::CompoundAssign { .. }
             | Stmt::Return(_)
             | Stmt::Defer(_)
             | Stmt::Requires(_)
@@ -693,12 +703,13 @@ fn analyze_call_token_propagation(
 fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
     match stmt {
         Stmt::Let { value, .. }
-        | Stmt::Return(value)
+        | Stmt::Return(Some(value))
         | Stmt::Defer(value)
         | Stmt::Requires(value)
         | Stmt::Ensures(value)
         | Stmt::Expr(value)
-        | Stmt::Assign { value, .. } => Some(value),
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. } => Some(value),
         Stmt::If { .. }
         | Stmt::While { .. }
         | Stmt::For { .. }
@@ -706,7 +717,8 @@ fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
         | Stmt::Loop { .. }
         | Stmt::Break
         | Stmt::Continue
-        | Stmt::Match { .. } => None,
+        | Stmt::Match { .. }
+        | Stmt::Return(None) => None,
     }
 }
 
@@ -743,13 +755,11 @@ fn analyze_expr_call_tokens(
                 }
             }
 
-            if callee == "revoke_cap" || callee == "delegate_cap" {
-                if args.is_empty() {
-                    violations.push(format!(
-                        "function `{}` uses `{}` without token argument",
-                        function_name, callee
-                    ));
-                }
+            if (callee == "revoke_cap" || callee == "delegate_cap") && args.is_empty() {
+                violations.push(format!(
+                    "function `{}` uses `{}` without token argument",
+                    function_name, callee
+                ));
             }
 
             for arg in args {
@@ -852,6 +862,13 @@ fn analyze_expr_call_tokens(
         Expr::Await(inner) => analyze_expr_call_tokens(
             function_name,
             Some(inner),
+            local_types,
+            requirement_map,
+            violations,
+        ),
+        Expr::Unary { expr, .. } => analyze_expr_call_tokens(
+            function_name,
+            Some(expr),
             local_types,
             requirement_map,
             violations,
@@ -969,7 +986,7 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
                     ));
                 }
             }
-            if let Stmt::Return(Expr::Ident(name)) = stmt {
+            if let Stmt::Return(Some(Expr::Ident(name))) = stmt {
                 if let Some((bound_lifetime, _)) = ref_bindings.get(name) {
                     if return_lifetime.is_some() && return_lifetime != *bound_lifetime {
                         violations.push(format!(
@@ -1045,11 +1062,13 @@ fn stmt_has_await(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::Return(value)
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Return(Some(value))
         | Stmt::Defer(value)
         | Stmt::Requires(value)
         | Stmt::Ensures(value)
         | Stmt::Expr(value) => expr_has_await(value),
+        Stmt::Return(None) => false,
         Stmt::If {
             condition,
             then_body,
@@ -1101,6 +1120,7 @@ fn expr_has_await(expr: &Expr) -> bool {
         } => expr_has_await(try_expr) || expr_has_await(catch_expr),
         Expr::Binary { left, right, .. } => expr_has_await(left) || expr_has_await(right),
         Expr::Range { start, end, .. } => expr_has_await(start) || expr_has_await(end),
+        Expr::Unary { expr, .. } => expr_has_await(expr),
         Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => false,
     }
 }
@@ -1398,6 +1418,15 @@ fn analyze_ownership_block(
                     ));
                 }
             }
+            Stmt::CompoundAssign { target, value, .. } => {
+                if let Expr::Ident(from) = value {
+                    if let Some(owner) = owners.remove(from) {
+                        owners.insert(target.clone(), owner);
+                        moved.insert(from.clone());
+                    }
+                }
+                moved.remove(target);
+            }
             Stmt::Expr(Expr::Call { callee, args }) => {
                 if callee == "free"
                     || callee.ends_with(".free")
@@ -1431,7 +1460,7 @@ fn analyze_ownership_block(
                     ));
                 }
             }
-            Stmt::Return(Expr::Ident(name)) => {
+            Stmt::Return(Some(Expr::Ident(name))) => {
                 owners.remove(name);
                 moved.insert(name.clone());
             }
@@ -1638,11 +1667,13 @@ fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
     match stmt {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::Return(value)
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Return(Some(value))
         | Stmt::Defer(value)
         | Stmt::Requires(value)
         | Stmt::Ensures(value)
         | Stmt::Expr(value) => expr_uses_ident(value, target),
+        Stmt::Return(None) => false,
         Stmt::If {
             condition,
             then_body,
@@ -1716,6 +1747,7 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
         Expr::Range { start, end, .. } => {
             expr_uses_ident(start, target) || expr_uses_ident(end, target)
         }
+        Expr::Unary { expr, .. } => expr_uses_ident(expr, target),
         Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) => false,
     }
 }
@@ -1803,13 +1835,15 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
                         }
                     }
                 }
-                Stmt::Assign { target, value } => {
-                    if let Expr::Ident(from) = value {
-                        if let Some(root) = roots.get(from).copied() {
-                            roots.insert(target.clone(), root);
-                        }
+                Stmt::Assign {
+                    target,
+                    value: Expr::Ident(from),
+                } => {
+                    if let Some(root) = roots.get(from).copied() {
+                        roots.insert(target.clone(), root);
                     }
                 }
+                Stmt::Assign { .. } => {}
                 Stmt::Expr(Expr::Call { callee, args }) => {
                     if is_free_callee(callee) {
                         if let Some(Expr::Ident(name)) = args.first() {
@@ -2009,11 +2043,13 @@ fn collect_stmt_idents(stmt: &Stmt) -> Vec<String> {
     match stmt {
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
-        | Stmt::Return(value)
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Return(Some(value))
         | Stmt::Defer(value)
         | Stmt::Requires(value)
         | Stmt::Ensures(value)
         | Stmt::Expr(value) => collect_expr_idents(value, &mut out),
+        Stmt::Return(None) => {}
         Stmt::If {
             condition,
             then_body,
@@ -2112,6 +2148,7 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
             collect_expr_idents(start, out);
             collect_expr_idents(end, out);
         }
+        Expr::Unary { expr, .. } => collect_expr_idents(expr, out),
         Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) => {}
     }
 }
@@ -2506,6 +2543,7 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             .find_map(|(_, value)| deferred_resource(value)),
         ast::Expr::EnumInit { payload, .. } => payload.iter().find_map(deferred_resource),
         ast::Expr::Await(inner) => deferred_resource(inner),
+        ast::Expr::Unary { expr, .. } => deferred_resource(expr),
         ast::Expr::Int(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
@@ -2615,42 +2653,44 @@ fn validate_async_semantics(
     }
 }
 
+struct TypeCheckEnv<'a> {
+    fn_sigs: &'a HashMap<String, (Vec<Type>, Type)>,
+    fn_generics: &'a HashMap<String, Vec<ast::GenericParam>>,
+    struct_defs: &'a HashMap<String, ast::Struct>,
+    enum_defs: &'a HashMap<String, ast::Enum>,
+    trait_impls: &'a HashMap<String, Vec<Type>>,
+}
+
+struct TypeCheckState<'a> {
+    errors: &'a mut usize,
+    type_error_details: &'a mut Vec<String>,
+    generic_specializations: &'a mut BTreeSet<String>,
+    trait_violations: &'a mut Vec<String>,
+}
+
 fn type_check_stmt(
     stmt: &Stmt,
     scopes: &mut SymbolScopes,
-    fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
-    fn_generics: &HashMap<String, Vec<ast::GenericParam>>,
-    struct_defs: &HashMap<String, ast::Struct>,
-    enum_defs: &HashMap<String, ast::Enum>,
-    trait_impls: &HashMap<String, Vec<Type>>,
+    env: &TypeCheckEnv<'_>,
     loop_depth: usize,
     expected_return: &Type,
-    errors: &mut usize,
-    type_error_details: &mut Vec<String>,
-    generic_specializations: &mut BTreeSet<String>,
-    trait_violations: &mut Vec<String>,
+    state: &mut TypeCheckState<'_>,
 ) {
+    let enum_defs = env.enum_defs;
     match stmt {
         Stmt::Let { name, ty, value } => {
             let inferred = infer_expr_type(
                 value,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             let final_ty = match (ty, inferred) {
                 (Some(explicit), Some(actual)) => {
                     if !type_compatible(explicit, &actual) {
                         record_type_error(
-                            errors,
-                            type_error_details,
+                            state.errors,
+                            state.type_error_details,
                             format!(
                                 "let binding `{}` type mismatch: expected `{}`, got `{}`",
                                 name, explicit, actual
@@ -2663,8 +2703,8 @@ fn type_check_stmt(
                 (None, Some(actual)) => actual,
                 (None, None) => {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         format!(
                             "cannot infer type for let binding `{}`; add an explicit type annotation",
                             name
@@ -2680,23 +2720,32 @@ fn type_check_stmt(
             let value_ty = infer_expr_type(
                 value,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
                 if !type_compatible(&target_ty, &value_ty) {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         format!(
                             "assignment type mismatch for `{}`: expected `{}`, got `{}`",
+                            target, target_ty, value_ty
+                        ),
+                    );
+                }
+            }
+        }
+        Stmt::CompoundAssign { target, value, .. } => {
+            let target_ty = scopes.get(target);
+            let value_ty = infer_expr_type(value, scopes, env, state);
+            if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
+                if !type_compatible(&target_ty, &value_ty) {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "compound assignment type mismatch for `{}`: expected `{}`, got `{}`",
                             target, target_ty, value_ty
                         ),
                     );
@@ -2711,15 +2760,8 @@ fn type_check_stmt(
             let cond_ty = infer_expr_type(
                 condition,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             if !is_bool_or_integer(cond_ty.as_ref()) {
                 let found = cond_ty
@@ -2727,8 +2769,8 @@ fn type_check_stmt(
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "unknown".to_string());
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!("if-condition must be bool/integer-compatible, got `{found}`"),
                 );
             }
@@ -2736,38 +2778,24 @@ fn type_check_stmt(
             for stmt in then_body {
                 type_check_stmt(
                     stmt,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
+                scopes,
+                env,
                     loop_depth,
                     expected_return,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                state,
+            );
             }
             scopes.pop();
             scopes.push();
             for stmt in else_body {
                 type_check_stmt(
                     stmt,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
+                scopes,
+                env,
                     loop_depth,
                     expected_return,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                state,
+            );
             }
             scopes.pop();
         }
@@ -2775,15 +2803,8 @@ fn type_check_stmt(
             let cond_ty = infer_expr_type(
                 condition,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             if !is_bool_or_integer(cond_ty.as_ref()) {
                 let found = cond_ty
@@ -2791,8 +2812,8 @@ fn type_check_stmt(
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "unknown".to_string());
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!("while-condition must be bool/integer-compatible, got `{found}`"),
                 );
             }
@@ -2800,19 +2821,12 @@ fn type_check_stmt(
             for stmt in body {
                 type_check_stmt(
                     stmt,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
+                scopes,
+                env,
                     loop_depth + 1,
                     expected_return,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                state,
+            );
             }
             scopes.pop();
         }
@@ -2826,42 +2840,28 @@ fn type_check_stmt(
             if let Some(init) = init {
                 type_check_stmt(
                     init,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
+                scopes,
+                env,
                     loop_depth + 1,
                     expected_return,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                state,
+            );
             }
             if let Some(condition) = condition {
                 let cond_ty = infer_expr_type(
                     condition,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                scopes,
+                env,
+                state,
+            );
                 if !is_bool_or_integer(cond_ty.as_ref()) {
                     let found = cond_ty
                         .as_ref()
                         .map(ToString::to_string)
                         .unwrap_or_else(|| "unknown".to_string());
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         format!("for-condition must be bool/integer-compatible, got `{found}`"),
                     );
                 }
@@ -2869,36 +2869,22 @@ fn type_check_stmt(
             for stmt in body {
                 type_check_stmt(
                     stmt,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
+                scopes,
+                env,
                     loop_depth + 1,
                     expected_return,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                state,
+            );
             }
             if let Some(step) = step {
                 type_check_stmt(
                     step,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
+                scopes,
+                env,
                     loop_depth + 1,
                     expected_return,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                state,
+            );
             }
             scopes.pop();
         }
@@ -2910,15 +2896,8 @@ fn type_check_stmt(
             let iterable_ty = infer_expr_type(
                 iterable,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             let binding_ty = match iterable_ty {
                 Some(Type::Named { name, args }) if name == "Range" && args.len() == 1 => {
@@ -2926,8 +2905,8 @@ fn type_check_stmt(
                 }
                 Some(other) => {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         format!(
                             "for-in iterable must be a range expression, got `{}`",
                             other
@@ -2948,19 +2927,12 @@ fn type_check_stmt(
             for stmt in body {
                 type_check_stmt(
                     stmt,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
+                scopes,
+                env,
                     loop_depth + 1,
                     expected_return,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                state,
+            );
             }
             scopes.pop();
         }
@@ -2969,27 +2941,20 @@ fn type_check_stmt(
             for stmt in body {
                 type_check_stmt(
                     stmt,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
+                scopes,
+                env,
                     loop_depth + 1,
                     expected_return,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                state,
+            );
             }
             scopes.pop();
         }
         Stmt::Break => {
             if loop_depth == 0 {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     "`break` is only valid inside loop bodies".to_string(),
                 );
             }
@@ -2997,30 +2962,23 @@ fn type_check_stmt(
         Stmt::Continue => {
             if loop_depth == 0 {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     "`continue` is only valid inside loop bodies".to_string(),
                 );
             }
         }
-        Stmt::Return(expr) => {
+        Stmt::Return(Some(expr)) => {
             if let Some(actual) = infer_expr_type(
                 expr,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             ) {
                 if !type_compatible(expected_return, &actual) {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         format!(
                             "return type mismatch: expected `{}`, got `{}`",
                             expected_return, actual
@@ -3029,73 +2987,64 @@ fn type_check_stmt(
                 }
             }
         }
+        Stmt::Return(None) => {
+            if !matches!(expected_return, Type::Void) {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!(
+                        "return type mismatch: expected `{}`, got `void`",
+                        expected_return
+                    ),
+                );
+            }
+        }
         Stmt::Match { scrutinee, arms } => {
             let scrutinee_ty = infer_expr_type(
                 scrutinee,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
                     let guard_ty = infer_expr_type(
                         guard,
-                        scopes,
-                        fn_sigs,
-                        fn_generics,
-                        struct_defs,
-                        enum_defs,
-                        trait_impls,
-                        errors,
-                        type_error_details,
-                        generic_specializations,
-                        trait_violations,
-                    );
+                scopes,
+                env,
+                state,
+            );
                     if !is_bool_or_integer(guard_ty.as_ref()) {
                         let found = guard_ty
                             .as_ref()
                             .map(ToString::to_string)
                             .unwrap_or_else(|| "unknown".to_string());
                         record_type_error(
-                            errors,
-                            type_error_details,
+                            state.errors,
+                            state.type_error_details,
                             format!("match guard must be bool/integer-compatible, got `{found}`"),
                         );
                     }
                 }
                 let value_ty = infer_expr_type(
                     &arm.value,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                scopes,
+                env,
+                state,
+            );
                 check_pattern_compatibility(
                     &arm.pattern,
                     scrutinee_ty.as_ref(),
                     enum_defs,
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                 );
                 if arm.returns {
                     if let Some(actual) = value_ty.as_ref() {
                         if !type_compatible(expected_return, actual) {
                             record_type_error(
-                                errors,
-                                type_error_details,
+                                state.errors,
+                                state.type_error_details,
                                 format!(
                                     "return type mismatch: expected `{}`, got `{}`",
                                     expected_return, actual
@@ -3111,15 +3060,8 @@ fn type_check_stmt(
             let _ = infer_expr_type(
                 expr,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
         }
     }
@@ -3128,16 +3070,14 @@ fn type_check_stmt(
 fn infer_expr_type(
     expr: &Expr,
     scopes: &SymbolScopes,
-    fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
-    fn_generics: &HashMap<String, Vec<ast::GenericParam>>,
-    struct_defs: &HashMap<String, ast::Struct>,
-    enum_defs: &HashMap<String, ast::Enum>,
-    trait_impls: &HashMap<String, Vec<Type>>,
-    errors: &mut usize,
-    type_error_details: &mut Vec<String>,
-    generic_specializations: &mut BTreeSet<String>,
-    trait_violations: &mut Vec<String>,
+    env: &TypeCheckEnv<'_>,
+    state: &mut TypeCheckState<'_>,
 ) -> Option<Type> {
+    let fn_sigs = env.fn_sigs;
+    let fn_generics = env.fn_generics;
+    let struct_defs = env.struct_defs;
+    let enum_defs = env.enum_defs;
+    let trait_impls = env.trait_impls;
     fn resolve_function_ref_name(
         fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
         candidate: &str,
@@ -3198,38 +3138,24 @@ fn infer_expr_type(
                 });
             }
             record_type_error(
-                errors,
-                type_error_details,
+                state.errors,
+                state.type_error_details,
                 format!("unresolved identifier `{name}`"),
             );
             None
         }
         Expr::Group(inner) => infer_expr_type(
             inner,
-            scopes,
-            fn_sigs,
-            fn_generics,
-            struct_defs,
-            enum_defs,
-            trait_impls,
-            errors,
-            type_error_details,
-            generic_specializations,
-            trait_violations,
-        ),
+                scopes,
+                env,
+                state,
+            ),
         Expr::Await(inner) => infer_expr_type(
             inner,
-            scopes,
-            fn_sigs,
-            fn_generics,
-            struct_defs,
-            enum_defs,
-            trait_impls,
-            errors,
-            type_error_details,
-            generic_specializations,
-            trait_violations,
-        ),
+                scopes,
+                env,
+                state,
+            ),
         Expr::Call { callee, args } => {
             let (base_callee, explicit_types) = split_generic_callee(callee);
             let runtime_sig = runtime_call_signature(base_callee);
@@ -3239,8 +3165,8 @@ fn infer_expr_type(
                 (params, ret)
             } else {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!("unresolved call target `{}`", base_callee),
                 );
                 return None;
@@ -3250,17 +3176,10 @@ fn infer_expr_type(
             for arg in args {
                 arg_types.push(infer_expr_type(
                     arg,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                ));
+                scopes,
+                env,
+                state,
+            ));
             }
             let (resolved_params, resolved_ret, bindings, skip_post_call_validation) = if fn_sigs
                 .contains_key(base_callee)
@@ -3273,8 +3192,8 @@ fn infer_expr_type(
                     explicit_types.as_deref(),
                 ) else {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         format!(
                             "call signature mismatch for `{}`: expected ({}) -> {}",
                             base_callee,
@@ -3306,7 +3225,7 @@ fn infer_expr_type(
                             args.len()
                         )
                     };
-                    record_type_error(errors, type_error_details, detail);
+                    record_type_error(state.errors, state.type_error_details, detail);
                     return None;
                 }
                 for (expected, actual) in params.iter().zip(arg_types.iter()) {
@@ -3315,8 +3234,8 @@ fn infer_expr_type(
                     };
                     if !type_compatible(expected, actual) {
                         record_type_error(
-                            errors,
-                            type_error_details,
+                            state.errors,
+                            state.type_error_details,
                             format!(
                                 "runtime call `{}` argument type mismatch: expected `{}`, got `{}`",
                                 base_callee, expected, actual
@@ -3332,7 +3251,7 @@ fn infer_expr_type(
                     .map(|(name, ty)| format!("{name}={ty}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                generic_specializations.insert(format!("{base_callee}<{rendered}>"));
+                state.generic_specializations.insert(format!("{base_callee}<{rendered}>"));
                 for generic in &generics {
                     if let Some((_, concrete)) =
                         bindings.iter().find(|(name, _)| *name == generic.name)
@@ -3343,8 +3262,8 @@ fn infer_expr_type(
                                     "generic specialization `{}` violates bound `{}` on `{}`",
                                     base_callee, bound, generic.name
                                 );
-                                trait_violations.push(detail.clone());
-                                record_type_error(errors, type_error_details, detail);
+                                state.trait_violations.push(detail.clone());
+                                record_type_error(state.errors, state.type_error_details, detail);
                             }
                         }
                     }
@@ -3353,8 +3272,8 @@ fn infer_expr_type(
             if !skip_post_call_validation {
                 if resolved_params.len() != args.len() {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         format!(
                             "call `{}` parameter count mismatch after resolution: expected {}, got {}",
                             base_callee,
@@ -3367,8 +3286,8 @@ fn infer_expr_type(
                     if let (Some(expected), Some(actual)) = (resolved_params.get(index), arg_ty) {
                         if !type_compatible(expected, &actual) {
                             record_type_error(
-                                errors,
-                                type_error_details,
+                                state.errors,
+                                state.type_error_details,
                                 format!(
                                     "call `{}` argument {} type mismatch: expected `{}`, got `{}`",
                                     base_callee, index, expected, actual
@@ -3389,25 +3308,16 @@ fn infer_expr_type(
                     });
                 }
             }
-            let Some(base_ty) = infer_expr_type(
+            let base_ty = infer_expr_type(
                 base,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
-            ) else {
-                return None;
-            };
+                env,
+                state,
+            )?;
             let Type::Named { name, .. } = base_ty else {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!(
                         "field access requires struct-like receiver; expression resolved to `{}`",
                         base_ty
@@ -3417,8 +3327,8 @@ fn infer_expr_type(
             };
             let Some(struct_def) = struct_defs.get(&name) else {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!("field access targets unknown struct `{name}`"),
                 );
                 return None;
@@ -3429,8 +3339,8 @@ fn infer_expr_type(
                 .find(|candidate| candidate.name == *field)
             else {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!("struct `{name}` has no field `{field}`"),
                 );
                 return None;
@@ -3440,8 +3350,8 @@ fn infer_expr_type(
         Expr::StructInit { name, fields } => {
             let Some(struct_def) = struct_defs.get(name) else {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!("unknown struct `{name}` in initializer"),
                 );
                 return None;
@@ -3453,30 +3363,23 @@ fn infer_expr_type(
                     .find(|candidate| candidate.name == *field_name)
                 else {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         format!("struct `{name}` has no field `{field_name}`"),
                     );
                     continue;
                 };
                 let value_ty = infer_expr_type(
                     value,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                scopes,
+                env,
+                state,
+            );
                 if let Some(value_ty) = value_ty {
                     if !type_compatible(&found.ty, &value_ty) {
                         record_type_error(
-                            errors,
-                            type_error_details,
+                            state.errors,
+                            state.type_error_details,
                             format!(
                                 "struct field `{name}.{field_name}` type mismatch: expected `{}`, got `{}`",
                                 found.ty, value_ty
@@ -3497,8 +3400,8 @@ fn infer_expr_type(
         } => {
             let Some(enum_def) = enum_defs.get(enum_name) else {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!("unknown enum `{enum_name}` in initializer"),
                 );
                 return None;
@@ -3509,16 +3412,16 @@ fn infer_expr_type(
                 .find(|candidate| candidate.name == *variant)
             else {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!("enum `{enum_name}` has no variant `{variant}`"),
                 );
                 return None;
             };
             if found_variant.payload.len() != payload.len() {
                 record_type_error(
-                    errors,
-                    type_error_details,
+                    state.errors,
+                    state.type_error_details,
                     format!(
                         "enum variant `{enum_name}.{variant}` payload arity mismatch: expected {}, got {}",
                         found_variant.payload.len(),
@@ -3529,23 +3432,16 @@ fn infer_expr_type(
             for (index, value) in payload.iter().enumerate() {
                 let value_ty = infer_expr_type(
                     value,
-                    scopes,
-                    fn_sigs,
-                    fn_generics,
-                    struct_defs,
-                    enum_defs,
-                    trait_impls,
-                    errors,
-                    type_error_details,
-                    generic_specializations,
-                    trait_violations,
-                );
+                scopes,
+                env,
+                state,
+            );
                 if let (Some(expected), Some(actual)) = (found_variant.payload.get(index), value_ty)
                 {
                     if !type_compatible(expected, &actual) {
                         record_type_error(
-                            errors,
-                            type_error_details,
+                            state.errors,
+                            state.type_error_details,
                             format!(
                                 "enum variant `{enum_name}.{variant}` payload {index} type mismatch: expected `{expected}`, got `{actual}`"
                             ),
@@ -3558,6 +3454,38 @@ fn infer_expr_type(
                 args: Vec::new(),
             })
         }
+        Expr::Unary { op, expr } => {
+            let inner = infer_expr_type(expr, scopes, env, state);
+            match (op, inner) {
+                (ast::UnaryOp::Not, Some(ty)) => {
+                    if is_bool_or_integer(Some(&ty)) {
+                        Some(Type::Bool)
+                    } else {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!("logical not expects bool/integer-compatible operand, got `{ty}`"),
+                        );
+                        None
+                    }
+                }
+                (ast::UnaryOp::BitNot, Some(ty))
+                | (ast::UnaryOp::Plus, Some(ty))
+                | (ast::UnaryOp::Neg, Some(ty)) => {
+                    if is_integer_type(&ty) {
+                        Some(ty)
+                    } else {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!("unary operator expects integer operand, got `{ty}`"),
+                        );
+                        None
+                    }
+                }
+                (_, None) => None,
+            }
+        }
         Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -3565,35 +3493,21 @@ fn infer_expr_type(
             let left = infer_expr_type(
                 try_expr,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             let right = infer_expr_type(
                 catch_expr,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             match (left, right) {
                 (Some(l), Some(r)) if type_compatible(&l, &r) => Some(l),
                 (Some(_), Some(_)) => {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         "try/catch branches must resolve to compatible types".to_string(),
                     );
                     None
@@ -3611,28 +3525,14 @@ fn infer_expr_type(
             let left_ty = infer_expr_type(
                 start,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             let right_ty = infer_expr_type(
                 end,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             match (left_ty, right_ty) {
                 (Some(left), Some(right))
@@ -3647,8 +3547,8 @@ fn infer_expr_type(
                 }
                 (Some(left), Some(right)) => {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         format!(
                             "range bounds must be compatible integers, got `{}` and `{}`",
                             left, right
@@ -3663,28 +3563,14 @@ fn infer_expr_type(
             let left_ty = infer_expr_type(
                 left,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             let right_ty = infer_expr_type(
                 right,
                 scopes,
-                fn_sigs,
-                fn_generics,
-                struct_defs,
-                enum_defs,
-                trait_impls,
-                errors,
-                type_error_details,
-                generic_specializations,
-                trait_violations,
+                env,
+                state,
             );
             match op {
                 BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
@@ -3702,8 +3588,8 @@ fn infer_expr_type(
                             .map(ToString::to_string)
                             .unwrap_or_else(|| "unknown".to_string());
                         record_type_error(
-                            errors,
-                            type_error_details,
+                            state.errors,
+                            state.type_error_details,
                             format!(
                                 "arithmetic operands must be integers, got left=`{left}` right=`{right}`"
                             ),
@@ -3713,11 +3599,41 @@ fn infer_expr_type(
                 }
                 BinaryOp::Mod => {
                     record_type_error(
-                        errors,
-                        type_error_details,
+                        state.errors,
+                        state.type_error_details,
                         "operator `%` is parsed but not yet supported by lowering".to_string(),
                     );
                     None
+                }
+                BinaryOp::BitAnd
+                | BinaryOp::BitOr
+                | BinaryOp::BitXor
+                | BinaryOp::Shl
+                | BinaryOp::Shr => {
+                    if left_ty.as_ref().is_some_and(is_integer_type)
+                        && right_ty.as_ref().is_some_and(is_integer_type)
+                    {
+                        left_ty
+                    } else {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            "bitwise operands must be integers".to_string(),
+                        );
+                        None
+                    }
+                }
+                BinaryOp::And | BinaryOp::Or => {
+                    if is_bool_or_integer(left_ty.as_ref()) && is_bool_or_integer(right_ty.as_ref()) {
+                        Some(Type::Bool)
+                    } else {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            "logical operands must be bool/integer-compatible".to_string(),
+                        );
+                        None
+                    }
                 }
                 BinaryOp::Eq
                 | BinaryOp::Neq
@@ -3728,8 +3644,8 @@ fn infer_expr_type(
                     if let (Some(l), Some(r)) = (&left_ty, &right_ty) {
                         if !type_compatible(l, r) {
                             record_type_error(
-                                errors,
-                                type_error_details,
+                                state.errors,
+                                state.type_error_details,
                                 format!(
                                     "comparison operands must have compatible types, got `{}` and `{}`",
                                     l, r
@@ -3817,13 +3733,15 @@ fn parse_simple_type(token: &str) -> Option<Type> {
     })
 }
 
+type CallSignature = (Vec<Type>, Type, Vec<(String, Type)>);
+
 fn resolve_call_signature(
     params: &[Type],
     ret: &Type,
     generics: &[ast::GenericParam],
     arg_types: &[Option<Type>],
     explicit_types: Option<&[Type]>,
-) -> Option<(Vec<Type>, Type, Vec<(String, Type)>)> {
+) -> Option<CallSignature> {
     let mut bindings = BTreeMap::<String, Type>::new();
     if let Some(explicit_types) = explicit_types {
         if explicit_types.len() != generics.len() {
@@ -4422,6 +4340,7 @@ fn stmt_has_explicit_return(stmt: &Stmt) -> bool {
             .any(|arm| arm.returns || expr_has_nested_return(&arm.value)),
         Stmt::Let { value, .. }
         | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
         | Stmt::Expr(value)
         | Stmt::Defer(value)
         | Stmt::Requires(value)
@@ -4469,6 +4388,18 @@ fn eval_block_control<'a>(
                     return EvalOutcome::Continue;
                 };
                 env.insert(target.clone(), val);
+            }
+            Stmt::CompoundAssign { target, op, value } => {
+                let Some(lhs) = env.get(target).cloned() else {
+                    return EvalOutcome::Continue;
+                };
+                let Some(rhs) = eval_expr(value, env, functions) else {
+                    return EvalOutcome::Continue;
+                };
+                let Some(next) = eval_binary(*op, lhs, rhs) else {
+                    return EvalOutcome::Continue;
+                };
+                env.insert(target.clone(), next);
             }
             Stmt::If {
                 condition,
@@ -4601,12 +4532,13 @@ fn eval_block_control<'a>(
             }
             Stmt::Break => return EvalOutcome::Break,
             Stmt::Continue => return EvalOutcome::ContinueLoop,
-            Stmt::Return(expr) => {
+            Stmt::Return(Some(expr)) => {
                 let Some(val) = eval_expr(expr, env, functions) else {
                     return EvalOutcome::Continue;
                 };
                 return EvalOutcome::Return(val);
             }
+            Stmt::Return(None) => return EvalOutcome::Return(Value::I32(0)),
             Stmt::Match { scrutinee, arms } => {
                 let Some(value) = eval_expr(scrutinee, env, functions) else {
                     return EvalOutcome::Continue;
@@ -4720,6 +4652,17 @@ fn eval_expr<'a>(
                 _ => None,
             }
         }
+        Expr::Unary { op, expr } => {
+            let value = eval_expr(expr, env, functions)?;
+            match (op, value) {
+                (ast::UnaryOp::Not, Value::Bool(v)) => Some(Value::Bool(!v)),
+                (ast::UnaryOp::Not, Value::I32(v)) => Some(Value::Bool(v == 0)),
+                (ast::UnaryOp::BitNot, Value::I32(v)) => Some(Value::I32(!v)),
+                (ast::UnaryOp::Plus, Value::I32(v)) => Some(Value::I32(v)),
+                (ast::UnaryOp::Neg, Value::I32(v)) => Some(Value::I32(-v)),
+                _ => None,
+            }
+        }
         Expr::StructInit { name, fields } => {
             let mut map = BTreeMap::new();
             for (field, value) in fields {
@@ -4783,6 +4726,13 @@ fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Option<Value> {
         (BinaryOp::Mul, Value::I32(a), Value::I32(b)) => Some(Value::I32(a * b)),
         (BinaryOp::Div, Value::I32(a), Value::I32(b)) => Some(Value::I32(a / b)),
         (BinaryOp::Mod, Value::I32(a), Value::I32(b)) => Some(Value::I32(a % b)),
+        (BinaryOp::BitAnd, Value::I32(a), Value::I32(b)) => Some(Value::I32(a & b)),
+        (BinaryOp::BitOr, Value::I32(a), Value::I32(b)) => Some(Value::I32(a | b)),
+        (BinaryOp::BitXor, Value::I32(a), Value::I32(b)) => Some(Value::I32(a ^ b)),
+        (BinaryOp::Shl, Value::I32(a), Value::I32(b)) => Some(Value::I32(a << b)),
+        (BinaryOp::Shr, Value::I32(a), Value::I32(b)) => Some(Value::I32(a >> b)),
+        (BinaryOp::And, Value::Bool(a), Value::Bool(b)) => Some(Value::Bool(a && b)),
+        (BinaryOp::Or, Value::Bool(a), Value::Bool(b)) => Some(Value::Bool(a || b)),
         (BinaryOp::Eq, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a == b)),
         (BinaryOp::Neq, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a != b)),
         (BinaryOp::Lt, Value::I32(a), Value::I32(b)) => Some(Value::Bool(a < b)),

@@ -1093,7 +1093,7 @@ pub fn verify_file(path: &Path) -> Result<Output> {
     })
 }
 
-fn normalize_diagnostics_for_path(path: &Path, diagnostics: &mut Vec<diagnostics::Diagnostic>) {
+fn normalize_diagnostics_for_path(path: &Path, diagnostics: &mut [diagnostics::Diagnostic]) {
     for diagnostic in diagnostics.iter_mut() {
         if diagnostic.path.is_none() {
             diagnostic.path = Some(path.display().to_string());
@@ -1359,11 +1359,16 @@ fn qualify_stmt(
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::Return(value)
+        | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => qualify_expr(value, namespace, local_functions, module_aliases),
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                qualify_expr(value, namespace, local_functions, module_aliases);
+            }
+        }
         ast::Stmt::If {
             condition,
             then_body,
@@ -1458,6 +1463,9 @@ fn qualify_expr(
         ast::Expr::Await(inner) => {
             qualify_expr(inner, namespace, local_functions, module_aliases);
         }
+        ast::Expr::Unary { expr, .. } => {
+            qualify_expr(expr, namespace, local_functions, module_aliases);
+        }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -1545,11 +1553,16 @@ fn canonicalize_stmt_calls(
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::Return(value)
+        | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => canonicalize_expr_calls(value, namespace, known_functions),
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                canonicalize_expr_calls(value, namespace, known_functions);
+            }
+        }
         ast::Stmt::If {
             condition,
             then_body,
@@ -1651,6 +1664,9 @@ fn canonicalize_expr_calls(
         ast::Expr::Await(inner) => {
             canonicalize_expr_calls(inner, namespace, known_functions);
         }
+        ast::Expr::Unary { expr, .. } => {
+            canonicalize_expr_calls(expr, namespace, known_functions);
+        }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -1738,11 +1754,13 @@ fn collect_parse_diagnostics(source_path: &Path) -> Result<Vec<diagnostics::Diag
     }
 }
 
+type ParseDiagnosticsHit = (PathBuf, Vec<PathBuf>, Vec<diagnostics::Diagnostic>);
+
 fn collect_parse_diagnostics_recursive(
     path: &Path,
     visited: &mut HashSet<PathBuf>,
     visiting: &mut HashSet<PathBuf>,
-) -> Result<Option<(PathBuf, Vec<PathBuf>, Vec<diagnostics::Diagnostic>)>> {
+) -> Result<Option<ParseDiagnosticsHit>> {
     let canonical = path
         .canonicalize()
         .with_context(|| format!("failed resolving module path: {}", path.display()))?;
@@ -2226,8 +2244,29 @@ fn llvm_emit_block(
                 ctx.code
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
             }
+            ast::Stmt::CompoundAssign { target, op, value } => {
+                let combined_expr = ast::Expr::Binary {
+                    op: *op,
+                    left: Box::new(ast::Expr::Ident(target.clone())),
+                    right: Box::new(value.clone()),
+                };
+                let value = llvm_emit_expr(&combined_expr, ctx, string_literal_ids, task_ref_ids);
+                let slot = ctx
+                    .slots
+                    .entry(target.clone())
+                    .or_insert_with(|| format!("%slot_{}_{}", target, ctx.next_value))
+                    .clone();
+                if !ctx.code.contains(&format!("{slot} = alloca i32")) {
+                    ctx.code.push_str(&format!("  {slot} = alloca i32\n"));
+                }
+                ctx.code
+                    .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+            }
             ast::Stmt::Return(expr) => {
-                let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
+                let value = expr
+                    .as_ref()
+                    .map(|expr| llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids))
+                    .unwrap_or_else(|| "0".to_string());
                 ctx.code.push_str(&format!("  ret i32 {value}\n"));
                 return true;
             }
@@ -2565,6 +2604,31 @@ fn llvm_emit_expr(
         }
         ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
         ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
+        ast::Expr::Unary { op, expr } => {
+            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
+            match op {
+                ast::UnaryOp::Plus => value,
+                ast::UnaryOp::Neg => {
+                    let out = ctx.value();
+                    ctx.code.push_str(&format!("  {out} = sub i32 0, {value}\n"));
+                    out
+                }
+                ast::UnaryOp::BitNot => {
+                    let out = ctx.value();
+                    ctx.code.push_str(&format!("  {out} = xor i32 {value}, -1\n"));
+                    out
+                }
+                ast::UnaryOp::Not => {
+                    let pred = ctx.value();
+                    let out = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {pred} = icmp eq i32 {value}, 0\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = zext i1 {pred} to i32\n"));
+                    out
+                }
+            }
+        }
         ast::Expr::FieldAccess { base, field } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
@@ -2647,6 +2711,40 @@ fn llvm_emit_expr(
                 ast::BinaryOp::Mod => ctx
                     .code
                     .push_str(&format!("  {out} = srem i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::BitAnd => ctx
+                    .code
+                    .push_str(&format!("  {out} = and i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::BitOr => ctx
+                    .code
+                    .push_str(&format!("  {out} = or i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::BitXor => ctx
+                    .code
+                    .push_str(&format!("  {out} = xor i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Shl => ctx
+                    .code
+                    .push_str(&format!("  {out} = shl i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::Shr => ctx
+                    .code
+                    .push_str(&format!("  {out} = ashr i32 {lhs}, {rhs}\n")),
+                ast::BinaryOp::And | ast::BinaryOp::Or => {
+                    let lhs_pred = ctx.value();
+                    let rhs_pred = ctx.value();
+                    let bool_out = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {lhs_pred} = icmp ne i32 {lhs}, 0\n"));
+                    ctx.code
+                        .push_str(&format!("  {rhs_pred} = icmp ne i32 {rhs}, 0\n"));
+                    let bool_op = match op {
+                        ast::BinaryOp::And => "and",
+                        ast::BinaryOp::Or => "or",
+                        _ => unreachable!(),
+                    };
+                    ctx.code.push_str(&format!(
+                        "  {bool_out} = {bool_op} i1 {lhs_pred}, {rhs_pred}\n"
+                    ));
+                    ctx.code
+                        .push_str(&format!("  {out} = zext i1 {bool_out} to i32\n"));
+                }
                 ast::BinaryOp::Eq
                 | ast::BinaryOp::Neq
                 | ast::BinaryOp::Lt
@@ -2689,7 +2787,7 @@ fn is_extern_c_import_decl(function: &hir::TypedFunction) -> bool {
         && function.body.is_empty()
 }
 
-fn collect_extern_c_imports<'a>(fir: &'a fir::FirModule) -> Vec<&'a hir::TypedFunction> {
+fn collect_extern_c_imports(fir: &fir::FirModule) -> Vec<&hir::TypedFunction> {
     fir.typed_functions
         .iter()
         .filter(|function| is_extern_c_import_decl(function))
@@ -2723,11 +2821,16 @@ fn collect_string_literals_from_stmt(stmt: &ast::Stmt, literals: &mut HashSet<St
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::Return(value)
+        | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => collect_string_literals_from_expr(value, literals),
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_string_literals_from_expr(value, literals);
+            }
+        }
         ast::Stmt::If {
             condition,
             then_body,
@@ -2813,6 +2916,7 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
         }
         ast::Expr::Group(inner) => collect_string_literals_from_expr(inner, literals),
         ast::Expr::Await(inner) => collect_string_literals_from_expr(inner, literals),
+        ast::Expr::Unary { expr, .. } => collect_string_literals_from_expr(expr, literals),
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -2873,6 +2977,7 @@ fn expr_task_ref_name(expr: &ast::Expr) -> Option<String> {
             Some(name)
         }
         ast::Expr::Group(inner) => expr_task_ref_name(inner),
+        ast::Expr::Unary { expr, .. } => expr_task_ref_name(expr),
         _ => None,
     }
 }
@@ -2885,11 +2990,16 @@ fn collect_used_runtime_imports_from_stmt(
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::Return(value)
+        | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => collect_used_runtime_imports_from_expr(value, seen, used),
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_used_runtime_imports_from_expr(value, seen, used);
+            }
+        }
         ast::Stmt::If {
             condition,
             then_body,
@@ -2986,6 +3096,9 @@ fn collect_used_runtime_imports_from_expr(
         }
         ast::Expr::Await(inner) => {
             collect_used_runtime_imports_from_expr(inner, seen, used);
+        }
+        ast::Expr::Unary { expr, .. } => {
+            collect_used_runtime_imports_from_expr(expr, seen, used);
         }
         ast::Expr::TryCatch {
             try_expr,
@@ -3607,18 +3720,23 @@ fn emit_native_libraries_cranelift(
             locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
         let mut next_var = function.params.len();
-        let terminated = clif_emit_block(
-            &mut builder,
-            &mut module,
-            &function_ids,
-            &function_signatures,
-            &function.body,
-            &mut locals,
-            signature.ret,
-            &mut next_var,
-            &string_literal_ids,
-            &task_ref_ids,
-        )?;
+        let terminated = {
+            let mut ctx = ClifLoweringCtx {
+                module: &mut module,
+                function_ids: &function_ids,
+                function_signatures: &function_signatures,
+                string_literal_ids: &string_literal_ids,
+                task_ref_ids: &task_ref_ids,
+            };
+            clif_emit_block(
+                &mut builder,
+                &mut ctx,
+                &function.body,
+                &mut locals,
+                signature.ret,
+                &mut next_var,
+            )?
+        };
         if !terminated {
             if let Some(ret_ty) = signature.ret {
                 let ret = zero_for_type(&mut builder, ret_ty);
@@ -4085,18 +4203,23 @@ fn emit_native_artifact_cranelift(
         }
         let mut next_var = function.params.len();
 
-        let terminated = clif_emit_block(
-            &mut builder,
-            &mut module,
-            &function_ids,
-            &function_signatures,
-            &function.body,
-            &mut locals,
-            signature.ret,
-            &mut next_var,
-            &string_literal_ids,
-            &task_ref_ids,
-        )?;
+        let terminated = {
+            let mut ctx = ClifLoweringCtx {
+                module: &mut module,
+                function_ids: &function_ids,
+                function_signatures: &function_signatures,
+                string_literal_ids: &string_literal_ids,
+                task_ref_ids: &task_ref_ids,
+            };
+            clif_emit_block(
+                &mut builder,
+                &mut ctx,
+                &function.body,
+                &mut locals,
+                signature.ret,
+                &mut next_var,
+            )?
+        };
         if !terminated {
             let fallback = if function.name == "main" && signature.ret == Some(types::I32) {
                 forced_main_return
@@ -4170,17 +4293,21 @@ fn emit_native_artifact_cranelift(
     ))
 }
 
+struct ClifLoweringCtx<'a> {
+    module: &'a mut ObjectModule,
+    function_ids: &'a HashMap<String, cranelift_module::FuncId>,
+    function_signatures: &'a HashMap<String, ClifFunctionSignature>,
+    string_literal_ids: &'a HashMap<String, i32>,
+    task_ref_ids: &'a HashMap<String, i32>,
+}
+
 fn clif_emit_block(
     builder: &mut FunctionBuilder,
-    module: &mut ObjectModule,
-    function_ids: &HashMap<String, cranelift_module::FuncId>,
-    function_signatures: &HashMap<String, ClifFunctionSignature>,
+    ctx: &mut ClifLoweringCtx<'_>,
     body: &[ast::Stmt],
     locals: &mut HashMap<String, LocalBinding>,
     return_ty: Option<ClifType>,
     next_var: &mut usize,
-    string_literal_ids: &HashMap<String, i32>,
-    task_ref_ids: &HashMap<String, i32>,
 ) -> Result<bool> {
     for stmt in body {
         match stmt {
@@ -4189,14 +4316,9 @@ fn clif_emit_block(
             } => {
                 let mut val = clif_emit_expr(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     value,
                     locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 let target_ty = ty
                     .as_ref()
@@ -4219,14 +4341,9 @@ fn clif_emit_block(
                     for (field, field_expr) in fields {
                         let field_val = clif_emit_expr(
                             builder,
-                            module,
-                            function_ids,
-                            function_signatures,
+                            ctx,
                             field_expr,
                             locals,
-                            next_var,
-                            string_literal_ids,
-                            task_ref_ids,
                         )?;
                         let field_var = Variable::from_u32(*next_var as u32);
                         *next_var += 1;
@@ -4245,14 +4362,34 @@ fn clif_emit_block(
             ast::Stmt::Assign { target, value } => {
                 let val = clif_emit_expr(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     value,
                     locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
+                )?;
+                let binding = if let Some(existing) = locals.get(target).copied() {
+                    existing
+                } else {
+                    let var = Variable::from_u32(*next_var as u32);
+                    *next_var += 1;
+                    builder.declare_var(var, val.ty);
+                    let binding = LocalBinding { var, ty: val.ty };
+                    locals.insert(target.clone(), binding);
+                    binding
+                };
+                let val = cast_clif_value(builder, val, binding.ty)?;
+                builder.def_var(binding.var, val.value);
+            }
+            ast::Stmt::CompoundAssign { target, op, value } => {
+                let combined_expr = ast::Expr::Binary {
+                    op: *op,
+                    left: Box::new(ast::Expr::Ident(target.clone())),
+                    right: Box::new(value.clone()),
+                };
+                let val = clif_emit_expr(
+                    builder,
+                    ctx,
+                    &combined_expr,
+                    locals,
                 )?;
                 let binding = if let Some(existing) = locals.get(target).copied() {
                     existing
@@ -4268,22 +4405,26 @@ fn clif_emit_block(
                 builder.def_var(binding.var, val.value);
             }
             ast::Stmt::Return(expr) => {
-                let mut value = clif_emit_expr(
-                    builder,
-                    module,
-                    function_ids,
-                    function_signatures,
-                    expr,
-                    locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
-                )?;
-                if let Some(return_ty) = return_ty {
-                    value = cast_clif_value(builder, value, return_ty)?;
-                    builder.ins().return_(&[value.value]);
+                if let Some(expr) = expr {
+                    let mut value = clif_emit_expr(
+                        builder,
+                        ctx,
+                        expr,
+                        locals,
+                    )?;
+                    if let Some(return_ty) = return_ty {
+                        value = cast_clif_value(builder, value, return_ty)?;
+                        builder.ins().return_(&[value.value]);
+                    } else {
+                        builder.ins().return_(&[]);
+                    }
                 } else {
-                    builder.ins().return_(&[]);
+                    let value = return_ty.map(|ty| zero_for_type(builder, ty));
+                    if let Some(value) = value {
+                        builder.ins().return_(&[value]);
+                    } else {
+                        builder.ins().return_(&[]);
+                    }
                 }
                 return Ok(true);
             }
@@ -4293,14 +4434,9 @@ fn clif_emit_block(
             | ast::Stmt::Defer(expr) => {
                 let _ = clif_emit_expr(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     expr,
                     locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
             }
             ast::Stmt::If {
@@ -4310,14 +4446,9 @@ fn clif_emit_block(
             } => {
                 let cond_val = clif_emit_expr(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     condition,
                     locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 let zero = zero_for_type(builder, cond_val.ty);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
@@ -4329,15 +4460,11 @@ fn clif_emit_block(
                 builder.switch_to_block(then_block);
                 let then_terminated = clif_emit_block(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     then_body,
                     locals,
                     return_ty,
                     next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 if !then_terminated {
                     builder.ins().jump(cont_block, &[]);
@@ -4347,15 +4474,11 @@ fn clif_emit_block(
                 builder.switch_to_block(else_block);
                 let else_terminated = clif_emit_block(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     else_body,
                     locals,
                     return_ty,
                     next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 if !else_terminated {
                     builder.ins().jump(cont_block, &[]);
@@ -4376,14 +4499,9 @@ fn clif_emit_block(
                 builder.switch_to_block(head);
                 let cond_val = clif_emit_expr(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     condition,
                     locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 let zero = zero_for_type(builder, cond_val.ty);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
@@ -4392,15 +4510,11 @@ fn clif_emit_block(
                 builder.switch_to_block(loop_body);
                 let body_terminated = clif_emit_block(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     body,
                     locals,
                     return_ty,
                     next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 if !body_terminated {
                     builder.ins().jump(head, &[]);
@@ -4420,15 +4534,11 @@ fn clif_emit_block(
                 if let Some(init) = init {
                     let _ = clif_emit_block(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         std::slice::from_ref(init.as_ref()),
                         locals,
                         return_ty,
                         next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                 }
                 let head = builder.create_block();
@@ -4440,14 +4550,9 @@ fn clif_emit_block(
                 if let Some(condition) = condition {
                     let cond_val = clif_emit_expr(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         condition,
                         locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                     let zero = zero_for_type(builder, cond_val.ty);
                     let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
@@ -4458,15 +4563,11 @@ fn clif_emit_block(
                 builder.switch_to_block(loop_body);
                 let body_terminated = clif_emit_block(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     body,
                     locals,
                     return_ty,
                     next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 if !body_terminated {
                     builder.ins().jump(step_block, &[]);
@@ -4476,15 +4577,11 @@ fn clif_emit_block(
                 if let Some(step) = step {
                     let _ = clif_emit_block(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         std::slice::from_ref(step.as_ref()),
                         locals,
                         return_ty,
                         next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                 }
                 builder.ins().jump(head, &[]);
@@ -4506,25 +4603,15 @@ fn clif_emit_block(
                 {
                     let start_val = clif_emit_expr(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         start,
                         locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                     let end_val = clif_emit_expr(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         end,
                         locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                     let binding_var = if let Some(existing) = locals.get(binding).copied() {
                         existing
@@ -4562,15 +4649,11 @@ fn clif_emit_block(
                     builder.switch_to_block(loop_body);
                     let body_terminated = clif_emit_block(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         body,
                         locals,
                         return_ty,
                         next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                     if !body_terminated {
                         builder.ins().jump(step_block, &[]);
@@ -4589,15 +4672,11 @@ fn clif_emit_block(
                 } else {
                     let _ = clif_emit_block(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         body,
                         locals,
                         return_ty,
                         next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                 }
             }
@@ -4607,15 +4686,11 @@ fn clif_emit_block(
                 builder.switch_to_block(head);
                 let body_terminated = clif_emit_block(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     body,
                     locals,
                     return_ty,
                     next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 if !body_terminated {
                     builder.ins().jump(head, &[]);
@@ -4626,14 +4701,9 @@ fn clif_emit_block(
             ast::Stmt::Match { scrutinee, arms } => {
                 let scrutinee_val = clif_emit_expr(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     scrutinee,
                     locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 let end_block = builder.create_block();
                 let mut next_block = builder.create_block();
@@ -4646,14 +4716,9 @@ fn clif_emit_block(
                     let guarded_pred = if let Some(guard) = &arm.guard {
                         let guard_val = clif_emit_expr(
                             builder,
-                            module,
-                            function_ids,
-                            function_signatures,
+                            ctx,
                             guard,
                             locals,
-                            next_var,
-                            string_literal_ids,
-                            task_ref_ids,
                         )?;
                         let zero = zero_for_type(builder, guard_val.ty);
                         let guard_pred = builder.ins().icmp(IntCC::NotEqual, guard_val.value, zero);
@@ -4676,14 +4741,9 @@ fn clif_emit_block(
                     builder.switch_to_block(arm_block);
                     let arm_value = clif_emit_expr(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         &arm.value,
                         locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                     if arm.returns {
                         builder.ins().return_(&[arm_value.value]);
@@ -4752,14 +4812,9 @@ fn variant_tag(variant: &str) -> i32 {
 
 fn clif_emit_expr(
     builder: &mut FunctionBuilder,
-    module: &mut ObjectModule,
-    function_ids: &HashMap<String, cranelift_module::FuncId>,
-    function_signatures: &HashMap<String, ClifFunctionSignature>,
+    ctx: &mut ClifLoweringCtx<'_>,
     expr: &ast::Expr,
     locals: &mut HashMap<String, LocalBinding>,
-    next_var: &mut usize,
-    string_literal_ids: &HashMap<String, i32>,
-    task_ref_ids: &HashMap<String, i32>,
 ) -> Result<ClifValue> {
     Ok(match expr {
         ast::Expr::Int(v) => {
@@ -4780,7 +4835,7 @@ fn clif_emit_expr(
         ast::Expr::Str(value) => ClifValue {
             value: builder.ins().iconst(
                 pointer_sized_clif_type(),
-                string_literal_ids.get(value).copied().unwrap_or(0) as i64,
+                ctx.string_literal_ids.get(value).copied().unwrap_or(0) as i64,
             ),
             ty: pointer_sized_clif_type(),
         },
@@ -4790,7 +4845,7 @@ fn clif_emit_expr(
                     value: builder.use_var(binding.var),
                     ty: binding.ty,
                 }
-            } else if let Some(task_ref) = task_ref_ids.get(name).copied() {
+            } else if let Some(task_ref) = ctx.task_ref_ids.get(name).copied() {
                 ClifValue {
                     value: builder
                         .ins()
@@ -4806,26 +4861,61 @@ fn clif_emit_expr(
         }
         ast::Expr::Group(inner) => clif_emit_expr(
             builder,
-            module,
-            function_ids,
-            function_signatures,
+            ctx,
             inner,
             locals,
-            next_var,
-            string_literal_ids,
-            task_ref_ids,
         )?,
         ast::Expr::Await(inner) => clif_emit_expr(
             builder,
-            module,
-            function_ids,
-            function_signatures,
+            ctx,
             inner,
             locals,
-            next_var,
-            string_literal_ids,
-            task_ref_ids,
         )?,
+        ast::Expr::Unary { op, expr } => {
+            let value = clif_emit_expr(
+                builder,
+                ctx,
+                expr,
+                locals,
+            )?;
+            match op {
+                ast::UnaryOp::Plus => value,
+                ast::UnaryOp::Neg => {
+                    if value.ty == types::F32 || value.ty == types::F64 {
+                        let zero = if value.ty == types::F32 {
+                            builder.ins().f32const(0.0)
+                        } else {
+                            builder.ins().f64const(0.0)
+                        };
+                        ClifValue {
+                            value: builder.ins().fsub(zero, value.value),
+                            ty: value.ty,
+                        }
+                    } else {
+                        let zero = builder.ins().iconst(value.ty, 0);
+                        ClifValue {
+                            value: builder.ins().isub(zero, value.value),
+                            ty: value.ty,
+                        }
+                    }
+                }
+                ast::UnaryOp::Not => {
+                    let zero = zero_for_type(builder, value.ty);
+                    let pred = builder.ins().icmp(IntCC::Equal, value.value, zero);
+                    bool_to_i8(builder, pred)
+                }
+                ast::UnaryOp::BitNot => {
+                    if !value.ty.is_int() {
+                        bail!("native backend bitwise not requires integer operand");
+                    }
+                    let all_ones = builder.ins().iconst(value.ty, -1);
+                    ClifValue {
+                        value: builder.ins().bxor(value.value, all_ones),
+                        ty: value.ty,
+                    }
+                }
+            }
+        }
         ast::Expr::FieldAccess { base, field } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = locals.get(&format!("{name}.{field}")).copied() {
@@ -4834,7 +4924,7 @@ fn clif_emit_expr(
                         ty: binding.ty,
                     }
                 } else if let Some(task_ref_name) = expr_task_ref_name(expr) {
-                    if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
+                    if let Some(task_ref) = ctx.task_ref_ids.get(&task_ref_name).copied() {
                         ClifValue {
                             value: builder
                                 .ins()
@@ -4844,40 +4934,25 @@ fn clif_emit_expr(
                     } else {
                         clif_emit_expr(
                             builder,
-                            module,
-                            function_ids,
-                            function_signatures,
+                            ctx,
                             base,
                             locals,
-                            next_var,
-                            string_literal_ids,
-                            task_ref_ids,
                         )?
                     }
                 } else {
                     clif_emit_expr(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         base,
                         locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?
                 }
             } else {
                 clif_emit_expr(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     base,
                     locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?
             }
         }
@@ -4886,14 +4961,9 @@ fn clif_emit_expr(
             for (_, value) in fields {
                 let out = clif_emit_expr(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     value,
                     locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
                 if first.is_none() {
                     first = Some(out);
@@ -4912,14 +4982,9 @@ fn clif_emit_expr(
             for value in payload {
                 let _ = clif_emit_expr(
                     builder,
-                    module,
-                    function_ids,
-                    function_signatures,
+                    ctx,
                     value,
                     locals,
-                    next_var,
-                    string_literal_ids,
-                    task_ref_ids,
                 )?;
             }
             let key = format!("{enum_name}::{variant}");
@@ -4935,61 +5000,36 @@ fn clif_emit_expr(
             catch_expr,
         } => clif_emit_expr(
             builder,
-            module,
-            function_ids,
-            function_signatures,
+            ctx,
             try_expr,
             locals,
-            next_var,
-            string_literal_ids,
-            task_ref_ids,
         )
         .or_else(|_| {
             clif_emit_expr(
                 builder,
-                module,
-                function_ids,
-                function_signatures,
+                ctx,
                 catch_expr,
                 locals,
-                next_var,
-                string_literal_ids,
-                task_ref_ids,
             )
         })?,
         ast::Expr::Range { start, .. } => clif_emit_expr(
             builder,
-            module,
-            function_ids,
-            function_signatures,
+            ctx,
             start,
             locals,
-            next_var,
-            string_literal_ids,
-            task_ref_ids,
         )?,
         ast::Expr::Binary { op, left, right } => {
             let lhs = clif_emit_expr(
                 builder,
-                module,
-                function_ids,
-                function_signatures,
+                ctx,
                 left,
                 locals,
-                next_var,
-                string_literal_ids,
-                task_ref_ids,
             )?;
             let rhs = clif_emit_expr(
                 builder,
-                module,
-                function_ids,
-                function_signatures,
+                ctx,
                 right,
                 locals,
-                next_var,
-                string_literal_ids,
-                task_ref_ids,
             )?;
             match op {
                 ast::BinaryOp::Add => {
@@ -5055,6 +5095,57 @@ fn clif_emit_expr(
                         ty: lhs.ty,
                     }
                 }
+                ast::BinaryOp::BitAnd => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    ClifValue {
+                        value: builder.ins().band(lhs.value, rhs.value),
+                        ty: lhs.ty,
+                    }
+                }
+                ast::BinaryOp::BitOr => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    ClifValue {
+                        value: builder.ins().bor(lhs.value, rhs.value),
+                        ty: lhs.ty,
+                    }
+                }
+                ast::BinaryOp::BitXor => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    ClifValue {
+                        value: builder.ins().bxor(lhs.value, rhs.value),
+                        ty: lhs.ty,
+                    }
+                }
+                ast::BinaryOp::Shl => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    ClifValue {
+                        value: builder.ins().ishl(lhs.value, rhs.value),
+                        ty: lhs.ty,
+                    }
+                }
+                ast::BinaryOp::Shr => {
+                    let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
+                    ClifValue {
+                        value: builder.ins().sshr(lhs.value, rhs.value),
+                        ty: lhs.ty,
+                    }
+                }
+                ast::BinaryOp::And => {
+                    let lhs_zero = zero_for_type(builder, lhs.ty);
+                    let rhs_zero = zero_for_type(builder, rhs.ty);
+                    let lhs_pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, lhs_zero);
+                    let rhs_pred = builder.ins().icmp(IntCC::NotEqual, rhs.value, rhs_zero);
+                    let pred = builder.ins().band(lhs_pred, rhs_pred);
+                    bool_to_i8(builder, pred)
+                }
+                ast::BinaryOp::Or => {
+                    let lhs_zero = zero_for_type(builder, lhs.ty);
+                    let rhs_zero = zero_for_type(builder, rhs.ty);
+                    let lhs_pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, lhs_zero);
+                    let rhs_pred = builder.ins().icmp(IntCC::NotEqual, rhs.value, rhs_zero);
+                    let pred = builder.ins().bor(lhs_pred, rhs_pred);
+                    bool_to_i8(builder, pred)
+                }
                 ast::BinaryOp::Eq => {
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred = builder.ins().icmp(IntCC::Equal, lhs.value, rhs.value);
@@ -5099,28 +5190,23 @@ fn clif_emit_expr(
         }
         ast::Expr::Call { callee, args } => {
             let mut values = Vec::with_capacity(args.len());
-            if let Some(function_id) = function_ids.get(callee).copied() {
-                let signature = function_signatures.get(callee).ok_or_else(|| {
+            if let Some(function_id) = ctx.function_ids.get(callee).copied() {
+                let signature = ctx.function_signatures.get(callee).ok_or_else(|| {
                     anyhow!("missing native function signature metadata for `{callee}`")
                 })?;
                 for (index, arg) in args.iter().enumerate() {
                     let mut lowered = clif_emit_expr(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         arg,
                         locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                     if let Some(target) = signature.params.get(index).copied() {
                         lowered = cast_clif_value(builder, lowered, target)?;
                     }
                     values.push(lowered.value);
                 }
-                let func_ref = module.declare_func_in_func(function_id, builder.func);
+                let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
                 let call = builder.ins().call(func_ref, &values);
                 if let Some(value) = builder.inst_results(call).first().copied() {
                     ClifValue {
@@ -5137,14 +5223,9 @@ fn clif_emit_expr(
                 for arg in args {
                     let _ = clif_emit_expr(
                         builder,
-                        module,
-                        function_ids,
-                        function_signatures,
+                        ctx,
                         arg,
                         locals,
-                        next_var,
-                        string_literal_ids,
-                        task_ref_ids,
                     )?;
                 }
                 return Err(anyhow!(
@@ -5363,12 +5444,17 @@ fn collect_unresolved_calls_from_stmt(
     match stmt {
         ast::Stmt::Let { value, .. }
         | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::Return(value)
+        | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => {
             collect_unresolved_calls_from_expr(value, defined_functions, unresolved)
+        }
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_unresolved_calls_from_expr(value, defined_functions, unresolved);
+            }
         }
         ast::Stmt::If {
             condition,
@@ -5464,6 +5550,9 @@ fn collect_unresolved_calls_from_expr(
         }
         ast::Expr::Await(inner) => {
             collect_unresolved_calls_from_expr(inner, defined_functions, unresolved);
+        }
+        ast::Expr::Unary { expr, .. } => {
+            collect_unresolved_calls_from_expr(expr, defined_functions, unresolved);
         }
         ast::Expr::TryCatch {
             try_expr,
