@@ -224,14 +224,14 @@ Production-readiness objective:
 - [ ] Add structured failure triage playbook mapping common failures to exact fix workflows.
 
 ### Core Stdlib Expansion Priorities (`core`)
-- [ ] Add `core.bytes` primitives (byte buffers, endian encode/decode, safe slicing helpers).
-- [ ] Add `core.path` primitives (normalize/join/split, platform-safe path operations).
-- [ ] Add `core.collections` baseline (`Vec`, `Map`, `Set`) with deterministic-friendly contracts.
-- [ ] Add `core.sync.atomic` baseline typed atomics/fence APIs aligned with memory-model contract.
-- [ ] Add `core.encoding` baseline (json/base64/hex) for practical systems/app interoperability.
-- [ ] Add `core.error` baseline typed error/context propagation primitives.
-- [ ] Add `core.time.duration` utilities for monotonic arithmetic and deadline composition.
-- [ ] Expand `core.fs` with production file primitives (tempfiles, file-region APIs, optional mmap boundary).
+- [✅] Add `core.bytes` primitives (byte buffers, endian encode/decode, safe slicing helpers).
+- [✅] Add `core.path` primitives (normalize/join/split, platform-safe path operations).
+- [✅] Add `core.collections` baseline (`Vec`, `Map`, `Set`) with deterministic-friendly contracts.
+- [✅] Add `core.sync.atomic` baseline typed atomics/fence APIs aligned with memory-model contract.
+- [✅] Add `core.encoding` baseline (json/base64/hex) for practical systems/app interoperability.
+- [✅] Add `core.error` baseline typed error/context propagation primitives.
+- [✅] Add `core.time.duration` utilities for monotonic arithmetic and deadline composition.
+- [✅] Expand `core.fs` with production file primitives (tempfiles, file-region APIs, optional mmap boundary).
 
 ### Tracking + Exit Criteria
 - [ ] Close all currently failing `crates/driver` tests and keep workspace green for 14 consecutive days.
