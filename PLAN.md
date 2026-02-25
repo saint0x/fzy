@@ -167,6 +167,78 @@ Net assessment
 - Production-appropriate now: async semantics + deterministic runtime/testing + native async intrinsic surface + equivalence normalization gate.
 - Async section is complete for production scope in this plan.
 
+## Solidifying For Production (Maturity Closure)
+
+Status snapshot (as of February 25, 2026):
+- Fozzy strict deterministic lifecycle is healthy (`doctor`, `test --det --strict`, `run --det --record`, `trace verify --strict`, `replay`, `ci`).
+- Host-backed validation is healthy (proc/fs/http host runs pass).
+- Full production gate script currently passes end-to-end (`scripts/fozzy_production_gate.sh`), including pedantic topology closure and unsafe-budget gate.
+- `fozzy map suites --profile pedantic` currently reports closure at this point-in-time (`requiredHotspotCount=18`, `uncoveredHotspotCount=0`).
+- Critical maturity blocker remains: `cargo test --workspace` is currently not green (4 failing `crates/driver` tests).
+
+Production-readiness objective:
+- Move from "strong deterministic runtime/testing platform" to "serious systems-language maturity" by closing language semantics parity, release-gate completeness, and production DX rigor.
+
+### Release Gate Unification (Blockers)
+- [ ] Make `cargo test --workspace` a mandatory release gate and fail release when any crate test fails.
+- [ ] Add compiler pipeline gate (`cargo check --workspace`) to production release script.
+- [ ] Add `fz abi-check` baseline validation for shipped examples/apps in release gate.
+- [ ] Add `fz parity` and `fz equivalence` mandatory gates for representative language probes.
+- [ ] Enforce warning-free first-party builds in release (`-D warnings` or equivalent policy).
+- [ ] Add a single "ship gate" entrypoint that runs language + compiler + Fozzy + ABI + docs/tooling smoke.
+- [ ] Make shipped examples release-blocking for FFI contracts (`fz headers`/ABI generation must pass for examples that export C ABI).
+
+### Systems Language Semantics Parity
+- [ ] Remove `i32`-only literal/token bottleneck from parser/AST and support full-width integer literal typing.
+- [ ] Complete end-to-end type semantics parity across parser -> HIR -> FIR -> verifier -> native backends for `u*/i*/f*`, pointers, refs, arrays, structs, enums.
+- [ ] Remove or close remaining `void/i32`-only native signature constraints with concrete lowering support.
+- [✅] Expand verifier guarantees beyond current narrow entry return-type assumptions to full declared return-type families.
+- [ ] Add cross-backend semantic conformance tests for non-`i32` signatures and aggregate returns.
+- [ ] Add ABI/layout contract tests for non-trivial `repr(C)` structs/enums and alignment-sensitive cases.
+- [ ] Fix `usize`/`isize` semantics to be target-dependent and ABI-correct (no unconditional `usize -> u64`, `isize -> i64` concretization in language/FFI paths).
+- [ ] Align C type mapping for pointer-sized integers to `size_t`/`ssize_t` semantics where applicable, not fixed-width aliases.
+- [✅] Extend ABI manifest identity with hard build/target identity fields (target triple, data-layout hash, compiler/toolchain identity hash).
+
+### Memory Safety Hardening Depth
+- [ ] Strengthen alias/lifetime/provenance verification beyond current heuristic/intra-procedural baseline.
+- [ ] Add deeper async suspension borrow-safety proofs and regressions for borrow-across-`await` edge cases.
+- [ ] Add inter-procedural ownership/lifetime summaries for generic/trait-heavy call paths.
+- [ ] Add memory-model conformance probes for atomic ordering claims (`Relaxed`/`Acquire`/`Release`/`AcqRel`/`SeqCst`).
+- [ ] Align public safety positioning with enforceability: avoid "Rust-class outcomes" claims until proof depth and guarantees actually match.
+
+### Bidirectional Trace/Interop Closure
+- [ ] Route native trace replay/shrink/ci through validated Fozzy replay path (or provide explicit equivalence bridge) so bidirectional claim is operationally true.
+- [ ] Add reverse trace conversion path (`.fozzy` -> native trace schema) or formally narrow public compatibility claim.
+
+### CI + Operational Maturity
+- [ ] Add first-party CI workflows under `.github/workflows` for PR and mainline enforcement.
+- [ ] Require deterministic reproducibility artifacts on CI failures (trace + timeline + report auto-upload).
+- [ ] Add release-branch policy checks for lock/vendor drift and ABI-manifest drift.
+- [ ] Add target matrix gating for bidirectional C interop (macOS/Linux, x86_64/aarch64) as required release condition.
+- [ ] Add flake-tracking budget for deterministic tests and gate on regression.
+
+### Tooling + DX Solidification (High Value, Not Overkill)
+- [ ] Stabilize LSP production ergonomics: eliminate dead-code/warning drift, tighten protocol behavior, and keep diagnostics/hover/rename deterministic.
+- [ ] Publish one canonical "production workflow" doc path (author -> check -> verify -> gate -> release) and keep command outputs aligned.
+- [ ] Add strict smoke for `fozzyfmt` and `fozzydoc` into production gate.
+- [ ] Add structured failure triage playbook mapping common failures to exact fix workflows.
+
+### Core Stdlib Expansion Priorities (`core`)
+- [ ] Add `core.bytes` primitives (byte buffers, endian encode/decode, safe slicing helpers).
+- [ ] Add `core.path` primitives (normalize/join/split, platform-safe path operations).
+- [ ] Add `core.collections` baseline (`Vec`, `Map`, `Set`) with deterministic-friendly contracts.
+- [ ] Add `core.sync.atomic` baseline typed atomics/fence APIs aligned with memory-model contract.
+- [ ] Add `core.encoding` baseline (json/base64/hex) for practical systems/app interoperability.
+- [ ] Add `core.error` baseline typed error/context propagation primitives.
+- [ ] Add `core.time.duration` utilities for monotonic arithmetic and deadline composition.
+- [ ] Expand `core.fs` with production file primitives (tempfiles, file-region APIs, optional mmap boundary).
+
+### Tracking + Exit Criteria
+- [ ] Close all currently failing `crates/driver` tests and keep workspace green for 14 consecutive days.
+- [ ] Keep pedantic hotspot closure at `uncoveredHotspotCount=0` across two consecutive release candidates.
+- [ ] Demonstrate release-gate pass on clean checkout in CI and local reproducibility.
+- [ ] Mark "serious systems-language maturity" only after all above blocker sections are complete.
+
 ## Checklist: Needs To Be Done
 
 ### Async Semantics + Concurrency Unification

@@ -856,26 +856,6 @@ fn parse_let_symbol(raw_line: &str) -> Option<(String, usize)> {
     Some((name.to_string(), start))
 }
 
-fn symbol_spans(source: &str, symbol: &str) -> Vec<(usize, usize, usize)> {
-    let mut spans = Vec::new();
-    for (line_idx, line) in source.lines().enumerate() {
-        let mut cursor = 0usize;
-        while cursor < line.len() {
-            let Some(offset) = line[cursor..].find(symbol) else {
-                break;
-            };
-            let col = cursor + offset;
-            if is_word_boundary(line, col.saturating_sub(1))
-                && is_word_boundary(line, col + symbol.len())
-            {
-                spans.push((line_idx, col, symbol.len()));
-            }
-            cursor = col + symbol.len();
-        }
-    }
-    spans
-}
-
 fn symbol_spans_identifier_tokens(source: &str, symbol: &str) -> Vec<(usize, usize, usize)> {
     let mut spans = Vec::new();
     if symbol.is_empty() {
@@ -1036,14 +1016,6 @@ fn identifier_at_position(source: &str, line: usize, character: usize) -> Option
 
 fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'.'
-}
-
-fn is_word_boundary(input: &str, index: usize) -> bool {
-    if index >= input.len() {
-        return true;
-    }
-    let ch = input.as_bytes()[index] as char;
-    !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
 }
 
 fn symbol_len(line: &str, start: usize) -> usize {
@@ -1495,7 +1467,7 @@ mod tests {
     fn symbol_and_reference_scan_finds_occurrences() {
         let source =
             "fn ping() -> i32 {\n    let ping_count = 1\n    ping()\n    return ping_count\n}\n";
-        let spans = symbol_spans(source, "ping");
+        let spans = symbol_spans_identifier_tokens(source, "ping");
         assert!(spans.len() >= 2);
         let defs = collect_symbol_occurrences(source, Path::new("/tmp/t.fzy"));
         assert!(defs.iter().any(|entry| entry.name == "ping"));

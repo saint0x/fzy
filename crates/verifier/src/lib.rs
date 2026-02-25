@@ -301,25 +301,14 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     if let Some(return_type) = &module.entry_return_type {
-        match return_type {
-            ast::Type::Int {
-                signed: true,
-                bits: 32,
-            } => {
-                if module.entry_return_const_i32.is_none() {
-                    report.diagnostics.push(Diagnostic::new(
-                        Severity::Error,
-                        "main must return an i32 expression in this profile",
-                        Some("add `return <i32>` in `fn main() -> i32`".to_string()),
-                    ));
-                }
-            }
-            ast::Type::Void => {}
-            _ => report.diagnostics.push(Diagnostic::new(
-                Severity::Warning,
-                format!("unverified return type in v0: {return_type}"),
-                Some("supported now: `void`, `i32`".to_string()),
-            )),
+        if !matches!(return_type, ast::Type::Void) && !module.entry_has_return_expr {
+            report.diagnostics.push(Diagnostic::new(
+                Severity::Error,
+                format!("main must return a `{return_type}` expression in this profile"),
+                Some(format!(
+                    "add `return <{return_type}>` in `fn main() -> {return_type}`"
+                )),
+            ));
         }
     }
 
@@ -364,6 +353,7 @@ mod tests {
             nodes: 1,
             entry_return_type: None,
             entry_return_const_i32: None,
+            entry_has_return_expr: false,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -409,6 +399,7 @@ mod tests {
             nodes: 1,
             entry_return_type: None,
             entry_return_const_i32: None,
+            entry_has_return_expr: false,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -457,6 +448,7 @@ mod tests {
             nodes: 1,
             entry_return_type: None,
             entry_return_const_i32: None,
+            entry_has_return_expr: false,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -506,6 +498,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: None,
+            entry_has_return_expr: false,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -539,7 +532,7 @@ mod tests {
         assert!(report
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("main must return an i32")));
+            .any(|d| d.message.contains("main must return a `i32`")));
     }
 
     #[test]
@@ -555,6 +548,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: vec!["socket_res".to_string()],
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -604,6 +598,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 1,
@@ -653,6 +648,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -709,6 +705,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -779,6 +776,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -835,6 +833,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -888,6 +887,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -937,6 +937,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -992,6 +993,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,
@@ -1049,6 +1051,7 @@ mod tests {
                 bits: 32,
             }),
             entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
             linear_resources: Vec::new(),
             deferred_resources: Vec::new(),
             matches_without_wildcard: 0,

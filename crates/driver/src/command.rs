@@ -5270,6 +5270,7 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
         .with_context(|| format!("failed writing header: {}", header_path.display()))?;
     let abi_manifest = header_path.with_extension("abi.json");
     let panic_boundary = detect_ffi_panic_boundary(&exports);
+    let (target_triple, data_layout_hash, compiler_identity_hash) = abi_identity_fields();
     let package_json = serde_json::json!({
         "name": package_name,
         "version": resolved
@@ -5282,6 +5283,9 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
         "schemaVersion": "fozzylang.ffi_abi.v0",
         "package": package_json,
         "abiRevision": 1u64,
+        "targetTriple": target_triple,
+        "dataLayoutHash": data_layout_hash,
+        "compilerIdentityHash": compiler_identity_hash,
         "panicBoundary": panic_boundary,
         "layoutPolicy": {
             "reprCStableOnly": true,
@@ -5582,6 +5586,42 @@ fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
 
 fn is_repr_c(repr: Option<&str>) -> bool {
     repr.is_some_and(|repr| repr.to_ascii_lowercase().contains('c'))
+}
+
+fn abi_identity_fields() -> (String, String, String) {
+    let target_triple = std::env::var("TARGET")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| format!("{}-unknown-{}", std::env::consts::ARCH, std::env::consts::OS));
+    let data_layout_descriptor = format!(
+        "target={target_triple};endian={};ptr_width={};usize={};usize_align={}",
+        if cfg!(target_endian = "little") {
+            "little"
+        } else {
+            "big"
+        },
+        std::mem::size_of::<usize>() * 8,
+        std::mem::size_of::<usize>(),
+        std::mem::align_of::<usize>()
+    );
+    let compiler_descriptor = ProcessCommand::new("rustc")
+        .arg("-vV")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .unwrap_or_else(|| "rustc:unknown".to_string());
+    (
+        target_triple,
+        sha256_hex(data_layout_descriptor.as_bytes()),
+        sha256_hex(compiler_descriptor.as_bytes()),
+    )
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex_encode(hasher.finalize().as_slice())
 }
 
 fn ffi_type_layout(ty: &ast::Type) -> Option<(usize, usize)> {
@@ -6946,7 +6986,7 @@ mod tests {
             std::env::temp_dir().join(format!("fozzylang-test-async-record-{suffix}.trace.json"));
         std::fs::write(
             &source,
-            "async fn worker() -> i32 {}\ntest \"a\" {}\nfn main() -> i32 {\n    return 0\n}\n",
+            "use core.thread;\nasync fn worker() -> i32 {\n    return 0\n}\ntest \"a\" {}\nfn main() -> i32 {\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -7008,7 +7048,7 @@ mod tests {
             std::env::temp_dir().join(format!("fozzylang-test-rpc-record-{suffix}.trace.json"));
         std::fs::write(
             &source,
-            "rpc Ping(req: PingReq) -> PingRes;\nrpc Chat(stream<ChatReq>) -> stream<ChatRes>;\nfn main() -> i32 {\n    Ping(req)\n    Chat(req)\n    timeout(10)\n    cancel()\n    return 0\n}\n",
+            "use core.thread;\nuse core.net;\nrpc Ping(req: i32) -> i32;\nrpc Chat(req: i32) -> i32;\nfn main() -> i32 {\n    Ping(0)\n    Chat(0)\n    timeout(10)\n    cancel()\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -7326,7 +7366,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-async-workload-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "rpc Ping(req: PingReq) -> PingRes;\nasync fn worker() -> i32 {}\ntest \"flow\" {}\nfn main() -> i32 {\n    spawn(worker)\n    Ping(req)\n    return 0\n}\n",
+            "use core.thread;\nuse core.net;\nrpc Ping(req: i32) -> i32;\nasync fn worker() -> i32 {\n    return 0\n}\ntest \"flow\" {}\nfn main() -> i32 {\n    spawn(worker)\n    Ping(0)\n    return 0\n}\n",
         )
         .expect("source should be written");
 

@@ -24,6 +24,7 @@ pub struct TypedModule {
     pub inferred_capabilities: Vec<String>,
     pub entry_return_type: Option<Type>,
     pub entry_return_const_i32: Option<i32>,
+    pub entry_has_return_expr: bool,
     pub linear_resources: Vec<String>,
     pub deferred_resources: Vec<String>,
     pub matches_without_wildcard: usize,
@@ -233,6 +234,10 @@ pub fn lower(module: &Module) -> TypedModule {
         .find(|f| f.name == "main")
         .map(|f| f.return_type.clone());
     let entry_return_const_i32 = interpret_entry_i32(&typed_functions);
+    let entry_has_return_expr = typed_functions
+        .iter()
+        .find(|f| f.name == "main")
+        .is_some_and(|f| function_has_explicit_return(&f.body));
 
     let (
         linear_resources,
@@ -297,6 +302,7 @@ pub fn lower(module: &Module) -> TypedModule {
         inferred_capabilities,
         entry_return_type,
         entry_return_const_i32,
+        entry_has_return_expr,
         linear_resources,
         deferred_resources,
         matches_without_wildcard,
@@ -2324,15 +2330,23 @@ fn infer_expr_type(
         Expr::Bool(_) => Some(Type::Bool),
         Expr::Str(_) => Some(Type::Str),
         Expr::Ident(name) => {
-            let found = scopes.get(name);
-            if found.is_none() {
-                record_type_error(
-                    errors,
-                    type_error_details,
-                    format!("unresolved identifier `{name}`"),
-                );
+            if let Some(found) = scopes.get(name) {
+                return Some(found);
             }
-            found
+            if fn_sigs.contains_key(name) {
+                // Function symbols are first-class callable handles for scheduler/runtime intrinsics
+                // such as spawn(worker). They lower as opaque i32 handles in v1.
+                return Some(Type::Int {
+                    signed: true,
+                    bits: 32,
+                });
+            }
+            record_type_error(
+                errors,
+                type_error_details,
+                format!("unresolved identifier `{name}`"),
+            );
+            None
         }
         Expr::Group(inner) => infer_expr_type(
             inner,
@@ -3314,6 +3328,36 @@ fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
     })
 }
 
+fn function_has_explicit_return(body: &[Stmt]) -> bool {
+    body.iter().any(stmt_has_explicit_return)
+}
+
+fn stmt_has_explicit_return(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Return(_) => true,
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body.iter().any(stmt_has_explicit_return)
+                || else_body.iter().any(stmt_has_explicit_return)
+        }
+        Stmt::While { body, .. } => body.iter().any(stmt_has_explicit_return),
+        Stmt::Match { arms, .. } => arms.iter().any(|arm| expr_has_nested_return(&arm.value)),
+        Stmt::Let { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::Expr(value)
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value) => expr_has_nested_return(value),
+    }
+}
+
+fn expr_has_nested_return(_expr: &Expr) -> bool {
+    false
+}
+
 fn eval_block<'a>(
     body: &[Stmt],
     env: &mut BTreeMap<String, Value>,
@@ -3384,7 +3428,13 @@ fn eval_expr<'a>(
         Expr::Int(v) => Some(Value::I32(*v)),
         Expr::Bool(v) => Some(Value::Bool(*v)),
         Expr::Str(v) => Some(Value::Str(v.clone())),
-        Expr::Ident(name) => env.get(name).cloned(),
+        Expr::Ident(name) => env.get(name).cloned().or_else(|| {
+            if functions.contains_key(name.as_str()) {
+                Some(Value::I32(0))
+            } else {
+                None
+            }
+        }),
         Expr::Group(inner) => eval_expr(inner, env, functions),
         Expr::Await(inner) => eval_expr(inner, env, functions),
         Expr::Call { callee, args } => {

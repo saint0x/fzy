@@ -270,8 +270,70 @@ impl Parser {
 
     fn parse_rpc_decl(&mut self) {
         let _ = self.consume(&TokenKind::KwRpc);
-        self.consume_until(&[TokenKind::Semi]);
+        let Some(name) = self.expect_ident("expected rpc method name") else {
+            self.consume_until(&[TokenKind::Semi]);
+            let _ = self.consume(&TokenKind::Semi);
+            return;
+        };
+        if !self.consume(&TokenKind::LParen) {
+            self.push_diag_here("expected `(` after rpc method name");
+            self.consume_until(&[TokenKind::Semi]);
+            let _ = self.consume(&TokenKind::Semi);
+            return;
+        }
+        let mut params = Vec::new();
+        let mut positional = 0usize;
+        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+            let (param_name, ty) = if matches!(self.peek_kind(), TokenKind::Ident(_))
+                && matches!(self.peek_n(1).map(|tok| &tok.kind), Some(TokenKind::Colon))
+            {
+                let Some(param_name) = self.expect_ident("expected rpc parameter name") else {
+                    break;
+                };
+                let _ = self.consume(&TokenKind::Colon);
+                let Some(ty) = self.parse_type() else {
+                    self.consume_until(&[TokenKind::Comma, TokenKind::RParen]);
+                    let _ = self.consume(&TokenKind::Comma);
+                    continue;
+                };
+                (param_name, ty)
+            } else {
+                let Some(ty) = self.parse_type() else {
+                    self.consume_until(&[TokenKind::Comma, TokenKind::RParen]);
+                    let _ = self.consume(&TokenKind::Comma);
+                    continue;
+                };
+                let name = format!("arg{positional}");
+                positional += 1;
+                (name, ty)
+            };
+            params.push(ast::Param {
+                name: param_name,
+                ty,
+            });
+            if !self.consume(&TokenKind::Comma) {
+                break;
+            }
+        }
+        let _ = self.consume(&TokenKind::RParen);
+        let return_type = if self.consume(&TokenKind::Arrow) {
+            self.parse_type().unwrap_or(Type::Void)
+        } else {
+            Type::Void
+        };
         let _ = self.consume(&TokenKind::Semi);
+        self.module.items.push(ast::Item::Function(ast::Function {
+            name,
+            generics: Vec::new(),
+            params,
+            return_type,
+            body: Vec::new(),
+            is_async: false,
+            is_pub: false,
+            is_extern: true,
+            abi: Some("rpc".to_string()),
+            ffi_panic: None,
+        }));
     }
 
     fn parse_use_or_cap(&mut self) {
