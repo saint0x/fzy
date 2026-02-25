@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use driver::{run as driver_run, Command, CommandFailure, Format};
 
 pub fn run() -> Result<()> {
@@ -130,7 +130,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             Ok(Command::Init { name })
         }
         Some("build") => {
-            let path = arg_path(args, 1)?;
+            let path = arg_path_or_cwd(args, 1)?;
             let release = args.iter().any(|a| a == "--release");
             let lib = args.iter().any(|a| a == "--lib");
             let threads = parse_u16_flag(args, "--threads")?;
@@ -150,7 +150,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             })
         }
         Some("run") => {
-            let path = arg_path(args, 1)?;
+            let path = arg_path_or_cwd(args, 1)?;
             if has_flag(args, "--strict") {
                 bail!("`--strict` was removed; use `--strict-verify`");
             }
@@ -184,7 +184,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             })
         }
         Some("test") => {
-            let path = arg_path(args, 1)?;
+            let path = arg_path_or_cwd(args, 1)?;
             if has_flag(args, "--strict") {
                 bail!("`--strict` was removed; use `--strict-verify`");
             }
@@ -217,33 +217,33 @@ fn parse_command(args: &[String]) -> Result<Command> {
             })
         }
         Some("fmt") => Ok(Command::Fmt {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
         }),
         Some("check") => Ok(Command::Check {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
         }),
         Some("verify") => Ok(Command::Verify {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
         }),
         Some("dx-check") => Ok(Command::DxCheck {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
             strict: has_flag(args, "--strict"),
         }),
         Some("spec-check") => Ok(Command::SpecCheck),
         Some("emit-ir") => Ok(Command::EmitIr {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
         }),
         Some("parity") => Ok(Command::Parity {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
             seed: parse_u64_flag(args, "--seed")?,
         }),
         Some("equivalence") => Ok(Command::Equivalence {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
             seed: parse_u64_flag(args, "--seed")?,
         }),
         Some("audit") => match args.get(1).map(String::as_str) {
             Some("unsafe") => Ok(Command::AuditUnsafe {
-                path: arg_path(args, 2)?,
+                path: arg_path_or_cwd(args, 2)?,
             }),
             _ => {
                 print_help();
@@ -251,7 +251,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             }
         },
         Some("vendor") => Ok(Command::Vendor {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
         }),
         Some("abi-check") => Ok(Command::AbiCheck {
             current: arg_path(args, 1)?,
@@ -259,14 +259,14 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 .ok_or_else(|| anyhow::anyhow!("missing value for --baseline"))?,
         }),
         Some("debug-check") => Ok(Command::DebugCheck {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
         }),
         Some("lsp") => match args.get(1).map(String::as_str) {
             Some("serve") => Ok(Command::LspServe {
                 path: parse_path_flag(args, "--path")?,
             }),
             Some("diagnostics") => Ok(Command::LspDiagnostics {
-                path: arg_path(args, 2)?,
+                path: arg_path_or_cwd(args, 2)?,
             }),
             Some("definition") => Ok(Command::LspDefinition {
                 path: arg_path(args, 2)?,
@@ -294,7 +294,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
                     .ok_or_else(|| anyhow::anyhow!("missing <to>"))?,
             }),
             Some("smoke") => Ok(Command::LspSmoke {
-                path: arg_path(args, 2)?,
+                path: arg_path_or_cwd(args, 2)?,
             }),
             _ => {
                 print_help();
@@ -321,12 +321,12 @@ fn parse_command(args: &[String]) -> Result<Command> {
             output: parse_path_flag(args, "--out")?,
         }),
         Some("headers") => Ok(Command::Headers {
-            path: arg_path(args, 1)?,
+            path: arg_path_or_cwd(args, 1)?,
             output: parse_path_flag(args, "--out")?,
         }),
         Some("rpc") => match args.get(1).map(String::as_str) {
             Some("gen") => Ok(Command::RpcGen {
-                path: arg_path(args, 2)?,
+                path: arg_path_or_cwd(args, 2)?,
                 out_dir: parse_path_flag(args, "--out-dir")?,
             }),
             _ => {
@@ -350,34 +350,44 @@ fn arg_path(args: &[String], idx: usize) -> Result<PathBuf> {
     Ok(PathBuf::from(raw))
 }
 
+fn arg_path_or_cwd(args: &[String], idx: usize) -> Result<PathBuf> {
+    match args.get(idx) {
+        None => std::env::current_dir().context("failed to resolve current working directory"),
+        Some(raw) if raw.starts_with('-') => {
+            std::env::current_dir().context("failed to resolve current working directory")
+        }
+        Some(raw) => Ok(PathBuf::from(raw)),
+    }
+}
+
 fn print_help() {
     eprintln!(
         "fz <command> [options]\n\
 commands:\n\
   init <name>\n\
-  build <path> [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name]\n\
-  run <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [-- <args>]\n\
-  test <path> [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
-  fmt <path>\n\
-  check <path>\n\
-  verify <path>\n\
-  dx-check <project> [--strict]\n\
+  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name]\n\
+  run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [-- <args>]\n\
+  test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
+  fmt [path]\n\
+  check [path]\n\
+  verify [path]\n\
+  dx-check [project] [--strict]\n\
   spec-check\n\
-  emit-ir <path>\n\
-  parity <path> [--seed N]\n\
-  equivalence <path> [--seed N]\n\
-  audit unsafe <path>\n\
-  vendor <project>\n\
+  emit-ir [path]\n\
+  parity [path] [--seed N]\n\
+  equivalence [path] [--seed N]\n\
+  audit unsafe [path]\n\
+  vendor [project]\n\
   abi-check <current.abi.json> --baseline <baseline.abi.json>\n\
-  debug-check <path>\n\
+  debug-check [path]\n\
   lsp serve [--path workspace]\n\
-  lsp diagnostics <path>\n\
+  lsp diagnostics [path]\n\
   lsp definition <path> <symbol>\n\
   lsp hover <path> <symbol>\n\
   lsp rename <path> <from> <to>\n\
-  lsp smoke <path>\n\
-  headers <path> [--out path]\n\
-  rpc gen <path> [--out-dir dir]\n\
+  lsp smoke [path]\n\
+  headers [path] [--out path]\n\
+  rpc gen [path] [--out-dir dir]\n\
   fuzz <scenario>\n\
   explore <scenario>\n\
   replay <trace>\n\
@@ -494,7 +504,6 @@ fn parse_repeated_value_flags(args: &[String], flags: &[&str]) -> Result<Vec<Str
 mod tests {
     use super::parse_command;
     use driver::Command;
-
     #[test]
     fn parse_command_accepts_long_version_flag_alias() {
         let args = vec!["--version".to_string()];
@@ -545,5 +554,41 @@ mod tests {
         ];
         let command = parse_command(&args).expect("trace-native should parse");
         assert!(matches!(command, Command::TraceNative { .. }));
+    }
+
+    #[test]
+    fn parse_check_defaults_to_current_directory() {
+        let args = vec!["check".to_string()];
+        let command = parse_command(&args).expect("check should parse without path");
+        let cwd = std::env::current_dir().expect("cwd should resolve");
+        match command {
+            Command::Check { path } => assert_eq!(path, cwd),
+            _ => panic!("expected check command"),
+        }
+    }
+
+    #[test]
+    fn parse_run_defaults_to_current_directory_when_first_arg_is_flag() {
+        let args = vec!["run".to_string(), "--det".to_string()];
+        let command = parse_command(&args).expect("run should parse without explicit path");
+        let cwd = std::env::current_dir().expect("cwd should resolve");
+        match command {
+            Command::Run { path, deterministic, .. } => {
+                assert_eq!(path, cwd);
+                assert!(deterministic);
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn parse_lsp_diagnostics_defaults_to_current_directory() {
+        let args = vec!["lsp".to_string(), "diagnostics".to_string()];
+        let command = parse_command(&args).expect("lsp diagnostics should parse without path");
+        let cwd = std::env::current_dir().expect("cwd should resolve");
+        match command {
+            Command::LspDiagnostics { path } => assert_eq!(path, cwd),
+            _ => panic!("expected lsp diagnostics command"),
+        }
     }
 }
