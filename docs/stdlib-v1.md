@@ -1,8 +1,8 @@
-# Stdlib v0
+# Stdlib v1
 
 ## Scope
 
-The v0 stdlib provides production baseline primitives for:
+The v1 stdlib provides production baseline primitives for:
 
 - networking + HTTP core + deterministic replay surface
 - structured observability (logs, metrics, spans)
@@ -14,7 +14,7 @@ The v0 stdlib provides production baseline primitives for:
 
 ## Stability Guarantees
 
-- Public API contracts in `crates/stdlib/src/*.rs` are semver-stable for v0 behavior.
+- Public API contracts in `crates/stdlib/src/*.rs` are semver-stable for v1 behavior.
 - `Host` and `Deterministic` runtime modes preserve app API parity; only decision sources differ.
 - Security defaults are fail-closed for limits and capability gates.
 - Durability primitives keep atomic-write and lock-contention behavior stable.
@@ -53,7 +53,7 @@ The v0 stdlib provides production baseline primitives for:
 ### `network`
 
 - Polling/socket APIs support host and deterministic backends with parity goals.
-- Supported v0 behavior includes IPv4/IPv6, DNS lookup, UDP, Unix sockets, and socket options.
+- Supported v1 behavior includes IPv4/IPv6, DNS lookup, UDP, Unix sockets, and socket options.
 - Errors are returned as explicit network/backend failures; deterministic backend can inject controlled failures.
 
 ### `http`
@@ -118,7 +118,7 @@ The v0 stdlib provides production baseline primitives for:
 - Runtime profiles: `dev`, `verify`, `release` with explicit deterministic/strict behavior.
 - Service manifest includes ports, limits, workers, graceful-stop budget.
 
-## Non-goals (v0)
+## Non-goals (v1)
 
 - complete replacement for external observability backends
 - platform-specific process supervisor orchestration

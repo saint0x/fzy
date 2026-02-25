@@ -12,7 +12,7 @@ What works: C-facing header/ABI generation, ABI baseline checking, native trace 
 What blocks “full bidirectional compatibility”: missing reverse bridges, coverage debt, ABI drift risk
 
 What is shipped
-- FFI surface exists via `pub extern "C" fn ...` declarations and generated C headers/ABI manifests (`command.rs` export/header path, `docs/abi-policy-v0.md`).
+- FFI surface exists via `pub extern "C" fn ...` declarations and generated C headers/ABI manifests (`command.rs` export/header path, `docs/abi-policy-v1.md`).
 - ABI compatibility gate exists and correctly fails on signature/panic-boundary drift (`command.rs` `abi-check` tests).
 - Native trace lifecycle is healthy (`fz test --det --record ...`, `fz replay/ci/shrink/explore` all passed on `sitrep.native.trace.json`).
 - Native -> Fozzy bridge exists via generated `goalTrace` (`*.goal.fozzy`), and `fozzy trace verify/replay/ci` passed on that artifact.

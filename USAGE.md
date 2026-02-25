@@ -291,12 +291,12 @@ Typical workflows:
 fozzydoc examples/robust_cli/src --format markdown --out artifacts/robust_cli.api.md
 
 # Keep language reference synced with extracted API section
-fozzydoc examples/robust_cli/src --format markdown --reference docs/language-reference-v0.md --out artifacts/robust_cli.api.md
+fozzydoc examples/robust_cli/src --format markdown --reference docs/language-reference-v1.md --out artifacts/robust_cli.api.md
 ```
 
 ## 8. Repository Conventions You Must Follow
 
-Source of truth: `docs/project-conventions-v0.md`.
+Source of truth: `docs/project-conventions-v1.md`.
 
 ## 8.1 Required structure
 
@@ -446,11 +446,11 @@ For meaningful changes, run at least:
 
 ## 16. Where To Go Next
 
-- Language semantics: `docs/language-reference-v0.md`
-- Stdlib behavior scope: `docs/stdlib-v0.md`
-- Project conventions: `docs/project-conventions-v0.md`
-- Dependency lock/vendor policy: `docs/dependency-locking-v0.md`
-- ABI policy: `docs/abi-policy-v0.md`
+- Language semantics: `docs/language-reference-v1.md`
+- Stdlib behavior scope: `docs/stdlib-v1.md`
+- Project conventions: `docs/project-conventions-v1.md`
+- Dependency lock/vendor policy: `docs/dependency-locking-v1.md`
+- ABI policy: `docs/abi-policy-v1.md`
 
 ---
 

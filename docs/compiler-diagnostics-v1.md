@@ -1,4 +1,4 @@
-# Compiler Diagnostics v2 (Production)
+# Compiler Diagnostics v1 (Production)
 
 This document defines the production diagnostics contract for `fz` and `fz lsp diagnostics`.
 

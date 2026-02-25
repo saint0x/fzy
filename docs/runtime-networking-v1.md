@@ -1,4 +1,4 @@
-# Runtime Networking v0
+# Runtime Networking v1
 
 ## Layering Contract
 
@@ -7,7 +7,7 @@
 
 ## Stability Guarantees
 
-- `bind`, `listen`, `accept`, `connect`, `read`, `write`, `close` are stable API operations in v0.
+- `bind`, `listen`, `accept`, `connect`, `read`, `write`, `close` are stable API operations in v1.
 - Socket ownership is explicit: listener sockets are runtime-owned; accepted/connected sockets are application-owned until `close`.
 - Cancellation/deadline checks are request-context scoped and stable in both host and deterministic modes.
 - Graceful shutdown semantics are stable: stop accepting new requests, drain in-flight requests, stop at configured timeout.
@@ -38,7 +38,7 @@
 - `ProxyTerminated`: TLS terminated before app boundary with trusted proxy forwarding policy.
 - `NativeAdapter`: TLS managed by adapter boundary before request parsing.
 
-## Non-goals (v0)
+## Non-goals (v1)
 
 - HTTP/2 or HTTP/3 semantics.
 - Cross-platform zero-copy transport tuning claims.

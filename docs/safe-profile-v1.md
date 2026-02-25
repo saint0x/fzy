@@ -1,4 +1,4 @@
-# Safe Profile v0
+# Safe Profile v1
 
 ## Guarantees
 
@@ -16,7 +16,7 @@
 - Capability usage not permitted by safe-profile rules.
 - Memory lifecycle imbalance (`alloc` without matching `free`).
 
-## Out Of Scope In v0
+## Out Of Scope In v1
 
 - Full alias/lifetime theorem proving.
 - Complete data-race freedom proofs for all shared-memory patterns.

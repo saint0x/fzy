@@ -121,7 +121,7 @@ fz vendor <project> --json
   - `fozzy.lock` (updated dependency graph hash)
   - `vendor/fozzy-vendor.json` (lock hash + per-dependency source/vendor hashes)
 
-Spec: `docs/dependency-locking-v0.md`
+Spec: `docs/dependency-locking-v1.md`
 
 ## ABI Compatibility Gate
 
@@ -197,7 +197,7 @@ Inspect:
 
 ## Example Projects
 
-All shipped examples follow the v0 narrative DX convention:
+All shipped examples follow the v1 narrative DX convention:
 
 - `src/main.fzy` is orchestration-only and the `fn main` declaration is last.
 - tests live under `src/tests/*` (no test declarations in `main.fzy`).

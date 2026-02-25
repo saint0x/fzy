@@ -1,6 +1,6 @@
-# Language Reference v0
+# Language Reference v1
 
-This document defines the v0 observable semantics contract used by the toolchain.
+This document defines the v1 observable semantics contract used by the toolchain.
 
 ## Evaluation Order
 
@@ -20,7 +20,7 @@ This document defines the v0 observable semantics contract used by the toolchain
 
 - `try <expr> catch <fallback>` evaluates the try branch first and returns the fallback value when the try branch fails.
 - Catch fallback value must type-check against the try expression result type.
-- v0 error classes are runtime operation failures (I/O, process, net), cancellation/deadline events, and verifier/runtime contract failures.
+- v1 error classes are runtime operation failures (I/O, process, net), cancellation/deadline events, and verifier/runtime contract failures.
 - `panic(...)` must never cross C ABI boundaries.
 - Exported FFI boundaries must declare panic policy with `#[ffi_panic(abort)]` or `#[ffi_panic(error)]`.
 
@@ -140,7 +140,7 @@ test "chaos_case" nondet {
 - `det` mode uses deterministic scheduler policies: `fifo`, `random` (seeded), `coverage_guided`.
 - Scheduling decisions are recorded as replay-critical trace data.
 - Async checkpoints and RPC frame decisions are represented as deterministic events.
-- v0 model controls explicit runtime scheduling points and does not claim arbitrary OS-preemptive interleaving coverage.
+- v1 model controls explicit runtime scheduling points and does not claim arbitrary OS-preemptive interleaving coverage.
 
 ### Yieldpoint Definitions (Equivalence Contract)
 
@@ -158,9 +158,9 @@ test "chaos_case" nondet {
 - Safe-profile checks reject unsafe capabilities and unsafe escape sites.
 - References in safe profile require explicit lifetime/region annotations (`&'name T` / `&'name mut T`) and verifier-valid handoff.
 - Alloc/free imbalance is diagnosed and can be a hard failure in safe profile.
-- v0 does not claim complete alias/lifetime proof coverage for all low-level patterns.
+- v1 does not claim complete alias/lifetime proof coverage for all low-level patterns.
 
-## Ownership Model (v0)
+## Ownership Model (v1)
 
 - Heap allocations are single-owner values by default: creating via `alloc(...)` establishes ownership in the current scope.
 - Ownership moves on assignment, argument passing, and return of owning types; use-after-move is verifier-invalid.
@@ -170,7 +170,7 @@ test "chaos_case" nondet {
 
 ## Atomics And Memory Ordering Contract
 
-- v0 exposes stable atomic orderings: `Relaxed`, `Acquire`, `Release`, `AcqRel`, `SeqCst`.
+- v1 exposes stable atomic orderings: `Relaxed`, `Acquire`, `Release`, `AcqRel`, `SeqCst`.
 - `Acquire` reads synchronize-with `Release` writes on the same atomic location.
 - `AcqRel` applies to read-modify-write operations and composes acquire + release edges.
 - `SeqCst` operations participate in a single total order visible to all threads.

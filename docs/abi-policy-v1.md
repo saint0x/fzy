@@ -1,10 +1,10 @@
-# ABI Policy v0
+# ABI Policy v1
 
 ## Stability Contract
 
 - ABI manifests use schema `fozzylang.ffi_abi.v0`.
 - Exported symbols are derived from `pub extern "C" fn` declarations only.
-- ABI compatibility in v0 is defined by normalized export signatures:
+- ABI compatibility in v1 is defined by normalized export signatures:
   - function name
   - ordered C parameter types
   - C return type
@@ -36,7 +36,7 @@ Breaking ABI changes include:
 - Regressing `symbolVersion` for an existing export.
 - Changing package identity within a compatibility baseline comparison.
 
-Non-breaking in v0:
+Non-breaking in v1:
 
 - adding a new export with a unique symbol name
 
@@ -51,7 +51,7 @@ Use `fz abi-check <current.abi.json> --baseline <baseline.abi.json>` to gate com
 - baseline export signature immutability
 - symbol version non-regression
 
-## Explicitly Unsupported At FFI Boundary (v0)
+## Explicitly Unsupported At FFI Boundary (v1)
 
 - Async closures/task handles as ABI payload types.
 - Non-FFI-stable generic abstractions without concrete C-compatible lowering.

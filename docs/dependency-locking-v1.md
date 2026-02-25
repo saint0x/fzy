@@ -1,4 +1,4 @@
-# Dependency Locking v0
+# Dependency Locking v1
 
 ## Contract
 

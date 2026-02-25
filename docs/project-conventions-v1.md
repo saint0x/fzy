@@ -1,4 +1,4 @@
-# Project Conventions v0
+# Project Conventions v1
 
 ## Goals
 

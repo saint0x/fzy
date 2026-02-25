@@ -1,4 +1,4 @@
-# Compiler Foundation v0 (1.5)
+# Compiler Foundation v1
 
 ## Status
 
@@ -18,7 +18,7 @@ Implemented:
 - Added FIR def-use and liveness analysis output per basic block.
 - Started 1.6 capability/memory work: function-scoped capability requirement propagation and ownership-transfer violation detection.
 
-Still pending in 1.5:
+Current known limits:
 - Full Cranelift and LLVM instruction selection for all expression/statement forms.
 - Full function ABI lowering (stack frames/calling convention details beyond current baseline).
 - Advanced pattern match lowering (destructuring/guards/or-patterns).
