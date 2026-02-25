@@ -572,7 +572,20 @@ fn collect_expr_semantics(
             collect_expr_semantics(start, scope_id, scopes, decls, refs, positions);
             collect_expr_semantics(end, scope_id, scopes, decls, refs, positions);
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) => {}
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_expr_semantics(item, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            collect_expr_semantics(base, scope_id, scopes, decls, refs, positions);
+            collect_expr_semantics(index, scope_id, scopes, decls, refs, positions);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_) => {}
     }
 }
 
@@ -598,7 +611,12 @@ fn resolve_reference(
     }
 }
 
-fn resolve_decl_id(name: &str, scope_id: usize, scopes: &[Scope], decls: &[SemanticDecl]) -> Option<usize> {
+fn resolve_decl_id(
+    name: &str,
+    scope_id: usize,
+    scopes: &[Scope],
+    decls: &[SemanticDecl],
+) -> Option<usize> {
     let mut scope = Some(scope_id);
     while let Some(id) = scope {
         if let Some(found) = scopes[id]
@@ -1386,7 +1404,11 @@ fn lsp_inlay_hints(ws: &WorkspaceState, params: &Value) -> Result<Value> {
             if let Some(signature) = &decl.signature {
                 function_params.insert(
                     decl.name.clone(),
-                    signature.params.iter().map(|param| param.name.clone()).collect(),
+                    signature
+                        .params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect(),
                 );
             }
         }
@@ -1519,7 +1541,11 @@ fn document_symbol_kind(kind: &str) -> usize {
     }
 }
 
-fn call_context_at_position(source: &str, line: usize, character: usize) -> Option<(String, usize)> {
+fn call_context_at_position(
+    source: &str,
+    line: usize,
+    character: usize,
+) -> Option<(String, usize)> {
     let mut stack = Vec::<(String, usize, bool)>::new();
     let mut last_ident = None::<String>;
     for (line_idx, row) in source.lines().enumerate() {
@@ -2663,7 +2689,9 @@ mod tests {
 
         let doc_symbols = lsp_document_symbol(&ws, &json!({"textDocument": {"uri": uri}}))
             .expect("document symbols should succeed");
-        assert!(doc_symbols.as_array().is_some_and(|items| !items.is_empty()));
+        assert!(doc_symbols
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
 
         let ws_symbols = lsp_workspace_symbol(&ws, &json!({"query": "ping"}))
             .expect("workspace symbols should succeed");

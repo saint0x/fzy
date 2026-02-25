@@ -12,6 +12,8 @@ struct Token {
 enum TokenKind {
     Ident(String),
     Int(i128),
+    Float { value: f64, bits: Option<u16> },
+    Char(char),
     Str(String),
     KwFn,
     KwPub,
@@ -414,13 +416,16 @@ impl Parser {
             }
         };
         let deterministic = !self.consume(&TokenKind::KwNondet);
-        if self.consume(&TokenKind::LBrace) {
-            self.consume_until(&[TokenKind::RBrace]);
-            let _ = self.consume(&TokenKind::RBrace);
-        }
+        let body = if self.at(&TokenKind::LBrace) {
+            self.parse_block()?
+        } else {
+            self.push_diag_here("expected `{` to start test body");
+            return None;
+        };
         Some(ast::Item::Test(ast::TestBlock {
             name,
             deterministic,
+            body,
         }))
     }
 
@@ -1109,6 +1114,8 @@ impl Parser {
         let token = self.advance()?;
         let mut expr = match token.kind {
             TokenKind::Int(v) => Expr::Int(v),
+            TokenKind::Float { value, bits } => Expr::Float { value, bits },
+            TokenKind::Char(value) => Expr::Char(value),
             TokenKind::KwTrue => Expr::Bool(true),
             TokenKind::KwFalse => Expr::Bool(false),
             TokenKind::Str(v) => Expr::Str(v),
@@ -1162,6 +1169,17 @@ impl Parser {
                 let _ = self.consume(&TokenKind::RParen);
                 Expr::Group(Box::new(inner))
             }
+            TokenKind::LBracket => {
+                let mut items = Vec::new();
+                while !self.at(&TokenKind::RBracket) && !self.at(&TokenKind::Eof) {
+                    items.push(self.parse_expr(0)?);
+                    if !self.consume(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                let _ = self.consume(&TokenKind::RBracket);
+                Expr::ArrayLiteral(items)
+            }
             _ => {
                 self.push_diag_at(token.line, token.col, "unexpected token in expression");
                 return None;
@@ -1199,6 +1217,18 @@ impl Parser {
                     return None;
                 };
                 expr = Expr::Call { callee, args };
+                continue;
+            }
+            if self.consume(&TokenKind::LBracket) {
+                let index = self.parse_expr(0)?;
+                if !self.consume(&TokenKind::RBracket) {
+                    self.push_diag_here("expected `]` after index expression");
+                    return None;
+                }
+                expr = Expr::Index {
+                    base: Box::new(expr),
+                    index: Box::new(index),
+                };
                 continue;
             }
             break;
@@ -1868,8 +1898,15 @@ impl<'a> Lexer<'a> {
                     }
                 }
                 '\'' => {
-                    self.advance_char();
-                    TokenKind::Apostrophe
+                    if let Some((value, consumed_cols)) = self.try_lex_char_literal() {
+                        for _ in 0..consumed_cols {
+                            self.advance_char();
+                        }
+                        TokenKind::Char(value)
+                    } else {
+                        self.advance_char();
+                        TokenKind::Apostrophe
+                    }
                 }
                 '#' => {
                     self.advance_char();
@@ -1879,30 +1916,7 @@ impl<'a> Lexer<'a> {
                     self.advance_char();
                     TokenKind::Str(self.lex_string_literal(line, col, idx))
                 }
-                c if c.is_ascii_digit() => {
-                    let start = idx;
-                    let mut end = idx + 1;
-                    self.advance_char();
-                    while let Some((i, next)) = self.peek_char() {
-                        if next.is_ascii_digit() {
-                            end = i + 1;
-                            self.advance_char();
-                        } else {
-                            break;
-                        }
-                    }
-                    match self.source[start..end].parse::<i128>() {
-                        Ok(value) => TokenKind::Int(value),
-                        Err(_) => {
-                            self.diagnostics.push(Diagnostic::new(
-                                Severity::Error,
-                                "integer literal exceeds i128 range",
-                                Some("use smaller literal or explicit narrowing".to_string()),
-                            ));
-                            TokenKind::Int(0)
-                        }
-                    }
-                }
+                c if c.is_ascii_digit() => self.lex_number_literal(idx),
                 c if is_ident_start(c) => {
                     let start = idx;
                     let mut end = idx + 1;
@@ -1939,6 +1953,182 @@ impl<'a> Lexer<'a> {
             col: self.col,
         });
         tokens
+    }
+
+    fn lex_number_literal(&mut self, start_idx: usize) -> TokenKind {
+        self.advance_char();
+        while let Some((_, next)) = self.peek_char() {
+            if next.is_ascii_digit() {
+                self.advance_char();
+            } else {
+                break;
+            }
+        }
+
+        let mut is_float = false;
+        if self.peek_char().is_some_and(|(_, c)| c == '.') {
+            let mut iter = self.chars.clone();
+            let _ = iter.next();
+            if iter.next().is_some_and(|(_, c)| c.is_ascii_digit()) {
+                is_float = true;
+                self.advance_char();
+                while let Some((_, next)) = self.peek_char() {
+                    if next.is_ascii_digit() {
+                        self.advance_char();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if self.peek_char().is_some_and(|(_, c)| c == 'e' || c == 'E') {
+            let mut iter = self.chars.clone();
+            let _ = iter.next();
+            if iter
+                .next()
+                .is_some_and(|(_, c)| c.is_ascii_digit() || c == '+' || c == '-')
+            {
+                is_float = true;
+                self.advance_char();
+                if self.peek_char().is_some_and(|(_, c)| c == '+' || c == '-') {
+                    self.advance_char();
+                }
+                let mut saw_digit = false;
+                while let Some((_, next)) = self.peek_char() {
+                    if next.is_ascii_digit() {
+                        saw_digit = true;
+                        self.advance_char();
+                    } else {
+                        break;
+                    }
+                }
+                if !saw_digit {
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            "malformed float exponent",
+                            Some("expected digits after exponent marker".to_string()),
+                        )
+                        .with_span(
+                            self.line,
+                            self.col.saturating_sub(1),
+                            self.line,
+                            self.col,
+                        ),
+                    );
+                }
+            }
+        }
+
+        let mut bits = None;
+        if self.peek_char().is_some_and(|(_, c)| c == 'f') {
+            let mut iter = self.chars.clone();
+            let _ = iter.next();
+            let tail = [iter.next().map(|(_, c)| c), iter.next().map(|(_, c)| c)];
+            match tail {
+                [Some('3'), Some('2')] => {
+                    bits = Some(32);
+                    self.advance_char();
+                    self.advance_char();
+                    self.advance_char();
+                }
+                [Some('6'), Some('4')] => {
+                    bits = Some(64);
+                    self.advance_char();
+                    self.advance_char();
+                    self.advance_char();
+                }
+                _ => {}
+            }
+        }
+
+        let end_idx = self.peek_char().map_or(self.source.len(), |(idx, _)| idx);
+        let literal = &self.source[start_idx..end_idx];
+        if is_float || bits.is_some() {
+            match literal
+                .trim_end_matches("f32")
+                .trim_end_matches("f64")
+                .parse::<f64>()
+            {
+                Ok(value) => {
+                    if !value.is_finite() {
+                        self.diagnostics.push(Diagnostic::new(
+                            Severity::Error,
+                            "float literal overflow",
+                            Some("value must be finite".to_string()),
+                        ));
+                        return TokenKind::Float { value: 0.0, bits };
+                    }
+                    if bits == Some(32) {
+                        let narrowed = value as f32;
+                        if !narrowed.is_finite() || (value != 0.0 && narrowed == 0.0) {
+                            self.diagnostics.push(Diagnostic::new(
+                                Severity::Error,
+                                "f32 literal precision/overflow failure",
+                                Some("use smaller magnitude or `f64`".to_string()),
+                            ));
+                        }
+                    }
+                    TokenKind::Float { value, bits }
+                }
+                Err(_) => {
+                    self.diagnostics.push(Diagnostic::new(
+                        Severity::Error,
+                        "invalid float literal",
+                        Some("use decimal/exponent form like `1.5`, `1e3`, `1.0f32`".to_string()),
+                    ));
+                    TokenKind::Float { value: 0.0, bits }
+                }
+            }
+        } else {
+            match literal.parse::<i128>() {
+                Ok(value) => TokenKind::Int(value),
+                Err(_) => {
+                    self.diagnostics.push(Diagnostic::new(
+                        Severity::Error,
+                        "integer literal exceeds i128 range",
+                        Some("use smaller literal or explicit narrowing".to_string()),
+                    ));
+                    TokenKind::Int(0)
+                }
+            }
+        }
+    }
+
+    fn try_lex_char_literal(&mut self) -> Option<(char, usize)> {
+        let mut iter = self.chars.clone();
+        let _ = iter.next();
+        let (_, first) = iter.next()?;
+        if first == '\\' {
+            let (_, esc) = iter.next()?;
+            let (_, end_quote) = iter.next()?;
+            if end_quote != '\'' {
+                return None;
+            }
+            let value = match esc {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                '\\' => '\\',
+                '\'' => '\'',
+                '0' => '\0',
+                _ => {
+                    self.diagnostics.push(Diagnostic::new(
+                        Severity::Error,
+                        format!("unsupported char escape `\\{esc}`"),
+                        Some("supported escapes: \\\\, \\\', \\n, \\r, \\t, \\0".to_string()),
+                    ));
+                    esc
+                }
+            };
+            return Some((value, 4));
+        }
+        let (_, end_quote) = iter.next()?;
+        if end_quote != '\'' {
+            return None;
+        }
+        Some((first, 3))
     }
 
     fn peek_char(&mut self) -> Option<(usize, char)> {
@@ -2619,5 +2809,79 @@ mod tests {
                 ..
             } if matches!(arms.first().map(|arm| &arm.pattern), Some(ast::Pattern::Or(_)))
         )));
+    }
+
+    #[test]
+    fn parses_float_char_array_and_index_literals() {
+        let source = r#"
+            fn main() -> i32 {
+                let pi: f64 = 3.14159;
+                let ratio: f32 = 1.5f32;
+                let ch: char = '\n';
+                let arr = [1, 2, 3];
+                let v = arr[1];
+                let _ = pi;
+                let _ = ratio;
+                let _ = ch;
+                return v;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::Float { .. },
+                ..
+            }
+        )));
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::Char(_),
+                ..
+            }
+        )));
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::ArrayLiteral(_),
+                ..
+            }
+        )));
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::Index { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_block_body_is_preserved() {
+        let source = r#"
+            test "smoke" {
+                let values = [1, 2];
+                let _ = values[0];
+            }
+        "#;
+        let module = parse(source, "tests").expect("parse should succeed");
+        let test = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Test(test) => Some(test),
+                _ => None,
+            })
+            .expect("test block should exist");
+        assert!(!test.body.is_empty());
     }
 }

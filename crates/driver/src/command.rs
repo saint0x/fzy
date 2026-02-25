@@ -2321,7 +2321,26 @@ fn collect_semantic_unsafe_entries_from_expr(
             collect_semantic_unsafe_entries_from_expr(start, module_path, function_name, entries);
             collect_semantic_unsafe_entries_from_expr(end, module_path, function_name, entries);
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_semantic_unsafe_entries_from_expr(
+                    item,
+                    module_path,
+                    function_name,
+                    entries,
+                );
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            collect_semantic_unsafe_entries_from_expr(base, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(index, module_path, function_name, entries);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => {}
     }
 }
 
@@ -3427,13 +3446,14 @@ fn write_non_scenario_trace_artifacts(
     let (primary_scenario_path, generated_scenarios) =
         generate_language_test_scenarios(&base_dir, stem, inputs.deterministic_test_names)?;
     if let Some(primary_scenario) = &primary_scenario_path {
-        ensure_goal_trace_from_scenario(primary_scenario, trace_path, inputs.seed)
-            .with_context(|| {
+        ensure_goal_trace_from_scenario(primary_scenario, trace_path, inputs.seed).with_context(
+            || {
                 format!(
                     "failed generating goal trace from scenario {}",
                     primary_scenario.display()
                 )
-            })?;
+            },
+        )?;
         goal_trace_written = Some(trace_path.to_path_buf());
     }
 
@@ -3520,8 +3540,11 @@ fn write_non_scenario_trace_artifacts(
         .with_context(|| format!("failed writing report artifact: {}", report_path.display()))?;
         report_written = Some(report_path.clone());
 
-        let scenario_priorities =
-            build_scenario_priorities(&generated_scenarios, inputs.rpc_frames, inputs.async_execution);
+        let scenario_priorities = build_scenario_priorities(
+            &generated_scenarios,
+            inputs.rpc_frames,
+            inputs.async_execution,
+        );
         write_json_file(
             &explore_path,
             &ExplorePayload {
@@ -4011,7 +4034,16 @@ fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
         ast::Expr::Range { start, end, .. } => {
             count_async_hooks_in_expr(start) + count_async_hooks_in_expr(end)
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => 0,
+        ast::Expr::ArrayLiteral(items) => items.iter().map(count_async_hooks_in_expr).sum(),
+        ast::Expr::Index { base, index } => {
+            count_async_hooks_in_expr(base) + count_async_hooks_in_expr(index)
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => 0,
     }
 }
 
@@ -4194,7 +4226,23 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
             let (r_spawns, r_yields) = analyze_workload_expr(end);
             (l_spawns + r_spawns, l_yields + r_yields)
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => (0, 0),
+        ast::Expr::ArrayLiteral(items) => items.iter().fold((0, 0), |mut acc, item| {
+            let (spawns, yields) = analyze_workload_expr(item);
+            acc.0 += spawns;
+            acc.1 += yields;
+            acc
+        }),
+        ast::Expr::Index { base, index } => {
+            let (l_spawns, l_yields) = analyze_workload_expr(base);
+            let (r_spawns, r_yields) = analyze_workload_expr(index);
+            (l_spawns + r_spawns, l_yields + r_yields)
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => (0, 0),
     }
 }
 
@@ -4565,7 +4613,21 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
         ast::Expr::Unary { expr, .. } => collect_call_names_from_expr(expr, out),
         ast::Expr::Group(inner) => collect_call_names_from_expr(inner, out),
         ast::Expr::Await(inner) => collect_call_names_from_expr(inner, out),
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_call_names_from_expr(item, out);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            collect_call_names_from_expr(base, out);
+            collect_call_names_from_expr(index, out);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => {}
     }
 }
 

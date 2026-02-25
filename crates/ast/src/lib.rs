@@ -99,6 +99,7 @@ pub struct Impl {
 pub struct TestBlock {
     pub name: String,
     pub deterministic: bool,
+    pub body: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +157,11 @@ pub enum Stmt {
 #[derive(Debug, Clone)]
 pub enum Expr {
     Int(i128),
+    Float {
+        value: f64,
+        bits: Option<u16>,
+    },
+    Char(char),
     Bool(bool),
     Str(String),
     Ident(String),
@@ -186,6 +192,11 @@ pub enum Expr {
         start: Box<Expr>,
         end: Box<Expr>,
         inclusive: bool,
+    },
+    ArrayLiteral(Vec<Expr>),
+    Index {
+        base: Box<Expr>,
+        index: Box<Expr>,
     },
     Unary {
         op: UnaryOp,
@@ -378,7 +389,9 @@ pub fn walk_stmt<V: AstVisitor + ?Sized>(visitor: &mut V, stmt: &Stmt) {
         | Stmt::Requires(value)
         | Stmt::Ensures(value)
         | Stmt::Expr(value) => visitor.visit_expr(value),
-        Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => visitor.visit_expr(value),
+        Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
+            visitor.visit_expr(value)
+        }
         Stmt::Return(value) => {
             if let Some(value) = value {
                 visitor.visit_expr(value);
@@ -479,6 +492,15 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
             visitor.visit_expr(start);
             visitor.visit_expr(end);
         }
+        Expr::ArrayLiteral(items) => {
+            for item in items {
+                visitor.visit_expr(item);
+            }
+        }
+        Expr::Index { base, index } => {
+            visitor.visit_expr(base);
+            visitor.visit_expr(index);
+        }
         Expr::Await(inner) => visitor.visit_expr(inner),
         Expr::Unary { expr, .. } => visitor.visit_expr(expr),
         Expr::Binary { left, right, .. } => {
@@ -486,6 +508,11 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
             visitor.visit_expr(right);
         }
         Expr::Group(inner) => visitor.visit_expr(inner),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => {}
+        Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Ident(_) => {}
     }
 }

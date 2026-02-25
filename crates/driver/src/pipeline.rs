@@ -1481,7 +1481,21 @@ fn qualify_expr(
             qualify_expr(start, namespace, local_functions, module_aliases);
             qualify_expr(end, namespace, local_functions, module_aliases);
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                qualify_expr(item, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            qualify_expr(base, namespace, local_functions, module_aliases);
+            qualify_expr(index, namespace, local_functions, module_aliases);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => {}
     }
 }
 
@@ -1682,7 +1696,21 @@ fn canonicalize_expr_calls(
             canonicalize_expr_calls(start, namespace, known_functions);
             canonicalize_expr_calls(end, namespace, known_functions);
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                canonicalize_expr_calls(item, namespace, known_functions);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            canonicalize_expr_calls(base, namespace, known_functions);
+            canonicalize_expr_calls(index, namespace, known_functions);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => {}
     }
 }
 
@@ -2578,6 +2606,8 @@ fn llvm_emit_expr(
 ) -> String {
     match expr {
         ast::Expr::Int(v) => v.to_string(),
+        ast::Expr::Float { value, .. } => (*value as i32).to_string(),
+        ast::Expr::Char(value) => (*value as i32).to_string(),
         ast::Expr::Bool(v) => {
             if *v {
                 "1".to_string()
@@ -2610,12 +2640,14 @@ fn llvm_emit_expr(
                 ast::UnaryOp::Plus => value,
                 ast::UnaryOp::Neg => {
                     let out = ctx.value();
-                    ctx.code.push_str(&format!("  {out} = sub i32 0, {value}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = sub i32 0, {value}\n"));
                     out
                 }
                 ast::UnaryOp::BitNot => {
                     let out = ctx.value();
-                    ctx.code.push_str(&format!("  {out} = xor i32 {value}, -1\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = xor i32 {value}, -1\n"));
                     out
                 }
                 ast::UnaryOp::Not => {
@@ -2672,6 +2704,16 @@ fn llvm_emit_expr(
         ast::Expr::Range { start, .. } => {
             llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids)
         }
+        ast::Expr::ArrayLiteral(items) => {
+            if let Some(first) = items.first() {
+                llvm_emit_expr(first, ctx, string_literal_ids, task_ref_ids)
+            } else {
+                "0".to_string()
+            }
+        }
+        ast::Expr::Index { base, .. } => {
+            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
+        }
         ast::Expr::Call { callee, args } => {
             let args = args
                 .iter()
@@ -2697,43 +2739,53 @@ fn llvm_emit_expr(
             match op {
                 ast::BinaryOp::Add => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = add i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = add i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::Sub => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = sub i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = sub i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::Mul => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = mul i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = mul i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::Div => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = sdiv i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = sdiv i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::Mod => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = srem i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = srem i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::BitAnd => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = and i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = and i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::BitOr => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = or i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = or i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::BitXor => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = xor i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = xor i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::Shl => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = shl i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = shl i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::Shr => {
                     let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code.push_str(&format!("  {out} = ashr i32 {lhs}, {rhs}\n"));
+                    ctx.code
+                        .push_str(&format!("  {out} = ashr i32 {lhs}, {rhs}\n"));
                 }
                 ast::BinaryOp::And | ast::BinaryOp::Or => {
                     let lhs_pred = ctx.value();
@@ -2742,7 +2794,8 @@ fn llvm_emit_expr(
                     let merge_label = ctx.label("logical.merge");
                     let result_slot = format!("%slot_logical_{}", ctx.next_value);
                     ctx.next_value += 1;
-                    ctx.code.push_str(&format!("  {result_slot} = alloca i32\n"));
+                    ctx.code
+                        .push_str(&format!("  {result_slot} = alloca i32\n"));
                     ctx.code
                         .push_str(&format!("  {lhs_pred} = icmp ne i32 {lhs}, 0\n"));
                     match op {
@@ -2751,7 +2804,8 @@ fn llvm_emit_expr(
                                 "  br i1 {lhs_pred}, label %{rhs_label}, label %{short_label}\n"
                             ));
                             ctx.code.push_str(&format!("{short_label}:\n"));
-                            ctx.code.push_str(&format!("  store i32 0, ptr {result_slot}\n"));
+                            ctx.code
+                                .push_str(&format!("  store i32 0, ptr {result_slot}\n"));
                             ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                         }
                         ast::BinaryOp::Or => {
@@ -2759,7 +2813,8 @@ fn llvm_emit_expr(
                                 "  br i1 {lhs_pred}, label %{short_label}, label %{rhs_label}\n"
                             ));
                             ctx.code.push_str(&format!("{short_label}:\n"));
-                            ctx.code.push_str(&format!("  store i32 1, ptr {result_slot}\n"));
+                            ctx.code
+                                .push_str(&format!("  store i32 1, ptr {result_slot}\n"));
                             ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                         }
                         _ => unreachable!(),
@@ -2967,7 +3022,20 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
             collect_string_literals_from_expr(start, literals);
             collect_string_literals_from_expr(end, literals);
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_string_literals_from_expr(item, literals);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            collect_string_literals_from_expr(base, literals);
+            collect_string_literals_from_expr(index, literals);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Ident(_) => {}
     }
 }
 
@@ -3150,7 +3218,21 @@ fn collect_used_runtime_imports_from_expr(
             collect_used_runtime_imports_from_expr(start, seen, used);
             collect_used_runtime_imports_from_expr(end, seen, used);
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_used_runtime_imports_from_expr(item, seen, used);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            collect_used_runtime_imports_from_expr(base, seen, used);
+            collect_used_runtime_imports_from_expr(index, seen, used);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => {}
     }
 }
 
@@ -4349,12 +4431,7 @@ fn clif_emit_block(
             ast::Stmt::Let {
                 name, value, ty, ..
             } => {
-                let mut val = clif_emit_expr(
-                    builder,
-                    ctx,
-                    value,
-                    locals,
-                )?;
+                let mut val = clif_emit_expr(builder, ctx, value, locals)?;
                 let target_ty = ty
                     .as_ref()
                     .and_then(ast_signature_type_to_clif_type)
@@ -4374,12 +4451,7 @@ fn clif_emit_block(
                 builder.def_var(binding.var, val.value);
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
-                        let field_val = clif_emit_expr(
-                            builder,
-                            ctx,
-                            field_expr,
-                            locals,
-                        )?;
+                        let field_val = clif_emit_expr(builder, ctx, field_expr, locals)?;
                         let field_var = Variable::from_u32(*next_var as u32);
                         *next_var += 1;
                         builder.declare_var(field_var, field_val.ty);
@@ -4395,12 +4467,7 @@ fn clif_emit_block(
                 }
             }
             ast::Stmt::Assign { target, value } => {
-                let val = clif_emit_expr(
-                    builder,
-                    ctx,
-                    value,
-                    locals,
-                )?;
+                let val = clif_emit_expr(builder, ctx, value, locals)?;
                 let binding = if let Some(existing) = locals.get(target).copied() {
                     existing
                 } else {
@@ -4420,12 +4487,7 @@ fn clif_emit_block(
                     left: Box::new(ast::Expr::Ident(target.clone())),
                     right: Box::new(value.clone()),
                 };
-                let val = clif_emit_expr(
-                    builder,
-                    ctx,
-                    &combined_expr,
-                    locals,
-                )?;
+                let val = clif_emit_expr(builder, ctx, &combined_expr, locals)?;
                 let binding = if let Some(existing) = locals.get(target).copied() {
                     existing
                 } else {
@@ -4441,12 +4503,7 @@ fn clif_emit_block(
             }
             ast::Stmt::Return(expr) => {
                 if let Some(expr) = expr {
-                    let mut value = clif_emit_expr(
-                        builder,
-                        ctx,
-                        expr,
-                        locals,
-                    )?;
+                    let mut value = clif_emit_expr(builder, ctx, expr, locals)?;
                     if let Some(return_ty) = return_ty {
                         value = cast_clif_value(builder, value, return_ty)?;
                         builder.ins().return_(&[value.value]);
@@ -4467,24 +4524,14 @@ fn clif_emit_block(
             | ast::Stmt::Requires(expr)
             | ast::Stmt::Ensures(expr)
             | ast::Stmt::Defer(expr) => {
-                let _ = clif_emit_expr(
-                    builder,
-                    ctx,
-                    expr,
-                    locals,
-                )?;
+                let _ = clif_emit_expr(builder, ctx, expr, locals)?;
             }
             ast::Stmt::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                let cond_val = clif_emit_expr(
-                    builder,
-                    ctx,
-                    condition,
-                    locals,
-                )?;
+                let cond_val = clif_emit_expr(builder, ctx, condition, locals)?;
                 let zero = zero_for_type(builder, cond_val.ty);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
                 let then_block = builder.create_block();
@@ -4493,28 +4540,16 @@ fn clif_emit_block(
                 builder.ins().brif(cond, then_block, &[], else_block, &[]);
 
                 builder.switch_to_block(then_block);
-                let then_terminated = clif_emit_block(
-                    builder,
-                    ctx,
-                    then_body,
-                    locals,
-                    return_ty,
-                    next_var,
-                )?;
+                let then_terminated =
+                    clif_emit_block(builder, ctx, then_body, locals, return_ty, next_var)?;
                 if !then_terminated {
                     builder.ins().jump(cont_block, &[]);
                 }
                 builder.seal_block(then_block);
 
                 builder.switch_to_block(else_block);
-                let else_terminated = clif_emit_block(
-                    builder,
-                    ctx,
-                    else_body,
-                    locals,
-                    return_ty,
-                    next_var,
-                )?;
+                let else_terminated =
+                    clif_emit_block(builder, ctx, else_body, locals, return_ty, next_var)?;
                 if !else_terminated {
                     builder.ins().jump(cont_block, &[]);
                 }
@@ -4532,25 +4567,14 @@ fn clif_emit_block(
                 let exit = builder.create_block();
                 builder.ins().jump(head, &[]);
                 builder.switch_to_block(head);
-                let cond_val = clif_emit_expr(
-                    builder,
-                    ctx,
-                    condition,
-                    locals,
-                )?;
+                let cond_val = clif_emit_expr(builder, ctx, condition, locals)?;
                 let zero = zero_for_type(builder, cond_val.ty);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
                 builder.ins().brif(cond, loop_body, &[], exit, &[]);
 
                 builder.switch_to_block(loop_body);
-                let body_terminated = clif_emit_block(
-                    builder,
-                    ctx,
-                    body,
-                    locals,
-                    return_ty,
-                    next_var,
-                )?;
+                let body_terminated =
+                    clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
                 if !body_terminated {
                     builder.ins().jump(head, &[]);
                 }
@@ -4583,12 +4607,7 @@ fn clif_emit_block(
                 builder.ins().jump(head, &[]);
                 builder.switch_to_block(head);
                 if let Some(condition) = condition {
-                    let cond_val = clif_emit_expr(
-                        builder,
-                        ctx,
-                        condition,
-                        locals,
-                    )?;
+                    let cond_val = clif_emit_expr(builder, ctx, condition, locals)?;
                     let zero = zero_for_type(builder, cond_val.ty);
                     let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
                     builder.ins().brif(cond, loop_body, &[], exit, &[]);
@@ -4596,14 +4615,8 @@ fn clif_emit_block(
                     builder.ins().jump(loop_body, &[]);
                 }
                 builder.switch_to_block(loop_body);
-                let body_terminated = clif_emit_block(
-                    builder,
-                    ctx,
-                    body,
-                    locals,
-                    return_ty,
-                    next_var,
-                )?;
+                let body_terminated =
+                    clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
                 if !body_terminated {
                     builder.ins().jump(step_block, &[]);
                 }
@@ -4636,18 +4649,8 @@ fn clif_emit_block(
                     inclusive,
                 } = iterable
                 {
-                    let start_val = clif_emit_expr(
-                        builder,
-                        ctx,
-                        start,
-                        locals,
-                    )?;
-                    let end_val = clif_emit_expr(
-                        builder,
-                        ctx,
-                        end,
-                        locals,
-                    )?;
+                    let start_val = clif_emit_expr(builder, ctx, start, locals)?;
+                    let end_val = clif_emit_expr(builder, ctx, end, locals)?;
                     let binding_var = if let Some(existing) = locals.get(binding).copied() {
                         existing
                     } else {
@@ -4682,14 +4685,8 @@ fn clif_emit_block(
                     };
                     builder.ins().brif(pred, loop_body, &[], exit, &[]);
                     builder.switch_to_block(loop_body);
-                    let body_terminated = clif_emit_block(
-                        builder,
-                        ctx,
-                        body,
-                        locals,
-                        return_ty,
-                        next_var,
-                    )?;
+                    let body_terminated =
+                        clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
                     if !body_terminated {
                         builder.ins().jump(step_block, &[]);
                     }
@@ -4705,28 +4702,15 @@ fn clif_emit_block(
                     builder.switch_to_block(exit);
                     builder.seal_block(exit);
                 } else {
-                    let _ = clif_emit_block(
-                        builder,
-                        ctx,
-                        body,
-                        locals,
-                        return_ty,
-                        next_var,
-                    )?;
+                    let _ = clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
                 }
             }
             ast::Stmt::Loop { body } => {
                 let head = builder.create_block();
                 builder.ins().jump(head, &[]);
                 builder.switch_to_block(head);
-                let body_terminated = clif_emit_block(
-                    builder,
-                    ctx,
-                    body,
-                    locals,
-                    return_ty,
-                    next_var,
-                )?;
+                let body_terminated =
+                    clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
                 if !body_terminated {
                     builder.ins().jump(head, &[]);
                 }
@@ -4734,12 +4718,7 @@ fn clif_emit_block(
             }
             ast::Stmt::Break | ast::Stmt::Continue => {}
             ast::Stmt::Match { scrutinee, arms } => {
-                let scrutinee_val = clif_emit_expr(
-                    builder,
-                    ctx,
-                    scrutinee,
-                    locals,
-                )?;
+                let scrutinee_val = clif_emit_expr(builder, ctx, scrutinee, locals)?;
                 let end_block = builder.create_block();
                 let mut next_block = builder.create_block();
                 builder.ins().jump(next_block, &[]);
@@ -4749,12 +4728,7 @@ fn clif_emit_block(
                     builder.seal_block(next_block);
                     let pred = clif_emit_match_pattern_pred(builder, scrutinee_val, &arm.pattern);
                     let guarded_pred = if let Some(guard) = &arm.guard {
-                        let guard_val = clif_emit_expr(
-                            builder,
-                            ctx,
-                            guard,
-                            locals,
-                        )?;
+                        let guard_val = clif_emit_expr(builder, ctx, guard, locals)?;
                         let zero = zero_for_type(builder, guard_val.ty);
                         let guard_pred = builder.ins().icmp(IntCC::NotEqual, guard_val.value, zero);
                         builder.ins().band(pred, guard_pred)
@@ -4774,12 +4748,7 @@ fn clif_emit_block(
                     }
 
                     builder.switch_to_block(arm_block);
-                    let arm_value = clif_emit_expr(
-                        builder,
-                        ctx,
-                        &arm.value,
-                        locals,
-                    )?;
+                    let arm_value = clif_emit_expr(builder, ctx, &arm.value, locals)?;
                     if arm.returns {
                         builder.ins().return_(&[arm_value.value]);
                     } else {
@@ -4863,6 +4832,23 @@ fn clif_emit_expr(
                 ty,
             }
         }
+        ast::Expr::Float { value, bits } => {
+            if bits.unwrap_or(64) == 32 {
+                ClifValue {
+                    value: builder.ins().f32const(*value as f32),
+                    ty: types::F32,
+                }
+            } else {
+                ClifValue {
+                    value: builder.ins().f64const(*value),
+                    ty: types::F64,
+                }
+            }
+        }
+        ast::Expr::Char(v) => ClifValue {
+            value: builder.ins().iconst(types::I32, *v as i64),
+            ty: types::I32,
+        },
         ast::Expr::Bool(v) => ClifValue {
             value: builder.ins().iconst(types::I8, if *v { 1 } else { 0 }),
             ty: types::I8,
@@ -4894,25 +4880,10 @@ fn clif_emit_expr(
                 }
             }
         }
-        ast::Expr::Group(inner) => clif_emit_expr(
-            builder,
-            ctx,
-            inner,
-            locals,
-        )?,
-        ast::Expr::Await(inner) => clif_emit_expr(
-            builder,
-            ctx,
-            inner,
-            locals,
-        )?,
+        ast::Expr::Group(inner) => clif_emit_expr(builder, ctx, inner, locals)?,
+        ast::Expr::Await(inner) => clif_emit_expr(builder, ctx, inner, locals)?,
         ast::Expr::Unary { op, expr } => {
-            let value = clif_emit_expr(
-                builder,
-                ctx,
-                expr,
-                locals,
-            )?;
+            let value = clif_emit_expr(builder, ctx, expr, locals)?;
             match op {
                 ast::UnaryOp::Plus => value,
                 ast::UnaryOp::Neg => {
@@ -4967,39 +4938,19 @@ fn clif_emit_expr(
                             ty: default_int_clif_type(),
                         }
                     } else {
-                        clif_emit_expr(
-                            builder,
-                            ctx,
-                            base,
-                            locals,
-                        )?
+                        clif_emit_expr(builder, ctx, base, locals)?
                     }
                 } else {
-                    clif_emit_expr(
-                        builder,
-                        ctx,
-                        base,
-                        locals,
-                    )?
+                    clif_emit_expr(builder, ctx, base, locals)?
                 }
             } else {
-                clif_emit_expr(
-                    builder,
-                    ctx,
-                    base,
-                    locals,
-                )?
+                clif_emit_expr(builder, ctx, base, locals)?
             }
         }
         ast::Expr::StructInit { fields, .. } => {
             let mut first = None;
             for (_, value) in fields {
-                let out = clif_emit_expr(
-                    builder,
-                    ctx,
-                    value,
-                    locals,
-                )?;
+                let out = clif_emit_expr(builder, ctx, value, locals)?;
                 if first.is_none() {
                     first = Some(out);
                 }
@@ -5015,12 +4966,7 @@ fn clif_emit_expr(
             payload,
         } => {
             for value in payload {
-                let _ = clif_emit_expr(
-                    builder,
-                    ctx,
-                    value,
-                    locals,
-                )?;
+                let _ = clif_emit_expr(builder, ctx, value, locals)?;
             }
             let key = format!("{enum_name}::{variant}");
             ClifValue {
@@ -5033,33 +4979,22 @@ fn clif_emit_expr(
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
-        } => clif_emit_expr(
-            builder,
-            ctx,
-            try_expr,
-            locals,
-        )
-        .or_else(|_| {
-            clif_emit_expr(
-                builder,
-                ctx,
-                catch_expr,
-                locals,
-            )
-        })?,
-        ast::Expr::Range { start, .. } => clif_emit_expr(
-            builder,
-            ctx,
-            start,
-            locals,
-        )?,
+        } => clif_emit_expr(builder, ctx, try_expr, locals)
+            .or_else(|_| clif_emit_expr(builder, ctx, catch_expr, locals))?,
+        ast::Expr::Range { start, .. } => clif_emit_expr(builder, ctx, start, locals)?,
+        ast::Expr::ArrayLiteral(items) => {
+            if let Some(first) = items.first() {
+                clif_emit_expr(builder, ctx, first, locals)?
+            } else {
+                ClifValue {
+                    value: builder.ins().iconst(pointer_sized_clif_type(), 0),
+                    ty: pointer_sized_clif_type(),
+                }
+            }
+        }
+        ast::Expr::Index { base, .. } => clif_emit_expr(builder, ctx, base, locals)?,
         ast::Expr::Binary { op, left, right } => {
-            let lhs = clif_emit_expr(
-                builder,
-                ctx,
-                left,
-                locals,
-            )?;
+            let lhs = clif_emit_expr(builder, ctx, left, locals)?;
             match op {
                 ast::BinaryOp::Add => {
                     let rhs = clif_emit_expr(builder, ctx, right, locals)?;
@@ -5286,12 +5221,7 @@ fn clif_emit_expr(
                     anyhow!("missing native function signature metadata for `{callee}`")
                 })?;
                 for (index, arg) in args.iter().enumerate() {
-                    let mut lowered = clif_emit_expr(
-                        builder,
-                        ctx,
-                        arg,
-                        locals,
-                    )?;
+                    let mut lowered = clif_emit_expr(builder, ctx, arg, locals)?;
                     if let Some(target) = signature.params.get(index).copied() {
                         lowered = cast_clif_value(builder, lowered, target)?;
                     }
@@ -5312,12 +5242,7 @@ fn clif_emit_expr(
                 }
             } else {
                 for arg in args {
-                    let _ = clif_emit_expr(
-                        builder,
-                        ctx,
-                        arg,
-                        locals,
-                    )?;
+                    let _ = clif_emit_expr(builder, ctx, arg, locals)?;
                 }
                 return Err(anyhow!(
                     "native backend cannot lower unresolved call target `{}`",
@@ -5362,6 +5287,23 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
+        if function
+            .body
+            .iter()
+            .any(stmt_uses_native_unsupported_expression)
+        {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend does not yet support array/index expressions in function `{}`",
+                    function.name
+                ),
+                Some(
+                    "run with deterministic/runtime backends for this module until native aggregate indexing lowering is implemented"
+                        .to_string(),
+                ),
+            ));
+        }
     }
 
     let defined_functions = module
@@ -5398,6 +5340,106 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
         diagnostics::DiagnosticDomain::NativeLowering,
     );
     diagnostics
+}
+
+fn stmt_uses_native_unsupported_expression(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Return(Some(value))
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => expr_uses_native_unsupported_expression(value),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_uses_native_unsupported_expression(condition)
+                || then_body
+                    .iter()
+                    .any(stmt_uses_native_unsupported_expression)
+                || else_body
+                    .iter()
+                    .any(stmt_uses_native_unsupported_expression)
+        }
+        ast::Stmt::While { condition, body } => {
+            expr_uses_native_unsupported_expression(condition)
+                || body.iter().any(stmt_uses_native_unsupported_expression)
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(stmt_uses_native_unsupported_expression)
+                || condition
+                    .as_ref()
+                    .is_some_and(expr_uses_native_unsupported_expression)
+                || step
+                    .as_deref()
+                    .is_some_and(stmt_uses_native_unsupported_expression)
+                || body.iter().any(stmt_uses_native_unsupported_expression)
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            expr_uses_native_unsupported_expression(iterable)
+                || body.iter().any(stmt_uses_native_unsupported_expression)
+        }
+        ast::Stmt::Loop { body } => body.iter().any(stmt_uses_native_unsupported_expression),
+        ast::Stmt::Match { scrutinee, arms } => {
+            expr_uses_native_unsupported_expression(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(expr_uses_native_unsupported_expression)
+                        || expr_uses_native_unsupported_expression(&arm.value)
+                })
+        }
+        ast::Stmt::Break | ast::Stmt::Continue | ast::Stmt::Return(None) => false,
+    }
+}
+
+fn expr_uses_native_unsupported_expression(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::ArrayLiteral(_) | ast::Expr::Index { .. } => true,
+        ast::Expr::Call { args, .. } => args.iter().any(expr_uses_native_unsupported_expression),
+        ast::Expr::FieldAccess { base, .. } => expr_uses_native_unsupported_expression(base),
+        ast::Expr::StructInit { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| expr_uses_native_unsupported_expression(value)),
+        ast::Expr::EnumInit { payload, .. } => {
+            payload.iter().any(expr_uses_native_unsupported_expression)
+        }
+        ast::Expr::Group(inner)
+        | ast::Expr::Await(inner)
+        | ast::Expr::Unary { expr: inner, .. } => expr_uses_native_unsupported_expression(inner),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            expr_uses_native_unsupported_expression(try_expr)
+                || expr_uses_native_unsupported_expression(catch_expr)
+        }
+        ast::Expr::Binary { left, right, .. }
+        | ast::Expr::Range {
+            start: left,
+            end: right,
+            ..
+        } => {
+            expr_uses_native_unsupported_expression(left)
+                || expr_uses_native_unsupported_expression(right)
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => false,
+    }
 }
 
 fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {
@@ -5660,7 +5702,21 @@ fn collect_unresolved_calls_from_expr(
             collect_unresolved_calls_from_expr(start, defined_functions, unresolved);
             collect_unresolved_calls_from_expr(end, defined_functions, unresolved);
         }
-        ast::Expr::Int(_) | ast::Expr::Bool(_) | ast::Expr::Str(_) | ast::Expr::Ident(_) => {}
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_unresolved_calls_from_expr(item, defined_functions, unresolved);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            collect_unresolved_calls_from_expr(base, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(index, defined_functions, unresolved);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => {}
     }
 }
 

@@ -63,8 +63,11 @@ pub struct FunctionCapabilityRequirement {
 #[derive(Debug, Clone)]
 enum Value {
     I32(i32),
+    F64(f64),
     Bool(bool),
+    Char(char),
     Str(String),
+    List(Vec<Value>),
     Struct {
         _name: String,
         fields: BTreeMap<String, Value>,
@@ -162,28 +165,49 @@ pub fn lower(module: &Module) -> TypedModule {
     let mut trait_violations = validate_trait_impls(module, &trait_defs);
 
     for item in &module.items {
-        if let ast::Item::Function(function) = item {
-            fn_sigs.insert(
-                function.name.clone(),
-                (
-                    function.params.iter().map(|p| p.ty.clone()).collect(),
-                    function.return_type.clone(),
-                ),
-            );
-            fn_async.insert(function.name.clone(), function.is_async);
-            fn_generics.insert(function.name.clone(), function.generics.clone());
-            typed_functions.push(TypedFunction {
-                name: function.name.clone(),
-                generics: function.generics.clone(),
-                params: function.params.clone(),
-                return_type: function.return_type.clone(),
-                body: function.body.clone(),
-                is_async: function.is_async,
-                is_extern: function.is_extern,
-                abi: function.abi.clone(),
-                ffi_panic: function.ffi_panic.clone(),
-                required_capabilities: Vec::new(),
-            });
+        match item {
+            ast::Item::Function(function) => {
+                fn_sigs.insert(
+                    function.name.clone(),
+                    (
+                        function.params.iter().map(|p| p.ty.clone()).collect(),
+                        function.return_type.clone(),
+                    ),
+                );
+                fn_async.insert(function.name.clone(), function.is_async);
+                fn_generics.insert(function.name.clone(), function.generics.clone());
+                typed_functions.push(TypedFunction {
+                    name: function.name.clone(),
+                    generics: function.generics.clone(),
+                    params: function.params.clone(),
+                    return_type: function.return_type.clone(),
+                    body: function.body.clone(),
+                    is_async: function.is_async,
+                    is_extern: function.is_extern,
+                    abi: function.abi.clone(),
+                    ffi_panic: function.ffi_panic.clone(),
+                    required_capabilities: Vec::new(),
+                });
+            }
+            ast::Item::Test(test) => {
+                let name = format!("test::{}", sanitize_test_name(&test.name));
+                fn_sigs.insert(name.clone(), (Vec::new(), Type::Void));
+                fn_async.insert(name.clone(), false);
+                fn_generics.insert(name.clone(), Vec::new());
+                typed_functions.push(TypedFunction {
+                    name,
+                    generics: Vec::new(),
+                    params: Vec::new(),
+                    return_type: Type::Void,
+                    body: test.body.clone(),
+                    is_async: false,
+                    is_extern: false,
+                    abi: None,
+                    ffi_panic: None,
+                    required_capabilities: Vec::new(),
+                });
+            }
+            _ => {}
         }
     }
 
@@ -340,6 +364,22 @@ pub fn lower(module: &Module) -> TypedModule {
     }
 }
 
+fn sanitize_test_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "unnamed".to_string()
+    } else {
+        out
+    }
+}
+
 fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait>) -> Vec<String> {
     let mut violations = Vec::new();
     for item in &module.items {
@@ -478,10 +518,19 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
             Expr::Range { start, end, .. } => {
                 expr_has_cap_intrinsic(start) || expr_has_cap_intrinsic(end)
             }
+            Expr::ArrayLiteral(items) => items.iter().any(expr_has_cap_intrinsic),
+            Expr::Index { base, index } => {
+                expr_has_cap_intrinsic(base) || expr_has_cap_intrinsic(index)
+            }
             Expr::Group(inner) => expr_has_cap_intrinsic(inner),
             Expr::Await(inner) => expr_has_cap_intrinsic(inner),
             Expr::Unary { expr, .. } => expr_has_cap_intrinsic(expr),
-            Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => false,
+            Expr::Int(_)
+            | Expr::Float { .. }
+            | Expr::Char(_)
+            | Expr::Bool(_)
+            | Expr::Str(_)
+            | Expr::Ident(_) => false,
         }
     }
 
@@ -852,6 +901,33 @@ fn analyze_expr_call_tokens(
                 violations,
             );
         }
+        Expr::ArrayLiteral(items) => {
+            for item in items {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(item),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+        }
+        Expr::Index { base, index } => {
+            analyze_expr_call_tokens(
+                function_name,
+                Some(base),
+                local_types,
+                requirement_map,
+                violations,
+            );
+            analyze_expr_call_tokens(
+                function_name,
+                Some(index),
+                local_types,
+                requirement_map,
+                violations,
+            );
+        }
         Expr::Group(inner) => analyze_expr_call_tokens(
             function_name,
             Some(inner),
@@ -873,7 +949,12 @@ fn analyze_expr_call_tokens(
             requirement_map,
             violations,
         ),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => {}
+        Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Ident(_) => {}
     }
 }
 
@@ -1120,8 +1201,15 @@ fn expr_has_await(expr: &Expr) -> bool {
         } => expr_has_await(try_expr) || expr_has_await(catch_expr),
         Expr::Binary { left, right, .. } => expr_has_await(left) || expr_has_await(right),
         Expr::Range { start, end, .. } => expr_has_await(start) || expr_has_await(end),
+        Expr::ArrayLiteral(items) => items.iter().any(expr_has_await),
+        Expr::Index { base, index } => expr_has_await(base) || expr_has_await(index),
         Expr::Unary { expr, .. } => expr_has_await(expr),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) | Expr::Ident(_) => false,
+        Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Ident(_) => false,
     }
 }
 
@@ -1747,8 +1835,12 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
         Expr::Range { start, end, .. } => {
             expr_uses_ident(start, target) || expr_uses_ident(end, target)
         }
+        Expr::ArrayLiteral(items) => items.iter().any(|item| expr_uses_ident(item, target)),
+        Expr::Index { base, index } => {
+            expr_uses_ident(base, target) || expr_uses_ident(index, target)
+        }
         Expr::Unary { expr, .. } => expr_uses_ident(expr, target),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) => false,
+        Expr::Int(_) | Expr::Float { .. } | Expr::Char(_) | Expr::Bool(_) | Expr::Str(_) => false,
     }
 }
 
@@ -2148,8 +2240,17 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
             collect_expr_idents(start, out);
             collect_expr_idents(end, out);
         }
+        Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_expr_idents(item, out);
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_expr_idents(base, out);
+            collect_expr_idents(index, out);
+        }
         Expr::Unary { expr, .. } => collect_expr_idents(expr, out),
-        Expr::Int(_) | Expr::Bool(_) | Expr::Str(_) => {}
+        Expr::Int(_) | Expr::Float { .. } | Expr::Char(_) | Expr::Bool(_) | Expr::Str(_) => {}
     }
 }
 
@@ -2543,8 +2644,14 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             .find_map(|(_, value)| deferred_resource(value)),
         ast::Expr::EnumInit { payload, .. } => payload.iter().find_map(deferred_resource),
         ast::Expr::Await(inner) => deferred_resource(inner),
+        ast::Expr::ArrayLiteral(items) => items.iter().find_map(deferred_resource),
+        ast::Expr::Index { base, index } => {
+            deferred_resource(base).or_else(|| deferred_resource(index))
+        }
         ast::Expr::Unary { expr, .. } => deferred_resource(expr),
         ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Range { .. }
@@ -2679,12 +2786,7 @@ fn type_check_stmt(
     let enum_defs = env.enum_defs;
     match stmt {
         Stmt::Let { name, ty, value } => {
-            let inferred = infer_expr_type(
-                value,
-                scopes,
-                env,
-                state,
-            );
+            let inferred = infer_expr_type(value, scopes, env, state);
             let final_ty = match (ty, inferred) {
                 (Some(explicit), Some(actual)) => {
                     if !type_compatible(explicit, &actual) {
@@ -2717,12 +2819,7 @@ fn type_check_stmt(
         }
         Stmt::Assign { target, value } => {
             let target_ty = scopes.get(target);
-            let value_ty = infer_expr_type(
-                value,
-                scopes,
-                env,
-                state,
-            );
+            let value_ty = infer_expr_type(value, scopes, env, state);
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
                 if !type_compatible(&target_ty, &value_ty) {
                     record_type_error(
@@ -2757,12 +2854,7 @@ fn type_check_stmt(
             then_body,
             else_body,
         } => {
-            let cond_ty = infer_expr_type(
-                condition,
-                scopes,
-                env,
-                state,
-            );
+            let cond_ty = infer_expr_type(condition, scopes, env, state);
             if !is_bool_or_integer(cond_ty.as_ref()) {
                 let found = cond_ty
                     .as_ref()
@@ -2776,36 +2868,17 @@ fn type_check_stmt(
             }
             scopes.push();
             for stmt in then_body {
-                type_check_stmt(
-                    stmt,
-                scopes,
-                env,
-                    loop_depth,
-                    expected_return,
-                state,
-            );
+                type_check_stmt(stmt, scopes, env, loop_depth, expected_return, state);
             }
             scopes.pop();
             scopes.push();
             for stmt in else_body {
-                type_check_stmt(
-                    stmt,
-                scopes,
-                env,
-                    loop_depth,
-                    expected_return,
-                state,
-            );
+                type_check_stmt(stmt, scopes, env, loop_depth, expected_return, state);
             }
             scopes.pop();
         }
         Stmt::While { condition, body } => {
-            let cond_ty = infer_expr_type(
-                condition,
-                scopes,
-                env,
-                state,
-            );
+            let cond_ty = infer_expr_type(condition, scopes, env, state);
             if !is_bool_or_integer(cond_ty.as_ref()) {
                 let found = cond_ty
                     .as_ref()
@@ -2819,14 +2892,7 @@ fn type_check_stmt(
             }
             scopes.push();
             for stmt in body {
-                type_check_stmt(
-                    stmt,
-                scopes,
-                env,
-                    loop_depth + 1,
-                    expected_return,
-                state,
-            );
+                type_check_stmt(stmt, scopes, env, loop_depth + 1, expected_return, state);
             }
             scopes.pop();
         }
@@ -2838,22 +2904,10 @@ fn type_check_stmt(
         } => {
             scopes.push();
             if let Some(init) = init {
-                type_check_stmt(
-                    init,
-                scopes,
-                env,
-                    loop_depth + 1,
-                    expected_return,
-                state,
-            );
+                type_check_stmt(init, scopes, env, loop_depth + 1, expected_return, state);
             }
             if let Some(condition) = condition {
-                let cond_ty = infer_expr_type(
-                    condition,
-                scopes,
-                env,
-                state,
-            );
+                let cond_ty = infer_expr_type(condition, scopes, env, state);
                 if !is_bool_or_integer(cond_ty.as_ref()) {
                     let found = cond_ty
                         .as_ref()
@@ -2867,24 +2921,10 @@ fn type_check_stmt(
                 }
             }
             for stmt in body {
-                type_check_stmt(
-                    stmt,
-                scopes,
-                env,
-                    loop_depth + 1,
-                    expected_return,
-                state,
-            );
+                type_check_stmt(stmt, scopes, env, loop_depth + 1, expected_return, state);
             }
             if let Some(step) = step {
-                type_check_stmt(
-                    step,
-                scopes,
-                env,
-                    loop_depth + 1,
-                    expected_return,
-                state,
-            );
+                type_check_stmt(step, scopes, env, loop_depth + 1, expected_return, state);
             }
             scopes.pop();
         }
@@ -2893,12 +2933,7 @@ fn type_check_stmt(
             iterable,
             body,
         } => {
-            let iterable_ty = infer_expr_type(
-                iterable,
-                scopes,
-                env,
-                state,
-            );
+            let iterable_ty = infer_expr_type(iterable, scopes, env, state);
             let binding_ty = match iterable_ty {
                 Some(Type::Named { name, args }) if name == "Range" && args.len() == 1 => {
                     args[0].clone()
@@ -2925,28 +2960,14 @@ fn type_check_stmt(
             scopes.push();
             scopes.insert(binding.clone(), binding_ty);
             for stmt in body {
-                type_check_stmt(
-                    stmt,
-                scopes,
-                env,
-                    loop_depth + 1,
-                    expected_return,
-                state,
-            );
+                type_check_stmt(stmt, scopes, env, loop_depth + 1, expected_return, state);
             }
             scopes.pop();
         }
         Stmt::Loop { body } => {
             scopes.push();
             for stmt in body {
-                type_check_stmt(
-                    stmt,
-                scopes,
-                env,
-                    loop_depth + 1,
-                    expected_return,
-                state,
-            );
+                type_check_stmt(stmt, scopes, env, loop_depth + 1, expected_return, state);
             }
             scopes.pop();
         }
@@ -2969,12 +2990,7 @@ fn type_check_stmt(
             }
         }
         Stmt::Return(Some(expr)) => {
-            if let Some(actual) = infer_expr_type(
-                expr,
-                scopes,
-                env,
-                state,
-            ) {
+            if let Some(actual) = infer_expr_type(expr, scopes, env, state) {
                 if !type_compatible(expected_return, &actual) {
                     record_type_error(
                         state.errors,
@@ -3000,20 +3016,10 @@ fn type_check_stmt(
             }
         }
         Stmt::Match { scrutinee, arms } => {
-            let scrutinee_ty = infer_expr_type(
-                scrutinee,
-                scopes,
-                env,
-                state,
-            );
+            let scrutinee_ty = infer_expr_type(scrutinee, scopes, env, state);
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    let guard_ty = infer_expr_type(
-                        guard,
-                scopes,
-                env,
-                state,
-            );
+                    let guard_ty = infer_expr_type(guard, scopes, env, state);
                     if !is_bool_or_integer(guard_ty.as_ref()) {
                         let found = guard_ty
                             .as_ref()
@@ -3026,12 +3032,7 @@ fn type_check_stmt(
                         );
                     }
                 }
-                let value_ty = infer_expr_type(
-                    &arm.value,
-                scopes,
-                env,
-                state,
-            );
+                let value_ty = infer_expr_type(&arm.value, scopes, env, state);
                 check_pattern_compatibility(
                     &arm.pattern,
                     scrutinee_ty.as_ref(),
@@ -3057,12 +3058,7 @@ fn type_check_stmt(
             }
         }
         Stmt::Defer(expr) | Stmt::Requires(expr) | Stmt::Ensures(expr) | Stmt::Expr(expr) => {
-            let _ = infer_expr_type(
-                expr,
-                scopes,
-                env,
-                state,
-            );
+            let _ = infer_expr_type(expr, scopes, env, state);
         }
     }
 }
@@ -3123,6 +3119,10 @@ fn infer_expr_type(
             };
             Some(Type::Int { signed: true, bits })
         }
+        Expr::Float { bits, .. } => Some(Type::Float {
+            bits: bits.unwrap_or(64),
+        }),
+        Expr::Char(_) => Some(Type::Char),
         Expr::Bool(_) => Some(Type::Bool),
         Expr::Str(_) => Some(Type::Str),
         Expr::Ident(name) => {
@@ -3144,18 +3144,8 @@ fn infer_expr_type(
             );
             None
         }
-        Expr::Group(inner) => infer_expr_type(
-            inner,
-                scopes,
-                env,
-                state,
-            ),
-        Expr::Await(inner) => infer_expr_type(
-            inner,
-                scopes,
-                env,
-                state,
-            ),
+        Expr::Group(inner) => infer_expr_type(inner, scopes, env, state),
+        Expr::Await(inner) => infer_expr_type(inner, scopes, env, state),
         Expr::Call { callee, args } => {
             let (base_callee, explicit_types) = split_generic_callee(callee);
             let runtime_sig = runtime_call_signature(base_callee);
@@ -3174,12 +3164,7 @@ fn infer_expr_type(
             let generics = fn_generics.get(base_callee).cloned().unwrap_or_default();
             let mut arg_types = Vec::with_capacity(args.len());
             for arg in args {
-                arg_types.push(infer_expr_type(
-                    arg,
-                scopes,
-                env,
-                state,
-            ));
+                arg_types.push(infer_expr_type(arg, scopes, env, state));
             }
             let (resolved_params, resolved_ret, bindings, skip_post_call_validation) = if fn_sigs
                 .contains_key(base_callee)
@@ -3251,7 +3236,9 @@ fn infer_expr_type(
                     .map(|(name, ty)| format!("{name}={ty}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                state.generic_specializations.insert(format!("{base_callee}<{rendered}>"));
+                state
+                    .generic_specializations
+                    .insert(format!("{base_callee}<{rendered}>"));
                 for generic in &generics {
                     if let Some((_, concrete)) =
                         bindings.iter().find(|(name, _)| *name == generic.name)
@@ -3308,12 +3295,7 @@ fn infer_expr_type(
                     });
                 }
             }
-            let base_ty = infer_expr_type(
-                base,
-                scopes,
-                env,
-                state,
-            )?;
+            let base_ty = infer_expr_type(base, scopes, env, state)?;
             let Type::Named { name, .. } = base_ty else {
                 record_type_error(
                     state.errors,
@@ -3369,12 +3351,7 @@ fn infer_expr_type(
                     );
                     continue;
                 };
-                let value_ty = infer_expr_type(
-                    value,
-                scopes,
-                env,
-                state,
-            );
+                let value_ty = infer_expr_type(value, scopes, env, state);
                 if let Some(value_ty) = value_ty {
                     if !type_compatible(&found.ty, &value_ty) {
                         record_type_error(
@@ -3430,12 +3407,7 @@ fn infer_expr_type(
                 );
             }
             for (index, value) in payload.iter().enumerate() {
-                let value_ty = infer_expr_type(
-                    value,
-                scopes,
-                env,
-                state,
-            );
+                let value_ty = infer_expr_type(value, scopes, env, state);
                 if let (Some(expected), Some(actual)) = (found_variant.payload.get(index), value_ty)
                 {
                     if !type_compatible(expected, &actual) {
@@ -3464,7 +3436,9 @@ fn infer_expr_type(
                         record_type_error(
                             state.errors,
                             state.type_error_details,
-                            format!("logical not expects bool/integer-compatible operand, got `{ty}`"),
+                            format!(
+                                "logical not expects bool/integer-compatible operand, got `{ty}`"
+                            ),
                         );
                         None
                     }
@@ -3474,11 +3448,13 @@ fn infer_expr_type(
                 | (ast::UnaryOp::Neg, Some(ty)) => {
                     if is_integer_type(&ty) {
                         Some(ty)
+                    } else if !matches!(op, ast::UnaryOp::BitNot) && is_float_type(&ty) {
+                        Some(ty)
                     } else {
                         record_type_error(
                             state.errors,
                             state.type_error_details,
-                            format!("unary operator expects integer operand, got `{ty}`"),
+                            format!("unary operator expects numeric operand, got `{ty}`"),
                         );
                         None
                     }
@@ -3490,18 +3466,8 @@ fn infer_expr_type(
             try_expr,
             catch_expr,
         } => {
-            let left = infer_expr_type(
-                try_expr,
-                scopes,
-                env,
-                state,
-            );
-            let right = infer_expr_type(
-                catch_expr,
-                scopes,
-                env,
-                state,
-            );
+            let left = infer_expr_type(try_expr, scopes, env, state);
+            let right = infer_expr_type(catch_expr, scopes, env, state);
             match (left, right) {
                 (Some(l), Some(r)) if type_compatible(&l, &r) => Some(l),
                 (Some(_), Some(_)) => {
@@ -3522,18 +3488,8 @@ fn infer_expr_type(
             end,
             inclusive: _,
         } => {
-            let left_ty = infer_expr_type(
-                start,
-                scopes,
-                env,
-                state,
-            );
-            let right_ty = infer_expr_type(
-                end,
-                scopes,
-                env,
-                state,
-            );
+            let left_ty = infer_expr_type(start, scopes, env, state);
+            let right_ty = infer_expr_type(end, scopes, env, state);
             match (left_ty, right_ty) {
                 (Some(left), Some(right))
                     if is_integer_type(&left)
@@ -3559,23 +3515,84 @@ fn infer_expr_type(
                 _ => None,
             }
         }
+        Expr::ArrayLiteral(items) => {
+            if items.is_empty() {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    "cannot infer type of empty array literal".to_string(),
+                );
+                return Some(Type::Array {
+                    elem: Box::new(i32_type()),
+                    len: 0,
+                });
+            }
+            let mut elem_ty: Option<Type> = None;
+            for item in items {
+                let ty = infer_expr_type(item, scopes, env, state);
+                if let Some(ty) = ty {
+                    if let Some(existing) = &elem_ty {
+                        if !type_compatible(existing, &ty) {
+                            record_type_error(
+                                state.errors,
+                                state.type_error_details,
+                                format!(
+                                    "array literal element type mismatch: expected `{}`, got `{}`",
+                                    existing, ty
+                                ),
+                            );
+                        }
+                    } else {
+                        elem_ty = Some(ty);
+                    }
+                }
+            }
+            Some(Type::Array {
+                elem: Box::new(elem_ty.unwrap_or_else(i32_type)),
+                len: items.len(),
+            })
+        }
+        Expr::Index { base, index } => {
+            let base_ty = infer_expr_type(base, scopes, env, state);
+            let index_ty = infer_expr_type(index, scopes, env, state);
+            if !index_ty.as_ref().is_some_and(is_integer_type) {
+                let found = index_ty
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "unknown".to_string());
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!("index expression must be integer, got `{found}`"),
+                );
+            }
+            match base_ty {
+                Some(Type::Array { elem, .. }) => Some(*elem),
+                Some(Type::Slice(elem)) => Some(*elem),
+                Some(Type::Vec(elem)) => Some(*elem),
+                Some(Type::Str) => Some(Type::Char),
+                Some(other) => {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!("indexing is not supported for type `{other}`"),
+                    );
+                    None
+                }
+                None => None,
+            }
+        }
         Expr::Binary { op, left, right } => {
-            let left_ty = infer_expr_type(
-                left,
-                scopes,
-                env,
-                state,
-            );
-            let right_ty = infer_expr_type(
-                right,
-                scopes,
-                env,
-                state,
-            );
+            let left_ty = infer_expr_type(left, scopes, env, state);
+            let right_ty = infer_expr_type(right, scopes, env, state);
             match op {
                 BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div => {
                     if left_ty.as_ref().is_some_and(is_integer_type)
                         && right_ty.as_ref().is_some_and(is_integer_type)
+                    {
+                        left_ty
+                    } else if left_ty.as_ref().is_some_and(is_float_type)
+                        && right_ty.as_ref().is_some_and(is_float_type)
                     {
                         left_ty
                     } else {
@@ -3591,7 +3608,7 @@ fn infer_expr_type(
                             state.errors,
                             state.type_error_details,
                             format!(
-                                "arithmetic operands must be integers, got left=`{left}` right=`{right}`"
+                                "arithmetic operands must be numeric-compatible, got left=`{left}` right=`{right}`"
                             ),
                         );
                         None
@@ -3640,7 +3657,8 @@ fn infer_expr_type(
                     }
                 }
                 BinaryOp::And | BinaryOp::Or => {
-                    if is_bool_or_integer(left_ty.as_ref()) && is_bool_or_integer(right_ty.as_ref()) {
+                    if is_bool_or_integer(left_ty.as_ref()) && is_bool_or_integer(right_ty.as_ref())
+                    {
                         Some(Type::Bool)
                     } else {
                         record_type_error(
@@ -4186,6 +4204,8 @@ fn runtime_default_value(ty: &Type) -> Option<Value> {
     match ty {
         Type::Bool => Some(Value::Bool(false)),
         Type::ISize | Type::USize | Type::Int { .. } => Some(Value::I32(0)),
+        Type::Float { .. } => Some(Value::F64(0.0)),
+        Type::Char => Some(Value::Char('\0')),
         Type::Str => Some(Value::Str(String::new())),
         Type::Void => Some(Value::I32(0)),
         _ => None,
@@ -4299,6 +4319,10 @@ fn is_integer_type(ty: &Type) -> bool {
     matches!(ty, Type::ISize | Type::USize | Type::Int { .. })
 }
 
+fn is_float_type(ty: &Type) -> bool {
+    matches!(ty, Type::Float { .. })
+}
+
 fn is_bool_or_integer(ty: Option<&Type>) -> bool {
     matches!(ty, Some(Type::Bool)) || ty.is_some_and(is_integer_type)
 }
@@ -4317,9 +4341,11 @@ fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
     let mut env = BTreeMap::new();
     eval_block(&main.body, &mut env, &map).and_then(|value| match value {
         Value::I32(v) => Some(v),
+        Value::F64(v) => Some(v as i32),
         Value::Bool(v) => Some(v as i32),
+        Value::Char(v) => Some(v as i32),
         Value::Str(_) => None,
-        Value::Struct { .. } | Value::Enum { .. } => None,
+        Value::List(_) | Value::Struct { .. } | Value::Enum { .. } => None,
     })
 }
 
@@ -4625,6 +4651,8 @@ fn eval_expr<'a>(
 
     match expr {
         Expr::Int(v) => i32::try_from(*v).ok().map(Value::I32),
+        Expr::Float { value, .. } => Some(Value::F64(*value)),
+        Expr::Char(v) => Some(Value::Char(*v)),
         Expr::Bool(v) => Some(Value::Bool(*v)),
         Expr::Str(v) => Some(Value::Str(v.clone())),
         Expr::Ident(name) => env.get(name).cloned().or_else(|| {
@@ -4675,7 +4703,9 @@ fn eval_expr<'a>(
                 (ast::UnaryOp::Not, Value::I32(v)) => Some(Value::Bool(v == 0)),
                 (ast::UnaryOp::BitNot, Value::I32(v)) => Some(Value::I32(!v)),
                 (ast::UnaryOp::Plus, Value::I32(v)) => Some(Value::I32(v)),
+                (ast::UnaryOp::Plus, Value::F64(v)) => Some(Value::F64(v)),
                 (ast::UnaryOp::Neg, Value::I32(v)) => Some(Value::I32(-v)),
+                (ast::UnaryOp::Neg, Value::F64(v)) => Some(Value::F64(-v)),
                 _ => None,
             }
         }
@@ -4727,42 +4757,66 @@ fn eval_expr<'a>(
                 fields,
             })
         }
-        Expr::Binary { op, left, right } => {
-            match op {
-                BinaryOp::And => {
-                    let left = eval_expr(left, env, functions)?;
-                    if !truthy(&left) {
-                        Some(Value::Bool(false))
-                    } else {
-                        let right = eval_expr(right, env, functions)?;
-                        Some(Value::Bool(truthy(&right)))
-                    }
-                }
-                BinaryOp::Or => {
-                    let left = eval_expr(left, env, functions)?;
-                    if truthy(&left) {
-                        Some(Value::Bool(true))
-                    } else {
-                        let right = eval_expr(right, env, functions)?;
-                        Some(Value::Bool(truthy(&right)))
-                    }
-                }
-                _ => {
-                    let left = eval_expr(left, env, functions)?;
-                    let right = eval_expr(right, env, functions)?;
-                    eval_binary(*op, left, right)
-                }
+        Expr::ArrayLiteral(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for item in items {
+                out.push(eval_expr(item, env, functions)?);
+            }
+            Some(Value::List(out))
+        }
+        Expr::Index { base, index } => {
+            let base = eval_expr(base, env, functions)?;
+            let index = eval_expr(index, env, functions)?;
+            let Value::I32(index) = index else {
+                return None;
+            };
+            let Ok(index) = usize::try_from(index) else {
+                return None;
+            };
+            match base {
+                Value::List(items) => items.get(index).cloned(),
+                Value::Str(text) => text.chars().nth(index).map(Value::Char),
+                _ => None,
             }
         }
+        Expr::Binary { op, left, right } => match op {
+            BinaryOp::And => {
+                let left = eval_expr(left, env, functions)?;
+                if !truthy(&left) {
+                    Some(Value::Bool(false))
+                } else {
+                    let right = eval_expr(right, env, functions)?;
+                    Some(Value::Bool(truthy(&right)))
+                }
+            }
+            BinaryOp::Or => {
+                let left = eval_expr(left, env, functions)?;
+                if truthy(&left) {
+                    Some(Value::Bool(true))
+                } else {
+                    let right = eval_expr(right, env, functions)?;
+                    Some(Value::Bool(truthy(&right)))
+                }
+            }
+            _ => {
+                let left = eval_expr(left, env, functions)?;
+                let right = eval_expr(right, env, functions)?;
+                eval_binary(*op, left, right)
+            }
+        },
     }
 }
 
 fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Option<Value> {
     match (op, left, right) {
         (BinaryOp::Add, Value::I32(a), Value::I32(b)) => Some(Value::I32(a + b)),
+        (BinaryOp::Add, Value::F64(a), Value::F64(b)) => Some(Value::F64(a + b)),
         (BinaryOp::Sub, Value::I32(a), Value::I32(b)) => Some(Value::I32(a - b)),
+        (BinaryOp::Sub, Value::F64(a), Value::F64(b)) => Some(Value::F64(a - b)),
         (BinaryOp::Mul, Value::I32(a), Value::I32(b)) => Some(Value::I32(a * b)),
+        (BinaryOp::Mul, Value::F64(a), Value::F64(b)) => Some(Value::F64(a * b)),
         (BinaryOp::Div, Value::I32(a), Value::I32(b)) => Some(Value::I32(a / b)),
+        (BinaryOp::Div, Value::F64(a), Value::F64(b)) => Some(Value::F64(a / b)),
         (BinaryOp::Mod, Value::I32(a), Value::I32(b)) => Some(Value::I32(a % b)),
         (BinaryOp::BitAnd, Value::I32(a), Value::I32(b)) => Some(Value::I32(a & b)),
         (BinaryOp::BitOr, Value::I32(a), Value::I32(b)) => Some(Value::I32(a | b)),
@@ -4781,6 +4835,14 @@ fn eval_binary(op: BinaryOp, left: Value, right: Value) -> Option<Value> {
         (BinaryOp::Neq, Value::Bool(a), Value::Bool(b)) => Some(Value::Bool(a != b)),
         (BinaryOp::Eq, Value::Str(a), Value::Str(b)) => Some(Value::Bool(a == b)),
         (BinaryOp::Neq, Value::Str(a), Value::Str(b)) => Some(Value::Bool(a != b)),
+        (BinaryOp::Eq, Value::F64(a), Value::F64(b)) => Some(Value::Bool(a == b)),
+        (BinaryOp::Neq, Value::F64(a), Value::F64(b)) => Some(Value::Bool(a != b)),
+        (BinaryOp::Lt, Value::F64(a), Value::F64(b)) => Some(Value::Bool(a < b)),
+        (BinaryOp::Lte, Value::F64(a), Value::F64(b)) => Some(Value::Bool(a <= b)),
+        (BinaryOp::Gt, Value::F64(a), Value::F64(b)) => Some(Value::Bool(a > b)),
+        (BinaryOp::Gte, Value::F64(a), Value::F64(b)) => Some(Value::Bool(a >= b)),
+        (BinaryOp::Eq, Value::Char(a), Value::Char(b)) => Some(Value::Bool(a == b)),
+        (BinaryOp::Neq, Value::Char(a), Value::Char(b)) => Some(Value::Bool(a != b)),
         _ => None,
     }
 }
@@ -4789,7 +4851,10 @@ fn truthy(v: &Value) -> bool {
     match v {
         Value::Bool(v) => *v,
         Value::I32(v) => *v != 0,
+        Value::F64(v) => *v != 0.0,
+        Value::Char(v) => *v != '\0',
         Value::Str(v) => !v.is_empty(),
+        Value::List(v) => !v.is_empty(),
         Value::Struct { .. } | Value::Enum { .. } => true,
     }
 }
@@ -4838,7 +4903,10 @@ fn eval_bool_expr(
     match eval_expr(expr, env, &map)? {
         Value::Bool(v) => Some(v),
         Value::I32(v) => Some(v != 0),
+        Value::F64(v) => Some(v != 0.0),
+        Value::Char(v) => Some(v != '\0'),
         Value::Str(v) => Some(!v.is_empty()),
+        Value::List(v) => Some(!v.is_empty()),
         Value::Struct { .. } | Value::Enum { .. } => Some(true),
     }
 }

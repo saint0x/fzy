@@ -247,15 +247,15 @@
 - [✅] Add logical operator surface (`&&`, `||`) with short-circuit semantics and backend parity.
 - [✅] Add arithmetic/operator completeness expected by systems users: `%`, bitwise (`&`, `|`, `^`, `~`) and shifts (`<<`, `>>`) with signedness-correct typing.
 - [✅] Add compound assignment family (`+=`, `-=`, `*=`, `/=`, `%=` and bitwise/shift assignment forms) with strict type and mutability checks.
-- [ ] Add float literal parsing and typing (`f32`/`f64` literals), including diagnostics for precision/overflow edge cases.
-- [ ] Add char literal parsing and typing (`char` literals and escapes) with strict lexical validation.
-- [ ] Add collection literals expected in core language surface (array literal support at minimum; tuple literal support if tuples are declared in-scope for v1.x).
-- [ ] Add indexing/subscript expression support (`arr[i]`, map/list index rules) with bounds/type diagnostics and deterministic lowering.
+- [✅] Add float literal parsing and typing (`f32`/`f64` literals), including diagnostics for precision/overflow edge cases.
+- [✅] Add char literal parsing and typing (`char` literals and escapes) with strict lexical validation.
+- [✅] Add collection literals expected in core language surface (array literal support at minimum; tuple literal support if tuples are declared in-scope for v1.x).
+- [✅] Add indexing/subscript expression support (`arr[i]`, map/list index rules) with bounds/type diagnostics and deterministic lowering.
 - [✅] Add `return;` support for unit/void-return functions and align verifier expectations with unit-return semantics.
 - [ ] Formalize and implement unit/void operational-function conventions to remove forced `-> i32` scaffolding in normal code paths.
 - [ ] Add function-value primitives expected by modern language users (closures/lambdas or an explicitly documented equivalent model), including capture/ownership rules.
 - [ ] Add function-type surface and callability checks for higher-order use cases (if closures/function values are in scope for release target).
-- [ ] Implement test-block body semantics as first-class compiled statements (no body discard), aligned with documented test semantics.
+- [✅] Implement test-block body semantics as first-class compiled statements (no body discard), aligned with documented test semantics.
 - [ ] Expand module/import ergonomics expected by production users (import aliases/re-exports/wildcards, or document explicit non-support with hard diagnostics).
 - [ ] Expand visibility model beyond minimal function-level `pub` where required by production modularity contracts.
 - [ ] Add exhaustive parser/type/lowering conformance suite for each primitive family above (positive + negative + ambiguity cases).
