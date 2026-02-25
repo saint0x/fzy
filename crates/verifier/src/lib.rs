@@ -268,6 +268,13 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             format!("type checking failed with {} error(s)", module.type_errors),
             Some("fix invalid types, unresolved functions, and bad call signatures".to_string()),
         ));
+        for detail in &module.type_error_details {
+            report.diagnostics.push(Diagnostic::new(
+                Severity::Error,
+                detail.clone(),
+                Some("type-check detail".to_string()),
+            ));
+        }
     }
 
     if let Some(return_type) = &module.entry_return_type {
@@ -351,6 +358,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -393,6 +401,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -438,6 +447,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -484,6 +494,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -530,6 +541,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -576,6 +588,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -625,6 +638,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -686,6 +700,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -733,6 +748,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -783,6 +799,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),
@@ -829,6 +846,7 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             type_errors: 0,
+            type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
             ownership_violations: Vec::new(),
             capability_token_violations: Vec::new(),

@@ -38,6 +38,7 @@ pub struct TypedModule {
     pub call_graph: Vec<(String, String)>,
     pub typed_functions: Vec<TypedFunction>,
     pub type_errors: usize,
+    pub type_error_details: Vec<String>,
     pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
     pub ownership_violations: Vec<String>,
     pub capability_token_violations: Vec<String>,
@@ -107,6 +108,7 @@ pub fn lower(module: &Module) -> TypedModule {
     let mut fn_generics = HashMap::<String, Vec<ast::GenericParam>>::new();
     let mut typed_functions = Vec::new();
     let mut type_errors = 0usize;
+    let mut type_error_details = Vec::new();
     let struct_defs = module
         .items
         .iter()
@@ -201,6 +203,7 @@ pub fn lower(module: &Module) -> TypedModule {
                 &trait_impls,
                 &function.return_type,
                 &mut type_errors,
+                &mut type_error_details,
                 &mut generic_specializations,
                 &mut trait_violations,
             );
@@ -288,6 +291,7 @@ pub fn lower(module: &Module) -> TypedModule {
         call_graph,
         typed_functions,
         type_errors,
+        type_error_details,
         function_capability_requirements,
         ownership_violations,
         capability_token_violations,
@@ -1431,6 +1435,7 @@ fn type_check_stmt(
     trait_impls: &HashMap<String, Vec<Type>>,
     expected_return: &Type,
     errors: &mut usize,
+    type_error_details: &mut Vec<String>,
     generic_specializations: &mut BTreeSet<String>,
     trait_violations: &mut Vec<String>,
 ) {
@@ -1445,6 +1450,7 @@ fn type_check_stmt(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -1475,6 +1481,7 @@ fn type_check_stmt(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -1498,6 +1505,7 @@ fn type_check_stmt(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -1516,6 +1524,7 @@ fn type_check_stmt(
                     trait_impls,
                     expected_return,
                     errors,
+                    type_error_details,
                     generic_specializations,
                     trait_violations,
                 );
@@ -1533,6 +1542,7 @@ fn type_check_stmt(
                     trait_impls,
                     expected_return,
                     errors,
+                    type_error_details,
                     generic_specializations,
                     trait_violations,
                 );
@@ -1549,6 +1559,7 @@ fn type_check_stmt(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -1567,6 +1578,7 @@ fn type_check_stmt(
                     trait_impls,
                     expected_return,
                     errors,
+                    type_error_details,
                     generic_specializations,
                     trait_violations,
                 );
@@ -1583,6 +1595,7 @@ fn type_check_stmt(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             ) {
@@ -1601,6 +1614,7 @@ fn type_check_stmt(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -1615,6 +1629,7 @@ fn type_check_stmt(
                         enum_defs,
                         trait_impls,
                         errors,
+                        type_error_details,
                         generic_specializations,
                         trait_violations,
                     );
@@ -1631,6 +1646,7 @@ fn type_check_stmt(
                     enum_defs,
                     trait_impls,
                     errors,
+                    type_error_details,
                     generic_specializations,
                     trait_violations,
                 );
@@ -1648,6 +1664,7 @@ fn type_check_stmt(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -1664,6 +1681,7 @@ fn infer_expr_type(
     enum_defs: &HashMap<String, ast::Enum>,
     trait_impls: &HashMap<String, Vec<Type>>,
     errors: &mut usize,
+    type_error_details: &mut Vec<String>,
     generic_specializations: &mut BTreeSet<String>,
     trait_violations: &mut Vec<String>,
 ) -> Option<Type> {
@@ -1684,33 +1702,23 @@ fn infer_expr_type(
             enum_defs,
             trait_impls,
             errors,
+            type_error_details,
             generic_specializations,
             trait_violations,
         ),
         Expr::Call { callee, args } => {
             let (base_callee, explicit_types) = split_generic_callee(callee);
-            let Some((params, ret)) = fn_sigs.get(base_callee) else {
-                if callee.contains('.') || is_runtime_intrinsic(callee) {
-                    for arg in args {
-                        let _ = infer_expr_type(
-                            arg,
-                            scopes,
-                            fn_sigs,
-                            fn_generics,
-                            struct_defs,
-                            enum_defs,
-                            trait_impls,
-                            errors,
-                            generic_specializations,
-                            trait_violations,
-                        );
-                    }
-                    return Some(Type::Int {
-                        signed: true,
-                        bits: 32,
-                    });
-                }
-                *errors += 1;
+            let runtime_sig = runtime_call_signature(base_callee);
+            let (params, ret) = if let Some((params, ret)) = fn_sigs.get(base_callee) {
+                (params.clone(), ret.clone())
+            } else if let Some((params, ret)) = runtime_sig {
+                (params, ret)
+            } else {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("unresolved call target `{}`", base_callee),
+                );
                 return None;
             };
             let generics = fn_generics.get(base_callee).cloned().unwrap_or_default();
@@ -1725,19 +1733,73 @@ fn infer_expr_type(
                     enum_defs,
                     trait_impls,
                     errors,
+                    type_error_details,
                     generic_specializations,
                     trait_violations,
                 ));
             }
-            let Some((resolved_params, resolved_ret, bindings)) = resolve_call_signature(
-                params,
-                ret,
-                &generics,
-                &arg_types,
-                explicit_types.as_deref(),
-            ) else {
-                *errors += 1;
-                return None;
+            let (resolved_params, resolved_ret, bindings, skip_post_call_validation) =
+                if fn_sigs.contains_key(base_callee) {
+                let Some((resolved_params, resolved_ret, bindings)) = resolve_call_signature(
+                    &params,
+                    &ret,
+                    &generics,
+                    &arg_types,
+                    explicit_types.as_deref(),
+                ) else {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "call signature mismatch for `{}`: expected ({}) -> {}",
+                            base_callee,
+                            params
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            ret
+                        ),
+                    );
+                    return None;
+                };
+                (resolved_params, resolved_ret, bindings, false)
+            } else {
+                if params.len() != args.len() {
+                    let detail = if matches!(base_callee, "net.write" | "net.write_json")
+                        && args.len() == 1
+                    {
+                        format!(
+                            "runtime call `{}` migrated to `(conn, status, body)`; update call sites like `{}(conn, 200, \"ok\")`",
+                            base_callee, base_callee
+                        )
+                    } else {
+                        format!(
+                            "runtime call `{}` expects {} args but got {}",
+                            base_callee,
+                            params.len(),
+                            args.len()
+                        )
+                    };
+                    record_type_error(errors, type_error_details, detail);
+                    return None;
+                }
+                for (expected, actual) in params.iter().zip(arg_types.iter()) {
+                    let Some(actual) = actual else {
+                        continue;
+                    };
+                    if !type_compatible(expected, actual) {
+                        record_type_error(
+                            errors,
+                            type_error_details,
+                            format!(
+                                "runtime call `{}` argument type mismatch: expected `{}`, got `{}`",
+                                base_callee, expected, actual
+                            ),
+                        );
+                    }
+                }
+                (params.clone(), ret.clone(), Vec::new(), true)
             };
             if !bindings.is_empty() {
                 let rendered = bindings
@@ -1762,13 +1824,31 @@ fn infer_expr_type(
                     }
                 }
             }
-            if resolved_params.len() != args.len() {
-                *errors += 1;
-            }
-            for (index, arg_ty) in arg_types.into_iter().enumerate() {
-                if let (Some(expected), Some(actual)) = (resolved_params.get(index), arg_ty) {
-                    if !type_compatible(expected, &actual) {
-                        *errors += 1;
+            if !skip_post_call_validation {
+                if resolved_params.len() != args.len() {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "call `{}` parameter count mismatch after resolution: expected {}, got {}",
+                            base_callee,
+                            resolved_params.len(),
+                            args.len()
+                        ),
+                    );
+                }
+                for (index, arg_ty) in arg_types.into_iter().enumerate() {
+                    if let (Some(expected), Some(actual)) = (resolved_params.get(index), arg_ty) {
+                        if !type_compatible(expected, &actual) {
+                            record_type_error(
+                                errors,
+                                type_error_details,
+                                format!(
+                                    "call `{}` argument {} type mismatch: expected `{}`, got `{}`",
+                                    base_callee, index, expected, actual
+                                ),
+                            );
+                        }
                     }
                 }
             }
@@ -1784,6 +1864,7 @@ fn infer_expr_type(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             ) else {
@@ -1830,6 +1911,7 @@ fn infer_expr_type(
                     enum_defs,
                     trait_impls,
                     errors,
+                    type_error_details,
                     generic_specializations,
                     trait_violations,
                 );
@@ -1874,6 +1956,7 @@ fn infer_expr_type(
                     enum_defs,
                     trait_impls,
                     errors,
+                    type_error_details,
                     generic_specializations,
                     trait_violations,
                 );
@@ -1902,6 +1985,7 @@ fn infer_expr_type(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -1914,6 +1998,7 @@ fn infer_expr_type(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -1938,6 +2023,7 @@ fn infer_expr_type(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -1950,6 +2036,7 @@ fn infer_expr_type(
                 enum_defs,
                 trait_impls,
                 errors,
+                type_error_details,
                 generic_specializations,
                 trait_violations,
             );
@@ -2199,6 +2286,80 @@ pub fn is_runtime_intrinsic(name: &str) -> bool {
     )
 }
 
+fn i32_type() -> Type {
+    Type::Int {
+        signed: true,
+        bits: 32,
+    }
+}
+
+fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
+    let i32 = i32_type();
+    let str_ty = Type::Str;
+    Some(match name {
+        "spawn" => (vec![i32.clone()], i32.clone()),
+        "yield" | "checkpoint" | "timeout" | "cancel" | "recv" | "pulse" => {
+            (vec![], i32.clone())
+        }
+        "deadline" => (vec![i32.clone()], i32.clone()),
+        "alloc" => (vec![i32.clone()], i32.clone()),
+        "free" | "close" => (vec![i32.clone()], i32.clone()),
+        "net.bind" | "net.accept" | "net.connect" | "net.poll_next" => (vec![], i32.clone()),
+        "net.listen" | "net.read" | "net.close" | "net.poll_register" => {
+            (vec![i32.clone()], i32.clone())
+        }
+        "net.method" | "net.path" | "net.body" => (vec![i32.clone()], str_ty.clone()),
+        "net.write" | "net.write_json" => {
+            (vec![i32.clone(), i32.clone(), str_ty.clone()], i32.clone())
+        }
+        "net.write_response" => (
+            vec![
+                i32.clone(),
+                i32.clone(),
+                str_ty.clone(),
+                str_ty.clone(),
+                i32.clone(),
+            ],
+            i32.clone(),
+        ),
+        "env.get" => (vec![str_ty.clone()], str_ty.clone()),
+        "http.header" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "http.post_json" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "time.now" => (vec![], i32.clone()),
+        "fs.open"
+        | "fs.write"
+        | "fs.flush"
+        | "fs.atomic_write"
+        | "fs.rename_atomic"
+        | "fs.fsync"
+        | "fs.lock"
+        | "fs.read" => (vec![], i32.clone()),
+        "process.run" | "proc.run" | "process.spawn" | "proc.spawn" => {
+            (vec![str_ty.clone()], i32.clone())
+        }
+        "process.exec_timeout" | "proc.exec_timeout" => (vec![i32.clone()], i32.clone()),
+        "process.wait" | "proc.wait" => (vec![i32.clone(), i32.clone()], i32.clone()),
+        "process.stdout" | "proc.stdout" | "process.stderr" | "proc.stderr" => {
+            (vec![i32.clone()], str_ty.clone())
+        }
+        "process.exit_code" | "proc.exit_code" => (vec![i32.clone()], i32.clone()),
+        "process.exit_class" | "proc.exit_class" => (vec![], i32.clone()),
+        "ctx.deadline" => (vec![i32.clone()], i32.clone()),
+        "ctx.cancel_if_timeout" | "channel.send" | "channel.recv" => (vec![], i32.clone()),
+        _ => return None,
+    })
+}
+
+fn runtime_default_value(ty: &Type) -> Option<Value> {
+    match ty {
+        Type::Bool => Some(Value::Bool(false)),
+        Type::Int { .. } => Some(Value::I32(0)),
+        Type::Str => Some(Value::Str(String::new())),
+        Type::Void => Some(Value::I32(0)),
+        _ => None,
+    }
+}
+
 fn check_pattern_compatibility(
     pattern: &ast::Pattern,
     scrutinee_ty: Option<&Type>,
@@ -2225,6 +2386,11 @@ fn type_compatible(expected: &Type, actual: &Type) -> bool {
         (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
         _ => expected == actual,
     }
+}
+
+fn record_type_error(errors: &mut usize, type_error_details: &mut Vec<String>, detail: String) {
+    *errors += 1;
+    type_error_details.push(detail);
 }
 
 fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
@@ -2317,11 +2483,11 @@ fn eval_expr<'a>(
         Expr::Call { callee, args } => {
             let (callee_name, _) = split_generic_callee(callee);
             let Some(function) = functions.get(callee_name) else {
-                if callee.contains('.') || is_runtime_intrinsic(callee) {
+                if let Some((_, ret_ty)) = runtime_call_signature(callee_name) {
                     for arg in args {
                         let _ = eval_expr(arg, env, functions)?;
                     }
-                    return Some(Value::I32(0));
+                    return runtime_default_value(&ret_ty);
                 }
                 return None;
             };
@@ -2504,5 +2670,74 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(!typed.reference_lifetime_violations.is_empty());
+    }
+
+    #[test]
+    fn net_path_routing_typechecks_and_keeps_entry_i32() {
+        let source = r#"
+            use cap.net;
+            fn main() -> i32 {
+                let l = net.bind();
+                net.listen(l);
+                let c = net.accept();
+                net.read(c);
+                let p = net.path(c);
+                if p == "/a" {
+                    net.write(c, 200, "path-a");
+                } else {
+                    net.write(c, 200, "path-other");
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert_eq!(typed.entry_return_const_i32, Some(0));
+    }
+
+    #[test]
+    fn unknown_dotted_call_is_a_type_error() {
+        let source = r#"
+            fn main() -> i32 {
+                fake.module.call();
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+    }
+
+    #[test]
+    fn process_spawn_string_command_typechecks() {
+        let source = r#"
+            use cap.proc;
+            fn main() -> i32 {
+                process.spawn("echo hi");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn process_spawn_non_string_reports_detail() {
+        let source = r#"
+            use cap.proc;
+            fn main() -> i32 {
+                process.spawn(1);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("process.spawn") && detail.contains("expected `str`")));
     }
 }

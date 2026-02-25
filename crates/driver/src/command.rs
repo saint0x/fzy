@@ -5730,6 +5730,50 @@ mod tests {
     }
 
     #[test]
+    fn run_spawn_executes_worker_side_effect() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-spawn-native-{suffix}.fzy"));
+        let out_path = std::env::temp_dir().join(format!("fozzylang-spawn-native-{suffix}.txt"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use cap.proc;\nuse cap.thread;\n\nfn worker() -> i32 {{\n    process.run(\"/bin/sh -lc 'echo spawned > {quoted_out}'\")\n    return 0\n}}\n\nfn main() -> i32 {{\n    spawn(worker)\n    return 0\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: None,
+            },
+            Format::Json,
+        )
+        .expect("run command should succeed for spawn worker side effect");
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(
+            out_path.exists(),
+            "spawned worker side effect output should exist at {}",
+            out_path.display()
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
     fn run_supports_same_function_name_in_sibling_modules() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
