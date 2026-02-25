@@ -754,12 +754,28 @@ impl Parser {
                         self.push_diag_here("expected `=>` in match arm");
                         return None;
                     }
+                    if self.at(&TokenKind::KwReturn) {
+                        self.push_diag_here(
+                            "`return` is not allowed directly in a match arm expression; return after `match`",
+                        );
+                        self.consume_until(&[TokenKind::Comma, TokenKind::RBrace]);
+                        let _ = self.consume(&TokenKind::Comma);
+                        continue;
+                    }
                     let value = self.parse_expr(0)?;
                     arms.push(MatchArm {
                         pattern,
                         guard,
                         value,
                     });
+                    let _ = self.consume(&TokenKind::Comma);
+                    continue;
+                }
+                if self.at(&TokenKind::KwReturn) {
+                    self.push_diag_here(
+                        "`return` is not allowed directly in a match arm expression; return after `match`",
+                    );
+                    self.consume_until(&[TokenKind::Comma, TokenKind::RBrace]);
                     let _ = self.consume(&TokenKind::Comma);
                     continue;
                 }
@@ -822,27 +838,54 @@ impl Parser {
     }
 
     fn parse_single_pattern(&mut self) -> Option<Pattern> {
-        let token = self.advance()?;
-        match token.kind {
-            TokenKind::Int(v) => Some(Pattern::Int(v)),
-            TokenKind::KwTrue => Some(Pattern::Bool(true)),
-            TokenKind::KwFalse => Some(Pattern::Bool(false)),
-            TokenKind::Ident(name) if name == "_" => Some(Pattern::Wildcard),
-            TokenKind::Ident(name) => {
-                if self.consume(&TokenKind::LParen) {
-                    let mut bindings = Vec::new();
-                    while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
-                        let binding = self.expect_ident("expected variant binding")?;
-                        bindings.push(binding);
-                        if !self.consume(&TokenKind::Comma) {
-                            break;
-                        }
-                    }
-                    let _ = self.consume(&TokenKind::RParen);
-                    Some(Pattern::Variant { name, bindings })
-                } else {
-                    Some(Pattern::Ident(name))
+        let token = self.peek()?.clone();
+        let expr = self.parse_expr(0)?;
+        match expr {
+            Expr::Int(v) => Some(Pattern::Int(v)),
+            Expr::Bool(v) => Some(Pattern::Bool(v)),
+            Expr::Ident(name) if name == "_" => Some(Pattern::Wildcard),
+            Expr::Ident(name) => {
+                if name.chars().next().is_some_and(char::is_uppercase) {
+                    self.push_diag_at(
+                        token.line,
+                        token.col,
+                        "capitalized bare pattern is not supported; use `Enum::Variant` or a lowercase binding",
+                    );
+                    return None;
                 }
+                Some(Pattern::Ident(name))
+            }
+            Expr::EnumInit {
+                enum_name,
+                variant,
+                payload,
+            } => {
+                let mut bindings = Vec::with_capacity(payload.len());
+                for value in payload {
+                    let Expr::Ident(name) = value else {
+                        self.push_diag_at(
+                            token.line,
+                            token.col,
+                            "enum variant pattern bindings must be identifiers",
+                        );
+                        return None;
+                    };
+                    bindings.push(name);
+                }
+                Some(Pattern::Variant {
+                    enum_name,
+                    variant,
+                    bindings,
+                })
+            }
+            Expr::Call { callee, .. } => {
+                let _ = callee;
+                self.push_diag_at(
+                    token.line,
+                    token.col,
+                    "unqualified enum variant pattern is not supported; use `Enum::Variant(...)`",
+                );
+                None
             }
             _ => {
                 self.push_diag_at(token.line, token.col, "invalid match pattern");
@@ -1159,12 +1202,13 @@ impl Parser {
         if !self.at(&TokenKind::LBrace) {
             return false;
         }
-        match (self.peek_n(1), self.peek_n(2)) {
+        match (self.peek_n(1), self.peek_n(2), self.peek_n(3)) {
             (
                 Some(Token {
                     kind: TokenKind::RBrace,
                     ..
                 }),
+                _,
                 _,
             ) => true,
             (
@@ -1176,7 +1220,14 @@ impl Parser {
                     kind: TokenKind::Colon,
                     ..
                 }),
-            ) => true,
+                next,
+            ) => !matches!(
+                next,
+                Some(Token {
+                    kind: TokenKind::Colon,
+                    ..
+                })
+            ),
             _ => false,
         }
     }
@@ -1824,7 +1875,7 @@ mod tests {
                 let m = Maybe::Some(px);
                 let _ = id<Point>(p);
                 match m {
-                    Some(v) => v,
+                    Maybe::Some(v) => v,
                     _ => 0,
                 };
                 return 0;
@@ -1869,6 +1920,62 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn rejects_unqualified_enum_variant_patterns() {
+        let source = r#"
+            enum Maybe { Some(i32), None }
+            fn main() -> i32 {
+                let m = Maybe::Some(1);
+                match m {
+                    Some(v) => v,
+                    _ => 0,
+                };
+                return 0;
+            }
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message
+                .contains("unqualified enum variant pattern is not supported")
+        }));
+    }
+
+    #[test]
+    fn rejects_capitalized_bare_patterns() {
+        let source = r#"
+            fn main() -> i32 {
+                match 1 {
+                    Value => Value,
+                    _ => 0,
+                };
+                return 0;
+            }
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message
+                .contains("capitalized bare pattern is not supported")
+        }));
+    }
+
+    #[test]
+    fn rejects_return_in_match_arm_expression() {
+        let source = r#"
+            fn main() -> i32 {
+                match 1 {
+                    1 => return 1,
+                    _ => 0,
+                };
+                return 0;
+            }
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics.iter().any(|diag| {
+            diag.message
+                .contains("`return` is not allowed directly in a match arm expression")
+        }));
     }
 
     #[test]

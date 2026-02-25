@@ -2217,8 +2217,13 @@ fn llvm_emit_match_pattern_pred(
             ));
             pred
         }
-        ast::Pattern::Variant { name, .. } => {
-            let tag = variant_tag(name);
+        ast::Pattern::Variant {
+            enum_name,
+            variant,
+            ..
+        } => {
+            let key = format!("{enum_name}::{variant}");
+            let tag = variant_tag(&key);
             let pred = ctx.value();
             ctx.code.push_str(&format!(
                 "  {pred} = icmp eq i32 {scrutinee_value}, {tag}\n"
@@ -2311,14 +2316,15 @@ fn llvm_emit_expr(
             first.unwrap_or_else(|| "0".to_string())
         }
         ast::Expr::EnumInit {
-            enum_name: _,
+            enum_name,
             variant,
             payload,
         } => {
             for value in payload {
                 let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
             }
-            variant_tag(variant).to_string()
+            let key = format!("{enum_name}::{variant}");
+            variant_tag(&key).to_string()
         }
         ast::Expr::TryCatch { try_expr, .. } => {
             llvm_emit_expr(try_expr, ctx, string_literal_ids, task_ref_ids)
@@ -4145,8 +4151,13 @@ fn clif_emit_match_pattern_pred(
             let rhs = builder.ins().iconst(scrutinee.ty, if *v { 1 } else { 0 });
             builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
         }
-        ast::Pattern::Variant { name, .. } => {
-            let rhs = builder.ins().iconst(scrutinee.ty, variant_tag(name) as i64);
+        ast::Pattern::Variant {
+            enum_name,
+            variant,
+            ..
+        } => {
+            let key = format!("{enum_name}::{variant}");
+            let rhs = builder.ins().iconst(scrutinee.ty, variant_tag(&key) as i64);
             builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
         }
         ast::Pattern::Or(patterns) => {
@@ -4328,7 +4339,9 @@ fn clif_emit_expr(
             })
         }
         ast::Expr::EnumInit {
-            variant, payload, ..
+            enum_name,
+            variant,
+            payload,
         } => {
             for value in payload {
                 let _ = clif_emit_expr(
@@ -4343,10 +4356,11 @@ fn clif_emit_expr(
                     task_ref_ids,
                 )?;
             }
+            let key = format!("{enum_name}::{variant}");
             ClifValue {
                 value: builder
                     .ins()
-                    .iconst(default_int_clif_type(), variant_tag(variant) as i64),
+                    .iconst(default_int_clif_type(), variant_tag(&key) as i64),
                 ty: default_int_clif_type(),
             }
         }

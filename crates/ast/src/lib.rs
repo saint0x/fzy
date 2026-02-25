@@ -195,7 +195,11 @@ pub enum Pattern {
     Int(i128),
     Bool(bool),
     Ident(String),
-    Variant { name: String, bindings: Vec<String> },
+    Variant {
+        enum_name: String,
+        variant: String,
+        bindings: Vec<String>,
+    },
     Or(Vec<Pattern>),
 }
 

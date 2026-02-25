@@ -7716,6 +7716,12 @@ mod tests {
             "variant-resolution",
         );
         assert!(variant.contains("has no variant `Err`"));
+
+        let unqualified_pattern = run_check_text(
+            "enum Maybe { Some(i32), None }\nfn main() -> i32 {\n    let m = Maybe::Some(1)\n    match m {\n        Some(v) => v,\n        _ => 0,\n    }\n}\n",
+            "variant-pattern-qualification",
+        );
+        assert!(unqualified_pattern.contains("unqualified enum variant pattern"));
     }
 
     #[test]

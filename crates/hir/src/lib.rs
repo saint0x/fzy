@@ -70,7 +70,7 @@ enum Value {
         fields: BTreeMap<String, Value>,
     },
     Enum {
-        _enum_name: String,
+        enum_name: String,
         variant: String,
         _payload: Vec<Value>,
     },
@@ -2670,6 +2670,7 @@ fn type_check_stmt(
                 check_pattern_compatibility(
                     &arm.pattern,
                     scrutinee_ty.as_ref(),
+                    enum_defs,
                     errors,
                     type_error_details,
                 );
@@ -3727,18 +3728,79 @@ fn runtime_default_value(ty: &Type) -> Option<Value> {
 fn check_pattern_compatibility(
     pattern: &ast::Pattern,
     scrutinee_ty: Option<&Type>,
+    enum_defs: &HashMap<String, ast::Enum>,
     errors: &mut usize,
     type_error_details: &mut Vec<String>,
 ) {
     match (pattern, scrutinee_ty) {
         (ast::Pattern::Int(_), Some(ty)) if is_integer_type(ty) => {}
         (ast::Pattern::Bool(_), Some(Type::Bool)) => {}
-        (ast::Pattern::Wildcard, _)
-        | (ast::Pattern::Ident(_), _)
-        | (ast::Pattern::Variant { .. }, _) => {}
+        (ast::Pattern::Wildcard, _) | (ast::Pattern::Ident(_), _) => {}
+        (
+            ast::Pattern::Variant {
+                enum_name,
+                variant,
+                bindings,
+            },
+            Some(Type::Named { name, .. }),
+        ) => {
+            if name != enum_name {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!(
+                        "pattern `{enum_name}::{variant}` does not match scrutinee enum `{name}`"
+                    ),
+                );
+                return;
+            }
+            let Some(enum_def) = enum_defs.get(enum_name) else {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("match pattern references unknown enum `{enum_name}`"),
+                );
+                return;
+            };
+            let Some(found_variant) = enum_def
+                .variants
+                .iter()
+                .find(|candidate| candidate.name == *variant)
+            else {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("enum `{enum_name}` has no variant `{variant}`"),
+                );
+                return;
+            };
+            if found_variant.payload.len() != bindings.len() {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!(
+                        "pattern `{enum_name}::{variant}` binding arity mismatch: expected {}, got {}",
+                        found_variant.payload.len(),
+                        bindings.len()
+                    ),
+                );
+            }
+        }
+        (ast::Pattern::Variant { enum_name, variant, .. }, Some(actual)) => record_type_error(
+            errors,
+            type_error_details,
+            format!("pattern `{enum_name}::{variant}` expects enum scrutinee, got `{actual}`"),
+        ),
+        (ast::Pattern::Variant { enum_name, variant, .. }, None) => record_type_error(
+            errors,
+            type_error_details,
+            format!(
+                "pattern `{enum_name}::{variant}` could not be validated because scrutinee type is unknown"
+            ),
+        ),
         (ast::Pattern::Or(patterns), ty) => {
             for pattern in patterns {
-                check_pattern_compatibility(pattern, ty, errors, type_error_details);
+                check_pattern_compatibility(pattern, ty, enum_defs, errors, type_error_details);
             }
         }
         (ast::Pattern::Int(_), Some(actual)) => record_type_error(
@@ -3989,7 +4051,7 @@ fn eval_expr<'a>(
                 values.push(eval_expr(value, env, functions)?);
             }
             Some(Value::Enum {
-                _enum_name: enum_name.clone(),
+                enum_name: enum_name.clone(),
                 variant: variant.clone(),
                 _payload: values,
             })
@@ -4041,7 +4103,18 @@ fn pattern_matches(pattern: &ast::Pattern, value: &Value) -> bool {
         (ast::Pattern::Int(a), Value::I32(b)) => i128::from(*b) == *a,
         (ast::Pattern::Bool(a), Value::Bool(b)) => a == b,
         (ast::Pattern::Ident(_), _) => true,
-        (ast::Pattern::Variant { name, .. }, Value::Enum { variant, .. }) => name == variant,
+        (
+            ast::Pattern::Variant {
+                enum_name,
+                variant,
+                ..
+            },
+            Value::Enum {
+                enum_name: value_enum_name,
+                variant: value_variant,
+                ..
+            },
+        ) => enum_name == value_enum_name && variant == value_variant,
         (ast::Pattern::Variant { .. }, _) => false,
         (ast::Pattern::Or(patterns), value) => patterns.iter().any(|p| pattern_matches(p, value)),
         _ => false,
@@ -4301,6 +4374,48 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.match_unreachable_arms, 2);
         assert_eq!(typed.match_duplicate_catchall_arms, 1);
+    }
+
+    #[test]
+    fn qualified_variant_patterns_typecheck_against_scrutinee_enum() {
+        let source = r#"
+            enum Maybe { Some(i32), None }
+            fn main() -> i32 {
+                let m = Maybe::Some(7);
+                match m {
+                    Maybe::Some(v) => 1,
+                    Maybe::None => 0,
+                    _ => 0,
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn qualified_variant_pattern_rejects_wrong_enum_name() {
+        let source = r#"
+            enum Left { A(i32) }
+            enum Right { A(i32) }
+            fn main() -> i32 {
+                let v = Left::A(1);
+                match v {
+                    Right::A(x) => x,
+                    _ => 0,
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("does not match scrutinee enum")));
     }
 
     #[test]

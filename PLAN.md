@@ -199,6 +199,33 @@ Production-readiness objective:
 - [✅] Align C type mapping for pointer-sized integers to `size_t`/`ssize_t` semantics where applicable, not fixed-width aliases.
 - [✅] Extend ABI manifest identity with hard build/target identity fields (target triple, data-layout hash, compiler/toolchain identity hash).
 
+### Enum/Match Semantics Productionization (Type-Safe Idiomatic Core)
+- [✅] Standardize canonical enum variant syntax to `Type::Variant` for construction, comparisons, and pattern matching in production code/documentation.
+- [✅] Support ergonomic compatibility mode for bare-variant patterns only if it can be unambiguous; otherwise reject with targeted fix-it toward `Type::Variant`.
+- [✅] Make parser and verifier semantics consistent for enum variants in all contexts (expression, pattern, guard, constructor payload forms).
+- [✅] Eliminate pattern fallback ambiguity where unknown variant tokens are interpreted as catch-all/binding arms.
+- [✅] Ensure match-arm reachability/exhaustiveness runs only after successful variant resolution, preventing false duplicate-catch-all cascades.
+- [✅] Define and enforce whether `return` is allowed in match arms; either implement fully in parser/lowering or reject with explicit diagnostic and fix guidance.
+- [✅] Add full variant-resolution diagnostics family:
+- [✅] unknown variant on known enum type
+- [✅] unqualified variant hint (`did you mean Enum::Variant?`)
+- [✅] binding-vs-variant ambiguity hint
+- [✅] unreachable-arm diagnostics only after semantic resolution
+- [✅] Harden lowering/codegen for enum tags and payload extraction:
+- [✅] deterministic/stable variant tag mapping
+- [✅] payload binding correctness in nested matches
+- [✅] backend parity for Cranelift/LLVM enum-match lowering
+- [✅] Add conformance suites for enum/match semantics:
+- [✅] parser tests (`Type::Variant`, payload constructors, pattern forms)
+- [✅] verifier tests (name resolution, ambiguity rejection, exhaustiveness)
+- [✅] end-to-end language tests covering nested/guarded matches and early-return idioms
+- [✅] Add production gates for enum/match semantics:
+- [✅] `fz check`, `fz build` (cranelift + llvm), `fz test --det --strict`
+- [✅] trace record/verify/replay/ci artifact lifecycle for enum-heavy scenarios
+- [✅] host-backed deterministic/interop checks where feasible
+- [✅] Upgrade all exhibition/smoke/example repos to canonical `Type::Variant` idioms once compiler semantics are stabilized.
+- [✅] Publish and freeze enum/match style guide in docs with explicit "idiomatic Fozzy" guidance and migration notes.
+
 ### Memory Safety Hardening Depth
 - [✅] Strengthen alias/lifetime/provenance verification beyond current heuristic/intra-procedural baseline.
 - [✅] Add deeper async suspension borrow-safety proofs and regressions for borrow-across-`await` edge cases.
