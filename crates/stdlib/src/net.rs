@@ -441,10 +441,7 @@ impl NetBackend for HostNet {
         let id = self.new_socket_id();
         self.sockets.insert(
             id,
-            (
-                HostSocket::Listener(socket),
-                SocketOwnership::RuntimeOwned,
-            ),
+            (HostSocket::Listener(socket), SocketOwnership::RuntimeOwned),
         );
         self.decisions.push(NetDecision::Bind {
             addr: addr.to_string(),
@@ -1478,7 +1475,11 @@ impl HttpResponse {
             out.extend_from_slice(
                 format!(
                     "Connection: {}\r\n",
-                    if self.keep_alive { "keep-alive" } else { "close" }
+                    if self.keep_alive {
+                        "keep-alive"
+                    } else {
+                        "close"
+                    }
                 )
                 .as_bytes(),
             );
@@ -1672,8 +1673,7 @@ fn is_http_request_complete(raw: &[u8], limits: &HttpServerLimits) -> Result<boo
             let value = value.trim();
             if name == "content-length" {
                 content_length = value.parse::<usize>().ok();
-            } else if name == "transfer-encoding"
-                && value.to_ascii_lowercase().contains("chunked")
+            } else if name == "transfer-encoding" && value.to_ascii_lowercase().contains("chunked")
             {
                 chunked = true;
             }

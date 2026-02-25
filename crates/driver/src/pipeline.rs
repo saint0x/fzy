@@ -3104,18 +3104,10 @@ fn emit_native_libraries_cranelift(
             .get(&function.name)
             .ok_or_else(|| anyhow!("missing signature for `{}`", function.name))?;
         for param_ty in &signature.params {
-            context
-                .func
-                .signature
-                .params
-                .push(AbiParam::new(*param_ty));
+            context.func.signature.params.push(AbiParam::new(*param_ty));
         }
         if let Some(ret_ty) = signature.ret {
-            context
-                .func
-                .signature
-                .returns
-                .push(AbiParam::new(ret_ty));
+            context.func.signature.returns.push(AbiParam::new(ret_ty));
         }
 
         let mut function_builder_context = FunctionBuilderContext::new();
@@ -3128,11 +3120,10 @@ fn emit_native_libraries_cranelift(
         let mut locals = HashMap::<String, LocalBinding>::new();
         for (index, param) in function.params.iter().enumerate() {
             let var = Variable::from_u32(index as u32);
-            let param_ty = signature
-                .params
-                .get(index)
-                .copied()
-                .ok_or_else(|| anyhow!("missing param {} type for `{}`", index, function.name))?;
+            let param_ty =
+                signature.params.get(index).copied().ok_or_else(|| {
+                    anyhow!("missing param {} type for `{}`", index, function.name)
+                })?;
             builder.declare_var(var, param_ty);
             let value = builder.block_params(entry)[index];
             builder.def_var(var, value);
@@ -3590,18 +3581,10 @@ fn emit_native_artifact_cranelift(
             .get(&function.name)
             .ok_or_else(|| anyhow!("missing signature for `{}`", function.name))?;
         for param_ty in &signature.params {
-            context
-                .func
-                .signature
-                .params
-                .push(AbiParam::new(*param_ty));
+            context.func.signature.params.push(AbiParam::new(*param_ty));
         }
         if let Some(ret_ty) = signature.ret {
-            context
-                .func
-                .signature
-                .returns
-                .push(AbiParam::new(ret_ty));
+            context.func.signature.returns.push(AbiParam::new(ret_ty));
         }
 
         let mut function_builder_context = FunctionBuilderContext::new();
@@ -3614,11 +3597,10 @@ fn emit_native_artifact_cranelift(
         let mut locals = HashMap::<String, LocalBinding>::new();
         for (index, param) in function.params.iter().enumerate() {
             let var = Variable::from_u32(index as u32);
-            let param_ty = signature
-                .params
-                .get(index)
-                .copied()
-                .ok_or_else(|| anyhow!("missing param {} type for `{}`", index, function.name))?;
+            let param_ty =
+                signature.params.get(index).copied().ok_or_else(|| {
+                    anyhow!("missing param {} type for `{}`", index, function.name)
+                })?;
             builder.declare_var(var, param_ty);
             let value = builder.block_params(entry)[index];
             builder.def_var(var, value);
@@ -4045,9 +4027,7 @@ fn clif_emit_match_pattern_pred(
             builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
         }
         ast::Pattern::Variant { name, .. } => {
-            let rhs = builder
-                .ins()
-                .iconst(scrutinee.ty, variant_tag(name) as i64);
+            let rhs = builder.ins().iconst(scrutinee.ty, variant_tag(name) as i64);
             builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
         }
         ast::Pattern::Or(patterns) => {
@@ -4116,7 +4096,9 @@ fn clif_emit_expr(
                 }
             } else if let Some(task_ref) = task_ref_ids.get(name).copied() {
                 ClifValue {
-                    value: builder.ins().iconst(default_int_clif_type(), task_ref as i64),
+                    value: builder
+                        .ins()
+                        .iconst(default_int_clif_type(), task_ref as i64),
                     ty: default_int_clif_type(),
                 }
             } else {
@@ -4158,7 +4140,9 @@ fn clif_emit_expr(
                 } else if let Some(task_ref_name) = expr_task_ref_name(expr) {
                     if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
                         ClifValue {
-                            value: builder.ins().iconst(default_int_clif_type(), task_ref as i64),
+                            value: builder
+                                .ins()
+                                .iconst(default_int_clif_type(), task_ref as i64),
                             ty: default_int_clif_type(),
                         }
                     } else {
@@ -4366,14 +4350,17 @@ fn clif_emit_expr(
                 }
                 ast::BinaryOp::Lt => {
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    let pred = builder.ins().icmp(IntCC::SignedLessThan, lhs.value, rhs.value);
+                    let pred = builder
+                        .ins()
+                        .icmp(IntCC::SignedLessThan, lhs.value, rhs.value);
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Lte => {
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    let pred = builder
-                        .ins()
-                        .icmp(IntCC::SignedLessThanOrEqual, lhs.value, rhs.value);
+                    let pred =
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedLessThanOrEqual, lhs.value, rhs.value);
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Gt => {
@@ -4385,9 +4372,10 @@ fn clif_emit_expr(
                 }
                 ast::BinaryOp::Gte => {
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    let pred = builder
-                        .ins()
-                        .icmp(IntCC::SignedGreaterThanOrEqual, lhs.value, rhs.value);
+                    let pred =
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedGreaterThanOrEqual, lhs.value, rhs.value);
                     bool_to_i8(builder, pred)
                 }
             }

@@ -149,6 +149,10 @@ pub enum Command {
     Ci {
         trace: PathBuf,
     },
+    TraceNative {
+        trace: PathBuf,
+        output: Option<PathBuf>,
+    },
     Headers {
         path: PathBuf,
         output: Option<PathBuf>,
@@ -600,26 +604,12 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 passthrough_fozzy("explore", &target, format)
             }
         }
-        Command::Replay { trace } => {
-            if is_native_trace_or_manifest(&trace) {
-                native_replay(&trace, format)
-            } else {
-                replay_like("replay", &trace, format)
-            }
-        }
-        Command::Shrink { trace } => {
-            if is_native_trace_or_manifest(&trace) {
-                native_shrink(&trace, format)
-            } else {
-                replay_like("shrink", &trace, format)
-            }
-        }
-        Command::Ci { trace } => {
-            if is_native_trace_or_manifest(&trace) {
-                native_ci(&trace, format)
-            } else {
-                replay_like("ci", &trace, format)
-            }
+        Command::Replay { trace } => replay_like("replay", &trace, format),
+        Command::Shrink { trace } => replay_like("shrink", &trace, format),
+        Command::Ci { trace } => replay_like("ci", &trace, format),
+        Command::TraceNative { trace, output } => {
+            let converted = convert_fozzy_trace_to_native(&trace, output.as_deref())?;
+            Ok(render_trace_native_artifacts(format, converted))
         }
         Command::Headers { path, output } => {
             let generated = generate_c_headers(&path, output.as_deref())?;
@@ -4625,25 +4615,15 @@ fn replay_like(command: &str, target: &Path, format: Format) -> Result<String> {
 
 #[derive(Debug, Clone, Deserialize)]
 struct NativeTracePayloadOwned {
-    #[serde(rename = "schemaVersion")]
-    schema_version: String,
-    capability: String,
-    scheduler: String,
-    seed: u64,
     #[serde(rename = "executionOrder")]
     execution_order: Vec<u64>,
     #[serde(rename = "asyncSchedule")]
     async_schedule: Vec<u64>,
     #[serde(rename = "rpcFrames")]
     rpc_frames: Vec<RpcFrameEventOwned>,
-    events: Vec<serde_json::Value>,
-    #[serde(rename = "runtimeEvents", default)]
-    runtime_events: Vec<RuntimeSemanticEvent>,
-    #[serde(rename = "causalLinks", default)]
-    causal_links: Vec<CausalLink>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct RpcFrameEventOwned {
     #[serde(rename = "event")]
     kind: String,
@@ -4698,129 +4678,210 @@ fn load_native_trace(target: &Path) -> Result<(PathBuf, NativeTracePayloadOwned)
     Ok((trace_path, trace))
 }
 
-fn native_replay(target: &Path, format: Format) -> Result<String> {
-    let (trace_path, trace) = load_native_trace(target)?;
-    let rpc_frames = trace
-        .rpc_frames
-        .iter()
-        .map(|frame| RpcFrameEvent {
-            kind: match frame.kind.as_str() {
-                "rpc_send" => "rpc_send",
-                "rpc_recv" => "rpc_recv",
-                "rpc_deadline" => "rpc_deadline",
-                "rpc_cancel" => "rpc_cancel",
-                _ => "rpc_recv",
-            },
-            method: frame.method.clone(),
-            task_id: frame.task_id,
-        })
-        .collect::<Vec<_>>();
-    let rpc_validation = validate_rpc_frames(&rpc_frames);
-    let errors = rpc_validation
-        .iter()
-        .filter(|finding| matches!(finding.severity, RpcValidationSeverity::Error))
-        .count();
-    if trace.execution_order.is_empty() {
-        bail!(
-            "native replay failed for {}: missing thread scheduling decisions",
-            trace_path.display()
-        );
-    }
-    if errors > 0 {
-        bail!(
-            "native replay failed for {}: {} rpc validation error(s)",
-            trace_path.display(),
-            errors
-        );
-    }
-    let task_set = trace
-        .execution_order
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    let invalid_links = trace
-        .causal_links
-        .iter()
-        .filter(|link| !task_set.contains(&link.from) || !task_set.contains(&link.to))
-        .count();
-    if invalid_links > 0 {
-        bail!(
-            "native replay failed for {}: {} invalid causal link(s)",
-            trace_path.display(),
-            invalid_links
-        );
-    }
-    let native_decisions = build_native_decision_stream(&trace);
-    let decision_count = native_decisions.len();
-    match format {
-        Format::Text => Ok(format!(
-            "native replay pass trace={} decisions={} thread={} async={} rpc={}",
-            trace_path.display(),
-            decision_count,
-            trace.execution_order.len(),
-            trace.async_schedule.len(),
-            trace.rpc_frames.len()
-        )),
-        Format::Json => Ok(serde_json::json!({
-            "engine": "fozzylang-native",
-            "status": "pass",
-            "trace": trace_path.display().to_string(),
-            "schemaVersion": trace.schema_version,
-            "capability": trace.capability,
-            "scheduler": trace.scheduler,
-            "seed": trace.seed,
-            "decisionCounts": {
-                "thread": trace.execution_order.len(),
-                "async": trace.async_schedule.len(),
-                "rpc": trace.rpc_frames.len(),
-                "total": decision_count,
-            },
-            "decisions": native_decisions,
-            "events": trace.events.len(),
-            "runtimeEvents": trace.runtime_events.len(),
-            "causalLinks": trace.causal_links.len(),
-            "rpcValidation": rpc_validation
-                .iter()
-                .map(rpc_validation_json)
-                .collect::<Vec<_>>(),
-        })
-        .to_string()),
-    }
+#[derive(Debug, Clone)]
+struct TraceNativeArtifacts {
+    trace_path: PathBuf,
+    manifest_path: PathBuf,
+    decision_count: usize,
+    event_count: usize,
+    rpc_frame_count: usize,
+    seed: u64,
 }
 
-fn build_native_decision_stream(trace: &NativeTracePayloadOwned) -> Vec<serde_json::Value> {
-    let mut decisions = Vec::with_capacity(
-        trace.execution_order.len() + trace.async_schedule.len() + trace.rpc_frames.len(),
-    );
-    for (step, task_id) in trace.execution_order.iter().enumerate() {
-        decisions.push(serde_json::json!({
-            "step": step,
-            "kind": "thread.schedule",
-            "taskId": task_id,
-            "capability": "thread",
-        }));
+fn convert_fozzy_trace_to_native(
+    target: &Path,
+    output: Option<&Path>,
+) -> Result<TraceNativeArtifacts> {
+    ensure_exists(target)?;
+    let source = std::fs::read_to_string(target)
+        .with_context(|| format!("failed reading fozzy trace: {}", target.display()))?;
+    let payload: serde_json::Value = serde_json::from_str(&source)
+        .with_context(|| format!("failed parsing fozzy trace: {}", target.display()))?;
+
+    let format_value = payload.get("format").and_then(|value| value.as_str());
+    if format_value != Some("fozzy-trace") {
+        bail!(
+            "unsupported trace format in {}: expected `fozzy-trace`",
+            target.display()
+        );
     }
-    let base = decisions.len();
-    for (index, task_id) in trace.async_schedule.iter().enumerate() {
-        decisions.push(serde_json::json!({
-            "step": base + index,
-            "kind": "async.schedule",
-            "taskId": task_id,
-            "capability": "thread",
-        }));
+
+    let decisions = payload
+        .get("decisions")
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| {
+            anyhow!(
+                "fozzy trace missing `decisions` array: {}",
+                target.display()
+            )
+        })?;
+    let events = payload
+        .get("events")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let seed = payload
+        .get("summary")
+        .and_then(|summary| summary.get("identity"))
+        .and_then(|identity| identity.get("seed"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1);
+
+    let mut execution_order = Vec::new();
+    let mut async_schedule = Vec::new();
+    let mut rpc_frames = Vec::new();
+    let mut capability = "thread";
+
+    for decision in decisions {
+        let Some(kind) = decision.get("kind").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        match kind {
+            "scheduler_pick" => {
+                let Some(task_id) = decision.get("task_id").and_then(|value| value.as_u64()) else {
+                    continue;
+                };
+                execution_order.push(task_id);
+                let label = decision
+                    .get("label")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if label.contains("async") || label.contains("await") {
+                    async_schedule.push(task_id);
+                }
+                if label.contains("rpc") {
+                    capability = "net";
+                }
+            }
+            "rpc_send" | "rpc_recv" | "rpc_deadline" | "rpc_cancel" => {
+                capability = "net";
+                rpc_frames.push(RpcFrameEventOwned {
+                    kind: kind.to_string(),
+                    method: decision
+                        .get("method")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    task_id: decision
+                        .get("task_id")
+                        .and_then(|value| value.as_u64())
+                        .unwrap_or(0),
+                });
+            }
+            "rpc.frame" => {
+                capability = "net";
+                let event = decision
+                    .get("event")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("rpc_recv");
+                let normalized = match event {
+                    "rpc_send" | "rpc_recv" | "rpc_deadline" | "rpc_cancel" => event,
+                    _ => "rpc_recv",
+                };
+                rpc_frames.push(RpcFrameEventOwned {
+                    kind: normalized.to_string(),
+                    method: decision
+                        .get("method")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("unknown")
+                        .to_string(),
+                    task_id: decision
+                        .get("task_id")
+                        .and_then(|value| value.as_u64())
+                        .or_else(|| decision.get("taskId").and_then(|value| value.as_u64()))
+                        .unwrap_or(0),
+                });
+            }
+            "async.schedule" => {
+                if let Some(task_id) = decision
+                    .get("task_id")
+                    .and_then(|value| value.as_u64())
+                    .or_else(|| decision.get("taskId").and_then(|value| value.as_u64()))
+                {
+                    async_schedule.push(task_id);
+                }
+            }
+            _ => {}
+        }
     }
-    let base = decisions.len();
-    for (index, frame) in trace.rpc_frames.iter().enumerate() {
-        decisions.push(serde_json::json!({
-            "step": base + index,
-            "kind": "rpc.frame",
-            "event": frame.kind,
-            "method": frame.method,
-            "taskId": frame.task_id,
-            "capability": "net",
-        }));
+
+    if execution_order.is_empty() {
+        execution_order.push(0);
     }
-    decisions
+
+    let trace_path = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| default_native_trace_path(target));
+    if let Some(parent) = trace_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed creating native trace output directory: {}",
+                parent.display()
+            )
+        })?;
+    }
+    let manifest_path = default_native_manifest_path(&trace_path);
+
+    let native_trace = serde_json::json!({
+        "schemaVersion": "fozzylang.thread_trace.v0",
+        "capability": capability,
+        "scheduler": "fifo",
+        "seed": seed,
+        "executionOrder": execution_order,
+        "asyncSchedule": async_schedule,
+        "rpcFrames": rpc_frames,
+        "events": events,
+        "runtimeEvents": [],
+        "causalLinks": [],
+    });
+    std::fs::write(&trace_path, serde_json::to_vec_pretty(&native_trace)?)
+        .with_context(|| format!("failed writing native trace: {}", trace_path.display()))?;
+
+    let manifest = serde_json::json!({
+        "schemaVersion": "fozzylang.artifacts.v0",
+        "trace": trace_path.display().to_string(),
+        "goalTrace": target.display().to_string(),
+    });
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&manifest)?).with_context(|| {
+        format!(
+            "failed writing native trace manifest: {}",
+            manifest_path.display()
+        )
+    })?;
+
+    Ok(TraceNativeArtifacts {
+        trace_path,
+        manifest_path,
+        decision_count: decisions.len(),
+        event_count: events.len(),
+        rpc_frame_count: rpc_frames.len(),
+        seed,
+    })
+}
+
+fn default_native_trace_path(target: &Path) -> PathBuf {
+    let base_dir = target.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = target
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("trace.fozzy");
+    let stem = file_name
+        .strip_suffix(".fozzy")
+        .or_else(|| file_name.strip_suffix(".fozzy.json"))
+        .unwrap_or(file_name);
+    base_dir.join(format!("{stem}.trace.json"))
+}
+
+fn default_native_manifest_path(trace_path: &Path) -> PathBuf {
+    let stem = trace_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("trace");
+    trace_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!("{stem}.manifest.json"))
 }
 
 fn native_explore(target: &Path, format: Format) -> Result<String> {
@@ -4858,103 +4919,6 @@ fn native_explore(target: &Path, format: Format) -> Result<String> {
             trace.rpc_frames.len()
         )),
         Format::Json => Ok(payload.to_string()),
-    }
-}
-
-fn native_shrink(target: &Path, format: Format) -> Result<String> {
-    let trace_path = resolve_native_trace_target(target)?;
-    let stem = trace_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("trace");
-    let shrink_path = trace_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!("{stem}.shrink.json"));
-    if shrink_path.exists() {
-        let shrink = std::fs::read_to_string(&shrink_path).with_context(|| {
-            format!(
-                "failed reading native shrink artifact: {}",
-                shrink_path.display()
-            )
-        })?;
-        return match format {
-            Format::Text => Ok(format!("native shrink artifact={}", shrink_path.display())),
-            Format::Json => Ok(shrink),
-        };
-    }
-    let (_, trace) = load_native_trace(target)?;
-    let rpc_frames = trace
-        .rpc_frames
-        .iter()
-        .map(|frame| RpcFrameEvent {
-            kind: match frame.kind.as_str() {
-                "rpc_send" => "rpc_send",
-                "rpc_recv" => "rpc_recv",
-                "rpc_deadline" => "rpc_deadline",
-                "rpc_cancel" => "rpc_cancel",
-                _ => "rpc_recv",
-            },
-            method: frame.method.clone(),
-            task_id: frame.task_id,
-        })
-        .collect::<Vec<_>>();
-    let payload = serde_json::json!({
-        "schemaVersion": "fozzylang.native_shrink.v0",
-        "trace": trace_path.display().to_string(),
-        "minimalRpcRepro": minimize_rpc_failure_frames(&rpc_frames),
-        "focus": classify_failure_classes(&rpc_frames, &trace.async_schedule, &trace.execution_order),
-    });
-    match format {
-        Format::Text => Ok(format!(
-            "native shrink synthesized for trace={}",
-            trace_path.display()
-        )),
-        Format::Json => Ok(payload.to_string()),
-    }
-}
-
-fn native_ci(target: &Path, format: Format) -> Result<String> {
-    let (trace_path, trace) = load_native_trace(target)?;
-    let replay = native_replay(target, Format::Json)?;
-    let replay_json: serde_json::Value = serde_json::from_str(&replay).with_context(|| {
-        format!(
-            "failed parsing native replay payload for {}",
-            trace_path.display()
-        )
-    })?;
-    let has_thread = !trace.execution_order.is_empty();
-    let has_async_model = !trace.async_schedule.is_empty();
-    let has_rpc_model = !trace.rpc_frames.is_empty();
-    let checks = vec![
-        serde_json::json!({"name":"thread_decisions", "ok": has_thread, "detail": format!("thread.schedule={}", trace.execution_order.len())}),
-        serde_json::json!({"name":"async_schedule_model", "ok": has_async_model || trace.async_schedule.is_empty(), "detail": format!("async.schedule={}", trace.async_schedule.len())}),
-        serde_json::json!({"name":"rpc_frame_model", "ok": has_rpc_model || trace.rpc_frames.is_empty(), "detail": format!("rpc.frame={}", trace.rpc_frames.len())}),
-        serde_json::json!({"name":"native_replay", "ok": replay_json.get("status").and_then(|v| v.as_str()) == Some("pass"), "detail": "replay passed"}),
-    ];
-    let ok = checks.iter().all(|check| {
-        check
-            .get("ok")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-    });
-    if !ok {
-        bail!("native ci failed for {}", trace_path.display());
-    }
-    match format {
-        Format::Text => Ok(format!(
-            "native ci pass trace={} checks={}",
-            trace_path.display(),
-            checks.len()
-        )),
-        Format::Json => Ok(serde_json::json!({
-            "schemaVersion": "fozzylang.native_ci.v0",
-            "ok": true,
-            "engine": "fozzylang-native",
-            "trace": trace_path.display().to_string(),
-            "checks": checks,
-        })
-        .to_string()),
     }
 }
 
@@ -5214,6 +5178,29 @@ fn render_rpc_artifacts(format: Format, artifacts: RpcArtifacts) -> String {
             "client": artifacts.client_stub.display().to_string(),
             "server": artifacts.server_stub.display().to_string(),
             "methods": artifacts.methods,
+        })
+        .to_string(),
+    }
+}
+
+fn render_trace_native_artifacts(format: Format, artifacts: TraceNativeArtifacts) -> String {
+    match format {
+        Format::Text => format!(
+            "generated native_trace={} manifest={} decisions={} events={} rpc_frames={} seed={}",
+            artifacts.trace_path.display(),
+            artifacts.manifest_path.display(),
+            artifacts.decision_count,
+            artifacts.event_count,
+            artifacts.rpc_frame_count,
+            artifacts.seed
+        ),
+        Format::Json => serde_json::json!({
+            "trace": artifacts.trace_path.display().to_string(),
+            "manifest": artifacts.manifest_path.display().to_string(),
+            "decisions": artifacts.decision_count,
+            "events": artifacts.event_count,
+            "rpcFrames": artifacts.rpc_frame_count,
+            "seed": artifacts.seed,
         })
         .to_string(),
     }
@@ -5592,7 +5579,13 @@ fn abi_identity_fields() -> (String, String, String) {
     let target_triple = std::env::var("TARGET")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| format!("{}-unknown-{}", std::env::consts::ARCH, std::env::consts::OS));
+        .unwrap_or_else(|| {
+            format!(
+                "{}-unknown-{}",
+                std::env::consts::ARCH,
+                std::env::consts::OS
+            )
+        });
     let data_layout_descriptor = format!(
         "target={target_triple};endian={};ptr_width={};usize={};usize_align={}",
         if cfg!(target_endian = "little") {
@@ -7280,7 +7273,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_command_uses_native_engine_for_native_trace() {
+    fn replay_command_routes_native_trace_through_goal_bridge() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -7306,17 +7299,14 @@ mod tests {
         )
         .expect("trace should be written");
 
-        let output = run(
+        let error = run(
             Command::Replay {
                 trace: trace.clone(),
             },
-            Format::Json,
+            Format::Text,
         )
-        .expect("replay should succeed");
-        assert!(output.contains("\"engine\":\"fozzylang-native\""));
-        assert!(output.contains("\"kind\":\"thread.schedule\""));
-        assert!(output.contains("\"kind\":\"async.schedule\""));
-        assert!(output.contains("\"kind\":\"rpc.frame\""));
+        .expect_err("replay should require a goal-trace bridge for native traces");
+        assert!(error.to_string().contains(".manifest.json"));
 
         let _ = std::fs::remove_file(trace);
     }
@@ -7371,7 +7361,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_command_fails_for_invalid_native_rpc_sequence() {
+    fn ci_command_routes_native_trace_through_goal_bridge() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -7402,14 +7392,14 @@ mod tests {
             },
             Format::Text,
         )
-        .expect_err("ci should fail");
-        assert!(error.to_string().contains("native replay failed"));
+        .expect_err("ci should require a goal-trace bridge for native traces");
+        assert!(error.to_string().contains(".manifest.json"));
 
         let _ = std::fs::remove_file(trace);
     }
 
     #[test]
-    fn shrink_command_uses_native_engine_for_native_trace() {
+    fn shrink_command_routes_native_trace_through_goal_bridge() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -7435,15 +7425,14 @@ mod tests {
         )
         .expect("trace should be written");
 
-        let output = run(
+        let error = run(
             Command::Shrink {
                 trace: trace.clone(),
             },
-            Format::Json,
+            Format::Text,
         )
-        .expect("shrink should succeed");
-        assert!(output.contains("\"schemaVersion\":\"fozzylang.native_shrink.v0\""));
-        assert!(output.contains("\"minimalRpcRepro\""));
+        .expect_err("shrink should require a goal-trace bridge for native traces");
+        assert!(error.to_string().contains(".manifest.json"));
 
         let _ = std::fs::remove_file(trace);
     }
@@ -7507,6 +7496,56 @@ mod tests {
 
         let resolved = resolve_replay_target(&manifest).expect("target should resolve");
         assert_eq!(resolved, goal_trace);
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn trace_native_command_converts_fozzy_trace_to_native_schema() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!("fozzylang-trace-native-{suffix}"));
+        std::fs::create_dir_all(&base).expect("base dir should be created");
+        let goal_trace = base.join("goal.fozzy");
+        std::fs::write(
+            &goal_trace,
+            serde_json::json!({
+                "format": "fozzy-trace",
+                "version": 3,
+                "decisions": [
+                    {"kind":"scheduler_pick","task_id":1,"label":"rpc_send"},
+                    {"kind":"rpc_send","task_id":1,"method":"Ping"}
+                ],
+                "events": [{"name":"ping","time_ms":0,"fields":{}}],
+                "summary": {"identity":{"seed":99}}
+            })
+            .to_string(),
+        )
+        .expect("goal trace should be written");
+
+        let output = run(
+            Command::TraceNative {
+                trace: goal_trace.clone(),
+                output: None,
+            },
+            Format::Json,
+        )
+        .expect("trace-native should succeed");
+        assert!(output.contains("\"seed\":99"));
+        assert!(output.contains("\"rpcFrames\":1"));
+
+        let native_trace = base.join("goal.trace.json");
+        let native_manifest = base.join("goal.trace.manifest.json");
+        let trace_text =
+            std::fs::read_to_string(&native_trace).expect("native trace should be written");
+        assert!(trace_text.contains("\"schemaVersion\": \"fozzylang.thread_trace.v0\""));
+        assert!(trace_text.contains("\"event\": \"rpc_send\""));
+        let manifest_text =
+            std::fs::read_to_string(&native_manifest).expect("native manifest should be written");
+        assert!(manifest_text.contains("\"goalTrace\""));
+        assert!(manifest_text.contains("goal.fozzy"));
 
         let _ = std::fs::remove_dir_all(base);
     }

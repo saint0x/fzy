@@ -207,8 +207,8 @@ Production-readiness objective:
 - [✅] Align public safety positioning with enforceability: avoid "Rust-class outcomes" claims until proof depth and guarantees actually match.
 
 ### Bidirectional Trace/Interop Closure
-- [ ] Route native trace replay/shrink/ci through validated Fozzy replay path (or provide explicit equivalence bridge) so bidirectional claim is operationally true.
-- [ ] Add reverse trace conversion path (`.fozzy` -> native trace schema) or formally narrow public compatibility claim.
+- [✅] Route native trace replay/shrink/ci through validated Fozzy replay path (or provide explicit equivalence bridge) so bidirectional claim is operationally true.
+- [✅] Add reverse trace conversion path (`.fozzy` -> native trace schema) or formally narrow public compatibility claim.
 
 ### CI + Operational Maturity
 - [ ] Add first-party CI workflows under `.github/workflows` for PR and mainline enforcement.

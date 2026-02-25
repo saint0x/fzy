@@ -316,6 +316,10 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("ci") => Ok(Command::Ci {
             trace: arg_path(args, 1)?,
         }),
+        Some("trace-native") => Ok(Command::TraceNative {
+            trace: arg_path(args, 1)?,
+            output: parse_path_flag(args, "--out")?,
+        }),
         Some("headers") => Ok(Command::Headers {
             path: arg_path(args, 1)?,
             output: parse_path_flag(args, "--out")?,
@@ -379,6 +383,7 @@ commands:\n\
   replay <trace>\n\
   shrink <trace>\n\
   ci <trace>\n\
+  trace-native <trace.fozzy> [--out path]\n\
   version|--version\n\
 flags:\n\
   --json\n\
@@ -512,7 +517,9 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(err.to_string().contains("production memory safety is always enabled"));
+        assert!(err
+            .to_string()
+            .contains("production memory safety is always enabled"));
     }
 
     #[test]
@@ -523,6 +530,20 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(err.to_string().contains("production memory safety is always enabled"));
+        assert!(err
+            .to_string()
+            .contains("production memory safety is always enabled"));
+    }
+
+    #[test]
+    fn parse_trace_native_command() {
+        let args = vec![
+            "trace-native".to_string(),
+            "artifacts/run.trace.fozzy".to_string(),
+            "--out".to_string(),
+            "artifacts/run.trace.json".to_string(),
+        ];
+        let command = parse_command(&args).expect("trace-native should parse");
+        assert!(matches!(command, Command::TraceNative { .. }));
     }
 }

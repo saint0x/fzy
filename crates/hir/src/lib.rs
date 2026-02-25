@@ -1444,7 +1444,11 @@ fn build_function_memory_summaries(
             .any(|param| matches!(param.ty, Type::Ref { .. }));
         let returns_ref = matches!(function.return_type, Type::Ref { .. });
         let generic_param_count = function.generics.len();
-        let trait_bound_count = function.generics.iter().map(|g| g.bounds.len()).sum::<usize>();
+        let trait_bound_count = function
+            .generics
+            .iter()
+            .map(|g| g.bounds.len())
+            .sum::<usize>();
         out.insert(
             function.name.clone(),
             FunctionMemorySummary {
