@@ -8,6 +8,8 @@ fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, 
 
 - Full user manual: `USAGE.md`
 - Canonical production workflow: `docs/production-workflow-v1.md`
+- `fozzy`: [ariacomputecompany/fozzy](https://github.com/ariacomputecompany/fozzy)
+- `fzllm`: [saint0x/fzyllm](https://github.com/saint0x/fzyllm)
 
 ## What This Repo Contains
 
