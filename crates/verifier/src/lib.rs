@@ -1,4 +1,4 @@
-use diagnostics::{Diagnostic, Severity};
+use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
 use fir::FirModule;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -288,17 +288,6 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     if module.type_errors > 0 {
-        report.diagnostics.push(
-            Diagnostic::new(
-                Severity::Error,
-                format!("type checking failed with {} error(s)", module.type_errors),
-                Some(
-                    "fix invalid types, unresolved functions, and bad call signatures".to_string(),
-                ),
-            )
-            .with_note("detailed type-check diagnostics are emitted below")
-            .with_suggested_fix("resolve the first detailed error, then re-run `fz check --json`"),
-        );
         for (index, detail) in module.type_error_details.iter().enumerate() {
             report.diagnostics.push(
                 Diagnostic::new(
@@ -354,32 +343,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         }
     }
 
-    let mut error_idx = 1usize;
-    let mut warn_idx = 1usize;
-    let mut note_idx = 1usize;
-    for diagnostic in &mut report.diagnostics {
-        if diagnostic.code.is_some() {
-            continue;
-        }
-        let code = match diagnostic.severity {
-            Severity::Error => {
-                let value = format!("E-VER-{error_idx:03}");
-                error_idx += 1;
-                value
-            }
-            Severity::Warning => {
-                let value = format!("W-VER-{warn_idx:03}");
-                warn_idx += 1;
-                value
-            }
-            Severity::Note => {
-                let value = format!("N-VER-{note_idx:03}");
-                note_idx += 1;
-                value
-            }
-        };
-        diagnostic.code = Some(code);
-    }
+    assign_stable_codes(&mut report.diagnostics, DiagnosticDomain::Verifier);
 
     report
 }

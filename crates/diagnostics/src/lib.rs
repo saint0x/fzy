@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const DIAGNOSTICS_SCHEMA_VERSION: &str = "fozzylang.diagnostics.v2";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Severity {
     Error,
@@ -39,6 +41,15 @@ pub struct Diagnostic {
     pub notes: Vec<String>,
     #[serde(default)]
     pub suggested_fixes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum DiagnosticDomain {
+    Parser,
+    Hir,
+    Verifier,
+    NativeLowering,
+    Driver,
 }
 
 impl Diagnostic {
@@ -119,4 +130,63 @@ impl Diagnostic {
         self.code = Some(code.into());
         self
     }
+}
+
+pub fn assign_stable_codes(diagnostics: &mut [Diagnostic], domain: DiagnosticDomain) {
+    for diagnostic in diagnostics {
+        if diagnostic.code.is_some() {
+            continue;
+        }
+        let code = stable_code_for_diagnostic(domain, diagnostic);
+        diagnostic.code = Some(code);
+    }
+}
+
+fn stable_code_for_diagnostic(domain: DiagnosticDomain, diagnostic: &Diagnostic) -> String {
+    let severity = severity_code_prefix(&diagnostic.severity);
+    let domain = domain_code_prefix(domain);
+    let mut material = String::new();
+    material.push_str(domain);
+    material.push('|');
+    material.push_str(&diagnostic.message);
+    material.push('|');
+    if let Some(help) = &diagnostic.help {
+        material.push_str(help);
+    }
+    material.push('|');
+    if let Some(span) = &diagnostic.span {
+        material.push_str(&format!(
+            "{}:{}:{}:{}",
+            span.start_line, span.start_col, span.end_line, span.end_col
+        ));
+    }
+    let digest = fnv1a_32(material.as_bytes());
+    format!("{severity}-{domain}-{digest:08X}")
+}
+
+fn severity_code_prefix(severity: &Severity) -> &'static str {
+    match severity {
+        Severity::Error => "E",
+        Severity::Warning => "W",
+        Severity::Note => "N",
+    }
+}
+
+fn domain_code_prefix(domain: DiagnosticDomain) -> &'static str {
+    match domain {
+        DiagnosticDomain::Parser => "PAR",
+        DiagnosticDomain::Hir => "HIR",
+        DiagnosticDomain::Verifier => "VER",
+        DiagnosticDomain::NativeLowering => "NAT",
+        DiagnosticDomain::Driver => "DRV",
+    }
+}
+
+fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811C9DC5;
+    for byte in bytes {
+        hash ^= *byte as u32;
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    hash
 }

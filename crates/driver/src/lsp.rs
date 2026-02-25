@@ -74,11 +74,17 @@ pub fn diagnostics_for_path(path: &Path) -> Result<Value> {
             diagnostics.extend(verify.diagnostics);
         }
     }
+    hydrate_document_context(
+        &mut diagnostics,
+        &source,
+        resolved.source_path.display().to_string(),
+    );
 
     let ok = diagnostics
         .iter()
         .all(|diag| !matches!(diag.severity, diagnostics::Severity::Error));
     Ok(json!({
+        "schemaVersion": diagnostics::DIAGNOSTICS_SCHEMA_VERSION,
         "ok": ok,
         "module": module_name,
         "diagnostics": diagnostics,
@@ -602,6 +608,7 @@ fn publish_diagnostics(ws: &WorkspaceState, uri: &str, writer: &mut dyn Write) -
         let fir = fir::build_owned(typed);
         diagnostics.extend(verifier::verify(&fir).diagnostics);
     }
+    hydrate_document_context(&mut diagnostics, &doc.text, doc.path.display().to_string());
 
     let payload = diagnostics
         .iter()
@@ -1128,15 +1135,55 @@ fn to_lsp_diagnostic(diag: &diagnostics::Diagnostic) -> Value {
     } else {
         (0, 0, 0, 1)
     };
+    let related_information = diag
+        .labels
+        .iter()
+        .filter_map(|label| {
+            let span = label.span.as_ref()?;
+            let path = diag.path.as_ref()?;
+            Some(json!({
+                "location": {
+                    "uri": path_to_uri(Path::new(path)),
+                    "range": {
+                        "start": {
+                            "line": span.start_line.saturating_sub(1),
+                            "character": span.start_col.saturating_sub(1),
+                        },
+                        "end": {
+                            "line": span.end_line.saturating_sub(1),
+                            "character": span.end_col.saturating_sub(1),
+                        }
+                    }
+                },
+                "message": label.message
+            }))
+        })
+        .collect::<Vec<_>>();
+    let mut message = diag.message.clone();
+    if let Some(help) = &diag.help {
+        message.push_str("\nhelp: ");
+        message.push_str(help);
+    }
     json!({
         "range": {
             "start": {"line": start_line, "character": start_col},
             "end": {"line": end_line, "character": end_col},
         },
         "severity": severity_to_lsp(&diag.severity),
-        "message": diag.message,
+        "message": message,
         "code": diag.code,
         "source": "fozzy",
+        "relatedInformation": related_information,
+        "codeDescription": diag.code.as_ref().map(|code| json!({"href": format!("https://fozzylang.dev/diagnostics/{code}")})),
+        "data": {
+            "path": diag.path.clone(),
+            "help": diag.help.clone(),
+            "fix": diag.fix.clone(),
+            "notes": diag.notes.clone(),
+            "suggestedFixes": diag.suggested_fixes.clone(),
+            "snippet": diag.snippet.clone(),
+            "labels": diag.labels.clone(),
+        }
     })
 }
 
@@ -1178,7 +1225,34 @@ fn type_diagnostics(typed: &hir::TypedModule) -> Vec<diagnostics::Diagnostic> {
             Some("reference lifetime issue".to_string()),
         ));
     }
+    diagnostics::assign_stable_codes(&mut out, diagnostics::DiagnosticDomain::Hir);
     out
+}
+
+fn hydrate_document_context(
+    diagnostics: &mut [diagnostics::Diagnostic],
+    source: &str,
+    path: String,
+) {
+    let lines = source.lines().map(ToString::to_string).collect::<Vec<_>>();
+    for diagnostic in diagnostics {
+        if diagnostic.path.is_none() {
+            diagnostic.path = Some(path.clone());
+        }
+        if let Some(span) = &diagnostic.span {
+            if diagnostic.snippet.is_none() && span.start_line > 0 && span.start_line <= lines.len()
+            {
+                diagnostic.snippet = Some(lines[span.start_line - 1].clone());
+            }
+            if diagnostic.labels.is_empty() {
+                diagnostic.labels.push(diagnostics::Label {
+                    message: diagnostic.message.clone(),
+                    primary: true,
+                    span: Some(span.clone()),
+                });
+            }
+        }
+    }
 }
 
 fn workspace_doc<'a>(ws: &'a WorkspaceState, uri: &str) -> Result<&'a Document> {

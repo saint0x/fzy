@@ -911,7 +911,9 @@ fn stmt_has_await(stmt: &Stmt) -> bool {
                 || then_body.iter().any(stmt_has_await)
                 || else_body.iter().any(stmt_has_await)
         }
-        Stmt::While { condition, body } => expr_has_await(condition) || body.iter().any(stmt_has_await),
+        Stmt::While { condition, body } => {
+            expr_has_await(condition) || body.iter().any(stmt_has_await)
+        }
         Stmt::Match { scrutinee, arms } => {
             expr_has_await(scrutinee)
                 || arms.iter().any(|arm| {
@@ -1148,7 +1150,8 @@ fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)
                 "call edge `{caller} -> {callee}` crosses function with potential resource escape (alloc/free+close imbalance)",
             ));
         }
-        if caller_summary.is_async && caller_summary.has_await && callee_summary.has_mut_ref_params {
+        if caller_summary.is_async && caller_summary.has_await && callee_summary.has_mut_ref_params
+        {
             violations.push(format!(
                 "call edge `{caller} -> {callee}` can hold mutable borrows across await boundary",
             ));
@@ -1227,8 +1230,7 @@ fn analyze_ownership_block(
                         }
                     }
                 }
-                if matches!(callee.as_str(), "unsafe" | "unsafe_reason")
-                    && !unsafe_has_reason(args)
+                if matches!(callee.as_str(), "unsafe" | "unsafe_reason") && !unsafe_has_reason(args)
                 {
                     violations.push(format!(
                         "function `{}` has unsafe site without required reason string",
@@ -1371,15 +1373,10 @@ fn build_function_memory_summaries(
         for stmt in &function.body {
             collector.visit_stmt(stmt);
         }
-        let has_mut_ref_params = function.params.iter().any(|param| {
-            matches!(
-                param.ty,
-                Type::Ref {
-                    mutable: true,
-                    ..
-                }
-            )
-        });
+        let has_mut_ref_params = function
+            .params
+            .iter()
+            .any(|param| matches!(param.ty, Type::Ref { mutable: true, .. }));
         out.insert(
             function.name.clone(),
             FunctionMemorySummary {
@@ -1412,8 +1409,12 @@ fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
             else_body,
         } => {
             expr_uses_ident(condition, target)
-                || then_body.iter().any(|nested| stmt_uses_ident(nested, target))
-                || else_body.iter().any(|nested| stmt_uses_ident(nested, target))
+                || then_body
+                    .iter()
+                    .any(|nested| stmt_uses_ident(nested, target))
+                || else_body
+                    .iter()
+                    .any(|nested| stmt_uses_ident(nested, target))
         }
         Stmt::While { condition, body } => {
             expr_uses_ident(condition, target)
@@ -1439,7 +1440,9 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
         Expr::StructInit { fields, .. } => fields
             .iter()
             .any(|(_, value)| expr_uses_ident(value, target)),
-        Expr::EnumInit { payload, .. } => payload.iter().any(|value| expr_uses_ident(value, target)),
+        Expr::EnumInit { payload, .. } => {
+            payload.iter().any(|value| expr_uses_ident(value, target))
+        }
         Expr::Group(inner) | Expr::Await(inner) => expr_uses_ident(inner, target),
         Expr::TryCatch {
             try_expr,
@@ -2028,14 +2031,28 @@ fn type_check_stmt(
             let final_ty = match (ty, inferred) {
                 (Some(explicit), Some(actual)) => {
                     if !type_compatible(explicit, &actual) {
-                        *errors += 1;
+                        record_type_error(
+                            errors,
+                            type_error_details,
+                            format!(
+                                "let binding `{}` type mismatch: expected `{}`, got `{}`",
+                                name, explicit, actual
+                            ),
+                        );
                     }
                     explicit.clone()
                 }
                 (Some(explicit), None) => explicit.clone(),
                 (None, Some(actual)) => actual,
                 (None, None) => {
-                    *errors += 1;
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "cannot infer type for let binding `{}`; add an explicit type annotation",
+                            name
+                        ),
+                    );
                     Type::Void
                 }
             };
@@ -2058,7 +2075,14 @@ fn type_check_stmt(
             );
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
                 if !type_compatible(&target_ty, &value_ty) {
-                    *errors += 1;
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "assignment type mismatch for `{}`: expected `{}`, got `{}`",
+                            target, target_ty, value_ty
+                        ),
+                    );
                 }
             }
         }
@@ -2081,7 +2105,15 @@ fn type_check_stmt(
                 trait_violations,
             );
             if !matches!(cond_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
-                *errors += 1;
+                let found = cond_ty
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "unknown".to_string());
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("if-condition must be bool/i32-compatible, got `{found}`"),
+                );
             }
             scopes.push();
             for stmt in then_body {
@@ -2135,7 +2167,15 @@ fn type_check_stmt(
                 trait_violations,
             );
             if !matches!(cond_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
-                *errors += 1;
+                let found = cond_ty
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "unknown".to_string());
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("while-condition must be bool/i32-compatible, got `{found}`"),
+                );
             }
             scopes.push();
             for stmt in body {
@@ -2171,7 +2211,14 @@ fn type_check_stmt(
                 trait_violations,
             ) {
                 if !type_compatible(expected_return, &actual) {
-                    *errors += 1;
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "return type mismatch: expected `{}`, got `{}`",
+                            expected_return, actual
+                        ),
+                    );
                 }
             }
         }
@@ -2205,7 +2252,15 @@ fn type_check_stmt(
                         trait_violations,
                     );
                     if !matches!(guard_ty, Some(Type::Bool) | Some(Type::Int { .. })) {
-                        *errors += 1;
+                        let found = guard_ty
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        record_type_error(
+                            errors,
+                            type_error_details,
+                            format!("match guard must be bool/i32-compatible, got `{found}`"),
+                        );
                     }
                 }
                 let value_ty = infer_expr_type(
@@ -2221,7 +2276,12 @@ fn type_check_stmt(
                     generic_specializations,
                     trait_violations,
                 );
-                check_pattern_compatibility(&arm.pattern, scrutinee_ty.as_ref(), errors);
+                check_pattern_compatibility(
+                    &arm.pattern,
+                    scrutinee_ty.as_ref(),
+                    errors,
+                    type_error_details,
+                );
                 let _ = value_ty;
             }
         }
@@ -2263,7 +2323,17 @@ fn infer_expr_type(
         }),
         Expr::Bool(_) => Some(Type::Bool),
         Expr::Str(_) => Some(Type::Str),
-        Expr::Ident(name) => scopes.get(name),
+        Expr::Ident(name) => {
+            let found = scopes.get(name);
+            if found.is_none() {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("unresolved identifier `{name}`"),
+                );
+            }
+            found
+        }
         Expr::Group(inner) => infer_expr_type(
             inner,
             scopes,
@@ -2399,11 +2469,12 @@ fn infer_expr_type(
                     {
                         for bound in &generic.bounds {
                             if !type_satisfies_trait(concrete, bound, trait_impls) {
-                                trait_violations.push(format!(
+                                let detail = format!(
                                     "generic specialization `{}` violates bound `{}` on `{}`",
                                     base_callee, bound, generic.name
-                                ));
-                                *errors += 1;
+                                );
+                                trait_violations.push(detail.clone());
+                                record_type_error(errors, type_error_details, detail);
                             }
                         }
                     }
@@ -2456,11 +2527,22 @@ fn infer_expr_type(
                 return None;
             };
             let Type::Named { name, .. } = base_ty else {
-                *errors += 1;
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!(
+                        "field access requires struct-like receiver; expression resolved to `{}`",
+                        base_ty
+                    ),
+                );
                 return None;
             };
             let Some(struct_def) = struct_defs.get(&name) else {
-                *errors += 1;
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("field access targets unknown struct `{name}`"),
+                );
                 return None;
             };
             let Some(found) = struct_def
@@ -2468,14 +2550,22 @@ fn infer_expr_type(
                 .iter()
                 .find(|candidate| candidate.name == *field)
             else {
-                *errors += 1;
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("struct `{name}` has no field `{field}`"),
+                );
                 return None;
             };
             Some(found.ty.clone())
         }
         Expr::StructInit { name, fields } => {
             let Some(struct_def) = struct_defs.get(name) else {
-                *errors += 1;
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("unknown struct `{name}` in initializer"),
+                );
                 return None;
             };
             for (field_name, value) in fields {
@@ -2484,7 +2574,11 @@ fn infer_expr_type(
                     .iter()
                     .find(|candidate| candidate.name == *field_name)
                 else {
-                    *errors += 1;
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!("struct `{name}` has no field `{field_name}`"),
+                    );
                     continue;
                 };
                 let value_ty = infer_expr_type(
@@ -2502,7 +2596,14 @@ fn infer_expr_type(
                 );
                 if let Some(value_ty) = value_ty {
                     if !type_compatible(&found.ty, &value_ty) {
-                        *errors += 1;
+                        record_type_error(
+                            errors,
+                            type_error_details,
+                            format!(
+                                "struct field `{name}.{field_name}` type mismatch: expected `{}`, got `{}`",
+                                found.ty, value_ty
+                            ),
+                        );
                     }
                 }
             }
@@ -2517,7 +2618,11 @@ fn infer_expr_type(
             payload,
         } => {
             let Some(enum_def) = enum_defs.get(enum_name) else {
-                *errors += 1;
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("unknown enum `{enum_name}` in initializer"),
+                );
                 return None;
             };
             let Some(found_variant) = enum_def
@@ -2525,11 +2630,23 @@ fn infer_expr_type(
                 .iter()
                 .find(|candidate| candidate.name == *variant)
             else {
-                *errors += 1;
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("enum `{enum_name}` has no variant `{variant}`"),
+                );
                 return None;
             };
             if found_variant.payload.len() != payload.len() {
-                *errors += 1;
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!(
+                        "enum variant `{enum_name}.{variant}` payload arity mismatch: expected {}, got {}",
+                        found_variant.payload.len(),
+                        payload.len()
+                    ),
+                );
             }
             for (index, value) in payload.iter().enumerate() {
                 let value_ty = infer_expr_type(
@@ -2548,7 +2665,13 @@ fn infer_expr_type(
                 if let (Some(expected), Some(actual)) = (found_variant.payload.get(index), value_ty)
                 {
                     if !type_compatible(expected, &actual) {
-                        *errors += 1;
+                        record_type_error(
+                            errors,
+                            type_error_details,
+                            format!(
+                                "enum variant `{enum_name}.{variant}` payload {index} type mismatch: expected `{expected}`, got `{actual}`"
+                            ),
+                        );
                     }
                 }
             }
@@ -2590,7 +2713,11 @@ fn infer_expr_type(
             match (left, right) {
                 (Some(l), Some(r)) if type_compatible(&l, &r) => Some(l),
                 (Some(_), Some(_)) => {
-                    *errors += 1;
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        "try/catch branches must resolve to compatible types".to_string(),
+                    );
                     None
                 }
                 (Some(l), None) => Some(l),
@@ -2632,7 +2759,21 @@ fn infer_expr_type(
                     {
                         left_ty
                     } else {
-                        *errors += 1;
+                        let left = left_ty
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        let right = right_ty
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        record_type_error(
+                            errors,
+                            type_error_details,
+                            format!(
+                                "arithmetic operands must be integers, got left=`{left}` right=`{right}`"
+                            ),
+                        );
                         None
                     }
                 }
@@ -2644,7 +2785,14 @@ fn infer_expr_type(
                 | BinaryOp::Gte => {
                     if let (Some(l), Some(r)) = (&left_ty, &right_ty) {
                         if !type_compatible(l, r) {
-                            *errors += 1;
+                            record_type_error(
+                                errors,
+                                type_error_details,
+                                format!(
+                                    "comparison operands must have compatible types, got `{}` and `{}`",
+                                    l, r
+                                ),
+                            );
                         }
                     }
                     Some(Type::Bool)
@@ -3108,6 +3256,7 @@ fn check_pattern_compatibility(
     pattern: &ast::Pattern,
     scrutinee_ty: Option<&Type>,
     errors: &mut usize,
+    type_error_details: &mut Vec<String>,
 ) {
     match (pattern, scrutinee_ty) {
         (ast::Pattern::Int(_), Some(Type::Int { .. })) => {}
@@ -3117,11 +3266,24 @@ fn check_pattern_compatibility(
         | (ast::Pattern::Variant { .. }, _) => {}
         (ast::Pattern::Or(patterns), ty) => {
             for pattern in patterns {
-                check_pattern_compatibility(pattern, ty, errors);
+                check_pattern_compatibility(pattern, ty, errors, type_error_details);
             }
         }
-        (ast::Pattern::Int(_), Some(_)) | (ast::Pattern::Bool(_), Some(_)) => *errors += 1,
-        (ast::Pattern::Int(_) | ast::Pattern::Bool(_), None) => *errors += 1,
+        (ast::Pattern::Int(_), Some(actual)) => record_type_error(
+            errors,
+            type_error_details,
+            format!("match pattern expects integer scrutinee, got `{actual}`"),
+        ),
+        (ast::Pattern::Bool(_), Some(actual)) => record_type_error(
+            errors,
+            type_error_details,
+            format!("match pattern expects bool scrutinee, got `{actual}`"),
+        ),
+        (ast::Pattern::Int(_) | ast::Pattern::Bool(_), None) => record_type_error(
+            errors,
+            type_error_details,
+            "match pattern could not be validated because scrutinee type is unknown".to_string(),
+        ),
     }
 }
 

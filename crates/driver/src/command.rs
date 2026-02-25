@@ -974,7 +974,7 @@ fn render_output(format: Format, output: Output) -> String {
             rendered
         }
         Format::Json => serde_json::json!({
-            "schemaVersion": "fozzylang.diagnostics.v1",
+            "schemaVersion": diagnostics::DIAGNOSTICS_SCHEMA_VERSION,
             "module": output.module,
             "nodes": output.nodes,
             "diagnostics": output.diagnostics,
@@ -1028,6 +1028,16 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
                     " {role}: {} ({}:{}-{}:{})\n",
                     label.message, span.start_line, span.start_col, span.end_line, span.end_col
                 ));
+                if !label.primary {
+                    let path = diagnostic.path.as_deref().unwrap_or("<unknown>");
+                    out.push_str(&format!(
+                        "  related --> {path}:{}:{}\n",
+                        span.start_line, span.start_col
+                    ));
+                    if let Some(frame) = render_code_frame(path, span, &mut source_cache) {
+                        out.push_str(&frame);
+                    }
+                }
             } else {
                 out.push_str(&format!(" {role}: {}\n", label.message));
             }
@@ -1064,28 +1074,40 @@ fn render_code_frame(
     if span.start_line == 0 || span.start_line > lines.len() {
         return None;
     }
-    let line_idx = span.start_line - 1;
-    let line = &lines[line_idx];
-    let gutter = span.start_line.to_string();
-    let highlight_start = span.start_col.max(1);
-    let highlight_end = if span.end_line == span.start_line {
-        span.end_col.max(highlight_start)
-    } else {
-        line.chars().count().max(highlight_start)
-    };
-    let mut marker = String::new();
-    marker.push_str(&" ".repeat(highlight_start.saturating_sub(1)));
-    marker.push_str(&"^".repeat(highlight_end.saturating_sub(highlight_start) + 1));
+    let start_line = span.start_line.max(1).min(lines.len());
+    let end_line = span.end_line.max(start_line).min(lines.len());
+    let first_context = start_line.saturating_sub(1).max(1);
+    let last_context = (end_line + 1).min(lines.len());
+    let gutter_width = last_context.to_string().len();
     let mut frame = String::new();
-    if line_idx > 0 {
-        let prev_line_no = span.start_line - 1;
-        frame.push_str(&format!(" {prev_line_no} | {}\n", lines[line_idx - 1]));
-    }
-    frame.push_str(&format!(" {gutter} | {line}\n"));
-    frame.push_str(&format!(" {} | {marker}\n", " ".repeat(gutter.len())));
-    if line_idx + 1 < lines.len() {
-        let next_line_no = span.start_line + 1;
-        frame.push_str(&format!(" {next_line_no} | {}\n", lines[line_idx + 1]));
+    for line_no in first_context..=last_context {
+        let line = &lines[line_no - 1];
+        frame.push_str(&format!(
+            " {:>width$} | {line}\n",
+            line_no,
+            width = gutter_width
+        ));
+        if (start_line..=end_line).contains(&line_no) {
+            let line_len = line.chars().count();
+            let highlight_start = if line_no == start_line {
+                span.start_col.max(1)
+            } else {
+                1
+            };
+            let highlight_end = if line_no == end_line {
+                span.end_col.max(highlight_start)
+            } else {
+                line_len.max(highlight_start)
+            };
+            let mut marker = String::new();
+            marker.push_str(&" ".repeat(highlight_start.saturating_sub(1)));
+            marker.push_str(&"^".repeat(highlight_end.saturating_sub(highlight_start) + 1));
+            frame.push_str(&format!(
+                " {:>width$} | {marker}\n",
+                "",
+                width = gutter_width
+            ));
+        }
     }
     Some(frame)
 }
@@ -2488,12 +2510,31 @@ fn lsp_diagnostics_command(path: &Path, format: Format) -> Result<String> {
         .cloned()
         .unwrap_or_default();
     match format {
-        Format::Text => Ok(format!(
-            "lsp diagnostics module={} diagnostics={} ok={}",
-            module,
-            diagnostics.len(),
-            ok
-        )),
+        Format::Text => {
+            let parsed_items = diagnostics
+                .iter()
+                .filter_map(|value| {
+                    serde_json::from_value::<diagnostics::Diagnostic>(value.clone()).ok()
+                })
+                .collect::<Vec<_>>();
+            let details = render_diagnostics_text(&parsed_items);
+            if details.is_empty() {
+                Ok(format!(
+                    "lsp diagnostics module={} diagnostics={} ok={}",
+                    module,
+                    diagnostics.len(),
+                    ok
+                ))
+            } else {
+                Ok(format!(
+                    "lsp diagnostics module={} diagnostics={} ok={}\n{}",
+                    module,
+                    diagnostics.len(),
+                    ok,
+                    details
+                ))
+            }
+        }
         Format::Json => Ok(payload.to_string()),
     }
 }
@@ -5375,7 +5416,8 @@ fn render_c_header(package_name: &str, exports: &[&ast::Function]) -> String {
     header.push_str("int32_t fz_host_init(void);\n");
     header.push_str("int32_t fz_host_shutdown(void);\n");
     header.push_str("int32_t fz_host_cleanup(void);\n");
-    header.push_str("int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb);\n");
+    header
+        .push_str("int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb);\n");
     header.push_str("int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg);\n\n");
     for function in exports {
         header.push_str(&format!(
@@ -5397,10 +5439,7 @@ fn render_c_header(package_name: &str, exports: &[&ast::Function]) -> String {
     header
 }
 
-fn validate_ffi_contract(
-    _module: &ast::Module,
-    exports: &[&ast::Function],
-) -> Result<()> {
+fn validate_ffi_contract(_module: &ast::Module, exports: &[&ast::Function]) -> Result<()> {
     if exports.is_empty() {
         return Ok(());
     }
@@ -5518,7 +5557,11 @@ fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
                 });
             }
             ast::Item::Enum(item) if is_repr_c(item.repr.as_deref()) => {
-                if item.variants.iter().any(|variant| !variant.payload.is_empty()) {
+                if item
+                    .variants
+                    .iter()
+                    .any(|variant| !variant.payload.is_empty())
+                {
                     bail!(
                         "repr(C) enum `{}` has payload variants; only C-style fieldless enums are supported",
                         item.name
@@ -5554,10 +5597,9 @@ fn ffi_type_layout(ty: &ast::Type) -> Option<(usize, usize)> {
             let bytes = (*bits as usize) / 8;
             Some((bytes.max(1), bytes.max(1)))
         }
-        ast::Type::Ptr { .. } => Some((
-            std::mem::size_of::<usize>(),
-            std::mem::align_of::<usize>(),
-        )),
+        ast::Type::Ptr { .. } => {
+            Some((std::mem::size_of::<usize>(), std::mem::align_of::<usize>()))
+        }
         _ => None,
     }
 }

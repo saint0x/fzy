@@ -1,5 +1,5 @@
 use ast::{BinaryOp, Expr, MatchArm, Module, Pattern, Stmt, Type};
-use diagnostics::{Diagnostic, Severity};
+use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
 
 #[derive(Debug, Clone)]
 struct Token {
@@ -91,6 +91,7 @@ pub fn parse(source: &str, module_name: &str) -> Result<Module, Vec<Diagnostic>>
     if diagnostics.is_empty() {
         Ok(module)
     } else {
+        assign_stable_codes(&mut diagnostics, DiagnosticDomain::Parser);
         Err(diagnostics)
     }
 }
@@ -176,7 +177,9 @@ impl Parser {
                     match tok.kind {
                         TokenKind::Ident(part) => parts.push(part),
                         TokenKind::Comma => {}
-                        _ => self.push_diag_at(tok.line, tok.col, "invalid repr attribute component"),
+                        _ => {
+                            self.push_diag_at(tok.line, tok.col, "invalid repr attribute component")
+                        }
                     }
                 }
                 let _ = self.consume(&TokenKind::RParen);

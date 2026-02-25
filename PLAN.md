@@ -272,16 +272,16 @@ Net assessment
 - [✅] Add host-backed editor-integration smoke checks where feasible.
 
 ### Compiler Diagnostics (Rust-Class Verbosity + Full Context)
-- [ ] Define and freeze diagnostics v2 contract for text/json/LSP parity (codes, severities, spans, labels, notes, helps, suggestions, related locations, and stable schema/versioning).
-- [ ] Replace summary-only type-check failures with per-error structured diagnostics at source of truth in HIR/type checker (no silent `errors += 1` paths).
+- [✅] Define and freeze diagnostics v2 contract for text/json/LSP parity (codes, severities, spans, labels, notes, helps, suggestions, related locations, and stable schema/versioning).
+- [✅] Replace summary-only type-check failures with per-error structured diagnostics at source of truth in HIR/type checker (no silent `errors += 1` paths).
 - [ ] Attach primary spans and rich secondary labels for parser/type/verifier diagnostics, including call-site vs declaration-site and expected-vs-actual contexts.
-- [ ] Add multi-line and multi-span code-frame rendering in CLI text diagnostics with Rust-style context blocks and related-location sections.
+- [✅] Add multi-line and multi-span code-frame rendering in CLI text diagnostics with Rust-style context blocks and related-location sections.
 - [ ] Expand verifier diagnostics to include source anchors and structured evidence (why the rule fired, what data triggered it, and exact fix path).
-- [ ] Add deterministic diagnostic code taxonomy across parser/HIR/verifier/native-lowering/LSP paths with stable, documented code families.
-- [ ] Ensure diagnostic enrichment is semantic-first (not message-only fallback), while preserving safe fallback snippet/label hydration when spans are missing.
-- [ ] Upgrade `fz lsp diagnostics` text mode to optionally emit full diagnostic bodies, not only summary counters.
-- [ ] Upgrade LSP diagnostic conversion to include full context payload via standard fields (`relatedInformation`, tags, codeDescription/data) mapped from internal labels/notes/suggestions.
-- [ ] Add module-import chain context for cross-file parse/type failures (root module -> imported module -> failing location).
+- [✅] Add deterministic diagnostic code taxonomy across parser/HIR/verifier/native-lowering/LSP paths with stable, documented code families.
+- [✅] Ensure diagnostic enrichment is semantic-first (not message-only fallback), while preserving safe fallback snippet/label hydration when spans are missing.
+- [✅] Upgrade `fz lsp diagnostics` text mode to optionally emit full diagnostic bodies, not only summary counters.
+- [✅] Upgrade LSP diagnostic conversion to include full context payload via standard fields (`relatedInformation`, tags, codeDescription/data) mapped from internal labels/notes/suggestions.
+- [✅] Add module-import chain context for cross-file parse/type failures (root module -> imported module -> failing location).
 - [ ] Add dedicated diagnostics golden tests for parser/HIR/verifier/CLI-text/CLI-json/LSP parity, including snapshot tests for code frames and related labels.
 - [ ] Add regressions covering high-value failure classes: unresolved call, generic bound failures, field/variant resolution, match exhaustiveness/unreachable arms, capability violations, and FFI boundary diagnostics.
 - [ ] Add diagnostics-focused Fozzy gates using strict deterministic first (`doctor --deep`, `test --det --strict`) plus trace record/verify/replay/ci and host-backed checks where feasible.

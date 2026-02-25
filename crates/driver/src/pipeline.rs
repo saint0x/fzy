@@ -930,6 +930,10 @@ pub fn verify_file(path: &Path) -> Result<Output> {
                 }
             }
             enrich_diagnostics_context(&mut diagnostics);
+            diagnostics::assign_stable_codes(
+                &mut diagnostics,
+                diagnostics::DiagnosticDomain::Driver,
+            );
             return Ok(Output {
                 module: module_name.to_string(),
                 nodes: 0,
@@ -950,6 +954,7 @@ pub fn verify_file(path: &Path) -> Result<Output> {
         }
     }
     enrich_diagnostics_context(&mut diagnostics);
+    diagnostics::assign_stable_codes(&mut diagnostics, diagnostics::DiagnosticDomain::Driver);
 
     Ok(Output {
         module: fir.name,
@@ -982,6 +987,10 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
                 }
             }
             enrich_diagnostics_context(&mut diagnostics);
+            diagnostics::assign_stable_codes(
+                &mut diagnostics,
+                diagnostics::DiagnosticDomain::Driver,
+            );
             return Ok(Output {
                 module: module_name.to_string(),
                 nodes: 0,
@@ -1002,6 +1011,7 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
         }
     }
     enrich_diagnostics_context(&mut diagnostics);
+    diagnostics::assign_stable_codes(&mut diagnostics, diagnostics::DiagnosticDomain::Driver);
     let llvm = lower_backend_ir(&fir, BackendKind::Llvm);
     let cranelift = lower_backend_ir(&fir, BackendKind::Cranelift);
 
@@ -1476,9 +1486,9 @@ fn collect_parse_diagnostics(source_path: &Path) -> Result<Vec<diagnostics::Diag
     let mut visited = HashSet::<PathBuf>::new();
     let mut visiting = HashSet::<PathBuf>::new();
     match collect_parse_diagnostics_recursive(&canonical, &mut visited, &mut visiting)? {
-        Some((failed_path, diagnostics)) => Ok(diagnostics
+        Some((failed_path, import_chain, diagnostics)) => Ok(diagnostics
             .into_iter()
-            .map(|diagnostic| annotate_parse_diagnostic(diagnostic, &failed_path))
+            .map(|diagnostic| annotate_parse_diagnostic(diagnostic, &failed_path, &import_chain))
             .collect()),
         None => Ok(Vec::new()),
     }
@@ -1488,7 +1498,7 @@ fn collect_parse_diagnostics_recursive(
     path: &Path,
     visited: &mut HashSet<PathBuf>,
     visiting: &mut HashSet<PathBuf>,
-) -> Result<Option<(PathBuf, Vec<diagnostics::Diagnostic>)>> {
+) -> Result<Option<(PathBuf, Vec<PathBuf>, Vec<diagnostics::Diagnostic>)>> {
     let canonical = path
         .canonicalize()
         .with_context(|| format!("failed resolving module path: {}", path.display()))?;
@@ -1504,7 +1514,13 @@ fn collect_parse_diagnostics_recursive(
         .ok_or_else(|| anyhow!("invalid module filename for {}", canonical.display()))?;
     let ast = match parser::parse(&source, module_name) {
         Ok(ast) => ast,
-        Err(diagnostics) => return Ok(Some((canonical.clone(), diagnostics))),
+        Err(diagnostics) => {
+            return Ok(Some((
+                canonical.clone(),
+                vec![canonical.clone()],
+                diagnostics,
+            )))
+        }
     };
     visited.insert(canonical.clone());
 
@@ -1519,9 +1535,11 @@ fn collect_parse_diagnostics_recursive(
                 canonical.display()
             )
         })?;
-        if let Some(failure) = collect_parse_diagnostics_recursive(&module_path, visited, visiting)?
+        if let Some((failed_path, mut import_chain, diagnostics)) =
+            collect_parse_diagnostics_recursive(&module_path, visited, visiting)?
         {
-            return Ok(Some(failure));
+            import_chain.insert(0, canonical.clone());
+            return Ok(Some((failed_path, import_chain, diagnostics)));
         }
     }
     visiting.remove(&canonical);
@@ -1531,6 +1549,7 @@ fn collect_parse_diagnostics_recursive(
 fn annotate_parse_diagnostic(
     mut diagnostic: diagnostics::Diagnostic,
     module_path: &Path,
+    import_chain: &[PathBuf],
 ) -> diagnostics::Diagnostic {
     diagnostic.path = Some(module_path.display().to_string());
     let mut help = diagnostic.help.unwrap_or_default();
@@ -1538,6 +1557,18 @@ fn annotate_parse_diagnostic(
         help.push(' ');
     }
     help.push_str(&format!("source: {}", module_path.display()));
+    if import_chain.len() > 1 {
+        let chain = import_chain
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        if !help.is_empty() {
+            help.push(' ');
+        }
+        help.push_str(&format!("import chain: {chain}"));
+        diagnostic.notes.push(format!("import chain: {chain}"));
+    }
     diagnostic.help = Some(help);
     diagnostic
 }
@@ -2424,7 +2455,10 @@ fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
     resolve_source_path_with_target(input, false)
 }
 
-fn resolve_source_path_with_target(input: &Path, prefer_lib_target: bool) -> Result<ResolvedSource> {
+fn resolve_source_path_with_target(
+    input: &Path,
+    prefer_lib_target: bool,
+) -> Result<ResolvedSource> {
     if input.is_file() {
         let root = input
             .parent()
@@ -3028,7 +3062,10 @@ fn emit_native_libraries_cranelift(
     let runtime_shim_path =
         ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
     compile_runtime_shim_object(&runtime_shim_path, &shim_obj_path, profile, manifest)?;
-    create_static_archive(&static_path, &[object_path.as_path(), shim_obj_path.as_path()])?;
+    create_static_archive(
+        &static_path,
+        &[object_path.as_path(), shim_obj_path.as_path()],
+    )?;
     let allow_undefined = !collect_extern_c_imports(fir).is_empty();
     link_shared_library(
         &shared_path,
@@ -4148,6 +4185,10 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
         )
     }));
 
+    diagnostics::assign_stable_codes(
+        &mut diagnostics,
+        diagnostics::DiagnosticDomain::NativeLowering,
+    );
     diagnostics
 }
 
@@ -8972,8 +9013,14 @@ mod tests {
         let artifact = compile_library_with_backend(&root, BuildProfile::Dev, None)
             .expect("library project should compile");
         assert_eq!(artifact.module, "lib");
-        assert!(artifact.static_lib.as_ref().is_some_and(|path| path.exists()));
-        assert!(artifact.shared_lib.as_ref().is_some_and(|path| path.exists()));
+        assert!(artifact
+            .static_lib
+            .as_ref()
+            .is_some_and(|path| path.exists()));
+        assert!(artifact
+            .shared_lib
+            .as_ref()
+            .is_some_and(|path| path.exists()));
 
         let _ = std::fs::remove_dir_all(root);
     }
