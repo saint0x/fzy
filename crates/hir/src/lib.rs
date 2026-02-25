@@ -10,6 +10,9 @@ pub struct TypedFunction {
     pub return_type: Type,
     pub body: Vec<Stmt>,
     pub is_async: bool,
+    pub is_extern: bool,
+    pub abi: Option<String>,
+    pub ffi_panic: Option<String>,
     pub required_capabilities: Vec<String>,
 }
 
@@ -175,6 +178,9 @@ pub fn lower(module: &Module) -> TypedModule {
                 return_type: function.return_type.clone(),
                 body: function.body.clone(),
                 is_async: function.is_async,
+                is_extern: function.is_extern,
+                abi: function.abi.clone(),
+                ffi_panic: function.ffi_panic.clone(),
                 required_capabilities: Vec::new(),
             });
         }

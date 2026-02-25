@@ -113,7 +113,7 @@ Use for new projects.
 ## 5.2 Build, run, test
 
 ```bash
-fz build <path> [--release] [--threads N] [--backend llvm|cranelift] [--json]
+fz build <path> [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
 fz run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 fz test <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
 ```
@@ -121,6 +121,7 @@ fz test <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record p
 Use cases:
 
 - `build`: compile only
+- `build --lib`: emit `.a` + shared library (`.so`/`.dylib`) plus C header + ABI manifest
 - `run`: execute a project or scenario once
 - `test`: execute discovered tests with optional deterministic scheduler policy
 
@@ -185,6 +186,8 @@ Typical use:
 
 - generate or refresh C headers and RPC outputs
 - compare ABI manifests before merge/release
+- `#[ffi_panic(abort|error)]` is required on exported `pub extern "C" fn`
+- full production interop contract: `docs/c-interop-production-v1.md`
 
 ## 5.7 Dependency locking and vendor
 

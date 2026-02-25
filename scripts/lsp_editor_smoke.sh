@@ -28,7 +28,7 @@ SRC
 "$FZ_BIN" lsp diagnostics "$SAMPLE" --json >/dev/null
 "$FZ_BIN" lsp definition "$SAMPLE" main --json >/dev/null
 "$FZ_BIN" lsp hover "$SAMPLE" main --json >/dev/null
-"$FZ_BIN" lsp rename "$SAMPLE" value answer --json >/dev/null
 "$FZ_BIN" lsp smoke "$SAMPLE" --json >/dev/null
+"$FZ_BIN" lsp rename "$SAMPLE" main entry_main --json >/dev/null
 
 echo "lsp-editor-smoke: ok"

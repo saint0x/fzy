@@ -239,17 +239,21 @@ Net assessment
 - [✅] Make full Fozzy production gate mandatory in release pipeline.
 
 ### Bidirectional C Compatibility
-- [ ] Add imported `extern "C"` lowering for true linker imports.
-- [ ] Add explicit link config surface (`-l`, `-L`, frameworks/system libs).
-- [ ] Complete ABI-faithful import/export lowering across backends.
-- [ ] Enforce panic boundary behavior in generated runtime/code.
-- [ ] Ship `fz build --lib` outputs (`.a`/`.so`/`.dylib`) with installable headers.
-- [ ] Add C-host lifecycle contract (init/call/shutdown/cleanup).
-- [ ] Add callback support (C function pointers into Fozzy) with signature validation.
-- [ ] Expand to validated `repr(C)` structs/enums (size/align/layout checks).
-- [ ] Add cross-language matrix tests (macOS/Linux, x86_64/aarch64, C->Fozzy and Fozzy->C).
-- [ ] Gate release on full bidirectional ABI matrix.
-- [ ] Publish production interop guide.
+- [✅] Parser now supports first-class `#[ffi_panic(abort|error)]` attribute syntax.
+- [✅] Remove marker-string fallback for panic-boundary detection (no backward compatibility).
+- [✅] Enforce panic-boundary contracts from parsed AST attributes only.
+- [✅] Add parser diagnostics/tests for invalid `ffi_panic` attribute usage.
+- [✅] Add imported `extern "C"` lowering for true linker imports.
+- [✅] Add explicit link config surface (`-l`, `-L`, frameworks/system libs).
+- [✅] Complete ABI-faithful import/export lowering across backends.
+- [✅] Enforce panic boundary behavior in generated runtime/code.
+- [✅] Ship `fz build --lib` outputs (`.a`/`.so`/`.dylib`) with installable headers.
+- [✅] Add C-host lifecycle contract (init/call/shutdown/cleanup).
+- [✅] Add callback support (C function pointers into Fozzy) with signature validation.
+- [✅] Expand to validated `repr(C)` structs/enums (size/align/layout checks).
+- [✅] Add cross-language matrix tests (macOS/Linux, x86_64/aarch64, C->Fozzy and Fozzy->C).
+- [✅] Gate release on full bidirectional ABI matrix.
+- [✅] Publish production interop guide.
 
 ### Editor Tooling (Syntax Highlighting + LSP)
 - [✅] Define and freeze grammar/token classes for editor-facing syntax categories.

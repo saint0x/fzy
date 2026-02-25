@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 
 use crate::lsp;
 use crate::pipeline::{
-    compile_file_with_backend, emit_ir, parse_program, refresh_lockfile, verify_file,
-    BuildArtifact, BuildProfile, Output,
+    compile_file_with_backend, compile_library_with_backend, emit_ir, parse_program,
+    refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact, Output,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,8 +43,12 @@ pub enum Command {
     Build {
         path: PathBuf,
         release: bool,
+        lib: bool,
         threads: Option<u16>,
         backend: Option<String>,
+        link_libs: Vec<String>,
+        link_search: Vec<String>,
+        frameworks: Vec<String>,
     },
     Run {
         path: PathBuf,
@@ -164,17 +168,34 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::Build {
             path,
             release,
+            lib,
             threads,
             backend,
+            link_libs,
+            link_search,
+            frameworks,
         } => {
             let profile = if release {
                 BuildProfile::Release
             } else {
                 BuildProfile::Dev
             };
-            let artifact = compile_file_with_backend(&path, profile, backend.as_deref())?;
             let runtime_config = persist_runtime_threads_config(&path, threads)?;
-            Ok(render_artifact(format, artifact, threads, runtime_config))
+            let _link_scope = BuildLinkArgsScope::new(&link_libs, &link_search, &frameworks);
+            if lib {
+                let artifact = compile_library_with_backend(&path, profile, backend.as_deref())?;
+                let headers = generate_c_headers(&path, None)?;
+                Ok(render_library_artifact(
+                    format,
+                    artifact,
+                    headers,
+                    threads,
+                    runtime_config,
+                ))
+            } else {
+                let artifact = compile_file_with_backend(&path, profile, backend.as_deref())?;
+                Ok(render_artifact(format, artifact, threads, runtime_config))
+            }
         }
         Command::Run {
             path,
@@ -609,6 +630,66 @@ pub fn run(command: Command, format: Format) -> Result<String> {
     }
 }
 
+struct BuildLinkArgsScope {
+    previous: Option<String>,
+    active: bool,
+}
+
+impl BuildLinkArgsScope {
+    fn new(link_libs: &[String], link_search: &[String], frameworks: &[String]) -> Self {
+        let mut args = Vec::new();
+        for path in link_search {
+            if !path.trim().is_empty() {
+                args.push(format!("-L{}", path.trim()));
+            }
+        }
+        for lib in link_libs {
+            if !lib.trim().is_empty() {
+                args.push(format!("-l{}", lib.trim()));
+            }
+        }
+        if cfg!(target_vendor = "apple") {
+            for framework in frameworks {
+                if !framework.trim().is_empty() {
+                    args.push("-framework".to_string());
+                    args.push(framework.trim().to_string());
+                }
+            }
+        }
+        if args.is_empty() {
+            return Self {
+                previous: None,
+                active: false,
+            };
+        }
+        let previous = std::env::var("FZ_LINKER_ARGS").ok();
+        let mut merged = previous.clone().unwrap_or_default();
+        if !merged.trim().is_empty() {
+            merged.push(' ');
+        }
+        merged.push_str(&args.join(" "));
+        // Build executes synchronously in this process; scope restores previous value.
+        std::env::set_var("FZ_LINKER_ARGS", merged);
+        Self {
+            previous,
+            active: true,
+        }
+    }
+}
+
+impl Drop for BuildLinkArgsScope {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        if let Some(previous) = &self.previous {
+            std::env::set_var("FZ_LINKER_ARGS", previous);
+        } else {
+            std::env::remove_var("FZ_LINKER_ARGS");
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ScenarioRunRouting {
     deterministic_applied: bool,
@@ -793,6 +874,69 @@ fn render_artifact(
                 .output
                 .as_ref()
                 .map(|path| path.display().to_string()),
+        })
+        .to_string(),
+    }
+}
+
+fn render_library_artifact(
+    format: Format,
+    artifact: LibraryArtifact,
+    headers: HeaderArtifact,
+    threads: Option<u16>,
+    runtime_config: Option<PathBuf>,
+) -> String {
+    match format {
+        Format::Text => format!(
+            "module={} profile={:?} status={} diagnostics={} static_lib={} shared_lib={} header={} abi_manifest={} threads={} runtime_config={} dep_graph_hash={}",
+            artifact.module,
+            artifact.profile,
+            artifact.status,
+            artifact.diagnostics,
+            artifact
+                .static_lib
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            artifact
+                .shared_lib
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            headers.path.display(),
+            headers.abi_manifest.display(),
+            threads
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "default".to_string()),
+            runtime_config
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "<none>".to_string()),
+            artifact
+                .dependency_graph_hash
+                .clone()
+                .unwrap_or_else(|| "<none>".to_string())
+        ),
+        Format::Json => serde_json::json!({
+            "module": artifact.module,
+            "profile": format!("{:?}", artifact.profile),
+            "status": artifact.status,
+            "diagnostics": artifact.diagnostics,
+            "dependencyGraphHash": artifact.dependency_graph_hash,
+            "threads": threads,
+            "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
+            "buildMode": "lib",
+            "staticLib": artifact
+                .static_lib
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            "sharedLib": artifact
+                .shared_lib
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            "header": headers.path.display().to_string(),
+            "abiManifest": headers.abi_manifest.display().to_string(),
+            "exports": headers.exports,
         })
         .to_string(),
     }
@@ -5050,7 +5194,8 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
             _ => None,
         })
         .collect();
-    validate_ffi_contract(&parsed.combined_source, &exports)?;
+    validate_ffi_contract(&parsed.module, &exports)?;
+    let repr_c_layouts = collect_repr_c_layouts(&parsed.module)?;
 
     let header_path = output
         .map(Path::to_path_buf)
@@ -5073,7 +5218,7 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
     std::fs::write(&header_path, header)
         .with_context(|| format!("failed writing header: {}", header_path.display()))?;
     let abi_manifest = header_path.with_extension("abi.json");
-    let panic_boundary = detect_ffi_panic_boundary(&parsed.combined_source);
+    let panic_boundary = detect_ffi_panic_boundary(&exports);
     let package_json = serde_json::json!({
         "name": package_name,
         "version": resolved
@@ -5092,6 +5237,14 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
             "nonReprCUnstable": true,
         },
         "symbolVersioning": "strict-name-signature-v0",
+        "reprCLayouts": repr_c_layouts.iter().map(|layout| {
+            serde_json::json!({
+                "name": layout.name,
+                "kind": layout.kind,
+                "size": layout.size,
+                "align": layout.align,
+            })
+        }).collect::<Vec<_>>(),
         "exports": exports.iter().map(|function| {
             serde_json::json!({
                 "name": function.name.as_str(),
@@ -5208,6 +5361,12 @@ fn render_c_header(package_name: &str, exports: &[&ast::Function]) -> String {
     header.push_str("\n#define ");
     header.push_str(&guard);
     header.push_str("\n\n#include <stdbool.h>\n#include <stddef.h>\n#include <stdint.h>\n\n#ifdef __cplusplus\nextern \"C\" {\n#endif\n\n");
+    header.push_str("typedef int32_t (*fz_callback_i32_v0)(int32_t arg);\n");
+    header.push_str("int32_t fz_host_init(void);\n");
+    header.push_str("int32_t fz_host_shutdown(void);\n");
+    header.push_str("int32_t fz_host_cleanup(void);\n");
+    header.push_str("int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb);\n");
+    header.push_str("int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg);\n\n");
     for function in exports {
         header.push_str(&format!(
             "{} {}({});\n",
@@ -5228,9 +5387,40 @@ fn render_c_header(package_name: &str, exports: &[&ast::Function]) -> String {
     header
 }
 
-fn validate_ffi_contract(source: &str, exports: &[&ast::Function]) -> Result<()> {
+fn validate_ffi_contract(
+    _module: &ast::Module,
+    exports: &[&ast::Function],
+) -> Result<()> {
     if exports.is_empty() {
         return Ok(());
+    }
+    let mut panic_mode: Option<&str> = None;
+    for function in exports {
+        let Some(mode) = function.ffi_panic.as_deref() else {
+            bail!(
+                "ffi panic contract missing on export `{}`: add `#[ffi_panic(abort)]` or `#[ffi_panic(error)]`",
+                function.name
+            );
+        };
+        if mode != "abort" && mode != "error" {
+            bail!(
+                "invalid ffi panic mode `{}` on export `{}`; expected `abort` or `error`",
+                mode,
+                function.name
+            );
+        }
+        if let Some(expected) = panic_mode {
+            if expected != mode {
+                bail!(
+                    "ffi panic contract mismatch across exports: expected `{}` but `{}` uses `{}`",
+                    expected,
+                    function.name,
+                    mode
+                );
+            }
+        } else {
+            panic_mode = Some(mode);
+        }
     }
     for function in exports {
         if !is_ffi_stable_type(&function.return_type) {
@@ -5251,25 +5441,114 @@ fn validate_ffi_contract(source: &str, exports: &[&ast::Function]) -> Result<()>
             }
         }
     }
-    if source.contains("panic(")
-        && !source.contains("#[ffi_panic(abort)]")
-        && !source.contains("#[ffi_panic(error)]")
-    {
-        bail!(
-            "ffi panic contract missing: add `#[ffi_panic(abort)]` or `#[ffi_panic(error)]` to prevent panic crossing C boundary"
-        );
-    }
     Ok(())
 }
 
-fn detect_ffi_panic_boundary(source: &str) -> &'static str {
-    if source.contains("#[ffi_panic(abort)]") {
-        "abort"
-    } else if source.contains("#[ffi_panic(error)]") {
-        "error"
-    } else {
-        "abort-or-translate"
+#[derive(Debug, Clone)]
+struct ReprCLayout {
+    name: String,
+    kind: &'static str,
+    size: usize,
+    align: usize,
+}
+
+fn collect_repr_c_layouts(module: &ast::Module) -> Result<Vec<ReprCLayout>> {
+    let mut layouts = Vec::new();
+    for item in &module.items {
+        match item {
+            ast::Item::Struct(item) if is_repr_c(item.repr.as_deref()) => {
+                let mut offset = 0usize;
+                let mut struct_align = 1usize;
+                for field in &item.fields {
+                    let (size, align) = ffi_type_layout(&field.ty).ok_or_else(|| {
+                        anyhow!(
+                            "repr(C) struct `{}` field `{}` uses unsupported layout type `{}`",
+                            item.name,
+                            field.name,
+                            field.ty
+                        )
+                    })?;
+                    offset = align_up(offset, align);
+                    offset += size;
+                    struct_align = struct_align.max(align);
+                }
+                let size = align_up(offset, struct_align);
+                layouts.push(ReprCLayout {
+                    name: item.name.clone(),
+                    kind: "struct",
+                    size,
+                    align: struct_align,
+                });
+            }
+            ast::Item::Enum(item) if is_repr_c(item.repr.as_deref()) => {
+                if item.variants.iter().any(|variant| !variant.payload.is_empty()) {
+                    bail!(
+                        "repr(C) enum `{}` has payload variants; only C-style fieldless enums are supported",
+                        item.name
+                    );
+                }
+                layouts.push(ReprCLayout {
+                    name: item.name.clone(),
+                    kind: "enum",
+                    size: 4,
+                    align: 4,
+                });
+            }
+            _ => {}
+        }
     }
+    Ok(layouts)
+}
+
+fn is_repr_c(repr: Option<&str>) -> bool {
+    repr.is_some_and(|repr| repr.to_ascii_lowercase().contains('c'))
+}
+
+fn ffi_type_layout(ty: &ast::Type) -> Option<(usize, usize)> {
+    match ty {
+        ast::Type::Void => Some((0, 1)),
+        ast::Type::Bool => Some((1, 1)),
+        ast::Type::Char => Some((4, 4)),
+        ast::Type::Int { bits, .. } => {
+            let bytes = (*bits as usize) / 8;
+            Some((bytes.max(1), bytes.max(1)))
+        }
+        ast::Type::Float { bits } => {
+            let bytes = (*bits as usize) / 8;
+            Some((bytes.max(1), bytes.max(1)))
+        }
+        ast::Type::Ptr { .. } => Some((
+            std::mem::size_of::<usize>(),
+            std::mem::align_of::<usize>(),
+        )),
+        _ => None,
+    }
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    if align == 0 {
+        return value;
+    }
+    let rem = value % align;
+    if rem == 0 {
+        value
+    } else {
+        value + (align - rem)
+    }
+}
+
+fn detect_ffi_panic_boundary(exports: &[&ast::Function]) -> &'static str {
+    for function in exports {
+        if let Some(mode) = function.ffi_panic.as_deref() {
+            if mode == "abort" {
+                return "abort";
+            }
+            if mode == "error" {
+                return "error";
+            }
+        }
+    }
+    "abort-or-translate"
 }
 
 fn is_ffi_stable_type(ty: &ast::Type) -> bool {
@@ -5383,12 +5662,18 @@ fn resolve_source(path: &Path) -> Result<ResolvedSource> {
     manifest
         .validate()
         .map_err(|error| anyhow!("invalid fozzy.toml: {error}"))?;
-    let relative = manifest.primary_bin_path().ok_or_else(|| {
-        anyhow!(
-            "no [[target.bin]] entry in {} for source resolution",
-            manifest_path.display()
-        )
-    })?;
+    let relative = manifest
+        .target
+        .lib
+        .as_ref()
+        .map(|lib| lib.path.as_str())
+        .or_else(|| manifest.primary_bin_path())
+        .ok_or_else(|| {
+            anyhow!(
+                "no [target.lib] or [[target.bin]] entry in {} for source resolution",
+                manifest_path.display()
+            )
+        })?;
     Ok(ResolvedSource {
         source_path: path.join(relative),
         project_root: path.to_path_buf(),
@@ -5759,7 +6044,7 @@ mod tests {
         let header = std::env::temp_dir().join(format!("fozzylang-headers-{suffix}.h"));
         std::fs::write(
             &source,
-            "pub extern \"C\" fn add(left: i32, right: i32) -> i32;\n",
+            "#[ffi_panic(abort)]\npub extern \"C\" fn add(left: i32, right: i32) -> i32;\n",
         )
         .expect("source should be written");
 
@@ -5775,6 +6060,8 @@ mod tests {
         assert!(output.contains("abi_manifest="));
         let header_text = std::fs::read_to_string(&header).expect("header should be created");
         assert!(header_text.contains("int32_t add(int32_t left, int32_t right);"));
+        assert!(header_text.contains("int32_t fz_host_init(void);"));
+        assert!(header_text.contains("fz_host_register_callback_i32"));
         let abi_path = header.with_extension("abi.json");
         assert!(abi_path.exists());
 
@@ -5803,7 +6090,7 @@ mod tests {
         .expect("main source should be written");
         std::fs::write(
             root.join("src/ffi.fzy"),
-            "pub extern \"C\" fn add(left: i32, right: i32) -> i32;\n",
+            "#[ffi_panic(abort)]\npub extern \"C\" fn add(left: i32, right: i32) -> i32;\n",
         )
         .expect("ffi source should be written");
 
@@ -6131,8 +6418,12 @@ mod tests {
             Command::Build {
                 path: source.clone(),
                 release: false,
+                lib: false,
                 threads: Some(3),
                 backend: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
             },
             Format::Json,
         )
@@ -6149,6 +6440,42 @@ mod tests {
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(runtime_config);
+    }
+
+    #[test]
+    fn build_lib_emits_static_shared_and_headers() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-build-lib-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "#[ffi_panic(abort)]\npub extern \"C\" fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Build {
+                path: source.clone(),
+                release: false,
+                lib: true,
+                threads: None,
+                backend: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
+            },
+            Format::Json,
+        )
+        .expect("build --lib should succeed");
+        assert!(output.contains("\"buildMode\":\"lib\""));
+        assert!(output.contains("\"staticLib\""));
+        assert!(output.contains("\"sharedLib\""));
+        assert!(output.contains("\"header\""));
+        assert!(output.contains("\"abiManifest\""));
+
+        let _ = std::fs::remove_file(source);
     }
 
     #[test]

@@ -765,6 +765,17 @@ pub struct BuildArtifact {
 }
 
 #[derive(Debug, Clone)]
+pub struct LibraryArtifact {
+    pub module: String,
+    pub profile: BuildProfile,
+    pub status: &'static str,
+    pub diagnostics: usize,
+    pub static_lib: Option<PathBuf>,
+    pub shared_lib: Option<PathBuf>,
+    pub dependency_graph_hash: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct Output {
     pub module: String,
     pub nodes: usize,
@@ -834,6 +845,61 @@ pub fn compile_file_with_backend(
         status,
         diagnostics: report.diagnostics.len() + native_lowerability_errors.len(),
         output,
+        dependency_graph_hash: resolved.dependency_graph_hash,
+    })
+}
+
+pub fn compile_library_with_backend(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+) -> Result<LibraryArtifact> {
+    let resolved = resolve_source_path_with_target(path, true)?;
+    let parsed = parse_program(&resolved.source_path)?;
+    let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
+    let typed = hir::lower(&parsed.module);
+    let fir = fir::build_owned(typed);
+    let report = verifier::verify_with_policy(
+        &fir,
+        verifier::VerifyPolicy {
+            safe_profile: matches!(profile, BuildProfile::Verify),
+        },
+    );
+
+    let checks_enabled = resolved
+        .manifest
+        .as_ref()
+        .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
+        .unwrap_or(true);
+    let has_verifier_errors = report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_native_lowerability_errors = !native_lowerability_errors.is_empty();
+    let status = if has_native_lowerability_errors || (checks_enabled && has_verifier_errors) {
+        "error"
+    } else {
+        "ok"
+    };
+    let (static_lib, shared_lib) = if status == "ok" {
+        emit_native_libraries(
+            &fir,
+            &resolved.project_root,
+            profile,
+            resolved.manifest.as_ref(),
+            backend_override,
+        )?
+    } else {
+        (None, None)
+    };
+
+    Ok(LibraryArtifact {
+        module: fir.name,
+        profile,
+        status,
+        diagnostics: report.diagnostics.len() + native_lowerability_errors.len(),
+        static_lib,
+        shared_lib,
         dependency_graph_hash: resolved.dependency_graph_hash,
     })
 }
@@ -1649,11 +1715,24 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
         }
         let _ = writeln!(&mut out, "declare i32 @{}({})", import.symbol, params);
     }
-    if !used_imports.is_empty() {
+    let extern_imports = collect_extern_c_imports(fir);
+    for import in &extern_imports {
+        let params = import
+            .params
+            .iter()
+            .map(|_| "i32")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = writeln!(&mut out, "declare i32 @{}({})", import.name, params);
+    }
+    if !used_imports.is_empty() || !extern_imports.is_empty() {
         out.push('\n');
     }
     let string_literal_ids = build_string_literal_ids(&collect_string_literals(fir));
     for function in &fir.typed_functions {
+        if is_extern_c_import_decl(function) {
+            continue;
+        }
         out.push_str(&llvm_emit_function(
             function,
             forced_main_return.filter(|_| function.name == "main"),
@@ -2070,6 +2149,22 @@ fn native_runtime_import_for_callee(callee: &str) -> Option<&'static NativeRunti
         .find(|import| import.callee == callee)
 }
 
+fn is_extern_c_import_decl(function: &hir::TypedFunction) -> bool {
+    function.is_extern
+        && function
+            .abi
+            .as_deref()
+            .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+        && function.body.is_empty()
+}
+
+fn collect_extern_c_imports<'a>(fir: &'a fir::FirModule) -> Vec<&'a hir::TypedFunction> {
+    fir.typed_functions
+        .iter()
+        .filter(|function| is_extern_c_import_decl(function))
+        .collect()
+}
+
 fn collect_used_native_runtime_imports(fir: &fir::FirModule) -> Vec<&'static NativeRuntimeImport> {
     let mut seen = HashSet::<&'static str>::new();
     let mut used = Vec::<&'static NativeRuntimeImport>::new();
@@ -2324,6 +2419,10 @@ enum LockfileMode {
 }
 
 fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
+    resolve_source_path_with_target(input, false)
+}
+
+fn resolve_source_path_with_target(input: &Path, prefer_lib_target: bool) -> Result<ResolvedSource> {
     if input.is_file() {
         let root = input
             .parent()
@@ -2346,9 +2445,24 @@ fn resolve_source_path(input: &Path) -> Result<ResolvedSource> {
     let (manifest, manifest_path, dependency_graph_hash) =
         load_manifest(input, LockfileMode::ValidateOrCreate)?;
 
-    let relative = manifest
-        .primary_bin_path()
-        .ok_or_else(|| anyhow!("no [[target.bin]] entry in {}", manifest_path.display()))?;
+    let relative = if prefer_lib_target {
+        manifest
+            .target
+            .lib
+            .as_ref()
+            .map(|lib| lib.path.as_str())
+            .or_else(|| manifest.primary_bin_path())
+            .ok_or_else(|| {
+                anyhow!(
+                    "no [target.lib] or [[target.bin]] entry in {}",
+                    manifest_path.display()
+                )
+            })?
+    } else {
+        manifest
+            .primary_bin_path()
+            .ok_or_else(|| anyhow!("no [[target.bin]] entry in {}", manifest_path.display()))?
+    };
     Ok(ResolvedSource {
         source_path: input.join(relative),
         project_root: input.to_path_buf(),
@@ -2640,6 +2754,453 @@ fn emit_native_artifact(
     }
 }
 
+fn emit_native_libraries(
+    fir: &fir::FirModule,
+    project_root: &Path,
+    profile: BuildProfile,
+    manifest: Option<&manifest::Manifest>,
+    backend_override: Option<&str>,
+) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+    let backend = resolve_native_backend(profile, backend_override)?;
+    match backend.as_str() {
+        "llvm" => emit_native_libraries_llvm(fir, project_root, profile, manifest),
+        "cranelift" => emit_native_libraries_cranelift(fir, project_root, profile, manifest),
+        other => Err(anyhow!(
+            "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
+            other
+        )),
+    }
+}
+
+fn emit_native_libraries_llvm(
+    fir: &fir::FirModule,
+    project_root: &Path,
+    profile: BuildProfile,
+    manifest: Option<&manifest::Manifest>,
+) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+    let build_dir = project_root.join(".fz").join("build");
+    std::fs::create_dir_all(&build_dir)
+        .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
+
+    let ll_path = build_dir.join(format!("{}.ll", fir.name));
+    let obj_path = build_dir.join(format!("{}.ffi.o", fir.name));
+    let shim_obj_path = build_dir.join(format!("{}.ffi.runtime.o", fir.name));
+    let static_path = build_dir.join(format!("lib{}.a", fir.name));
+    let shared_path = build_dir.join(format!("lib{}.{}", fir.name, shared_lib_extension()));
+
+    let string_literals = collect_string_literals(fir);
+    let spawn_task_symbols = collect_spawn_task_symbols(fir);
+    let runtime_shim_path =
+        ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
+    let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
+    let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks);
+    std::fs::write(&ll_path, llvm_ir)
+        .with_context(|| format!("failed writing llvm ir: {}", ll_path.display()))?;
+
+    let candidates = linker_candidates();
+    let mut obj_compiled = false;
+    let mut shim_compiled = false;
+    let mut last_error = None;
+    for tool in &candidates {
+        let mut obj_cmd = Command::new(tool);
+        obj_cmd
+            .arg("-x")
+            .arg("ir")
+            .arg(&ll_path)
+            .arg("-c")
+            .arg("-fPIC")
+            .arg("-o")
+            .arg(&obj_path);
+        apply_target_link_flags(&mut obj_cmd);
+        apply_profile_optimization_flags(&mut obj_cmd, profile, manifest);
+        match obj_cmd.output() {
+            Ok(output) if output.status.success() => {
+                obj_compiled = true;
+            }
+            Ok(output) => {
+                last_error = Some(format!(
+                    "{} failed compiling llvm object: {}",
+                    tool,
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+                continue;
+            }
+            Err(err) => {
+                last_error = Some(format!("{tool} unavailable: {err}"));
+                continue;
+            }
+        }
+
+        let mut shim_cmd = Command::new(tool);
+        shim_cmd
+            .arg("-x")
+            .arg("c")
+            .arg(&runtime_shim_path)
+            .arg("-c")
+            .arg("-fPIC")
+            .arg("-o")
+            .arg(&shim_obj_path);
+        apply_target_link_flags(&mut shim_cmd);
+        apply_profile_optimization_flags(&mut shim_cmd, profile, manifest);
+        match shim_cmd.output() {
+            Ok(output) if output.status.success() => {
+                shim_compiled = true;
+                break;
+            }
+            Ok(output) => {
+                last_error = Some(format!(
+                    "{} failed compiling runtime shim object: {}",
+                    tool,
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Err(err) => {
+                last_error = Some(format!("{tool} unavailable: {err}"));
+            }
+        }
+    }
+    if !obj_compiled || !shim_compiled {
+        return Err(anyhow!(
+            "failed compiling ffi library objects: {}",
+            last_error.unwrap_or_else(|| "unknown compiler error".to_string())
+        ));
+    }
+
+    create_static_archive(&static_path, &[obj_path.as_path(), shim_obj_path.as_path()])?;
+    let allow_undefined = !collect_extern_c_imports(fir).is_empty();
+    link_shared_library(
+        &shared_path,
+        &[obj_path.as_path(), shim_obj_path.as_path()],
+        manifest,
+        allow_undefined,
+    )?;
+    Ok((Some(static_path), Some(shared_path)))
+}
+
+fn emit_native_libraries_cranelift(
+    fir: &fir::FirModule,
+    project_root: &Path,
+    profile: BuildProfile,
+    manifest: Option<&manifest::Manifest>,
+) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
+    let build_dir = project_root.join(".fz").join("build");
+    std::fs::create_dir_all(&build_dir)
+        .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
+    let object_path = build_dir.join(format!("{}.ffi.o", fir.name));
+    let shim_obj_path = build_dir.join(format!("{}.ffi.runtime.o", fir.name));
+    let static_path = build_dir.join(format!("lib{}.a", fir.name));
+    let shared_path = build_dir.join(format!("lib{}.{}", fir.name, shared_lib_extension()));
+
+    let string_literals = collect_string_literals(fir);
+    let string_literal_ids = build_string_literal_ids(&string_literals);
+    let mut flags_builder = settings::builder();
+    let optimize_override = manifest
+        .and_then(|manifest| profile_config(manifest, profile))
+        .and_then(|config| config.optimize);
+    let opt_level = match (profile, optimize_override) {
+        (_, Some(true)) => "speed",
+        (_, Some(false)) => "none",
+        (BuildProfile::Dev, None) => "none",
+        (BuildProfile::Release, None) => "speed",
+        (BuildProfile::Verify, None) => "speed",
+    };
+    flags_builder
+        .set("opt_level", opt_level)
+        .map_err(|error| anyhow!("failed setting cranelift opt_level={opt_level}: {error}"))?;
+    flags_builder
+        .set("is_pic", "true")
+        .map_err(|error| anyhow!("failed enabling cranelift PIC codegen: {error}"))?;
+    let flags = settings::Flags::new(flags_builder);
+    let isa_builder = cranelift_native::builder()
+        .map_err(|error| anyhow!("failed constructing cranelift native isa: {error}"))?;
+    let isa = isa_builder
+        .finish(flags)
+        .map_err(|error| anyhow!("failed finalizing cranelift isa: {error}"))?;
+    let object_builder = ObjectBuilder::new(isa, fir.name.clone(), default_libcall_names())
+        .map_err(|error| anyhow!("failed creating cranelift object builder: {error}"))?;
+    let mut module = ObjectModule::new(object_builder);
+
+    let mut function_ids = HashMap::new();
+    for function in &fir.typed_functions {
+        let mut sig = module.make_signature();
+        for _ in &function.params {
+            sig.params.push(AbiParam::new(types::I32));
+        }
+        sig.returns.push(AbiParam::new(types::I32));
+        let linkage = if is_extern_c_import_decl(function) {
+            Linkage::Import
+        } else {
+            Linkage::Export
+        };
+        let id = module
+            .declare_function(function.name.as_str(), linkage, &sig)
+            .map_err(|error| {
+                anyhow!(
+                    "failed declaring cranelift ffi symbol `{}`: {error}",
+                    function.name
+                )
+            })?;
+        function_ids.insert(function.name.clone(), id);
+    }
+    declare_native_runtime_imports(&mut module, &mut function_ids)?;
+    let spawn_task_symbols = collect_spawn_task_symbols(fir);
+    let mut task_ref_ids = HashMap::<String, i32>::new();
+    for (index, symbol) in spawn_task_symbols.iter().enumerate() {
+        task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
+    }
+    for function in &fir.typed_functions {
+        if is_extern_c_import_decl(function) {
+            continue;
+        }
+        let Some(function_id) = function_ids.get(&function.name).copied() else {
+            continue;
+        };
+        let mut context = module.make_context();
+        context.func.signature.params.clear();
+        context.func.signature.returns.clear();
+        for _ in &function.params {
+            context
+                .func
+                .signature
+                .params
+                .push(AbiParam::new(types::I32));
+        }
+        context
+            .func
+            .signature
+            .returns
+            .push(AbiParam::new(types::I32));
+
+        let mut function_builder_context = FunctionBuilderContext::new();
+        let mut builder = FunctionBuilder::new(&mut context.func, &mut function_builder_context);
+        let entry = builder.create_block();
+        builder.append_block_params_for_function_params(entry);
+        builder.switch_to_block(entry);
+        builder.seal_block(entry);
+
+        let mut locals = HashMap::<String, Variable>::new();
+        for (index, param) in function.params.iter().enumerate() {
+            let var = Variable::from_u32(index as u32);
+            builder.declare_var(var, types::I32);
+            let value = builder.block_params(entry)[index];
+            builder.def_var(var, value);
+            locals.insert(param.name.clone(), var);
+        }
+        let mut next_var = function.params.len();
+        let terminated = clif_emit_block(
+            &mut builder,
+            &mut module,
+            &function_ids,
+            &function.body,
+            &mut locals,
+            &mut next_var,
+            &string_literal_ids,
+            &task_ref_ids,
+        )?;
+        if !terminated {
+            let ret = builder.ins().iconst(types::I32, 0);
+            builder.ins().return_(&[ret]);
+        }
+        builder.finalize();
+        module
+            .define_function(function_id, &mut context)
+            .map_err(|error| {
+                anyhow!(
+                    "failed defining cranelift ffi function `{}`: {error}",
+                    function.name
+                )
+            })?;
+        module.clear_context(&mut context);
+    }
+    let object_product = module.finish();
+    let object_bytes = object_product
+        .emit()
+        .map_err(|error| anyhow!("failed emitting cranelift object bytes: {error}"))?;
+    std::fs::write(&object_path, object_bytes).with_context(|| {
+        format!(
+            "failed writing cranelift ffi object: {}",
+            object_path.display()
+        )
+    })?;
+
+    let runtime_shim_path =
+        ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
+    compile_runtime_shim_object(&runtime_shim_path, &shim_obj_path, profile, manifest)?;
+    create_static_archive(&static_path, &[object_path.as_path(), shim_obj_path.as_path()])?;
+    let allow_undefined = !collect_extern_c_imports(fir).is_empty();
+    link_shared_library(
+        &shared_path,
+        &[object_path.as_path(), shim_obj_path.as_path()],
+        manifest,
+        allow_undefined,
+    )?;
+    Ok((Some(static_path), Some(shared_path)))
+}
+
+fn compile_runtime_shim_object(
+    runtime_shim_path: &Path,
+    out_object: &Path,
+    profile: BuildProfile,
+    manifest: Option<&manifest::Manifest>,
+) -> Result<()> {
+    let candidates = linker_candidates();
+    let mut last_error = None;
+    for tool in candidates {
+        let mut cmd = Command::new(&tool);
+        cmd.arg("-x")
+            .arg("c")
+            .arg(runtime_shim_path)
+            .arg("-c")
+            .arg("-fPIC")
+            .arg("-o")
+            .arg(out_object);
+        apply_target_link_flags(&mut cmd);
+        apply_profile_optimization_flags(&mut cmd, profile, manifest);
+        match cmd.output() {
+            Ok(output) if output.status.success() => return Ok(()),
+            Ok(output) => {
+                last_error = Some(format!(
+                    "{} failed compiling runtime shim object: {}",
+                    tool,
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            Err(err) => {
+                last_error = Some(format!("{tool} unavailable: {err}"));
+            }
+        }
+    }
+    Err(anyhow!(
+        "failed to compile runtime shim object: {}",
+        last_error.unwrap_or_else(|| "unknown compiler error".to_string())
+    ))
+}
+
+fn create_static_archive(output: &Path, objects: &[&Path]) -> Result<()> {
+    let candidates = archiver_candidates();
+    let mut last_error = None;
+    for tool in candidates {
+        let mut cmd = Command::new(&tool);
+        cmd.arg("rcs").arg(output);
+        for object in objects {
+            cmd.arg(object);
+        }
+        match cmd.output() {
+            Ok(output_result) if output_result.status.success() => return Ok(()),
+            Ok(output_result) => {
+                last_error = Some(format!(
+                    "{} failed creating static archive: {}",
+                    tool,
+                    String::from_utf8_lossy(&output_result.stderr)
+                ));
+            }
+            Err(err) => {
+                last_error = Some(format!("{tool} unavailable: {err}"));
+            }
+        }
+    }
+    Err(anyhow!(
+        "failed to create static archive {}: {}",
+        output.display(),
+        last_error.unwrap_or_else(|| "unknown archiver error".to_string())
+    ))
+}
+
+fn link_shared_library(
+    output: &Path,
+    objects: &[&Path],
+    manifest: Option<&manifest::Manifest>,
+    allow_undefined: bool,
+) -> Result<()> {
+    let candidates = linker_candidates();
+    let mut last_error = None;
+    for tool in candidates {
+        let mut cmd = Command::new(&tool);
+        if cfg!(target_vendor = "apple") {
+            cmd.arg("-dynamiclib");
+            if allow_undefined {
+                cmd.arg("-Wl,-undefined,dynamic_lookup");
+            }
+        } else {
+            cmd.arg("-shared");
+            if allow_undefined {
+                cmd.arg("-Wl,--allow-shlib-undefined");
+            }
+        }
+        for object in objects {
+            cmd.arg(object);
+        }
+        cmd.arg("-o").arg(output);
+        apply_target_link_flags(&mut cmd);
+        apply_manifest_link_args(&mut cmd, manifest);
+        apply_extra_linker_args(&mut cmd);
+        match cmd.output() {
+            Ok(output_result) if output_result.status.success() => return Ok(()),
+            Ok(output_result) => {
+                last_error = Some(format!(
+                    "{} failed linking shared library: {}",
+                    tool,
+                    String::from_utf8_lossy(&output_result.stderr)
+                ));
+            }
+            Err(err) => {
+                last_error = Some(format!("{tool} unavailable: {err}"));
+            }
+        }
+    }
+    Err(anyhow!(
+        "failed to link shared library {}: {}",
+        output.display(),
+        last_error.unwrap_or_else(|| "unknown linker error".to_string())
+    ))
+}
+
+fn apply_profile_optimization_flags(
+    cmd: &mut Command,
+    profile: BuildProfile,
+    manifest: Option<&manifest::Manifest>,
+) {
+    let optimize_override = manifest
+        .and_then(|manifest| profile_config(manifest, profile))
+        .and_then(|config| config.optimize);
+    match (profile, optimize_override) {
+        (_, Some(true)) => {
+            cmd.arg("-O2");
+        }
+        (_, Some(false)) => {
+            cmd.arg("-O0");
+        }
+        (BuildProfile::Dev, None) => {
+            cmd.arg("-O0");
+        }
+        (BuildProfile::Release, None) => {
+            cmd.arg("-O2");
+        }
+        (BuildProfile::Verify, None) => {
+            cmd.arg("-O1").arg("-g");
+        }
+    }
+}
+
+fn archiver_candidates() -> Vec<String> {
+    if let Ok(explicit) = std::env::var("FZ_AR") {
+        if !explicit.trim().is_empty() {
+            return vec![explicit];
+        }
+    }
+    vec!["ar".to_string()]
+}
+
+fn shared_lib_extension() -> &'static str {
+    if cfg!(target_vendor = "apple") {
+        "dylib"
+    } else if cfg!(target_os = "windows") {
+        "dll"
+    } else {
+        "so"
+    }
+}
+
 fn resolve_native_backend(profile: BuildProfile, backend_override: Option<&str>) -> Result<String> {
     if let Some(explicit) = backend_override {
         let normalized = explicit.trim().to_ascii_lowercase();
@@ -2702,6 +3263,7 @@ fn emit_native_artifact_llvm(
             .arg("-o")
             .arg(&bin_path);
         apply_target_link_flags(&mut cmd);
+        apply_manifest_link_args(&mut cmd, manifest);
         let optimize_override = manifest
             .and_then(|manifest| profile_config(manifest, profile))
             .and_then(|config| config.optimize);
@@ -2814,7 +3376,11 @@ fn emit_native_artifact_cranelift(
             sig.params.push(AbiParam::new(types::I32));
         }
         sig.returns.push(AbiParam::new(types::I32));
-        let linkage = Linkage::Export;
+        let linkage = if is_extern_c_import_decl(function) {
+            Linkage::Import
+        } else {
+            Linkage::Export
+        };
         let id = module
             .declare_function(function.name.as_str(), linkage, &sig)
             .map_err(|error| {
@@ -2835,6 +3401,9 @@ fn emit_native_artifact_cranelift(
         ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
 
     for function in &fir.typed_functions {
+        if is_extern_c_import_decl(function) {
+            continue;
+        }
         let Some(function_id) = function_ids.get(&function.name).copied() else {
             continue;
         };
@@ -2921,6 +3490,7 @@ fn emit_native_artifact_cranelift(
             .arg(&bin_path)
             .arg("-lpthread");
         apply_target_link_flags(&mut cmd);
+        apply_manifest_link_args(&mut cmd, manifest);
         // Object code is already generated at selected Cranelift optimization level.
         apply_extra_linker_args(&mut cmd);
 
@@ -3720,7 +4290,18 @@ fn ensure_native_runtime_shim(
     string_literals: &[String],
     task_symbols: &[String],
 ) -> Result<PathBuf> {
-    let runtime_shim_path = build_dir.join("fz_native_runtime.c");
+    let mut hasher = Sha256::new();
+    for literal in string_literals {
+        hasher.update(literal.as_bytes());
+        hasher.update([0u8]);
+    }
+    for symbol in task_symbols {
+        hasher.update(symbol.as_bytes());
+        hasher.update([0u8]);
+    }
+    let digest = hasher.finalize();
+    let tag = hex_encode(&digest[..8]);
+    let runtime_shim_path = build_dir.join(format!("fz_native_runtime_{tag}.c"));
     std::fs::write(
         &runtime_shim_path,
         render_native_runtime_shim(string_literals, task_symbols),
@@ -3792,6 +4373,7 @@ extern char** environ;
 "#,
     );
     c.push_str("typedef int32_t (*fz_task_entry_fn)(void);\n");
+    c.push_str("typedef int32_t (*fz_callback_i32_v0)(int32_t);\n");
     c.push_str(&task_declarations);
     c.push_str("static fz_task_entry_fn fz_task_entries[] = {\n");
     c.push_str(&task_entries);
@@ -3938,6 +4520,9 @@ static pthread_mutex_t fz_spawn_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t fz_spawn_atexit_once = PTHREAD_ONCE_INIT;
 static int64_t fz_async_deadline_ms = 0;
 static int32_t fz_async_cancelled = 0;
+static fz_callback_i32_v0 fz_host_callbacks[64];
+static int fz_host_initialized = 0;
+static pthread_mutex_t fz_host_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t fz_env_bootstrap_once = PTHREAD_ONCE_INIT;
 
 typedef struct {
@@ -8157,6 +8742,59 @@ int32_t fz_native_pulse(void) {
 int32_t fz_native_net_poll_next(void) {
   return -1;
 }
+
+int32_t fz_host_init(void) {
+  pthread_mutex_lock(&fz_host_lock);
+  fz_host_initialized = 1;
+  for (int i = 0; i < 64; i++) {
+    fz_host_callbacks[i] = NULL;
+  }
+  pthread_mutex_unlock(&fz_host_lock);
+  return 0;
+}
+
+int32_t fz_host_shutdown(void) {
+  pthread_mutex_lock(&fz_host_lock);
+  fz_host_initialized = 0;
+  pthread_mutex_unlock(&fz_host_lock);
+  return 0;
+}
+
+int32_t fz_host_cleanup(void) {
+  pthread_mutex_lock(&fz_host_lock);
+  for (int i = 0; i < 64; i++) {
+    fz_host_callbacks[i] = NULL;
+  }
+  pthread_mutex_unlock(&fz_host_lock);
+  return 0;
+}
+
+int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb) {
+  if (slot < 0 || slot >= 64 || cb == NULL) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_host_lock);
+  if (!fz_host_initialized) {
+    pthread_mutex_unlock(&fz_host_lock);
+    return -2;
+  }
+  fz_host_callbacks[slot] = cb;
+  pthread_mutex_unlock(&fz_host_lock);
+  return 0;
+}
+
+int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg) {
+  if (slot < 0 || slot >= 64) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_host_lock);
+  fz_callback_i32_v0 cb = fz_host_callbacks[slot];
+  pthread_mutex_unlock(&fz_host_lock);
+  if (cb == NULL) {
+    return -2;
+  }
+  return cb(arg);
+}
 "#,
     );
     c
@@ -8197,6 +8835,32 @@ fn apply_target_link_flags(cmd: &mut Command) {
     }
 }
 
+fn apply_manifest_link_args(cmd: &mut Command, manifest: Option<&manifest::Manifest>) {
+    let Some(manifest) = manifest else {
+        return;
+    };
+    for search in &manifest.link.search {
+        let trimmed = search.trim();
+        if !trimmed.is_empty() {
+            cmd.arg(format!("-L{trimmed}"));
+        }
+    }
+    for lib in &manifest.link.libs {
+        let trimmed = lib.trim();
+        if !trimmed.is_empty() {
+            cmd.arg(format!("-l{trimmed}"));
+        }
+    }
+    if cfg!(target_vendor = "apple") {
+        for framework in &manifest.link.frameworks {
+            let trimmed = framework.trim();
+            if !trimmed.is_empty() {
+                cmd.arg("-framework").arg(trimmed);
+            }
+        }
+    }
+}
+
 fn apply_extra_linker_args(cmd: &mut Command) {
     if let Ok(extra) = std::env::var("FZ_LINKER_ARGS") {
         for arg in extra.split_whitespace() {
@@ -8223,8 +8887,9 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        compile_file, compile_file_with_backend, emit_ir, parse_program, refresh_lockfile,
-        render_native_runtime_shim, verify_file, BuildProfile,
+        compile_file, compile_file_with_backend, compile_library_with_backend, emit_ir,
+        lower_llvm_ir, parse_program, refresh_lockfile, render_native_runtime_shim, verify_file,
+        BuildProfile,
     };
 
     #[test]
@@ -8278,6 +8943,48 @@ mod tests {
         assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compile_library_uses_lib_target_when_present() {
+        let project_name = format!(
+            "fozzylang-project-lib-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo_lib\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"demo_lib\"\npath=\"src/lib.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "#[ffi_panic(abort)]\npub extern \"C\" fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n",
+        )
+        .expect("source should be written");
+
+        let artifact = compile_library_with_backend(&root, BuildProfile::Dev, None)
+            .expect("library project should compile");
+        assert_eq!(artifact.module, "lib");
+        assert!(artifact.static_lib.as_ref().is_some_and(|path| path.exists()));
+        assert!(artifact.shared_lib.as_ref().is_some_and(|path| path.exists()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn llvm_lowering_declares_extern_c_import_without_defining_stub() {
+        let source = "extern \"C\" fn c_add(left: i32, right: i32) -> i32;\nfn main() -> i32 {\n    return c_add(1, 2)\n}\n";
+        let module = parser::parse(source, "ffi_import").expect("source should parse");
+        let typed = hir::lower(&module);
+        let fir = fir::build_owned(typed);
+        let ir = lower_llvm_ir(&fir, true);
+        assert!(ir.contains("declare i32 @c_add(i32, i32)"));
+        assert!(!ir.contains("define i32 @c_add("));
     }
 
     #[test]

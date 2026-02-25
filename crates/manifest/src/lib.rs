@@ -14,6 +14,8 @@ pub struct Manifest {
     #[serde(default)]
     pub target: Target,
     #[serde(default)]
+    pub link: Link,
+    #[serde(default)]
     pub deps: BTreeMap<String, Dependency>,
     #[serde(default)]
     pub profiles: Profiles,
@@ -36,6 +38,16 @@ pub struct BinTarget {
 pub struct LibTarget {
     pub name: String,
     pub path: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Link {
+    #[serde(default)]
+    pub libs: Vec<String>,
+    #[serde(default)]
+    pub search: Vec<String>,
+    #[serde(default)]
+    pub frameworks: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +90,21 @@ impl Manifest {
         }
         if self.target.bin.is_empty() && self.target.lib.is_none() {
             return Err("manifest must define at least one target".to_string());
+        }
+        for (index, lib) in self.link.libs.iter().enumerate() {
+            if lib.trim().is_empty() {
+                return Err(format!("link.libs[{index}] cannot be empty"));
+            }
+        }
+        for (index, path) in self.link.search.iter().enumerate() {
+            if path.trim().is_empty() {
+                return Err(format!("link.search[{index}] cannot be empty"));
+            }
+        }
+        for (index, framework) in self.link.frameworks.iter().enumerate() {
+            if framework.trim().is_empty() {
+                return Err(format!("link.frameworks[{index}] cannot be empty"));
+            }
         }
         for (name, dep) in &self.deps {
             match dep {
@@ -168,5 +195,30 @@ mod tests {
             manifest.deps.get("parser"),
             Some(super::Dependency::Git { .. })
         ));
+    }
+
+    #[test]
+    fn loads_link_configuration() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [link]
+            libs = ["ssl", "crypto"]
+            search = ["/usr/local/lib"]
+            frameworks = ["CoreFoundation"]
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        manifest
+            .validate()
+            .expect("manifest should pass validation");
+        assert_eq!(manifest.link.libs.len(), 2);
+        assert_eq!(manifest.link.search.len(), 1);
+        assert_eq!(manifest.link.frameworks.len(), 1);
     }
 }

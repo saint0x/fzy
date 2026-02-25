@@ -101,6 +101,7 @@ struct Parser {
     diagnostics: Vec<Diagnostic>,
     module: Module,
     pending_repr: Option<String>,
+    pending_ffi_panic: Option<String>,
 }
 
 impl Parser {
@@ -123,6 +124,7 @@ impl Parser {
                 free_sites: 0,
             },
             pending_repr: None,
+            pending_ffi_panic: None,
         }
     }
 
@@ -160,35 +162,79 @@ impl Parser {
             self.push_diag_at(name_token.line, name_token.col, "expected attribute name");
             return;
         };
-        if name != "repr" {
-            self.push_diag_at(name_token.line, name_token.col, "unsupported attribute");
-            self.consume_until(&[TokenKind::RBracket]);
-            let _ = self.consume(&TokenKind::RBracket);
-            return;
-        }
-        if !self.consume(&TokenKind::LParen) {
-            self.push_diag_at(name_token.line, name_token.col, "expected `(` after `repr`");
-            return;
-        }
-        let mut parts = Vec::new();
-        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
-            let Some(tok) = self.advance() else {
-                break;
-            };
-            match tok.kind {
-                TokenKind::Ident(part) => parts.push(part),
-                TokenKind::Comma => {}
-                _ => self.push_diag_at(tok.line, tok.col, "invalid repr attribute component"),
+        match name.as_str() {
+            "repr" => {
+                if !self.consume(&TokenKind::LParen) {
+                    self.push_diag_at(name_token.line, name_token.col, "expected `(` after `repr`");
+                    return;
+                }
+                let mut parts = Vec::new();
+                while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                    let Some(tok) = self.advance() else {
+                        break;
+                    };
+                    match tok.kind {
+                        TokenKind::Ident(part) => parts.push(part),
+                        TokenKind::Comma => {}
+                        _ => self.push_diag_at(tok.line, tok.col, "invalid repr attribute component"),
+                    }
+                }
+                let _ = self.consume(&TokenKind::RParen);
+                let _ = self.consume(&TokenKind::RBracket);
+                if !parts.is_empty() {
+                    self.pending_repr = Some(parts.join(", "));
+                }
             }
-        }
-        let _ = self.consume(&TokenKind::RParen);
-        let _ = self.consume(&TokenKind::RBracket);
-        if !parts.is_empty() {
-            self.pending_repr = Some(parts.join(", "));
+            "ffi_panic" => {
+                if !self.consume(&TokenKind::LParen) {
+                    self.push_diag_at(
+                        name_token.line,
+                        name_token.col,
+                        "expected `(` after `ffi_panic`",
+                    );
+                    return;
+                }
+                let mode = match self.advance() {
+                    Some(Token {
+                        kind: TokenKind::Ident(mode),
+                        ..
+                    }) => mode,
+                    Some(tok) => {
+                        self.push_diag_at(tok.line, tok.col, "invalid ffi_panic mode");
+                        String::new()
+                    }
+                    None => String::new(),
+                };
+                if !mode.is_empty() && mode != "abort" && mode != "error" {
+                    self.push_diag_at(
+                        name_token.line,
+                        name_token.col,
+                        "ffi_panic mode must be `abort` or `error`",
+                    );
+                } else if !mode.is_empty() {
+                    self.pending_ffi_panic = Some(mode);
+                }
+                let _ = self.consume(&TokenKind::RParen);
+                let _ = self.consume(&TokenKind::RBracket);
+            }
+            _ => {
+                self.push_diag_at(name_token.line, name_token.col, "unsupported attribute");
+                self.consume_until(&[TokenKind::RBracket]);
+                let _ = self.consume(&TokenKind::RBracket);
+            }
         }
     }
 
     fn parse_item(&mut self) -> Option<ast::Item> {
+        if self.pending_ffi_panic.is_some()
+            && !matches!(
+                self.peek_kind(),
+                TokenKind::KwFn | TokenKind::KwAsync | TokenKind::KwPub | TokenKind::KwExtern
+            )
+        {
+            self.push_diag_here("`#[ffi_panic(...)]` applies only to functions");
+            self.pending_ffi_panic = None;
+        }
         if self.at(&TokenKind::KwUse) {
             self.parse_use_or_cap();
             return None;
@@ -554,6 +600,7 @@ impl Parser {
             is_pub,
             is_extern,
             abi,
+            ffi_panic: self.pending_ffi_panic.take(),
         }))
     }
 
@@ -1138,6 +1185,12 @@ impl Parser {
 
     fn at(&self, kind: &TokenKind) -> bool {
         self.peek().is_some_and(|tok| tok.kind == *kind)
+    }
+
+    fn peek_kind(&self) -> TokenKind {
+        self.peek()
+            .map(|token| token.kind.clone())
+            .unwrap_or(TokenKind::Eof)
     }
 
     fn peek(&self) -> Option<&Token> {
@@ -1851,5 +1904,35 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn parses_ffi_panic_attribute_on_function() {
+        let source = r#"
+            #[ffi_panic(abort)]
+            pub extern "C" fn add(left: i32, right: i32) -> i32;
+        "#;
+        let module = parse(source, "ffi").expect("parse should succeed");
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "add" => Some(function),
+                _ => None,
+            })
+            .expect("ffi function should exist");
+        assert_eq!(function.ffi_panic.as_deref(), Some("abort"));
+    }
+
+    #[test]
+    fn rejects_invalid_ffi_panic_mode() {
+        let source = r#"
+            #[ffi_panic(ignore)]
+            pub extern "C" fn add(left: i32, right: i32) -> i32;
+        "#;
+        let diagnostics = parse(source, "ffi").expect_err("invalid mode should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("ffi_panic mode must be")));
     }
 }

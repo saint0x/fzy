@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "c-ffi-matrix-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "bash",
+      "args": ["scripts/c_ffi_matrix.sh"],
+      "exit_code": 0,
+      "stdout": "c-ffi-matrix-ok\n",
+      "stderr": "",
+      "times": 1
+    }
+  ]
+}

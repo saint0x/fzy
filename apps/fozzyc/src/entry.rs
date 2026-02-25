@@ -132,13 +132,21 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("build") => {
             let path = arg_path(args, 1)?;
             let release = args.iter().any(|a| a == "--release");
+            let lib = args.iter().any(|a| a == "--lib");
             let threads = parse_u16_flag(args, "--threads")?;
             let backend = parse_backend_flag(args)?;
+            let link_libs = parse_repeated_value_flags(args, &["-l", "--link-lib"])?;
+            let link_search = parse_repeated_value_flags(args, &["-L", "--link-search"])?;
+            let frameworks = parse_repeated_value_flags(args, &["-framework", "--framework"])?;
             Ok(Command::Build {
                 path,
                 release,
+                lib,
                 threads,
                 backend,
+                link_libs,
+                link_search,
+                frameworks,
             })
         }
         Some("run") => {
@@ -335,7 +343,7 @@ fn print_help() {
         "fz <command> [options]\n\
 commands:\n\
   init <name>\n\
-  build <path> [--release] [--threads N] [--backend llvm|cranelift]\n\
+  build <path> [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name]\n\
   run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [-- <args>]\n\
   test <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
   fmt <path>\n\
@@ -373,6 +381,10 @@ flags:\n\
   --record <path>\n\
   --host-backends\n\
   --backend <llvm|cranelift>\n\
+  --lib\n\
+  -l|--link-lib <name> (repeatable)\n\
+  -L|--link-search <path> (repeatable)\n\
+  -framework|--framework <name> (repeatable)\n\
   --threads <u16>\n\
   --sched <fifo|random|coverage_guided>\n\
   --filter <substring>\n\
@@ -447,6 +459,23 @@ fn parse_backend_flag(args: &[String]) -> Result<Option<String>> {
         "llvm" | "cranelift" => Ok(Some(normalized)),
         _ => bail!("invalid --backend `{value}`; expected `llvm` or `cranelift`"),
     }
+}
+
+fn parse_repeated_value_flags(args: &[String], flags: &[&str]) -> Result<Vec<String>> {
+    let mut values = Vec::new();
+    let mut idx = 0usize;
+    while idx < args.len() {
+        if flags.iter().any(|flag| args[idx] == *flag) {
+            let value = args
+                .get(idx + 1)
+                .ok_or_else(|| anyhow::anyhow!("missing value for {}", args[idx]))?;
+            values.push(value.clone());
+            idx += 2;
+            continue;
+        }
+        idx += 1;
+    }
+    Ok(values)
 }
 
 #[cfg(test)]

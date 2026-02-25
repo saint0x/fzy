@@ -44,7 +44,7 @@ cargo test --workspace
 
 ```bash
 # Build source/project
-fz build <path> [--release] [--threads N] [--backend llvm|cranelift] [--json]
+fz build <path> [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
 
 # Run source/project or .fozzy scenario
 fz run <path> [--det] [--strict-verify] [--safe-profile] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
@@ -133,6 +133,12 @@ Spec: `docs/dependency-locking-v0.md`
   - baseline export presence + signature immutability
   - symbol version non-regression
 - Additive exports are allowed.
+
+## C Interop
+
+- Production guide: `docs/c-interop-production-v1.md`
+- `#[ffi_panic(abort|error)]` is required on every exported `pub extern "C" fn`.
+- `fz build --lib` emits static/shared libraries plus installable header + ABI manifest.
 
 ## Fozzy-First Validation Contract
 

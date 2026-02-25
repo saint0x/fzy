@@ -34,6 +34,7 @@ pub struct Function {
     pub is_pub: bool,
     pub is_extern: bool,
     pub abi: Option<String>,
+    pub ffi_panic: Option<String>,
 }
 
 #[derive(Debug, Clone)]
