@@ -5778,23 +5778,6 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
-        if function
-            .body
-            .iter()
-            .any(stmt_uses_native_unsupported_expression)
-        {
-            diagnostics.push(diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "native backend does not yet support array/index expressions in function `{}`",
-                    function.name
-                ),
-                Some(
-                    "run with deterministic/runtime backends for this module until native aggregate indexing lowering is implemented"
-                        .to_string(),
-                ),
-            ));
-        }
     }
 
     let defined_functions = module
@@ -5831,106 +5814,6 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
         diagnostics::DiagnosticDomain::NativeLowering,
     );
     diagnostics
-}
-
-fn stmt_uses_native_unsupported_expression(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::Let { value, .. }
-        | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::CompoundAssign { value, .. }
-        | ast::Stmt::Return(Some(value))
-        | ast::Stmt::Defer(value)
-        | ast::Stmt::Requires(value)
-        | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => expr_uses_native_unsupported_expression(value),
-        ast::Stmt::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            expr_uses_native_unsupported_expression(condition)
-                || then_body
-                    .iter()
-                    .any(stmt_uses_native_unsupported_expression)
-                || else_body
-                    .iter()
-                    .any(stmt_uses_native_unsupported_expression)
-        }
-        ast::Stmt::While { condition, body } => {
-            expr_uses_native_unsupported_expression(condition)
-                || body.iter().any(stmt_uses_native_unsupported_expression)
-        }
-        ast::Stmt::For {
-            init,
-            condition,
-            step,
-            body,
-        } => {
-            init.as_deref()
-                .is_some_and(stmt_uses_native_unsupported_expression)
-                || condition
-                    .as_ref()
-                    .is_some_and(expr_uses_native_unsupported_expression)
-                || step
-                    .as_deref()
-                    .is_some_and(stmt_uses_native_unsupported_expression)
-                || body.iter().any(stmt_uses_native_unsupported_expression)
-        }
-        ast::Stmt::ForIn { iterable, body, .. } => {
-            expr_uses_native_unsupported_expression(iterable)
-                || body.iter().any(stmt_uses_native_unsupported_expression)
-        }
-        ast::Stmt::Loop { body } => body.iter().any(stmt_uses_native_unsupported_expression),
-        ast::Stmt::Match { scrutinee, arms } => {
-            expr_uses_native_unsupported_expression(scrutinee)
-                || arms.iter().any(|arm| {
-                    arm.guard
-                        .as_ref()
-                        .is_some_and(expr_uses_native_unsupported_expression)
-                        || expr_uses_native_unsupported_expression(&arm.value)
-                })
-        }
-        ast::Stmt::Break | ast::Stmt::Continue | ast::Stmt::Return(None) => false,
-    }
-}
-
-fn expr_uses_native_unsupported_expression(expr: &ast::Expr) -> bool {
-    match expr {
-        ast::Expr::ArrayLiteral(_) | ast::Expr::Index { .. } => true,
-        ast::Expr::Call { args, .. } => args.iter().any(expr_uses_native_unsupported_expression),
-        ast::Expr::FieldAccess { base, .. } => expr_uses_native_unsupported_expression(base),
-        ast::Expr::StructInit { fields, .. } => fields
-            .iter()
-            .any(|(_, value)| expr_uses_native_unsupported_expression(value)),
-        ast::Expr::EnumInit { payload, .. } => {
-            payload.iter().any(expr_uses_native_unsupported_expression)
-        }
-        ast::Expr::Group(inner)
-        | ast::Expr::Await(inner)
-        | ast::Expr::Unary { expr: inner, .. } => expr_uses_native_unsupported_expression(inner),
-        ast::Expr::TryCatch {
-            try_expr,
-            catch_expr,
-        } => {
-            expr_uses_native_unsupported_expression(try_expr)
-                || expr_uses_native_unsupported_expression(catch_expr)
-        }
-        ast::Expr::Binary { left, right, .. }
-        | ast::Expr::Range {
-            start: left,
-            end: right,
-            ..
-        } => {
-            expr_uses_native_unsupported_expression(left)
-                || expr_uses_native_unsupported_expression(right)
-        }
-        ast::Expr::Int(_)
-        | ast::Expr::Float { .. }
-        | ast::Expr::Char(_)
-        | ast::Expr::Bool(_)
-        | ast::Expr::Str(_)
-        | ast::Expr::Ident(_) => false,
-    }
 }
 
 fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {

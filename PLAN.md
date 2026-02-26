@@ -311,6 +311,38 @@
 - [ ] Add first-class dependency lifecycle UX to `fz` (`dep add/remove/update`, lock refresh hints, and deterministic source pinning ergonomics).
 - [✅] Improve root-level command UX for mixed tool configs (for example `fz audit unsafe .`): detect non-project roots and emit actionable project-target guidance instead of raw manifest-parse failures.
 
+### Language Ergonomics + Completeness Closure (Adoption-Critical, No CI/Deps Scope)
+- [ ] Resolve language-surface drift between plan claims, language-reference docs, parser diagnostics, and actual shipped behavior so declared support is strictly truthful.
+- [ ] Ship closure/lambda values with capture semantics as first-class language constructs (syntax, AST/HIR/FIR, verifier, native backends, docs, examples, tests).
+- [✅] Ship full import ergonomics expected by systems users:
+- [✅] import aliases (`use path as alias`)
+- [✅] wildcard imports (`use path::*`) with deterministic resolution rules
+- [✅] grouped imports (`use path::{a, b}`)
+- [✅] stable re-exports (`pub use ...`) parse/preservation support
+- [ ] Expand keyword/construct surface to full production language baseline expected by systems users (not partial/token-only support):
+- [ ] declaration constructs (`const`, `static`, mutability marker semantics, and module-level declaration parity)
+- [ ] pattern/destructuring completeness in `let` and `match` for production workflows
+- [ ] expression/control construct completeness parity across parser/type/lowering/runtime/native
+- [ ] Ensure every parser-recognized construct is end-to-end executable with native parity or hard-rejected with explicit diagnostics and fix guidance (no silent partial semantics).
+- [ ] Upgrade docs to publish one authoritative language-construct matrix (`implemented` / `partial` / `missing`) and gate release on matrix truthfulness.
+
+### Native Completeness Closure (Adoption Blocker #3)
+- [ ] Close remaining native lowering gaps so supported language constructs do not fail late in native paths.
+- [✅] Remove native-lowering rejection for array/index expression families by implementing full backend lowering semantics.
+- [ ] Enforce backend completeness contract: supported-by-language implies supported-by-LLVM and supported-by-Cranelift under release gates.
+- [ ] Add execute-and-compare parity fixtures covering full construct families (including arrays/index + advanced expression forms) under both native backends.
+- [ ] Add release gate hard-fail when any construct marked `implemented` in language docs is missing in native lowering.
+
+### System Safety + Trust Model Assessment (No Proof-Depth Expansion Scope)
+- [✅] Assessment: safety posture remains strong and enforceable-by-default, but adoption trust depends on strict claim-vs-enforcement alignment.
+- [✅] Assessment: current caveats about non-Rust-equivalent proof depth are correct and should remain explicit until guarantees materially change.
+- [ ] Add a formal trust-model section in PLAN that enumerates:
+- [ ] what safety guarantees are enforced today by verifier/runtime/gates
+- [ ] what remains explicitly out-of-scope (without weakening language)
+- [ ] what evidence artifacts are required to justify each public safety claim
+- [ ] Add release-blocking claim-integrity checks so user-facing docs/README/guide cannot overstate safety guarantees relative to enforceable behavior.
+- [ ] Add a safety-claim review checklist to release gate workflow (memory model, borrow/alias coverage statements, unsafe-budget posture, FFI boundary guarantees).
+
 ### Release Flow
 - [✅] Phase 1: correctness fixes (listen, partial I/O, timeout correctness).
 - [✅] Phase 2: runtime hot-path performance fixes (network/executor scope completed).

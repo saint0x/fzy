@@ -258,10 +258,7 @@ impl Parser {
             match self.peek_n(1).map(|token| &token.kind) {
                 Some(TokenKind::KwUse) => {
                     let _ = self.consume(&TokenKind::KwPub);
-                    self.push_diag_here(
-                        "`pub use` re-exports are not supported yet; expose module APIs with explicit wrapper items",
-                    );
-                    self.parse_use_or_cap();
+                    self.parse_use_or_cap(true);
                     return None;
                 }
                 Some(TokenKind::KwMod) => {
@@ -298,7 +295,7 @@ impl Parser {
             self.pending_ffi_panic = None;
         }
         if self.at(&TokenKind::KwUse) {
-            self.parse_use_or_cap();
+            self.parse_use_or_cap(false);
             return None;
         }
         if self.at(&TokenKind::KwMod) {
@@ -395,9 +392,9 @@ impl Parser {
         }));
     }
 
-    fn parse_use_or_cap(&mut self) {
+    fn parse_use_or_cap(&mut self, is_pub: bool) {
         let _ = self.consume(&TokenKind::KwUse);
-        if self.consume(&TokenKind::KwCore) {
+        if !is_pub && self.consume(&TokenKind::KwCore) {
             if !self.consume(&TokenKind::Dot) {
                 self.push_diag_here("expected `.` after `use core`");
                 return;
@@ -409,66 +406,108 @@ impl Parser {
             let _ = self.consume(&TokenKind::Semi);
             return;
         }
-
-        let mut path = String::new();
-        let Some(first) = self.expect_ident("expected import path") else {
-            return;
-        };
-        path.push_str(&first);
-        while self.consume(&TokenKind::Colon) {
-            if !self.consume(&TokenKind::Colon) {
-                self.push_diag_here("expected `::` in import path");
+        let mut imports = Vec::new();
+        if !self.parse_use_tree(None, &mut imports) {
+            self.consume_until(&[TokenKind::Semi]);
+        }
+        while self.consume(&TokenKind::Comma) {
+            if !self.parse_use_tree(None, &mut imports) {
+                self.consume_until(&[TokenKind::Semi]);
                 break;
             }
+        }
+        if is_pub {
+            for import in imports {
+                self.module.imports.push(format!("pub {import}"));
+            }
+        } else {
+            self.module.imports.extend(imports);
+        }
+        let _ = self.consume(&TokenKind::Semi);
+    }
+
+    fn parse_use_tree(&mut self, prefix: Option<&str>, out: &mut Vec<String>) -> bool {
+        let Some(local_path) = self.parse_import_path_segments() else {
+            self.push_diag_here("expected import path");
+            return false;
+        };
+        let full_path = if let Some(prefix) = prefix {
+            format!("{prefix}::{local_path}")
+        } else {
+            local_path
+        };
+
+        if self.consume_double_colon() {
             if self.consume(&TokenKind::Star) {
-                self.push_diag_here(
-                    "wildcard imports are not supported; import explicit module paths instead",
-                );
-                break;
+                out.push(format!("{full_path}::*"));
+                return true;
             }
             if self.consume(&TokenKind::LBrace) {
-                self.push_diag_here(
-                    "grouped imports are not supported; use one `use` line per explicit import path",
-                );
-                self.consume_until(&[TokenKind::RBrace, TokenKind::Semi]);
-                let _ = self.consume(&TokenKind::RBrace);
-                break;
+                let mut saw_any = false;
+                while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                    saw_any = true;
+                    let parsed = self.parse_use_tree(Some(&full_path), out);
+                    if !parsed {
+                        self.consume_until(&[TokenKind::Comma, TokenKind::RBrace]);
+                    }
+                    if !self.consume(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                if !self.consume(&TokenKind::RBrace) {
+                    self.push_diag_here("expected `}` to close grouped import");
+                }
+                if !saw_any {
+                    self.push_diag_here("grouped import cannot be empty");
+                }
+                return true;
             }
-            let Some(seg) = self.expect_ident("expected import path segment") else {
-                break;
+            self.push_diag_here("expected `*`, `{`, or path segment after `::`");
+            return false;
+        }
+
+        if self.consume(&TokenKind::Ident("as".to_string())) {
+            let Some(alias) = self.expect_ident("expected alias target after `as`") else {
+                return false;
             };
+            out.push(format!("{full_path} as {alias}"));
+            return true;
+        }
+
+        out.push(full_path);
+        true
+    }
+
+    fn parse_import_path_segments(&mut self) -> Option<String> {
+        let mut path = self.expect_ident("expected import path")?;
+        while self.at_double_colon()
+            && self
+                .peek_n(2)
+                .is_some_and(|tok| matches!(tok.kind, TokenKind::Ident(_)))
+        {
+            let _ = self.consume_double_colon();
+            let seg = self.expect_ident("expected import path segment")?;
             path.push_str("::");
             path.push_str(&seg);
         }
-        if self.consume(&TokenKind::Ident("as".to_string())) {
-            self.push_diag_here(
-                "import aliases are not supported; use the canonical module path directly",
-            );
-            let _ = self.expect_ident("expected alias target after `as`");
-        }
-        if self.at(&TokenKind::Comma) {
-            self.push_diag_here("multiple imports in one `use` are not supported");
-            self.consume_until(&[TokenKind::Semi]);
-        }
-        if self.at(&TokenKind::LBrace) {
-            self.push_diag_here(
-                "grouped imports are not supported; use one `use` line per explicit import path",
-            );
-            self.consume_until(&[TokenKind::RBrace, TokenKind::Semi]);
-            let _ = self.consume(&TokenKind::RBrace);
-        }
-        if self.at(&TokenKind::Star) {
-            self.push_diag_here(
-                "wildcard imports are not supported; import explicit module paths instead",
-            );
+        Some(path)
+    }
+
+    fn at_double_colon(&self) -> bool {
+        self.at(&TokenKind::Colon)
+            && self
+                .peek_n(1)
+                .is_some_and(|tok| tok.kind == TokenKind::Colon)
+    }
+
+    fn consume_double_colon(&mut self) -> bool {
+        if self.at_double_colon() {
             let _ = self.advance();
-        }
-        if !path.is_empty() {
-            self.module.imports.push(path);
+            let _ = self.advance();
+            true
         } else {
-            self.consume_until(&[TokenKind::Semi]);
+            false
         }
-        let _ = self.consume(&TokenKind::Semi);
     }
 
     fn parse_mod_decl(&mut self, _is_pub: bool) {
@@ -3041,27 +3080,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_use_alias_wildcard_and_group_forms() {
+    fn supports_use_alias_wildcard_group_and_pub_reexport_forms() {
         let source = r#"
-            pub use core.net;
+            pub use app::net;
             use app::net as netmod;
             use app::net::*;
-            use app::fs::{open, close};
+            use app::fs::{open, close as close_fn};
+            use app::{db::{read, write}, os::*};
         "#;
-        let diagnostics = parse(source, "imports").expect_err("parse should fail");
-        assert!(diagnostics.iter().any(|diag| {
-            diag.message
-                .contains("`pub use` re-exports are not supported yet")
-        }));
-        assert!(diagnostics
+        let module = parse(source, "imports").expect("parse should succeed");
+        assert!(module.imports.iter().any(|entry| entry == "pub app::net"));
+        assert!(module
+            .imports
             .iter()
-            .any(|diag| diag.message.contains("import aliases are not supported")));
-        assert!(diagnostics
+            .any(|entry| entry == "app::net as netmod"));
+        assert!(module.imports.iter().any(|entry| entry == "app::net::*"));
+        assert!(module.imports.iter().any(|entry| entry == "app::fs::open"));
+        assert!(module
+            .imports
             .iter()
-            .any(|diag| diag.message.contains("wildcard imports are not supported")));
-        assert!(diagnostics
-            .iter()
-            .any(|diag| diag.message.contains("grouped imports are not supported")));
+            .any(|entry| entry == "app::fs::close as close_fn"));
+        assert!(module.imports.iter().any(|entry| entry == "app::db::read"));
+        assert!(module.imports.iter().any(|entry| entry == "app::db::write"));
+        assert!(module.imports.iter().any(|entry| entry == "app::os::*"));
     }
 
     #[test]
