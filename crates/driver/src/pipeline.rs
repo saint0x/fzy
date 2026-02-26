@@ -11,6 +11,8 @@ use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
 #[derive(Clone, Copy)]
 struct LocalBinding {
@@ -806,6 +808,29 @@ pub struct ParsedProgram {
     pub module_paths: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+struct ModuleStamp {
+    path: PathBuf,
+    bytes: u64,
+    modified_ns: u128,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedProgramCacheEntry {
+    parsed: ParsedProgram,
+    stamps: Vec<ModuleStamp>,
+}
+
+#[derive(Debug, Clone)]
+struct LowerCacheEntry {
+    typed: hir::TypedModule,
+    fir: fir::FirModule,
+}
+
+static PARSED_PROGRAM_CACHE: OnceLock<Mutex<HashMap<PathBuf, ParsedProgramCacheEntry>>> =
+    OnceLock::new();
+static LOWER_CACHE: OnceLock<Mutex<HashMap<String, LowerCacheEntry>>> = OnceLock::new();
+
 pub fn compile_file(path: &Path, profile: BuildProfile) -> Result<BuildArtifact> {
     compile_file_with_backend(path, profile, None)
 }
@@ -817,9 +842,10 @@ pub fn compile_file_with_backend(
 ) -> Result<BuildArtifact> {
     let resolved = resolve_source_path(path)?;
     let parsed = parse_program(&resolved.source_path)?;
+    let backend = resolve_native_backend(profile, backend_override)?;
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
-    let typed = hir::lower(&parsed.module);
-    let fir = fir::build_owned(typed);
+    let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
+    let (_typed, fir) = lower_fir_cached(&parsed);
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let report = verifier::verify_with_policy(
         &fir,
@@ -840,12 +866,19 @@ pub fn compile_file_with_backend(
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let has_native_lowerability_errors = !native_lowerability_errors.is_empty();
-    let status = if has_native_lowerability_errors || (checks_enabled && has_verifier_errors) {
+    let has_backend_risks = backend_risks
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let status = if has_native_lowerability_errors
+        || has_backend_risks
+        || (checks_enabled && has_verifier_errors)
+    {
         "error"
     } else {
         "ok"
     };
     let mut diagnostic_details = native_lowerability_errors;
+    diagnostic_details.extend(backend_risks);
     diagnostic_details.extend(report.diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let output = if status == "ok" {
@@ -854,7 +887,7 @@ pub fn compile_file_with_backend(
             &resolved.project_root,
             profile,
             resolved.manifest.as_ref(),
-            backend_override,
+            Some(backend.as_str()),
         )?)
     } else {
         None
@@ -878,9 +911,10 @@ pub fn compile_library_with_backend(
 ) -> Result<LibraryArtifact> {
     let resolved = resolve_source_path_with_target(path, true)?;
     let parsed = parse_program(&resolved.source_path)?;
+    let backend = resolve_native_backend(profile, backend_override)?;
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
-    let typed = hir::lower(&parsed.module);
-    let fir = fir::build_owned(typed);
+    let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
+    let (_typed, fir) = lower_fir_cached(&parsed);
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let report = verifier::verify_with_policy(
         &fir,
@@ -901,12 +935,19 @@ pub fn compile_library_with_backend(
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let has_native_lowerability_errors = !native_lowerability_errors.is_empty();
-    let status = if has_native_lowerability_errors || (checks_enabled && has_verifier_errors) {
+    let has_backend_risks = backend_risks
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let status = if has_native_lowerability_errors
+        || has_backend_risks
+        || (checks_enabled && has_verifier_errors)
+    {
         "error"
     } else {
         "ok"
     };
     let mut diagnostic_details = native_lowerability_errors;
+    diagnostic_details.extend(backend_risks);
     diagnostic_details.extend(report.diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let (static_lib, shared_lib) = if status == "ok" {
@@ -915,7 +956,7 @@ pub fn compile_library_with_backend(
             &resolved.project_root,
             profile,
             resolved.manifest.as_ref(),
-            backend_override,
+            Some(backend.as_str()),
         )?
     } else {
         (None, None)
@@ -971,8 +1012,7 @@ pub fn verify_file(path: &Path) -> Result<Output> {
         }
     };
     let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
-    let typed = hir::lower(&parsed.module);
-    let fir = fir::build_owned(typed);
+    let (_typed, fir) = lower_fir_cached(&parsed);
     let report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
@@ -1045,8 +1085,7 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
         }
     };
     let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
-    let typed = hir::lower(&parsed.module);
-    let fir = fir::build_owned(typed);
+    let (_typed, fir) = lower_fir_cached(&parsed);
     let report = verifier::verify(&fir);
     diagnostics.extend(report.diagnostics);
     for diagnostic in &mut diagnostics {
@@ -1074,8 +1113,39 @@ pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
     let canonical = source_path
         .canonicalize()
         .with_context(|| format!("failed resolving source file: {}", source_path.display()))?;
+    if let Some(cached) = cached_parsed_program(&canonical) {
+        return Ok(cached);
+    }
+    let parsed = parse_program_uncached(&canonical)?;
+    store_parsed_program_cache(&canonical, &parsed);
+    Ok(parsed)
+}
+
+pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirModule) {
+    let module_hash = sha256_hex(parsed.combined_source.as_bytes());
+    let cache = LOWER_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(guard) = cache.lock() {
+        if let Some(cached) = guard.get(&module_hash) {
+            return (cached.typed.clone(), cached.fir.clone());
+        }
+    }
+    let typed = hir::lower(&parsed.module);
+    let fir_module = fir::build_owned(typed.clone());
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(
+            module_hash,
+            LowerCacheEntry {
+                typed: typed.clone(),
+                fir: fir_module.clone(),
+            },
+        );
+    }
+    (typed, fir_module)
+}
+
+fn parse_program_uncached(canonical: &Path) -> Result<ParsedProgram> {
     let mut state = ModuleLoadState::default();
-    load_module_recursive(&canonical, &canonical, &mut state)?;
+    load_module_recursive(canonical, canonical, &mut state)?;
 
     let mut combined_source = String::new();
     for path in &state.load_order {
@@ -1093,11 +1163,11 @@ pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
     }
     let mut merged = state
         .loaded
-        .remove(&canonical)
+        .remove(canonical)
         .map(|module| module.ast)
         .ok_or_else(|| anyhow!("failed to load root module {}", canonical.display()))?;
     for path in &state.load_order {
-        if path == &canonical {
+        if path == canonical {
             continue;
         }
         let loaded = state
@@ -1107,12 +1177,54 @@ pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
         merge_module_owned(&mut merged, loaded.ast);
     }
     canonicalize_call_targets(&mut merged);
-
     Ok(ParsedProgram {
         module: merged,
         combined_source,
         module_paths: state.load_order,
     })
+}
+
+fn module_stamp(path: &Path) -> Option<ModuleStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    let modified_ns = modified.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    Some(ModuleStamp {
+        path: path.to_path_buf(),
+        bytes: meta.len(),
+        modified_ns,
+    })
+}
+
+fn cached_parsed_program(canonical: &Path) -> Option<ParsedProgram> {
+    let cache = PARSED_PROGRAM_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let guard = cache.lock().ok()?;
+    let entry = guard.get(canonical)?;
+    if entry.stamps.iter().all(|stamp| {
+        module_stamp(&stamp.path).is_some_and(|current| {
+            current.bytes == stamp.bytes && current.modified_ns == stamp.modified_ns
+        })
+    }) {
+        return Some(entry.parsed.clone());
+    }
+    None
+}
+
+fn store_parsed_program_cache(canonical: &Path, parsed: &ParsedProgram) {
+    let stamps = parsed
+        .module_paths
+        .iter()
+        .filter_map(|path| module_stamp(path))
+        .collect::<Vec<_>>();
+    let cache = PARSED_PROGRAM_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(mut guard) = cache.lock() {
+        guard.insert(
+            canonical.to_path_buf(),
+            ParsedProgramCacheEntry {
+                parsed: parsed.clone(),
+                stamps,
+            },
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -8561,6 +8673,60 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
     diagnostics
 }
 
+fn backend_capability_diagnostics(
+    module: &ast::Module,
+    backend: &str,
+) -> Vec<diagnostics::Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let backend = backend.trim().to_ascii_lowercase();
+    if backend == "cranelift" {
+        for item in &module.items {
+            let ast::Item::Function(function) = item else {
+                continue;
+            };
+            if function.is_pubext
+                && function.is_async
+                && function
+                    .abi
+                    .as_deref()
+                    .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+            {
+                diagnostics.push(
+                    diagnostics::Diagnostic::new(
+                        diagnostics::Severity::Error,
+                        format!(
+                            "backend `cranelift` does not support async C export `{}`",
+                            function.name
+                        ),
+                        Some(
+                            "compile with `--backend llvm` or remove async C export surface"
+                                .to_string(),
+                        ),
+                    )
+                    .with_fix("switch backend: `fz build <path> --backend llvm`"),
+                );
+            }
+            if function.is_async && function.is_unsafe {
+                diagnostics.push(
+                    diagnostics::Diagnostic::new(
+                        diagnostics::Severity::Error,
+                        format!(
+                            "backend `cranelift` rejects async+unsafe function `{}`",
+                            function.name
+                        ),
+                        Some(
+                            "use backend llvm for this code shape or refactor unsafe code outside async path"
+                                .to_string(),
+                        ),
+                    )
+                    .with_fix("switch backend: `fz build <path> --backend llvm`"),
+                );
+            }
+        }
+    }
+    diagnostics
+}
+
 fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {
     ast_signature_type_to_clif_type(ty).is_some() || matches!(ty, ast::Type::Void)
 }
@@ -15705,6 +15871,57 @@ mod tests {
         let error = compile_file_with_backend(&path, BuildProfile::Dev, Some("c_shim"))
             .expect_err("removed backend must fail");
         assert!(error.to_string().contains("unknown backend"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn compile_file_cranelift_rejects_async_c_exports_with_guidance() {
+        let file_name = format!(
+            "fozzylang-backend-risk-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "pubext async c fn serve(req: i32) -> i32 {\n    return req\n}\n\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let artifact = compile_file_with_backend(&path, BuildProfile::Dev, Some("cranelift"))
+            .expect("build should return diagnostics");
+        assert_eq!(artifact.status, "error");
+        assert!(artifact
+            .diagnostic_details
+            .iter()
+            .any(|d| d.message.contains("does not support async C export")));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn parse_program_cache_invalidates_on_source_change() {
+        let file_name = format!(
+            "fozzylang-parse-cache-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(&path, "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("temp source should be written");
+        let first = parse_program(&path).expect("first parse should succeed");
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    return 17\n}\n\nfn extra() -> i32 {\n    return 1\n}\n",
+        )
+        .expect("temp source should mutate");
+        let second = parse_program(&path).expect("second parse should succeed");
+        assert_ne!(first.combined_source, second.combined_source);
 
         let _ = std::fs::remove_file(path);
     }

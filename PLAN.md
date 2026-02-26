@@ -103,6 +103,25 @@
 - [✅] Enforce clean-checkout local reproducibility evidence via archived-checkout ship-gate execution (`scripts/exit_criteria.py record-local-repro`).
 - [✅] Enforce serious-systems maturity declaration only through strict exit-criteria gate evaluation (`scripts/exit_criteria_gate.sh` / `scripts/exit_criteria.py status --strict`).
 
+### Production Continuation Docking (2026-02-26)
+- [✅] Unify CLI output through one reusable formatter utility and normalize final CLI presentation for all commands (stable multiline text + pretty JSON).
+- [✅] Add and ship production DX commands: `fz explain`, `fz doctor project`, and `fz devloop`.
+- [✅] Make policy visibility default in command output and auto-surface unsafe docs artifacts when unsafe sites exist.
+- [✅] Move unsafe contract inventory to canonical compiler data (`HIR -> FIR`) and consume that single source in verifier + audit.
+- [✅] Add stable unsafe site IDs and bind proof references to concrete artifacts when available.
+- [✅] Add strict async+unsafe verifier checks tied to canonical unsafe site inventory.
+- [✅] Add incremental pipeline caching: parsed program cache (module stamps) and HIR/FIR cache keyed by module hash.
+- [✅] Add backend capability-matrix early diagnostics with explicit backend guidance for risky code shapes.
+- [✅] Validate production gates after changes:
+- [✅] `cargo test -q -p hir -p fir -p verifier -p driver -p fz`
+- [✅] `fozzy doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 4242 --json`
+- [✅] `fozzy test --det --strict tests/run.pass.fozzy.json --json`
+- [✅] `fozzy run tests/run.pass.fozzy.json --det --record artifacts/unsafe-pass.trace.fozzy --json`
+- [✅] `fozzy trace verify artifacts/unsafe-pass.trace.fozzy --strict --json`
+- [✅] `fozzy replay artifacts/unsafe-pass.trace.fozzy --json`
+- [✅] `fozzy ci artifacts/unsafe-pass.trace.fozzy --json`
+- [✅] `fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`
+
 ## Checklist: Needs To Be Done
 
 ### Undone: First-Class Unsafe Islands + Unsafe DX/Docs (Production)

@@ -22,7 +22,7 @@ test "det_language_surface" {
     let ok: bool = !(routed == 0);
     // Compiler generates unsafe contract metadata (reason/invariant/owner/scope/risk_class/proof_ref) for this site.
     unsafe {
-        discard lang_unsafe_id(routed);
+        discard lang_id(routed);
     }
     if ok {
         pulse();

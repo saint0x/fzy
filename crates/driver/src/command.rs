@@ -13,7 +13,8 @@ use sha2::{Digest, Sha256};
 use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
-    compile_file_with_backend, compile_library_with_backend, emit_ir, parse_program,
+    compile_file_with_backend, compile_library_with_backend, emit_ir, lower_fir_cached,
+    parse_program,
     refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact, Output,
 };
 
@@ -4467,8 +4468,7 @@ fn run_non_scenario_test_plan(
         bail!("--record requires --det");
     }
 
-    let typed = hir::lower(&parsed.module);
-    let fir = fir::build_owned(typed);
+    let (_typed, fir) = lower_fir_cached(&parsed);
     let production_memory_safety = true;
     let verify_report = verifier::verify_with_policy(
         &fir,
