@@ -10,7 +10,7 @@
 | `use_group_support` | implemented | `use path::{a,b}` (including nested groups) expands into concrete imports. |
 | `pub_use_reexport_support` | implemented | `pub use ...` parses as stable re-export/import metadata in module state. |
 | `let_mutability_semantics` | implemented | `let` is immutable by default; reassignment requires `let mut` and type-check enforcement. |
-| `let_pattern_destructuring` | partial | Variant-pattern destructuring in `let` lowers natively for literal variant initializers; native `match` variant payload bindings are explicitly rejected; tuple/struct destructuring and full pattern family parity remain open. |
+| `let_pattern_destructuring` | partial | Variant-pattern destructuring in `let` lowers natively for literal variant initializers; `match` variant payload bindings lower for literal enum scrutinees without guards and are explicitly diagnosed otherwise; tuple/struct destructuring and full pattern family parity remain open. |
 | `const_declaration_surface` | implemented | Module-level `const NAME: Type = expr;` is parsed/typed and resolved in function scope. |
 | `static_declaration_surface` | implemented | Module-level `static NAME: Type = expr;` is parsed/typed and resolved in function scope. |
 | `static_mut_surface` | missing | `static mut` remains intentionally unsupported in v1 safe model. |

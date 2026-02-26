@@ -2633,6 +2633,19 @@ impl ControlFlowBuilder {
                                 else_target: else_block,
                             },
                         )?;
+                        let binding_stmts = if arm.guard.is_some() {
+                            if pattern_has_variant_payload_bindings(&arm.pattern) {
+                                bail!(
+                                    "native backend does not support match guards that depend on variant payload bindings"
+                                );
+                            }
+                            Vec::new()
+                        } else {
+                            bindings_for_match_arm_pattern(&arm.pattern, scrutinee)?
+                        };
+                        for stmt in binding_stmts {
+                            self.append_stmt(arm_block, stmt)?;
+                        }
                         if arm.returns {
                             self.terminate(
                                 arm_block,
@@ -2756,6 +2769,105 @@ fn pattern_to_expr(scrutinee_name: &str, pattern: &ast::Pattern) -> ast::Expr {
                 right: Box::new(pattern_to_expr(scrutinee_name, pattern)),
             })
         }
+    }
+}
+
+fn pattern_has_variant_payload_bindings(pattern: &ast::Pattern) -> bool {
+    match pattern {
+        ast::Pattern::Variant { bindings, .. } => !bindings.is_empty(),
+        ast::Pattern::Or(patterns) => patterns.iter().any(pattern_has_variant_payload_bindings),
+        ast::Pattern::Wildcard
+        | ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_)
+        | ast::Pattern::Ident(_) => false,
+    }
+}
+
+fn variant_payload_bindings_supported_for_scrutinee(
+    pattern: &ast::Pattern,
+    scrutinee: &ast::Expr,
+) -> bool {
+    match pattern {
+        ast::Pattern::Variant {
+            enum_name,
+            variant,
+            bindings,
+        } => {
+            if bindings.is_empty() {
+                return true;
+            }
+            match scrutinee {
+                ast::Expr::EnumInit {
+                    enum_name: value_enum,
+                    variant: value_variant,
+                    payload,
+                } => {
+                    value_enum == enum_name
+                        && value_variant == variant
+                        && payload.len() == bindings.len()
+                }
+                _ => false,
+            }
+        }
+        ast::Pattern::Or(patterns) => patterns
+            .iter()
+            .all(|pattern| variant_payload_bindings_supported_for_scrutinee(pattern, scrutinee)),
+        ast::Pattern::Wildcard
+        | ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_)
+        | ast::Pattern::Ident(_) => true,
+    }
+}
+
+fn bindings_for_match_arm_pattern(
+    pattern: &ast::Pattern,
+    scrutinee: &ast::Expr,
+) -> Result<Vec<ast::Stmt>> {
+    match pattern {
+        ast::Pattern::Variant {
+            enum_name,
+            variant,
+            bindings,
+        } => {
+            if bindings.is_empty() {
+                return Ok(Vec::new());
+            }
+            let ast::Expr::EnumInit {
+                enum_name: value_enum,
+                variant: value_variant,
+                payload,
+            } = scrutinee
+            else {
+                bail!(
+                    "native backend requires literal enum scrutinee for match-arm payload bindings"
+                );
+            };
+            if value_enum != enum_name || value_variant != variant || payload.len() != bindings.len() {
+                bail!(
+                    "native backend requires exact literal enum variant match for payload bindings"
+                );
+            }
+            let mut stmts = Vec::with_capacity(bindings.len());
+            for (name, value) in bindings.iter().zip(payload.iter()) {
+                stmts.push(ast::Stmt::Let {
+                    name: name.clone(),
+                    mutable: false,
+                    ty: None,
+                    value: value.clone(),
+                });
+            }
+            Ok(stmts)
+        }
+        ast::Pattern::Or(patterns) => {
+            if patterns.iter().any(pattern_has_variant_payload_bindings) {
+                bail!("native backend does not support payload bindings within or-pattern match arms");
+            }
+            Ok(Vec::new())
+        }
+        ast::Pattern::Wildcard
+        | ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_)
+        | ast::Pattern::Ident(_) => Ok(Vec::new()),
     }
 }
 
@@ -6285,11 +6397,11 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
             diagnostics.push(diagnostics::Diagnostic::new(
                 diagnostics::Severity::Error,
                 format!(
-                    "native backend does not yet support variant payload bindings in `match` arms for function `{}`",
+                    "native backend only supports match-arm variant payload bindings for literal enum scrutinees without guards in function `{}`",
                     function.name
                 ),
                 Some(
-                    "match on the variant tag only (no payload bindings) or route execution through deterministic/scenario backends"
+                    "use a literal enum scrutinee and avoid guards on payload-binding arms, or remove payload bindings for native builds"
                         .to_string(),
                 ),
             ));
@@ -6606,18 +6718,13 @@ fn stmt_contains_unsupported_let_pattern_variant_binding(stmt: &ast::Stmt) -> bo
 
 fn stmt_contains_unsupported_match_variant_binding(stmt: &ast::Stmt) -> bool {
     match stmt {
-        ast::Stmt::Match { arms, .. } => {
-            arms.iter().any(|arm| match &arm.pattern {
-                ast::Pattern::Variant { bindings, .. } => !bindings.is_empty(),
-                ast::Pattern::Or(patterns) => patterns.iter().any(|pattern| {
-                    matches!(
-                        pattern,
-                        ast::Pattern::Variant { bindings, .. } if !bindings.is_empty()
-                    )
-                }),
-                _ => false,
-            })
-        }
+        ast::Stmt::Match { scrutinee, arms } => arms.iter().any(|arm| {
+            if arm.guard.is_some() && pattern_has_variant_payload_bindings(&arm.pattern) {
+                return true;
+            }
+            pattern_has_variant_payload_bindings(&arm.pattern)
+                && !variant_payload_bindings_supported_for_scrutinee(&arm.pattern, scrutinee)
+        }),
         ast::Stmt::If {
             then_body,
             else_body,
@@ -13351,7 +13458,32 @@ mod tests {
         let output = verify_file(&path).expect("verify should run");
         assert!(output.diagnostic_details.iter().any(|diag| {
             diag.message
-                .contains("does not yet support variant payload bindings in `match` arms")
+                .contains("only supports match-arm variant payload bindings for literal enum scrutinees without guards")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_accepts_native_match_variant_payload_bindings_for_literal_scrutinee() {
+        let file_name = format!(
+            "fozzylang-native-match-pattern-literal-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "enum Maybe { Some(i32), None }\nfn main() -> i32 {\n    match Maybe::Some(9) {\n        Maybe::Some(v) => return v,\n        _ => return 0,\n    }\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("only supports match-arm variant payload bindings for literal enum scrutinees without guards")
         }));
 
         let _ = std::fs::remove_file(path);

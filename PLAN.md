@@ -326,6 +326,7 @@
 - [✅] declaration slice delivered: `let` immutability-by-default + `let mut` enforcement, plus module-level `const`/`static` declarations with typed/global resolution and native parity
 - [ ] pattern/destructuring completeness in `let` and `match` for production workflows
 - [✅] pattern/destructuring slice delivered: first-class `let` pattern statements (`let Enum::Variant(...) = ...`) with scoped pattern bindings in `let` and `match`, HIR type-checking/evaluator binding semantics, FIR/driver traversal support, and parser/HIR regressions.
+- [✅] native `match` payload-binding slice delivered for literal enum scrutinees without guards, with explicit diagnostics for unsupported binding shapes.
 - [ ] expression/control construct completeness parity across parser/type/lowering/runtime/native
 - [ ] Ensure every parser-recognized construct is end-to-end executable with native parity or hard-rejected with explicit diagnostics and fix guidance (no silent partial semantics).
 - [✅] parser-recognized `let` pattern destructuring now lowers natively for supported pattern families (with deterministic cross-backend execution parity coverage).
