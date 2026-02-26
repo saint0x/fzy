@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sys
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,17 @@ def main() -> int:
         if marker in src:
             errors.append(
                 f"legacy data-plane runtime import reintroduced in native import table: `{marker}`"
+            )
+
+    legacy_shim_exports = (
+        r"^int32_t fz_native_str_",
+        r"^int32_t fz_native_list_",
+        r"^int32_t fz_native_map_",
+    )
+    for pattern in legacy_shim_exports:
+        if re.search(pattern, src, flags=re.MULTILINE):
+            errors.append(
+                f"legacy shim-exported data-plane symbol reintroduced in runtime shim: `{pattern}`"
             )
 
     if "build_control_flow_cfg(&function.body)" in src:

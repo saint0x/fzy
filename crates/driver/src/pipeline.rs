@@ -10838,211 +10838,6 @@ int32_t fz_native_time_now(void) {
   return (int32_t)fz_now_ms();
 }
 
-static int32_t fz_native_str_concat(const int32_t* ids, int count) {
-  if (ids == NULL || count <= 0) {
-    return fz_intern_slice("", 0);
-  }
-  size_t total = 0;
-  for (int i = 0; i < count; i++) {
-    total += strlen(fz_lookup_string(ids[i]));
-  }
-  char* out = (char*)malloc(total + 1);
-  if (out == NULL) {
-    return 0;
-  }
-  size_t used = 0;
-  for (int i = 0; i < count; i++) {
-    const char* part = fz_lookup_string(ids[i]);
-    size_t len = strlen(part);
-    if (len > 0) {
-      memcpy(out + used, part, len);
-      used += len;
-    }
-  }
-  out[used] = '\0';
-  return fz_intern_owned(out);
-}
-
-int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id) {
-  int32_t ids[] = {a_id, b_id};
-  return fz_native_str_concat(ids, 2);
-}
-
-int32_t fz_native_str_concat3(int32_t a_id, int32_t b_id, int32_t c_id) {
-  int32_t ids[] = {a_id, b_id, c_id};
-  return fz_native_str_concat(ids, 3);
-}
-
-int32_t fz_native_str_concat4(int32_t a_id, int32_t b_id, int32_t c_id, int32_t d_id) {
-  int32_t ids[] = {a_id, b_id, c_id, d_id};
-  return fz_native_str_concat(ids, 4);
-}
-
-int32_t fz_native_str_contains(int32_t haystack_id, int32_t needle_id) {
-  const char* hay = fz_lookup_string(haystack_id);
-  const char* needle = fz_lookup_string(needle_id);
-  if (needle == NULL || needle[0] == '\0') {
-    return 1;
-  }
-  return strstr(hay == NULL ? "" : hay, needle) != NULL ? 1 : 0;
-}
-
-int32_t fz_native_str_starts_with(int32_t value_id, int32_t prefix_id) {
-  const char* value = fz_lookup_string(value_id);
-  const char* prefix = fz_lookup_string(prefix_id);
-  size_t value_len = strlen(value == NULL ? "" : value);
-  size_t prefix_len = strlen(prefix == NULL ? "" : prefix);
-  if (prefix_len > value_len) {
-    return 0;
-  }
-  return strncmp(value == NULL ? "" : value, prefix == NULL ? "" : prefix, prefix_len) == 0 ? 1 : 0;
-}
-
-int32_t fz_native_str_ends_with(int32_t value_id, int32_t suffix_id) {
-  const char* value = fz_lookup_string(value_id);
-  const char* suffix = fz_lookup_string(suffix_id);
-  size_t value_len = strlen(value == NULL ? "" : value);
-  size_t suffix_len = strlen(suffix == NULL ? "" : suffix);
-  if (suffix_len > value_len) {
-    return 0;
-  }
-  return strcmp((value == NULL ? "" : value) + (value_len - suffix_len), suffix == NULL ? "" : suffix) == 0 ? 1 : 0;
-}
-
-int32_t fz_native_str_len(int32_t value_id) {
-  const char* value = fz_lookup_string(value_id);
-  return (int32_t)strlen(value == NULL ? "" : value);
-}
-
-int32_t fz_native_str_trim(int32_t value_id) {
-  const char* value = fz_lookup_string(value_id);
-  if (value == NULL) {
-    return fz_intern_slice("", 0);
-  }
-  size_t len = strlen(value);
-  size_t start = 0;
-  while (start < len && isspace((unsigned char)value[start])) {
-    start++;
-  }
-  size_t end = len;
-  while (end > start && isspace((unsigned char)value[end - 1])) {
-    end--;
-  }
-  return fz_intern_slice(value + start, end - start);
-}
-
-int32_t fz_native_str_slice(int32_t value_id, int32_t start, int32_t span_len) {
-  const char* value = fz_lookup_string(value_id);
-  if (value == NULL) {
-    return fz_intern_slice("", 0);
-  }
-  size_t len = strlen(value);
-  size_t s = (start < 0) ? 0 : (size_t)start;
-  if (s > len) {
-    s = len;
-  }
-  size_t n = span_len < 0 ? 0 : (size_t)span_len;
-  if (s + n > len) {
-    n = len - s;
-  }
-  return fz_intern_slice(value + s, n);
-}
-
-int32_t fz_native_str_replace(int32_t value_id, int32_t from_id, int32_t to_id) {
-  const char* value = fz_lookup_string(value_id);
-  const char* from = fz_lookup_string(from_id);
-  const char* to = fz_lookup_string(to_id);
-  if (value == NULL) value = "";
-  if (from == NULL || from[0] == '\0') {
-    return fz_intern_slice(value, strlen(value));
-  }
-  if (to == NULL) {
-    to = "";
-  }
-  size_t from_len = strlen(from);
-  size_t to_len = strlen(to);
-  size_t value_len = strlen(value);
-  size_t cap = value_len + 1;
-  char* out = (char*)malloc(cap);
-  if (out == NULL) {
-    return 0;
-  }
-  size_t out_len = 0;
-  const char* cursor = value;
-  const char* hit = NULL;
-  while ((hit = strstr(cursor, from)) != NULL) {
-    size_t prefix = (size_t)(hit - cursor);
-    size_t needed = out_len + prefix + to_len + 1;
-    if (needed > cap) {
-      while (cap < needed) cap *= 2;
-      char* next = (char*)realloc(out, cap);
-      if (next == NULL) {
-        free(out);
-        return 0;
-      }
-      out = next;
-    }
-    memcpy(out + out_len, cursor, prefix);
-    out_len += prefix;
-    memcpy(out + out_len, to, to_len);
-    out_len += to_len;
-    cursor = hit + from_len;
-  }
-  size_t tail = strlen(cursor);
-  if (out_len + tail + 1 > cap) {
-    cap = out_len + tail + 1;
-    char* next = (char*)realloc(out, cap);
-    if (next == NULL) {
-      free(out);
-      return 0;
-    }
-    out = next;
-  }
-  memcpy(out + out_len, cursor, tail);
-  out_len += tail;
-  out[out_len] = '\0';
-  return fz_intern_owned(out);
-}
-
-int32_t fz_native_str_split(int32_t value_id, int32_t sep_id) {
-  const char* value = fz_lookup_string(value_id);
-  const char* sep = fz_lookup_string(sep_id);
-  if (value == NULL) value = "";
-  if (sep == NULL) sep = "";
-  int32_t handle = fz_list_alloc();
-  if (handle < 0) {
-    return -1;
-  }
-  fz_list_state* list = fz_list_get(handle);
-  if (list == NULL) {
-    return -1;
-  }
-  size_t sep_len = strlen(sep);
-  if (sep_len == 0) {
-    (void)fz_list_push_cstr(list, value);
-    return handle;
-  }
-  const char* cursor = value;
-  const char* hit = NULL;
-  while ((hit = strstr(cursor, sep)) != NULL) {
-    size_t n = (size_t)(hit - cursor);
-    char* part = (char*)malloc(n + 1);
-    if (part == NULL) {
-      break;
-    }
-    memcpy(part, cursor, n);
-    part[n] = '\0';
-    if (fz_list_push_cstr(list, part) != 0) {
-      free(part);
-      break;
-    }
-    free(part);
-    cursor = hit + sep_len;
-  }
-  (void)fz_list_push_cstr(list, cursor);
-  return handle;
-}
-
 int32_t fz_native_http_header(int32_t key_id, int32_t value_id) {
   if (key_id <= 0 || value_id <= 0) {
     return -1;
@@ -11248,14 +11043,14 @@ int32_t fz_native_json_object4(
   return fz_native_json_object_from_pairs(ids, 4);
 }
 
-int32_t fz_native_list_new(void) {
+static int32_t fz_runtime_list_new(void) {
   pthread_mutex_lock(&fz_collections_lock);
   int32_t handle = fz_list_alloc();
   pthread_mutex_unlock(&fz_collections_lock);
   return handle;
 }
 
-int32_t fz_native_list_push(int32_t handle, int32_t value_id) {
+static int32_t fz_runtime_list_push(int32_t handle, int32_t value_id) {
   const char* value = fz_lookup_string(value_id);
   pthread_mutex_lock(&fz_collections_lock);
   fz_list_state* list = fz_list_get(handle);
@@ -11264,7 +11059,7 @@ int32_t fz_native_list_push(int32_t handle, int32_t value_id) {
   return ok;
 }
 
-int32_t fz_native_list_pop(int32_t handle) {
+static int32_t fz_runtime_list_pop(int32_t handle) {
   pthread_mutex_lock(&fz_collections_lock);
   fz_list_state* list = fz_list_get(handle);
   if (list == NULL || list->count <= 0) {
@@ -11280,7 +11075,7 @@ int32_t fz_native_list_pop(int32_t handle) {
   return id;
 }
 
-int32_t fz_native_list_len(int32_t handle) {
+static int32_t fz_runtime_list_len(int32_t handle) {
   pthread_mutex_lock(&fz_collections_lock);
   fz_list_state* list = fz_list_get(handle);
   int32_t len = list == NULL ? -1 : list->count;
@@ -11288,7 +11083,7 @@ int32_t fz_native_list_len(int32_t handle) {
   return len;
 }
 
-int32_t fz_native_list_get(int32_t handle, int32_t index) {
+static int32_t fz_runtime_list_get(int32_t handle, int32_t index) {
   pthread_mutex_lock(&fz_collections_lock);
   fz_list_state* list = fz_list_get(handle);
   if (list == NULL || index < 0 || index >= list->count) {
@@ -11301,7 +11096,7 @@ int32_t fz_native_list_get(int32_t handle, int32_t index) {
   return id;
 }
 
-int32_t fz_native_list_set(int32_t handle, int32_t index, int32_t value_id) {
+static int32_t fz_runtime_list_set(int32_t handle, int32_t index, int32_t value_id) {
   const char* value = fz_lookup_string(value_id);
   if (value == NULL) value = "";
   pthread_mutex_lock(&fz_collections_lock);
@@ -11321,7 +11116,7 @@ int32_t fz_native_list_set(int32_t handle, int32_t index, int32_t value_id) {
   return 0;
 }
 
-int32_t fz_native_list_clear(int32_t handle) {
+static int32_t fz_runtime_list_clear(int32_t handle) {
   pthread_mutex_lock(&fz_collections_lock);
   fz_list_state* list = fz_list_get(handle);
   if (list == NULL) {
@@ -11337,7 +11132,7 @@ int32_t fz_native_list_clear(int32_t handle) {
   return 0;
 }
 
-int32_t fz_native_list_join(int32_t handle, int32_t sep_id) {
+static int32_t fz_runtime_list_join(int32_t handle, int32_t sep_id) {
   const char* sep = fz_lookup_string(sep_id);
   if (sep == NULL) sep = "";
   pthread_mutex_lock(&fz_collections_lock);
@@ -11375,14 +11170,14 @@ int32_t fz_native_list_join(int32_t handle, int32_t sep_id) {
   return fz_intern_owned(out);
 }
 
-int32_t fz_native_map_new(void) {
+static int32_t fz_runtime_map_new(void) {
   pthread_mutex_lock(&fz_collections_lock);
   int32_t handle = fz_map_alloc();
   pthread_mutex_unlock(&fz_collections_lock);
   return handle;
 }
 
-int32_t fz_native_map_set(int32_t handle, int32_t key_id, int32_t value_id) {
+static int32_t fz_runtime_map_set(int32_t handle, int32_t key_id, int32_t value_id) {
   const char* key = fz_lookup_string(key_id);
   const char* value = fz_lookup_string(value_id);
   if (key == NULL || key[0] == '\0') {
@@ -11426,7 +11221,7 @@ int32_t fz_native_map_set(int32_t handle, int32_t key_id, int32_t value_id) {
   return 0;
 }
 
-int32_t fz_native_map_get(int32_t handle, int32_t key_id) {
+static int32_t fz_runtime_map_get(int32_t handle, int32_t key_id) {
   const char* key = fz_lookup_string(key_id);
   pthread_mutex_lock(&fz_collections_lock);
   fz_map_state* map = fz_map_get(handle);
@@ -11441,7 +11236,7 @@ int32_t fz_native_map_get(int32_t handle, int32_t key_id) {
   return out;
 }
 
-int32_t fz_native_map_has(int32_t handle, int32_t key_id) {
+static int32_t fz_runtime_map_has(int32_t handle, int32_t key_id) {
   const char* key = fz_lookup_string(key_id);
   pthread_mutex_lock(&fz_collections_lock);
   fz_map_state* map = fz_map_get(handle);
@@ -11450,7 +11245,7 @@ int32_t fz_native_map_has(int32_t handle, int32_t key_id) {
   return ok;
 }
 
-int32_t fz_native_map_delete(int32_t handle, int32_t key_id) {
+static int32_t fz_runtime_map_delete(int32_t handle, int32_t key_id) {
   const char* key = fz_lookup_string(key_id);
   pthread_mutex_lock(&fz_collections_lock);
   fz_map_state* map = fz_map_get(handle);
@@ -11476,7 +11271,7 @@ int32_t fz_native_map_delete(int32_t handle, int32_t key_id) {
   return 1;
 }
 
-int32_t fz_native_map_keys(int32_t handle) {
+static int32_t fz_runtime_map_keys(int32_t handle) {
   pthread_mutex_lock(&fz_collections_lock);
   fz_map_state* map = fz_map_get(handle);
   if (map == NULL) {
@@ -11496,7 +11291,7 @@ int32_t fz_native_map_keys(int32_t handle) {
   return list_handle;
 }
 
-int32_t fz_native_map_len(int32_t handle) {
+static int32_t fz_runtime_map_len(int32_t handle) {
   pthread_mutex_lock(&fz_collections_lock);
   fz_map_state* map = fz_map_get(handle);
   int32_t len = map == NULL ? -1 : map->count;
@@ -12804,13 +12599,13 @@ int32_t fz_native_net_body_json(int32_t conn_fd) {
 }
 
 int32_t fz_native_net_body_bind(int32_t conn_fd) {
-  int32_t out_map = fz_native_map_new();
+  int32_t out_map = fz_runtime_map_new();
   if (out_map < 0) {
     return -1;
   }
   int32_t body = fz_native_net_body_json(conn_fd);
   if (body <= 0) {
-    (void)fz_native_map_set(
+    (void)fz_runtime_map_set(
         out_map,
         fz_intern_slice("__error", 7),
         fz_intern_slice("invalid JSON body", 17));
@@ -12820,7 +12615,7 @@ int32_t fz_native_net_body_bind(int32_t conn_fd) {
   const char* raw = fz_lookup_string(body_id);
   const char* p = fz_json_ws(raw);
   if (p == NULL || *p != '{') {
-    (void)fz_native_map_set(
+    (void)fz_runtime_map_set(
         out_map,
         fz_intern_slice("__error", 7),
         fz_intern_slice("body must be JSON object", 24));
@@ -12833,7 +12628,7 @@ int32_t fz_native_net_body_bind(int32_t conn_fd) {
   for (;;) {
     char* key = NULL;
     if (fz_json_parse_string(&p, &key) != 0) {
-      (void)fz_native_map_set(
+      (void)fz_runtime_map_set(
           out_map,
           fz_intern_slice("__error", 7),
           fz_intern_slice("invalid JSON object key", 23));
@@ -12842,7 +12637,7 @@ int32_t fz_native_net_body_bind(int32_t conn_fd) {
     }
     p = fz_json_ws(p);
     if (*p != ':') {
-      (void)fz_native_map_set(
+      (void)fz_runtime_map_set(
           out_map,
           fz_intern_slice("__error", 7),
           fz_intern_slice("invalid JSON object syntax", 26));
@@ -12852,7 +12647,7 @@ int32_t fz_native_net_body_bind(int32_t conn_fd) {
     p = fz_json_ws(p + 1);
     const char* value_start = p;
     if (fz_json_skip_value_token(&p, 0) != 0) {
-      (void)fz_native_map_set(
+      (void)fz_runtime_map_set(
           out_map,
           fz_intern_slice("__error", 7),
           fz_intern_slice("invalid JSON object value", 25));
@@ -12869,11 +12664,11 @@ int32_t fz_native_net_body_bind(int32_t conn_fd) {
     if (decoded) {
       int32_t value_id = fz_intern_slice(string_value == NULL ? "" : string_value, strlen(string_value == NULL ? "" : string_value));
       free(string_value);
-      (void)fz_native_map_set(out_map, key_id, value_id);
+      (void)fz_runtime_map_set(out_map, key_id, value_id);
     } else {
       free(string_value);
       int32_t value_id = fz_intern_slice(value_start, (size_t)(value_end - value_start));
-      (void)fz_native_map_set(out_map, key_id, value_id);
+      (void)fz_runtime_map_set(out_map, key_id, value_id);
     }
     p = fz_json_ws(p);
     if (*p == ',') {
@@ -12883,7 +12678,7 @@ int32_t fz_native_net_body_bind(int32_t conn_fd) {
     if (*p == '}') {
       return out_map;
     }
-    (void)fz_native_map_set(
+    (void)fz_runtime_map_set(
         out_map,
         fz_intern_slice("__error", 7),
         fz_intern_slice("invalid JSON object terminator", 30));
@@ -14962,10 +14757,8 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_proc_stderr(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_proc_exit_code(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_env_get(int32_t key_id)"));
-        assert!(shim.contains("int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id)"));
-        assert!(
-            shim.contains("int32_t fz_native_str_contains(int32_t haystack_id, int32_t needle_id)")
-        );
+        assert!(!shim.contains("int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id)"));
+        assert!(!shim.contains("int32_t fz_native_str_contains("));
         assert!(shim.contains("int32_t fz_native_http_header(int32_t key_id, int32_t value_id)"));
         assert!(
             shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)")
@@ -15974,8 +15767,10 @@ mod tests {
 
         assert!(!llvm.contains("__native.array_"));
         assert!(!llvm.contains("fz_native_list_"));
+        assert!(!llvm.contains("fz_native_map_"));
         assert!(!clif.contains("__native.array_"));
         assert!(!clif.contains("fz_native_list_"));
+        assert!(!clif.contains("fz_native_map_"));
     }
 
     #[test]

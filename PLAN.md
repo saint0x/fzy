@@ -512,11 +512,11 @@
 - [ ] Make perf regressions release-blocking on these kernels once new pipeline is default.
 
 #### Deletion/Deprecation Checklist (No Compatibility Layer)
-- [ ] Delete data-plane call emission for runtime imports in both LLVM and Cranelift lowering paths.
-- [ ] Delete shim-backed array/list/map/string data-plane runtime symbols from default native optimized build path.
-- [ ] Delete compatibility toggles that retain old handle-based local data-plane execution.
-- [ ] Remove obsolete tests that encode old shim-based local data-plane behavior and replace with canonical-IR/direct-memory conformance tests.
-- [ ] Update docs to state the new execution architecture explicitly (direct-memory native pipeline with capability-boundary runtime imports only).
+- [✅] Delete data-plane call emission for runtime imports in both LLVM and Cranelift lowering paths.
+- [✅] Delete shim-backed array/list/map/string data-plane runtime symbols from default native optimized build path.
+- [✅] Delete compatibility toggles that retain old handle-based local data-plane execution.
+- [✅] Remove obsolete tests that encode old shim-based local data-plane behavior and replace with canonical-IR/direct-memory conformance tests.
+- [✅] Update docs to state the new execution architecture explicitly (direct-memory native pipeline with capability-boundary runtime imports only).
 
 ## Checklist: Done
 
