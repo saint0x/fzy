@@ -10199,33 +10199,6 @@ int32_t fz_native_json_object4(
   return fz_native_json_object_from_pairs(ids, 4);
 }
 
-int32_t fz_native_array_new(void) {
-  pthread_mutex_lock(&fz_collections_lock);
-  int32_t handle = fz_array_alloc();
-  pthread_mutex_unlock(&fz_collections_lock);
-  return handle;
-}
-
-int32_t fz_native_array_push(int32_t handle, int32_t value) {
-  pthread_mutex_lock(&fz_collections_lock);
-  fz_array_state* array = fz_array_get(handle);
-  int ok = fz_array_push_i32(array, value) == 0 ? 0 : -1;
-  pthread_mutex_unlock(&fz_collections_lock);
-  return ok;
-}
-
-int32_t fz_native_array_get(int32_t handle, int32_t index) {
-  pthread_mutex_lock(&fz_collections_lock);
-  fz_array_state* array = fz_array_get(handle);
-  if (array == NULL || index < 0 || index >= array->count) {
-    pthread_mutex_unlock(&fz_collections_lock);
-    return 0;
-  }
-  int32_t value = array->items[index];
-  pthread_mutex_unlock(&fz_collections_lock);
-  return value;
-}
-
 int32_t fz_native_list_new(void) {
   pthread_mutex_lock(&fz_collections_lock);
   int32_t handle = fz_list_alloc();
@@ -13963,9 +13936,9 @@ mod tests {
         ));
         assert!(shim.contains("int32_t fz_native_json_object3("));
         assert!(shim.contains("int32_t fz_native_json_object4("));
-        assert!(shim.contains("int32_t fz_native_array_new(void)"));
-        assert!(shim.contains("int32_t fz_native_array_push(int32_t handle, int32_t value)"));
-        assert!(shim.contains("int32_t fz_native_array_get(int32_t handle, int32_t index)"));
+        assert!(!shim.contains("int32_t fz_native_array_new(void)"));
+        assert!(!shim.contains("int32_t fz_native_array_push(int32_t handle, int32_t value)"));
+        assert!(!shim.contains("int32_t fz_native_array_get(int32_t handle, int32_t index)"));
         assert!(shim.contains("posix_spawnp"));
         assert!(shim.contains("int32_t fz_native_proc_spawnv("));
         assert!(shim.contains("int32_t fz_native_proc_runv("));

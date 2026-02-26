@@ -462,7 +462,7 @@
 - [✅] Remove `__native.array_new`, `__native.array_push`, `__native.array_get` from hot-path lowering for native optimized builds.
 - [ ] Remove string data-plane dependency on global intern-table path for loop-local temporaries.
 - [ ] Reduce `NATIVE_RUNTIME_IMPORTS` to capability/host-effect boundaries only (fs/http/proc/thread/time/log/etc.), excluding local data-plane primitives.
-- [ ] Ensure no fallback compatibility shim remains in optimized native path for removed data-plane calls.
+- [✅] Ensure no fallback compatibility shim remains in optimized native path for removed data-plane calls.
 
 #### Direct-to-Memory Arrays/Indexing (Phase 1)
 - [ ] Lower fixed-shape numeric array literals to contiguous memory objects directly (stack or static based on escape/lifetime class).
@@ -505,7 +505,7 @@
 
 #### Perf Exit Criteria
 - [✅] `bytes_kernel`: reduce from ~`4.995x` to <= `2.0x` in first pass, with follow-up target <= `1.4x`.
-- [ ] `resultx_classify`: reduce from ~`3.155x` to <= `1.8x` in first pass, with follow-up target <= `1.3x`.
+- [✅] `resultx_classify`: reduce from ~`3.155x` to <= `1.8x` in first pass, with follow-up target <= `1.3x`.
 - [ ] `text_kernel`: reduce from ~`1.667x` to <= `1.25x` after temporary-string direct-memory path lands.
 - [ ] Maintain parity/near-parity on existing strong kernels (no regressions beyond agreed noise band).
 - [ ] Make perf regressions release-blocking on these kernels once new pipeline is default.
