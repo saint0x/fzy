@@ -1,0 +1,21 @@
+enum ErrorCode { InvalidInput, NotFound, Conflict, Timeout, Io, Internal }
+
+fn classify(code: ErrorCode) -> i32 {
+    match code {
+        ErrorCode::Io => return 11,
+        ErrorCode::InvalidInput => return 17,
+        ErrorCode::Timeout => return 23,
+        ErrorCode::Conflict => return 31,
+        _ => return 43,
+    }
+}
+
+fn main() -> i32 {
+    let values = [4, 6, 9]
+    let idx = 1
+    let score = values[idx]
+    if str.contains(str.replace(str.trim("  xax  "), "a", "b"), "b") == 1 {
+        return classify(ErrorCode::Io) + score + str.len(str.replace(str.trim("  xax  "), "a", "b"))
+    }
+    return 0
+}

@@ -15538,4 +15538,50 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn cross_backend_direct_memory_bounds_probe_executes_consistently() {
+        let project_name = format!(
+            "fozzylang-direct-memory-bounds-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        let fixture = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/direct_memory_safety/main.fzy"),
+        )
+        .expect("direct memory safety fixture should be readable");
+        std::fs::write(root.join("src/main.fzy"), fixture).expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 68);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

@@ -36,12 +36,17 @@ echo "[gate] primitive parity/equivalence probes"
 "${FZ_CMD[@]}" equivalence tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity tests/fixtures/native_completeness/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" equivalence tests/fixtures/native_completeness/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity tests/fixtures/direct_memory_contract/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence tests/fixtures/direct_memory_contract/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity tests/fixtures/direct_memory_safety/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence tests/fixtures/direct_memory_safety/main.fzy --seed "$SEED" --json >/dev/null
 
 echo "[gate] native completeness execute-and-compare"
 cargo test -q -p driver pipeline::tests::cross_backend_native_completeness_fixture_execute_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::direct_memory_backend_contract_array_index_lowers_without_data_plane_runtime_calls -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::direct_memory_backend_contract_switch_and_constant_string_chain_lowering_is_parity_safe -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_contract_fixture_executes_consistently -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_bounds_probe_executes_consistently -- --exact >/dev/null
 
 echo "[gate] deterministic memory doctor/tests"
 fozzy doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
@@ -65,6 +70,7 @@ echo "[gate] host-backed run"
 fozzy run tests/runtime.bind_json_env.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/memory_graph_diff_top.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/primitive.host_operators.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
+fozzy run tests/host_backends_run.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 
 echo "[gate] host-backed C interop matrix"
 fozzy run tests/c_ffi_matrix.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null

@@ -37,6 +37,8 @@ PROBE_A="$TMP_DIR/parity_probe_a.fzy"
 PROBE_B="$TMP_DIR/parity_probe_b.fzy"
 PROBE_C="$ROOT/tests/fixtures/primitive_parity/main.fzy"
 PROBE_D="$ROOT/tests/fixtures/native_completeness/main.fzy"
+PROBE_E="$ROOT/tests/fixtures/direct_memory_contract/main.fzy"
+PROBE_F="$ROOT/tests/fixtures/direct_memory_safety/main.fzy"
 cat > "$PROBE_A" <<'FZY'
 fn main() -> i32 {
     return 0
@@ -63,6 +65,10 @@ FZY
 "${FZ_CMD[@]}" equivalence "$PROBE_C" --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity "$PROBE_D" --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" equivalence "$PROBE_D" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity "$PROBE_E" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence "$PROBE_E" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity "$PROBE_F" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence "$PROBE_F" --seed "$SEED" --json >/dev/null
 
 echo "[ship] native backend execute-and-compare control-flow parity"
 cargo test -q -p driver pipeline::tests::cross_backend_primitive_control_flow_and_operator_fixture_execute_consistently -- --exact >/dev/null
@@ -72,6 +78,7 @@ cargo test -q -p driver pipeline::tests::non_entry_infinite_loop_function_fixtur
 cargo test -q -p driver pipeline::tests::direct_memory_backend_contract_array_index_lowers_without_data_plane_runtime_calls -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::direct_memory_backend_contract_switch_and_constant_string_chain_lowering_is_parity_safe -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_contract_fixture_executes_consistently -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_bounds_probe_executes_consistently -- --exact >/dev/null
 
 echo "[ship] examples conformance on default production backend"
 for example_root in "$ROOT"/examples/*; do

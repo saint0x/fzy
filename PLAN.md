@@ -499,10 +499,10 @@
 - [ ] Add layout/alias validation tests for arrays/slices/strings under both backends.
 
 #### Determinism + Safety Gates (Mandatory)
-- [ ] Add deterministic differential tests: direct-memory mode vs capability-boundary mode must be behaviorally equivalent at language level.
-- [ ] Add memory-safety regression probes for bounds, aliasing, and lifetime-sensitive patterns after direct-memory lowering.
-- [ ] Run strict Fozzy lifecycle gates for each phase (`doctor`, `test --det --strict`, `run --record`, `trace verify`, `replay`, `ci`).
-- [ ] Add host-backed checks where relevant to confirm boundary-only runtime import behavior remains correct.
+- [✅] Add deterministic differential tests: direct-memory mode vs capability-boundary mode must be behaviorally equivalent at language level.
+- [✅] Add memory-safety regression probes for bounds, aliasing, and lifetime-sensitive patterns after direct-memory lowering.
+- [✅] Run strict Fozzy lifecycle gates for each phase (`doctor`, `test --det --strict`, `run --record`, `trace verify`, `replay`, `ci`).
+- [✅] Add host-backed checks where relevant to confirm boundary-only runtime import behavior remains correct.
 
 #### Perf Exit Criteria
 - [✅] `bytes_kernel`: reduce from ~`4.995x` to <= `2.0x` in first pass, with follow-up target <= `1.4x`.

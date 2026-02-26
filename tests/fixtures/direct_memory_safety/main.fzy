@@ -1,0 +1,23 @@
+fn bounds_probe() -> i32 {
+    let values = [7, 11, 13]
+    let hi = 9
+    let lo = -1
+    return values[hi] + values[lo] + values[2]
+}
+
+fn alias_probe() -> i32 {
+    let mut source = [2, 4, 6]
+    let alias = source
+    let picked = alias[2]
+    source = [9, 9, 9]
+    return picked + source[0]
+}
+
+fn lifetime_probe(index: i32) -> i32 {
+    let local = [10, 20, 30]
+    return local[index]
+}
+
+fn main() -> i32 {
+    return bounds_probe() + alias_probe() + lifetime_probe(0) + lifetime_probe(2)
+}
