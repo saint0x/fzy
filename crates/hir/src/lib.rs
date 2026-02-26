@@ -37,6 +37,7 @@ pub struct TypedModule {
     pub host_syscall_sites: usize,
     pub unsafe_sites: usize,
     pub unsafe_reasoned_sites: usize,
+    pub unsafe_contract_sites: Vec<UnsafeContractSite>,
     pub reference_sites: usize,
     pub alloc_sites: usize,
     pub free_sites: usize,
@@ -56,6 +57,21 @@ pub struct TypedModule {
     pub trait_violations: Vec<String>,
     pub reference_lifetime_violations: Vec<String>,
     pub linear_type_violations: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct UnsafeContractSite {
+    pub site_id: String,
+    pub kind: String,
+    pub function: String,
+    pub snippet: String,
+    pub reason: Option<String>,
+    pub invariant: Option<String>,
+    pub owner: Option<String>,
+    pub scope: Option<String>,
+    pub risk_class: Option<String>,
+    pub proof_ref: Option<String>,
+    pub async_context: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -445,14 +461,25 @@ pub fn lower(module: &Module) -> TypedModule {
         match_duplicate_catchall_arms,
     ) = collect_semantic_hints(&typed_functions);
     let (entry_requires, entry_ensures) = collect_entry_contracts(&typed_functions, &fn_sigs);
-    let (
-        host_syscall_sites,
-        unsafe_sites,
-        unsafe_reasoned_sites,
-        reference_sites,
-        alloc_sites,
-        free_sites,
-    ) = collect_effect_markers(&typed_functions);
+    let (host_syscall_sites, _unsafe_sites_markers, _unsafe_reasoned_sites_markers, reference_sites, alloc_sites, free_sites) =
+        collect_effect_markers(&typed_functions);
+    let unsafe_contract_sites = collect_unsafe_contract_sites(&typed_functions);
+    let unsafe_sites = unsafe_contract_sites
+        .iter()
+        .filter(|site| site.kind != "unsafe_violation_callsite")
+        .count();
+    let unsafe_reasoned_sites = unsafe_contract_sites
+        .iter()
+        .filter(|site| site.kind != "unsafe_violation_callsite")
+        .filter(|site| {
+            site.reason.as_deref().is_some_and(|v| !v.is_empty())
+                && site.invariant.as_deref().is_some_and(|v| !v.is_empty())
+                && site.owner.as_deref().is_some_and(|v| !v.is_empty())
+                && site.scope.as_deref().is_some_and(|v| !v.is_empty())
+                && site.risk_class.as_deref().is_some_and(|v| !v.is_empty())
+                && site.proof_ref.as_deref().is_some_and(|v| !v.is_empty())
+        })
+        .count();
     let inferred_capabilities = infer_capabilities(&typed_functions);
     let extern_c_abi_functions = module
         .items
@@ -512,6 +539,7 @@ pub fn lower(module: &Module) -> TypedModule {
         host_syscall_sites,
         unsafe_sites,
         unsafe_reasoned_sites,
+        unsafe_contract_sites,
         reference_sites,
         alloc_sites,
         free_sites,
@@ -3282,6 +3310,560 @@ fn collect_effect_markers(
         alloc_sites,
         free_sites,
     )
+}
+
+fn collect_unsafe_contract_sites(functions: &[TypedFunction]) -> Vec<UnsafeContractSite> {
+    let unsafe_functions = functions
+        .iter()
+        .filter(|function| function.is_unsafe)
+        .map(|function| function.name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut out = Vec::<UnsafeContractSite>::new();
+    for function in functions {
+        let owner = function
+            .params
+            .first()
+            .map(|param| param.name.clone())
+            .unwrap_or_else(|| "scope_root".to_string());
+        if function.is_unsafe {
+            let snippet = format!("unsafe fn {}", function.name);
+            out.push(generated_unsafe_contract_site(
+                "unsafe_fn",
+                &function.name,
+                &snippet,
+                &owner,
+                function.is_async,
+                None,
+            ));
+        }
+        if function.is_extern
+            && function
+                .abi
+                .as_deref()
+                .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+            && function.is_unsafe
+        {
+            let snippet = format!("ext unsafe c fn {}", function.name);
+            out.push(generated_unsafe_contract_site(
+                "unsafe_import",
+                &function.name,
+                &snippet,
+                &owner,
+                function.is_async,
+                None,
+            ));
+        }
+        for stmt in &function.body {
+            collect_unsafe_contract_sites_from_stmt(
+                stmt,
+                &function.name,
+                function.is_unsafe,
+                function.is_async,
+                &owner,
+                &unsafe_functions,
+                &mut out,
+            );
+        }
+    }
+    out
+}
+
+fn collect_unsafe_contract_sites_from_stmt(
+    stmt: &Stmt,
+    function_name: &str,
+    in_unsafe_context: bool,
+    in_async_context: bool,
+    owner: &str,
+    unsafe_functions: &BTreeSet<String>,
+    out: &mut Vec<UnsafeContractSite>,
+) {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => collect_unsafe_contract_sites_from_expr(
+            value,
+            function_name,
+            in_unsafe_context,
+            in_async_context,
+            owner,
+            unsafe_functions,
+            out,
+        ),
+        Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_unsafe_contract_sites_from_expr(
+                    value,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_unsafe_contract_sites_from_expr(
+                condition,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            for nested in then_body {
+                collect_unsafe_contract_sites_from_stmt(
+                    nested,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+            for nested in else_body {
+                collect_unsafe_contract_sites_from_stmt(
+                    nested,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Stmt::While { condition, body } => {
+            collect_unsafe_contract_sites_from_expr(
+                condition,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            for nested in body {
+                collect_unsafe_contract_sites_from_stmt(
+                    nested,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_unsafe_contract_sites_from_stmt(
+                    init,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+            if let Some(condition) = condition {
+                collect_unsafe_contract_sites_from_expr(
+                    condition,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+            if let Some(step) = step {
+                collect_unsafe_contract_sites_from_stmt(
+                    step,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+            for nested in body {
+                collect_unsafe_contract_sites_from_stmt(
+                    nested,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            collect_unsafe_contract_sites_from_expr(
+                iterable,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            for nested in body {
+                collect_unsafe_contract_sites_from_stmt(
+                    nested,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Stmt::Loop { body } => {
+            for nested in body {
+                collect_unsafe_contract_sites_from_stmt(
+                    nested,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            collect_unsafe_contract_sites_from_expr(
+                scrutinee,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_unsafe_contract_sites_from_expr(
+                        guard,
+                        function_name,
+                        in_unsafe_context,
+                        in_async_context,
+                        owner,
+                        unsafe_functions,
+                        out,
+                    );
+                }
+                collect_unsafe_contract_sites_from_expr(
+                    &arm.value,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Stmt::Break | Stmt::Continue => {}
+    }
+}
+
+fn collect_unsafe_contract_sites_from_expr(
+    expr: &Expr,
+    function_name: &str,
+    in_unsafe_context: bool,
+    in_async_context: bool,
+    owner: &str,
+    unsafe_functions: &BTreeSet<String>,
+    out: &mut Vec<UnsafeContractSite>,
+) {
+    match expr {
+        Expr::UnsafeBlock { body, .. } => {
+            let snippet = format!("{function_name}: unsafe {{ ... }}");
+            out.push(generated_unsafe_contract_site(
+                "unsafe_block",
+                function_name,
+                &snippet,
+                owner,
+                in_async_context,
+                None,
+            ));
+            for stmt in body {
+                collect_unsafe_contract_sites_from_stmt(
+                    stmt,
+                    function_name,
+                    true,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::Call { callee, args } => {
+            if !in_unsafe_context && unsafe_functions.contains(callee) {
+                let snippet = format!("{function_name}: call to unsafe `{callee}`");
+                out.push(unsafe_violation_site(
+                    function_name,
+                    &snippet,
+                    in_async_context,
+                ));
+            }
+            for arg in args {
+                collect_unsafe_contract_sites_from_expr(
+                    arg,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::FieldAccess { base, .. } => collect_unsafe_contract_sites_from_expr(
+            base,
+            function_name,
+            in_unsafe_context,
+            in_async_context,
+            owner,
+            unsafe_functions,
+            out,
+        ),
+        Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_unsafe_contract_sites_from_expr(
+                    value,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                collect_unsafe_contract_sites_from_expr(
+                    value,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::Closure { body, .. } => collect_unsafe_contract_sites_from_expr(
+            body,
+            function_name,
+            in_unsafe_context,
+            in_async_context,
+            owner,
+            unsafe_functions,
+            out,
+        ),
+        Expr::Group(inner) | Expr::Await(inner) | Expr::Unary { expr: inner, .. } => {
+            collect_unsafe_contract_sites_from_expr(
+                inner,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            )
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_unsafe_contract_sites_from_expr(
+                try_expr,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            collect_unsafe_contract_sites_from_expr(
+                catch_expr,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_unsafe_contract_sites_from_expr(
+                left,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            collect_unsafe_contract_sites_from_expr(
+                right,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+        }
+        Expr::Range { start, end, .. } => {
+            collect_unsafe_contract_sites_from_expr(
+                start,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            collect_unsafe_contract_sites_from_expr(
+                end,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+        }
+        Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_unsafe_contract_sites_from_expr(
+                    item,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::Index { base, index } => {
+            collect_unsafe_contract_sites_from_expr(
+                base,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            collect_unsafe_contract_sites_from_expr(
+                index,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+        }
+        Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Ident(_) => {}
+    }
+}
+
+fn generated_unsafe_contract_site(
+    kind: &str,
+    function_name: &str,
+    snippet: &str,
+    owner: &str,
+    async_context: bool,
+    callee: Option<&str>,
+) -> UnsafeContractSite {
+    let reason = match kind {
+        "unsafe_import" => format!("compiler-generated: unsafe FFI import `{function_name}`"),
+        "unsafe_fn" => format!("compiler-generated: unsafe function `{function_name}`"),
+        "unsafe_block" => format!("compiler-generated: unsafe island in `{function_name}`"),
+        _ => format!("compiler-generated: unsafe site in `{function_name}`"),
+    };
+    let scope = format!("{function_name}::{kind}");
+    let risk_class = if kind == "unsafe_import" || callee.is_some_and(|v| v.contains("c_")) {
+        "ffi".to_string()
+    } else {
+        "memory".to_string()
+    };
+    let site_id = stable_unsafe_site_id(kind, function_name, snippet);
+    let proof_ref = format!("gate://compiler-generated/{function_name}/{site_id}");
+    UnsafeContractSite {
+        site_id,
+        kind: kind.to_string(),
+        function: function_name.to_string(),
+        snippet: snippet.to_string(),
+        reason: Some(reason),
+        invariant: Some(format!("owner_live({owner})")),
+        owner: Some(owner.to_string()),
+        scope: Some(scope),
+        risk_class: Some(risk_class),
+        proof_ref: Some(proof_ref),
+        async_context,
+    }
+}
+
+fn unsafe_violation_site(function_name: &str, snippet: &str, async_context: bool) -> UnsafeContractSite {
+    let site_id = stable_unsafe_site_id("unsafe_violation_callsite", function_name, snippet);
+    UnsafeContractSite {
+        site_id,
+        kind: "unsafe_violation_callsite".to_string(),
+        function: function_name.to_string(),
+        snippet: snippet.to_string(),
+        reason: None,
+        invariant: None,
+        owner: None,
+        scope: None,
+        risk_class: None,
+        proof_ref: None,
+        async_context,
+    }
+}
+
+fn stable_unsafe_site_id(kind: &str, function_name: &str, snippet: &str) -> String {
+    let material = format!("{kind}|{function_name}|{snippet}");
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in material.as_bytes() {
+        hash ^= *byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("usite_{hash:016x}")
 }
 
 fn deferred_resource(expr: &ast::Expr) -> Option<String> {

@@ -125,10 +125,35 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         }
     }
 
-    if module.unsafe_sites > 0 {
+    if !module.unsafe_contract_sites.is_empty() {
+        let unsafe_sites = module
+            .unsafe_contract_sites
+            .iter()
+            .filter(|site| site.kind != "unsafe_violation_callsite")
+            .count();
         let missing_reasons = module
-            .unsafe_sites
-            .saturating_sub(module.unsafe_reasoned_sites);
+            .unsafe_contract_sites
+            .iter()
+            .filter(|site| site.kind != "unsafe_violation_callsite")
+            .filter(|site| {
+                site.reason.as_deref().is_none_or(str::is_empty)
+                    || site.invariant.as_deref().is_none_or(str::is_empty)
+                    || site.owner.as_deref().is_none_or(str::is_empty)
+                    || site.scope.as_deref().is_none_or(str::is_empty)
+                    || site.risk_class.as_deref().is_none_or(str::is_empty)
+                    || site.proof_ref.as_deref().is_none_or(str::is_empty)
+            })
+            .count();
+        let unsafe_context_violations = module
+            .unsafe_contract_sites
+            .iter()
+            .filter(|site| site.kind == "unsafe_violation_callsite")
+            .count();
+        let async_unsafe_sites = module
+            .unsafe_contract_sites
+            .iter()
+            .filter(|site| site.async_context && site.kind != "unsafe_violation_callsite")
+            .count();
         report.diagnostics.push(Diagnostic::new(
             if policy.safe_profile {
                 Severity::Error
@@ -137,7 +162,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             },
             format!(
                 "detected {} explicit unsafe escape marker(s)",
-                module.unsafe_sites
+                unsafe_sites
             ),
             Some(if policy.safe_profile {
                 "unsafe escapes are forbidden in safe profile".to_string()
@@ -168,6 +193,33 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                         "compiler-generated contracts are recommended by default and enforced in strict unsafe-audit mode"
                             .to_string()
                     },
+                ),
+            ));
+        }
+        if unsafe_context_violations > 0 {
+            report.diagnostics.push(Diagnostic::new(
+                Severity::Error,
+                format!(
+                    "{} unsafe callsite violation(s) detected outside unsafe context",
+                    unsafe_context_violations
+                ),
+                Some("wrap callsites in `unsafe { ... }` or move logic into an `unsafe fn`".to_string()),
+            ));
+        }
+        if async_unsafe_sites > 0 {
+            report.diagnostics.push(Diagnostic::new(
+                if policy.strict_unsafe_contracts || policy.safe_profile {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                },
+                format!(
+                    "{} unsafe site(s) execute in async context",
+                    async_unsafe_sites
+                ),
+                Some(
+                    "async + unsafe requires explicit invariants and deterministic evidence links"
+                        .to_string(),
                 ),
             ));
         }
@@ -385,6 +437,19 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![fir::UnsafeContractSite {
+                site_id: "usite_test".to_string(),
+                kind: "unsafe_block".to_string(),
+                function: "main".to_string(),
+                snippet: "main: unsafe { ... }".to_string(),
+                reason: Some("compiler-generated".to_string()),
+                invariant: Some("owner_live(scope_root)".to_string()),
+                owner: Some("scope_root".to_string()),
+                scope: Some("main::unsafe_block".to_string()),
+                risk_class: Some("memory".to_string()),
+                proof_ref: Some("gate://compiler-generated/main/usite_test".to_string()),
+                async_context: false,
+            }],
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -433,6 +498,19 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![fir::UnsafeContractSite {
+                site_id: "usite_test".to_string(),
+                kind: "unsafe_block".to_string(),
+                function: "main".to_string(),
+                snippet: "main: unsafe { ... }".to_string(),
+                reason: Some("compiler-generated".to_string()),
+                invariant: Some("owner_live(scope_root)".to_string()),
+                owner: Some("scope_root".to_string()),
+                scope: Some("main::unsafe_block".to_string()),
+                risk_class: Some("memory".to_string()),
+                proof_ref: Some("gate://compiler-generated/main/usite_test".to_string()),
+                async_context: false,
+            }],
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -484,6 +562,19 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![fir::UnsafeContractSite {
+                site_id: "usite_test".to_string(),
+                kind: "unsafe_block".to_string(),
+                function: "main".to_string(),
+                snippet: "main: unsafe { ... }".to_string(),
+                reason: None,
+                invariant: None,
+                owner: None,
+                scope: None,
+                risk_class: None,
+                proof_ref: None,
+                async_context: false,
+            }],
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -536,6 +627,19 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![fir::UnsafeContractSite {
+                site_id: "usite_test".to_string(),
+                kind: "unsafe_block".to_string(),
+                function: "main".to_string(),
+                snippet: "main: unsafe { ... }".to_string(),
+                reason: Some("compiler-generated".to_string()),
+                invariant: Some("owner_live(scope_root)".to_string()),
+                owner: Some("scope_root".to_string()),
+                scope: Some("main::unsafe_block".to_string()),
+                risk_class: Some("memory".to_string()),
+                proof_ref: Some("gate://compiler-generated/main/usite_test".to_string()),
+                async_context: false,
+            }],
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -588,6 +692,19 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![fir::UnsafeContractSite {
+                site_id: "usite_test".to_string(),
+                kind: "unsafe_block".to_string(),
+                function: "main".to_string(),
+                snippet: "main: unsafe { ... }".to_string(),
+                reason: Some("compiler-generated".to_string()),
+                invariant: Some("owner_live(scope_root)".to_string()),
+                owner: Some("scope_root".to_string()),
+                scope: Some("main::unsafe_block".to_string()),
+                risk_class: Some("memory".to_string()),
+                proof_ref: Some("gate://compiler-generated/main/usite_test".to_string()),
+                async_context: false,
+            }],
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -640,6 +757,19 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![fir::UnsafeContractSite {
+                site_id: "usite_test".to_string(),
+                kind: "unsafe_block".to_string(),
+                function: "main".to_string(),
+                snippet: "main: unsafe { ... }".to_string(),
+                reason: None,
+                invariant: None,
+                owner: None,
+                scope: None,
+                risk_class: None,
+                proof_ref: None,
+                async_context: false,
+            }],
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -692,6 +822,19 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![fir::UnsafeContractSite {
+                site_id: "usite_test".to_string(),
+                kind: "unsafe_block".to_string(),
+                function: "main".to_string(),
+                snippet: "main: unsafe { ... }".to_string(),
+                reason: None,
+                invariant: None,
+                owner: None,
+                scope: None,
+                risk_class: None,
+                proof_ref: None,
+                async_context: false,
+            }],
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -751,6 +894,7 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -824,6 +968,7 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -883,6 +1028,7 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -939,6 +1085,7 @@ mod tests {
             host_syscall_sites: 1,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -991,6 +1138,7 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 2,
             free_sites: 1,
@@ -1049,6 +1197,7 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 2,
             free_sites: 1,
@@ -1109,6 +1258,7 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 0,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -1167,6 +1317,7 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 1,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -1225,6 +1376,7 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 1,
             unsafe_reasoned_sites: 1,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,
@@ -1284,6 +1436,7 @@ mod tests {
             host_syscall_sites: 0,
             unsafe_sites: 1,
             unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
             reference_sites: 0,
             alloc_sites: 0,
             free_sites: 0,

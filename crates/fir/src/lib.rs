@@ -1,6 +1,7 @@
 use ast::Type;
 use core::CapabilitySet;
 use hir::{FunctionCapabilityRequirement, TypedFunction, TypedModule};
+pub use hir::UnsafeContractSite;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueType {
@@ -92,6 +93,7 @@ pub struct FirModule {
     pub host_syscall_sites: usize,
     pub unsafe_sites: usize,
     pub unsafe_reasoned_sites: usize,
+    pub unsafe_contract_sites: Vec<hir::UnsafeContractSite>,
     pub reference_sites: usize,
     pub alloc_sites: usize,
     pub free_sites: usize,
@@ -137,6 +139,7 @@ pub fn build_owned(typed: TypedModule) -> FirModule {
         host_syscall_sites,
         unsafe_sites,
         unsafe_reasoned_sites,
+        unsafe_contract_sites,
         reference_sites,
         alloc_sites,
         free_sites,
@@ -200,6 +203,7 @@ pub fn build_owned(typed: TypedModule) -> FirModule {
         host_syscall_sites,
         unsafe_sites,
         unsafe_reasoned_sites,
+        unsafe_contract_sites,
         reference_sites,
         alloc_sites,
         free_sites,
