@@ -3,6 +3,7 @@
 Correctness-first systems language toolchain with deterministic verification workflows.
 
 fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, replay, and artifact-driven debugging are first-class, not bolt-ons.
+A quick way to think about fzy is zig but safer, rust but more sane.
 
 ## Start Here
 
@@ -99,7 +100,7 @@ Implemented and verified in this repo:
 - Explore + shrink metadata artifacts for replay/shrink prioritization
 - Language-native scenario generation from parsed `test` blocks (combined + per-test)
 - Recursive multi-file module loading from `mod` declarations (`foo.fzy`, `foo/mod.fzy`, `foo::bar`)
-- C header generation from exported `pub extern "C" fn` signatures
+- C header generation from exported `pubext c fn` signatures
 - RPC schema/client/server stub generation (`fz rpc gen`)
 - `fz run` executes compiled native output:
   - text mode streams child stdout/stderr live (server-friendly)
@@ -222,7 +223,7 @@ Spec: `docs/dependency-locking-v1.md`
 ## C Interop
 
 - Production guide: `docs/c-interop-production-v1.md`
-- `#[ffi_panic(abort|error)]` is required on every exported `pub extern "C" fn`.
+- `#[ffi_panic(abort|error)]` is required on every exported `pubext c fn`.
 - `fz build --lib` emits static/shared libraries plus installable header + ABI manifest.
 
 ## Fozzy-First Validation Contract

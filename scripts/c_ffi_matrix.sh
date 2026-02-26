@@ -17,15 +17,15 @@ trap 'rm -rf "$WORK"' EXIT
 
 MODULE="$WORK/cffi.fzy"
 cat > "$MODULE" <<'FZY'
-extern "C" fn c_mul(left: i32, right: i32) -> i32;
+ext c fn c_mul(left: i32, right: i32) -> i32;
 
 #[ffi_panic(abort)]
-pub extern "C" fn add(left: i32, right: i32) -> i32 {
+pubext c fn add(left: i32, right: i32) -> i32 {
     return left + right
 }
 
 #[ffi_panic(abort)]
-pub extern "C" fn call_mul(left: i32, right: i32) -> i32 {
+pubext c fn call_mul(left: i32, right: i32) -> i32 {
     return c_mul(left, right)
 }
 FZY

@@ -138,15 +138,15 @@ fn next_counter() -> i32 {
 // panic_boundary = "error"
 //
 // Per-symbol override is still available:
-// #[ffi_panic(abort)] pubext fn ...
+// #[ffi_panic(abort)] pubext c fn ...
 
-extern "C" fn c_add(left: i32, right: i32) -> i32;
+ext c fn c_add(left: i32, right: i32) -> i32;
 
-pubext fn fz_add(left: i32, right: i32) -> i32 {
+pubext c fn fz_add(left: i32, right: i32) -> i32 {
     return left + right;
 }
 
-pubext async fn fz_health(code: i32) -> i32 {
+pubext async c fn fz_health(code: i32) -> i32 {
     timeout(25);
     checkpoint();
     return code;
@@ -401,8 +401,8 @@ test "syntax-showcase-match" {
   <script>
     const KEYWORDS = new Set([
       "use","mod","fn","return","if","else","match","while","for","in","loop",
-      "break","continue","let","const","static","trait","impl","struct","enum","extern","pub","async",
-      "await","requires","ensures","defer","test","pubext","unsafe"
+      "break","continue","let","const","static","trait","impl","struct","enum","pub","pubext","ext","async",
+      "await","requires","ensures","defer","test","unsafe"
     ]);
     const TYPES = new Set([
       "i8","i16","i32","i64","i128","isize","u8","u16","u32","u64","u128","usize",

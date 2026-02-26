@@ -7387,7 +7387,7 @@ mod tests {
         let header = std::env::temp_dir().join(format!("fozzylang-headers-{suffix}.h"));
         std::fs::write(
             &source,
-            "#[ffi_panic(abort)]\npub extern \"C\" fn add(left: i32, right: i32) -> i32;\n",
+            "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32;\n",
         )
         .expect("source should be written");
 
@@ -7423,7 +7423,7 @@ mod tests {
         let header = std::env::temp_dir().join(format!("fozzylang-headers-psize-{suffix}.h"));
         std::fs::write(
             &source,
-            "#[ffi_panic(abort)]\npub extern \"C\" fn span(len: usize, delta: isize) -> usize;\n",
+            "#[ffi_panic(abort)]\npubext c fn span(len: usize, delta: isize) -> usize;\n",
         )
         .expect("source should be written");
 
@@ -7459,7 +7459,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-headers-nolen-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "#[ffi_panic(abort)]\npub extern \"C\" fn write(buf_borrowed: *u8) -> i32;\n",
+            "#[ffi_panic(abort)]\npubext c fn write(buf_borrowed: *u8) -> i32;\n",
         )
         .expect("source should be written");
         let error = run(
@@ -7484,7 +7484,7 @@ mod tests {
         let header = std::env::temp_dir().join(format!("fozzylang-headers-layout-{suffix}.h"));
         std::fs::write(
             &source,
-            "#[repr(C)]\nstruct PackedLike { a: u8, b: u64, c: u16 }\n#[repr(C)]\nenum Mode { Ready, Busy }\n#[ffi_panic(abort)]\npub extern \"C\" fn touch(v: u64) -> u64;\n",
+            "#[repr(C)]\nstruct PackedLike { a: u8, b: u64, c: u16 }\n#[repr(C)]\nenum Mode { Ready, Busy }\n#[ffi_panic(abort)]\npubext c fn touch(v: u64) -> u64;\n",
         )
         .expect("source should be written");
 
@@ -7541,7 +7541,7 @@ mod tests {
         .expect("main source should be written");
         std::fs::write(
             root.join("src/ffi.fzy"),
-            "#[ffi_panic(abort)]\npub extern \"C\" fn add(left: i32, right: i32) -> i32;\n",
+            "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32;\n",
         )
         .expect("ffi source should be written");
 
@@ -7958,7 +7958,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-build-lib-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "#[ffi_panic(abort)]\npub extern \"C\" fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n",
+            "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n",
         )
         .expect("source should be written");
 
@@ -8521,7 +8521,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-ffi-panic-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "pub extern \"C\" fn add(left: i32, right: i32) -> i32;\nfn main() -> i32 {\n    panic(err)\n    return 0\n}\n",
+            "pubext c fn add(left: i32, right: i32) -> i32;\nfn main() -> i32 {\n    panic(err)\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -9044,11 +9044,8 @@ mod tests {
             .expect("clock should be after epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!("fozzylang-diag-ffi-boundary-{unique}.fzy"));
-        std::fs::write(
-            &path,
-            "pub extern \"C\" fn exported() -> i32 {\n    return 0\n}\n",
-        )
-        .expect("source should be written");
+        std::fs::write(&path, "pubext c fn exported() -> i32 {\n    return 0\n}\n")
+            .expect("source should be written");
         let ffi = run(
             Command::Headers {
                 path: path.clone(),

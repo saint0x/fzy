@@ -40,7 +40,7 @@
 ## Panic And Unwind
 
 - Panic must not cross C ABI boundaries.
-- `#[ffi_panic(abort|error)]` is required on exported `extern "C"` functions.
+- `#[ffi_panic(abort|error)]` is required on exported `pubext c fn` functions.
 
 ## Atomics And Ordering
 

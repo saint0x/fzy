@@ -20,7 +20,7 @@ enum TokenKind {
     KwPubext,
     KwConst,
     KwStatic,
-    KwExtern,
+    KwExt,
     KwAsync,
     KwAwait,
     KwRpc,
@@ -305,7 +305,7 @@ impl Parser {
                     | TokenKind::KwAsync
                     | TokenKind::KwPub
                     | TokenKind::KwPubext
-                    | TokenKind::KwExtern
+                    | TokenKind::KwExt
             )
         {
             self.push_diag_here("`#[ffi_panic(...)]` applies only to functions");
@@ -825,18 +825,19 @@ impl Parser {
         let is_extern = if is_pubext {
             true
         } else {
-            self.consume(&TokenKind::KwExtern)
+            self.consume(&TokenKind::KwExt)
         };
-        let abi = if is_pubext {
-            Some("C".to_string())
-        } else if is_extern {
-            match self.advance()?.kind {
-                TokenKind::Str(v) => Some(v),
-                _ => {
-                    self.push_diag_here("expected ABI string in extern declaration");
-                    return None;
-                }
+        if is_pub && is_extern && !is_pubext {
+            self.push_diag_here("use `pubext c fn` for exported C symbols");
+            return None;
+        }
+        let abi = if is_pubext || is_extern {
+            let raw_abi = self.expect_ident("expected ABI identifier (for example: `c`)")?;
+            if !raw_abi.eq_ignore_ascii_case("c") {
+                self.push_diag_here("unsupported ABI; only `c` is supported");
+                return None;
             }
+            Some("c".to_string())
         } else {
             None
         };
@@ -888,7 +889,7 @@ impl Parser {
 
         let mut body = Vec::new();
         if self.consume(&TokenKind::Semi) {
-            // extern declaration
+            // ext declaration
         } else if self.consume(&TokenKind::LBrace) {
             while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
                 match self.parse_stmt() {
@@ -2122,7 +2123,7 @@ impl Parser {
             TokenKind::KwPubext => Some("pubext".to_string()),
             TokenKind::KwConst => Some("const".to_string()),
             TokenKind::KwStatic => Some("static".to_string()),
-            TokenKind::KwExtern => Some("extern".to_string()),
+            TokenKind::KwExt => Some("ext".to_string()),
             TokenKind::KwAsync => Some("async".to_string()),
             TokenKind::KwAwait => Some("await".to_string()),
             TokenKind::KwRpc => Some("rpc".to_string()),
@@ -2198,7 +2199,7 @@ impl Parser {
             TokenKind::KwPubext,
             TokenKind::KwConst,
             TokenKind::KwStatic,
-            TokenKind::KwExtern,
+            TokenKind::KwExt,
             TokenKind::KwAsync,
             TokenKind::KwRpc,
             TokenKind::KwStruct,
@@ -2808,7 +2809,7 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "pubext" => TokenKind::KwPubext,
         "const" => TokenKind::KwConst,
         "static" => TokenKind::KwStatic,
-        "extern" => TokenKind::KwExtern,
+        "ext" => TokenKind::KwExt,
         "async" => TokenKind::KwAsync,
         "await" => TokenKind::KwAwait,
         "rpc" => TokenKind::KwRpc,
@@ -3134,7 +3135,7 @@ mod tests {
     fn parses_ffi_panic_attribute_on_function() {
         let source = r#"
             #[ffi_panic(abort)]
-            pub extern "C" fn add(left: i32, right: i32) -> i32;
+            pubext c fn add(left: i32, right: i32) -> i32;
         "#;
         let module = parse(source, "ffi").expect("parse should succeed");
         let function = module
@@ -3151,7 +3152,7 @@ mod tests {
     #[test]
     fn parses_pubext_function_as_c_export() {
         let source = r#"
-            pubext fn add(left: i32, right: i32) -> i32;
+            pubext c fn add(left: i32, right: i32) -> i32;
         "#;
         let module = parse(source, "ffi").expect("parse should succeed");
         let function = module
@@ -3165,13 +3166,13 @@ mod tests {
         assert!(function.is_pub);
         assert!(function.is_pubext);
         assert!(function.is_extern);
-        assert_eq!(function.abi.as_deref(), Some("C"));
+        assert_eq!(function.abi.as_deref(), Some("c"));
     }
 
     #[test]
     fn parses_pubext_async_function() {
         let source = r#"
-            pubext async fn flush(code: i32) -> i32;
+            pubext async c fn flush(code: i32) -> i32;
         "#;
         let module = parse(source, "ffi").expect("parse should succeed");
         let function = module
@@ -3184,19 +3185,30 @@ mod tests {
             .expect("ffi function should exist");
         assert!(function.is_async);
         assert!(function.is_pubext);
-        assert_eq!(function.abi.as_deref(), Some("C"));
+        assert_eq!(function.abi.as_deref(), Some("c"));
     }
 
     #[test]
     fn rejects_invalid_ffi_panic_mode() {
         let source = r#"
             #[ffi_panic(ignore)]
-            pub extern "C" fn add(left: i32, right: i32) -> i32;
+            pubext c fn add(left: i32, right: i32) -> i32;
         "#;
         let diagnostics = parse(source, "ffi").expect_err("invalid mode should fail");
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("ffi_panic mode must be")));
+    }
+
+    #[test]
+    fn rejects_pub_ext_export_syntax_in_favor_of_pubext() {
+        let source = r#"
+            pub ext c fn add(left: i32, right: i32) -> i32;
+        "#;
+        let diagnostics = parse(source, "ffi").expect_err("syntax should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("use `pubext c fn`")));
     }
 
     #[test]

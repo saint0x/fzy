@@ -213,7 +213,7 @@ Typical use:
 
 - generate or refresh C headers and RPC outputs
 - compare ABI manifests before merge/release
-- `#[ffi_panic(abort|error)]` is required on exported `pub extern "C" fn`
+- `#[ffi_panic(abort|error)]` is required on exported `pubext c fn`
 - ABI contract weakening is breaking and rejected by `abi-check`
 - full production interop contract: `docs/c-interop-production-v1.md`
 

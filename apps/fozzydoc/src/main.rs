@@ -469,11 +469,11 @@ mod tests {
             Some(("enum", "Kind".into(), "enum Kind".into()))
         );
         assert_eq!(
-            parse_decl("pub extern \"C\" fn fs_open(path: *u8) -> i32;"),
+            parse_decl("pubext c fn fs_open(path: *u8) -> i32;"),
             Some((
                 "fn",
                 "fs_open".into(),
-                "pub extern \"C\" fn fs_open(path: *u8) -> i32".into(),
+                "pubext c fn fs_open(path: *u8) -> i32".into(),
             ))
         );
         assert_eq!(
@@ -498,7 +498,7 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "/// app entrypoint\nfn main() -> i32 {\n    return 0\n}\n/**\n * request-response endpoint\n */\nrpc Ping(req: Req) -> Res;\n#[ffi_panic(error)] pub extern \"C\" fn fs_open(path: *u8) -> i32;\n",
+            "/// app entrypoint\nfn main() -> i32 {\n    return 0\n}\n/**\n * request-response endpoint\n */\nrpc Ping(req: Req) -> Res;\n#[ffi_panic(error)] pubext c fn fs_open(path: *u8) -> i32;\n",
         )
         .expect("source should be written");
 
@@ -518,8 +518,8 @@ mod tests {
     #[test]
     fn strips_attribute_prefixes() {
         assert_eq!(
-            strip_leading_attributes("#[ffi_panic(error)] pub extern \"C\" fn fs_open() -> i32;"),
-            "pub extern \"C\" fn fs_open() -> i32;"
+            strip_leading_attributes("#[ffi_panic(error)] pubext c fn fs_open() -> i32;"),
+            "pubext c fn fs_open() -> i32;"
         );
     }
 }

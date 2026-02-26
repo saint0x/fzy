@@ -1,6 +1,6 @@
-pubext fn fs_open(path_borrowed: *u8, len: usize) -> i32;
-pubext fn fs_write(fd: i32, ptr_borrowed: *u8, len: usize) -> i32;
-pubext fn hash32(ptr_borrowed: *u8, len: usize) -> u32;
+pubext c fn fs_open(path_borrowed: *u8, len: usize) -> i32;
+pubext c fn fs_write(fd: i32, ptr_borrowed: *u8, len: usize) -> i32;
+pubext c fn hash32(ptr_borrowed: *u8, len: usize) -> u32;
 fn touch() -> i32 {
     return 0
 }

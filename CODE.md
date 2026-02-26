@@ -239,11 +239,11 @@ FZY
 fz check /tmp/code_match.fzy --json
 ```
 
-## 8) Function declarations, visibility, extern, async, function types
+## 8) Function declarations, visibility, ext, async, function types
 
 ```bash
 cat > /tmp/code_functions.fzy <<'FZY'
-extern "C" fn c_add(left: i32, right: i32) -> i32;
+ext c fn c_add(left: i32, right: i32) -> i32;
 
 pub fn sum(x: i32, y: i32) -> i32 { return x + y }
 
@@ -477,10 +477,10 @@ fz check /tmp/code_task_groups.fzy --json
 
 ```bash
 cat > /tmp/code_ffi_full.fzy <<'FZY'
-extern "C" fn c_add(left: i32, right: i32) -> i32;
+ext c fn c_add(left: i32, right: i32) -> i32;
 
 #[ffi_panic(abort)]
-pub extern "C" fn add_safe(left: i32, right: i32) -> i32 {
+pubext c fn add_safe(left: i32, right: i32) -> i32 {
     return left + right
 }
 

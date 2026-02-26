@@ -3,7 +3,7 @@
 ## Stability Contract
 
 - ABI manifests use schema `fozzylang.ffi_abi.v1`.
-- Exported symbols are derived from `pubext fn` declarations (or migration-compatible `pub extern "C" fn`).
+- Exported symbols are derived from `pubext c fn` declarations.
 - ABI compatibility in v1 is defined by normalized export signatures and explicit contract metadata:
   - function name
   - ordered C parameter types

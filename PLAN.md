@@ -256,9 +256,9 @@
 - [✅] add mandatory `[ffi] panic_boundary = "abort|error"` for projects that import/export C symbols.
 - [✅] remove per-symbol `#[ffi_panic(...)]` requirement when project policy default is present.
 - [✅] keep explicit per-symbol override only for exceptional symbols.
-- [✅] Introduce `pubext fn` and `pubext async fn` syntax as language-native C-ABI export surface:
-- [✅] `pubext fn` lowers to `pub extern "C" fn` under Option A policy.
-- [✅] define `pubext async fn` adapter ABI semantics (or reject with stable diagnostics until adapter ABI is finalized).
+- [✅] Introduce `pubext c fn` and `pubext async c fn` syntax as language-native C-ABI export surface:
+- [✅] `pubext c fn` lowers to `pubext c fn` under Option A policy.
+- [✅] define `pubext async c fn` adapter ABI semantics (or reject with stable diagnostics until adapter ABI is finalized).
 - [✅] keep existing `extern "C"` parse surface only as migration-compatible syntax, but make `pubext` the documented primary form.
 - [✅] Extend verifier/driver/header generation so panic/ABI policy is sourced from TOML first, then symbol override.
 - [✅] Enforce single panic-boundary policy across exports unless explicit override is declared and ABI-checked.

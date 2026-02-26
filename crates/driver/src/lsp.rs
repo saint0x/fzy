@@ -1961,7 +1961,8 @@ fn collect_symbol_occurrences(source: &str, path: &Path) -> Vec<SymbolOccurrence
 
 fn parse_decl_symbol(raw_line: &str) -> Option<(String, String, usize)> {
     let prefixes = [
-        ("pub extern \"C\" fn ", "function"),
+        ("pubext c fn ", "function"),
+        ("ext c fn ", "function"),
         ("pub const ", "const"),
         ("const ", "const"),
         ("pub static mut ", "static"),

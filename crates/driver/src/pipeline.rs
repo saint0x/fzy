@@ -14926,9 +14926,9 @@ mod tests {
 
     use super::{
         compile_file, compile_file_with_backend, compile_library_with_backend,
-        derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir, parse_program,
-        native_runtime_import_contract_errors, native_runtime_import_for_callee, refresh_lockfile,
-        render_native_runtime_shim, verify_file, BackendKind, BuildProfile,
+        derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir,
+        native_runtime_import_contract_errors, native_runtime_import_for_callee, parse_program,
+        refresh_lockfile, render_native_runtime_shim, verify_file, BackendKind, BuildProfile,
     };
 
     fn run_native_exit(exe: &Path) -> i32 {
@@ -15026,7 +15026,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/lib.fzy"),
-            "#[ffi_panic(abort)]\npub extern \"C\" fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n",
+            "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n",
         )
         .expect("source should be written");
 
@@ -15047,7 +15047,7 @@ mod tests {
 
     #[test]
     fn llvm_lowering_declares_extern_c_import_without_defining_stub() {
-        let source = "extern \"C\" fn c_add(left: i32, right: i32) -> i32;\nfn main() -> i32 {\n    return c_add(1, 2)\n}\n";
+        let source = "ext c fn c_add(left: i32, right: i32) -> i32;\nfn main() -> i32 {\n    return c_add(1, 2)\n}\n";
         let module = parser::parse(source, "ffi_import").expect("source should parse");
         let typed = hir::lower(&module);
         let fir = fir::build_owned(typed);

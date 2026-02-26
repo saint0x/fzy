@@ -28,7 +28,7 @@ case "$MODE" in
   pointer_misuse)
     cat > "$TMP/pointer_bad.fzy" <<'FZY'
 #[ffi_panic(abort)]
-pub extern "C" fn write(ptr_borrowed: *u8) -> i32;
+pubext c fn write(ptr_borrowed: *u8) -> i32;
 FZY
     run_expect_fail \
       "cd \"$ROOT\" && cargo run -q -p fz -- headers \"$TMP/pointer_bad.fzy\"" \
@@ -37,7 +37,7 @@ FZY
   callback_lifecycle)
     cat > "$TMP/callback_bad.fzy" <<'FZY'
 #[ffi_panic(error)]
-pub extern "C" fn register_callback(cb_callback: *u8, cb_len: usize) -> i32;
+pubext c fn register_callback(cb_callback: *u8, cb_len: usize) -> i32;
 FZY
     run_expect_fail \
       "cd \"$ROOT\" && cargo run -q -p fz -- headers \"$TMP/callback_bad.fzy\"" \

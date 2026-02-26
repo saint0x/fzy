@@ -111,8 +111,8 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         if module.extern_c_abi_functions == 0 {
             report.diagnostics.push(Diagnostic::new(
                 Severity::Error,
-                "host syscall usage requires an `extern \"C\" fn` boundary",
-                Some("declare syscall wrappers as `extern \"C\" fn ...;`".to_string()),
+                "host syscall usage requires an `ext c fn` boundary",
+                Some("declare syscall wrappers as `ext c fn ...;`".to_string()),
             ));
         }
         if memory_safety_enforced {
@@ -935,7 +935,7 @@ mod tests {
         assert!(report
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("extern \"C\" fn")));
+            .any(|d| d.message.contains("ext c fn")));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-pubext fn hash32(ptr_borrowed: *u8, len: usize) -> u32;
+pubext c fn hash32(ptr_borrowed: *u8, len: usize) -> u32;
 fn touch() -> i32 {
     return 0
 }
