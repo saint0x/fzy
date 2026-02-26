@@ -448,11 +448,11 @@
 - [✅] Freeze new architectural invariant: a single canonical native-lowering pipeline feeds both LLVM and Cranelift backends.
 
 #### Canonical Pipeline Cutover (Single Execution Model)
-- [ ] Introduce a canonical low-level native IR (post-HIR/FIR) that encodes:
-- [ ] explicit memory objects/layout classes (stack/static/heap where applicable),
-- [ ] aliasing/escape class for each aggregate/string temporary,
-- [ ] bounds-check policy points,
-- [ ] direct-memory ops (`load/store/gep/slice/len`) and side-effect boundaries.
+- [✅] Introduce a canonical low-level native IR (post-HIR/FIR) that encodes:
+- [✅] explicit memory objects/layout classes (stack/static/heap where applicable),
+- [✅] aliasing/escape class for each aggregate/string temporary,
+- [✅] bounds-check policy points,
+- [✅] direct-memory ops (`load/store/gep/slice/len`) and side-effect boundaries.
 - [ ] Prohibit backend-specific AST-expression lowering as source-of-truth for semantics.
 - [✅] Make LLVM and Cranelift consume the same canonical native IR rather than re-lowering `typed_functions` independently.
 - [ ] Keep backend responsibilities codegen-only (instruction selection/register/legalization), not semantic lowering policy.

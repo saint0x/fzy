@@ -59,6 +59,9 @@ def main() -> int:
         "fn build_native_canonical_plan(",
         "let plan = build_native_canonical_plan(fir, enforce_contract_checks);",
         "let plan = build_native_canonical_plan(fir, true);",
+        "data_ops_by_function: HashMap<String, Vec<NativeDataOp>>",
+        "fn collect_native_data_ops_for_function(",
+        "render_native_data_op(",
     ]
     for marker in required_canonical_plan_markers:
         if marker not in src:
