@@ -764,6 +764,139 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     },
 ];
 
+const NATIVE_DATA_PLANE_IMPORTS: &[NativeRuntimeImport] = &[
+    NativeRuntimeImport {
+        callee: "str.concat2",
+        symbol: "fz_native_str_concat2",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.concat3",
+        symbol: "fz_native_str_concat3",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "str.concat4",
+        symbol: "fz_native_str_concat4",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "str.contains",
+        symbol: "fz_native_str_contains",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.starts_with",
+        symbol: "fz_native_str_starts_with",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.ends_with",
+        symbol: "fz_native_str_ends_with",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.replace",
+        symbol: "fz_native_str_replace",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "str.trim",
+        symbol: "fz_native_str_trim",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "str.split",
+        symbol: "fz_native_str_split",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "str.len",
+        symbol: "fz_native_str_len",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "str.slice",
+        symbol: "fz_native_str_slice",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "list.new",
+        symbol: "fz_native_list_new",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "list.push",
+        symbol: "fz_native_list_push",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "list.pop",
+        symbol: "fz_native_list_pop",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.len",
+        symbol: "fz_native_list_len",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.get",
+        symbol: "fz_native_list_get",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "list.set",
+        symbol: "fz_native_list_set",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "list.clear",
+        symbol: "fz_native_list_clear",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.join",
+        symbol: "fz_native_list_join",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.new",
+        symbol: "fz_native_map_new",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "map.set",
+        symbol: "fz_native_map_set",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "map.get",
+        symbol: "fz_native_map_get",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.has",
+        symbol: "fz_native_map_has",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.delete",
+        symbol: "fz_native_map_delete",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.keys",
+        symbol: "fz_native_map_keys",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "map.len",
+        symbol: "fz_native_map_len",
+        arity: 1,
+    },
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildProfile {
     Dev,
@@ -3896,6 +4029,17 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
         }
         let _ = writeln!(&mut out, "declare i32 @{}({})", import.symbol, params);
     }
+    let used_data_plane_imports = collect_used_native_data_plane_imports(fir);
+    for import in &used_data_plane_imports {
+        let mut params = String::new();
+        for index in 0..import.arity {
+            if index > 0 {
+                params.push_str(", ");
+            }
+            params.push_str("i32");
+        }
+        let _ = writeln!(&mut out, "declare i32 @{}({})", import.symbol, params);
+    }
     let extern_imports = collect_extern_c_imports(fir);
     for import in &extern_imports {
         let params = import
@@ -3906,7 +4050,8 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
             .join(", ");
         let _ = writeln!(&mut out, "declare i32 @{}({})", import.name, params);
     }
-    if !used_imports.is_empty() || !extern_imports.is_empty() {
+    if !used_imports.is_empty() || !used_data_plane_imports.is_empty() || !extern_imports.is_empty()
+    {
         out.push('\n');
     }
     let mut mutable_global_symbols = HashMap::<String, String>::new();
@@ -4874,6 +5019,7 @@ fn llvm_emit_expr(
                 .collect::<Vec<_>>()
                 .join(", ");
             let symbol = native_runtime_import_for_callee(callee)
+                .or_else(|| native_data_plane_import_for_callee(callee))
                 .map(|import| import.symbol)
                 .unwrap_or(callee.as_str());
             let symbol = native_mangle_symbol(symbol);
@@ -5021,6 +5167,12 @@ fn native_runtime_import_for_callee(callee: &str) -> Option<&'static NativeRunti
         .find(|import| import.callee == callee)
 }
 
+fn native_data_plane_import_for_callee(callee: &str) -> Option<&'static NativeRuntimeImport> {
+    NATIVE_DATA_PLANE_IMPORTS
+        .iter()
+        .find(|import| import.callee == callee)
+}
+
 fn native_runtime_import_contract_errors() -> Vec<String> {
     let mut errors = Vec::new();
     let mut seen = HashSet::<&'static str>::new();
@@ -5032,15 +5184,6 @@ fn native_runtime_import_contract_errors() -> Vec<String> {
             ));
         }
 
-        if import.callee.starts_with("str.")
-            || import.callee.starts_with("list.")
-            || import.callee.starts_with("map.")
-        {
-            errors.push(format!(
-                "native runtime boundary import table cannot include local data-plane callee `{}`",
-                import.callee
-            ));
-        }
     }
     errors
 }
@@ -5172,6 +5315,19 @@ fn collect_used_native_runtime_imports(fir: &fir::FirModule) -> Vec<&'static Nat
     for function in &fir.typed_functions {
         for stmt in &function.body {
             collect_used_runtime_imports_from_stmt(stmt, &mut seen, &mut used);
+        }
+    }
+    used
+}
+
+fn collect_used_native_data_plane_imports(
+    fir: &fir::FirModule,
+) -> Vec<&'static NativeRuntimeImport> {
+    let mut seen = HashSet::<&'static str>::new();
+    let mut used = Vec::<&'static NativeRuntimeImport>::new();
+    for function in &fir.typed_functions {
+        for stmt in &function.body {
+            collect_used_data_plane_imports_from_stmt(stmt, &mut seen, &mut used);
         }
     }
     used
@@ -5858,25 +6014,9 @@ fn eval_const_i32_call(
 }
 
 fn is_native_data_plane_string_call(callee: &str) -> bool {
-    matches!(
-        callee,
-        "str.concat"
-            | "str.concat2"
-            | "str.concat3"
-            | "str.concat4"
-            | "str.contains"
-            | "str.starts_with"
-            | "str.ends_with"
-            | "str.replace"
-            | "str.trim"
-            | "str.split"
-            | "str.len"
-            | "str.slice"
-    )
-}
-
-fn is_native_data_plane_list_map_call(callee: &str) -> bool {
-    callee.starts_with("list.") || callee.starts_with("map.")
+    matches!(callee, "str.concat")
+        || native_data_plane_import_for_callee(callee)
+            .is_some_and(|import| import.callee.starts_with("str."))
 }
 
 fn canonicalize_array_index_window(expr: &ast::Expr) -> Option<(String, i32)> {
@@ -6057,6 +6197,167 @@ fn collect_used_runtime_imports_from_expr(
         ast::Expr::Index { base, index } => {
             collect_used_runtime_imports_from_expr(base, seen, used);
             collect_used_runtime_imports_from_expr(index, seen, used);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn collect_used_data_plane_imports_from_stmt(
+    stmt: &ast::Stmt,
+    seen: &mut HashSet<&'static str>,
+    used: &mut Vec<&'static NativeRuntimeImport>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => collect_used_data_plane_imports_from_expr(value, seen, used),
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_used_data_plane_imports_from_expr(value, seen, used);
+            }
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_used_data_plane_imports_from_expr(condition, seen, used);
+            for nested in then_body {
+                collect_used_data_plane_imports_from_stmt(nested, seen, used);
+            }
+            for nested in else_body {
+                collect_used_data_plane_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_used_data_plane_imports_from_expr(condition, seen, used);
+            for nested in body {
+                collect_used_data_plane_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_used_data_plane_imports_from_stmt(init, seen, used);
+            }
+            if let Some(condition) = condition {
+                collect_used_data_plane_imports_from_expr(condition, seen, used);
+            }
+            if let Some(step) = step {
+                collect_used_data_plane_imports_from_stmt(step, seen, used);
+            }
+            for nested in body {
+                collect_used_data_plane_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_used_data_plane_imports_from_expr(iterable, seen, used);
+            for nested in body {
+                collect_used_data_plane_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_used_data_plane_imports_from_stmt(nested, seen, used);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_used_data_plane_imports_from_expr(scrutinee, seen, used);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_used_data_plane_imports_from_expr(guard, seen, used);
+                }
+                collect_used_data_plane_imports_from_expr(&arm.value, seen, used);
+            }
+        }
+    }
+}
+
+fn collect_used_data_plane_imports_from_expr(
+    expr: &ast::Expr,
+    seen: &mut HashSet<&'static str>,
+    used: &mut Vec<&'static NativeRuntimeImport>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if let Some(import) = native_data_plane_import_for_callee(callee) {
+                let empty_const_strings = HashMap::<String, String>::new();
+                let folded_const =
+                    eval_const_string_call(callee, args, &empty_const_strings).is_some()
+                        || eval_const_i32_call(callee, args, &empty_const_strings).is_some();
+                let can_skip = folded_const && callee.starts_with("str.");
+                if !can_skip && seen.insert(import.symbol) {
+                    used.push(import);
+                }
+            }
+            for arg in args {
+                collect_used_data_plane_imports_from_expr(arg, seen, used);
+            }
+        }
+        ast::Expr::UnsafeBlock { .. } => {}
+        ast::Expr::FieldAccess { base, .. } => {
+            collect_used_data_plane_imports_from_expr(base, seen, used);
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_used_data_plane_imports_from_expr(value, seen, used);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                collect_used_data_plane_imports_from_expr(value, seen, used);
+            }
+        }
+        ast::Expr::Closure { body, .. } => {
+            collect_used_data_plane_imports_from_expr(body, seen, used);
+        }
+        ast::Expr::Group(inner) => {
+            collect_used_data_plane_imports_from_expr(inner, seen, used);
+        }
+        ast::Expr::Await(inner) => {
+            collect_used_data_plane_imports_from_expr(inner, seen, used);
+        }
+        ast::Expr::Unary { expr, .. } => {
+            collect_used_data_plane_imports_from_expr(expr, seen, used);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_used_data_plane_imports_from_expr(try_expr, seen, used);
+            collect_used_data_plane_imports_from_expr(catch_expr, seen, used);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_used_data_plane_imports_from_expr(left, seen, used);
+            collect_used_data_plane_imports_from_expr(right, seen, used);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_used_data_plane_imports_from_expr(start, seen, used);
+            collect_used_data_plane_imports_from_expr(end, seen, used);
+        }
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_used_data_plane_imports_from_expr(item, seen, used);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            collect_used_data_plane_imports_from_expr(base, seen, used);
+            collect_used_data_plane_imports_from_expr(index, seen, used);
         }
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
@@ -6722,6 +7023,7 @@ fn emit_native_libraries_cranelift(
         );
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
+    declare_native_data_plane_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     for function in &fir.typed_functions {
         if is_extern_c_import_decl(function) {
@@ -7251,6 +7553,7 @@ fn emit_native_artifact_cranelift(
         );
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
+    declare_native_data_plane_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let async_exports = collect_async_c_exports(fir);
     let runtime_shim_path = ensure_native_runtime_shim(
@@ -8816,32 +9119,6 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
-        if function_body_contains_unsupported_dynamic_string_data_plane_calls(&function.body) {
-            diagnostics.push(diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "native backend removed dynamic string data-plane runtime calls in function `{}`",
-                    function.name
-                ),
-                Some(
-                    "rewrite to compile-time-foldable `str.*` expressions or move the operation outside the native direct-memory path"
-                        .to_string(),
-                ),
-            ));
-        }
-        if function_body_contains_unsupported_list_map_data_plane_calls(&function.body) {
-            diagnostics.push(diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "native backend removed list/map runtime-handle data-plane calls in function `{}`",
-                    function.name
-                ),
-                Some(
-                    "replace runtime-handle list/map operations with direct-memory native constructs before native compilation"
-                        .to_string(),
-                ),
-            ));
-        }
     }
 
     let defined_functions = module
@@ -9571,260 +9848,6 @@ fn stmt_contains_unsupported_partial_native_expression_usage(stmt: &ast::Stmt) -
     }
 }
 
-fn function_body_contains_unsupported_dynamic_string_data_plane_calls(body: &[ast::Stmt]) -> bool {
-    fn body_contains(body: &[ast::Stmt], const_strings: &mut HashMap<String, String>) -> bool {
-        body.iter().any(|stmt| stmt_contains(stmt, const_strings))
-    }
-
-    fn stmt_contains(stmt: &ast::Stmt, const_strings: &mut HashMap<String, String>) -> bool {
-        match stmt {
-            ast::Stmt::Let { name, value, .. } => {
-                let unsupported = expr_contains(value, const_strings);
-                if let Some(const_value) = eval_const_string_expr(value, const_strings) {
-                    const_strings.insert(name.clone(), const_value);
-                } else {
-                    const_strings.remove(name);
-                }
-                unsupported
-            }
-            ast::Stmt::Assign { target, value } => {
-                let unsupported = expr_contains(value, const_strings);
-                if let Some(const_value) = eval_const_string_expr(value, const_strings) {
-                    const_strings.insert(target.clone(), const_value);
-                } else {
-                    const_strings.remove(target);
-                }
-                unsupported
-            }
-            ast::Stmt::CompoundAssign { target, value, .. } => {
-                let unsupported = expr_contains(value, const_strings);
-                const_strings.remove(target);
-                unsupported
-            }
-            ast::Stmt::LetPattern { value, .. }
-            | ast::Stmt::Expr(value)
-            | ast::Stmt::Requires(value)
-            | ast::Stmt::Ensures(value)
-            | ast::Stmt::Defer(value) => expr_contains(value, const_strings),
-            ast::Stmt::Return(value) => value
-                .as_ref()
-                .is_some_and(|value| expr_contains(value, const_strings)),
-            ast::Stmt::If {
-                condition,
-                then_body,
-                else_body,
-            } => {
-                expr_contains(condition, const_strings)
-                    || body_contains(then_body, &mut const_strings.clone())
-                    || body_contains(else_body, &mut const_strings.clone())
-            }
-            ast::Stmt::While { condition, body } => {
-                expr_contains(condition, const_strings)
-                    || body_contains(body, &mut const_strings.clone())
-            }
-            ast::Stmt::For {
-                init,
-                condition,
-                step,
-                body,
-            } => {
-                init.as_deref()
-                    .is_some_and(|stmt| stmt_contains(stmt, &mut const_strings.clone()))
-                    || condition
-                        .as_ref()
-                        .is_some_and(|value| expr_contains(value, const_strings))
-                    || step
-                        .as_deref()
-                        .is_some_and(|stmt| stmt_contains(stmt, &mut const_strings.clone()))
-                    || body_contains(body, &mut const_strings.clone())
-            }
-            ast::Stmt::ForIn { iterable, body, .. } => {
-                expr_contains(iterable, const_strings)
-                    || body_contains(body, &mut const_strings.clone())
-            }
-            ast::Stmt::Loop { body } => body_contains(body, &mut const_strings.clone()),
-            ast::Stmt::Match { scrutinee, arms } => {
-                expr_contains(scrutinee, const_strings)
-                    || arms.iter().any(|arm| {
-                        arm.guard
-                            .as_ref()
-                            .is_some_and(|guard| expr_contains(guard, const_strings))
-                            || expr_contains(&arm.value, const_strings)
-                    })
-            }
-            ast::Stmt::Break | ast::Stmt::Continue => false,
-        }
-    }
-
-    fn expr_contains(expr: &ast::Expr, const_strings: &HashMap<String, String>) -> bool {
-        match expr {
-            ast::Expr::Call { callee, args } => {
-                (is_native_data_plane_string_call(callee)
-                    && eval_const_i32_call(callee, args, const_strings).is_none()
-                    && eval_const_string_call(callee, args, const_strings).is_none())
-                    || args.iter().any(|arg| expr_contains(arg, const_strings))
-            }
-            ast::Expr::UnsafeBlock { .. } => false,
-            ast::Expr::FieldAccess { base, .. } => expr_contains(base, const_strings),
-            ast::Expr::StructInit { fields, .. } => fields
-                .iter()
-                .any(|(_, value)| expr_contains(value, const_strings)),
-            ast::Expr::EnumInit { payload, .. } | ast::Expr::ArrayLiteral(payload) => payload
-                .iter()
-                .any(|value| expr_contains(value, const_strings)),
-            ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
-                expr_contains(inner, const_strings)
-            }
-            ast::Expr::Unary { expr, .. } => expr_contains(expr, const_strings),
-            ast::Expr::TryCatch {
-                try_expr,
-                catch_expr,
-            } => expr_contains(try_expr, const_strings) || expr_contains(catch_expr, const_strings),
-            ast::Expr::Binary { left, right, .. } => {
-                expr_contains(left, const_strings) || expr_contains(right, const_strings)
-            }
-            ast::Expr::Range { start, end, .. } => {
-                expr_contains(start, const_strings) || expr_contains(end, const_strings)
-            }
-            ast::Expr::Index { base, index } => {
-                expr_contains(base, const_strings) || expr_contains(index, const_strings)
-            }
-            ast::Expr::Closure { body, .. } => expr_contains(body, const_strings),
-            ast::Expr::Int(_)
-            | ast::Expr::Float { .. }
-            | ast::Expr::Char(_)
-            | ast::Expr::Bool(_)
-            | ast::Expr::Str(_)
-            | ast::Expr::Ident(_) => false,
-        }
-    }
-
-    body_contains(body, &mut HashMap::new())
-}
-
-fn function_body_contains_unsupported_list_map_data_plane_calls(body: &[ast::Stmt]) -> bool {
-    body.iter()
-        .any(stmt_contains_unsupported_list_map_data_plane_calls)
-}
-
-fn stmt_contains_unsupported_list_map_data_plane_calls(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::Let { value, .. }
-        | ast::Stmt::LetPattern { value, .. }
-        | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::CompoundAssign { value, .. }
-        | ast::Stmt::Expr(value)
-        | ast::Stmt::Requires(value)
-        | ast::Stmt::Ensures(value)
-        | ast::Stmt::Defer(value) => expr_contains_unsupported_list_map_data_plane_calls(value),
-        ast::Stmt::Return(value) => value
-            .as_ref()
-            .is_some_and(expr_contains_unsupported_list_map_data_plane_calls),
-        ast::Stmt::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            expr_contains_unsupported_list_map_data_plane_calls(condition)
-                || function_body_contains_unsupported_list_map_data_plane_calls(then_body)
-                || function_body_contains_unsupported_list_map_data_plane_calls(else_body)
-        }
-        ast::Stmt::While { condition, body } => {
-            expr_contains_unsupported_list_map_data_plane_calls(condition)
-                || function_body_contains_unsupported_list_map_data_plane_calls(body)
-        }
-        ast::Stmt::For {
-            init,
-            condition,
-            step,
-            body,
-        } => {
-            init.as_deref()
-                .is_some_and(stmt_contains_unsupported_list_map_data_plane_calls)
-                || condition
-                    .as_ref()
-                    .is_some_and(expr_contains_unsupported_list_map_data_plane_calls)
-                || step
-                    .as_deref()
-                    .is_some_and(stmt_contains_unsupported_list_map_data_plane_calls)
-                || function_body_contains_unsupported_list_map_data_plane_calls(body)
-        }
-        ast::Stmt::ForIn { iterable, body, .. } => {
-            expr_contains_unsupported_list_map_data_plane_calls(iterable)
-                || function_body_contains_unsupported_list_map_data_plane_calls(body)
-        }
-        ast::Stmt::Loop { body } => {
-            function_body_contains_unsupported_list_map_data_plane_calls(body)
-        }
-        ast::Stmt::Match { scrutinee, arms } => {
-            expr_contains_unsupported_list_map_data_plane_calls(scrutinee)
-                || arms.iter().any(|arm| {
-                    arm.guard
-                        .as_ref()
-                        .is_some_and(expr_contains_unsupported_list_map_data_plane_calls)
-                        || expr_contains_unsupported_list_map_data_plane_calls(&arm.value)
-                })
-        }
-        ast::Stmt::Break | ast::Stmt::Continue => false,
-    }
-}
-
-fn expr_contains_unsupported_list_map_data_plane_calls(expr: &ast::Expr) -> bool {
-    match expr {
-        ast::Expr::Call { callee, args } => {
-            is_native_data_plane_list_map_call(callee)
-                || args
-                    .iter()
-                    .any(expr_contains_unsupported_list_map_data_plane_calls)
-        }
-        ast::Expr::UnsafeBlock { .. } => false,
-        ast::Expr::FieldAccess { base, .. } => {
-            expr_contains_unsupported_list_map_data_plane_calls(base)
-        }
-        ast::Expr::StructInit { fields, .. } => fields
-            .iter()
-            .any(|(_, value)| expr_contains_unsupported_list_map_data_plane_calls(value)),
-        ast::Expr::EnumInit { payload, .. } => payload
-            .iter()
-            .any(expr_contains_unsupported_list_map_data_plane_calls),
-        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
-            expr_contains_unsupported_list_map_data_plane_calls(inner)
-        }
-        ast::Expr::Unary { expr, .. } => expr_contains_unsupported_list_map_data_plane_calls(expr),
-        ast::Expr::TryCatch {
-            try_expr,
-            catch_expr,
-        } => {
-            expr_contains_unsupported_list_map_data_plane_calls(try_expr)
-                || expr_contains_unsupported_list_map_data_plane_calls(catch_expr)
-        }
-        ast::Expr::Binary { left, right, .. } => {
-            expr_contains_unsupported_list_map_data_plane_calls(left)
-                || expr_contains_unsupported_list_map_data_plane_calls(right)
-        }
-        ast::Expr::Range { start, end, .. } => {
-            expr_contains_unsupported_list_map_data_plane_calls(start)
-                || expr_contains_unsupported_list_map_data_plane_calls(end)
-        }
-        ast::Expr::ArrayLiteral(items) => items
-            .iter()
-            .any(expr_contains_unsupported_list_map_data_plane_calls),
-        ast::Expr::Index { base, index } => {
-            expr_contains_unsupported_list_map_data_plane_calls(base)
-                || expr_contains_unsupported_list_map_data_plane_calls(index)
-        }
-        ast::Expr::Closure { body, .. } => {
-            expr_contains_unsupported_list_map_data_plane_calls(body)
-        }
-        ast::Expr::Int(_)
-        | ast::Expr::Float { .. }
-        | ast::Expr::Char(_)
-        | ast::Expr::Bool(_)
-        | ast::Expr::Str(_)
-        | ast::Expr::Ident(_) => false,
-    }
-}
-
 fn expr_contains_unsupported_partial_native_expression(
     expr: &ast::Expr,
     context: NativeExprContext,
@@ -10436,8 +10459,7 @@ fn collect_local_callable_bindings_from_expr(expr: &ast::Expr, out: &mut HashSet
 
 fn native_backend_supports_call(callee: &str) -> bool {
     native_runtime_import_for_callee(callee).is_some()
-        || is_native_data_plane_string_call(callee)
-        || is_native_data_plane_list_map_call(callee)
+        || native_data_plane_import_for_callee(callee).is_some()
 }
 
 fn declare_native_runtime_imports(
@@ -10459,6 +10481,41 @@ fn declare_native_runtime_imports(
             .map_err(|error| {
                 anyhow!(
                     "failed declaring native runtime import `{}` for `{}`: {error}",
+                    import.symbol,
+                    import.callee
+                )
+            })?;
+        function_ids.insert(import.callee.to_string(), id);
+        function_signatures.insert(
+            import.callee.to_string(),
+            ClifFunctionSignature {
+                params: (0..import.arity).map(|_| types::I32).collect(),
+                ret: Some(types::I32),
+            },
+        );
+    }
+    Ok(())
+}
+
+fn declare_native_data_plane_imports(
+    module: &mut ObjectModule,
+    function_ids: &mut HashMap<String, cranelift_module::FuncId>,
+    function_signatures: &mut HashMap<String, ClifFunctionSignature>,
+) -> Result<()> {
+    for import in NATIVE_DATA_PLANE_IMPORTS {
+        if function_ids.contains_key(import.callee) {
+            continue;
+        }
+        let mut sig = module.make_signature();
+        for _ in 0..import.arity {
+            sig.params.push(AbiParam::new(types::I32));
+        }
+        sig.returns.push(AbiParam::new(types::I32));
+        let id = module
+            .declare_function(import.symbol, Linkage::Import, &sig)
+            .map_err(|error| {
+                anyhow!(
+                    "failed declaring native data-plane import `{}` for `{}`: {error}",
                     import.symbol,
                     import.callee
                 )
@@ -12685,6 +12742,234 @@ static int32_t fz_runtime_map_len(int32_t handle) {
   pthread_mutex_unlock(&fz_collections_lock);
   return len;
 }
+
+static int32_t fz_native_str_concat_parts(const char** parts, int count) {
+  if (count <= 0) {
+    return fz_intern_slice("", 0);
+  }
+  size_t total = 1;
+  for (int i = 0; i < count; i++) {
+    const char* part = parts[i] == NULL ? "" : parts[i];
+    total += strlen(part);
+  }
+  char* out = (char*)malloc(total);
+  if (out == NULL) {
+    return 0;
+  }
+  size_t used = 0;
+  for (int i = 0; i < count; i++) {
+    const char* part = parts[i] == NULL ? "" : parts[i];
+    size_t len = strlen(part);
+    if (len > 0) {
+      memcpy(out + used, part, len);
+      used += len;
+    }
+  }
+  out[used] = '\0';
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id) {
+  const char* parts[2] = {fz_lookup_string(a_id), fz_lookup_string(b_id)};
+  return fz_native_str_concat_parts(parts, 2);
+}
+
+int32_t fz_native_str_concat3(int32_t a_id, int32_t b_id, int32_t c_id) {
+  const char* parts[3] = {fz_lookup_string(a_id), fz_lookup_string(b_id), fz_lookup_string(c_id)};
+  return fz_native_str_concat_parts(parts, 3);
+}
+
+int32_t fz_native_str_concat4(int32_t a_id, int32_t b_id, int32_t c_id, int32_t d_id) {
+  const char* parts[4] = {
+      fz_lookup_string(a_id), fz_lookup_string(b_id), fz_lookup_string(c_id), fz_lookup_string(d_id)};
+  return fz_native_str_concat_parts(parts, 4);
+}
+
+int32_t fz_native_str_contains(int32_t value_id, int32_t needle_id) {
+  const char* value = fz_lookup_string(value_id);
+  const char* needle = fz_lookup_string(needle_id);
+  if (value == NULL || needle == NULL) {
+    return 0;
+  }
+  return strstr(value, needle) != NULL ? 1 : 0;
+}
+
+int32_t fz_native_str_starts_with(int32_t value_id, int32_t prefix_id) {
+  const char* value = fz_lookup_string(value_id);
+  const char* prefix = fz_lookup_string(prefix_id);
+  if (value == NULL || prefix == NULL) {
+    return 0;
+  }
+  size_t prefix_len = strlen(prefix);
+  return strncmp(value, prefix, prefix_len) == 0 ? 1 : 0;
+}
+
+int32_t fz_native_str_ends_with(int32_t value_id, int32_t suffix_id) {
+  const char* value = fz_lookup_string(value_id);
+  const char* suffix = fz_lookup_string(suffix_id);
+  if (value == NULL || suffix == NULL) {
+    return 0;
+  }
+  size_t value_len = strlen(value);
+  size_t suffix_len = strlen(suffix);
+  if (suffix_len > value_len) {
+    return 0;
+  }
+  return memcmp(value + (value_len - suffix_len), suffix, suffix_len) == 0 ? 1 : 0;
+}
+
+int32_t fz_native_str_trim(int32_t value_id) {
+  const char* value = fz_lookup_string(value_id);
+  if (value == NULL) {
+    return fz_intern_slice("", 0);
+  }
+  const unsigned char* start = (const unsigned char*)value;
+  while (*start != '\0' && isspace(*start)) {
+    start++;
+  }
+  const unsigned char* end = start + strlen((const char*)start);
+  while (end > start && isspace(*(end - 1))) {
+    end--;
+  }
+  return fz_intern_slice((const char*)start, (size_t)(end - start));
+}
+
+int32_t fz_native_str_replace(int32_t value_id, int32_t from_id, int32_t to_id) {
+  const char* value = fz_lookup_string(value_id);
+  const char* from = fz_lookup_string(from_id);
+  const char* to = fz_lookup_string(to_id);
+  if (value == NULL) value = "";
+  if (from == NULL) from = "";
+  if (to == NULL) to = "";
+
+  size_t value_len = strlen(value);
+  size_t from_len = strlen(from);
+  size_t to_len = strlen(to);
+  if (from_len == 0) {
+    return fz_intern_slice(value, value_len);
+  }
+
+  size_t occurrences = 0;
+  const char* cursor = value;
+  while ((cursor = strstr(cursor, from)) != NULL) {
+    occurrences++;
+    cursor += from_len;
+  }
+  if (occurrences == 0) {
+    return fz_intern_slice(value, value_len);
+  }
+  size_t out_len = value_len;
+  if (to_len >= from_len) {
+    out_len += occurrences * (to_len - from_len);
+  } else {
+    out_len -= occurrences * (from_len - to_len);
+  }
+  char* out = (char*)malloc(out_len + 1);
+  if (out == NULL) {
+    return 0;
+  }
+  const char* src = value;
+  char* dst = out;
+  while (1) {
+    const char* hit = strstr(src, from);
+    if (hit == NULL) {
+      size_t tail = strlen(src);
+      memcpy(dst, src, tail);
+      dst += tail;
+      break;
+    }
+    size_t prefix = (size_t)(hit - src);
+    memcpy(dst, src, prefix);
+    dst += prefix;
+    if (to_len > 0) {
+      memcpy(dst, to, to_len);
+      dst += to_len;
+    }
+    src = hit + from_len;
+  }
+  *dst = '\0';
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_str_len(int32_t value_id) {
+  const char* value = fz_lookup_string(value_id);
+  return value == NULL ? 0 : (int32_t)strlen(value);
+}
+
+int32_t fz_native_str_slice(int32_t value_id, int32_t start, int32_t span) {
+  const char* value = fz_lookup_string(value_id);
+  if (value == NULL || span <= 0) {
+    return fz_intern_slice("", 0);
+  }
+  int32_t value_len = (int32_t)strlen(value);
+  int32_t begin = start < 0 ? 0 : start;
+  if (begin > value_len) {
+    begin = value_len;
+  }
+  int32_t max_span = value_len - begin;
+  int32_t take = span > max_span ? max_span : span;
+  return fz_intern_slice(value + begin, (size_t)take);
+}
+
+int32_t fz_native_str_split(int32_t value_id, int32_t sep_id) {
+  const char* value = fz_lookup_string(value_id);
+  const char* sep = fz_lookup_string(sep_id);
+  if (value == NULL) value = "";
+  if (sep == NULL) sep = "";
+  int32_t list = fz_runtime_list_new();
+  if (list < 0) {
+    return -1;
+  }
+  size_t sep_len = strlen(sep);
+  if (sep_len == 0) {
+    (void)fz_runtime_list_push(list, fz_intern_slice(value, strlen(value)));
+    return list;
+  }
+  const char* cursor = value;
+  while (1) {
+    const char* hit = strstr(cursor, sep);
+    if (hit == NULL) {
+      (void)fz_runtime_list_push(list, fz_intern_slice(cursor, strlen(cursor)));
+      break;
+    }
+    (void)fz_runtime_list_push(list, fz_intern_slice(cursor, (size_t)(hit - cursor)));
+    cursor = hit + sep_len;
+  }
+  return list;
+}
+
+int32_t fz_native_list_new(void) { return fz_runtime_list_new(); }
+int32_t fz_native_list_push(int32_t handle, int32_t value_id) {
+  return fz_runtime_list_push(handle, value_id);
+}
+int32_t fz_native_list_pop(int32_t handle) { return fz_runtime_list_pop(handle); }
+int32_t fz_native_list_len(int32_t handle) { return fz_runtime_list_len(handle); }
+int32_t fz_native_list_get(int32_t handle, int32_t index) {
+  return fz_runtime_list_get(handle, index);
+}
+int32_t fz_native_list_set(int32_t handle, int32_t index, int32_t value_id) {
+  return fz_runtime_list_set(handle, index, value_id);
+}
+int32_t fz_native_list_clear(int32_t handle) { return fz_runtime_list_clear(handle); }
+int32_t fz_native_list_join(int32_t handle, int32_t sep_id) {
+  return fz_runtime_list_join(handle, sep_id);
+}
+
+int32_t fz_native_map_new(void) { return fz_runtime_map_new(); }
+int32_t fz_native_map_set(int32_t handle, int32_t key_id, int32_t value_id) {
+  return fz_runtime_map_set(handle, key_id, value_id);
+}
+int32_t fz_native_map_get(int32_t handle, int32_t key_id) {
+  return fz_runtime_map_get(handle, key_id);
+}
+int32_t fz_native_map_has(int32_t handle, int32_t key_id) {
+  return fz_runtime_map_has(handle, key_id);
+}
+int32_t fz_native_map_delete(int32_t handle, int32_t key_id) {
+  return fz_runtime_map_delete(handle, key_id);
+}
+int32_t fz_native_map_keys(int32_t handle) { return fz_runtime_map_keys(handle); }
+int32_t fz_native_map_len(int32_t handle) { return fz_runtime_map_len(handle); }
 
 int32_t fz_native_json_from_list(int32_t list_handle) {
   pthread_mutex_lock(&fz_collections_lock);
@@ -16255,8 +16540,8 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_proc_stderr(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_proc_exit_code(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_env_get(int32_t key_id)"));
-        assert!(!shim.contains("int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id)"));
-        assert!(!shim.contains("int32_t fz_native_str_contains("));
+        assert!(shim.contains("int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id)"));
+        assert!(shim.contains("int32_t fz_native_str_contains("));
         assert!(shim.contains("int32_t fz_native_http_header(int32_t key_id, int32_t value_id)"));
         assert!(
             shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)")
@@ -16288,9 +16573,10 @@ mod tests {
         ));
         assert!(shim.contains("int32_t fz_native_json_object3("));
         assert!(shim.contains("int32_t fz_native_json_object4("));
-        assert!(!shim.contains("int32_t fz_native_array_new(void)"));
-        assert!(!shim.contains("int32_t fz_native_array_push(int32_t handle, int32_t value)"));
-        assert!(!shim.contains("int32_t fz_native_array_get(int32_t handle, int32_t index)"));
+        assert!(shim.contains("int32_t fz_native_list_new(void)"));
+        assert!(shim.contains("int32_t fz_native_list_push(int32_t handle, int32_t value_id)"));
+        assert!(shim.contains("int32_t fz_native_map_new(void)"));
+        assert!(shim.contains("int32_t fz_native_map_set("));
         assert!(shim.contains("posix_spawnp"));
         assert!(shim.contains("int32_t fz_native_proc_spawnv("));
         assert!(shim.contains("int32_t fz_native_proc_runv("));
@@ -17140,7 +17426,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_dynamic_string_data_plane_calls_on_native_backend() {
+    fn verify_accepts_dynamic_string_data_plane_calls_on_native_backend() {
         let file_name = format!(
             "fozzylang-native-dynamic-str-data-plane-unsupported-{}.fzy",
             SystemTime::now()
@@ -17156,7 +17442,7 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("removed dynamic string data-plane runtime calls")
         }));
@@ -17190,7 +17476,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_list_map_data_plane_calls_on_native_backend() {
+    fn verify_accepts_list_map_data_plane_calls_on_native_backend() {
         let file_name = format!(
             "fozzylang-native-list-map-data-plane-unsupported-{}.fzy",
             SystemTime::now()
@@ -17206,7 +17492,7 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("removed list/map runtime-handle data-plane calls")
         }));
