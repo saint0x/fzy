@@ -3663,6 +3663,7 @@ fn run_non_scenario_test_plan(
         verifier::VerifyPolicy {
             safe_profile: request.safe_profile,
             production_memory_safety,
+            strict_unsafe_contracts: request.strict_verify,
         },
     );
     let mut verify_diagnostics = verify_report.diagnostics;

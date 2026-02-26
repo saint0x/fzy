@@ -825,6 +825,7 @@ pub fn compile_file_with_backend(
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
             production_memory_safety: true,
+            strict_unsafe_contracts: !matches!(profile, BuildProfile::Dev),
         },
     );
 
@@ -884,6 +885,7 @@ pub fn compile_library_with_backend(
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
             production_memory_safety: true,
+            strict_unsafe_contracts: !matches!(profile, BuildProfile::Dev),
         },
     );
 
@@ -969,7 +971,14 @@ pub fn verify_file(path: &Path) -> Result<Output> {
     let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
     let typed = hir::lower(&parsed.module);
     let fir = fir::build_owned(typed);
-    let report = verifier::verify(&fir);
+    let report = verifier::verify_with_policy(
+        &fir,
+        verifier::VerifyPolicy {
+            safe_profile: false,
+            production_memory_safety: true,
+            strict_unsafe_contracts: true,
+        },
+    );
     diagnostics.extend(report.diagnostics);
     for diagnostic in &mut diagnostics {
         if diagnostic.path.is_none() {
@@ -1228,8 +1237,16 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
     }
 
     for item in &mut module.items {
-        if let ast::Item::Function(function) = item {
-            qualify_function(function, namespace, &local_functions, &module_aliases);
+        match item {
+            ast::Item::Function(function) => {
+                qualify_function(function, namespace, &local_functions, &module_aliases);
+            }
+            ast::Item::Test(test) => {
+                for stmt in &mut test.body {
+                    qualify_stmt(stmt, namespace, &local_functions, &module_aliases);
+                }
+            }
+            _ => {}
         }
     }
 }

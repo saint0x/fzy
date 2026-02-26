@@ -832,6 +832,20 @@ impl Parser {
         } else {
             self.consume(&TokenKind::KwUnsafe)
         };
+        let unsafe_meta = if is_unsafe && self.at(&TokenKind::LParen) {
+            let _ = self.consume(&TokenKind::LParen);
+            let mut args = Vec::new();
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                args.push(self.parse_expr(0)?);
+                if !self.consume(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            let _ = self.consume(&TokenKind::RParen);
+            Some(self.parse_unsafe_meta_args(&args)?)
+        } else {
+            None
+        };
         if is_pub && is_extern && !is_pubext {
             self.push_diag_here("use `pubext c fn` for exported C symbols");
             return None;
@@ -914,7 +928,7 @@ impl Parser {
             return_type,
             body,
             is_unsafe,
-            unsafe_meta: None,
+            unsafe_meta,
             is_async,
             is_pub,
             is_pubext,
@@ -3290,7 +3304,7 @@ mod tests {
     fn parses_unsafe_function_and_ext_unsafe_import() {
         let source = r#"
             ext unsafe c fn c_write(ptr: *u8) -> i32;
-            unsafe fn write(ptr: *u8) -> i32 {
+            unsafe("reason:local write", "invariant:owner_live(ptr) && ptr_nonnull(ptr)", "owner:ptr", "scope:write", "risk_class:memory", "proof_ref:test://parser-unsafe-fn") fn write(ptr: *u8) -> i32 {
                 unsafe {
                     return c_write(ptr);
                 }
@@ -3317,6 +3331,7 @@ mod tests {
             })
             .expect("write function should exist");
         assert!(write.is_unsafe);
+        assert!(write.unsafe_meta.is_some());
         assert!(write
             .body
             .iter()

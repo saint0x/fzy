@@ -141,6 +141,20 @@
 - [ ] deterministic + host-backed Fozzy lifecycle checks for unsafe+FFI scenarios (`doctor`, `test --det --strict`, `run --record`, `trace verify`, `replay`, `ci`).
 - [ ] release gate must fail on unsafe semantic regressions, policy violations, or unsafe inventory drift beyond approved thresholds.
 
+### Unsafe Architecture Closure Additions (Production, No Backwards Compatibility)
+- [ ] Add first-class `unsafe fn` contract syntax and semantics (not only unsafe block metadata), and wire it through parser -> AST -> HIR -> FIR -> verifier.
+- [ ] Remove nullable/placeholder `unsafe_meta` behavior for unsafe functions in production paths; unsafe declarations must carry typed contract data when policy requires it.
+- [ ] Unify ownership metadata binding to resolved provenance identities (for example `owner_id`) instead of string-name-only local symbol matching.
+- [ ] Extend owner/provenance resolution beyond local `alloc` roots to inter-procedural ownership sources (params, returns, field projections, and validated FFI handoffs).
+- [ ] Replace parser-only unsafe invariant DSL validation with semantic predicate checking against ownership/provenance facts in verifier passes.
+- [ ] Enforce one symbol canonicalization pipeline across all executable bodies, including `test` blocks and closure/task bodies, so unsafe calls resolve identically to regular calls.
+- [ ] Add explicit native lowering parity tests proving local unsafe function calls in tests/examples lower and execute in LLVM + Cranelift without unresolved-call regressions.
+- [ ] Move strict unsafe enforcement from `audit unsafe`-only env toggles to first-class build policy in `check`/`build`/`test`/`run` (profile-driven, not env-only).
+- [ ] Replace `FZ_UNSAFE_STRICT` as the primary control plane with explicit profile policy (`dev` warn, production/release block) and stable CLI/config controls.
+- [ ] Add a hard production gate requiring zero missing/invalid unsafe contracts in release profile for all first-party modules (including examples and smoke repos).
+- [ ] Add proof-reference artifact validation in core verification (`trace://`, `run://`, `ci://`, `test://`, `rfc://`, `gate://`) so contracts cannot point to non-existent evidence.
+- [ ] Add cross-repo conformance gate requiring both `examples/` and `anthropic_smoke` to exercise executable unsafe paths under the same production unsafe policy.
+
 ### Async Semantics + Concurrency Unification
 - [✅] Carry `async` as first-class semantics from parser through AST/HIR function models.
 - [✅] Add first-class await syntax + AST/HIR representation (not call-name heuristic).

@@ -1585,11 +1585,33 @@ fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)
     for function in functions {
         let mut owners = BTreeMap::<String, usize>::new();
         let mut moved = BTreeSet::<String>::new();
+        let mut owner_candidates = function
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect::<BTreeSet<_>>();
         let mut next_alloc = 1usize;
+        if function.is_unsafe {
+            if let Some(meta) = &function.unsafe_meta {
+                if !unsafe_meta_complete(meta) {
+                    violations.push(format!(
+                        "unsafe function `{}` has metadata with missing required fields",
+                        function.name
+                    ));
+                }
+                if !owner_candidates.contains(&meta.owner) {
+                    violations.push(format!(
+                        "unsafe function `{}` metadata owner `{}` does not resolve to a live ownership/provenance root",
+                        function.name, meta.owner
+                    ));
+                }
+            }
+        }
         analyze_ownership_block(
             &function.body,
             &mut owners,
             &mut moved,
+            &mut owner_candidates,
             &mut next_alloc,
             &mut violations,
             &function.name,
@@ -2026,6 +2048,7 @@ fn analyze_ownership_block(
     body: &[Stmt],
     owners: &mut BTreeMap<String, usize>,
     moved: &mut BTreeSet<String>,
+    owner_candidates: &mut BTreeSet<String>,
     next_alloc: &mut usize,
     violations: &mut Vec<String>,
     function_name: &str,
@@ -2041,6 +2064,7 @@ fn analyze_ownership_block(
         }
         match stmt {
             Stmt::Let { name, value, .. } => {
+                owner_candidates.insert(name.clone());
                 if is_alloc_expr(value) {
                     owners.insert(name.clone(), *next_alloc);
                     *next_alloc += 1;
@@ -2060,7 +2084,8 @@ fn analyze_ownership_block(
                     ));
                 }
             }
-            Stmt::LetPattern { value, .. } => {
+            Stmt::LetPattern { pattern, value, .. } => {
+                collect_pattern_bindings(pattern, owner_candidates);
                 if is_partial_move_expr(value, owners) {
                     violations.push(format!(
                         "function `{}` performs partial move from owned aggregate; partial moves are forbidden in v0",
@@ -2069,6 +2094,7 @@ fn analyze_ownership_block(
                 }
             }
             Stmt::Assign { target, value } => {
+                owner_candidates.insert(target.clone());
                 if let Expr::Ident(from) = value {
                     if let Some(owner) = owners.remove(from) {
                         owners.insert(target.clone(), owner);
@@ -2084,6 +2110,7 @@ fn analyze_ownership_block(
                 }
             }
             Stmt::CompoundAssign { target, value, .. } => {
+                owner_candidates.insert(target.clone());
                 if let Expr::Ident(from) = value {
                     if let Some(owner) = owners.remove(from) {
                         owners.insert(target.clone(), owner);
@@ -2110,7 +2137,7 @@ fn analyze_ownership_block(
                     }
                 }
             }
-            Stmt::Expr(Expr::UnsafeBlock { meta, .. }) => {
+            Stmt::Expr(Expr::UnsafeBlock { body, meta }) => {
                 if let Some(meta) = meta {
                     if !unsafe_meta_complete(meta) {
                         violations.push(format!(
@@ -2118,13 +2145,23 @@ fn analyze_ownership_block(
                             function_name
                         ));
                     }
-                    if !owners.contains_key(&meta.owner) {
+                    if !owners.contains_key(&meta.owner) && !owner_candidates.contains(&meta.owner)
+                    {
                         violations.push(format!(
                             "function `{}` unsafe metadata owner `{}` does not resolve to a live provenance root",
                             function_name, meta.owner
                         ));
                     }
                 }
+                analyze_ownership_block(
+                    body,
+                    owners,
+                    moved,
+                    owner_candidates,
+                    next_alloc,
+                    violations,
+                    function_name,
+                );
             }
             Stmt::Return(Some(Expr::Ident(name))) => {
                 owners.remove(name);
@@ -2139,10 +2176,13 @@ fn analyze_ownership_block(
                 let mut else_owners = owners.clone();
                 let mut then_moved = moved.clone();
                 let mut else_moved = moved.clone();
+                let mut then_owner_candidates = owner_candidates.clone();
+                let mut else_owner_candidates = owner_candidates.clone();
                 analyze_ownership_block(
                     then_body,
                     &mut then_owners,
                     &mut then_moved,
+                    &mut then_owner_candidates,
                     next_alloc,
                     violations,
                     function_name,
@@ -2151,6 +2191,7 @@ fn analyze_ownership_block(
                     else_body,
                     &mut else_owners,
                     &mut else_moved,
+                    &mut else_owner_candidates,
                     next_alloc,
                     violations,
                     function_name,
@@ -2163,9 +2204,21 @@ fn analyze_ownership_block(
                     .intersection(&else_moved)
                     .cloned()
                     .collect::<BTreeSet<_>>();
+                *owner_candidates = then_owner_candidates
+                    .intersection(&else_owner_candidates)
+                    .cloned()
+                    .collect::<BTreeSet<_>>();
             }
             Stmt::While { body, .. } => {
-                analyze_ownership_block(body, owners, moved, next_alloc, violations, function_name);
+                analyze_ownership_block(
+                    body,
+                    owners,
+                    moved,
+                    owner_candidates,
+                    next_alloc,
+                    violations,
+                    function_name,
+                );
             }
             Stmt::For {
                 init,
@@ -2178,17 +2231,27 @@ fn analyze_ownership_block(
                         std::slice::from_ref(init.as_ref()),
                         owners,
                         moved,
+                        owner_candidates,
                         next_alloc,
                         violations,
                         function_name,
                     );
                 }
-                analyze_ownership_block(body, owners, moved, next_alloc, violations, function_name);
+                analyze_ownership_block(
+                    body,
+                    owners,
+                    moved,
+                    owner_candidates,
+                    next_alloc,
+                    violations,
+                    function_name,
+                );
                 if let Some(step) = step {
                     analyze_ownership_block(
                         std::slice::from_ref(step.as_ref()),
                         owners,
                         moved,
+                        owner_candidates,
                         next_alloc,
                         violations,
                         function_name,
@@ -2197,10 +2260,27 @@ fn analyze_ownership_block(
             }
             Stmt::ForIn { binding, body, .. } => {
                 moved.remove(binding);
-                analyze_ownership_block(body, owners, moved, next_alloc, violations, function_name);
+                owner_candidates.insert(binding.clone());
+                analyze_ownership_block(
+                    body,
+                    owners,
+                    moved,
+                    owner_candidates,
+                    next_alloc,
+                    violations,
+                    function_name,
+                );
             }
             Stmt::Loop { body } => {
-                analyze_ownership_block(body, owners, moved, next_alloc, violations, function_name);
+                analyze_ownership_block(
+                    body,
+                    owners,
+                    moved,
+                    owner_candidates,
+                    next_alloc,
+                    violations,
+                    function_name,
+                );
             }
             Stmt::Break | Stmt::Continue => {}
             Stmt::Match { arms, .. } => {
@@ -2246,6 +2326,12 @@ fn build_function_memory_summaries(
         let mut unsafe_sites = 0usize;
         let mut unsafe_reasoned_sites = 0usize;
         let mut has_await = false;
+        if function.is_unsafe {
+            unsafe_sites += 1;
+            if function.unsafe_meta.as_ref().is_some_and(unsafe_meta_complete) {
+                unsafe_reasoned_sites += 1;
+            }
+        }
         struct Collector<'a> {
             alloc_sites: &'a mut usize,
             free_sites: &'a mut usize,
@@ -3175,6 +3261,12 @@ fn collect_effect_markers(
     let mut free_sites = 0usize;
 
     for function in functions {
+        if function.is_unsafe {
+            unsafe_sites += 1;
+            if function.unsafe_meta.as_ref().is_some_and(unsafe_meta_complete) {
+                unsafe_reasoned_sites += 1;
+            }
+        }
         for param in &function.params {
             if matches!(param.ty, Type::Ref { .. }) {
                 reference_sites += 1;
@@ -6086,6 +6178,30 @@ fn pattern_is_catchall(pattern: &ast::Pattern) -> bool {
         | ast::Pattern::Bool(_)
         | ast::Pattern::Struct { .. }
         | ast::Pattern::Variant { .. } => false,
+    }
+}
+
+fn collect_pattern_bindings(pattern: &ast::Pattern, out: &mut BTreeSet<String>) {
+    match pattern {
+        ast::Pattern::Ident(name) => {
+            out.insert(name.clone());
+        }
+        ast::Pattern::Struct { fields, .. } => {
+            for (_, binding) in fields {
+                out.insert(binding.clone());
+            }
+        }
+        ast::Pattern::Variant { bindings, .. } => {
+            for binding in bindings {
+                out.insert(binding.clone());
+            }
+        }
+        ast::Pattern::Or(patterns) => {
+            for candidate in patterns {
+                collect_pattern_bindings(candidate, out);
+            }
+        }
+        ast::Pattern::Wildcard | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => {}
     }
 }
 

@@ -5,6 +5,7 @@ use fir::FirModule;
 pub struct VerifyPolicy {
     pub safe_profile: bool,
     pub production_memory_safety: bool,
+    pub strict_unsafe_contracts: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -129,7 +130,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             .unsafe_sites
             .saturating_sub(module.unsafe_reasoned_sites);
         report.diagnostics.push(Diagnostic::new(
-            if memory_safety_enforced {
+            if policy.safe_profile {
                 Severity::Error
             } else {
                 Severity::Warning
@@ -139,13 +140,16 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 module.unsafe_sites
             ),
             Some(
-                "unsafe escapes must be isolated and are rejected under production memory safety"
-                    .to_string(),
+                if policy.safe_profile {
+                    "unsafe escapes are forbidden in safe profile".to_string()
+                } else {
+                    "unsafe escapes must be isolated and audited with explicit metadata".to_string()
+                },
             ),
         ));
         if missing_reasons > 0 {
             report.diagnostics.push(Diagnostic::new(
-                if memory_safety_enforced {
+                if policy.safe_profile || policy.strict_unsafe_contracts {
                     Severity::Error
                 } else {
                     Severity::Warning
@@ -155,8 +159,16 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                     missing_reasons
                 ),
                 Some(
-                    "use full unsafe contract: reason,invariant,owner,scope,risk_class,proof_ref"
-                        .to_string(),
+                    if policy.safe_profile {
+                        "safe profile rejects unsafe escapes regardless of metadata completeness"
+                            .to_string()
+                    } else if policy.strict_unsafe_contracts {
+                        "strict unsafe contracts are enabled; all unsafe sites require complete contract metadata"
+                            .to_string()
+                    } else {
+                        "metadata is recommended by default and enforced in strict unsafe-audit mode"
+                            .to_string()
+                    },
                 ),
             ));
         }
@@ -1130,5 +1142,183 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.message.contains("safe profile forbids capability")));
+    }
+
+    #[test]
+    fn production_mode_allows_unsafe_sites_with_warnings() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 0,
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                production_memory_safety: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("detected 1 explicit unsafe escape marker(s)")));
+        assert!(report.is_clean());
+    }
+
+    #[test]
+    fn safe_profile_rejects_unsafe_sites() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 1,
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                safe_profile: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(!report.is_clean());
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unsafe escape marker")));
+    }
+
+    #[test]
+    fn strict_unsafe_contracts_reject_missing_metadata() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 0,
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                strict_unsafe_contracts: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(!report.is_clean());
+        assert!(report.diagnostics.iter().any(|d| {
+            matches!(d.severity, diagnostics::Severity::Error)
+                && d.message
+                    .contains("unsafe escape site(s) missing required contract fields")
+        }));
     }
 }
