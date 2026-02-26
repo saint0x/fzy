@@ -29,31 +29,69 @@ def main() -> int:
     ast_src = read_text(ROOT / "crates" / "ast" / "src" / "lib.rs")
     hir_src = read_text(ROOT / "crates" / "hir" / "src" / "lib.rs")
 
+    has_use_alias = (
+        "fn parse_use_tree(" in parser_src
+        and "if self.consume(&TokenKind::Ident(\"as\".to_string()))" in parser_src
+    )
+    has_use_wildcard = (
+        "fn parse_use_tree(" in parser_src
+        and "if self.consume(&TokenKind::Star)" in parser_src
+    )
+    has_use_group = (
+        "fn parse_use_tree(" in parser_src
+        and "if self.consume(&TokenKind::LBrace)" in parser_src
+    )
+    has_pub_use = "self.module.imports.push(format!(\"pub {import}\"))" in parser_src
+    has_let_pattern = (
+        "LetPattern" in ast_src
+        and "let pattern = self.parse_pattern()?" in parser_src
+        and "Stmt::LetPattern" in hir_src
+    )
+
     expected_status = {
         "function_type_surface": "implemented"
         if "Type::Function {" in ast_src
         and "if self.consume(&TokenKind::KwFn)" in parser_src
         else "missing",
         "typed_function_references": "implemented"
-        if "fn function_ref_type(" in hir_src and "Type::Function {" in hir_src
+        if "fn function_ref_type(" in hir_src
+        and "Type::Function {" in hir_src
+        and "Value::FnRef" in hir_src
         else "missing",
         "higher_order_callability_checks": "implemented"
         if "is not callable (found" in hir_src
         else "missing",
-        "unsupported_use_alias_diag": "implemented"
-        if "import aliases are not supported" in parser_src
+        "use_alias_support": "implemented" if has_use_alias else "missing",
+        "use_wildcard_support": "implemented" if has_use_wildcard else "missing",
+        "use_group_support": "implemented" if has_use_group else "missing",
+        "pub_use_reexport_support": "implemented" if has_pub_use else "missing",
+        "let_mutability_semantics": "implemented"
+        if "assignment to immutable binding" in hir_src
+        and "let mutable = self.consume(&TokenKind::Ident(\"mut\".to_string()));"
+        in parser_src
         else "missing",
-        "unsupported_use_wildcard_diag": "implemented"
-        if "wildcard imports are not supported" in parser_src
+        "let_pattern_destructuring": "partial" if has_let_pattern else "missing",
+        "const_declaration_surface": "implemented"
+        if "fn parse_const(" in parser_src and "ast::Item::Const" in parser_src
         else "missing",
-        "unsupported_use_group_diag": "implemented"
-        if "grouped imports are not supported" in parser_src
+        "static_declaration_surface": "implemented"
+        if "fn parse_static(" in parser_src and "ast::Item::Static" in parser_src
         else "missing",
-        "unsupported_pub_use_reexport_diag": "implemented"
-        if "`pub use` re-exports are not supported yet" in parser_src
+        "static_mut_surface": "missing"
+        if "`static mut` is not supported in v1" in parser_src
+        else "implemented",
+        "closure_lambda_values": "implemented"
+        if "Expr::Closure" in ast_src and "parse_lambda" in parser_src
         else "missing",
         "expanded_item_visibility_struct_enum_trait_impl": "implemented"
         if "pub is_pub: bool" in ast_src
+        and "self.parse_struct(true)" in parser_src
+        and "self.parse_enum(true)" in parser_src
+        and "self.parse_trait(true)" in parser_src
+        and "self.parse_impl(true)" in parser_src
+        else "missing",
+        "module_import_alias_reexport_wildcard_support": "implemented"
+        if has_use_alias and has_use_wildcard and has_use_group and has_pub_use
         else "missing",
     }
 
