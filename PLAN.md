@@ -475,9 +475,9 @@
 
 #### Direct-to-Memory Match/Enum Control Flow (Phase 2)
 - [✅] Replace branch-chain lowering for eligible enum matches with compact discriminant-based switch lowering.
-- [ ] Define compact discriminant representation for native execution while preserving language-level enum semantics.
-- [ ] Keep guard/payload semantics exact; reject unsupported forms rather than fallback to compatibility behavior.
-- [ ] Preserve deterministic behavior and diagnostics while changing machine-level control-flow shape.
+- [✅] Define compact discriminant representation for native execution while preserving language-level enum semantics.
+- [✅] Keep guard/payload semantics exact; reject unsupported forms rather than fallback to compatibility behavior.
+- [✅] Preserve deterministic behavior and diagnostics while changing machine-level control-flow shape.
 
 #### Direct-to-Memory String Temporaries (Phase 3)
 - [ ] Introduce non-interned temporary string representation for non-escaping loop-local values.

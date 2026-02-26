@@ -10,7 +10,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variab
 use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Copy)]
 struct LocalBinding {
@@ -2189,10 +2189,11 @@ struct ControlFlowBuilder {
     active_loops: Vec<ActiveLoop>,
     next_loop_id: usize,
     next_temp: usize,
+    variant_tags: HashMap<String, i32>,
 }
 
 impl ControlFlowBuilder {
-    fn new() -> Self {
+    fn new(variant_tags: HashMap<String, i32>) -> Self {
         Self {
             blocks: vec![CfgBuildBlock {
                 stmts: Vec::new(),
@@ -2202,6 +2203,7 @@ impl ControlFlowBuilder {
             active_loops: Vec::new(),
             next_loop_id: 0,
             next_temp: 0,
+            variant_tags,
         }
     }
 
@@ -2684,7 +2686,9 @@ impl ControlFlowBuilder {
                             } else {
                                 switch_default = arm_block;
                             }
-                        } else if let Some(values) = pattern_switch_values(&arm.pattern) {
+                        } else if let Some(values) =
+                            pattern_switch_values(&arm.pattern, &self.variant_tags)
+                        {
                             for value in values {
                                 if !switch_seen.insert(value) {
                                     switch_viable = false;
@@ -2753,7 +2757,11 @@ impl ControlFlowBuilder {
                             } else {
                                 self.new_block()
                             };
-                            let mut condition = pattern_to_expr(&scrutinee_name, &arm.pattern);
+                            let mut condition = pattern_to_expr(
+                                &scrutinee_name,
+                                &arm.pattern,
+                                &self.variant_tags,
+                            );
                             if let Some(guard) = &arm.guard {
                                 condition = ast::Expr::Binary {
                                     op: ast::BinaryOp::And,
@@ -2840,8 +2848,11 @@ impl ControlFlowBuilder {
     }
 }
 
-fn build_control_flow_cfg(body: &[ast::Stmt]) -> Result<ControlFlowCfg> {
-    ControlFlowBuilder::new().finish(body)
+fn build_control_flow_cfg(
+    body: &[ast::Stmt],
+    variant_tags: &HashMap<String, i32>,
+) -> Result<ControlFlowCfg> {
+    ControlFlowBuilder::new(variant_tags.clone()).finish(body)
 }
 
 fn body_contains_break_at_depth(body: &[ast::Stmt], depth: usize) -> bool {
@@ -2878,7 +2889,11 @@ fn stmt_contains_break_at_depth(stmt: &ast::Stmt, depth: usize) -> bool {
     }
 }
 
-fn pattern_to_expr(scrutinee_name: &str, pattern: &ast::Pattern) -> ast::Expr {
+fn pattern_to_expr(
+    scrutinee_name: &str,
+    pattern: &ast::Pattern,
+    variant_tags: &HashMap<String, i32>,
+) -> ast::Expr {
     match pattern {
         ast::Pattern::Wildcard | ast::Pattern::Ident(_) => ast::Expr::Bool(true),
         ast::Pattern::Int(value) => ast::Expr::Binary {
@@ -2898,7 +2913,9 @@ fn pattern_to_expr(scrutinee_name: &str, pattern: &ast::Pattern) -> ast::Expr {
             ast::Expr::Binary {
                 op: ast::BinaryOp::Eq,
                 left: Box::new(ast::Expr::Ident(scrutinee_name.to_string())),
-                right: Box::new(ast::Expr::Int(variant_tag(&key) as i128)),
+                right: Box::new(ast::Expr::Int(
+                    variant_tag_for_key(&key, variant_tags) as i128,
+                )),
             }
         }
         ast::Pattern::Struct { .. } => ast::Expr::Bool(true),
@@ -2906,12 +2923,12 @@ fn pattern_to_expr(scrutinee_name: &str, pattern: &ast::Pattern) -> ast::Expr {
             let mut iter = patterns.iter();
             let first = iter
                 .next()
-                .map(|pattern| pattern_to_expr(scrutinee_name, pattern))
+                .map(|pattern| pattern_to_expr(scrutinee_name, pattern, variant_tags))
                 .unwrap_or(ast::Expr::Bool(true));
             iter.fold(first, |acc, pattern| ast::Expr::Binary {
                 op: ast::BinaryOp::Or,
                 left: Box::new(acc),
-                right: Box::new(pattern_to_expr(scrutinee_name, pattern)),
+                right: Box::new(pattern_to_expr(scrutinee_name, pattern, variant_tags)),
             })
         }
     }
@@ -2921,7 +2938,10 @@ fn pattern_is_catchall(pattern: &ast::Pattern) -> bool {
     matches!(pattern, ast::Pattern::Wildcard | ast::Pattern::Ident(_))
 }
 
-fn pattern_switch_values(pattern: &ast::Pattern) -> Option<Vec<i32>> {
+fn pattern_switch_values(
+    pattern: &ast::Pattern,
+    variant_tags: &HashMap<String, i32>,
+) -> Option<Vec<i32>> {
     match pattern {
         ast::Pattern::Int(value) => i32::try_from(*value).ok().map(|v| vec![v]),
         ast::Pattern::Bool(value) => Some(vec![if *value { 1 } else { 0 }]),
@@ -2929,12 +2949,12 @@ fn pattern_switch_values(pattern: &ast::Pattern) -> Option<Vec<i32>> {
             enum_name, variant, ..
         } => {
             let key = format!("{enum_name}::{variant}");
-            Some(vec![variant_tag(&key)])
+            Some(vec![variant_tag_for_key(&key, variant_tags)])
         }
         ast::Pattern::Or(patterns) => {
             let mut out = Vec::new();
             for pattern in patterns {
-                let mut values = pattern_switch_values(pattern)?;
+                let mut values = pattern_switch_values(pattern, variant_tags)?;
                 out.append(&mut values);
             }
             Some(out)
@@ -3330,6 +3350,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
     }
     let string_literal_ids = build_string_literal_ids(&collect_string_literals(fir));
     let global_const_i32 = build_global_const_i32_map(fir);
+    let variant_tags = build_variant_tag_map(fir);
     let mutable_static_i32 = build_mutable_static_i32_map(fir);
     let mut mutable_global_symbols = HashMap::<String, String>::new();
     let mut mutable_globals_sorted = mutable_static_i32.into_iter().collect::<Vec<_>>();
@@ -3355,6 +3376,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
             function,
             forced_main_return.filter(|_| function.name == "main"),
             &global_const_i32,
+            &variant_tags,
             &mutable_global_symbols,
             &string_literal_ids,
             &task_ref_ids,
@@ -3405,6 +3427,7 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> St
         None
     };
 
+    let variant_tags = build_variant_tag_map(fir);
     let mut out = String::new();
     for function in &fir.typed_functions {
         if is_extern_c_import_decl(function) {
@@ -3415,7 +3438,7 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> St
             "function %{}() -> i32 {{",
             native_mangle_symbol(&function.name)
         );
-        match build_control_flow_cfg(&function.body).and_then(|cfg| {
+        match build_control_flow_cfg(&function.body, &variant_tags).and_then(|cfg| {
             verify_control_flow_cfg(&cfg)?;
             Ok(cfg)
         }) {
@@ -3500,12 +3523,17 @@ struct LlvmFuncCtx {
     const_strings: HashMap<String, String>,
     closures: HashMap<String, LlvmClosureBinding>,
     globals: HashMap<String, i32>,
+    variant_tags: HashMap<String, i32>,
     mutable_globals: HashMap<String, String>,
     code: String,
 }
 
 impl LlvmFuncCtx {
-    fn new(globals: HashMap<String, i32>, mutable_globals: HashMap<String, String>) -> Self {
+    fn new(
+        globals: HashMap<String, i32>,
+        variant_tags: HashMap<String, i32>,
+        mutable_globals: HashMap<String, String>,
+    ) -> Self {
         Self {
             next_value: 0,
             next_label: 0,
@@ -3514,6 +3542,7 @@ impl LlvmFuncCtx {
             const_strings: HashMap::new(),
             closures: HashMap::new(),
             globals,
+            variant_tags,
             mutable_globals,
             code: String::new(),
         }
@@ -3536,6 +3565,7 @@ fn llvm_emit_function(
     function: &hir::TypedFunction,
     forced_return: Option<i32>,
     globals: &HashMap<String, i32>,
+    variant_tags: &HashMap<String, i32>,
     mutable_globals: &HashMap<String, String>,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
@@ -3547,7 +3577,11 @@ fn llvm_emit_function(
         .map(|(i, _)| format!("i32 %arg{i}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut ctx = LlvmFuncCtx::new(globals.clone(), mutable_globals.clone());
+    let mut ctx = LlvmFuncCtx::new(
+        globals.clone(),
+        variant_tags.clone(),
+        mutable_globals.clone(),
+    );
     let mut out = format!(
         "define i32 @{}({params}) {{\nentry:\n",
         native_mangle_symbol(&function.name)
@@ -3559,7 +3593,7 @@ fn llvm_emit_function(
         ));
         ctx.slots.insert(param.name.clone(), slot);
     }
-    let cfg = build_control_flow_cfg(&function.body)
+    let cfg = build_control_flow_cfg(&function.body, variant_tags)
         .and_then(|cfg| {
             verify_control_flow_cfg(&cfg)?;
             Ok(cfg)
@@ -3800,7 +3834,7 @@ fn llvm_emit_let_pattern(
             bindings,
         } => {
             let key = format!("{enum_name}::{variant}");
-            let tag = variant_tag(&key);
+            let tag = variant_tag_for_key(&key, &ctx.variant_tags);
             let cmp = ctx.value();
             ctx.code
                 .push_str(&format!("  {cmp} = icmp eq i32 {rendered}, {tag}\n"));
@@ -4125,7 +4159,7 @@ fn llvm_emit_expr(
                 let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
             }
             let key = format!("{enum_name}::{variant}");
-            variant_tag(&key).to_string()
+            variant_tag_for_key(&key, &ctx.variant_tags).to_string()
         }
         ast::Expr::TryCatch { try_expr, .. } => {
             llvm_emit_expr(try_expr, ctx, string_literal_ids, task_ref_ids)
@@ -4556,6 +4590,172 @@ fn collect_spawn_task_symbols(fir: &fir::FirModule) -> Vec<String> {
         .filter(|function| function.params.is_empty())
         .map(|function| function.name.clone())
         .collect()
+}
+
+fn build_variant_tag_map(fir: &fir::FirModule) -> HashMap<String, i32> {
+    let mut keys = BTreeSet::<String>::new();
+    for function in &fir.typed_functions {
+        for stmt in &function.body {
+            collect_variant_keys_from_stmt(stmt, &mut keys);
+        }
+    }
+    keys.into_iter()
+        .enumerate()
+        .map(|(idx, key)| (key, idx as i32 + 1))
+        .collect()
+}
+
+fn collect_variant_keys_from_stmt(stmt: &ast::Stmt, out: &mut BTreeSet<String>) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => collect_variant_keys_from_expr(value, out),
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_variant_keys_from_expr(value, out);
+            }
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_variant_keys_from_expr(condition, out);
+            for nested in then_body {
+                collect_variant_keys_from_stmt(nested, out);
+            }
+            for nested in else_body {
+                collect_variant_keys_from_stmt(nested, out);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_variant_keys_from_expr(condition, out);
+            for nested in body {
+                collect_variant_keys_from_stmt(nested, out);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_variant_keys_from_stmt(init, out);
+            }
+            if let Some(condition) = condition {
+                collect_variant_keys_from_expr(condition, out);
+            }
+            if let Some(step) = step {
+                collect_variant_keys_from_stmt(step, out);
+            }
+            for nested in body {
+                collect_variant_keys_from_stmt(nested, out);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_variant_keys_from_expr(iterable, out);
+            for nested in body {
+                collect_variant_keys_from_stmt(nested, out);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_variant_keys_from_stmt(nested, out);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_variant_keys_from_expr(scrutinee, out);
+            for arm in arms {
+                collect_variant_keys_from_pattern(&arm.pattern, out);
+                if let Some(guard) = &arm.guard {
+                    collect_variant_keys_from_expr(guard, out);
+                }
+                collect_variant_keys_from_expr(&arm.value, out);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_variant_keys_from_expr(expr: &ast::Expr, out: &mut BTreeSet<String>) {
+    match expr {
+        ast::Expr::EnumInit {
+            enum_name, variant, ..
+        } => {
+            out.insert(format!("{enum_name}::{variant}"));
+        }
+        ast::Expr::Call { args, .. } => {
+            for arg in args {
+                collect_variant_keys_from_expr(arg, out);
+            }
+        }
+        ast::Expr::FieldAccess { base, .. } => collect_variant_keys_from_expr(base, out),
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_variant_keys_from_expr(value, out);
+            }
+        }
+        ast::Expr::Closure { body, .. } => collect_variant_keys_from_expr(body, out),
+        ast::Expr::Group(inner) => collect_variant_keys_from_expr(inner, out),
+        ast::Expr::Await(inner) => collect_variant_keys_from_expr(inner, out),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_variant_keys_from_expr(try_expr, out);
+            collect_variant_keys_from_expr(catch_expr, out);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_variant_keys_from_expr(start, out);
+            collect_variant_keys_from_expr(end, out);
+        }
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_variant_keys_from_expr(item, out);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            collect_variant_keys_from_expr(base, out);
+            collect_variant_keys_from_expr(index, out);
+        }
+        ast::Expr::Unary { expr, .. } => collect_variant_keys_from_expr(expr, out),
+        ast::Expr::Binary { left, right, .. } => {
+            collect_variant_keys_from_expr(left, out);
+            collect_variant_keys_from_expr(right, out);
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn collect_variant_keys_from_pattern(pattern: &ast::Pattern, out: &mut BTreeSet<String>) {
+    match pattern {
+        ast::Pattern::Variant {
+            enum_name, variant, ..
+        } => {
+            out.insert(format!("{enum_name}::{variant}"));
+        }
+        ast::Pattern::Or(patterns) => {
+            for nested in patterns {
+                collect_variant_keys_from_pattern(nested, out);
+            }
+        }
+        ast::Pattern::Wildcard
+        | ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_)
+        | ast::Pattern::Ident(_)
+        | ast::Pattern::Struct { .. } => {}
+    }
 }
 
 fn escape_c_string(value: &str) -> String {
@@ -5320,6 +5520,7 @@ fn emit_native_libraries_cranelift(
     let string_literals = collect_string_literals(fir);
     let string_literal_ids = build_string_literal_ids(&string_literals);
     let global_const_i32 = build_global_const_i32_map(fir);
+    let variant_tags = build_variant_tag_map(fir);
     let mutable_static_i32 = build_mutable_static_i32_map(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
@@ -5450,7 +5651,7 @@ fn emit_native_libraries_cranelift(
             locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
         let mut next_var = function.params.len();
-        let cfg = build_control_flow_cfg(&function.body).and_then(|cfg| {
+        let cfg = build_control_flow_cfg(&function.body, &variant_tags).and_then(|cfg| {
             verify_control_flow_cfg(&cfg)?;
             Ok(cfg)
         })?;
@@ -5462,6 +5663,7 @@ fn emit_native_libraries_cranelift(
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
                 globals: &global_const_i32,
+                variant_tags: &variant_tags,
                 mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
                 array_bindings: HashMap::new(),
@@ -5802,6 +6004,7 @@ fn emit_native_artifact_cranelift(
     let string_literals = collect_string_literals(fir);
     let string_literal_ids = build_string_literal_ids(&string_literals);
     let global_const_i32 = build_global_const_i32_map(fir);
+    let variant_tags = build_variant_tag_map(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -5957,7 +6160,7 @@ fn emit_native_artifact_cranelift(
             locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
         let mut next_var = function.params.len();
-        let cfg = build_control_flow_cfg(&function.body).and_then(|cfg| {
+        let cfg = build_control_flow_cfg(&function.body, &variant_tags).and_then(|cfg| {
             verify_control_flow_cfg(&cfg)?;
             Ok(cfg)
         })?;
@@ -5969,6 +6172,7 @@ fn emit_native_artifact_cranelift(
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
                 globals: &global_const_i32,
+                variant_tags: &variant_tags,
                 mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
                 array_bindings: HashMap::new(),
@@ -6054,6 +6258,7 @@ struct ClifLoweringCtx<'a> {
     string_literal_ids: &'a HashMap<String, i32>,
     task_ref_ids: &'a HashMap<String, i32>,
     globals: &'a HashMap<String, i32>,
+    variant_tags: &'a HashMap<String, i32>,
     mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
     closures: HashMap<String, ClifClosureBinding>,
     array_bindings: HashMap<String, Vec<LocalBinding>>,
@@ -6408,7 +6613,9 @@ fn clif_emit_let_pattern(
             bindings,
         } => {
             let key = format!("{enum_name}::{variant}");
-            let expected_tag = builder.ins().iconst(lowered.ty, variant_tag(&key) as i64);
+            let expected_tag = builder
+                .ins()
+                .iconst(lowered.ty, variant_tag_for_key(&key, ctx.variant_tags) as i64);
             let _ = builder
                 .ins()
                 .icmp(IntCC::Equal, lowered.value, expected_tag);
@@ -6653,6 +6860,13 @@ fn variant_tag(variant: &str) -> i32 {
     }) & 0x7fff_ffff) as i32
 }
 
+fn variant_tag_for_key(key: &str, variant_tags: &HashMap<String, i32>) -> i32 {
+    variant_tags
+        .get(key)
+        .copied()
+        .unwrap_or_else(|| variant_tag(key))
+}
+
 fn clif_emit_expr(
     builder: &mut FunctionBuilder,
     ctx: &mut ClifLoweringCtx<'_>,
@@ -6845,7 +7059,10 @@ fn clif_emit_expr(
             ClifValue {
                 value: builder
                     .ins()
-                    .iconst(default_int_clif_type(), variant_tag(&key) as i64),
+                    .iconst(
+                        default_int_clif_type(),
+                        variant_tag_for_key(&key, ctx.variant_tags) as i64,
+                    ),
                 ty: default_int_clif_type(),
             }
         }
