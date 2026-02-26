@@ -28,6 +28,9 @@ python3 ./scripts/language_primitive_drift_gate.py >/dev/null
 echo "[gate] direct-memory architecture gate"
 python3 ./scripts/direct_memory_architecture_gate.py >/dev/null
 
+echo "[gate] direct-memory perf exit gate"
+python3 ./scripts/direct_memory_perf_gate.py >/dev/null
+
 echo "[gate] safety claim integrity gate"
 python3 ./scripts/safety_claim_integrity_gate.py >/dev/null
 

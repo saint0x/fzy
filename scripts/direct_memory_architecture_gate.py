@@ -62,6 +62,8 @@ def main() -> int:
         "data_ops_by_function: HashMap<String, Vec<NativeDataOp>>",
         "fn collect_native_data_ops_for_function(",
         "render_native_data_op(",
+        "fn collect_native_string_literals(",
+        "fn collect_folded_temp_string_literals(",
     ]
     for marker in required_canonical_plan_markers:
         if marker not in src:

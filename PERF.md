@@ -171,6 +171,11 @@ For each phase, run:
 - [ ] Host-backed run where feasible:
 - [ ] `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
 
+Production perf gate:
+- [ ] `scripts/direct_memory_perf_gate.py` is now wired into ship/production gates and enforces:
+- [ ] `bytes_kernel <= 1.40`, `resultx_classify <= 1.30`, `text_kernel <= 1.25`
+- [ ] near-parity kernels (`capability_parse`, `task_retry_backoff`, `arithmetic_kernel`, `duration_kernel`, `abi_pair_kernel`) <= `1.15`
+
 ---
 
 ## Implementation Notes To Revisit

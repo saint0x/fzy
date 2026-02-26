@@ -3600,7 +3600,7 @@ fn build_native_canonical_plan(
     }
     NativeCanonicalPlan {
         forced_main_return: compute_forced_main_return(fir, enforce_contract_checks),
-        string_literal_ids: build_string_literal_ids(&collect_string_literals(fir)),
+        string_literal_ids: build_string_literal_ids(&collect_native_string_literals(fir)),
         global_const_i32: build_global_const_i32_map(fir),
         mutable_static_i32: build_mutable_static_i32_map(fir),
         variant_tags,
@@ -4804,6 +4804,177 @@ fn collect_string_literals(fir: &fir::FirModule) -> Vec<String> {
     literals
 }
 
+fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
+    fn collect_from_body(
+        body: &[ast::Stmt],
+        const_strings: &mut HashMap<String, String>,
+        out: &mut HashSet<String>,
+    ) {
+        for stmt in body {
+            collect_from_stmt(stmt, const_strings, out);
+        }
+    }
+
+    fn collect_from_stmt(
+        stmt: &ast::Stmt,
+        const_strings: &mut HashMap<String, String>,
+        out: &mut HashSet<String>,
+    ) {
+        match stmt {
+            ast::Stmt::Let { name, value, .. } => {
+                collect_from_expr(value, const_strings, out);
+                if let Some(value) = eval_const_string_expr(value, const_strings) {
+                    const_strings.insert(name.clone(), value);
+                } else {
+                    const_strings.remove(name);
+                }
+            }
+            ast::Stmt::Assign { target, value } => {
+                collect_from_expr(value, const_strings, out);
+                if let Some(value) = eval_const_string_expr(value, const_strings) {
+                    const_strings.insert(target.clone(), value);
+                } else {
+                    const_strings.remove(target);
+                }
+            }
+            ast::Stmt::CompoundAssign { target, value, .. } => {
+                collect_from_expr(value, const_strings, out);
+                const_strings.remove(target);
+            }
+            ast::Stmt::LetPattern { value, .. }
+            | ast::Stmt::Defer(value)
+            | ast::Stmt::Requires(value)
+            | ast::Stmt::Ensures(value)
+            | ast::Stmt::Expr(value) => collect_from_expr(value, const_strings, out),
+            ast::Stmt::Return(value) => {
+                if let Some(value) = value {
+                    collect_from_expr(value, const_strings, out);
+                }
+            }
+            ast::Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                collect_from_expr(condition, const_strings, out);
+                collect_from_body(then_body, &mut const_strings.clone(), out);
+                collect_from_body(else_body, &mut const_strings.clone(), out);
+            }
+            ast::Stmt::While { condition, body } => {
+                collect_from_expr(condition, const_strings, out);
+                collect_from_body(body, &mut const_strings.clone(), out);
+            }
+            ast::Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    collect_from_stmt(init, &mut const_strings.clone(), out);
+                }
+                if let Some(condition) = condition {
+                    collect_from_expr(condition, const_strings, out);
+                }
+                if let Some(step) = step {
+                    collect_from_stmt(step, &mut const_strings.clone(), out);
+                }
+                collect_from_body(body, &mut const_strings.clone(), out);
+            }
+            ast::Stmt::ForIn { iterable, body, .. } => {
+                collect_from_expr(iterable, const_strings, out);
+                collect_from_body(body, &mut const_strings.clone(), out);
+            }
+            ast::Stmt::Loop { body } => collect_from_body(body, &mut const_strings.clone(), out),
+            ast::Stmt::Match { scrutinee, arms } => {
+                collect_from_expr(scrutinee, const_strings, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_from_expr(guard, const_strings, out);
+                    }
+                    collect_from_expr(&arm.value, const_strings, out);
+                }
+            }
+            ast::Stmt::Break | ast::Stmt::Continue => {}
+        }
+    }
+
+    fn collect_from_expr(
+        expr: &ast::Expr,
+        const_strings: &HashMap<String, String>,
+        out: &mut HashSet<String>,
+    ) {
+        if let Some(value) = eval_const_string_expr(expr, const_strings) {
+            out.insert(value);
+        }
+        match expr {
+            ast::Expr::Call { args, .. } => {
+                for arg in args {
+                    collect_from_expr(arg, const_strings, out);
+                }
+            }
+            ast::Expr::FieldAccess { base, .. } => collect_from_expr(base, const_strings, out),
+            ast::Expr::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    collect_from_expr(value, const_strings, out);
+                }
+            }
+            ast::Expr::EnumInit { payload, .. } | ast::Expr::ArrayLiteral(payload) => {
+                for value in payload {
+                    collect_from_expr(value, const_strings, out);
+                }
+            }
+            ast::Expr::Closure { body, .. }
+            | ast::Expr::Group(body)
+            | ast::Expr::Await(body) => collect_from_expr(body, const_strings, out),
+            ast::Expr::Unary { expr, .. } => collect_from_expr(expr, const_strings, out),
+            ast::Expr::TryCatch {
+                try_expr,
+                catch_expr,
+            } => {
+                collect_from_expr(try_expr, const_strings, out);
+                collect_from_expr(catch_expr, const_strings, out);
+            }
+            ast::Expr::Binary { left, right, .. } => {
+                collect_from_expr(left, const_strings, out);
+                collect_from_expr(right, const_strings, out);
+            }
+            ast::Expr::Range { start, end, .. } => {
+                collect_from_expr(start, const_strings, out);
+                collect_from_expr(end, const_strings, out);
+            }
+            ast::Expr::Index { base, index } => {
+                collect_from_expr(base, const_strings, out);
+                collect_from_expr(index, const_strings, out);
+            }
+            ast::Expr::Int(_)
+            | ast::Expr::Float { .. }
+            | ast::Expr::Char(_)
+            | ast::Expr::Bool(_)
+            | ast::Expr::Str(_)
+            | ast::Expr::Ident(_) => {}
+        }
+    }
+
+    let mut out = HashSet::<String>::new();
+    for function in &fir.typed_functions {
+        collect_from_body(&function.body, &mut HashMap::new(), &mut out);
+    }
+    let mut out = out.into_iter().collect::<Vec<_>>();
+    out.sort();
+    out
+}
+
+fn collect_native_string_literals(fir: &fir::FirModule) -> Vec<String> {
+    let mut merged = collect_string_literals(fir).into_iter().collect::<HashSet<_>>();
+    for folded in collect_folded_temp_string_literals(fir) {
+        merged.insert(folded);
+    }
+    let mut merged = merged.into_iter().collect::<Vec<_>>();
+    merged.sort();
+    merged
+}
+
 fn collect_string_literals_from_stmt(stmt: &ast::Stmt, literals: &mut HashSet<String>) {
     match stmt {
         ast::Stmt::Let { value, .. }
@@ -5201,6 +5372,31 @@ fn eval_const_string_call(
     const_strings: &HashMap<String, String>,
 ) -> Option<String> {
     match callee {
+        "str.concat2" if args.len() == 2 => {
+            let a = eval_const_string_expr(&args[0], const_strings)?;
+            let b = eval_const_string_expr(&args[1], const_strings)?;
+            Some(format!("{a}{b}"))
+        }
+        "str.concat3" if args.len() == 3 => {
+            let a = eval_const_string_expr(&args[0], const_strings)?;
+            let b = eval_const_string_expr(&args[1], const_strings)?;
+            let c = eval_const_string_expr(&args[2], const_strings)?;
+            Some(format!("{a}{b}{c}"))
+        }
+        "str.concat4" if args.len() == 4 => {
+            let a = eval_const_string_expr(&args[0], const_strings)?;
+            let b = eval_const_string_expr(&args[1], const_strings)?;
+            let c = eval_const_string_expr(&args[2], const_strings)?;
+            let d = eval_const_string_expr(&args[3], const_strings)?;
+            Some(format!("{a}{b}{c}{d}"))
+        }
+        "str.concat" if !args.is_empty() => {
+            let mut out = String::new();
+            for arg in args {
+                out.push_str(&eval_const_string_expr(arg, const_strings)?);
+            }
+            Some(out)
+        }
         "str.trim" if args.len() == 1 => {
             let value = eval_const_string_expr(&args[0], const_strings)?;
             Some(value.trim().to_string())
@@ -5862,7 +6058,7 @@ fn emit_native_libraries_llvm(
     let static_path = build_dir.join(format!("lib{}.a", fir.name));
     let shared_path = build_dir.join(format!("lib{}.{}", fir.name, shared_lib_extension()));
 
-    let string_literals = collect_string_literals(fir);
+    let string_literals = collect_native_string_literals(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let runtime_shim_path =
         ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
@@ -5965,7 +6161,7 @@ fn emit_native_libraries_cranelift(
     let static_path = build_dir.join(format!("lib{}.a", fir.name));
     let shared_path = build_dir.join(format!("lib{}.{}", fir.name, shared_lib_extension()));
 
-    let string_literals = collect_string_literals(fir);
+    let string_literals = collect_native_string_literals(fir);
     let plan = build_native_canonical_plan(fir, true);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
@@ -6380,7 +6576,7 @@ fn emit_native_artifact_llvm(
 
     let ll_path = build_dir.join(format!("{}.ll", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
-    let string_literals = collect_string_literals(fir);
+    let string_literals = collect_native_string_literals(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let runtime_shim_path =
         ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
@@ -6458,7 +6654,7 @@ fn emit_native_artifact_cranelift(
 
     let object_path = build_dir.join(format!("{}.o", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
-    let string_literals = collect_string_literals(fir);
+    let string_literals = collect_native_string_literals(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -16275,6 +16471,51 @@ mod tests {
         );
         assert_eq!(cranelift_exit, llvm_exit);
         assert_eq!(cranelift_exit, 9);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_direct_memory_folded_temp_string_literal_executes_consistently() {
+        let project_name = format!(
+            "fozzylang-direct-memory-folded-temp-str-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let base = \"  a  \"\n    let trimmed = str.trim(base)\n    let replaced = str.replace(trimmed, \"a\", \"xy\")\n    return str.len(replaced)\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 2);
 
         let _ = std::fs::remove_dir_all(root);
     }

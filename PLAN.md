@@ -480,11 +480,11 @@
 - [✅] Preserve deterministic behavior and diagnostics while changing machine-level control-flow shape.
 
 #### Direct-to-Memory String Temporaries (Phase 3)
-- [ ] Introduce non-interned temporary string representation for non-escaping loop-local values.
-- [ ] Intern only at semantic escape boundaries (persistent/global/ABI/capability boundaries).
-- [ ] Lower `trim`, `replace`, `contains`, `starts_with`, `ends_with`, `len` to direct memory/string-view operations where safe.
+- [✅] Introduce non-interned temporary string representation for non-escaping loop-local values.
+- [✅] Intern only at semantic escape boundaries (persistent/global/ABI/capability boundaries).
+- [✅] Lower `trim`, `replace`, `contains`, `starts_with`, `ends_with`, `len` to direct memory/string-view operations where safe.
 - [✅] Add cross-backend compile-time folding for pure constant `str.*` chains to bypass runtime calls when all inputs are compile-time strings.
-- [ ] Remove global lock + linear-scan intern overhead from hot local string pipelines.
+- [✅] Remove global lock + linear-scan intern overhead from hot local string pipelines.
 
 #### LLVM + Cranelift Backend Contract Unification
 - [✅] Define backend-agnostic lowering contract test suite for canonical native IR operations.
@@ -506,10 +506,10 @@
 
 #### Perf Exit Criteria
 - [✅] `bytes_kernel`: reduce from ~`4.995x` to <= `2.0x` in first pass, with follow-up target <= `1.4x`.
-- [✅] `resultx_classify`: reduce from ~`3.155x` to <= `1.8x` in first pass, with follow-up target <= `1.3x`.
+- [ ] `resultx_classify`: reduce from ~`3.155x` to <= `1.8x` in first pass, with follow-up target <= `1.3x`.
 - [ ] `text_kernel`: reduce from ~`1.667x` to <= `1.25x` after temporary-string direct-memory path lands.
-- [ ] Maintain parity/near-parity on existing strong kernels (no regressions beyond agreed noise band).
-- [ ] Make perf regressions release-blocking on these kernels once new pipeline is default.
+- [✅] Maintain parity/near-parity on existing strong kernels (no regressions beyond agreed noise band).
+- [✅] Make perf regressions release-blocking on these kernels once new pipeline is default.
 
 #### Deletion/Deprecation Checklist (No Compatibility Layer)
 - [✅] Delete data-plane call emission for runtime imports in both LLVM and Cranelift lowering paths.
