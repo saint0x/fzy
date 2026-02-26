@@ -212,6 +212,11 @@ pub enum Expr {
         variant: String,
         payload: Vec<Expr>,
     },
+    Closure {
+        params: Vec<Param>,
+        return_type: Option<Type>,
+        body: Box<Expr>,
+    },
     Group(Box<Expr>),
     Await(Box<Expr>),
     TryCatch {
@@ -539,6 +544,7 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
                 visitor.visit_expr(value);
             }
         }
+        Expr::Closure { body, .. } => visitor.visit_expr(body),
         Expr::TryCatch {
             try_expr,
             catch_expr,

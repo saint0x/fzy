@@ -2291,6 +2291,9 @@ fn collect_semantic_unsafe_entries_from_expr(
                 );
             }
         }
+        ast::Expr::Closure { body, .. } => {
+            collect_semantic_unsafe_entries_from_expr(body, module_path, function_name, entries);
+        }
         ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
             collect_semantic_unsafe_entries_from_expr(inner, module_path, function_name, entries);
         }
@@ -4024,6 +4027,7 @@ fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
             .map(|(_, value)| count_async_hooks_in_expr(value))
             .sum(),
         ast::Expr::EnumInit { payload, .. } => payload.iter().map(count_async_hooks_in_expr).sum(),
+        ast::Expr::Closure { body, .. } => count_async_hooks_in_expr(body),
         ast::Expr::Group(inner) => count_async_hooks_in_expr(inner),
         ast::Expr::Unary { expr, .. } => count_async_hooks_in_expr(expr),
         ast::Expr::TryCatch {
@@ -4211,6 +4215,7 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
             acc.1 += yields;
             acc
         }),
+        ast::Expr::Closure { body, .. } => analyze_workload_expr(body),
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -4599,6 +4604,7 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
                 collect_call_names_from_expr(value, out);
             }
         }
+        ast::Expr::Closure { body, .. } => collect_call_names_from_expr(body, out),
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,

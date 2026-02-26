@@ -583,6 +583,9 @@ fn collect_expr_semantics(
                 collect_expr_semantics(item, scope_id, scopes, decls, refs, positions);
             }
         }
+        ast::Expr::Closure { body, .. } => {
+            collect_expr_semantics(body, scope_id, scopes, decls, refs, positions);
+        }
         ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
             collect_expr_semantics(inner, scope_id, scopes, decls, refs, positions)
         }

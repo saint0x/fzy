@@ -1289,6 +1289,9 @@ impl Parser {
     }
 
     fn parse_prefix_expr(&mut self) -> Option<Expr> {
+        if self.at(&TokenKind::Pipe) {
+            return self.parse_lambda_expr();
+        }
         if self.consume(&TokenKind::KwTry) {
             let try_expr = self.parse_expr(0)?;
             if !self.consume(&TokenKind::KwCatch) {
@@ -1458,6 +1461,42 @@ impl Parser {
         }
 
         Some(expr)
+    }
+
+    fn parse_lambda_expr(&mut self) -> Option<Expr> {
+        if !self.consume(&TokenKind::Pipe) {
+            return None;
+        }
+        let mut params = Vec::new();
+        if !self.at(&TokenKind::Pipe) {
+            loop {
+                let name = self.expect_ident("expected lambda parameter name")?;
+                if !self.consume(&TokenKind::Colon) {
+                    self.push_diag_here("expected `:` in lambda parameter");
+                    return None;
+                }
+                let ty = self.parse_type()?;
+                params.push(ast::Param { name, ty });
+                if !self.consume(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        if !self.consume(&TokenKind::Pipe) {
+            self.push_diag_here("expected `|` to close lambda parameter list");
+            return None;
+        }
+        let return_type = if self.consume(&TokenKind::Arrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        let body = self.parse_expr(0)?;
+        Some(Expr::Closure {
+            params,
+            return_type,
+            body: Box::new(body),
+        })
     }
 
     fn parse_type(&mut self) -> Option<Type> {
@@ -3347,5 +3386,45 @@ mod tests {
         assert!(diags
             .iter()
             .any(|diag| diag.message.contains("or-patterns are not supported in `let` bindings")));
+    }
+
+    #[test]
+    fn parses_lambda_expression_with_typed_params() {
+        let source = r#"
+            fn main() -> i32 {
+                let add1 = |x: i32| x + 1;
+                return add1(4);
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        let ast::Stmt::Let { value, .. } = &main_fn.body[0] else {
+            panic!("expected first statement to be let binding");
+        };
+        let ast::Expr::Closure {
+            params,
+            return_type,
+            ..
+        } = value
+        else {
+            panic!("expected lambda expression");
+        };
+        assert_eq!(params.len(), 1);
+        assert!(return_type.is_none());
+        assert_eq!(params[0].name, "x");
+        assert_eq!(
+            params[0].ty,
+            ast::Type::Int {
+                signed: true,
+                bits: 32
+            }
+        );
     }
 }

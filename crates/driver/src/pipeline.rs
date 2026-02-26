@@ -1458,6 +1458,9 @@ fn qualify_expr(
                 qualify_expr(value, namespace, local_functions, module_aliases);
             }
         }
+        ast::Expr::Closure { body, .. } => {
+            qualify_expr(body, namespace, local_functions, module_aliases);
+        }
         ast::Expr::Group(inner) => {
             qualify_expr(inner, namespace, local_functions, module_aliases);
         }
@@ -1673,6 +1676,9 @@ fn canonicalize_expr_calls(
             for value in payload {
                 canonicalize_expr_calls(value, namespace, known_functions);
             }
+        }
+        ast::Expr::Closure { body, .. } => {
+            canonicalize_expr_calls(body, namespace, known_functions);
         }
         ast::Expr::Group(inner) => {
             canonicalize_expr_calls(inner, namespace, known_functions);
@@ -3284,6 +3290,7 @@ fn llvm_emit_expr(
         }
         ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
         ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
+        ast::Expr::Closure { .. } => "0".to_string(),
         ast::Expr::Unary { op, expr } => {
             let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
             match op {
@@ -3656,6 +3663,9 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
                 collect_string_literals_from_expr(value, literals);
             }
         }
+        ast::Expr::Closure { body, .. } => {
+            collect_string_literals_from_expr(body, literals);
+        }
         ast::Expr::Group(inner) => collect_string_literals_from_expr(inner, literals),
         ast::Expr::Await(inner) => collect_string_literals_from_expr(inner, literals),
         ast::Expr::Unary { expr, .. } => collect_string_literals_from_expr(expr, literals),
@@ -3853,6 +3863,9 @@ fn collect_used_runtime_imports_from_expr(
             for value in payload {
                 collect_used_runtime_imports_from_expr(value, seen, used);
             }
+        }
+        ast::Expr::Closure { body, .. } => {
+            collect_used_runtime_imports_from_expr(body, seen, used);
         }
         ast::Expr::Group(inner) => {
             collect_used_runtime_imports_from_expr(inner, seen, used);
@@ -5411,6 +5424,11 @@ fn clif_emit_expr(
         }
         ast::Expr::Group(inner) => clif_emit_expr(builder, ctx, inner, locals)?,
         ast::Expr::Await(inner) => clif_emit_expr(builder, ctx, inner, locals)?,
+        ast::Expr::Closure { .. } => {
+            return Err(anyhow!(
+                "native backend cannot lower closure/lambda expression yet"
+            ));
+        }
         ast::Expr::Unary { op, expr } => {
             let value = clif_emit_expr(builder, ctx, expr, locals)?;
             match op {
@@ -5829,6 +5847,19 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
+        if function_body_contains_closure_expr(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend does not support closure/lambda expressions in function `{}`",
+                    function.name
+                ),
+                Some(
+                    "replace lambda expressions with top-level function items for native builds until closure lowering is implemented"
+                        .to_string(),
+                ),
+            ));
+        }
     }
 
     let defined_functions = module
@@ -5869,6 +5900,93 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
 
 fn function_body_contains_let_pattern(body: &[ast::Stmt]) -> bool {
     body.iter().any(stmt_contains_let_pattern)
+}
+
+fn function_body_contains_closure_expr(body: &[ast::Stmt]) -> bool {
+    body.iter().any(stmt_contains_closure_expr)
+}
+
+fn stmt_contains_closure_expr(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Return(Some(value))
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => expr_contains_closure(value),
+        ast::Stmt::Return(None) | ast::Stmt::Break | ast::Stmt::Continue => false,
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_closure(condition)
+                || function_body_contains_closure_expr(then_body)
+                || function_body_contains_closure_expr(else_body)
+        }
+        ast::Stmt::While { condition, body } => {
+            expr_contains_closure(condition) || function_body_contains_closure_expr(body)
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().is_some_and(stmt_contains_closure_expr)
+                || condition.as_ref().is_some_and(expr_contains_closure)
+                || step.as_deref().is_some_and(stmt_contains_closure_expr)
+                || function_body_contains_closure_expr(body)
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            expr_contains_closure(iterable) || function_body_contains_closure_expr(body)
+        }
+        ast::Stmt::Loop { body } => function_body_contains_closure_expr(body),
+        ast::Stmt::Match { scrutinee, arms } => {
+            expr_contains_closure(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_contains_closure)
+                        || expr_contains_closure(&arm.value)
+                })
+        }
+    }
+}
+
+fn expr_contains_closure(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Closure { .. } => true,
+        ast::Expr::Call { args, .. } => args.iter().any(expr_contains_closure),
+        ast::Expr::FieldAccess { base, .. } => expr_contains_closure(base),
+        ast::Expr::StructInit { fields, .. } => {
+            fields.iter().any(|(_, value)| expr_contains_closure(value))
+        }
+        ast::Expr::EnumInit { payload, .. } => payload.iter().any(expr_contains_closure),
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) => expr_contains_closure(inner),
+        ast::Expr::Unary { expr, .. } => expr_contains_closure(expr),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => expr_contains_closure(try_expr) || expr_contains_closure(catch_expr),
+        ast::Expr::Binary { left, right, .. } => {
+            expr_contains_closure(left) || expr_contains_closure(right)
+        }
+        ast::Expr::Range { start, end, .. } => {
+            expr_contains_closure(start) || expr_contains_closure(end)
+        }
+        ast::Expr::ArrayLiteral(items) => items.iter().any(expr_contains_closure),
+        ast::Expr::Index { base, index } => {
+            expr_contains_closure(base) || expr_contains_closure(index)
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => false,
+    }
 }
 
 fn stmt_contains_let_pattern(stmt: &ast::Stmt) -> bool {
@@ -6144,6 +6262,9 @@ fn collect_unresolved_calls_from_expr(
             for value in payload {
                 collect_unresolved_calls_from_expr(value, defined_functions, unresolved);
             }
+        }
+        ast::Expr::Closure { body, .. } => {
+            collect_unresolved_calls_from_expr(body, defined_functions, unresolved);
         }
         ast::Expr::Group(inner) => {
             collect_unresolved_calls_from_expr(inner, defined_functions, unresolved);
@@ -12263,6 +12384,31 @@ mod tests {
             diag.message.contains(
                 "native backend does not support pattern destructuring in `let` statements",
             )
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_reports_unsupported_native_closure_lowering() {
+        let file_name = format!(
+            "fozzylang-native-closure-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    let add1 = |x: i32| x + 1;\n    return add1(3)\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("native backend does not support closure/lambda expressions")
         }));
 
         let _ = std::fs::remove_file(path);

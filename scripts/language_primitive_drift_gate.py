@@ -47,6 +47,15 @@ def main() -> int:
         and "let pattern = self.parse_pattern()?" in parser_src
         and "Stmt::LetPattern" in hir_src
     )
+    has_closure = (
+        "Expr::Closure" in ast_src
+        and "fn parse_lambda_expr(" in parser_src
+        and "Value::Closure" in hir_src
+    )
+    has_native_closure_reject = (
+        "native backend does not support closure/lambda expressions" in
+        read_text(ROOT / "crates" / "driver" / "src" / "pipeline.rs")
+    )
 
     expected_status = {
         "function_type_surface": "implemented"
@@ -80,9 +89,11 @@ def main() -> int:
         "static_mut_surface": "missing"
         if "`static mut` is not supported in v1" in parser_src
         else "implemented",
-        "closure_lambda_values": "implemented"
-        if "Expr::Closure" in ast_src and "parse_lambda" in parser_src
-        else "missing",
+        "closure_lambda_values": (
+            "partial"
+            if has_closure and has_native_closure_reject
+            else ("implemented" if has_closure else "missing")
+        ),
         "expanded_item_visibility_struct_enum_trait_impl": "implemented"
         if "pub is_pub: bool" in ast_src
         and "self.parse_struct(true)" in parser_src

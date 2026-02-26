@@ -89,9 +89,18 @@ enum Value {
         payload: Vec<Value>,
     },
     FnRef(String),
+    Closure(RuntimeClosure),
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone)]
+struct RuntimeClosure {
+    params: Vec<ast::Param>,
+    return_type: Option<Type>,
+    body: Expr,
+    captures: BTreeMap<String, Value>,
+}
+
+#[derive(Default, Clone)]
 struct SymbolScopes {
     stack: Vec<HashMap<String, SymbolBinding>>,
 }
@@ -653,6 +662,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 .iter()
                 .any(|(_, value)| expr_has_cap_intrinsic(value)),
             Expr::EnumInit { payload, .. } => payload.iter().any(expr_has_cap_intrinsic),
+            Expr::Closure { body, .. } => expr_has_cap_intrinsic(body),
             Expr::TryCatch {
                 try_expr,
                 catch_expr,
@@ -998,6 +1008,13 @@ fn analyze_expr_call_tokens(
                 );
             }
         }
+        Expr::Closure { body, .. } => analyze_expr_call_tokens(
+            function_name,
+            Some(body),
+            local_types,
+            requirement_map,
+            violations,
+        ),
         Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -1343,6 +1360,7 @@ fn expr_has_await(expr: &Expr) -> bool {
         Expr::FieldAccess { base, .. } => expr_has_await(base),
         Expr::StructInit { fields, .. } => fields.iter().any(|(_, value)| expr_has_await(value)),
         Expr::EnumInit { payload, .. } => payload.iter().any(expr_has_await),
+        Expr::Closure { body, .. } => expr_has_await(body),
         Expr::Group(inner) => expr_has_await(inner),
         Expr::TryCatch {
             try_expr,
@@ -1983,6 +2001,13 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
         Expr::EnumInit { payload, .. } => {
             payload.iter().any(|value| expr_uses_ident(value, target))
         }
+        Expr::Closure { params, body, .. } => {
+            if params.iter().any(|param| param.name == target) {
+                false
+            } else {
+                expr_uses_ident(body, target)
+            }
+        }
         Expr::Group(inner) | Expr::Await(inner) => expr_uses_ident(inner, target),
         Expr::TryCatch {
             try_expr,
@@ -2383,6 +2408,15 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
         Expr::EnumInit { payload, .. } => {
             for value in payload {
                 collect_expr_idents(value, out);
+            }
+        }
+        Expr::Closure { params, body, .. } => {
+            let mut nested = Vec::new();
+            collect_expr_idents(body, &mut nested);
+            for ident in nested {
+                if !params.iter().any(|param| param.name == ident) {
+                    out.push(ident);
+                }
             }
         }
         Expr::Group(inner) | Expr::Await(inner) => collect_expr_idents(inner, out),
@@ -2821,6 +2855,7 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             .iter()
             .find_map(|(_, value)| deferred_resource(value)),
         ast::Expr::EnumInit { payload, .. } => payload.iter().find_map(deferred_resource),
+        ast::Expr::Closure { body, .. } => deferred_resource(body),
         ast::Expr::Await(inner) => deferred_resource(inner),
         ast::Expr::ArrayLiteral(items) => items.iter().find_map(deferred_resource),
         ast::Expr::Index { base, index } => {
@@ -3417,6 +3452,40 @@ fn infer_expr_type(
                 format!("unresolved identifier `{name}`"),
             );
             None
+        }
+        Expr::Closure {
+            params,
+            return_type,
+            body,
+        } => {
+            let mut closure_scopes = scopes.clone();
+            closure_scopes.push();
+            for param in params {
+                closure_scopes.insert(param.name.clone(), param.ty.clone(), false);
+            }
+            let inferred_body = infer_expr_type(body, &closure_scopes, env, state);
+            let resolved_ret = match (return_type, inferred_body) {
+                (Some(expected), Some(actual)) => {
+                    if !type_compatible(expected, &actual) {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!(
+                                "closure return type mismatch: expected `{}`, got `{}`",
+                                expected, actual
+                            ),
+                        );
+                    }
+                    expected.clone()
+                }
+                (Some(expected), None) => expected.clone(),
+                (None, Some(actual)) => actual,
+                (None, None) => Type::Void,
+            };
+            Some(Type::Function {
+                params: params.iter().map(|param| param.ty.clone()).collect(),
+                ret: Box::new(resolved_ret),
+            })
         }
         Expr::Group(inner) => infer_expr_type(inner, scopes, env, state),
         Expr::Await(inner) => infer_expr_type(inner, scopes, env, state),
@@ -4831,7 +4900,11 @@ fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
         Value::Bool(v) => Some(v as i32),
         Value::Char(v) => Some(v as i32),
         Value::Str(_) => None,
-        Value::FnRef(_) | Value::List(_) | Value::Struct { .. } | Value::Enum { .. } => None,
+        Value::FnRef(_)
+        | Value::Closure(_)
+        | Value::List(_)
+        | Value::Struct { .. }
+        | Value::Enum { .. } => None,
     })
 }
 
@@ -5188,6 +5261,16 @@ fn eval_expr<'a>(
                 None
             }
         }),
+        Expr::Closure {
+            params,
+            return_type,
+            body,
+        } => Some(Value::Closure(RuntimeClosure {
+            params: params.clone(),
+            return_type: return_type.clone(),
+            body: body.as_ref().clone(),
+            captures: env.clone(),
+        })),
         Expr::Group(inner) => eval_expr(inner, env, functions),
         Expr::Await(inner) => eval_expr(inner, env, functions),
         Expr::Call { callee, args } => {
@@ -5199,6 +5282,25 @@ fn eval_expr<'a>(
                     _ => None,
                 },
             };
+            if let Some(Value::Closure(closure)) = env.get(callee_name) {
+                if closure.params.len() != args.len() {
+                    return None;
+                }
+                let mut local = closure.captures.clone();
+                for (arg, param) in args.iter().zip(&closure.params) {
+                    local.insert(param.name.clone(), eval_expr(arg, env, functions)?);
+                }
+                let value = eval_expr(&closure.body, &local, functions);
+                if value.is_none() {
+                    return runtime_default_value(
+                        closure
+                            .return_type
+                            .as_ref()
+                            .unwrap_or(&Type::Void),
+                    );
+                }
+                return value;
+            }
             let Some(resolved_name) = resolved_name else {
                 if let Some((_, ret_ty)) = runtime_call_signature(callee_name) {
                     for arg in args {
@@ -5390,7 +5492,7 @@ fn truthy(v: &Value) -> bool {
         Value::Char(v) => *v != '\0',
         Value::Str(v) => !v.is_empty(),
         Value::List(v) => !v.is_empty(),
-        Value::FnRef(_) | Value::Struct { .. } | Value::Enum { .. } => true,
+        Value::FnRef(_) | Value::Closure(_) | Value::Struct { .. } | Value::Enum { .. } => true,
     }
 }
 
@@ -5471,7 +5573,9 @@ fn eval_bool_expr(
         Value::Char(v) => Some(v != '\0'),
         Value::Str(v) => Some(!v.is_empty()),
         Value::List(v) => Some(!v.is_empty()),
-        Value::FnRef(_) | Value::Struct { .. } | Value::Enum { .. } => Some(true),
+        Value::FnRef(_) | Value::Closure(_) | Value::Struct { .. } | Value::Enum { .. } => {
+            Some(true)
+        }
     }
 }
 
@@ -6109,6 +6213,38 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
         assert_eq!(typed.entry_return_const_i32, Some(7));
+    }
+
+    #[test]
+    fn closure_values_capture_outer_bindings_and_typecheck() {
+        let source = r#"
+            fn main() -> i32 {
+                let base: i32 = 5;
+                let add = |x: i32| x + base;
+                return add(2);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert_eq!(typed.entry_return_const_i32, Some(7));
+    }
+
+    #[test]
+    fn closure_explicit_return_type_mismatch_is_reported() {
+        let source = r#"
+            fn main() -> i32 {
+                let f = |x: i32| -> bool x + 1;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("closure return type mismatch")));
     }
 
     #[test]

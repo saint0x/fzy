@@ -314,6 +314,8 @@
 ### Language Ergonomics + Completeness Closure (Adoption-Critical, No CI/Deps Scope)
 - [ ] Resolve language-surface drift between plan claims, language-reference docs, parser diagnostics, and actual shipped behavior so declared support is strictly truthful.
 - [ ] Ship closure/lambda values with capture semantics as first-class language constructs (syntax, AST/HIR/FIR, verifier, native backends, docs, examples, tests).
+- [✅] closure/lambda slice delivered: typed lambda syntax (`|x: T| expr`, optional `-> Ret`) now lowers through AST/HIR/FIR with lexical capture semantics in evaluator/type-checking and parser/HIR/driver tests.
+- [ ] closure/lambda native lowering parity remains open; native backends now fail fast with explicit lowerability diagnostics instead of late backend failures.
 - [✅] Ship full import ergonomics expected by systems users:
 - [✅] import aliases (`use path as alias`)
 - [✅] wildcard imports (`use path::*`) with deterministic resolution rules
