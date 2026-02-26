@@ -1,9 +1,9 @@
 const ITERATIONS: i32 = 8000000
 
 fn owner_score(owner: str) -> i32 {
-    if owner == "owned" { return 11 }
-    if owner == "borrowed" { return 7 }
-    if owner == "out" { return 13 }
+    if owner == "owned" then return 11
+    if owner == "borrowed" then return 7
+    if owner == "out" then return 13
     return 17
 }
 

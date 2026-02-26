@@ -8,11 +8,11 @@ test "det_flow" {}
 
 test "det_language_surface" {
     for n in 0..4 {
-        let _ = n;
+        discard n;
     }
     let mask: i32 = (~7) ^ 3;
     let selected: fn(i32) -> i32 = lang_id;
-    let _ = selected;
+    discard selected;
     let routed: i32 = mask % 5;
     let ok: bool = !(routed == 0);
     if ok {

@@ -34,6 +34,16 @@ fn weight(mode: Mode) -> i32 {
     }
 }
 
+async fn boost(v: i32) -> i32 {
+    checkpoint()
+    return v + 1
+}
+
+async fn run_once(cfg: Config) -> i32 {
+    let score = worker(cfg)
+    return await boost(score)
+}
+
 fn worker(cfg: Config) -> i32 {
     let mut attempt: i32 = 0
     let mut total: i32 = 0
@@ -44,7 +54,9 @@ fn worker(cfg: Config) -> i32 {
         let trimmed = str.trim(raw)
         let text = str.replace(trimmed, ",", "|")
 
-        if str.contains(text, parts[1]) == 1 { total += 2 }
+        if str.contains(text, parts[1]) == 1 {
+            total += 2
+        }
         total += weight(cfg.mode)
 
         attempt += 1
@@ -56,6 +68,8 @@ fn worker(cfg: Config) -> i32 {
 fn main() -> i32 {
     let cfg = Config { retries: 4, mode: Mode::Fast }
     let score = worker(cfg)
+    discard run_once
+    if score > 0 then return score
     return score
 }
 ```

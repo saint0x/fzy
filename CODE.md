@@ -72,12 +72,12 @@ fn main() -> i32 {
     let ok: bool = true
     let msg: str = "hello"
 
-    let _ = big
-    let _ = f
-    let _ = c
-    let _ = msg
+    discard big
+    discard f
+    discard c
+    discard msg
 
-    if ok { return i + j }
+    if ok then return i + j
     return 0
 }
 FZY
@@ -180,7 +180,7 @@ fn main() -> i32 {
     }
 
     // for-in inclusive range
-    for n in 4..=6 {
+    for n in range.closed(4, 6) {
         total += n
     }
 
@@ -220,14 +220,13 @@ fn code(v: i32) -> i32 {
 }
 
 fn classify(msg: Msg) -> i32 {
-    match msg {
+    return match msg {
         Msg::Ping => 1,
         Msg::Pong => 2,
-        Msg::Data => 3,
-        Msg::Err => return -9,
+        Msg::Data(v) => v,
+        Msg::Err(code) => 0 - code,
         _ => 0,
     }
-    return 7
 }
 
 fn main() -> i32 {
@@ -257,13 +256,17 @@ async fn worker(v: i32) -> i32 {
     return v + 100
 }
 
+async fn run_worker(v: i32) -> i32 {
+    return await worker(v)
+}
+
 fn id(v: i32) -> i32 { return v }
 
 fn main() -> i32 {
     let a = sum(4, 5)
     let b = apply(id, a)
-    let _ = c_add
-    let _ = worker
+    discard c_add
+    discard run_worker
     return b
 }
 FZY
@@ -344,7 +347,7 @@ impl Render for Point {
 fn main() -> i32 {
     let p = Point { x: 3, y: 8 }
     let f = Flag::On
-    let _ = f
+    discard f
     return Point.render(p.x + p.y)
 }
 FZY
@@ -434,14 +437,14 @@ async fn worker(v: i32) -> i32 {
     checkpoint()
     yield()
     pulse()
-    if recv() != 0 { return -1 }
+    if recv() != 0 then return -1
     return v + 100
 }
 
 fn main() -> i32 {
     let h = spawn(worker)
     let out = join(h)
-    let _ = out
+    discard out
     cancel()
     return 0
 }
@@ -459,10 +462,10 @@ fn job_b() -> i32 { return 0 }
 
 fn main() -> i32 {
     let g = task.group_begin()
-    let _ = task.group_spawn(g, job_a)
-    let _ = task.group_spawn(g, job_b)
-    let _ = task.group_join(g)
-    let _ = task.group_cancel(g)
+    discard task.group_spawn(g, job_a)
+    discard task.group_spawn(g, job_b)
+    discard task.group_join(g)
+    discard task.group_cancel(g)
     return 0
 }
 FZY
@@ -483,7 +486,7 @@ pub extern "C" fn add_safe(left: i32, right: i32) -> i32 {
 
 fn main() -> i32 {
     let local = add_safe(5, 6)
-    let _ = c_add
+    discard c_add
     return local
 }
 FZY
@@ -510,9 +513,9 @@ enum Kind {
 
 fn main() -> i32 {
     let h = Header { version: 1, flags: 0, payload_len: 8 }
-    let _ = h
+    discard h
     let k = Kind::A
-    let _ = k
+    discard k
     return 0
 }
 FZY
@@ -528,8 +531,8 @@ rpc Ping(req: i32) -> i32;
 rpc Put(key: i32, value: i32) -> i32;
 
 fn main() -> i32 {
-    let _ = Ping(1)
-    let _ = Put(2, 3)
+    discard Ping(1)
+    discard Put(2, 3)
     return 0
 }
 FZY
@@ -632,8 +635,8 @@ fn main() -> i32 {
         return 1
     }
     let conn = http.accept()
-    let _ = http.read(conn)
-    let _ = http.write(conn, 200, "ok")
+    discard http.read(conn)
+    discard http.write(conn, 200, "ok")
     return 0
 }
 FZY

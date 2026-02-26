@@ -43,7 +43,7 @@
       "patterns": [
         {
           "name": "keyword.control.fzy",
-          "match": "\\b(fn|async|test|nondet|let|if|else|while|match|return|defer|requires|ensures|mod|use|rpc|trait|impl|for|struct|enum|pub|extern)\\b"
+          "match": "\\b(fn|async|test|nondet|let|discard|if|then|else|while|match|return|defer|requires|ensures|mod|use|rpc|trait|impl|for|struct|enum|pub|extern)\\b"
         }
       ]
     },

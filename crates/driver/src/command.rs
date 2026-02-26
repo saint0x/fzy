@@ -6214,7 +6214,7 @@ fn generate_rpc_artifacts(path: &Path, out_dir: Option<&Path>) -> Result<RpcArti
     client.push_str("    }\n");
     for method in &methods {
         client.push_str(&format!(
-            "    async fn {}(req: {}) -> {} {{\n        let _ = apply_rpc_contract(5000)\n        let frame = rpc.transport_send(\"{}\", req)\n        if frame == 0 {{\n            cancel()\n        }}\n        let response = recv()\n        return response\n    }}\n",
+            "    async fn {}(req: {}) -> {} {{\n        discard apply_rpc_contract(5000)\n        let frame = rpc.transport_send(\"{}\", req)\n        if frame == 0 {{\n            cancel()\n        }}\n        let response = recv()\n        return response\n    }}\n",
             method.name.to_lowercase(),
             method.request,
             method.response,
@@ -6234,7 +6234,7 @@ fn generate_rpc_artifacts(path: &Path, out_dir: Option<&Path>) -> Result<RpcArti
     server.push_str("    }\n");
     for method in &methods {
         server.push_str(&format!(
-            "    async fn handle_{}(req: {}) -> {} {{\n        let _ = apply_rpc_handler_contract(5000)\n        let incoming = rpc.transport_recv(\"{}\")\n        if incoming == 0 {{\n            cancel()\n        }}\n        let _ = req\n        return incoming\n    }}\n",
+            "    async fn handle_{}(req: {}) -> {} {{\n        discard apply_rpc_handler_contract(5000)\n        let incoming = rpc.transport_recv(\"{}\")\n        if incoming == 0 {{\n            cancel()\n        }}\n        discard req\n        return incoming\n    }}\n",
             method.name.to_lowercase(),
             method.request,
             method.response,
@@ -8976,7 +8976,7 @@ mod tests {
         assert!(field.contains("has no field `missing`"));
 
         let variant = run_check_text(
-            "enum Status { Ok }\nfn main() -> i32 {\n    let _ = Status::Err\n    return 0\n}\n",
+            "enum Status { Ok }\nfn main() -> i32 {\n    discard Status::Err\n    return 0\n}\n",
             "variant-resolution",
         );
         assert!(variant.contains("has no variant `Err`"));

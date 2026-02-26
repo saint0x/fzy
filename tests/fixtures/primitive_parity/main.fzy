@@ -25,7 +25,7 @@ fn spin(limit: i32) -> i32 {
 }
 
 fn apply_id(cb: fn(i32) -> i32, v: i32) -> i32 {
-    let _ = cb
+    discard cb
     return v
 }
 

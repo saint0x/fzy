@@ -5742,7 +5742,7 @@ mod tests {
             fn id<T: Show>(v: T) -> T { return v; }
             fn main() -> i32 {
                 let v: i32 = 4;
-                let _ = id<i32>(v);
+                discard id<i32>(v);
                 return 0;
             }
         "#;
@@ -5875,8 +5875,8 @@ mod tests {
                 let msg = json.object2("role", json.str("user"), "content", user);
                 let messages = json.array1(msg);
                 let payload = json.object2("model", json.str("claude"), "messages", messages);
-                let _ = http.post_json_capture("https://example.com", payload);
-                let _ = http.last_status();
+                discard http.post_json_capture("https://example.com", payload);
+                discard http.last_status();
                 return 0;
             }
         "#;
@@ -5895,15 +5895,15 @@ mod tests {
                 list.push(l, "a");
                 let m = map.new();
                 map.set(m, "k", "v");
-                let _ = str.contains("abc", "a");
-                let _ = fs.exists("/tmp");
-                let _ = time.monotonic_ms();
-                let _ = process.poll(process.spawn("echo hi"));
+                discard str.contains("abc", "a");
+                discard fs.exists("/tmp");
+                discard time.monotonic_ms();
+                discard process.poll(process.spawn("echo hi"));
                 let c = http.accept();
-                let _ = http.header(c, "content-type");
-                let _ = route.match(c, "GET", "/sessions/:id/messages");
+                discard http.header(c, "content-type");
+                discard route.match(c, "GET", "/sessions/:id/messages");
                 let fields = log.fields2("component", "test", "phase", "boot");
-                let _ = log.info("x", fields);
+                discard log.info("x", fields);
                 return 0;
             }
         "#;
@@ -5920,12 +5920,12 @@ mod tests {
                 let c = http.accept();
                 let body = http.body_json(c);
                 let bound = http.body_bind(c);
-                let _ = map.get(bound, "message");
-                let _ = json.has(body, "message");
+                discard map.get(bound, "message");
+                discard json.has(body, "message");
                 let msg = json.get_str(body, "message");
                 let nested = json.path(body, "meta.user.id");
-                let _ = json.get(nested, "raw");
-                let _ = json.parse("{\"ok\":true}");
+                discard json.get(nested, "raw");
+                discard json.parse("{\"ok\":true}");
                 if str.len(msg) > 0 {
                     http.write(c, 200, msg);
                 }
@@ -6118,7 +6118,7 @@ mod tests {
         let source = r#"
             fn main() -> i32 {
                 timeout(25);
-                let _ = deadline(100);
+                discard deadline(100);
                 return 0;
             }
         "#;
@@ -6236,7 +6236,7 @@ mod tests {
         let source = r#"
             fn main() -> i32 {
                 let v = atomic.load(1, "Release");
-                let _ = v;
+                discard v;
                 atomic.fence("Relaxed");
                 return 0;
             }
@@ -6261,7 +6261,7 @@ mod tests {
             }
             async fn worker(v: &'a i32) -> i32 {
                 await recv();
-                let _ = project<i32>(v);
+                discard project<i32>(v);
                 return 0;
             }
         "#;
@@ -6300,7 +6300,7 @@ mod tests {
             fn main() -> i32 {
                 let sum: i32 = 0;
                 for i in 0..5 {
-                    let _ = i;
+                    discard i;
                 }
                 return sum;
             }

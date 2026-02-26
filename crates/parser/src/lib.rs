@@ -44,10 +44,12 @@ enum TokenKind {
     KwDefer,
     KwMatch,
     KwIf,
+    KwThen,
     KwElse,
     KwWhile,
     KwTry,
     KwCatch,
+    KwDiscard,
     KwTrue,
     KwFalse,
     LParen,
@@ -900,6 +902,10 @@ impl Parser {
                 self.push_diag_here("or-patterns are not supported in `let` bindings");
                 return None;
             }
+            if matches!(pattern, Pattern::Wildcard) {
+                self.push_diag_here("`let _ = ...` is removed; use `discard <expr>`");
+                return None;
+            }
             let ty = if self.consume(&TokenKind::Colon) {
                 self.parse_type()
             } else {
@@ -929,12 +935,12 @@ impl Parser {
 
         if self.consume(&TokenKind::KwIf) {
             let condition = self.parse_expr(0)?;
-            let then_body = self.parse_block()?;
+            let then_body = self.parse_if_branch_body()?;
             let else_body = if self.consume(&TokenKind::KwElse) {
                 if self.at(&TokenKind::KwIf) {
                     vec![self.parse_stmt()?]
                 } else {
-                    self.parse_block()?
+                    self.parse_if_branch_body()?
                 }
             } else {
                 Vec::new()
@@ -997,6 +1003,12 @@ impl Parser {
             let expr = self.parse_expr(0)?;
             let _ = self.consume(&TokenKind::Semi);
             return Some(Stmt::Defer(expr));
+        }
+
+        if self.consume(&TokenKind::KwDiscard) {
+            let expr = self.parse_expr(0)?;
+            let _ = self.consume(&TokenKind::Semi);
+            return Some(Stmt::Expr(expr));
         }
 
         if self.consume(&TokenKind::KwMatch) {
@@ -1083,6 +1095,34 @@ impl Parser {
         Some(body)
     }
 
+    fn parse_if_branch_body(&mut self) -> Option<Vec<Stmt>> {
+        if self.consume(&TokenKind::KwThen) {
+            return self.parse_then_control_stmt().map(|stmt| vec![stmt]);
+        }
+        self.parse_block()
+    }
+
+    fn parse_then_control_stmt(&mut self) -> Option<Stmt> {
+        if self.consume(&TokenKind::KwReturn) {
+            let expr = match self.peek_kind() {
+                TokenKind::Semi
+                | TokenKind::KwElse
+                | TokenKind::RBrace
+                | TokenKind::Eof => None,
+                _ => Some(self.parse_expr(0)?),
+            };
+            return Some(Stmt::Return(expr));
+        }
+        if self.consume(&TokenKind::KwBreak) {
+            return Some(Stmt::Break);
+        }
+        if self.consume(&TokenKind::KwContinue) {
+            return Some(Stmt::Continue);
+        }
+        self.push_diag_here("`if ... then ...` requires `return`, `break`, or `continue`");
+        None
+    }
+
     fn parse_for_stmt(&mut self) -> Option<Stmt> {
         if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_)))
             && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::KwIn)
@@ -1133,6 +1173,10 @@ impl Parser {
             let pattern = self.parse_pattern()?;
             if matches!(pattern, Pattern::Or(_)) {
                 self.push_diag_here("or-patterns are not supported in `let` bindings");
+                return None;
+            }
+            if matches!(pattern, Pattern::Wildcard) {
+                self.push_diag_here("`let _ = ...` is removed; use `discard <expr>`");
                 return None;
             }
             let ty = if self.consume(&TokenKind::Colon) {
@@ -1300,13 +1344,8 @@ impl Parser {
                     continue;
                 }
                 if self.consume(&TokenKind::DotDotEq) {
-                    let right = self.parse_expr(1)?;
-                    left = Expr::Range {
-                        start: Box::new(left),
-                        end: Box::new(right),
-                        inclusive: true,
-                    };
-                    continue;
+                    self.push_diag_here("`..=` is removed; use `range.closed(start, end)`");
+                    return None;
                 }
             }
             let Some((op, prec)) = self.current_binary_op() else {
@@ -1489,6 +1528,16 @@ impl Parser {
                 if callee == "unsafe" {
                     let contract = self.parse_unsafe_contract_args(&args)?;
                     expr = Expr::UnsafeContract(contract);
+                } else if callee == "range.closed" {
+                    if args.len() != 2 {
+                        self.push_diag_here("`range.closed` requires exactly 2 arguments");
+                        return None;
+                    }
+                    expr = Expr::Range {
+                        start: Box::new(args[0].clone()),
+                        end: Box::new(args[1].clone()),
+                        inclusive: true,
+                    };
                 } else {
                     expr = Expr::Call { callee, args };
                 }
@@ -2078,10 +2127,12 @@ impl Parser {
             TokenKind::KwDefer => Some("defer".to_string()),
             TokenKind::KwMatch => Some("match".to_string()),
             TokenKind::KwIf => Some("if".to_string()),
+            TokenKind::KwThen => Some("then".to_string()),
             TokenKind::KwElse => Some("else".to_string()),
             TokenKind::KwWhile => Some("while".to_string()),
             TokenKind::KwTry => Some("try".to_string()),
             TokenKind::KwCatch => Some("catch".to_string()),
+            TokenKind::KwDiscard => Some("discard".to_string()),
             TokenKind::KwTrue => Some("true".to_string()),
             TokenKind::KwFalse => Some("false".to_string()),
             _ => {
@@ -2158,6 +2209,7 @@ impl Parser {
             TokenKind::KwBreak,
             TokenKind::KwContinue,
             TokenKind::KwReturn,
+            TokenKind::KwDiscard,
             TokenKind::KwMatch,
             TokenKind::Eof,
         ]);
@@ -2759,10 +2811,12 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "defer" => TokenKind::KwDefer,
         "match" => TokenKind::KwMatch,
         "if" => TokenKind::KwIf,
+        "then" => TokenKind::KwThen,
         "else" => TokenKind::KwElse,
         "while" => TokenKind::KwWhile,
         "try" => TokenKind::KwTry,
         "catch" => TokenKind::KwCatch,
+        "discard" => TokenKind::KwDiscard,
         "true" => TokenKind::KwTrue,
         "false" => TokenKind::KwFalse,
         _ => TokenKind::Ident(ident.to_string()),
@@ -2825,7 +2879,7 @@ mod tests {
                 let p = Point { x: 7, y: 3 };
                 let px = p.x;
                 let m = Maybe::Some(px);
-                let _ = id<Point>(p);
+                discard id<Point>(p);
                 match m {
                     Maybe::Some(v) => v,
                     _ => 0,
@@ -3121,8 +3175,8 @@ mod tests {
                 let small: isize = 7;
                 let wide: i128 = 170141183460469231731687303715884105727;
                 let ptr: usize = 42;
-                let _ = small;
-                let _ = wide;
+                discard small;
+                discard wide;
                 return ptr;
             }
         "#;
@@ -3208,8 +3262,8 @@ mod tests {
                     if i == 3 { continue; }
                     if i == 8 { break; }
                 }
-                for n in 0..=3 {
-                    let _ = n;
+                for n in range.closed(0, 3) {
+                    discard n;
                 }
                 loop { break; }
                 return total;
@@ -3239,6 +3293,59 @@ mod tests {
     }
 
     #[test]
+    fn parses_if_then_control_statement() {
+        let source = r#"
+            fn main() -> i32 {
+                if true then return 7
+                return 0;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, ast::Stmt::If { .. })));
+    }
+
+    #[test]
+    fn rejects_inclusive_range_operator() {
+        let source = r#"
+            fn main() -> i32 {
+                for i in 0..=3 {
+                    discard i;
+                }
+                return 0;
+            }
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("`..=` is removed; use `range.closed(start, end)`")));
+    }
+
+    #[test]
+    fn rejects_let_wildcard_statement() {
+        let source = r#"
+            fn main() -> i32 {
+                let _ = 1;
+                return 0;
+            }
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.message.contains("`let _ = ...` is removed; use `discard <expr>`")));
+    }
+
+    #[test]
     fn parses_operator_completeness_and_unit_return() {
         let source = r#"
             fn main() -> void {
@@ -3253,9 +3360,9 @@ mod tests {
                 flags <<= 1;
                 flags >>= 1;
                 flags %= 3;
-                let _ = ok;
-                let _ = mix;
-                let _ = value;
+                discard ok;
+                discard mix;
+                discard value;
                 return;
             }
         "#;
@@ -3329,9 +3436,9 @@ mod tests {
                 let ch: char = '\n';
                 let arr = [1, 2, 3];
                 let v = arr[1];
-                let _ = pi;
-                let _ = ratio;
-                let _ = ch;
+                discard pi;
+                discard ratio;
+                discard ch;
                 return v;
             }
         "#;
@@ -3407,7 +3514,7 @@ mod tests {
         let source = r#"
             test "smoke" {
                 let values = [1, 2];
-                let _ = values[0];
+                discard values[0];
             }
         "#;
         let module = parse(source, "tests").expect("parse should succeed");

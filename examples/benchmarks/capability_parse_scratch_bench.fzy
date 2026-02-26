@@ -1,13 +1,13 @@
 const ITERATIONS: i32 = 8000000
 
 fn parse_capability(name: str) -> i32 {
-    if name == "time" { return 3 }
-    if name == "rng" { return 5 }
-    if name == "fs" { return 7 }
-    if name == "http" { return 11 }
-    if name == "proc" { return 13 }
-    if name == "mem" { return 17 }
-    if name == "thread" { return 19 }
+    if name == "time" then return 3
+    if name == "rng" then return 5
+    if name == "fs" then return 7
+    if name == "http" then return 11
+    if name == "proc" then return 13
+    if name == "mem" then return 17
+    if name == "thread" then return 19
     return 23
 }
 

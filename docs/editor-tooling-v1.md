@@ -4,7 +4,7 @@ This document defines the production editor contract for `.fzy` sources.
 
 ## Language Token Classes (Frozen)
 
-- Keywords: `fn`, `async`, `test`, `nondet`, `let`, `if`, `else`, `while`, `match`, `return`, `defer`, `requires`, `ensures`, `mod`, `use`, `rpc`, `trait`, `impl`, `for`, `struct`, `enum`, `pub`, `extern`
+- Keywords: `fn`, `async`, `test`, `nondet`, `let`, `discard`, `if`, `then`, `else`, `while`, `match`, `return`, `defer`, `requires`, `ensures`, `mod`, `use`, `rpc`, `trait`, `impl`, `for`, `struct`, `enum`, `pub`, `extern`
 - Types: `void`, `bool`, `str`, `char`, integer widths (`i8..i128`, `u8..u128`), float widths (`f32`, `f64`)
 - Functions: declaration names in `fn` and `rpc` headers
 - Struct/Enum symbols: declaration names in `struct`/`enum`

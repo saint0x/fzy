@@ -8,9 +8,17 @@ This document defines the v1 observable semantics contract used by the toolchain
 - `let` initializers evaluate before binding assignment.
 - `let` bindings are immutable by default.
 - `let mut <name> = ...` is required for reassignment (`=`, `+=`, `-=`, `*=`, `/=`, `%=` and bitwise compound assignments).
+- `discard <expr>` explicitly evaluates and ignores an expression result.
+- `let _ = ...` is removed.
 - Function call arguments evaluate left-to-right.
 - `defer` registers cleanup in lexical order and executes in reverse registration order at scope exit.
 - `match` evaluates the scrutinee first, then evaluates only the selected arm expression.
+
+## Ranges And Branch Shortcuts
+
+- Exclusive ranges remain `start..end`.
+- Inclusive `..=` is removed; use `range.closed(start, end)`.
+- One-line control-flow branches use `if <cond> then return|break|continue`.
 
 ## Declarations
 
