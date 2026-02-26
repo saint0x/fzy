@@ -1,4 +1,4 @@
-use ast::{BinaryOp, Expr, MatchArm, Module, Pattern, Stmt, Type, UnaryOp, UnsafeMeta};
+use ast::{BinaryOp, Expr, MatchArm, Module, Pattern, Stmt, Type, UnaryOp};
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
 
 #[derive(Debug, Clone)]
@@ -832,20 +832,12 @@ impl Parser {
         } else {
             self.consume(&TokenKind::KwUnsafe)
         };
-        let unsafe_meta = if is_unsafe && self.at(&TokenKind::LParen) {
-            let _ = self.consume(&TokenKind::LParen);
-            let mut args = Vec::new();
-            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
-                args.push(self.parse_expr(0)?);
-                if !self.consume(&TokenKind::Comma) {
-                    break;
-                }
-            }
-            let _ = self.consume(&TokenKind::RParen);
-            Some(self.parse_unsafe_meta_args(&args)?)
-        } else {
-            None
-        };
+        if is_unsafe && self.at(&TokenKind::LParen) {
+            self.push_diag_here(
+                "inline unsafe metadata is removed; use `unsafe fn ...` and compiler-generated unsafe contracts/docs",
+            );
+            return None;
+        }
         if is_pub && is_extern && !is_pubext {
             self.push_diag_here("use `pubext c fn` for exported C symbols");
             return None;
@@ -928,7 +920,7 @@ impl Parser {
             return_type,
             body,
             is_unsafe,
-            unsafe_meta,
+            unsafe_meta: None,
             is_async,
             is_pub,
             is_pubext,
@@ -1427,20 +1419,12 @@ impl Parser {
             return Some(Expr::Await(Box::new(awaited)));
         }
         if self.consume(&TokenKind::KwUnsafe) {
-            let meta = if self.at(&TokenKind::LParen) {
-                let _ = self.consume(&TokenKind::LParen);
-                let mut args = Vec::new();
-                while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
-                    args.push(self.parse_expr(0)?);
-                    if !self.consume(&TokenKind::Comma) {
-                        break;
-                    }
-                }
-                let _ = self.consume(&TokenKind::RParen);
-                Some(self.parse_unsafe_meta_args(&args)?)
-            } else {
-                None
-            };
+            if self.at(&TokenKind::LParen) {
+                self.push_diag_here(
+                    "inline unsafe metadata is removed; use `unsafe { ... }` and compiler-generated unsafe contracts/docs",
+                );
+                return None;
+            }
             if !self.consume(&TokenKind::LBrace) {
                 self.push_diag_here("expected `{` after `unsafe`");
                 return None;
@@ -1453,7 +1437,7 @@ impl Parser {
                 }
             }
             let _ = self.consume(&TokenKind::RBrace);
-            return Some(Expr::UnsafeBlock { body, meta });
+            return Some(Expr::UnsafeBlock { body, meta: None });
         }
         if self.consume(&TokenKind::Bang) {
             let expr = self.parse_prefix_expr()?;
@@ -1591,7 +1575,7 @@ impl Parser {
                 };
                 if callee == "unsafe_reason" {
                     self.push_diag_here(
-                        "`unsafe_reason(...)` is removed; use `unsafe { ... }` (optionally `unsafe(\"reason:...\", \"invariant:...\", \"owner:...\", \"scope:...\", \"risk_class:...\", \"proof_ref:...\") { ... }`)",
+                        "`unsafe_reason(...)` is removed; use `unsafe { ... }` and compiler-generated unsafe contracts/docs",
                     );
                     return None;
                 }
@@ -1667,138 +1651,6 @@ impl Parser {
             return_type,
             body: Box::new(body),
         })
-    }
-
-    fn parse_unsafe_meta_args(&mut self, args: &[Expr]) -> Option<UnsafeMeta> {
-        if args.len() != 6 {
-            self.push_diag_here(
-                "unsafe contract requires exactly 6 string args: reason,invariant,owner,scope,risk_class,proof_ref",
-            );
-            return None;
-        }
-
-        let reason = self.parse_unsafe_contract_field(&args[0], "reason")?;
-        let invariant = self.parse_unsafe_contract_field(&args[1], "invariant")?;
-        let owner = self.parse_unsafe_contract_field(&args[2], "owner")?;
-        let scope = self.parse_unsafe_contract_field(&args[3], "scope")?;
-        let risk_class = self.parse_unsafe_contract_field(&args[4], "risk_class")?;
-        let proof_ref = self.parse_unsafe_contract_field(&args[5], "proof_ref")?;
-        if !Self::unsafe_invariant_supported(&invariant) {
-            self.push_diag_here(
-                "unsafe contract `invariant` must use supported predicate DSL (e.g. `owner_live(x) && ptr_nonnull(p) && ptr_len_ge(p,8)`)",
-            );
-            return None;
-        }
-        if !Self::unsafe_risk_class_supported(&risk_class) {
-            self.push_diag_here(
-                "unsafe contract `risk_class` must be one of: memory, ffi, process, io, concurrency, crypto, other",
-            );
-            return None;
-        }
-        if !Self::unsafe_proof_ref_supported(&proof_ref) {
-            self.push_diag_here(
-                "unsafe contract `proof_ref` must use one of: trace:// test:// rfc:// gate:// run:// ci://",
-            );
-            return None;
-        }
-
-        Some(UnsafeMeta {
-            reason,
-            invariant,
-            owner,
-            scope,
-            risk_class,
-            proof_ref,
-        })
-    }
-
-    fn parse_unsafe_contract_field(&mut self, expr: &Expr, field: &str) -> Option<String> {
-        let Expr::Str(value) = expr else {
-            self.push_diag_here(&format!(
-                "unsafe contract field `{field}` must be a string in `{field}:...` form"
-            ));
-            return None;
-        };
-        let Some((label, raw)) = value.split_once(':') else {
-            self.push_diag_here(&format!(
-                "unsafe contract field must include `{field}:...` label"
-            ));
-            return None;
-        };
-        if label.trim() != field {
-            self.push_diag_here(&format!(
-                "unsafe contract arg expected `{field}:...` but got `{label}:...`"
-            ));
-            return None;
-        }
-        let normalized = raw.trim();
-        if normalized.is_empty() {
-            self.push_diag_here(&format!("unsafe contract `{field}` must not be empty"));
-            return None;
-        }
-        Some(normalized.to_string())
-    }
-
-    fn unsafe_invariant_supported(value: &str) -> bool {
-        let allowed = [
-            "owner_live",
-            "ptr_nonnull",
-            "ptr_aligned",
-            "ptr_len_ge",
-            "no_alias",
-            "range_within",
-        ];
-        let clauses = value
-            .split("&&")
-            .map(str::trim)
-            .filter(|c| !c.is_empty())
-            .collect::<Vec<_>>();
-        if clauses.is_empty() {
-            return false;
-        }
-        clauses.iter().all(|clause| {
-            let Some(open) = clause.find('(') else {
-                return false;
-            };
-            let Some(close) = clause.rfind(')') else {
-                return false;
-            };
-            if close <= open + 1 || close + 1 != clause.len() {
-                return false;
-            }
-            let predicate = clause[..open].trim();
-            if !allowed.contains(&predicate) {
-                return false;
-            }
-            clause[open + 1..close]
-                .split(',')
-                .map(str::trim)
-                .all(Self::unsafe_invariant_arg_supported)
-        })
-    }
-
-    fn unsafe_invariant_arg_supported(value: &str) -> bool {
-        if value.is_empty() {
-            return false;
-        }
-        value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
-    }
-
-    fn unsafe_risk_class_supported(value: &str) -> bool {
-        matches!(
-            value,
-            "memory" | "ffi" | "process" | "io" | "concurrency" | "crypto" | "other"
-        )
-    }
-
-    fn unsafe_proof_ref_supported(value: &str) -> bool {
-        [
-            "trace://", "test://", "rfc://", "gate://", "run://", "ci://",
-        ]
-        .iter()
-        .any(|scheme| value.starts_with(scheme))
     }
 
     fn parse_type(&mut self) -> Option<Type> {
@@ -3267,7 +3119,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsafe_metadata_with_unsupported_invariant() {
+    fn rejects_inline_unsafe_metadata_on_block() {
         let source = r#"
             fn main() -> i32 {
                 let p = alloc(8);
@@ -3277,34 +3129,30 @@ mod tests {
                 return 0;
             }
         "#;
-        let diagnostics = parse(source, "unsafe").expect_err("unsupported invariant should fail");
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("supported predicate DSL")));
+        let diagnostics = parse(source, "unsafe").expect_err("inline metadata should fail");
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("inline unsafe metadata is removed")));
     }
 
     #[test]
-    fn rejects_unsafe_metadata_with_invalid_risk_class() {
+    fn rejects_inline_unsafe_metadata_on_function() {
         let source = r#"
-            fn main() -> i32 {
-                let p = alloc(8);
-                unsafe("reason:x", "invariant:owner_live(p) && ptr_nonnull(p)", "owner:p", "scope:main", "risk_class:network", "proof_ref:trace://x") {
-                    free(p);
-                }
+            unsafe("reason:x", "invariant:owner_live(p) && ptr_nonnull(p)", "owner:p", "scope:main", "risk_class:memory", "proof_ref:trace://x") fn write(p: *u8) -> i32 {
                 return 0;
             }
         "#;
-        let diagnostics = parse(source, "unsafe").expect_err("invalid risk class should fail");
-        assert!(diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.message.contains("risk_class")));
+        let diagnostics = parse(source, "unsafe").expect_err("inline metadata should fail");
+        assert!(diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("inline unsafe metadata is removed")));
     }
 
     #[test]
     fn parses_unsafe_function_and_ext_unsafe_import() {
         let source = r#"
             ext unsafe c fn c_write(ptr: *u8) -> i32;
-            unsafe("reason:local write", "invariant:owner_live(ptr) && ptr_nonnull(ptr)", "owner:ptr", "scope:write", "risk_class:memory", "proof_ref:test://parser-unsafe-fn") fn write(ptr: *u8) -> i32 {
+            unsafe fn write(ptr: *u8) -> i32 {
                 unsafe {
                     return c_write(ptr);
                 }
@@ -3331,7 +3179,7 @@ mod tests {
             })
             .expect("write function should exist");
         assert!(write.is_unsafe);
-        assert!(write.unsafe_meta.is_some());
+        assert!(write.unsafe_meta.is_none());
         assert!(write
             .body
             .iter()

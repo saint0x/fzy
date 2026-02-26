@@ -5,3 +5,9 @@ version = "0.1.0"
 [[target.bin]]
 name = "minimal_runtime"
 path = "src/main.fzy"
+
+[unsafe]
+contracts = "compiler"
+enforce_dev = false
+enforce_verify = true
+enforce_release = true

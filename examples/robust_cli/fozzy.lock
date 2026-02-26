@@ -1,9 +1,9 @@
 {
-  "dependencyGraphHash": "0a659d2a160ec672db772b6156a83ab32e23f084d12fc9b7914ca4afb375e4af",
+  "dependencyGraphHash": "317cb03de394e0eafce25d1e57f4335aca2ad3614605cbbfbf00556d955b4467",
   "graph": {
     "deps": [],
     "package": {
-      "manifestHash": "75baef61e221ef45477f8b2ff2420005f97cdcb7dd33beb825a4ee1aa5138418",
+      "manifestHash": "e5142ee9807f6ca65e29a7ed62a4f92cf71c3b6beb49254e8aaebd3ae94d2172",
       "name": "robust_cli",
       "version": "0.1.0"
     }

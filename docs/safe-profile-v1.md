@@ -33,14 +33,14 @@
 - First-class unsafe surface:
   - `unsafe fn ...`
   - `unsafe { ... }`
-  - optional metadata on unsafe blocks:
-    - `unsafe("reason:...", "invariant:...", "owner:...", "scope:...", "risk_class:...", "proof_ref:...") { ... }`
+  - compiler-generated unsafe contracts/docs with fields:
+    - `reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`
 - `unsafe_reason(...)` and executable `unsafe(...)` form are removed.
 - `fz audit unsafe --workspace` emits:
   - `.fz/unsafe-map.workspace.json`
   - `.fz/unsafe-docs.workspace.json`
   - `.fz/unsafe-docs.workspace.md`
   - `.fz/unsafe-docs.workspace.html`
-- Default policy is non-blocking metadata; strict blocking mode is `FZ_UNSAFE_STRICT=1`.
+- Default policy is profile-driven generated-contract enforcement (`[unsafe]` in `fozzy.toml`).
 
 See [unsafe-contract-authoring-v1.md](unsafe-contract-authoring-v1.md) for the full authoring guide (Fzy + Rust boundary code).

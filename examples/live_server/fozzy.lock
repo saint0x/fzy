@@ -1,9 +1,9 @@
 {
-  "dependencyGraphHash": "3d7207bfe1baaab87bc3145d94a2a19ec7c27769dfedda132e6803790c64822a",
+  "dependencyGraphHash": "240986bd007c39b401769f287451bf06d899567661fc6f0518a66abd06beb336",
   "graph": {
     "deps": [],
     "package": {
-      "manifestHash": "4709e1d4cae1831e41e5edca73602bededaa68b7d82ca074912df22a52ed443d",
+      "manifestHash": "1b36e7390f755612a21eeec9b3f563423cee7ca89bd0fd582d1b8ddaaffdbe26",
       "name": "live_server",
       "version": "0.1.0"
     }

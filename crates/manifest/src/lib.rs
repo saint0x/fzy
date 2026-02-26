@@ -21,6 +21,8 @@ pub struct Manifest {
     pub profiles: Profiles,
     #[serde(default)]
     pub ffi: Ffi,
+    #[serde(default, rename = "unsafe")]
+    pub unsafe_policy: UnsafePolicy,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -87,6 +89,25 @@ pub struct Ffi {
     pub panic_boundary: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnsafePolicy {
+    pub contracts: Option<String>,
+    pub enforce_dev: Option<bool>,
+    pub enforce_verify: Option<bool>,
+    pub enforce_release: Option<bool>,
+}
+
+impl Default for UnsafePolicy {
+    fn default() -> Self {
+        Self {
+            contracts: Some("compiler".to_string()),
+            enforce_dev: Some(false),
+            enforce_verify: Some(true),
+            enforce_release: Some(true),
+        }
+    }
+}
+
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
         if self.package.name.trim().is_empty() {
@@ -143,6 +164,11 @@ impl Manifest {
         if let Some(mode) = self.ffi.panic_boundary.as_deref() {
             if mode != "abort" && mode != "error" {
                 return Err("ffi.panic_boundary must be `abort` or `error`".to_string());
+            }
+        }
+        if let Some(mode) = self.unsafe_policy.contracts.as_deref() {
+            if mode != "compiler" {
+                return Err("unsafe.contracts must be `compiler`".to_string());
             }
         }
         Ok(())

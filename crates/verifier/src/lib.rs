@@ -139,13 +139,12 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 "detected {} explicit unsafe escape marker(s)",
                 module.unsafe_sites
             ),
-            Some(
-                if policy.safe_profile {
-                    "unsafe escapes are forbidden in safe profile".to_string()
-                } else {
-                    "unsafe escapes must be isolated and audited with explicit metadata".to_string()
-                },
-            ),
+            Some(if policy.safe_profile {
+                "unsafe escapes are forbidden in safe profile".to_string()
+            } else {
+                "unsafe escapes must be isolated and audited with compiler-generated contracts"
+                    .to_string()
+            }),
         ));
         if missing_reasons > 0 {
             report.diagnostics.push(Diagnostic::new(
@@ -163,10 +162,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                         "safe profile rejects unsafe escapes regardless of metadata completeness"
                             .to_string()
                     } else if policy.strict_unsafe_contracts {
-                        "strict unsafe contracts are enabled; all unsafe sites require complete contract metadata"
+                        "strict unsafe contracts are enabled; all unsafe sites require complete generated contracts"
                             .to_string()
                     } else {
-                        "metadata is recommended by default and enforced in strict unsafe-audit mode"
+                        "compiler-generated contracts are recommended by default and enforced in strict unsafe-audit mode"
                             .to_string()
                     },
                 ),
@@ -1196,10 +1195,9 @@ mod tests {
                 ..VerifyPolicy::default()
             },
         );
-        assert!(report
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("detected 1 explicit unsafe escape marker(s)")));
+        assert!(report.diagnostics.iter().any(|d| d
+            .message
+            .contains("detected 1 explicit unsafe escape marker(s)")));
         assert!(report.is_clean());
     }
 

@@ -1,7 +1,8 @@
 fn lang_id(v: i32) -> i32 {
     return v;
 }
-unsafe("reason:exercise unsafe fn surface", "invariant:owner_live(v)", "owner:v", "scope:lang_unsafe_id", "risk_class:other", "proof_ref:test://examples-robust-cli-unsafe-fn") fn lang_unsafe_id(v: i32) -> i32 {
+// Compiler generates unsafe contract metadata (reason/invariant/owner/scope/risk_class/proof_ref) for this site.
+unsafe fn lang_unsafe_id(v: i32) -> i32 {
     return v;
 }
 test "det_cli_boot" {
@@ -47,7 +48,8 @@ test "det_language_surface" {
     discard lang_unsafe_id;
     let routed: i32 = mask% 5;
     let ok: bool = !(routed == 0);
-    unsafe("reason:exercise unsafe call path", "invariant:owner_live(routed)", "owner:routed", "scope:det_language_surface", "risk_class:other", "proof_ref:test://examples-robust-cli-unsafe-block") {
+    // Compiler generates unsafe contract metadata (reason/invariant/owner/scope/risk_class/proof_ref) for this site.
+    unsafe {
         discard lang_unsafe_id(routed);
     }
     if ok {

@@ -63,11 +63,10 @@
 - Unsafe surface:
   - `unsafe fn ...`
   - `unsafe { ... }`
-  - optional metadata on unsafe blocks:
-    - `unsafe("reason:...", "invariant:...", "owner:...", "scope:...", "risk_class:...", "proof_ref:...") { ... }`
+  - compiler-generated unsafe contracts/docs:
+    - `reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`
 - Calls to unsafe functions/imports must be inside unsafe context.
-- Metadata is non-blocking by default.
-- Strict mode (`FZ_UNSAFE_STRICT=1`) blocks missing/invalid metadata and unsafe-context violations.
+- Contract enforcement is profile-driven through `[unsafe]` policy in `fozzy.toml`.
 
 ## Production Gates
 

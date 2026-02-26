@@ -1,9 +1,9 @@
 {
-  "dependencyGraphHash": "f68956af85621c67a7c0759e4911edcfaf1f8903d052592c9db0083d795547d4",
+  "dependencyGraphHash": "56607a9667b1d3a03ff3190fea8e0e461555198569ba143d5a27cd1850aa270b",
   "graph": {
     "deps": [],
     "package": {
-      "manifestHash": "42ee89c118b1eef69212484f2204f65cff5b08e3413b2ed3cc38bb5cb96c45b4",
+      "manifestHash": "84921c4188b75546157e5b982053567160d043f48069e594c6161b607ad14849",
       "name": "fullstack",
       "version": "0.1.0"
     }

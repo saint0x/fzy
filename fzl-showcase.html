@@ -141,22 +141,10 @@ fn next_counter() -> i32 {
 // #[ffi_panic(abort)] pubext c fn ...
 
 ext unsafe c fn c_add(left: i32, right: i32) -> i32;
-unsafe(
-    "reason:ffi wrapper contract",
-    "invariant:owner_live(left)",
-    "owner:left",
-    "scope:c_add_unsafe",
-    "risk_class:ffi",
-    "proof_ref:test://showcase-unsafe-fn"
-) fn c_add_unsafe(left: i32, right: i32) -> i32 {
-    unsafe(
-        "reason:call ffi import",
-        "invariant:owner_live(left)",
-        "owner:left",
-        "scope:c_add_unsafe",
-        "risk_class:ffi",
-        "proof_ref:test://showcase-unsafe-import"
-    ) {
+// Compiler-generated unsafe contracts/docs include reason/invariant/owner/scope/risk_class/proof_ref.
+unsafe fn c_add_unsafe(left: i32, right: i32) -> i32 {
+    // Compiler-generated unsafe contracts/docs include reason/invariant/owner/scope/risk_class/proof_ref.
+    unsafe {
         return c_add(left, right);
     }
     return 0;
@@ -354,14 +342,8 @@ fn host_and_io_showcase() -> i32 {
     let proc_id = proc.spawn("echo", ["fzl", "showcase"]);
     let _exit = proc.wait(proc_id);
 
-    unsafe(
-        "reason:ffi bridge call in host path",
-        "invariant:owner_live(listener)",
-        "owner:listener",
-        "scope:host_and_io_showcase",
-        "risk_class:ffi",
-        "proof_ref:test://showcase-host-ffi-bridge"
-    ) {
+    // Compiler-generated unsafe contracts/docs include reason/invariant/owner/scope/risk_class/proof_ref.
+    unsafe {
         discard c_add_unsafe(listener, 7);
     }
 

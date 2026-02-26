@@ -820,12 +820,13 @@ pub fn compile_file_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let typed = hir::lower(&parsed.module);
     let fir = fir::build_owned(typed);
+    let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
             production_memory_safety: true,
-            strict_unsafe_contracts: !matches!(profile, BuildProfile::Dev),
+            strict_unsafe_contracts,
         },
     );
 
@@ -880,12 +881,13 @@ pub fn compile_library_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let typed = hir::lower(&parsed.module);
     let fir = fir::build_owned(typed);
+    let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
             production_memory_safety: true,
-            strict_unsafe_contracts: !matches!(profile, BuildProfile::Dev),
+            strict_unsafe_contracts,
         },
     );
 
@@ -9734,7 +9736,12 @@ fn collect_unresolved_calls_from_expr(
         }
         ast::Expr::UnsafeBlock { body, .. } => {
             for stmt in body {
-                collect_unresolved_calls_from_stmt(stmt, defined_functions, local_callables, unresolved);
+                collect_unresolved_calls_from_stmt(
+                    stmt,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Expr::FieldAccess { base, .. } => {
@@ -15201,6 +15208,18 @@ fn profile_config(
         BuildProfile::Release => manifest.profiles.release.as_ref(),
         BuildProfile::Verify => manifest.profiles.verify.as_ref(),
     }
+}
+
+fn unsafe_contracts_enforced(manifest: Option<&manifest::Manifest>, profile: BuildProfile) -> bool {
+    if let Some(manifest) = manifest {
+        let unsafe_policy = &manifest.unsafe_policy;
+        return match profile {
+            BuildProfile::Dev => unsafe_policy.enforce_dev.unwrap_or(false),
+            BuildProfile::Verify => unsafe_policy.enforce_verify.unwrap_or(true),
+            BuildProfile::Release => unsafe_policy.enforce_release.unwrap_or(true),
+        };
+    }
+    !matches!(profile, BuildProfile::Dev)
 }
 
 #[cfg(test)]

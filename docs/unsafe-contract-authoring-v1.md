@@ -6,7 +6,8 @@ Unsafe is first-class:
 
 ```fzy
 unsafe fn copy_into(ptr: *u8, len: usize) -> i32 {
-    unsafe("reason:ffi boundary write", "invariant:owner_live(ptr) && ptr_nonnull(ptr) && ptr_len_ge(ptr,len)", "owner:ptr", "scope:copy_into", "risk_class:ffi", "proof_ref:trace://copy-into-2026-02-26") {
+    // Compiler generates reason/invariant/owner/scope/risk_class/proof_ref for this unsafe site.
+    unsafe {
         return 0
     }
 }
@@ -15,7 +16,7 @@ unsafe fn copy_into(ptr: *u8, len: usize) -> i32 {
 Use:
 - `unsafe fn` for unsafe function boundaries.
 - `unsafe { ... }` for local unsafe islands.
-- Optional metadata on unsafe blocks:
+- Compiler-generated contract fields in unsafe docs:
   - `reason`
   - `invariant`
   - `owner`
@@ -52,11 +53,11 @@ fn write(ptr: *u8, len: usize) -> i32 {
 - `.fz/unsafe-docs.workspace.html`
 
 Default policy:
-- Metadata is non-blocking.
+- Generated contracts are enforced by profile policy from `fozzy.toml`.
 
 Strict CI/release mode:
-- `FZ_UNSAFE_STRICT=1`
-- Fails on missing/invalid metadata.
+- `enforce_verify = true` / `enforce_release = true` in `[unsafe]`
+- Fails on missing/invalid generated contracts.
 - Fails on unsafe-context violations (unsafe calls outside unsafe context).
 
 ## Rust Unsafe Boundary Rules

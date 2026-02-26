@@ -8,3 +8,9 @@ path = "src/main.fzy"
 
 [ffi]
 panic_boundary = "error"
+
+[unsafe]
+contracts = "compiler"
+enforce_dev = false
+enforce_verify = true
+enforce_release = true
