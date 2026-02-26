@@ -6730,6 +6730,19 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
+        if function_body_contains_unsupported_partial_native_expression_usage(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend detected parser-recognized expressions without full lowering parity in function `{}`",
+                    function.name
+                ),
+                Some(
+                    "native builds require explicit rewrites for residual partial forms (range outside `for-in`, array/index expressions, non-identifier field access chains, and unsupported struct literal placement)"
+                        .to_string(),
+                ),
+            ));
+        }
     }
 
     let defined_functions = module
@@ -7242,6 +7255,173 @@ fn stmt_contains_try_catch_usage(stmt: &ast::Stmt) -> bool {
                 })
         }
         ast::Stmt::Break | ast::Stmt::Continue => false,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NativeExprContext {
+    Default,
+    ForInIterable,
+    LetInitializer,
+    LetPatternInitializer,
+    MatchScrutinee,
+}
+
+fn function_body_contains_unsupported_partial_native_expression_usage(body: &[ast::Stmt]) -> bool {
+    body.iter()
+        .any(stmt_contains_unsupported_partial_native_expression_usage)
+}
+
+fn stmt_contains_unsupported_partial_native_expression_usage(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Let { value, .. } => expr_contains_unsupported_partial_native_expression(
+            value,
+            NativeExprContext::LetInitializer,
+        ),
+        ast::Stmt::LetPattern { value, .. } => expr_contains_unsupported_partial_native_expression(
+            value,
+            NativeExprContext::LetPatternInitializer,
+        ),
+        ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Defer(value) => {
+            expr_contains_unsupported_partial_native_expression(value, NativeExprContext::Default)
+        }
+        ast::Stmt::Return(value) => value.as_ref().is_some_and(|value| {
+            expr_contains_unsupported_partial_native_expression(value, NativeExprContext::Default)
+        }),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_unsupported_partial_native_expression(
+                condition,
+                NativeExprContext::Default,
+            ) || function_body_contains_unsupported_partial_native_expression_usage(then_body)
+                || function_body_contains_unsupported_partial_native_expression_usage(else_body)
+        }
+        ast::Stmt::While { condition, body } => {
+            expr_contains_unsupported_partial_native_expression(
+                condition,
+                NativeExprContext::Default,
+            ) || function_body_contains_unsupported_partial_native_expression_usage(body)
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(stmt_contains_unsupported_partial_native_expression_usage)
+                || condition.as_ref().is_some_and(|condition| {
+                    expr_contains_unsupported_partial_native_expression(
+                        condition,
+                        NativeExprContext::Default,
+                    )
+                })
+                || step
+                    .as_deref()
+                    .is_some_and(stmt_contains_unsupported_partial_native_expression_usage)
+                || function_body_contains_unsupported_partial_native_expression_usage(body)
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            expr_contains_unsupported_partial_native_expression(
+                iterable,
+                NativeExprContext::ForInIterable,
+            ) || function_body_contains_unsupported_partial_native_expression_usage(body)
+        }
+        ast::Stmt::Loop { body } => {
+            function_body_contains_unsupported_partial_native_expression_usage(body)
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            expr_contains_unsupported_partial_native_expression(
+                scrutinee,
+                NativeExprContext::MatchScrutinee,
+            ) || arms.iter().any(|arm| {
+                arm.guard.as_ref().is_some_and(|guard| {
+                    expr_contains_unsupported_partial_native_expression(
+                        guard,
+                        NativeExprContext::Default,
+                    )
+                }) || expr_contains_unsupported_partial_native_expression(
+                    &arm.value,
+                    NativeExprContext::Default,
+                )
+            })
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => false,
+    }
+}
+
+fn expr_contains_unsupported_partial_native_expression(
+    expr: &ast::Expr,
+    context: NativeExprContext,
+) -> bool {
+    match expr {
+        ast::Expr::TryCatch { .. } => false,
+        ast::Expr::Range { start, end, .. } => {
+            if context != NativeExprContext::ForInIterable {
+                return true;
+            }
+            expr_contains_unsupported_partial_native_expression(start, NativeExprContext::Default)
+                || expr_contains_unsupported_partial_native_expression(
+                    end,
+                    NativeExprContext::Default,
+                )
+        }
+        ast::Expr::ArrayLiteral(_) | ast::Expr::Index { .. } => true,
+        ast::Expr::StructInit { fields, .. } => {
+            if !matches!(
+                context,
+                NativeExprContext::LetInitializer
+                    | NativeExprContext::LetPatternInitializer
+                    | NativeExprContext::MatchScrutinee
+            ) {
+                return true;
+            }
+            fields.iter().any(|(_, value)| {
+                expr_contains_unsupported_partial_native_expression(
+                    value,
+                    NativeExprContext::Default,
+                )
+            })
+        }
+        ast::Expr::FieldAccess { base, .. } => {
+            if !matches!(base.as_ref(), ast::Expr::Ident(_)) && expr_task_ref_name(expr).is_none() {
+                return true;
+            }
+            expr_contains_unsupported_partial_native_expression(base, NativeExprContext::Default)
+        }
+        ast::Expr::Call { args, .. } => args.iter().any(|arg| {
+            expr_contains_unsupported_partial_native_expression(arg, NativeExprContext::Default)
+        }),
+        ast::Expr::Unary { expr, .. }
+        | ast::Expr::Group(expr)
+        | ast::Expr::Await(expr)
+        | ast::Expr::Closure { body: expr, .. } => {
+            expr_contains_unsupported_partial_native_expression(expr, NativeExprContext::Default)
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            expr_contains_unsupported_partial_native_expression(left, NativeExprContext::Default)
+                || expr_contains_unsupported_partial_native_expression(
+                    right,
+                    NativeExprContext::Default,
+                )
+        }
+        ast::Expr::EnumInit { payload, .. } => payload.iter().any(|value| {
+            expr_contains_unsupported_partial_native_expression(value, NativeExprContext::Default)
+        }),
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => false,
     }
 }
 
@@ -14194,6 +14374,56 @@ mod tests {
         assert!(output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("native backend does not support `try/catch` expressions")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_native_range_expression_outside_for_in() {
+        let file_name = format!(
+            "fozzylang-native-range-expr-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    let r = 1..4;\n    return 0\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("detected parser-recognized expressions without full lowering parity")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_native_array_index_expression_shapes() {
+        let file_name = format!(
+            "fozzylang-native-array-index-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    let values = [3, 5, 8];\n    return values[1]\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("detected parser-recognized expressions without full lowering parity")
         }));
 
         let _ = std::fs::remove_file(path);
