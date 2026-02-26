@@ -89,9 +89,9 @@ def main() -> int:
         in pipeline_src
     )
     has_native_array_index_lowering = (
-        'native_runtime_import_for_callee("__native.array_new")' in pipeline_src
-        and 'native_runtime_import_for_callee("__native.array_push")' in pipeline_src
-        and 'native_runtime_import_for_callee("__native.array_get")' in pipeline_src
+        "array_slots: HashMap<String, Vec<String>>" in pipeline_src
+        and "array_bindings: HashMap<String, Vec<LocalBinding>>" in pipeline_src
+        and "__native.array_get" not in pipeline_src
     )
     has_native_array_index_partial_reject = "array/index expressions" in pipeline_src
     has_cross_backend_native_completeness_parity = (

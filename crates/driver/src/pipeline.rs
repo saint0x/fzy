@@ -445,21 +445,6 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "__native.array_new",
-        symbol: "fz_native_array_new",
-        arity: 0,
-    },
-    NativeRuntimeImport {
-        callee: "__native.array_push",
-        symbol: "fz_native_array_push",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "__native.array_get",
-        symbol: "fz_native_array_get",
-        arity: 2,
-    },
-    NativeRuntimeImport {
         callee: "list.new",
         symbol: "fz_native_list_new",
         arity: 0,
@@ -3335,6 +3320,7 @@ struct LlvmFuncCtx {
     next_value: usize,
     next_label: usize,
     slots: HashMap<String, String>,
+    array_slots: HashMap<String, Vec<String>>,
     closures: HashMap<String, LlvmClosureBinding>,
     globals: HashMap<String, i32>,
     mutable_globals: HashMap<String, String>,
@@ -3347,6 +3333,7 @@ impl LlvmFuncCtx {
             next_value: 0,
             next_label: 0,
             slots: HashMap::new(),
+            array_slots: HashMap::new(),
             closures: HashMap::new(),
             globals,
             mutable_globals,
@@ -3658,6 +3645,25 @@ fn llvm_emit_linear_stmts(
     for stmt in body {
         match stmt {
             ast::Stmt::Let { name, value, .. } => {
+                if let ast::Expr::ArrayLiteral(items) = value {
+                    let mut element_slots = Vec::with_capacity(items.len());
+                    for (idx, item) in items.iter().enumerate() {
+                        let item_value = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
+                        let slot = format!("%slot_{}_arr_{}_{}", name, idx, ctx.next_value);
+                        ctx.code.push_str(&format!(
+                            "  {slot} = alloca i32\n  store i32 {item_value}, ptr {slot}\n"
+                        ));
+                        element_slots.push(slot);
+                    }
+                    ctx.array_slots.insert(name.clone(), element_slots);
+                    continue;
+                }
+                if let ast::Expr::Ident(source) = value {
+                    if let Some(source_slots) = ctx.array_slots.get(source).cloned() {
+                        ctx.array_slots.insert(name.clone(), source_slots);
+                        continue;
+                    }
+                }
                 if let ast::Expr::Closure {
                     params,
                     return_type,
@@ -3693,11 +3699,31 @@ fn llvm_emit_linear_stmts(
                         ctx.slots.insert(format!("{name}.{field}"), field_slot);
                     }
                 }
+                ctx.array_slots.remove(name);
             }
             ast::Stmt::LetPattern { pattern, value, .. } => {
                 llvm_emit_let_pattern(pattern, value, ctx, string_literal_ids, task_ref_ids)?;
             }
             ast::Stmt::Assign { target, value } => {
+                if let ast::Expr::ArrayLiteral(items) = value {
+                    let mut element_slots = Vec::with_capacity(items.len());
+                    for (idx, item) in items.iter().enumerate() {
+                        let item_value = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
+                        let slot = format!("%slot_{}_arr_{}_{}", target, idx, ctx.next_value);
+                        ctx.code.push_str(&format!(
+                            "  {slot} = alloca i32\n  store i32 {item_value}, ptr {slot}\n"
+                        ));
+                        element_slots.push(slot);
+                    }
+                    ctx.array_slots.insert(target.clone(), element_slots);
+                    continue;
+                }
+                if let ast::Expr::Ident(source) = value {
+                    if let Some(source_slots) = ctx.array_slots.get(source).cloned() {
+                        ctx.array_slots.insert(target.clone(), source_slots);
+                        continue;
+                    }
+                }
                 let value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
                 if let Some(symbol) = ctx.mutable_globals.get(target).cloned() {
                     ctx.code
@@ -3714,6 +3740,7 @@ fn llvm_emit_linear_stmts(
                 }
                 ctx.code
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+                ctx.array_slots.remove(target);
             }
             ast::Stmt::CompoundAssign { target, op, value } => {
                 let combined_expr = ast::Expr::Binary {
@@ -3737,6 +3764,7 @@ fn llvm_emit_linear_stmts(
                 }
                 ctx.code
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+                ctx.array_slots.remove(target);
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -3892,41 +3920,36 @@ fn llvm_emit_expr(
             llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids)
         }
         ast::Expr::ArrayLiteral(items) => {
-            let new_symbol = native_mangle_symbol(
-                native_runtime_import_for_callee("__native.array_new")
-                    .expect("__native.array_new native runtime import should exist")
-                    .symbol,
-            );
-            let handle = ctx.value();
-            ctx.code
-                .push_str(&format!("  {handle} = call i32 @{new_symbol}()\n"));
-            let push_symbol = native_mangle_symbol(
-                native_runtime_import_for_callee("__native.array_push")
-                    .expect("__native.array_push native runtime import should exist")
-                    .symbol,
-            );
+            // Array literals are materialized by statement lowering into element slots.
+            // Expression-position array literals are unsupported in direct-memory mode.
             for item in items {
-                let item_value = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
-                let push_result = ctx.value();
-                ctx.code.push_str(&format!(
-                    "  {push_result} = call i32 @{push_symbol}(i32 {handle}, i32 {item_value})\n"
-                ));
+                let _ = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
             }
-            handle
+            "0".to_string()
         }
         ast::Expr::Index { base, index } => {
-            let base_value = llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids);
             let index_value = llvm_emit_expr(index, ctx, string_literal_ids, task_ref_ids);
-            let get_symbol = native_mangle_symbol(
-                native_runtime_import_for_callee("__native.array_get")
-                    .expect("__native.array_get native runtime import should exist")
-                    .symbol,
-            );
-            let out = ctx.value();
-            ctx.code.push_str(&format!(
-                "  {out} = call i32 @{get_symbol}(i32 {base_value}, i32 {index_value})\n"
-            ));
-            out
+            if let ast::Expr::Ident(name) = base.as_ref() {
+                if let Some(elements) = ctx.array_slots.get(name).cloned() {
+                    if elements.is_empty() {
+                        return "0".to_string();
+                    }
+                    let mut selected = "0".to_string();
+                    for (idx, slot) in elements.iter().enumerate().rev() {
+                        let loaded = ctx.value();
+                        let cmp = ctx.value();
+                        let out = ctx.value();
+                        ctx.code
+                            .push_str(&format!("  {loaded} = load i32, ptr {slot}\n"));
+                        ctx.code.push_str(&format!(
+                            "  {cmp} = icmp eq i32 {index_value}, {idx}\n  {out} = select i1 {cmp}, i32 {loaded}, i32 {selected}\n"
+                        ));
+                        selected = out;
+                    }
+                    return selected;
+                }
+            }
+            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
         }
         ast::Expr::Call { callee, args } => {
             if let Some(binding) = ctx.closures.get(callee).cloned() {
@@ -4481,26 +4504,11 @@ fn collect_used_runtime_imports_from_expr(
             collect_used_runtime_imports_from_expr(end, seen, used);
         }
         ast::Expr::ArrayLiteral(items) => {
-            if let Some(import) = native_runtime_import_for_callee("__native.array_new") {
-                if seen.insert(import.symbol) {
-                    used.push(import);
-                }
-            }
-            if let Some(import) = native_runtime_import_for_callee("__native.array_push") {
-                if seen.insert(import.symbol) {
-                    used.push(import);
-                }
-            }
             for item in items {
                 collect_used_runtime_imports_from_expr(item, seen, used);
             }
         }
         ast::Expr::Index { base, index } => {
-            if let Some(import) = native_runtime_import_for_callee("__native.array_get") {
-                if seen.insert(import.symbol) {
-                    used.push(import);
-                }
-            }
             collect_used_runtime_imports_from_expr(base, seen, used);
             collect_used_runtime_imports_from_expr(index, seen, used);
         }
@@ -5149,6 +5157,7 @@ fn emit_native_libraries_cranelift(
                 globals: &global_const_i32,
                 mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
+                array_bindings: HashMap::new(),
             };
             clif_emit_cfg(
                 &mut builder,
@@ -5654,6 +5663,7 @@ fn emit_native_artifact_cranelift(
                 globals: &global_const_i32,
                 mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
+                array_bindings: HashMap::new(),
             };
             clif_emit_cfg(
                 &mut builder,
@@ -5737,6 +5747,7 @@ struct ClifLoweringCtx<'a> {
     globals: &'a HashMap<String, i32>,
     mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
     closures: HashMap<String, ClifClosureBinding>,
+    array_bindings: HashMap<String, Vec<LocalBinding>>,
 }
 
 fn clif_emit_cfg(
@@ -6099,6 +6110,29 @@ fn clif_emit_linear_stmts(
             ast::Stmt::Let {
                 name, value, ty, ..
             } => {
+                if let ast::Expr::ArrayLiteral(items) = value {
+                    let mut bindings = Vec::with_capacity(items.len());
+                    for item in items {
+                        let mut item_val = clif_emit_expr(builder, ctx, item, locals, next_var)?;
+                        item_val = cast_clif_value(builder, item_val, default_int_clif_type())?;
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, default_int_clif_type());
+                        builder.def_var(var, item_val.value);
+                        bindings.push(LocalBinding {
+                            var,
+                            ty: default_int_clif_type(),
+                        });
+                    }
+                    ctx.array_bindings.insert(name.clone(), bindings);
+                    continue;
+                }
+                if let ast::Expr::Ident(source) = value {
+                    if let Some(source_bindings) = ctx.array_bindings.get(source).cloned() {
+                        ctx.array_bindings.insert(name.clone(), source_bindings);
+                        continue;
+                    }
+                }
                 if let ast::Expr::Closure {
                     params,
                     return_type,
@@ -6150,11 +6184,35 @@ fn clif_emit_linear_stmts(
                         );
                     }
                 }
+                ctx.array_bindings.remove(name);
             }
             ast::Stmt::LetPattern { pattern, value, .. } => {
                 clif_emit_let_pattern(builder, ctx, pattern, value, locals, next_var)?;
             }
             ast::Stmt::Assign { target, value } => {
+                if let ast::Expr::ArrayLiteral(items) = value {
+                    let mut bindings = Vec::with_capacity(items.len());
+                    for item in items {
+                        let mut item_val = clif_emit_expr(builder, ctx, item, locals, next_var)?;
+                        item_val = cast_clif_value(builder, item_val, default_int_clif_type())?;
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, default_int_clif_type());
+                        builder.def_var(var, item_val.value);
+                        bindings.push(LocalBinding {
+                            var,
+                            ty: default_int_clif_type(),
+                        });
+                    }
+                    ctx.array_bindings.insert(target.clone(), bindings);
+                    continue;
+                }
+                if let ast::Expr::Ident(source) = value {
+                    if let Some(source_bindings) = ctx.array_bindings.get(source).cloned() {
+                        ctx.array_bindings.insert(target.clone(), source_bindings);
+                        continue;
+                    }
+                }
                 let val = clif_emit_expr(builder, ctx, value, locals, next_var)?;
                 if let Some(data_id) = ctx.mutable_globals.get(target).copied() {
                     let val = cast_clif_value(builder, val, types::I32)?;
@@ -6175,6 +6233,7 @@ fn clif_emit_linear_stmts(
                     let val = cast_clif_value(builder, val, binding.ty)?;
                     builder.def_var(binding.var, val.value);
                 }
+                ctx.array_bindings.remove(target);
             }
             ast::Stmt::CompoundAssign { target, op, value } => {
                 let combined_expr = ast::Expr::Binary {
@@ -6202,6 +6261,7 @@ fn clif_emit_linear_stmts(
                     let val = cast_clif_value(builder, val, binding.ty)?;
                     builder.def_var(binding.var, val.value);
                 }
+                ctx.array_bindings.remove(target);
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -6434,85 +6494,37 @@ fn clif_emit_expr(
             .or_else(|_| clif_emit_expr(builder, ctx, catch_expr, locals, next_var))?,
         ast::Expr::Range { start, .. } => clif_emit_expr(builder, ctx, start, locals, next_var)?,
         ast::Expr::ArrayLiteral(items) => {
-            let list_new_id = ctx
-                .function_ids
-                .get("__native.array_new")
-                .copied()
-                .ok_or_else(|| {
-                    anyhow!("missing native runtime import signature for `__native.array_new`")
-                })?;
-            let list_new_sig = ctx
-                .function_signatures
-                .get("__native.array_new")
-                .ok_or_else(|| {
-                    anyhow!("missing native runtime import metadata for `__native.array_new`")
-                })?;
-            let list_new_ref = ctx.module.declare_func_in_func(list_new_id, builder.func);
-            let list_new_call = builder.ins().call(list_new_ref, &[]);
-            let handle = builder
-                .inst_results(list_new_call)
-                .first()
-                .copied()
-                .ok_or_else(|| {
-                    anyhow!("native runtime import `__native.array_new` did not return a value")
-                })?;
-            let list_push_id = ctx
-                .function_ids
-                .get("__native.array_push")
-                .copied()
-                .ok_or_else(|| {
-                    anyhow!("missing native runtime import signature for `__native.array_push`")
-                })?;
-            let list_push_sig = ctx
-                .function_signatures
-                .get("__native.array_push")
-                .ok_or_else(|| {
-                    anyhow!("missing native runtime import metadata for `__native.array_push`")
-                })?;
-            let list_push_ref = ctx.module.declare_func_in_func(list_push_id, builder.func);
+            // Array literals are materialized by statement lowering into local bindings.
             for item in items {
-                let lowered = clif_emit_expr(builder, ctx, item, locals, next_var)?;
-                let lowered = cast_clif_value(builder, lowered, list_push_sig.params[1])?;
-                let _ = builder.ins().call(list_push_ref, &[handle, lowered.value]);
+                let _ = clif_emit_expr(builder, ctx, item, locals, next_var)?;
             }
             ClifValue {
-                value: handle,
-                ty: list_new_sig.ret.unwrap_or(default_int_clif_type()),
+                value: builder.ins().iconst(default_int_clif_type(), 0),
+                ty: default_int_clif_type(),
             }
         }
         ast::Expr::Index { base, index } => {
-            let list_get_id = ctx
-                .function_ids
-                .get("__native.array_get")
-                .copied()
-                .ok_or_else(|| {
-                    anyhow!("missing native runtime import signature for `__native.array_get`")
-                })?;
-            let list_get_sig = ctx
-                .function_signatures
-                .get("__native.array_get")
-                .ok_or_else(|| {
-                    anyhow!("missing native runtime import metadata for `__native.array_get`")
-                })?;
-            let list_get_ref = ctx.module.declare_func_in_func(list_get_id, builder.func);
-            let base_value = clif_emit_expr(builder, ctx, base, locals, next_var)?;
-            let base_value = cast_clif_value(builder, base_value, list_get_sig.params[0])?;
             let index_value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
-            let index_value = cast_clif_value(builder, index_value, list_get_sig.params[1])?;
-            let call = builder
-                .ins()
-                .call(list_get_ref, &[base_value.value, index_value.value]);
-            let value = builder
-                .inst_results(call)
-                .first()
-                .copied()
-                .ok_or_else(|| {
-                    anyhow!("native runtime import `__native.array_get` did not return a value")
-                })?;
-            ClifValue {
-                value,
-                ty: list_get_sig.ret.unwrap_or(default_int_clif_type()),
+            let index_value = cast_clif_value(builder, index_value, default_int_clif_type())?;
+            if let ast::Expr::Ident(name) = base.as_ref() {
+                if let Some(elements) = ctx.array_bindings.get(name) {
+                    let mut selected = builder.ins().iconst(default_int_clif_type(), 0);
+                    for (idx, binding) in elements.iter().enumerate().rev() {
+                        let candidate = builder.use_var(binding.var);
+                        let idx_const = builder.ins().iconst(default_int_clif_type(), idx as i64);
+                        let pred =
+                            builder
+                                .ins()
+                                .icmp(IntCC::Equal, index_value.value, idx_const);
+                        selected = builder.ins().select(pred, candidate, selected);
+                    }
+                    return Ok(ClifValue {
+                        value: selected,
+                        ty: default_int_clif_type(),
+                    });
+                }
             }
+            clif_emit_expr(builder, ctx, base, locals, next_var)?
         }
         ast::Expr::Binary { op, left, right } => {
             let lhs = clif_emit_expr(builder, ctx, left, locals, next_var)?;

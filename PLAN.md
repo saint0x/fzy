@@ -442,6 +442,81 @@
 - [✅] PR-E: FIR/driver clone reduction.
 - [✅] PR-F: pedantic coverage closure + production gate enforcement.
 
+### Native Direct-to-Memory Lowering Unification (No Backwards Compatibility, No Shims)
+- [ ] Hard-break architecture decision: native perf path is direct-memory-first; runtime-handle path is not retained for local data operations.
+- [ ] Remove compatibility objective for current native collection/string runtime-handle ABI on optimized native builds.
+- [ ] Freeze new architectural invariant: a single canonical native-lowering pipeline feeds both LLVM and Cranelift backends.
+
+#### Canonical Pipeline Cutover (Single Execution Model)
+- [ ] Introduce a canonical low-level native IR (post-HIR/FIR) that encodes:
+- [ ] explicit memory objects/layout classes (stack/static/heap where applicable),
+- [ ] aliasing/escape class for each aggregate/string temporary,
+- [ ] bounds-check policy points,
+- [ ] direct-memory ops (`load/store/gep/slice/len`) and side-effect boundaries.
+- [ ] Prohibit backend-specific AST-expression lowering as source-of-truth for semantics.
+- [ ] Make LLVM and Cranelift consume the same canonical native IR rather than re-lowering `typed_functions` independently.
+- [ ] Keep backend responsibilities codegen-only (instruction selection/register/legalization), not semantic lowering policy.
+
+#### Runtime Shim Elimination (Native Data Plane)
+- [ ] Remove generated C runtime shim as the execution dependency for local array/list/map/string data-plane operations.
+- [✅] Remove `__native.array_new`, `__native.array_push`, `__native.array_get` from hot-path lowering for native optimized builds.
+- [ ] Remove string data-plane dependency on global intern-table path for loop-local temporaries.
+- [ ] Reduce `NATIVE_RUNTIME_IMPORTS` to capability/host-effect boundaries only (fs/http/proc/thread/time/log/etc.), excluding local data-plane primitives.
+- [ ] Ensure no fallback compatibility shim remains in optimized native path for removed data-plane calls.
+
+#### Direct-to-Memory Arrays/Indexing (Phase 1)
+- [ ] Lower fixed-shape numeric array literals to contiguous memory objects directly (stack or static based on escape/lifetime class).
+- [ ] Lower index operations to direct address arithmetic + load/store with explicit type width and signedness.
+- [ ] Implement one bounds-check policy model:
+- [ ] checked in safety mode,
+- [ ] provably-elided when static analysis proves in-range access.
+- [ ] Add rolling-window/index-pattern canonicalization for kernels like byte decoding loops.
+- [✅] Eliminate per-access mutex/call overhead currently introduced through collection runtime ABI.
+
+#### Direct-to-Memory Match/Enum Control Flow (Phase 2)
+- [ ] Replace branch-chain lowering for eligible enum matches with compact discriminant-based switch lowering.
+- [ ] Define compact discriminant representation for native execution while preserving language-level enum semantics.
+- [ ] Keep guard/payload semantics exact; reject unsupported forms rather than fallback to compatibility behavior.
+- [ ] Preserve deterministic behavior and diagnostics while changing machine-level control-flow shape.
+
+#### Direct-to-Memory String Temporaries (Phase 3)
+- [ ] Introduce non-interned temporary string representation for non-escaping loop-local values.
+- [ ] Intern only at semantic escape boundaries (persistent/global/ABI/capability boundaries).
+- [ ] Lower `trim`, `replace`, `contains`, `starts_with`, `ends_with`, `len` to direct memory/string-view operations where safe.
+- [ ] Remove global lock + linear-scan intern overhead from hot local string pipelines.
+
+#### LLVM + Cranelift Backend Contract Unification
+- [ ] Define backend-agnostic lowering contract test suite for canonical native IR operations.
+- [ ] Require parity: LLVM and Cranelift must emit equivalent observable semantics for the same canonical IR test corpus.
+- [ ] Remove backend-specific semantic exceptions for arrays/indexing/string temporaries in optimized native mode.
+- [ ] Add backend conformance gate to release criteria for direct-memory lowering features.
+
+#### Type/Layout + ABI Constraints for Direct Memory
+- [ ] Tighten internal type/layout metadata flow so element width/align/stride are available at canonical IR level.
+- [ ] Eliminate pointer-sized/i32 surrogate usage for local data-plane values where concrete layout is known.
+- [ ] Keep external ABI stable while allowing internal representation changes for optimized native lowering.
+- [ ] Add layout/alias validation tests for arrays/slices/strings under both backends.
+
+#### Determinism + Safety Gates (Mandatory)
+- [ ] Add deterministic differential tests: direct-memory mode vs capability-boundary mode must be behaviorally equivalent at language level.
+- [ ] Add memory-safety regression probes for bounds, aliasing, and lifetime-sensitive patterns after direct-memory lowering.
+- [ ] Run strict Fozzy lifecycle gates for each phase (`doctor`, `test --det --strict`, `run --record`, `trace verify`, `replay`, `ci`).
+- [ ] Add host-backed checks where relevant to confirm boundary-only runtime import behavior remains correct.
+
+#### Perf Exit Criteria
+- [✅] `bytes_kernel`: reduce from ~`4.995x` to <= `2.0x` in first pass, with follow-up target <= `1.4x`.
+- [ ] `resultx_classify`: reduce from ~`3.155x` to <= `1.8x` in first pass, with follow-up target <= `1.3x`.
+- [ ] `text_kernel`: reduce from ~`1.667x` to <= `1.25x` after temporary-string direct-memory path lands.
+- [ ] Maintain parity/near-parity on existing strong kernels (no regressions beyond agreed noise band).
+- [ ] Make perf regressions release-blocking on these kernels once new pipeline is default.
+
+#### Deletion/Deprecation Checklist (No Compatibility Layer)
+- [ ] Delete data-plane call emission for runtime imports in both LLVM and Cranelift lowering paths.
+- [ ] Delete shim-backed array/list/map/string data-plane runtime symbols from default native optimized build path.
+- [ ] Delete compatibility toggles that retain old handle-based local data-plane execution.
+- [ ] Remove obsolete tests that encode old shim-based local data-plane behavior and replace with canonical-IR/direct-memory conformance tests.
+- [ ] Update docs to state the new execution architecture explicitly (direct-memory native pipeline with capability-boundary runtime imports only).
+
 ## Checklist: Done
 
 ### Runtime Networking + HTTP Baseline
