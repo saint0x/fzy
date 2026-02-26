@@ -171,6 +171,6 @@ Symptoms:
 Fix workflow:
 
 1. Run `fz audit unsafe [target] --workspace --json`.
-2. Add missing unsafe contract metadata (`reason/invariant/owner/scope/risk_class/proof_ref`).
+2. Add missing unsafe metadata on unsafe blocks (`reason/invariant/owner/scope/risk_class/proof_ref`) where needed.
 3. Remove unnecessary unsafe usage or explicitly approve budget changes.
 4. Re-run gate and confirm budget compliance.

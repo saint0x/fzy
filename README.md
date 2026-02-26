@@ -11,7 +11,7 @@ A quick way to think about fzy is zig but safer, rust but more sane.
 - Full user manual: `USAGE.md`
 - Canonical production workflow: `docs/production-workflow-v1.md`
 - System safety/trust model: `docs/system-safety-trust-model-v1.md`
-- Unsafe contract authoring: `docs/unsafe-contract-authoring-v1.md`
+- Unsafe islands/metadata authoring: `docs/unsafe-contract-authoring-v1.md`
 - `fozzy`: [ariacomputecompany/fozzy](https://github.com/ariacomputecompany/fozzy)
 - `fzyllm`: [saint0x/fzyllm](https://github.com/saint0x/fzyllm)
 
@@ -225,6 +225,7 @@ Spec: `docs/dependency-locking-v1.md`
 
 - Production guide: `docs/c-interop-production-v1.md`
 - `#[ffi_panic(abort|error)]` is required on every exported `pubext c fn`.
+- Prefer `ext unsafe c fn` for unsafe C imports and call them only inside `unsafe { ... }`.
 - `fz build --lib` emits static/shared libraries plus installable header + ABI manifest.
 
 ## Fozzy-First Validation Contract

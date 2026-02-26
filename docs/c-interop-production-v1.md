@@ -8,7 +8,8 @@ This guide covers production C interoperability for Fozzy in both directions:
 ## Contract
 - `pubext c fn` is the C-export surface.
 - `pubext async c fn` exports use async-handle ABI (`*_async_start/poll/await/drop`).
-- `ext c fn` is the C-import surface.
+- `ext unsafe c fn` is the unsafe C-import surface.
+- `ext c fn` is reserved for safe import contracts.
 - `fozzy.toml` is the policy source of truth for C panic boundary:
   - `[ffi] panic_boundary = "abort"` or `"error"` is required for projects with C interop symbols.
 - `#[ffi_panic(...)]` is per-symbol override only.
@@ -62,18 +63,20 @@ Async export requirements:
 - must return `i32` for `async-handle-v1`.
 
 ## Importing C into Fozzy
-Declare linker imports with `ext` declarations:
+Declare unsafe linker imports with `ext unsafe` declarations:
 
 ```fzy
-ext c fn c_mul(left: i32, right: i32) -> i32;
+ext unsafe c fn c_mul(left: i32, right: i32) -> i32;
 
 #[ffi_panic(abort)]
 pubext c fn call_mul(left: i32, right: i32) -> i32 {
-    return c_mul(left, right)
+    unsafe {
+        return c_mul(left, right)
+    }
 }
 ```
 
-`ext c fn` imports are lowered as real linker imports (no generated stub definitions).
+`ext unsafe c fn` imports are lowered as real linker imports (no generated stub definitions).
 
 ## Link Configuration
 `fz build` supports explicit linker inputs:

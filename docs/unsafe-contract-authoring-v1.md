@@ -1,37 +1,63 @@
-# Unsafe Contract Authoring v1
+# Unsafe Islands Authoring v1
 
-## Fzy Unsafe Contract
+## Fzy Unsafe Surface
 
-Unsafe contracts are first-class and mandatory:
+Unsafe is first-class:
 
 ```fzy
-unsafe(
-  "reason:ffi boundary write",
-  "invariant:owner_live(buf) && ptr_nonnull(buf) && ptr_len_ge(buf,buf_len)",
-  "owner:buf",
-  "scope:fs_write",
-  "risk_class:ffi",
-  "proof_ref:trace://ffi-write-2026-02-26"
-)
+unsafe fn copy_into(ptr: *u8, len: usize) -> i32 {
+    unsafe("reason:ffi boundary write", "invariant:owner_live(ptr) && ptr_nonnull(ptr) && ptr_len_ge(ptr,len)", "owner:ptr", "scope:copy_into", "risk_class:ffi", "proof_ref:trace://copy-into-2026-02-26") {
+        return 0
+    }
+}
 ```
 
-Required fields:
+Use:
+- `unsafe fn` for unsafe function boundaries.
+- `unsafe { ... }` for local unsafe islands.
+- Optional metadata on unsafe blocks:
+  - `reason`
+  - `invariant`
+  - `owner`
+  - `scope`
+  - `risk_class` (`memory|ffi|process|io|concurrency|crypto|other`)
+  - `proof_ref` (`trace://|test://|rfc://|gate://|run://|ci://`)
 
-- `reason`
-- `invariant` (predicate DSL only)
-- `owner`
-- `scope`
-- `risk_class` (`memory|ffi|process|io|concurrency|crypto|other`)
-- `proof_ref` (`trace://|test://|rfc://|gate://|run://|ci://`)
+Removed:
+- `unsafe_reason(...)`
+- executable `unsafe(...)` expression form without block
 
-Supported invariant predicates:
+## Unsafe FFI Imports
 
-- `owner_live(x)`
-- `ptr_nonnull(p)`
-- `ptr_aligned(p,n)`
-- `ptr_len_ge(p,n)`
-- `no_alias(a,b)`
-- `range_within(start,end,bound)`
+Prefer unsafe imports when contract is not statically safe:
+
+```fzy
+ext unsafe c fn c_write(ptr: *u8, len: usize) -> i32;
+
+fn write(ptr: *u8, len: usize) -> i32 {
+    unsafe {
+        return c_write(ptr, len)
+    }
+}
+```
+
+`ext c fn` remains available for safe contracts only.
+
+## Audit + Docs Artifacts
+
+`fz audit unsafe --workspace` emits:
+- `.fz/unsafe-map.workspace.json`
+- `.fz/unsafe-docs.workspace.json`
+- `.fz/unsafe-docs.workspace.md`
+- `.fz/unsafe-docs.workspace.html`
+
+Default policy:
+- Metadata is non-blocking.
+
+Strict CI/release mode:
+- `FZ_UNSAFE_STRICT=1`
+- Fails on missing/invalid metadata.
+- Fails on unsafe-context violations (unsafe calls outside unsafe context).
 
 ## Rust Unsafe Boundary Rules
 

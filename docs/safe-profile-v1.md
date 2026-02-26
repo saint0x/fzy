@@ -4,14 +4,14 @@
 
 - Unsafe capabilities (`time`, `rng`, `fs`, `http`, `proc`, `mem`, `thread`) are rejected in safe profile verification.
 - Host syscall usage is rejected in safe profile.
-- Explicit unsafe escape markers are rejected in safe profile.
+- Explicit unsafe islands/functions are rejected in safe profile.
 - Reference-region sites without proof are rejected in safe profile.
 - Alloc/free lifecycle imbalance is rejected in safe profile.
-- Unsafe sites without explicit reason strings are rejected in safe profile.
+- Unsafe metadata is policy-controlled; strict mode rejects missing/invalid metadata.
 
 ## Rejected Patterns
 
-- `unsafe` escapes without reason strings.
+- `unsafe fn`/`unsafe { ... }` in safe profile.
 - Host syscall markers (`syscall.*`) without strict boundary policy.
 - Capability usage not permitted by safe-profile rules.
 - Memory lifecycle imbalance (`alloc` without matching `free`).
@@ -28,12 +28,19 @@
 - Returning a reference requires matching annotated region proof from an input or another proven binding.
 - Missing annotations or mismatched return lifetimes are verifier violations.
 
-## Unsafe Contract Syntax
+## Unsafe Syntax + Audit
 
-Required auditable unsafe contract form:
-
-- `unsafe("reason:...", "invariant:...", "owner:...", "scope:...", "risk_class:...", "proof_ref:...")`
-
-`unsafe_reason(...)` is removed. `fz audit unsafe --workspace` emits `.fz/unsafe-map.workspace.json` and fails if any site has missing contract fields or invalid `proof_ref`.
+- First-class unsafe surface:
+  - `unsafe fn ...`
+  - `unsafe { ... }`
+  - optional metadata on unsafe blocks:
+    - `unsafe("reason:...", "invariant:...", "owner:...", "scope:...", "risk_class:...", "proof_ref:...") { ... }`
+- `unsafe_reason(...)` and executable `unsafe(...)` form are removed.
+- `fz audit unsafe --workspace` emits:
+  - `.fz/unsafe-map.workspace.json`
+  - `.fz/unsafe-docs.workspace.json`
+  - `.fz/unsafe-docs.workspace.md`
+  - `.fz/unsafe-docs.workspace.html`
+- Default policy is non-blocking metadata; strict blocking mode is `FZ_UNSAFE_STRICT=1`.
 
 See [unsafe-contract-authoring-v1.md](unsafe-contract-authoring-v1.md) for the full authoring guide (Fzy + Rust boundary code).

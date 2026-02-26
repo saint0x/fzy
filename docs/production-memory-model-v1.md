@@ -3,7 +3,7 @@
 ## Safety Target
 
 - Safe-by-default semantics are mandatory for production run/test/build pipelines.
-- Unsafe behavior is allowed only through explicit structured `unsafe(...)` contracts.
+- Unsafe behavior is allowed only through first-class unsafe islands/functions.
 - Production policy target is enforceable high-assurance default safety with no unsound default fallback path.
 - The implementation intentionally does not claim full theorem-proved equivalence to Rust’s borrow checker.
 
@@ -60,14 +60,14 @@
 
 ## Unsafe Islands
 
-- Unsafe sites must include:
-  - `reason:...`
-  - `invariant:...`
-  - `owner:...`
-  - `scope:...`
-  - `risk_class:...`
-  - `proof_ref:...`
-- Unsafe sites without these contracts are release-blocking.
+- Unsafe surface:
+  - `unsafe fn ...`
+  - `unsafe { ... }`
+  - optional metadata on unsafe blocks:
+    - `unsafe("reason:...", "invariant:...", "owner:...", "scope:...", "risk_class:...", "proof_ref:...") { ... }`
+- Calls to unsafe functions/imports must be inside unsafe context.
+- Metadata is non-blocking by default.
+- Strict mode (`FZ_UNSAFE_STRICT=1`) blocks missing/invalid metadata and unsafe-context violations.
 
 ## Production Gates
 
@@ -80,4 +80,4 @@ Mandatory for memory safety releases:
 - `fozzy replay <trace.fozzy> --json`
 - `fozzy ci <trace.fozzy> --json`
 - host-backed parity run for memory scenario
-- unsafe budget gate (missing-contract count must be zero; entry count must be within budget)
+- unsafe budget gate (strict mode enforces missing/invalid metadata = 0 and unsafe-context violations = 0)

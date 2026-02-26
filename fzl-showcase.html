@@ -140,7 +140,7 @@ fn next_counter() -> i32 {
 // Per-symbol override is still available:
 // #[ffi_panic(abort)] pubext c fn ...
 
-ext c fn c_add(left: i32, right: i32) -> i32;
+ext unsafe c fn c_add(left: i32, right: i32) -> i32;
 
 pubext c fn fz_add(left: i32, right: i32) -> i32 {
     return left + right;
@@ -315,7 +315,7 @@ fn c_view_demo() -> i32 {
 }
 
 // ------------------------------------------------------------
-// SECTION G: IO/process/http + explicit unsafe contract site
+// SECTION G: IO/process/http + explicit unsafe island metadata
 // ------------------------------------------------------------
 fn host_and_io_showcase() -> i32 {
     let root = path.join("tmp", "showcase");
@@ -341,7 +341,9 @@ fn host_and_io_showcase() -> i32 {
         "scope:host_and_io_showcase",
         "risk_class:memory",
         "proof_ref:trace://ffi-bridge-001"
-    );
+    ) {
+        discard c_add;
+    }
 
     if str.contains(raw, "ok") == 1 {
         return 0;

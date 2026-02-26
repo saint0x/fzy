@@ -243,7 +243,7 @@ fz check /tmp/code_match.fzy --json
 
 ```bash
 cat > /tmp/code_functions.fzy <<'FZY'
-ext c fn c_add(left: i32, right: i32) -> i32;
+ext unsafe c fn c_add(left: i32, right: i32) -> i32;
 
 pub fn sum(x: i32, y: i32) -> i32 { return x + y }
 
@@ -411,8 +411,9 @@ fn checked_add(x: i32, y: i32) -> i32 {
         "scope:checked_add",
         "risk_class:memory",
         "proof_ref:trace://unsafe-checked-add-001"
-    )
-    free(p)
+    ) {
+        free(p)
+    }
     let out = x + y
     ensures out >= x
     return out
@@ -477,7 +478,7 @@ fz check /tmp/code_task_groups.fzy --json
 
 ```bash
 cat > /tmp/code_ffi_full.fzy <<'FZY'
-ext c fn c_add(left: i32, right: i32) -> i32;
+ext unsafe c fn c_add(left: i32, right: i32) -> i32;
 
 #[ffi_panic(abort)]
 pubext c fn add_safe(left: i32, right: i32) -> i32 {
@@ -486,7 +487,9 @@ pubext c fn add_safe(left: i32, right: i32) -> i32 {
 
 fn main() -> i32 {
     let local = add_safe(5, 6)
-    discard c_add
+    unsafe {
+        discard c_add
+    }
     return local
 }
 FZY

@@ -4,6 +4,7 @@
 
 - ABI manifests use schema `fozzylang.ffi_abi.v1`.
 - Exported symbols are derived from `pubext c fn` declarations.
+- Unsafe imports should be declared as `ext unsafe c fn` and audited through unsafe inventory/docs artifacts.
 - ABI compatibility in v1 is defined by normalized export signatures and explicit contract metadata:
   - function name
   - ordered C parameter types
