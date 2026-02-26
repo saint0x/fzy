@@ -313,9 +313,9 @@
 
 ### Language Ergonomics + Completeness Closure (Adoption-Critical, No CI/Deps Scope)
 - [ ] Resolve language-surface drift between plan claims, language-reference docs, parser diagnostics, and actual shipped behavior so declared support is strictly truthful.
-- [ ] Ship closure/lambda values with capture semantics as first-class language constructs (syntax, AST/HIR/FIR, verifier, native backends, docs, examples, tests).
+- [✅] Ship closure/lambda values with capture semantics as first-class language constructs (syntax, AST/HIR/FIR, verifier, native backends, docs, examples, tests).
 - [✅] closure/lambda slice delivered: typed lambda syntax (`|x: T| expr`, optional `-> Ret`) now lowers through AST/HIR/FIR with lexical capture semantics in evaluator/type-checking and parser/HIR/driver tests.
-- [ ] closure/lambda native lowering parity remains open; native backends now fail fast with explicit lowerability diagnostics instead of late backend failures.
+- [✅] closure/lambda native lowering parity delivered in both native backends with lexical capture lowering and cross-backend execution tests.
 - [✅] Ship full import ergonomics expected by systems users:
 - [✅] import aliases (`use path as alias`)
 - [✅] wildcard imports (`use path::*`) with deterministic resolution rules
@@ -328,7 +328,7 @@
 - [✅] pattern/destructuring slice delivered: first-class `let` pattern statements (`let Enum::Variant(...) = ...`) with scoped pattern bindings in `let` and `match`, HIR type-checking/evaluator binding semantics, FIR/driver traversal support, and parser/HIR regressions.
 - [ ] expression/control construct completeness parity across parser/type/lowering/runtime/native
 - [ ] Ensure every parser-recognized construct is end-to-end executable with native parity or hard-rejected with explicit diagnostics and fix guidance (no silent partial semantics).
-- [✅] parser-recognized `let` pattern destructuring now fails native lowerability early with explicit diagnostics and fix guidance until native lowering parity lands.
+- [✅] parser-recognized `let` pattern destructuring now lowers natively for supported pattern families (with deterministic cross-backend execution parity coverage).
 - [✅] Upgrade docs to publish one authoritative language-construct matrix (`implemented` / `partial` / `missing`) and gate release on matrix truthfulness.
 
 ### Native Completeness Closure (Adoption Blocker #3)

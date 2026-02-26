@@ -30,6 +30,22 @@ struct ClifFunctionSignature {
     ret: Option<ClifType>,
 }
 
+#[derive(Clone)]
+struct LlvmClosureBinding {
+    params: Vec<ast::Param>,
+    return_type: Option<ast::Type>,
+    body: ast::Expr,
+    captures: HashMap<String, String>,
+}
+
+#[derive(Clone)]
+struct ClifClosureBinding {
+    params: Vec<ast::Param>,
+    return_type: Option<ast::Type>,
+    body: ast::Expr,
+    captures: HashMap<String, LocalBinding>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct NativeRuntimeImport {
     callee: &'static str,
@@ -3047,6 +3063,7 @@ struct LlvmFuncCtx {
     next_value: usize,
     next_label: usize,
     slots: HashMap<String, String>,
+    closures: HashMap<String, LlvmClosureBinding>,
     globals: HashMap<String, i32>,
     code: String,
 }
@@ -3057,6 +3074,7 @@ impl LlvmFuncCtx {
             next_value: 0,
             next_label: 0,
             slots: HashMap::new(),
+            closures: HashMap::new(),
             globals,
             code: String::new(),
         }
@@ -3169,6 +3187,154 @@ fn llvm_emit_function(
     Ok(out)
 }
 
+fn llvm_snapshot_closure_captures(ctx: &mut LlvmFuncCtx) -> HashMap<String, String> {
+    let visible = ctx.slots.clone();
+    let mut captures = HashMap::new();
+    for (name, slot) in visible {
+        let loaded = ctx.value();
+        ctx.code
+            .push_str(&format!("  {loaded} = load i32, ptr {slot}\n"));
+        let capture_slot = format!(
+            "%slot_cap_{}_{}",
+            native_mangle_symbol(&name),
+            ctx.next_value
+        );
+        ctx.code.push_str(&format!(
+            "  {capture_slot} = alloca i32\n  store i32 {loaded}, ptr {capture_slot}\n"
+        ));
+        captures.insert(name, capture_slot);
+    }
+    captures
+}
+
+fn llvm_restore_shadowed_slots(
+    ctx: &mut LlvmFuncCtx,
+    saved: HashMap<String, Option<String>>,
+    inserted_names: HashSet<String>,
+) {
+    for (name, prior) in saved {
+        if let Some(slot) = prior {
+            ctx.slots.insert(name, slot);
+        } else if inserted_names.contains(&name) {
+            ctx.slots.remove(&name);
+        }
+    }
+}
+
+fn llvm_emit_inlined_closure_call(
+    binding: LlvmClosureBinding,
+    args: &[ast::Expr],
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> String {
+    let mut saved = HashMap::<String, Option<String>>::new();
+    let mut inserted = HashSet::<String>::new();
+    for (name, capture_slot) in &binding.captures {
+        if !saved.contains_key(name) {
+            saved.insert(name.clone(), ctx.slots.get(name).cloned());
+        }
+        ctx.slots.insert(name.clone(), capture_slot.clone());
+        inserted.insert(name.clone());
+    }
+
+    for (index, param) in binding.params.iter().enumerate() {
+        let arg = args.get(index).cloned().unwrap_or(ast::Expr::Int(0));
+        let rendered = llvm_emit_expr(&arg, ctx, string_literal_ids, task_ref_ids);
+        let param_slot = format!(
+            "%slot_closure_param_{}_{}",
+            native_mangle_symbol(&param.name),
+            ctx.next_value
+        );
+        ctx.code.push_str(&format!(
+            "  {param_slot} = alloca i32\n  store i32 {rendered}, ptr {param_slot}\n"
+        ));
+        if !saved.contains_key(&param.name) {
+            saved.insert(param.name.clone(), ctx.slots.get(&param.name).cloned());
+        }
+        ctx.slots.insert(param.name.clone(), param_slot);
+        inserted.insert(param.name.clone());
+    }
+
+    let mut value = llvm_emit_expr(&binding.body, ctx, string_literal_ids, task_ref_ids);
+    if binding.return_type.as_ref().is_some_and(|ty| *ty == ast::Type::Void) {
+        value = "0".to_string();
+    }
+    llvm_restore_shadowed_slots(ctx, saved, inserted);
+    value
+}
+
+fn llvm_emit_let_pattern(
+    pattern: &ast::Pattern,
+    value: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<()> {
+    let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+    match pattern {
+        ast::Pattern::Wildcard => {}
+        ast::Pattern::Ident(name) => {
+            let slot = format!("%slot_{}_{}", native_mangle_symbol(name), ctx.next_value);
+            ctx.code.push_str(&format!(
+                "  {slot} = alloca i32\n  store i32 {rendered}, ptr {slot}\n"
+            ));
+            ctx.slots.insert(name.clone(), slot);
+        }
+        ast::Pattern::Int(expected) => {
+            let cmp = ctx.value();
+            ctx.code
+                .push_str(&format!("  {cmp} = icmp eq i32 {rendered}, {expected}\n"));
+        }
+        ast::Pattern::Bool(expected) => {
+            let cmp = ctx.value();
+            let expected_i32 = if *expected { 1 } else { 0 };
+            ctx.code
+                .push_str(&format!("  {cmp} = icmp eq i32 {rendered}, {expected_i32}\n"));
+        }
+        ast::Pattern::Variant {
+            enum_name,
+            variant,
+            bindings,
+        } => {
+            let key = format!("{enum_name}::{variant}");
+            let tag = variant_tag(&key);
+            let cmp = ctx.value();
+            ctx.code
+                .push_str(&format!("  {cmp} = icmp eq i32 {rendered}, {tag}\n"));
+            if let ast::Expr::EnumInit {
+                enum_name: value_enum,
+                variant: value_variant,
+                payload,
+            } = value
+            {
+                if value_enum == enum_name
+                    && value_variant == variant
+                    && payload.len() == bindings.len()
+                {
+                    for (binding_name, payload_expr) in bindings.iter().zip(payload.iter()) {
+                        let payload_value =
+                            llvm_emit_expr(payload_expr, ctx, string_literal_ids, task_ref_ids);
+                        let slot = format!(
+                            "%slot_{}_{}",
+                            native_mangle_symbol(binding_name),
+                            ctx.next_value
+                        );
+                        ctx.code.push_str(&format!(
+                            "  {slot} = alloca i32\n  store i32 {payload_value}, ptr {slot}\n"
+                        ));
+                        ctx.slots.insert(binding_name.clone(), slot);
+                    }
+                }
+            }
+        }
+        ast::Pattern::Or(_) => {
+            bail!("native backend does not support or-pattern destructuring in `let` statements");
+        }
+    }
+    Ok(())
+}
+
 fn llvm_emit_linear_stmts(
     body: &[ast::Stmt],
     ctx: &mut LlvmFuncCtx,
@@ -3178,6 +3344,24 @@ fn llvm_emit_linear_stmts(
     for stmt in body {
         match stmt {
             ast::Stmt::Let { name, value, .. } => {
+                if let ast::Expr::Closure {
+                    params,
+                    return_type,
+                    body,
+                } = value
+                {
+                    let captures = llvm_snapshot_closure_captures(ctx);
+                    ctx.closures.insert(
+                        name.clone(),
+                        LlvmClosureBinding {
+                            params: params.clone(),
+                            return_type: return_type.clone(),
+                            body: (**body).clone(),
+                            captures,
+                        },
+                    );
+                    continue;
+                }
                 let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
                 let slot = format!("%slot_{}_{}", name, ctx.next_value);
                 ctx.code.push_str(&format!(
@@ -3196,8 +3380,8 @@ fn llvm_emit_linear_stmts(
                     }
                 }
             }
-            ast::Stmt::LetPattern { .. } => {
-                bail!("llvm linear emission does not support pattern let lowering yet");
+            ast::Stmt::LetPattern { pattern, value, .. } => {
+                llvm_emit_let_pattern(pattern, value, ctx, string_literal_ids, task_ref_ids)?;
             }
             ast::Stmt::Assign { target, value } => {
                 let value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
@@ -3290,7 +3474,24 @@ fn llvm_emit_expr(
         }
         ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
         ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
-        ast::Expr::Closure { .. } => "0".to_string(),
+        ast::Expr::Closure {
+            params,
+            return_type,
+            body,
+        } => {
+            let captures = llvm_snapshot_closure_captures(ctx);
+            let name = format!("__closure_{}", ctx.next_value);
+            ctx.closures.insert(
+                name,
+                LlvmClosureBinding {
+                    params: params.clone(),
+                    return_type: return_type.clone(),
+                    body: (**body).clone(),
+                    captures,
+                },
+            );
+            "0".to_string()
+        }
         ast::Expr::Unary { op, expr } => {
             let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
             match op {
@@ -3372,6 +3573,15 @@ fn llvm_emit_expr(
             llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
         }
         ast::Expr::Call { callee, args } => {
+            if let Some(binding) = ctx.closures.get(callee).cloned() {
+                return llvm_emit_inlined_closure_call(
+                    binding,
+                    args,
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                );
+            }
             let args = args
                 .iter()
                 .map(|arg| {
@@ -4527,6 +4737,7 @@ fn emit_native_libraries_cranelift(
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
                 globals: &global_const_i32,
+                closures: HashMap::new(),
             };
             clif_emit_cfg(
                 &mut builder,
@@ -5013,6 +5224,7 @@ fn emit_native_artifact_cranelift(
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
                 globals: &global_const_i32,
+                closures: HashMap::new(),
             };
             clif_emit_cfg(
                 &mut builder,
@@ -5094,6 +5306,7 @@ struct ClifLoweringCtx<'a> {
     string_literal_ids: &'a HashMap<String, i32>,
     task_ref_ids: &'a HashMap<String, i32>,
     globals: &'a HashMap<String, i32>,
+    closures: HashMap<String, ClifClosureBinding>,
 }
 
 fn clif_emit_cfg(
@@ -5152,7 +5365,7 @@ fn clif_emit_cfg(
         match &cfg.blocks[block_id].terminator {
             ControlFlowTerminator::Return(Some(expr)) => {
                 if let Some(return_ty) = return_ty {
-                    let value = clif_emit_expr(builder, ctx, expr, locals)?;
+                    let value = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
                     let value = cast_clif_value(builder, value, return_ty)?;
                     builder.ins().return_(&[value.value]);
                 } else {
@@ -5188,7 +5401,7 @@ fn clif_emit_cfg(
                 then_target,
                 else_target,
             } => {
-                let cond_val = clif_emit_expr(builder, ctx, condition, locals)?;
+                let cond_val = clif_emit_expr(builder, ctx, condition, locals, next_var)?;
                 let zero = zero_for_type(builder, cond_val.ty);
                 let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
                 builder.ins().brif(
@@ -5238,6 +5451,174 @@ fn clif_emit_cfg(
     Ok(())
 }
 
+fn clif_snapshot_closure_captures(
+    builder: &mut FunctionBuilder,
+    locals: &HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> HashMap<String, LocalBinding> {
+    let mut captures = HashMap::new();
+    for (name, binding) in locals {
+        let captured_var = Variable::from_u32(*next_var as u32);
+        *next_var += 1;
+        builder.declare_var(captured_var, binding.ty);
+        let current = builder.use_var(binding.var);
+        builder.def_var(captured_var, current);
+        captures.insert(
+            name.clone(),
+            LocalBinding {
+                var: captured_var,
+                ty: binding.ty,
+            },
+        );
+    }
+    captures
+}
+
+fn clif_restore_shadowed_locals(
+    locals: &mut HashMap<String, LocalBinding>,
+    saved: HashMap<String, Option<LocalBinding>>,
+    inserted: HashSet<String>,
+) {
+    for (name, prior) in saved {
+        if let Some(binding) = prior {
+            locals.insert(name, binding);
+        } else if inserted.contains(&name) {
+            locals.remove(&name);
+        }
+    }
+}
+
+fn clif_emit_inlined_closure_call(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    binding: ClifClosureBinding,
+    args: &[ast::Expr],
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<ClifValue> {
+    let mut cast_args = Vec::with_capacity(binding.params.len());
+    for (index, param) in binding.params.iter().enumerate() {
+        let arg = args.get(index).cloned().unwrap_or(ast::Expr::Int(0));
+        let mut lowered = clif_emit_expr(builder, ctx, &arg, locals, next_var)?;
+        if let Some(target_ty) = ast_signature_type_to_clif_type(&param.ty) {
+            lowered = cast_clif_value(builder, lowered, target_ty)?;
+        }
+        cast_args.push(lowered);
+    }
+
+    let mut saved = HashMap::<String, Option<LocalBinding>>::new();
+    let mut inserted = HashSet::<String>::new();
+    for (name, capture) in &binding.captures {
+        if !saved.contains_key(name) {
+            saved.insert(name.clone(), locals.get(name).copied());
+        }
+        locals.insert(name.clone(), *capture);
+        inserted.insert(name.clone());
+    }
+
+    for (index, param) in binding.params.iter().enumerate() {
+        if !saved.contains_key(&param.name) {
+            saved.insert(param.name.clone(), locals.get(&param.name).copied());
+        }
+        let target_ty = ast_signature_type_to_clif_type(&param.ty).unwrap_or(cast_args[index].ty);
+        let var = Variable::from_u32(*next_var as u32);
+        *next_var += 1;
+        builder.declare_var(var, target_ty);
+        let value = cast_clif_value(builder, cast_args[index], target_ty)?;
+        builder.def_var(var, value.value);
+        locals.insert(param.name.clone(), LocalBinding { var, ty: target_ty });
+        inserted.insert(param.name.clone());
+    }
+
+    let mut result = clif_emit_expr(builder, ctx, &binding.body, locals, next_var)?;
+    if let Some(return_ty) = &binding.return_type {
+        if let Some(target_ty) = ast_signature_type_to_clif_type(return_ty) {
+            result = cast_clif_value(builder, result, target_ty)?;
+        }
+    }
+    clif_restore_shadowed_locals(locals, saved, inserted);
+    Ok(result)
+}
+
+fn clif_emit_let_pattern(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    pattern: &ast::Pattern,
+    value: &ast::Expr,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<()> {
+    let lowered = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+    match pattern {
+        ast::Pattern::Wildcard => {}
+        ast::Pattern::Ident(name) => {
+            let var = Variable::from_u32(*next_var as u32);
+            *next_var += 1;
+            builder.declare_var(var, lowered.ty);
+            builder.def_var(var, lowered.value);
+            locals.insert(
+                name.clone(),
+                LocalBinding {
+                    var,
+                    ty: lowered.ty,
+                },
+            );
+        }
+        ast::Pattern::Int(expected) => {
+            let expected_value = builder.ins().iconst(lowered.ty, *expected as i64);
+            let _ = builder
+                .ins()
+                .icmp(IntCC::Equal, lowered.value, expected_value);
+        }
+        ast::Pattern::Bool(expected) => {
+            let expected_value = builder.ins().iconst(lowered.ty, i64::from(*expected));
+            let _ = builder
+                .ins()
+                .icmp(IntCC::Equal, lowered.value, expected_value);
+        }
+        ast::Pattern::Variant {
+            enum_name,
+            variant,
+            bindings,
+        } => {
+            let key = format!("{enum_name}::{variant}");
+            let expected_tag = builder.ins().iconst(lowered.ty, variant_tag(&key) as i64);
+            let _ = builder.ins().icmp(IntCC::Equal, lowered.value, expected_tag);
+            if let ast::Expr::EnumInit {
+                enum_name: value_enum,
+                variant: value_variant,
+                payload,
+            } = value
+            {
+                if value_enum == enum_name
+                    && value_variant == variant
+                    && payload.len() == bindings.len()
+                {
+                    for (binding_name, payload_expr) in bindings.iter().zip(payload.iter()) {
+                        let payload_val =
+                            clif_emit_expr(builder, ctx, payload_expr, locals, next_var)?;
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, payload_val.ty);
+                        builder.def_var(var, payload_val.value);
+                        locals.insert(
+                            binding_name.clone(),
+                            LocalBinding {
+                                var,
+                                ty: payload_val.ty,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        ast::Pattern::Or(_) => {
+            bail!("native backend does not support or-pattern destructuring in `let` statements")
+        }
+    }
+    Ok(())
+}
+
 fn clif_emit_linear_stmts(
     builder: &mut FunctionBuilder,
     ctx: &mut ClifLoweringCtx<'_>,
@@ -5250,7 +5631,24 @@ fn clif_emit_linear_stmts(
             ast::Stmt::Let {
                 name, value, ty, ..
             } => {
-                let mut val = clif_emit_expr(builder, ctx, value, locals)?;
+                if let ast::Expr::Closure {
+                    params,
+                    return_type,
+                    body,
+                } = value
+                {
+                    ctx.closures.insert(
+                        name.clone(),
+                        ClifClosureBinding {
+                            params: params.clone(),
+                            return_type: return_type.clone(),
+                            body: (**body).clone(),
+                            captures: clif_snapshot_closure_captures(builder, locals, next_var),
+                        },
+                    );
+                    continue;
+                }
+                let mut val = clif_emit_expr(builder, ctx, value, locals, next_var)?;
                 let target_ty = ty
                     .as_ref()
                     .and_then(ast_signature_type_to_clif_type)
@@ -5270,7 +5668,8 @@ fn clif_emit_linear_stmts(
                 builder.def_var(binding.var, val.value);
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
-                        let field_val = clif_emit_expr(builder, ctx, field_expr, locals)?;
+                        let field_val =
+                            clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
                         let field_var = Variable::from_u32(*next_var as u32);
                         *next_var += 1;
                         builder.declare_var(field_var, field_val.ty);
@@ -5285,11 +5684,11 @@ fn clif_emit_linear_stmts(
                     }
                 }
             }
-            ast::Stmt::LetPattern { .. } => {
-                bail!("cranelift linear emission does not support pattern let lowering yet");
+            ast::Stmt::LetPattern { pattern, value, .. } => {
+                clif_emit_let_pattern(builder, ctx, pattern, value, locals, next_var)?;
             }
             ast::Stmt::Assign { target, value } => {
-                let val = clif_emit_expr(builder, ctx, value, locals)?;
+                let val = clif_emit_expr(builder, ctx, value, locals, next_var)?;
                 let binding = if let Some(existing) = locals.get(target).copied() {
                     existing
                 } else {
@@ -5309,7 +5708,7 @@ fn clif_emit_linear_stmts(
                     left: Box::new(ast::Expr::Ident(target.clone())),
                     right: Box::new(value.clone()),
                 };
-                let val = clif_emit_expr(builder, ctx, &combined_expr, locals)?;
+                let val = clif_emit_expr(builder, ctx, &combined_expr, locals, next_var)?;
                 let binding = if let Some(existing) = locals.get(target).copied() {
                     existing
                 } else {
@@ -5327,7 +5726,7 @@ fn clif_emit_linear_stmts(
             | ast::Stmt::Requires(expr)
             | ast::Stmt::Ensures(expr)
             | ast::Stmt::Defer(expr) => {
-                let _ = clif_emit_expr(builder, ctx, expr, locals)?;
+                let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
             }
             ast::Stmt::Return(_)
             | ast::Stmt::If { .. }
@@ -5356,6 +5755,7 @@ fn clif_emit_expr(
     ctx: &mut ClifLoweringCtx<'_>,
     expr: &ast::Expr,
     locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
 ) -> Result<ClifValue> {
     Ok(match expr {
         ast::Expr::Int(v) => {
@@ -5422,15 +5822,31 @@ fn clif_emit_expr(
                 }
             }
         }
-        ast::Expr::Group(inner) => clif_emit_expr(builder, ctx, inner, locals)?,
-        ast::Expr::Await(inner) => clif_emit_expr(builder, ctx, inner, locals)?,
-        ast::Expr::Closure { .. } => {
-            return Err(anyhow!(
-                "native backend cannot lower closure/lambda expression yet"
-            ));
+        ast::Expr::Group(inner) => clif_emit_expr(builder, ctx, inner, locals, next_var)?,
+        ast::Expr::Await(inner) => clif_emit_expr(builder, ctx, inner, locals, next_var)?,
+        ast::Expr::Closure {
+            params,
+            return_type,
+            body,
+        } => {
+            let captures = clif_snapshot_closure_captures(builder, locals, next_var);
+            let name = format!("__closure_{}", *next_var);
+            ctx.closures.insert(
+                name,
+                ClifClosureBinding {
+                    params: params.clone(),
+                    return_type: return_type.clone(),
+                    body: (**body).clone(),
+                    captures,
+                },
+            );
+            ClifValue {
+                value: builder.ins().iconst(default_int_clif_type(), 0),
+                ty: default_int_clif_type(),
+            }
         }
         ast::Expr::Unary { op, expr } => {
-            let value = clif_emit_expr(builder, ctx, expr, locals)?;
+            let value = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
             match op {
                 ast::UnaryOp::Plus => value,
                 ast::UnaryOp::Neg => {
@@ -5485,19 +5901,19 @@ fn clif_emit_expr(
                             ty: default_int_clif_type(),
                         }
                     } else {
-                        clif_emit_expr(builder, ctx, base, locals)?
+                        clif_emit_expr(builder, ctx, base, locals, next_var)?
                     }
                 } else {
-                    clif_emit_expr(builder, ctx, base, locals)?
+                    clif_emit_expr(builder, ctx, base, locals, next_var)?
                 }
             } else {
-                clif_emit_expr(builder, ctx, base, locals)?
+                clif_emit_expr(builder, ctx, base, locals, next_var)?
             }
         }
         ast::Expr::StructInit { fields, .. } => {
             let mut first = None;
             for (_, value) in fields {
-                let out = clif_emit_expr(builder, ctx, value, locals)?;
+                let out = clif_emit_expr(builder, ctx, value, locals, next_var)?;
                 if first.is_none() {
                     first = Some(out);
                 }
@@ -5513,7 +5929,7 @@ fn clif_emit_expr(
             payload,
         } => {
             for value in payload {
-                let _ = clif_emit_expr(builder, ctx, value, locals)?;
+                let _ = clif_emit_expr(builder, ctx, value, locals, next_var)?;
             }
             let key = format!("{enum_name}::{variant}");
             ClifValue {
@@ -5526,12 +5942,12 @@ fn clif_emit_expr(
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
-        } => clif_emit_expr(builder, ctx, try_expr, locals)
-            .or_else(|_| clif_emit_expr(builder, ctx, catch_expr, locals))?,
-        ast::Expr::Range { start, .. } => clif_emit_expr(builder, ctx, start, locals)?,
+        } => clif_emit_expr(builder, ctx, try_expr, locals, next_var)
+            .or_else(|_| clif_emit_expr(builder, ctx, catch_expr, locals, next_var))?,
+        ast::Expr::Range { start, .. } => clif_emit_expr(builder, ctx, start, locals, next_var)?,
         ast::Expr::ArrayLiteral(items) => {
             if let Some(first) = items.first() {
-                clif_emit_expr(builder, ctx, first, locals)?
+                clif_emit_expr(builder, ctx, first, locals, next_var)?
             } else {
                 ClifValue {
                     value: builder.ins().iconst(pointer_sized_clif_type(), 0),
@@ -5539,12 +5955,12 @@ fn clif_emit_expr(
                 }
             }
         }
-        ast::Expr::Index { base, .. } => clif_emit_expr(builder, ctx, base, locals)?,
+        ast::Expr::Index { base, .. } => clif_emit_expr(builder, ctx, base, locals, next_var)?,
         ast::Expr::Binary { op, left, right } => {
-            let lhs = clif_emit_expr(builder, ctx, left, locals)?;
+            let lhs = clif_emit_expr(builder, ctx, left, locals, next_var)?;
             match op {
                 ast::BinaryOp::Add => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         ClifValue {
@@ -5559,7 +5975,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Sub => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         ClifValue {
@@ -5574,7 +5990,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Mul => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         ClifValue {
@@ -5589,7 +6005,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Div => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         ClifValue {
@@ -5604,7 +6020,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Mod => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().srem(lhs.value, rhs.value),
@@ -5612,7 +6028,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::BitAnd => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().band(lhs.value, rhs.value),
@@ -5620,7 +6036,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::BitOr => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().bor(lhs.value, rhs.value),
@@ -5628,7 +6044,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::BitXor => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().bxor(lhs.value, rhs.value),
@@ -5636,7 +6052,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Shl => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().ishl(lhs.value, rhs.value),
@@ -5644,7 +6060,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Shr => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     ClifValue {
                         value: builder.ins().sshr(lhs.value, rhs.value),
@@ -5667,7 +6083,7 @@ fn clif_emit_expr(
                     builder.ins().jump(merge_block, &[false_val]);
 
                     builder.switch_to_block(rhs_block);
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs_zero = zero_for_type(builder, rhs.ty);
                     let rhs_pred = builder.ins().icmp(IntCC::NotEqual, rhs.value, rhs_zero);
                     let rhs_bool = bool_to_i8(builder, rhs_pred);
@@ -5698,7 +6114,7 @@ fn clif_emit_expr(
                     builder.ins().jump(merge_block, &[true_val]);
 
                     builder.switch_to_block(rhs_block);
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs_zero = zero_for_type(builder, rhs.ty);
                     let rhs_pred = builder.ins().icmp(IntCC::NotEqual, rhs.value, rhs_zero);
                     let rhs_bool = bool_to_i8(builder, rhs_pred);
@@ -5714,19 +6130,19 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Eq => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred = builder.ins().icmp(IntCC::Equal, lhs.value, rhs.value);
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Neq => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, rhs.value);
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Lt => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred = builder
                         .ins()
@@ -5734,7 +6150,7 @@ fn clif_emit_expr(
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Lte => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred =
                         builder
@@ -5743,7 +6159,7 @@ fn clif_emit_expr(
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Gt => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred = builder
                         .ins()
@@ -5751,7 +6167,7 @@ fn clif_emit_expr(
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Gte => {
-                    let rhs = clif_emit_expr(builder, ctx, right, locals)?;
+                    let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     let pred =
                         builder
@@ -5762,13 +6178,18 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::Call { callee, args } => {
+            if let Some(binding) = ctx.closures.get(callee).cloned() {
+                return clif_emit_inlined_closure_call(
+                    builder, ctx, binding, args, locals, next_var,
+                );
+            }
             let mut values = Vec::with_capacity(args.len());
             if let Some(function_id) = ctx.function_ids.get(callee).copied() {
                 let signature = ctx.function_signatures.get(callee).ok_or_else(|| {
                     anyhow!("missing native function signature metadata for `{callee}`")
                 })?;
                 for (index, arg) in args.iter().enumerate() {
-                    let mut lowered = clif_emit_expr(builder, ctx, arg, locals)?;
+                    let mut lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
                     if let Some(target) = signature.params.get(index).copied() {
                         lowered = cast_clif_value(builder, lowered, target)?;
                     }
@@ -5789,7 +6210,7 @@ fn clif_emit_expr(
                 }
             } else {
                 for arg in args {
-                    let _ = clif_emit_expr(builder, ctx, arg, locals)?;
+                    let _ = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
                 }
                 return Err(anyhow!(
                     "native backend cannot lower unresolved call target `{}`",
@@ -5834,28 +6255,15 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
-        if function_body_contains_let_pattern(&function.body) {
+        if function_body_contains_unsupported_closure_usage(&function.body) {
             diagnostics.push(diagnostics::Diagnostic::new(
                 diagnostics::Severity::Error,
                 format!(
-                    "native backend does not support pattern destructuring in `let` statements for function `{}`",
+                    "native backend only supports closures bound directly in `let` statements in function `{}`",
                     function.name
                 ),
                 Some(
-                    "use regular `let` bindings in native builds until closure/destructuring native lowering is implemented"
-                        .to_string(),
-                ),
-            ));
-        }
-        if function_body_contains_closure_expr(&function.body) {
-            diagnostics.push(diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "native backend does not support closure/lambda expressions in function `{}`",
-                    function.name
-                ),
-                Some(
-                    "replace lambda expressions with top-level function items for native builds until closure lowering is implemented"
+                    "bind the closure to a local `let` name and invoke it by identifier"
                         .to_string(),
                 ),
             ));
@@ -5873,8 +6281,15 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
     let mut unresolved = HashSet::<String>::new();
     for item in &module.items {
         if let ast::Item::Function(function) = item {
+            let mut local_callables = HashSet::<String>::new();
+            collect_local_callable_bindings(&function.body, &mut local_callables);
             for stmt in &function.body {
-                collect_unresolved_calls_from_stmt(stmt, &defined_functions, &mut unresolved);
+                collect_unresolved_calls_from_stmt(
+                    stmt,
+                    &defined_functions,
+                    &local_callables,
+                    &mut unresolved,
+                );
             }
         }
     }
@@ -5896,133 +6311,6 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
         diagnostics::DiagnosticDomain::NativeLowering,
     );
     diagnostics
-}
-
-fn function_body_contains_let_pattern(body: &[ast::Stmt]) -> bool {
-    body.iter().any(stmt_contains_let_pattern)
-}
-
-fn function_body_contains_closure_expr(body: &[ast::Stmt]) -> bool {
-    body.iter().any(stmt_contains_closure_expr)
-}
-
-fn stmt_contains_closure_expr(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::Let { value, .. }
-        | ast::Stmt::LetPattern { value, .. }
-        | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::CompoundAssign { value, .. }
-        | ast::Stmt::Return(Some(value))
-        | ast::Stmt::Defer(value)
-        | ast::Stmt::Requires(value)
-        | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => expr_contains_closure(value),
-        ast::Stmt::Return(None) | ast::Stmt::Break | ast::Stmt::Continue => false,
-        ast::Stmt::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            expr_contains_closure(condition)
-                || function_body_contains_closure_expr(then_body)
-                || function_body_contains_closure_expr(else_body)
-        }
-        ast::Stmt::While { condition, body } => {
-            expr_contains_closure(condition) || function_body_contains_closure_expr(body)
-        }
-        ast::Stmt::For {
-            init,
-            condition,
-            step,
-            body,
-        } => {
-            init.as_deref().is_some_and(stmt_contains_closure_expr)
-                || condition.as_ref().is_some_and(expr_contains_closure)
-                || step.as_deref().is_some_and(stmt_contains_closure_expr)
-                || function_body_contains_closure_expr(body)
-        }
-        ast::Stmt::ForIn { iterable, body, .. } => {
-            expr_contains_closure(iterable) || function_body_contains_closure_expr(body)
-        }
-        ast::Stmt::Loop { body } => function_body_contains_closure_expr(body),
-        ast::Stmt::Match { scrutinee, arms } => {
-            expr_contains_closure(scrutinee)
-                || arms.iter().any(|arm| {
-                    arm.guard.as_ref().is_some_and(expr_contains_closure)
-                        || expr_contains_closure(&arm.value)
-                })
-        }
-    }
-}
-
-fn expr_contains_closure(expr: &ast::Expr) -> bool {
-    match expr {
-        ast::Expr::Closure { .. } => true,
-        ast::Expr::Call { args, .. } => args.iter().any(expr_contains_closure),
-        ast::Expr::FieldAccess { base, .. } => expr_contains_closure(base),
-        ast::Expr::StructInit { fields, .. } => {
-            fields.iter().any(|(_, value)| expr_contains_closure(value))
-        }
-        ast::Expr::EnumInit { payload, .. } => payload.iter().any(expr_contains_closure),
-        ast::Expr::Group(inner) | ast::Expr::Await(inner) => expr_contains_closure(inner),
-        ast::Expr::Unary { expr, .. } => expr_contains_closure(expr),
-        ast::Expr::TryCatch {
-            try_expr,
-            catch_expr,
-        } => expr_contains_closure(try_expr) || expr_contains_closure(catch_expr),
-        ast::Expr::Binary { left, right, .. } => {
-            expr_contains_closure(left) || expr_contains_closure(right)
-        }
-        ast::Expr::Range { start, end, .. } => {
-            expr_contains_closure(start) || expr_contains_closure(end)
-        }
-        ast::Expr::ArrayLiteral(items) => items.iter().any(expr_contains_closure),
-        ast::Expr::Index { base, index } => {
-            expr_contains_closure(base) || expr_contains_closure(index)
-        }
-        ast::Expr::Int(_)
-        | ast::Expr::Float { .. }
-        | ast::Expr::Char(_)
-        | ast::Expr::Bool(_)
-        | ast::Expr::Str(_)
-        | ast::Expr::Ident(_) => false,
-    }
-}
-
-fn stmt_contains_let_pattern(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::LetPattern { .. } => true,
-        ast::Stmt::If {
-            then_body,
-            else_body,
-            ..
-        } => {
-            function_body_contains_let_pattern(then_body)
-                || function_body_contains_let_pattern(else_body)
-        }
-        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
-            function_body_contains_let_pattern(body)
-        }
-        ast::Stmt::For {
-            init, step, body, ..
-        } => {
-            init.as_deref().is_some_and(stmt_contains_let_pattern)
-                || step.as_deref().is_some_and(stmt_contains_let_pattern)
-                || function_body_contains_let_pattern(body)
-        }
-        ast::Stmt::ForIn { body, .. } => function_body_contains_let_pattern(body),
-        ast::Stmt::Match { .. } => false,
-        ast::Stmt::Let { .. }
-        | ast::Stmt::Assign { .. }
-        | ast::Stmt::CompoundAssign { .. }
-        | ast::Stmt::Break
-        | ast::Stmt::Continue
-        | ast::Stmt::Return(_)
-        | ast::Stmt::Defer(_)
-        | ast::Stmt::Requires(_)
-        | ast::Stmt::Ensures(_)
-        | ast::Stmt::Expr(_) => false,
-    }
 }
 
 fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {
@@ -6153,9 +6441,106 @@ fn cast_clif_value(
     );
 }
 
+fn function_body_contains_unsupported_closure_usage(body: &[ast::Stmt]) -> bool {
+    body.iter().any(stmt_contains_unsupported_closure_usage)
+}
+
+fn stmt_contains_unsupported_closure_usage(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Let { value, .. } => {
+            if matches!(value, ast::Expr::Closure { .. }) {
+                false
+            } else {
+                expr_contains_closure(value)
+            }
+        }
+        ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => expr_contains_closure(value),
+        ast::Stmt::Return(Some(value)) => expr_contains_closure(value),
+        ast::Stmt::Return(None) | ast::Stmt::Break | ast::Stmt::Continue => false,
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_closure(condition)
+                || function_body_contains_unsupported_closure_usage(then_body)
+                || function_body_contains_unsupported_closure_usage(else_body)
+        }
+        ast::Stmt::While { condition, body } => {
+            expr_contains_closure(condition) || function_body_contains_unsupported_closure_usage(body)
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(stmt_contains_unsupported_closure_usage)
+                || condition.as_ref().is_some_and(expr_contains_closure)
+                || step
+                    .as_deref()
+                    .is_some_and(stmt_contains_unsupported_closure_usage)
+                || function_body_contains_unsupported_closure_usage(body)
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            expr_contains_closure(iterable) || function_body_contains_unsupported_closure_usage(body)
+        }
+        ast::Stmt::Loop { body } => function_body_contains_unsupported_closure_usage(body),
+        ast::Stmt::Match { scrutinee, arms } => {
+            expr_contains_closure(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_contains_closure)
+                        || expr_contains_closure(&arm.value)
+                })
+        }
+    }
+}
+
+fn expr_contains_closure(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Closure { .. } => true,
+        ast::Expr::Call { args, .. } => args.iter().any(expr_contains_closure),
+        ast::Expr::FieldAccess { base, .. } => expr_contains_closure(base),
+        ast::Expr::StructInit { fields, .. } => {
+            fields.iter().any(|(_, value)| expr_contains_closure(value))
+        }
+        ast::Expr::EnumInit { payload, .. } => payload.iter().any(expr_contains_closure),
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) => expr_contains_closure(inner),
+        ast::Expr::Unary { expr, .. } => expr_contains_closure(expr),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => expr_contains_closure(try_expr) || expr_contains_closure(catch_expr),
+        ast::Expr::Binary { left, right, .. } => {
+            expr_contains_closure(left) || expr_contains_closure(right)
+        }
+        ast::Expr::Range { start, end, .. } => {
+            expr_contains_closure(start) || expr_contains_closure(end)
+        }
+        ast::Expr::ArrayLiteral(items) => items.iter().any(expr_contains_closure),
+        ast::Expr::Index { base, index } => {
+            expr_contains_closure(base) || expr_contains_closure(index)
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => false,
+    }
+}
+
 fn collect_unresolved_calls_from_stmt(
     stmt: &ast::Stmt,
     defined_functions: &HashSet<String>,
+    local_callables: &HashSet<String>,
     unresolved: &mut HashSet<String>,
 ) {
     match stmt {
@@ -6167,11 +6552,16 @@ fn collect_unresolved_calls_from_stmt(
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => {
-            collect_unresolved_calls_from_expr(value, defined_functions, unresolved)
+            collect_unresolved_calls_from_expr(value, defined_functions, local_callables, unresolved)
         }
         ast::Stmt::Return(value) => {
             if let Some(value) = value {
-                collect_unresolved_calls_from_expr(value, defined_functions, unresolved);
+                collect_unresolved_calls_from_expr(
+                    value,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Stmt::If {
@@ -6179,18 +6569,43 @@ fn collect_unresolved_calls_from_stmt(
             then_body,
             else_body,
         } => {
-            collect_unresolved_calls_from_expr(condition, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(
+                condition,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
             for nested in then_body {
-                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+                collect_unresolved_calls_from_stmt(
+                    nested,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
             for nested in else_body {
-                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+                collect_unresolved_calls_from_stmt(
+                    nested,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Stmt::While { condition, body } => {
-            collect_unresolved_calls_from_expr(condition, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(
+                condition,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
             for nested in body {
-                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+                collect_unresolved_calls_from_stmt(
+                    nested,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Stmt::For {
@@ -6200,37 +6615,87 @@ fn collect_unresolved_calls_from_stmt(
             body,
         } => {
             if let Some(init) = init {
-                collect_unresolved_calls_from_stmt(init, defined_functions, unresolved);
+                collect_unresolved_calls_from_stmt(
+                    init,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
             if let Some(condition) = condition {
-                collect_unresolved_calls_from_expr(condition, defined_functions, unresolved);
+                collect_unresolved_calls_from_expr(
+                    condition,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
             if let Some(step) = step {
-                collect_unresolved_calls_from_stmt(step, defined_functions, unresolved);
+                collect_unresolved_calls_from_stmt(
+                    step,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
             for nested in body {
-                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+                collect_unresolved_calls_from_stmt(
+                    nested,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Stmt::ForIn { iterable, body, .. } => {
-            collect_unresolved_calls_from_expr(iterable, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(
+                iterable,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
             for nested in body {
-                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+                collect_unresolved_calls_from_stmt(
+                    nested,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Stmt::Loop { body } => {
             for nested in body {
-                collect_unresolved_calls_from_stmt(nested, defined_functions, unresolved);
+                collect_unresolved_calls_from_stmt(
+                    nested,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Stmt::Break | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
-            collect_unresolved_calls_from_expr(scrutinee, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(
+                scrutinee,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_unresolved_calls_from_expr(guard, defined_functions, unresolved);
+                    collect_unresolved_calls_from_expr(
+                        guard,
+                        defined_functions,
+                        local_callables,
+                        unresolved,
+                    );
                 }
-                collect_unresolved_calls_from_expr(&arm.value, defined_functions, unresolved);
+                collect_unresolved_calls_from_expr(
+                    &arm.value,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
     }
@@ -6239,65 +6704,230 @@ fn collect_unresolved_calls_from_stmt(
 fn collect_unresolved_calls_from_expr(
     expr: &ast::Expr,
     defined_functions: &HashSet<String>,
+    local_callables: &HashSet<String>,
     unresolved: &mut HashSet<String>,
 ) {
     match expr {
         ast::Expr::Call { callee, args } => {
-            if !defined_functions.contains(callee) && !native_backend_supports_call(callee) {
+            if !defined_functions.contains(callee)
+                && !local_callables.contains(callee)
+                && !native_backend_supports_call(callee)
+            {
                 unresolved.insert(callee.clone());
             }
             for arg in args {
-                collect_unresolved_calls_from_expr(arg, defined_functions, unresolved);
+                collect_unresolved_calls_from_expr(arg, defined_functions, local_callables, unresolved);
             }
         }
         ast::Expr::FieldAccess { base, .. } => {
-            collect_unresolved_calls_from_expr(base, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(base, defined_functions, local_callables, unresolved);
         }
         ast::Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
-                collect_unresolved_calls_from_expr(value, defined_functions, unresolved);
+                collect_unresolved_calls_from_expr(
+                    value,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Expr::EnumInit { payload, .. } => {
             for value in payload {
-                collect_unresolved_calls_from_expr(value, defined_functions, unresolved);
+                collect_unresolved_calls_from_expr(
+                    value,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Expr::Closure { body, .. } => {
-            collect_unresolved_calls_from_expr(body, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(body, defined_functions, local_callables, unresolved);
         }
         ast::Expr::Group(inner) => {
-            collect_unresolved_calls_from_expr(inner, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(inner, defined_functions, local_callables, unresolved);
         }
         ast::Expr::Await(inner) => {
-            collect_unresolved_calls_from_expr(inner, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(inner, defined_functions, local_callables, unresolved);
         }
         ast::Expr::Unary { expr, .. } => {
-            collect_unresolved_calls_from_expr(expr, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(expr, defined_functions, local_callables, unresolved);
         }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
         } => {
-            collect_unresolved_calls_from_expr(try_expr, defined_functions, unresolved);
-            collect_unresolved_calls_from_expr(catch_expr, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(
+                try_expr,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
+            collect_unresolved_calls_from_expr(
+                catch_expr,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::Binary { left, right, .. } => {
-            collect_unresolved_calls_from_expr(left, defined_functions, unresolved);
-            collect_unresolved_calls_from_expr(right, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(left, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                right,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::Range { start, end, .. } => {
-            collect_unresolved_calls_from_expr(start, defined_functions, unresolved);
-            collect_unresolved_calls_from_expr(end, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(start, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(end, defined_functions, local_callables, unresolved);
         }
         ast::Expr::ArrayLiteral(items) => {
             for item in items {
-                collect_unresolved_calls_from_expr(item, defined_functions, unresolved);
+                collect_unresolved_calls_from_expr(
+                    item,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Expr::Index { base, index } => {
-            collect_unresolved_calls_from_expr(base, defined_functions, unresolved);
-            collect_unresolved_calls_from_expr(index, defined_functions, unresolved);
+            collect_unresolved_calls_from_expr(base, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                index,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn collect_local_callable_bindings(body: &[ast::Stmt], out: &mut HashSet<String>) {
+    for stmt in body {
+        match stmt {
+            ast::Stmt::Let { name, value, .. } => {
+                if matches!(value, ast::Expr::Closure { .. }) {
+                    out.insert(name.clone());
+                }
+                collect_local_callable_bindings_from_expr(value, out);
+            }
+            ast::Stmt::LetPattern { value, .. }
+            | ast::Stmt::Assign { value, .. }
+            | ast::Stmt::CompoundAssign { value, .. }
+            | ast::Stmt::Defer(value)
+            | ast::Stmt::Requires(value)
+            | ast::Stmt::Ensures(value)
+            | ast::Stmt::Expr(value) => collect_local_callable_bindings_from_expr(value, out),
+            ast::Stmt::Return(value) => {
+                if let Some(value) = value {
+                    collect_local_callable_bindings_from_expr(value, out);
+                }
+            }
+            ast::Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                collect_local_callable_bindings_from_expr(condition, out);
+                collect_local_callable_bindings(then_body, out);
+                collect_local_callable_bindings(else_body, out);
+            }
+            ast::Stmt::While { condition, body } => {
+                collect_local_callable_bindings_from_expr(condition, out);
+                collect_local_callable_bindings(body, out);
+            }
+            ast::Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    collect_local_callable_bindings(std::slice::from_ref(init.as_ref()), out);
+                }
+                if let Some(condition) = condition {
+                    collect_local_callable_bindings_from_expr(condition, out);
+                }
+                if let Some(step) = step {
+                    collect_local_callable_bindings(std::slice::from_ref(step.as_ref()), out);
+                }
+                collect_local_callable_bindings(body, out);
+            }
+            ast::Stmt::ForIn { iterable, body, .. } => {
+                collect_local_callable_bindings_from_expr(iterable, out);
+                collect_local_callable_bindings(body, out);
+            }
+            ast::Stmt::Loop { body } => collect_local_callable_bindings(body, out),
+            ast::Stmt::Match { scrutinee, arms } => {
+                collect_local_callable_bindings_from_expr(scrutinee, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_local_callable_bindings_from_expr(guard, out);
+                    }
+                    collect_local_callable_bindings_from_expr(&arm.value, out);
+                }
+            }
+            ast::Stmt::Break | ast::Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_local_callable_bindings_from_expr(expr: &ast::Expr, out: &mut HashSet<String>) {
+    match expr {
+        ast::Expr::Call { args, .. } => {
+            for arg in args {
+                collect_local_callable_bindings_from_expr(arg, out);
+            }
+        }
+        ast::Expr::FieldAccess { base, .. } => collect_local_callable_bindings_from_expr(base, out),
+        ast::Expr::StructInit { fields, .. } => {
+            for (_, value) in fields {
+                collect_local_callable_bindings_from_expr(value, out);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. } => {
+            for value in payload {
+                collect_local_callable_bindings_from_expr(value, out);
+            }
+        }
+        ast::Expr::Closure { body, .. } => collect_local_callable_bindings_from_expr(body, out),
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+            collect_local_callable_bindings_from_expr(inner, out)
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_local_callable_bindings_from_expr(try_expr, out);
+            collect_local_callable_bindings_from_expr(catch_expr, out);
+        }
+        ast::Expr::Unary { expr, .. } => collect_local_callable_bindings_from_expr(expr, out),
+        ast::Expr::Binary { left, right, .. } => {
+            collect_local_callable_bindings_from_expr(left, out);
+            collect_local_callable_bindings_from_expr(right, out);
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_local_callable_bindings_from_expr(start, out);
+            collect_local_callable_bindings_from_expr(end, out);
+        }
+        ast::Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_local_callable_bindings_from_expr(item, out);
+            }
+        }
+        ast::Expr::Index { base, index } => {
+            collect_local_callable_bindings_from_expr(base, out);
+            collect_local_callable_bindings_from_expr(index, out);
         }
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
@@ -12364,9 +12994,99 @@ mod tests {
     }
 
     #[test]
-    fn verify_reports_unsupported_native_let_pattern_lowering() {
+    fn cross_backend_closure_capture_executes_consistently() {
+        let project_name = format!(
+            "fozzylang-closure-native-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let base: i32 = 9\n    let add = |x: i32| x + base;\n    return add(8)\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 17);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_let_pattern_destructuring_executes_consistently() {
+        let project_name = format!(
+            "fozzylang-let-pattern-native-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "enum Maybe { Some(i32), None }\nfn main() -> i32 {\n    let Maybe::Some(v) = Maybe::Some(41);\n    return v + 1\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 42);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verify_accepts_native_let_pattern_lowering() {
         let file_name = format!(
-            "fozzylang-native-let-pattern-unsupported-{}.fzy",
+            "fozzylang-native-let-pattern-supported-{}.fzy",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after epoch")
@@ -12380,19 +13100,17 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
-            diag.message.contains(
-                "native backend does not support pattern destructuring in `let` statements",
-            )
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message.contains("pattern destructuring in `let` statements")
         }));
 
         let _ = std::fs::remove_file(path);
     }
 
     #[test]
-    fn verify_reports_unsupported_native_closure_lowering() {
+    fn verify_accepts_native_closure_lowering() {
         let file_name = format!(
-            "fozzylang-native-closure-unsupported-{}.fzy",
+            "fozzylang-native-closure-supported-{}.fzy",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after epoch")
@@ -12406,9 +13124,33 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message.contains("closure/lambda expressions")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_unsupported_non_let_closure_usage() {
+        let file_name = format!(
+            "fozzylang-native-closure-non-let-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn takes(cb: fn(i32) -> i32) -> i32 {\n    return cb(2)\n}\nfn main() -> i32 {\n    return takes(|x: i32| x + 1)\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
         assert!(output.diagnostic_details.iter().any(|diag| {
             diag.message
-                .contains("native backend does not support closure/lambda expressions")
+                .contains("native backend only supports closures bound directly in `let` statements")
         }));
 
         let _ = std::fs::remove_file(path);
