@@ -66,6 +66,20 @@ def main() -> int:
                 f"canonical native plan wiring missing required marker: `{marker}`"
             )
 
+    cfg_builder_calls = src.count("build_control_flow_cfg(")
+    if cfg_builder_calls != 2:
+        errors.append(
+            "canonical cfg construction drift: expected exactly 2 `build_control_flow_cfg(` occurrences "
+            f"(declaration + canonical-plan builder), found {cfg_builder_calls}"
+        )
+
+    cfg_verify_calls = src.count("verify_control_flow_cfg(&cfg)?;")
+    if cfg_verify_calls != 1:
+        errors.append(
+            "canonical cfg verification drift: expected exactly 1 shared verification call in canonical-plan builder, "
+            f"found {cfg_verify_calls}"
+        )
+
     if (
         "array/index expressions" in src
         and "detected parser-recognized expressions without full lowering parity" in src
