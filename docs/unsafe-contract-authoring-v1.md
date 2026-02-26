@@ -20,6 +20,7 @@ Use:
   - `reason`
   - `invariant`
   - `owner`
+  - `owner_id` (resolved provenance identity)
   - `scope`
   - `risk_class` (`memory|ffi|process|io|concurrency|crypto|other`)
   - `proof_ref` (`trace://|test://|rfc://|gate://|run://|ci://`)

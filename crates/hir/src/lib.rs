@@ -10,7 +10,6 @@ pub struct TypedFunction {
     pub return_type: Type,
     pub body: Vec<Stmt>,
     pub is_unsafe: bool,
-    pub unsafe_meta: Option<ast::UnsafeMeta>,
     pub is_async: bool,
     pub is_extern: bool,
     pub abi: Option<String>,
@@ -68,6 +67,7 @@ pub struct UnsafeContractSite {
     pub reason: Option<String>,
     pub invariant: Option<String>,
     pub owner: Option<String>,
+    pub owner_id: Option<String>,
     pub scope: Option<String>,
     pub risk_class: Option<String>,
     pub proof_ref: Option<String>,
@@ -352,7 +352,6 @@ pub fn lower(module: &Module) -> TypedModule {
                     return_type: function.return_type.clone(),
                     body: function.body.clone(),
                     is_unsafe: function.is_unsafe,
-                    unsafe_meta: function.unsafe_meta.clone(),
                     is_async: function.is_async,
                     is_extern: function.is_extern,
                     abi: function.abi.clone(),
@@ -372,7 +371,6 @@ pub fn lower(module: &Module) -> TypedModule {
                     return_type: Type::Void,
                     body: test.body.clone(),
                     is_unsafe: false,
-                    unsafe_meta: None,
                     is_async: false,
                     is_extern: false,
                     abi: None,
@@ -1687,23 +1685,6 @@ fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)
 }
 
 fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String> {
-    fn resolve_unsafe_callee(unsafe_functions: &BTreeSet<String>, callee: &str) -> Option<String> {
-        if unsafe_functions.contains(callee) {
-            return Some(callee.to_string());
-        }
-        let suffix = format!(".{callee}");
-        let mut matched: Option<String> = None;
-        for candidate in unsafe_functions {
-            if candidate.ends_with(&suffix) {
-                if matched.is_some() {
-                    return None;
-                }
-                matched = Some(candidate.clone());
-            }
-        }
-        matched
-    }
-
     fn analyze_stmt(
         function_name: &str,
         stmt: &Stmt,
@@ -2061,6 +2042,23 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
         }
     }
     violations
+}
+
+fn resolve_unsafe_callee(unsafe_functions: &BTreeSet<String>, callee: &str) -> Option<String> {
+    if unsafe_functions.contains(callee) {
+        return Some(callee.to_string());
+    }
+    let suffix = format!(".{callee}");
+    let mut matched: Option<String> = None;
+    for candidate in unsafe_functions {
+        if candidate.ends_with(&suffix) || candidate == callee {
+            if matched.is_some() {
+                return None;
+            }
+            matched = Some(candidate.clone());
+        }
+    }
+    matched
 }
 
 fn analyze_ownership_block(
@@ -2548,15 +2546,38 @@ fn is_alloc_expr(expr: &Expr) -> bool {
 }
 
 fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
+    #[derive(Debug, Clone)]
+    struct CallShape {
+        params: Vec<ast::Param>,
+        return_type: Type,
+        is_extern: bool,
+        is_unsafe: bool,
+    }
     let mut violations = Vec::new();
     let signatures = functions
         .iter()
-        .map(|function| (function.name.clone(), function.params.clone()))
+        .map(|function| {
+            (
+                function.name.clone(),
+                CallShape {
+                    params: function.params.clone(),
+                    return_type: function.return_type.clone(),
+                    is_extern: function.is_extern,
+                    is_unsafe: function.is_unsafe,
+                },
+            )
+        })
         .collect::<BTreeMap<_, _>>();
     for function in functions {
         let mut next_root = 1usize;
         let mut roots = BTreeMap::<String, usize>::new();
         let mut freed_roots = BTreeSet::<usize>::new();
+        for param in &function.params {
+            if param.ty.is_pointer_like() || matches!(param.ty, Type::Ref { .. }) {
+                roots.insert(param.name.clone(), next_root);
+                next_root += 1;
+            }
+        }
         for stmt in &function.body {
             let used = collect_stmt_idents(stmt);
             for used_name in used {
@@ -2579,6 +2600,24 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
                         if let Some(root) = roots.get(from).copied() {
                             roots.insert(name.clone(), root);
                         }
+                    } else if let Expr::FieldAccess { base, .. } = value {
+                        if let Expr::Ident(from) = base.as_ref() {
+                            if let Some(root) = roots.get(from).copied() {
+                                roots.insert(name.clone(), root);
+                            }
+                        }
+                    } else if let Expr::Call { callee, args } = value {
+                        if let Some(shape) = signatures.get(callee) {
+                            if matches!(shape.return_type, Type::Ref { .. } | Type::Ptr { .. }) {
+                                let maybe_root = args.iter().find_map(|arg| match arg {
+                                    Expr::Ident(arg_name) => roots.get(arg_name).copied(),
+                                    _ => None,
+                                });
+                                if let Some(root) = maybe_root {
+                                    roots.insert(name.clone(), root);
+                                }
+                            }
+                        }
                     }
                 }
                 Stmt::LetPattern { .. } => {}
@@ -2588,6 +2627,22 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
                 } => {
                     if let Some(root) = roots.get(from).copied() {
                         roots.insert(target.clone(), root);
+                    }
+                }
+                Stmt::Assign {
+                    target,
+                    value: Expr::Call { callee, args },
+                } => {
+                    if let Some(shape) = signatures.get(callee) {
+                        if matches!(shape.return_type, Type::Ref { .. } | Type::Ptr { .. }) {
+                            let maybe_root = args.iter().find_map(|arg| match arg {
+                                Expr::Ident(arg_name) => roots.get(arg_name).copied(),
+                                _ => None,
+                            });
+                            if let Some(root) = maybe_root {
+                                roots.insert(target.clone(), root);
+                            }
+                        }
                     }
                 }
                 Stmt::Assign { .. } => {}
@@ -2604,10 +2659,10 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
                             }
                         }
                     }
-                    if let Some(params) = signatures.get(callee) {
+                    if let Some(shape) = signatures.get(callee) {
                         let mut mut_ref_aliases = BTreeMap::<String, usize>::new();
                         let mut shared_ref_aliases = BTreeMap::<String, usize>::new();
-                        for (index, param) in params.iter().enumerate() {
+                        for (index, param) in shape.params.iter().enumerate() {
                             let Some(Expr::Ident(arg_name)) = args.get(index) else {
                                 continue;
                             };
@@ -2633,6 +2688,18 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
                                     "function `{}` call `{}` aliases mutable and shared borrows for `{}`",
                                     function.name, callee, name
                                 ));
+                            }
+                        }
+                        if shape.is_extern && shape.is_unsafe {
+                            for (index, param) in shape.params.iter().enumerate() {
+                                let Some(Expr::Ident(arg_name)) = args.get(index) else {
+                                    continue;
+                                };
+                                if param.name.ends_with("_owned") {
+                                    if let Some(root) = roots.remove(arg_name) {
+                                        freed_roots.insert(root);
+                                    }
+                                }
                             }
                         }
                     }
@@ -3628,13 +3695,15 @@ fn collect_unsafe_contract_sites_from_expr(
             }
         }
         Expr::Call { callee, args } => {
-            if !in_unsafe_context && unsafe_functions.contains(callee) {
-                let snippet = format!("{function_name}: call to unsafe `{callee}`");
-                out.push(unsafe_violation_site(
-                    function_name,
-                    &snippet,
-                    in_async_context,
-                ));
+            if !in_unsafe_context {
+                if let Some(unsafe_callee) = resolve_unsafe_callee(unsafe_functions, callee) {
+                    let snippet = format!("{function_name}: call to unsafe `{unsafe_callee}`");
+                    out.push(unsafe_violation_site(
+                        function_name,
+                        &snippet,
+                        in_async_context,
+                    ));
+                }
             }
             for arg in args {
                 collect_unsafe_contract_sites_from_expr(
@@ -3830,6 +3899,7 @@ fn generated_unsafe_contract_site(
     };
     let site_id = stable_unsafe_site_id(kind, function_name, snippet);
     let proof_ref = format!("gate://compiler-generated/{function_name}/{site_id}");
+    let owner_id = format!("owner::{function_name}::{owner}");
     UnsafeContractSite {
         site_id,
         kind: kind.to_string(),
@@ -3838,6 +3908,7 @@ fn generated_unsafe_contract_site(
         reason: Some(reason),
         invariant: Some(format!("owner_live({owner})")),
         owner: Some(owner.to_string()),
+        owner_id: Some(owner_id),
         scope: Some(scope),
         risk_class: Some(risk_class),
         proof_ref: Some(proof_ref),
@@ -3859,6 +3930,7 @@ fn unsafe_violation_site(
         reason: None,
         invariant: None,
         owner: None,
+        owner_id: None,
         scope: None,
         risk_class: None,
         proof_ref: None,

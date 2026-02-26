@@ -10673,7 +10673,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-safe-extern-c-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "ext c fn c_read(ptr: *u8) -> i32;\nfn main() -> i32 {\n    return 0\n}\n",
+            "ext c fn c_read(buf_owned: *u8) -> i32;\nfn main() -> i32 {\n    return 0\n}\n",
         )
         .expect("source should be written");
 

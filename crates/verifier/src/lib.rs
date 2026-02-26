@@ -131,11 +131,13 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         if function.is_extern
             && function.abi.as_deref() == Some("c")
             && !function.is_unsafe
-            && (function
-                .params
-                .iter()
-                .any(|param| param.ty.is_pointer_like())
-                || function.return_type.is_pointer_like())
+            && (function.return_type.is_pointer_like()
+                || function.params.iter().any(|param| {
+                    param.ty.is_pointer_like()
+                        && (param.name.ends_with("_owned")
+                            || param.name.ends_with("_out")
+                            || param.name.ends_with("_inout"))
+                }))
         {
             report.diagnostics.push(Diagnostic::new(
                 Severity::Error,
@@ -197,6 +199,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 site.reason.as_deref().is_none_or(str::is_empty)
                     || site.invariant.as_deref().is_none_or(str::is_empty)
                     || site.owner.as_deref().is_none_or(str::is_empty)
+                    || site.owner_id.as_deref().is_none_or(str::is_empty)
                     || site.scope.as_deref().is_none_or(str::is_empty)
                     || site.risk_class.as_deref().is_none_or(str::is_empty)
                     || site.proof_ref.as_deref().is_none_or(str::is_empty)
@@ -277,6 +280,34 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 ),
                 Some(
                     "async + unsafe requires explicit invariants and deterministic evidence links"
+                        .to_string(),
+                ),
+            ));
+        }
+        let malformed_invariants = module
+            .unsafe_contract_sites
+            .iter()
+            .filter(|site| site.kind != "unsafe_violation_callsite")
+            .filter(|site| {
+                !unsafe_invariant_matches_owner(
+                    site.invariant.as_deref().unwrap_or_default(),
+                    site.owner.as_deref().unwrap_or_default(),
+                )
+            })
+            .count();
+        if malformed_invariants > 0 {
+            report.diagnostics.push(Diagnostic::new(
+                if policy.strict_unsafe_contracts || policy.safe_profile {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                },
+                format!(
+                    "{} unsafe site(s) have malformed invariant metadata",
+                    malformed_invariants
+                ),
+                Some(
+                    "expected semantic invariant form `owner_live(<owner>)` matching the resolved owner"
                         .to_string(),
                 ),
             ));
@@ -483,6 +514,15 @@ fn unsafe_scope_matches(module_name: &str, pattern: &str) -> bool {
     module_name == pattern
 }
 
+fn unsafe_invariant_matches_owner(invariant: &str, owner: &str) -> bool {
+    let invariant = invariant.trim();
+    let owner = owner.trim();
+    if invariant.is_empty() || owner.is_empty() {
+        return false;
+    }
+    invariant == format!("owner_live({owner})")
+}
+
 #[cfg(test)]
 mod tests {
     use core::Capability;
@@ -498,6 +538,7 @@ mod tests {
             reason: Some("compiler-generated".to_string()),
             invariant: Some("owner_live(scope_root)".to_string()),
             owner: Some("scope_root".to_string()),
+            owner_id: Some("owner::main::scope_root".to_string()),
             scope: Some("main::unsafe_block".to_string()),
             risk_class: Some("memory".to_string()),
             proof_ref: Some("gate://compiler-generated/main/usite_test".to_string()),
@@ -514,6 +555,7 @@ mod tests {
             reason: None,
             invariant: None,
             owner: None,
+            owner_id: None,
             scope: None,
             risk_class: None,
             proof_ref: None,

@@ -15854,6 +15854,27 @@ mod tests {
     }
 
     #[test]
+    fn release_profile_disables_runtime_contract_forcing() {
+        let path = std::env::temp_dir().join(format!(
+            "fozzylang-release-contract-force-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        ));
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    requires false\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        let parsed = parse_program(&path).expect("source should parse");
+        let (_typed, fir) = super::lower_fir_cached(&parsed);
+        assert!(super::compute_forced_main_return(&fir, true).is_some());
+        assert!(super::compute_forced_main_return(&fir, false).is_none());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn emit_ir_includes_llvm_and_cranelift_forms() {
         let file_name = format!(
             "fozzylang-ir-{}.fzy",

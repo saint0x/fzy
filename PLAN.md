@@ -138,14 +138,14 @@
 - [✅] Keep unsafe metadata non-blocking by default (developer empowerment first):
 - [✅] optional unsafe contract metadata attached to unsafe islands/functions (`reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`).
 - [✅] missing metadata must not block normal compile/build/check by default.
-- [ ] malformed metadata should produce diagnostics in lint mode; become blocking only in strict unsafe-audit policy modes.
+- [✅] malformed metadata should produce diagnostics in lint mode; become blocking only in strict unsafe-audit policy modes.
 - [✅] Add policy-driven strictness controls in `fozzy.toml` and CLI:
 - [✅] unsafe policy defaults: compile enforcement of unsafe context on, metadata-required off.
 - [✅] strict mode toggles for CI/release: fail on missing/invalid metadata and fail on unsafe budget drift.
 - [✅] unsafe scope controls (`deny_unsafe_in` / allowlisted modules) for hardened repositories.
 - [✅] Upgrade compiler/runtime observability with zero release overhead:
 - [✅] dev/verify traces should include unsafe enter/exit site accounting and contract hash when metadata exists.
-- [ ] release path must keep unsafe boundary checks compile-time only with no hot-path runtime tax.
+- [✅] release path must keep unsafe boundary checks compile-time only with no hot-path runtime tax.
 - [✅] Upgrade `fz` DX surfaces to make unsafe behavior obvious and auditable:
 - [✅] `fz check`/`fz build` report exact unsafe-context violations with fix guidance.
 - [✅] `fz audit unsafe` must report real unsafe islands/functions/imports (not metadata expressions), risk classes, coverage, and budgets.
@@ -162,11 +162,11 @@
 
 ### Unsafe Architecture Closure Additions (Production, No Backwards Compatibility)
 - [✅] Add first-class `unsafe fn` contract syntax and semantics (not only unsafe block metadata), and wire it through parser -> AST -> HIR -> FIR -> verifier.
-- [ ] Remove nullable/placeholder `unsafe_meta` behavior for unsafe functions in production paths; unsafe declarations must carry typed contract data when policy requires it.
-- [ ] Unify ownership metadata binding to resolved provenance identities (for example `owner_id`) instead of string-name-only local symbol matching.
-- [ ] Extend owner/provenance resolution beyond local `alloc` roots to inter-procedural ownership sources (params, returns, field projections, and validated FFI handoffs).
-- [ ] Replace parser-only unsafe invariant DSL validation with semantic predicate checking against ownership/provenance facts in verifier passes.
-- [ ] Enforce one symbol canonicalization pipeline across all executable bodies, including `test` blocks and closure/task bodies, so unsafe calls resolve identically to regular calls.
+- [✅] Remove nullable/placeholder `unsafe_meta` behavior for unsafe functions in production paths; unsafe declarations must carry typed contract data when policy requires it.
+- [✅] Unify ownership metadata binding to resolved provenance identities (for example `owner_id`) instead of string-name-only local symbol matching.
+- [✅] Extend owner/provenance resolution beyond local `alloc` roots to inter-procedural ownership sources (params, returns, field projections, and validated FFI handoffs).
+- [✅] Replace parser-only unsafe invariant DSL validation with semantic predicate checking against ownership/provenance facts in verifier passes.
+- [✅] Enforce one symbol canonicalization pipeline across all executable bodies, including `test` blocks and closure/task bodies, so unsafe calls resolve identically to regular calls.
 - [✅] Add explicit native lowering parity tests proving local unsafe function calls in tests/examples lower and execute in LLVM + Cranelift without unresolved-call regressions.
 - [✅] Move strict unsafe enforcement from `audit unsafe`-only env toggles to first-class build policy in `check`/`build`/`test`/`run` (profile-driven, not env-only).
 - [✅] Replace `FZ_UNSAFE_STRICT` as the primary control plane with explicit profile policy (`dev` warn, production/release block) and stable CLI/config controls.
