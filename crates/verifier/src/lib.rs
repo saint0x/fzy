@@ -127,6 +127,30 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         }
     }
 
+    for function in &module.typed_functions {
+        if function.is_extern
+            && function.abi.as_deref() == Some("c")
+            && !function.is_unsafe
+            && (function
+                .params
+                .iter()
+                .any(|param| param.ty.is_pointer_like())
+                || function.return_type.is_pointer_like())
+        {
+            report.diagnostics.push(Diagnostic::new(
+                Severity::Error,
+                format!(
+                    "extern C import `{}` exposes pointer-like contract and must be declared `ext unsafe c fn`",
+                    function.name
+                ),
+                Some(
+                    "mark this import as `ext unsafe c fn` or change signature to a safe non-pointer contract"
+                        .to_string(),
+                ),
+            ));
+        }
+    }
+
     if !module.unsafe_contract_sites.is_empty() {
         let module_name = module.name.as_str();
         if !policy.allow_unsafe_in.is_empty()

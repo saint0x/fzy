@@ -10663,4 +10663,29 @@ mod tests {
         let proof_ref = format!("trace://{}#site=usite_demo", path.display());
         assert!(!super::proof_ref_valid(&proof_ref));
     }
+
+    #[test]
+    fn check_rejects_pointer_like_safe_extern_c_import() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-safe-extern-c-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "ext c fn c_read(ptr: *u8) -> i32;\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Check {
+                path: source.clone(),
+            },
+            Format::Text,
+        )
+        .expect("check command should return diagnostics");
+        assert!(output.contains("must be declared `ext unsafe c fn`"));
+
+        let _ = std::fs::remove_file(source);
+    }
 }
