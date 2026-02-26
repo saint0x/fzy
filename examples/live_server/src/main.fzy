@@ -11,6 +11,25 @@ mod services;
 mod runtime;
 mod cli;
 mod tests;
+
+fn feature_surface_demo(seed: i32) -> i32 {
+    let values = [seed, seed + 1, seed + 2];
+    let idx = 1;
+    let add = |x: i32| x + values[idx];
+    return add(2);
+}
+
 fn main() -> i32 {
-    model.preflight() cli.boot() services.boot_all() runtime.start() api.touch() return 0
+    let surface = feature_surface_demo(time.now());
+    if surface > 0 {
+        pulse();
+    } else {
+        pulse();
+    }
+    model.preflight();
+    cli.boot();
+    services.boot_all();
+    runtime.start();
+    api.touch();
+    return 0;
 }

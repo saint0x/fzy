@@ -64,6 +64,7 @@ This gate includes:
 - warning-free policy gate (`RUSTFLAGS="-D warnings"`)
 - workspace test gate (`cargo test --workspace`)
 - parity + equivalence representative language probes
+- safety-claim integrity gate (`scripts/safety_claim_integrity_gate.py`)
 - release-blocking FFI examples gate (`fz headers` + `fz abi-check`)
 - strict deterministic and host-backed Fozzy lifecycle
 - full command-surface checks

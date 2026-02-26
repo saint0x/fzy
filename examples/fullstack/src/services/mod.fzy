@@ -3,6 +3,14 @@ mod store;
 mod replication;
 mod metrics;
 mod http;
+use auth::init as auth_init;
+pub use store::init;
+
 fn boot_all() -> i32 {
-    auth.init() store.init() replication.init() metrics.init() http.start() return 0
+    auth_init();
+    init();
+    replication.init();
+    metrics.init();
+    http.start();
+    return 0;
 }

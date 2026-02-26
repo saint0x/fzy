@@ -8,7 +8,7 @@
 | `use_alias_support` | implemented | `use path as alias` is parsed and preserved for downstream stages. |
 | `use_wildcard_support` | implemented | `use path::*` is parsed and preserved for downstream stages. |
 | `use_group_support` | implemented | `use path::{a,b}` (including nested groups) expands into concrete imports. |
-| `pub_use_reexport_support` | implemented | `pub use ...` parses as stable re-export/import metadata in module state. |
+| `pub_use_reexport_support` | implemented | `pub use ...` parses and participates in symbol resolution as stable re-export support. |
 | `let_mutability_semantics` | implemented | `let` is immutable by default; reassignment requires `let mut` and type-check enforcement. |
 | `let_pattern_destructuring` | partial | Variant-pattern destructuring in `let` lowers natively for literal variant initializers; `match` variant payload bindings lower for literal enum scrutinees without guards and are explicitly diagnosed otherwise. Struct-pattern destructuring now supports first-class `let`/`match` bindings for literal struct sources and hard-diagnoses unsupported non-literal native binding shapes; tuple-pattern parity remains open. |
 | `const_declaration_surface` | implemented | Module-level `const NAME: Type = expr;` is parsed/typed and resolved in function scope. |

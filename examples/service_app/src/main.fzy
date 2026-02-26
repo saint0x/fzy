@@ -2,15 +2,39 @@ use core.time;
 use core.fs;
 use core.net;
 use core.thread;
+
 mod api;
 mod model;
 mod services;
 mod runtime;
 mod cli;
 mod tests;
+
+fn feature_surface_demo(seed: i32) -> i32 {
+    let values = [seed, seed + 1, seed + 2];
+    let idx = 1;
+    let add = |x: i32| x + values[idx];
+    return add(2);
+}
+
 fn main() -> i32 {
-    requires true model.preflight() cli.boot() services.boot_all() runtime.start() api.touch() let seed = time.now() match seed {
-        0 => pulse(), _ => pulse()
+    requires true;
+    let surface = feature_surface_demo(time.now());
+    if surface > 0 {
+        pulse();
+    } else {
+        pulse();
     }
-    ensures true return 0
+    model.preflight();
+    cli.boot();
+    services.boot_all();
+    runtime.start();
+    api.touch();
+    let seed = time.now();
+    match seed {
+        0 => pulse(),
+        _ => pulse(),
+    }
+    ensures true;
+    return 0;
 }

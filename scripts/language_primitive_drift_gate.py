@@ -42,7 +42,7 @@ def main() -> int:
         "fn parse_use_tree(" in parser_src
         and "if self.consume(&TokenKind::LBrace)" in parser_src
     )
-    has_pub_use = "self.module.imports.push(format!(\"pub {import}\"))" in parser_src
+    has_pub_use = "import.is_pub = true;" in parser_src
     has_let_pattern = (
         "LetPattern" in ast_src
         and "let pattern = self.parse_pattern()?" in parser_src

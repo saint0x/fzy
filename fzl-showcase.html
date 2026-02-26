@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FZL Language Showcase</title>
+  <style>
+    :root {
+      --bg: #09111a;
+      --bg2: #0f1d2b;
+      --panel: rgba(8, 16, 24, 0.8);
+      --text: #e7f1f8;
+      --muted: #8ba1b3;
+      --line: #183144;
+      --kw: #69d3ff;
+      --type: #ffd27a;
+      --fn: #9df0b6;
+      --num: #ffb084;
+      --str: #b6f7a5;
+      --char: #ffe48b;
+      --comment: #6f8a9c;
+      --attr: #ff9d9d;
+      --op: #c7d8e4;
+      --const: #9cc7ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Space Grotesk", "Avenir Next", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(1200px 700px at 10% -10%, #103450 0%, transparent 60%),
+        radial-gradient(900px 500px at 90% -20%, #3a2a14 0%, transparent 65%),
+        linear-gradient(160deg, var(--bg), var(--bg2));
+      color: var(--text);
+      min-height: 100vh;
+      padding: 28px;
+    }
+    .wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      backdrop-filter: blur(6px);
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 30px 90px rgba(0,0,0,.35);
+    }
+    .head {
+      padding: 18px 22px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .title { font-size: 1.2rem; font-weight: 700; letter-spacing: .01em; }
+    .sub { color: var(--muted); font-size: .92rem; }
+    .code-wrap { padding: 0; }
+    pre {
+      margin: 0;
+      padding: 24px;
+      overflow: auto;
+      line-height: 1.45;
+      font-size: 13.5px;
+      tab-size: 4;
+      font-family: "IBM Plex Mono", "SF Mono", "Menlo", monospace;
+      background: rgba(4, 9, 14, .55);
+    }
+    .comment { color: var(--comment); }
+    .keyword { color: var(--kw); font-weight: 600; }
+    .type { color: var(--type); }
+    .fn { color: var(--fn); }
+    .number { color: var(--num); }
+    .string { color: var(--str); }
+    .char { color: var(--char); }
+    .attribute { color: var(--attr); }
+    .operator { color: var(--op); }
+    .constant { color: var(--const); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="head">
+      <div class="title">FZL Full Language Showcase</div>
+      <div class="sub">Large syntax-highlighted exhibition covering language surface + runtime patterns</div>
+    </div>
+    <div class="code-wrap">
+      <pre><code id="fzl-code"></code></pre>
+    </div>
+  </div>
+
+  <script id="fzl-source" type="text/plain">// ============================================================
+// FZL SHOWCASE: PRODUCTION-STYLE CODE EXHIBITION
+// ============================================================
+// Goal:
+// - show how real FZL files look with broad language coverage
+// - annotate each section so new readers know what each block means
+
+// ------------------------------------------------------------
+// SECTION 1: module imports
+// ------------------------------------------------------------
+// These `use` lines pull standard library modules into scope.
+use core.time;
+use core.fs;
+use core.net;
+use core.proc;
+use core.mem;
+use core.thread;
+use core.sync.atomic;
+use core.encoding;
+use core.error;
+use core.path;
+use core.collections;
+
+// These `mod` lines declare local project modules.
+mod api;
+mod model;
+mod runtime;
+mod services;
+mod cli;
+mod tests;
+
+// ------------------------------------------------------------
+// SECTION 2: C-compatible data layout
+// ------------------------------------------------------------
+// `#[repr(C)]` freezes layout for ABI/FFI compatibility.
+#[repr(C)]
+struct Header {
+    // Protocol/schema version field.
+    version: u32,
+    // Bit flags for transport/runtime behavior.
+    flags: u32,
+    // Pointer-sized payload length for host parity.
+    payload_len: usize,
+}
+
+// C-compatible enum with canonical `Type::Variant` syntax.
+#[repr(C)]
+enum Message {
+    // No payload variant.
+    Message::Ping,
+    // No payload variant.
+    Message::Pong,
+    // Tuple-style payload variant.
+    Message::Data(i32, i32),
+    // Error variant with code payload.
+    Message::Err(i32),
+}
+
+// ------------------------------------------------------------
+// SECTION 3: trait + impl (interface + implementation)
+// ------------------------------------------------------------
+trait Codec {
+    // Encode hook contract.
+    fn encode(v: i32) -> i32;
+    // Decode hook contract.
+    fn decode(v: i32) -> i32;
+}
+
+// Concrete codec type with one config field.
+struct XorCodec { key: i32 }
+
+// Trait implementation block.
+impl Codec for XorCodec {
+    // Demonstrates arithmetic + bitwise expressions.
+    fn encode(v: i32) -> i32 {
+        return (v ^ 0x5A5A) + 7
+    }
+    // Reverse operation for round-trip behavior.
+    fn decode(v: i32) -> i32 {
+        return (v - 7) ^ 0x5A5A
+    }
+}
+
+// ------------------------------------------------------------
+// SECTION 4: FFI declarations and exported C ABI function
+// ------------------------------------------------------------
+// Imported external symbol.
+extern "C" fn c_add(left: i32, right: i32) -> i32;
+
+// Exported symbol with explicit panic boundary behavior.
+#[ffi_panic(abort)]
+pub extern "C" fn fz_add_safe(left: i32, right: i32) -> i32 {
+    return left + right
+}
+
+// ------------------------------------------------------------
+// SECTION 5: operators showcase
+// ------------------------------------------------------------
+fn signed_ops(a: i32, b: i32) -> i32 {
+    // Basic arithmetic.
+    let x: i32 = a + b
+    let y: i32 = a - b
+    let z: i32 = (x * y) / ((b | 1) + 1)
+    // Modulo.
+    let m: i32 = z % 97
+    // Shifts.
+    let sh: i32 = (m << 2) >> 1
+    // Bitwise not/and/xor.
+    let bw: i32 = (~sh) & 0x00FF
+    let bx: i32 = bw ^ 0x0033
+    // Logical short-circuit chain.
+    if bx > 0 && true || false {
+        return bx
+    }
+    // Unary minus.
+    return 0 - bx
+}
+
+// ------------------------------------------------------------
+// SECTION 6: match statement forms
+// ------------------------------------------------------------
+fn match_demo(input: i32) -> i32 {
+    match input {
+        // Literal arm.
+        0 => 10,
+        // Early-return arm.
+        1 => return 20,
+        // Or-pattern arm.
+        2 | 3 => 30,
+        // Catch-all arm.
+        _ => 40,
+    }
+    // Post-match return.
+    return 99
+}
+
+// Enum-pattern match using canonical qualified variants.
+fn enum_demo(msg: Message) -> i32 {
+    match msg {
+        Message::Ping => 1,
+        Message::Pong => 2,
+        Message::Data => 3,
+        Message::Err => return -1,
+        _ => 0,
+    }
+    return 7
+}
+
+// ------------------------------------------------------------
+// SECTION 7: loop/control-flow family
+// ------------------------------------------------------------
+fn loops_demo(limit: i32) -> i32 {
+    let total: i32 = 0
+    let i: i32 = 0
+
+    // While loop with break/continue.
+    while i < limit {
+        i += 1
+        if i % 2 == 0 {
+            continue
+        }
+        total += i
+        if total > 50 {
+            break
+        }
+    }
+
+    // C-style for loop.
+    for ; i < limit + 10; i += 1 {
+        total += 1
+        if total > 64 {
+            break
+        }
+    }
+
+    // Range-based for-in loop (inclusive upper bound).
+    for n in 0..=8 {
+        if n == 3 {
+            continue
+        }
+        total += n
+    }
+
+    // Infinite `loop` with explicit break.
+    loop {
+        total += 1
+        if total > 80 {
+            break
+        }
+    }
+
+    return total
+}
+
+// ------------------------------------------------------------
+// SECTION 8: arrays and indexing
+// ------------------------------------------------------------
+fn arrays_and_indexing() -> i32 {
+    // Fixed-size array literal.
+    let arr: [i32; 5] = [4, 8, 15, 16, 23]
+    // Indexed reads.
+    let head: i32 = arr[0]
+    let tail: i32 = arr[4]
+    return head + tail
+}
+
+// ------------------------------------------------------------
+// SECTION 9: function types / higher-order shape
+// ------------------------------------------------------------
+fn higher_order(cb: fn(i32) -> i32, v: i32) -> i32 {
+    // `_` pattern intentionally ignores value while keeping type surface.
+    let _ = cb
+    return v
+}
+
+// Identity function used by higher-order demo.
+fn id(v: i32) -> i32 { return v }
+
+// ------------------------------------------------------------
+// SECTION 10: async + scheduler primitives
+// ------------------------------------------------------------
+async fn async_worker(id: i32) -> i32 {
+    // Precondition contract.
+    requires id >= 0
+    // Deferred cleanup/log side effect.
+    defer observability.log("worker.defer")
+    // Deadline/cancellation/yieldpoint surface.
+    timeout(250)
+    checkpoint()
+    yield()
+    pulse()
+    let tick = time.now()
+    // Postcondition contract.
+    ensures tick >= 0
+    // Runtime receive contract.
+    if recv() != 0 {
+        return -1
+    }
+    return id + 100
+}
+
+async fn async_orchestrator() -> i32 {
+    // Spawn a task by qualified symbol.
+    let handle = spawn(runtime.worker.run)
+    // Await another async function.
+    let code = await async_worker(7)
+    // Join spawned task.
+    let joined = join(handle)
+    let _ = joined
+    return code
+}
+
+// ------------------------------------------------------------
+// SECTION 10B: multi-threaded parallelism + concurrency patterns
+// ------------------------------------------------------------
+fn concurrency_parallel_demo() -> i32 {
+    // Fan-out: spawn independent worker tasks.
+    let h1 = spawn(runtime.worker.run)
+    let h2 = thread.spawn(runtime.scheduler.tick)
+    let h3 = spawn_ctx(runtime.worker.run, 42)
+
+    // Optional scheduler/cancellation control points.
+    deadline(1000)
+    checkpoint()
+    pulse()
+
+    // Fan-in: join handles and aggregate results.
+    let r1 = join(h1)
+    let r2 = join(h2)
+
+    // Demonstrate explicit cancellation path.
+    let _ = cancel_task(h3)
+
+    // Demonstrate task-group lifecycle APIs.
+    let g = task.group_begin()
+    let _ = task.group_spawn(g, runtime.worker.run)
+    let _ = task.group_spawn(g, runtime.scheduler.tick)
+    let _ = task.group_join(g)
+    let _ = task.group_cancel(g)
+
+    // Cooperative receive/checkpoint endpoint.
+    let rx = recv()
+    if rx != 0 {
+        return -1
+    }
+    return r1 + r2
+}
+
+// ------------------------------------------------------------
+// SECTION 11: host/runtime IO and process APIs
+// ------------------------------------------------------------
+fn host_and_io_showcase() -> i32 {
+    // Path composition + directory creation.
+    let root = path.join("tmp", "showcase")
+    let _ = fs.mkdir(root)
+
+    // JSON encoding + file write/read.
+    let payload = encoding.json_encode("{\"ok\":true}")
+    let file = path.join(root, "data.json")
+    fs.write(file, payload)
+    let raw = fs.read(file)
+
+    // Network bind/listen surface.
+    let listener = net.bind()
+    if listener >= 0 {
+        net.listen(listener)
+    }
+
+    // Process spawn/wait.
+    let proc_id = proc.spawn("echo", ["fzl", "showcase"])
+    let exit = proc.wait(proc_id)
+    let _ = exit
+
+    // String predicate.
+    if str.contains(raw, "ok") == 1 {
+        return 0
+    }
+    return 1
+}
+
+// ------------------------------------------------------------
+// SECTION 12: semantic unsafe surface
+// ------------------------------------------------------------
+fn safety_surface() -> i32 {
+    // Unsafe justification string (auditable).
+    unsafe_reason("ffi boundary contract: validated layout + ownership")
+    // Unsafe semantic site (explicitly marked).
+    unsafe("manual pointer lifetime validated in verifier summary")
+    return 0
+}
+
+// ------------------------------------------------------------
+// SECTION 13: FFI call usage from safe function
+// ------------------------------------------------------------
+fn ffi_surface() -> i32 {
+    // Calls local exported ABI function.
+    let local: i32 = fz_add_safe(9, 12)
+    // Calls imported C function symbol.
+    let host: i32 = c_add(5, 8)
+    return local + host
+}
+
+// ------------------------------------------------------------
+// SECTION 14: contracts + error context
+// ------------------------------------------------------------
+fn contracts_and_errors(flag: bool) -> i32 {
+    // Function precondition.
+    requires flag == true
+    // Structured error context primitive.
+    let out = error.context("contracts_and_errors", 1)
+    // Function postcondition.
+    ensures out >= 0
+    return out
+}
+
+// ------------------------------------------------------------
+// SECTION 15: composed pipeline
+// ------------------------------------------------------------
+fn full_pipeline(seed: i32) -> i32 {
+    // Combine independent language/runtime feature demos.
+    let ops = signed_ops(seed, 11)
+    let mixed = loops_demo(14)
+    let mm = match_demo(seed % 5)
+    let em = enum_demo(Message::Ping)
+    let idx = arrays_and_indexing()
+    let ho = higher_order(id, seed)
+    let cc = concurrency_parallel_demo()
+    let io = host_and_io_showcase()
+    let sf = safety_surface()
+    let ct = contracts_and_errors(true)
+
+    let result = ops + mixed + mm + em + idx + ho + cc + io + sf + ct
+    if result > 0 {
+        return result
+    }
+    return 0
+}
+
+// ------------------------------------------------------------
+// SECTION 16: main entrypoint
+// ------------------------------------------------------------
+fn main() -> i32 {
+    // Typical boot sequence from example applications.
+    model.preflight()
+    cli.boot()
+    services.boot_all()
+    runtime.start()
+    api.touch()
+
+    // Seed from runtime clock.
+    let now: i32 = time.now()
+    let piped = full_pipeline(now & 255)
+
+    // Match with early returns and async branch.
+    match piped {
+        0 => return 2,
+        1 => return 3,
+        _ => {
+            let async_code = await async_orchestrator()
+            if async_code < 0 {
+                return 9
+            }
+            return piped % 127
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// SECTION 17: tests
+// ------------------------------------------------------------
+test "syntax-showcase-control-flow" {
+    // Verify loop family path returns positive value.
+    let out = loops_demo(12)
+    assert.eq_i32(out > 0, true)
+}
+
+test "syntax-showcase-operators" {
+    // Verify operator blend path is non-zero.
+    let out = signed_ops(13, 5)
+    assert.eq_i32(out != 0, true)
+}
+
+test "syntax-showcase-match" {
+    // Verify match arm selection.
+    let out = match_demo(2)
+    assert.eq_i32(out, 30)
+}
+
+// ============================================================
+// End of showcase
+// ============================================================
+</script>
+
+  <script>
+    const KEYWORDS = new Set([
+      "use","mod","fn","return","if","else","match","while","for","in","loop",
+      "break","continue","let","trait","impl","struct","enum","extern","pub","async",
+      "await","requires","ensures","defer","test"
+    ]);
+    const TYPES = new Set([
+      "i8","i16","i32","i64","i128","isize","u8","u16","u32","u64","u128","usize",
+      "f32","f64","bool","char","str","void"
+    ]);
+    const CONSTANTS = new Set(["true","false"]);
+
+    function esc(s) {
+      return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function highlightFzl(src) {
+      let i = 0;
+      let out = "";
+
+      const isAlpha = c => /[A-Za-z_]/.test(c);
+      const isAlnum = c => /[A-Za-z0-9_]/.test(c);
+      const isNum = c => /[0-9]/.test(c);
+
+      while (i < src.length) {
+        const ch = src[i];
+        const nx = src[i + 1] || "";
+
+        if (ch === "/" && nx === "/") {
+          let j = i;
+          while (j < src.length && src[j] !== "\n") j++;
+          out += `<span class=\"comment\">${esc(src.slice(i, j))}</span>`;
+          i = j;
+          continue;
+        }
+
+        if (ch === "#" && nx === "[") {
+          let j = i + 2;
+          while (j < src.length && src[j] !== "]") j++;
+          if (j < src.length) j++;
+          out += `<span class=\"attribute\">${esc(src.slice(i, j))}</span>`;
+          i = j;
+          continue;
+        }
+
+        if (ch === '"') {
+          let j = i + 1;
+          while (j < src.length) {
+            if (src[j] === "\\") { j += 2; continue; }
+            if (src[j] === '"') { j++; break; }
+            j++;
+          }
+          out += `<span class=\"string\">${esc(src.slice(i, j))}</span>`;
+          i = j;
+          continue;
+        }
+
+        if (ch === "'" && src[i+2] === "'") {
+          const j = i + 3;
+          out += `<span class=\"char\">${esc(src.slice(i, j))}</span>`;
+          i = j;
+          continue;
+        }
+
+        if (isNum(ch)) {
+          let j = i;
+          while (j < src.length && /[0-9A-Fa-fx_\.]/.test(src[j])) j++;
+          out += `<span class=\"number\">${esc(src.slice(i, j))}</span>`;
+          i = j;
+          continue;
+        }
+
+        if (isAlpha(ch)) {
+          let j = i;
+          while (j < src.length && isAlnum(src[j])) j++;
+          const word = src.slice(i, j);
+          if (KEYWORDS.has(word)) {
+            out += `<span class=\"keyword\">${esc(word)}</span>`;
+          } else if (TYPES.has(word)) {
+            out += `<span class=\"type\">${esc(word)}</span>`;
+          } else if (CONSTANTS.has(word)) {
+            out += `<span class=\"constant\">${esc(word)}</span>`;
+          } else {
+            let k = j;
+            while (k < src.length && /\s/.test(src[k])) k++;
+            if (src[k] === "(") out += `<span class=\"fn\">${esc(word)}</span>`;
+            else out += esc(word);
+          }
+          i = j;
+          continue;
+        }
+
+        if (/[:=+\-*/%&|!<>^~]/.test(ch)) {
+          let j = i + 1;
+          if (j < src.length && /[=<>|&:+\-]/.test(src[j])) j++;
+          out += `<span class=\"operator\">${esc(src.slice(i, j))}</span>`;
+          i = j;
+          continue;
+        }
+
+        out += esc(ch);
+        i++;
+      }
+      return out;
+    }
+
+    const source = document.getElementById("fzl-source").textContent;
+    document.getElementById("fzl-code").innerHTML = highlightFzl(source);
+  </script>
+</body>
+</html>

@@ -3,7 +3,7 @@ pub struct Module {
     pub name: String,
     pub items: Vec<Item>,
     pub modules: Vec<String>,
-    pub imports: Vec<String>,
+    pub imports: Vec<Import>,
     pub capabilities: Vec<String>,
     pub host_syscall_sites: usize,
     pub unsafe_sites: usize,
@@ -11,6 +11,14 @@ pub struct Module {
     pub reference_sites: usize,
     pub alloc_sites: usize,
     pub free_sites: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Import {
+    pub path: Vec<String>,
+    pub alias: Option<String>,
+    pub is_pub: bool,
+    pub wildcard: bool,
 }
 
 #[derive(Debug, Clone)]

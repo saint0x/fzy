@@ -101,7 +101,7 @@ Semantics:
 - RPC activity emits frame events: `rpc_send`, `rpc_recv`, `rpc_deadline`, `rpc_cancel`.
 - Deadline behavior is controlled by `timeout(...)` markers.
 - Cancellation behavior is controlled by `cancel()` markers.
-- RPC failure paths map to catchable operation failures in `try/catch` expressions.
+- RPC failure paths are exposed as operation failures in runtime data/diagnostics paths; native builds currently reject `try/catch` expressions with explicit diagnostics.
 
 ## Memory Model: `alloc` / `free`
 
@@ -139,13 +139,19 @@ Semantics:
 - Calling non-callable values is a hard type error.
 - Generic specialization syntax is not valid on function-value call targets.
 
+## Arrays And Indexing
+
+- Array literals (`[a, b, c]`) and index expressions (`arr[i]`) are first-class language expressions.
+- Type checking enforces compatible element types and integer index expressions.
+- Native lowering is supported in both LLVM and Cranelift backends.
+
 ## Module And Import Ergonomics (v1 Contract)
 
 - `use path::item;` is supported.
 - `use path as alias;` is supported.
 - `use path::*;` is supported.
 - `use path::{a, b};` is supported (including nested groups).
-- `pub use ...;` re-exports are supported at parser/module-import metadata level.
+- `pub use ...;` re-exports are supported with executable symbol resolution semantics.
 - Visibility support includes `pub fn`, `pub struct`, `pub enum`, `pub trait`, and `pub impl`.
 
 ## Test Block Semantics

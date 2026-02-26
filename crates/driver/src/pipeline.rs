@@ -1349,7 +1349,7 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
             _ => None,
         })
         .collect::<HashSet<_>>();
-    let module_aliases = module
+    let mut module_aliases = module
         .modules
         .iter()
         .map(|module_name| {
@@ -1359,12 +1359,44 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
             )
         })
         .collect::<HashMap<_, _>>();
+    for (alias, target) in import_aliases(module, &module_aliases) {
+        module_aliases.insert(alias, target);
+    }
 
     for item in &mut module.items {
         if let ast::Item::Function(function) = item {
             qualify_function(function, namespace, &local_functions, &module_aliases);
         }
     }
+}
+
+fn import_aliases(
+    module: &ast::Module,
+    module_aliases: &HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    for import in &module.imports {
+        if import.wildcard || import.path.is_empty() {
+            continue;
+        }
+        let Some(leaf) = import.path.last().cloned() else {
+            continue;
+        };
+        let canonical = canonicalize_import_path(&import.path, module_aliases);
+        let alias = import.alias.clone().unwrap_or(leaf);
+        aliases.insert(alias, canonical);
+    }
+    aliases
+}
+
+fn canonicalize_import_path(path: &[String], module_aliases: &HashMap<String, String>) -> String {
+    let mut segments = path.to_vec();
+    if let Some(head) = segments.first_mut() {
+        if let Some(replacement) = module_aliases.get(head) {
+            *head = replacement.clone();
+        }
+    }
+    segments.join(".")
 }
 
 fn qualify_function(
@@ -1541,7 +1573,9 @@ fn qualify_callee(
     module_aliases: &HashMap<String, String>,
 ) -> String {
     let (base, generic_suffix) = split_generic_suffix(callee);
-    let qualified_base = if let Some((head, tail)) = base.split_once('.') {
+    let qualified_base = if let Some(exact_alias) = module_aliases.get(base) {
+        exact_alias.clone()
+    } else if let Some((head, tail)) = base.split_once('.') {
         if let Some(qualified_head) = module_aliases.get(head) {
             format!("{qualified_head}.{tail}")
         } else {
@@ -13547,6 +13581,51 @@ mod tests {
         .expect("main source should be written");
         std::fs::write(root.join("src/infra.fzy"), "use core.net;\n")
             .expect("module source should be written");
+
+        let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+        assert_eq!(artifact.status, "ok");
+        assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compile_project_resolves_use_alias_and_pub_use_reexport_calls() {
+        let project_name = format!(
+            "fozzylang-import-alias-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src/services"))
+            .expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod services;\nfn main() -> i32 {\n    return services.invoke()\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "mod auth;\nmod store;\nuse auth::init as auth_init;\npub use store::init;\npub fn invoke() -> i32 {\n    return auth_init() + init()\n}\n",
+        )
+        .expect("services module should be written");
+        std::fs::write(
+            root.join("src/services/auth.fzy"),
+            "pub fn init() -> i32 {\n    return 2\n}\n",
+        )
+        .expect("auth module should be written");
+        std::fs::write(
+            root.join("src/services/store.fzy"),
+            "pub fn init() -> i32 {\n    return 3\n}\n",
+        )
+        .expect("store module should be written");
 
         let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
         assert_eq!(artifact.status, "ok");

@@ -433,29 +433,37 @@ impl Parser {
             }
         }
         if is_pub {
-            for import in imports {
-                self.module.imports.push(format!("pub {import}"));
+            for import in &mut imports {
+                import.is_pub = true;
             }
-        } else {
-            self.module.imports.extend(imports);
         }
+        self.module.imports.extend(imports);
         let _ = self.consume(&TokenKind::Semi);
     }
 
-    fn parse_use_tree(&mut self, prefix: Option<&str>, out: &mut Vec<String>) -> bool {
+    fn parse_use_tree(&mut self, prefix: Option<&[String]>, out: &mut Vec<ast::Import>) -> bool {
         let Some(local_path) = self.parse_import_path_segments() else {
             self.push_diag_here("expected import path");
             return false;
         };
         let full_path = if let Some(prefix) = prefix {
-            format!("{prefix}::{local_path}")
+            prefix
+                .iter()
+                .cloned()
+                .chain(local_path)
+                .collect::<Vec<_>>()
         } else {
             local_path
         };
 
         if self.consume_double_colon() {
             if self.consume(&TokenKind::Star) {
-                out.push(format!("{full_path}::*"));
+                out.push(ast::Import {
+                    path: full_path,
+                    alias: None,
+                    is_pub: false,
+                    wildcard: true,
+                });
                 return true;
             }
             if self.consume(&TokenKind::LBrace) {
@@ -486,16 +494,26 @@ impl Parser {
             let Some(alias) = self.expect_ident("expected alias target after `as`") else {
                 return false;
             };
-            out.push(format!("{full_path} as {alias}"));
+            out.push(ast::Import {
+                path: full_path,
+                alias: Some(alias),
+                is_pub: false,
+                wildcard: false,
+            });
             return true;
         }
 
-        out.push(full_path);
+        out.push(ast::Import {
+            path: full_path,
+            alias: None,
+            is_pub: false,
+            wildcard: false,
+        });
         true
     }
 
-    fn parse_import_path_segments(&mut self) -> Option<String> {
-        let mut path = self.expect_ident("expected import path")?;
+    fn parse_import_path_segments(&mut self) -> Option<Vec<String>> {
+        let mut path = vec![self.expect_ident("expected import path")?];
         while self.at_double_colon()
             && self
                 .peek_n(2)
@@ -503,8 +521,7 @@ impl Parser {
         {
             let _ = self.consume_double_colon();
             let seg = self.expect_ident("expected import path segment")?;
-            path.push_str("::");
-            path.push_str(&seg);
+            path.push(seg);
         }
         Some(path)
     }
@@ -3309,20 +3326,52 @@ mod tests {
             use app::{db::{read, write}, os::*};
         "#;
         let module = parse(source, "imports").expect("parse should succeed");
-        assert!(module.imports.iter().any(|entry| entry == "pub app::net"));
-        assert!(module
-            .imports
-            .iter()
-            .any(|entry| entry == "app::net as netmod"));
-        assert!(module.imports.iter().any(|entry| entry == "app::net::*"));
-        assert!(module.imports.iter().any(|entry| entry == "app::fs::open"));
-        assert!(module
-            .imports
-            .iter()
-            .any(|entry| entry == "app::fs::close as close_fn"));
-        assert!(module.imports.iter().any(|entry| entry == "app::db::read"));
-        assert!(module.imports.iter().any(|entry| entry == "app::db::write"));
-        assert!(module.imports.iter().any(|entry| entry == "app::os::*"));
+        assert!(module.imports.iter().any(|entry| {
+            entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["app".to_string(), "net".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.as_deref() == Some("netmod")
+                && entry.path == vec!["app".to_string(), "net".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && entry.wildcard
+                && entry.path == vec!["app".to_string(), "net".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["app".to_string(), "fs".to_string(), "open".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.as_deref() == Some("close_fn")
+                && entry.path == vec!["app".to_string(), "fs".to_string(), "close".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["app".to_string(), "db".to_string(), "read".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["app".to_string(), "db".to_string(), "write".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && entry.wildcard
+                && entry.path == vec!["app".to_string(), "os".to_string()]
+        }));
     }
 
     #[test]

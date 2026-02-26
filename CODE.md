@@ -47,6 +47,42 @@ fz check /tmp/code_min.fzy --json | jq -r '.diagnostics'
 # expected: 0 (or no blocking errors)
 ```
 
+## 1.1) Native completeness surface: closure + array/index
+
+```bash
+cat > /tmp/code_surface.fzy <<'FZY'
+fn main() -> i32 {
+    let values = [3, 5, 8]
+    let idx = 1
+    let add = |x: i32| x + values[idx]
+    return add(4)
+}
+FZY
+
+fz check /tmp/code_surface.fzy --json
+fz build /tmp/code_surface.fzy --backend cranelift --json
+fz build /tmp/code_surface.fzy --backend llvm --json
+fz run /tmp/code_surface.fzy --backend cranelift --json
+fz run /tmp/code_surface.fzy --backend llvm --json
+```
+
+## 1.2) Import ergonomics surface: `use ... as alias` and `pub use`
+
+```bash
+tmpd="$(mktemp -d /tmp/code_import_surface.XXXXXX)"
+cat > "$tmpd/main.fzy" <<'FZY'
+mod util;
+use util::answer as ans_alias;
+pub use util::answer;
+fn main() -> i32 { return ans_alias() + answer() - 84 }
+FZY
+cat > "$tmpd/util.fzy" <<'FZY'
+fn answer() -> i32 { return 42 }
+FZY
+
+fz check "$tmpd/main.fzy" --json
+```
+
 ## 2) Deterministic artifacts from a real example project
 
 Run deterministic tests and emit rich artifacts:

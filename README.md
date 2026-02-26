@@ -8,6 +8,7 @@ fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, 
 
 - Full user manual: `USAGE.md`
 - Canonical production workflow: `docs/production-workflow-v1.md`
+- System safety/trust model: `docs/system-safety-trust-model-v1.md`
 - `fozzy`: [ariacomputecompany/fozzy](https://github.com/ariacomputecompany/fozzy)
 - `fzyllm`: [saint0x/fzyllm](https://github.com/saint0x/fzyllm)
 
@@ -41,6 +42,10 @@ Implemented and verified in this repo:
   - transport failures preserve diagnostics through `http.last_error`
   - deterministic fallback failure status when HTTP status cannot be parsed
   - curl execution fallback paths (`curl`, `/usr/bin/curl`, `/opt/homebrew/bin/curl`)
+- Language/native completeness:
+  - closure/lambda lexical capture lowering parity in LLVM + Cranelift for supported forms
+  - array/index expression family lowers natively in LLVM + Cranelift with execute-and-compare parity fixtures
+  - module import surface includes executable `use ... as alias` and `pub use ...` re-export semantics
 
 ## Build And Test
 
@@ -181,6 +186,8 @@ Ship release gate (strict, no compatibility fallback):
 ```bash
 ./scripts/ship_release_gate.sh
 ```
+
+This includes release-blocking docs claim-integrity checks via `scripts/safety_claim_integrity_gate.py`.
 
 ## Example: Native Test Lifecycle
 

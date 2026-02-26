@@ -14,6 +14,7 @@ It intentionally avoids deep internal compiler/runtime implementation details.
 Canonical production workflow: `docs/production-workflow-v1.md`  
 Failure triage playbook: `docs/production-failure-triage-v1.md`
 Exit criteria tracking policy: `docs/exit-criteria-v1.md`
+System safety/trust model: `docs/system-safety-trust-model-v1.md`
 
 ## 1. What You Use In Practice
 
@@ -173,6 +174,18 @@ fz debug-check [path]
 ```
 
 Use these when behavior is correct in one mode but drifts in another, or when hardening safety properties.
+
+Recommended native completeness probe:
+
+```bash
+fz parity tests/fixtures/native_completeness/main.fzy --seed 4242 --json
+fz equivalence tests/fixtures/native_completeness/main.fzy --seed 4242 --json
+```
+
+Import ergonomics surface in shipped examples:
+
+- `use <path>::<item> as <alias>` executable alias import support
+- `pub use <path>::<item>` executable re-export support
 
 ## 5.5 LSP helpers
 
