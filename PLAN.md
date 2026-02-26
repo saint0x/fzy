@@ -454,7 +454,7 @@
 - [ ] bounds-check policy points,
 - [ ] direct-memory ops (`load/store/gep/slice/len`) and side-effect boundaries.
 - [ ] Prohibit backend-specific AST-expression lowering as source-of-truth for semantics.
-- [ ] Make LLVM and Cranelift consume the same canonical native IR rather than re-lowering `typed_functions` independently.
+- [✅] Make LLVM and Cranelift consume the same canonical native IR rather than re-lowering `typed_functions` independently.
 - [ ] Keep backend responsibilities codegen-only (instruction selection/register/legalization), not semantic lowering policy.
 
 #### Runtime Shim Elimination (Native Data Plane)

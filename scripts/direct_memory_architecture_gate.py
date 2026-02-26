@@ -55,6 +55,17 @@ def main() -> int:
     if "variant_tag_for_key(" not in src:
         errors.append("canonical discriminant mapping helper missing")
 
+    required_canonical_plan_markers = [
+        "fn build_native_canonical_plan(",
+        "let plan = build_native_canonical_plan(fir, enforce_contract_checks);",
+        "let plan = build_native_canonical_plan(fir, true);",
+    ]
+    for marker in required_canonical_plan_markers:
+        if marker not in src:
+            errors.append(
+                f"canonical native plan wiring missing required marker: `{marker}`"
+            )
+
     if (
         "array/index expressions" in src
         and "detected parser-recognized expressions without full lowering parity" in src

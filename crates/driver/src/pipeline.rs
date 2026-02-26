@@ -5604,10 +5604,7 @@ fn emit_native_libraries_cranelift(
     let shared_path = build_dir.join(format!("lib{}.{}", fir.name, shared_lib_extension()));
 
     let string_literals = collect_string_literals(fir);
-    let string_literal_ids = build_string_literal_ids(&string_literals);
-    let global_const_i32 = build_global_const_i32_map(fir);
-    let variant_tags = build_variant_tag_map(fir);
-    let mutable_static_i32 = build_mutable_static_i32_map(fir);
+    let plan = build_native_canonical_plan(fir, true);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -5638,7 +5635,11 @@ fn emit_native_libraries_cranelift(
     let mut function_ids = HashMap::new();
     let mut function_signatures = HashMap::new();
     let mut mutable_global_data_ids = HashMap::<String, cranelift_module::DataId>::new();
-    let mut mutable_globals_sorted = mutable_static_i32.into_iter().collect::<Vec<_>>();
+    let mut mutable_globals_sorted = plan
+        .mutable_static_i32
+        .iter()
+        .map(|(name, value)| (name.clone(), *value))
+        .collect::<Vec<_>>();
     mutable_globals_sorted.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, value) in mutable_globals_sorted {
         let symbol = llvm_static_symbol_name(&name);
@@ -5694,10 +5695,6 @@ fn emit_native_libraries_cranelift(
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
-    let mut task_ref_ids = HashMap::<String, i32>::new();
-    for (index, symbol) in spawn_task_symbols.iter().enumerate() {
-        task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
-    }
     for function in &fir.typed_functions {
         if is_extern_c_import_decl(function) {
             continue;
@@ -5737,19 +5734,31 @@ fn emit_native_libraries_cranelift(
             locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
         let mut next_var = function.params.len();
-        let cfg = build_control_flow_cfg(&function.body, &variant_tags).and_then(|cfg| {
-            verify_control_flow_cfg(&cfg)?;
-            Ok(cfg)
-        })?;
+        let cfg = match plan.cfg_by_function.get(&function.name) {
+            Some(Ok(cfg)) => cfg,
+            Some(Err(error)) => {
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: {}",
+                    function.name,
+                    error
+                ));
+            }
+            None => {
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: missing entry",
+                    function.name
+                ));
+            }
+        };
         {
             let mut ctx = ClifLoweringCtx {
                 module: &mut module,
                 function_ids: &function_ids,
                 function_signatures: &function_signatures,
-                string_literal_ids: &string_literal_ids,
-                task_ref_ids: &task_ref_ids,
-                globals: &global_const_i32,
-                variant_tags: &variant_tags,
+                string_literal_ids: &plan.string_literal_ids,
+                task_ref_ids: &plan.task_ref_ids,
+                globals: &plan.global_const_i32,
+                variant_tags: &plan.variant_tags,
                 mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
                 array_bindings: HashMap::new(),
@@ -6088,9 +6097,6 @@ fn emit_native_artifact_cranelift(
     let object_path = build_dir.join(format!("{}.o", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
     let string_literals = collect_string_literals(fir);
-    let string_literal_ids = build_string_literal_ids(&string_literals);
-    let global_const_i32 = build_global_const_i32_map(fir);
-    let variant_tags = build_variant_tag_map(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -6119,31 +6125,15 @@ fn emit_native_artifact_cranelift(
         .map_err(|error| anyhow!("failed creating cranelift object builder: {error}"))?;
     let mut module = ObjectModule::new(object_builder);
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
-    let forced_main_return = if enforce_contract_checks {
-        if fir
-            .entry_requires
-            .iter()
-            .any(|condition| matches!(condition, Some(false)))
-        {
-            Some(120)
-        } else if fir
-            .entry_ensures
-            .iter()
-            .any(|condition| matches!(condition, Some(false)))
-        {
-            Some(121)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
+    let plan = build_native_canonical_plan(fir, enforce_contract_checks);
 
     let mut function_ids = HashMap::new();
     let mut function_signatures = HashMap::new();
     let mut mutable_global_data_ids = HashMap::<String, cranelift_module::DataId>::new();
-    let mut mutable_globals_sorted = build_mutable_static_i32_map(fir)
-        .into_iter()
+    let mut mutable_globals_sorted = plan
+        .mutable_static_i32
+        .iter()
+        .map(|(name, value)| (name.clone(), *value))
         .collect::<Vec<_>>();
     mutable_globals_sorted.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, value) in mutable_globals_sorted {
@@ -6200,10 +6190,6 @@ fn emit_native_artifact_cranelift(
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
-    let mut task_ref_ids = HashMap::<String, i32>::new();
-    for (index, symbol) in spawn_task_symbols.iter().enumerate() {
-        task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
-    }
     let runtime_shim_path =
         ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
 
@@ -6246,19 +6232,31 @@ fn emit_native_artifact_cranelift(
             locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
         let mut next_var = function.params.len();
-        let cfg = build_control_flow_cfg(&function.body, &variant_tags).and_then(|cfg| {
-            verify_control_flow_cfg(&cfg)?;
-            Ok(cfg)
-        })?;
+        let cfg = match plan.cfg_by_function.get(&function.name) {
+            Some(Ok(cfg)) => cfg,
+            Some(Err(error)) => {
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: {}",
+                    function.name,
+                    error
+                ));
+            }
+            None => {
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: missing entry",
+                    function.name
+                ));
+            }
+        };
         {
             let mut ctx = ClifLoweringCtx {
                 module: &mut module,
                 function_ids: &function_ids,
                 function_signatures: &function_signatures,
-                string_literal_ids: &string_literal_ids,
-                task_ref_ids: &task_ref_ids,
-                globals: &global_const_i32,
-                variant_tags: &variant_tags,
+                string_literal_ids: &plan.string_literal_ids,
+                task_ref_ids: &plan.task_ref_ids,
+                globals: &plan.global_const_i32,
+                variant_tags: &plan.variant_tags,
                 mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
                 array_bindings: HashMap::new(),
@@ -6274,7 +6272,7 @@ fn emit_native_artifact_cranelift(
                 &mut next_var,
                 if function.name == "main" && signature.ret == Some(types::I32) {
                     Some(
-                        forced_main_return
+                        plan.forced_main_return
                             .or(fir.entry_return_const_i32)
                             .unwrap_or(0),
                     )
