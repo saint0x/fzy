@@ -4,7 +4,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use crate::capability::{require_capability, CapabilityError};
+use crate::core::{require_capability, CapabilityError};
 
 pub fn required_capability_for_durable_fs() -> Capability {
     Capability::FileSystem

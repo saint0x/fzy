@@ -1,4 +1,4 @@
-use crate::capability::{require_capability, CapabilityError};
+use crate::core::{require_capability, CapabilityError};
 use capabilities::{Capability, CapabilityToken};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};

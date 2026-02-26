@@ -4,7 +4,7 @@ use rand::SeedableRng;
 use rand_distr::{Distribution, Exp, Normal};
 use rand_xoshiro::Xoshiro256PlusPlus;
 
-use crate::capability::{require_capability, CapabilityError};
+use crate::core::{require_capability, CapabilityError};
 
 pub fn required_capability_for_rng() -> Capability {
     Capability::Random

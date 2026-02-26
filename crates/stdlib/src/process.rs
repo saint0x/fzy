@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
-use crate::capability::{require_capability, CapabilityError};
+use crate::core::{require_capability, CapabilityError};
 
 pub fn required_capability_for_process() -> Capability {
     Capability::Process

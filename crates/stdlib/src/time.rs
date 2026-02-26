@@ -1,7 +1,7 @@
 use capabilities::{Capability, CapabilityToken};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::capability::{require_capability, CapabilityError};
+use crate::core::{require_capability, CapabilityError};
 
 pub fn required_capability_for_time() -> Capability {
     Capability::Time

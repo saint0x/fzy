@@ -1,14 +1,6 @@
 # CODE.md
 
-Fully verifiable, copy-paste examples for real fzy workflows.
-
-All examples assume you are in repo root:
-
-```bash
-cd fozzylang
-```
-
-If `fz` is not installed globally, define a local fallback once in your shell:
+## 0) Local CLI shim
 
 ```bash
 if ! command -v fz >/dev/null 2>&1; then
@@ -16,284 +8,606 @@ if ! command -v fz >/dev/null 2>&1; then
 fi
 ```
 
-CLI behavior notes (current):
-- Most path-based `fz` commands default to current working directory when `[path]` is omitted.
-- `fz run` text mode streams child stdout/stderr live; `--json` captures structured `exitCode/stdout/stderr`.
-
-## 1) Minimal fzy file: check/build/test
-
-Create a tiny `.fzy` program:
+## 1) Project conventions: module layout + entrypoint contract
 
 ```bash
-cat > /tmp/code_min.fzy <<'FZY'
+tmpd="$(mktemp -d /tmp/code_project_layout.XXXXXX)"
+mkdir -p "$tmpd/src/services" "$tmpd/src/runtime" "$tmpd/src/tests"
+
+cat > "$tmpd/src/main.fzy" <<'FZY'
+use core.time;
+mod services;
+mod runtime;
+mod tests;
+
 fn main() -> i32 {
+    requires true
+    services.boot_all()
+    runtime.start()
+    ensures true
     return 0
 }
 FZY
-```
 
-Run checks:
+cat > "$tmpd/src/services/mod.fzy" <<'FZY'
+mod auth;
+mod store;
 
-```bash
-fz check /tmp/code_min.fzy --json
-fz build /tmp/code_min.fzy --backend cranelift --json
-fz test /tmp/code_min.fzy --det --seed 7 --json
-```
-
-Verify success:
-
-```bash
-fz check /tmp/code_min.fzy --json | jq -r '.diagnostics'
-# expected: 0 (or no blocking errors)
-```
-
-## 1.1) Native completeness surface: closure + array/index
-
-```bash
-cat > /tmp/code_surface.fzy <<'FZY'
-fn main() -> i32 {
-    let values = [3, 5, 8]
-    let idx = 1
-    let add = |x: i32| x + values[idx]
-    return add(4)
+fn boot_all() -> i32 {
+    auth.init()
+    store.init()
+    return 0
 }
 FZY
 
-fz check /tmp/code_surface.fzy --json
-fz build /tmp/code_surface.fzy --backend cranelift --json
-fz build /tmp/code_surface.fzy --backend llvm --json
-fz run /tmp/code_surface.fzy --backend cranelift --json
-fz run /tmp/code_surface.fzy --backend llvm --json
+cat > "$tmpd/src/services/auth.fzy" <<'FZY'
+pub fn init() -> i32 { return 0 }
+FZY
+
+cat > "$tmpd/src/services/store.fzy" <<'FZY'
+pub fn init() -> i32 { return 0 }
+FZY
+
+cat > "$tmpd/src/runtime/mod.fzy" <<'FZY'
+fn start() -> i32 { return 0 }
+FZY
+
+cat > "$tmpd/src/tests/mod.fzy" <<'FZY'
+test "boot-smoke" { pulse() }
+FZY
+
+fz check "$tmpd/src/main.fzy" --json
 ```
 
-## 1.2) Import ergonomics surface: `use ... as alias` and `pub use`
+## 2) Primitive literals + numeric/boolean/char/string semantics
+
+```bash
+cat > /tmp/code_primitives.fzy <<'FZY'
+fn main() -> i32 {
+    let i: i32 = 42
+    let j: i32 = -7
+    let big: i128 = 123456789
+    let f: f64 = 3.14
+    let c: char = 'z'
+    let ok: bool = true
+    let msg: str = "hello"
+
+    let _ = big
+    let _ = f
+    let _ = c
+    let _ = msg
+
+    if ok { return i + j }
+    return 0
+}
+FZY
+
+fz check /tmp/code_primitives.fzy --json
+```
+
+## 3) `let`, `let mut`, reassignment, compound assignment
+
+```bash
+cat > /tmp/code_bindings.fzy <<'FZY'
+fn main() -> i32 {
+    let mut total: i32 = 1
+    total = total + 3
+    total += 4
+    total -= 2
+    total *= 5
+    total /= 2
+    total %= 7
+    return total
+}
+FZY
+
+fz run /tmp/code_bindings.fzy --backend llvm --json
+```
+
+## 4) Operators: arithmetic, comparison, logical, bitwise, shifts, unary
+
+```bash
+cat > /tmp/code_operators.fzy <<'FZY'
+fn main() -> i32 {
+    let a: i32 = 12
+    let b: i32 = 5
+
+    let arith = (a + b) * (a - b) / (b | 1)
+    let modu = arith % 9
+    let cmp = (a > b) && (a != 0) || false
+
+    let bits = (~a) ^ (b << 2)
+    let shr = bits >> 1
+
+    if cmp {
+        return modu + shr
+    }
+    return 0 - shr
+}
+FZY
+
+fz check /tmp/code_operators.fzy --json
+```
+
+## 5) Arrays + indexing + index expressions in calls
+
+```bash
+cat > /tmp/code_arrays_index.fzy <<'FZY'
+fn add(x: i32, y: i32) -> i32 { return x + y }
+
+fn main() -> i32 {
+    let values = [3, 5, 8, 13, 21]
+    let mut idx = 2
+    idx += 1
+
+    let picked = values[idx]
+    let first = values[0]
+    return add(picked, first)
+}
+FZY
+
+fz run /tmp/code_arrays_index.fzy --backend cranelift --json
+```
+
+## 6) Loop flows: `while`, C-style `for`, `for in`, `loop`, break/continue
+
+```bash
+cat > /tmp/code_loops_full.fzy <<'FZY'
+fn main() -> i32 {
+    let mut total = 0
+    let mut i = 0
+
+    // while + continue + break
+    while i < 10 {
+        i += 1
+        if i % 2 == 0 {
+            continue
+        }
+        total += i
+        if total > 15 {
+            break
+        }
+    }
+
+    // C-style for (init omitted; uses existing i)
+    for ; i < 14; i += 1 {
+        total += 1
+    }
+
+    // for-in exclusive range
+    for n in 0..4 {
+        total += n
+    }
+
+    // for-in inclusive range
+    for n in 4..=6 {
+        total += n
+    }
+
+    // infinite loop with explicit break
+    loop {
+        total += 1
+        if total > 40 {
+            break
+        }
+    }
+
+    return total
+}
+FZY
+
+fz run /tmp/code_loops_full.fzy --backend llvm --json
+```
+
+## 7) Branching + `match` semantics
+
+```bash
+cat > /tmp/code_match.fzy <<'FZY'
+enum Msg {
+    Msg::Ping,
+    Msg::Pong,
+    Msg::Data(i32),
+    Msg::Err(i32),
+}
+
+fn code(v: i32) -> i32 {
+    if v < 0 {
+        return -1
+    } else if v == 0 {
+        return 10
+    }
+    return 20
+}
+
+fn classify(msg: Msg) -> i32 {
+    match msg {
+        Msg::Ping => 1,
+        Msg::Pong => 2,
+        Msg::Data => 3,
+        Msg::Err => return -9,
+        _ => 0,
+    }
+    return 7
+}
+
+fn main() -> i32 {
+    let a = code(0)
+    let b = classify(Msg::Ping)
+    return a + b
+}
+FZY
+
+fz check /tmp/code_match.fzy --json
+```
+
+## 8) Function declarations, visibility, extern, async, function types
+
+```bash
+cat > /tmp/code_functions.fzy <<'FZY'
+extern "C" fn c_add(left: i32, right: i32) -> i32;
+
+pub fn sum(x: i32, y: i32) -> i32 { return x + y }
+
+fn apply(cb: fn(i32) -> i32, v: i32) -> i32 {
+    return cb(v)
+}
+
+async fn worker(v: i32) -> i32 {
+    checkpoint()
+    return v + 100
+}
+
+fn id(v: i32) -> i32 { return v }
+
+fn main() -> i32 {
+    let a = sum(4, 5)
+    let b = apply(id, a)
+    let _ = c_add
+    let _ = worker
+    return b
+}
+FZY
+
+fz check /tmp/code_functions.fzy --json
+```
+
+## 9) Lambda syntax + closures (capturing outer variables)
+
+```bash
+cat > /tmp/code_lambda_closure.fzy <<'FZY'
+fn apply(cb: fn(i32) -> i32, v: i32) -> i32 {
+    return cb(v)
+}
+
+fn main() -> i32 {
+    let base = 12
+    let values = [1, 2, 3]
+    let idx = 1
+
+    // lambda syntax: |param: type| expr
+    let plus = |x: i32| x + base + values[idx]
+    return apply(plus, 5)
+}
+FZY
+
+fz run /tmp/code_lambda_closure.fzy --backend llvm --json
+```
+
+## 10) Globals: `const`, `static`, `static mut`
+
+```bash
+cat > /tmp/code_globals_full.fzy <<'FZY'
+const MAGIC: i32 = 9;
+static SCALE: i32 = 4;
+static mut COUNTER: i32 = 0;
+
+fn bump() -> i32 {
+    COUNTER += 1
+    return COUNTER
+}
+
+fn main() -> i32 {
+    let mut out = MAGIC * SCALE
+    out += bump()
+    out += bump()
+    return out
+}
+FZY
+
+fz run /tmp/code_globals_full.fzy --backend cranelift --json
+```
+
+## 11) Structs, enums, traits, impl, field access, struct init
+
+```bash
+cat > /tmp/code_types_full.fzy <<'FZY'
+trait Render {
+    fn render(v: i32) -> i32;
+}
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+enum Flag {
+    Flag::On,
+    Flag::Off,
+}
+
+impl Render for Point {
+    fn render(v: i32) -> i32 {
+        return v + 1
+    }
+}
+
+fn main() -> i32 {
+    let p = Point { x: 3, y: 8 }
+    let f = Flag::On
+    let _ = f
+    return Point.render(p.x + p.y)
+}
+FZY
+
+fz check /tmp/code_types_full.fzy --json
+```
+
+## 12) Import ergonomics: path import, alias, re-export, grouped, wildcard
 
 ```bash
 tmpd="$(mktemp -d /tmp/code_import_surface.XXXXXX)"
+mkdir -p "$tmpd/services"
+
 cat > "$tmpd/main.fzy" <<'FZY'
-mod util;
-use util::answer as ans_alias;
-pub use util::answer;
-fn main() -> i32 { return ans_alias() + answer() - 84 }
+mod services;
+use services::auth::init as auth_init;
+pub use services::store::init;
+use services::{metrics::tick, telemetry::*};
+
+fn main() -> i32 {
+    tick()
+    services.telemetry.pulse()
+    return auth_init() + init()
+}
 FZY
-cat > "$tmpd/util.fzy" <<'FZY'
-fn answer() -> i32 { return 42 }
+
+cat > "$tmpd/services/mod.fzy" <<'FZY'
+mod auth;
+mod store;
+mod metrics;
+mod telemetry;
+FZY
+cat > "$tmpd/services/auth.fzy" <<'FZY'
+pub fn init() -> i32 { return 10 }
+FZY
+cat > "$tmpd/services/store.fzy" <<'FZY'
+pub fn init() -> i32 { return 20 }
+FZY
+cat > "$tmpd/services/metrics.fzy" <<'FZY'
+pub fn tick() -> i32 { return 0 }
+FZY
+cat > "$tmpd/services/telemetry.fzy" <<'FZY'
+pub fn pulse() -> i32 { return 0 }
 FZY
 
 fz check "$tmpd/main.fzy" --json
 ```
 
-## 2) Deterministic artifacts from a real example project
-
-Run deterministic tests and emit rich artifacts:
+## 13) Contracts, `defer`, and explicit safety markers
 
 ```bash
-fz test examples/live_server --det --seed 77 --record artifacts/live_server.code.trace.json --rich-artifacts --json
+cat > /tmp/code_contracts_safety.fzy <<'FZY'
+fn checked_add(x: i32, y: i32) -> i32 {
+    requires x >= 0
+    defer pulse()
+    unsafe_reason("manual FFI boundary contract audited")
+    unsafe("pointer/lifetime preconditions validated externally")
+    let out = x + y
+    ensures out >= x
+    return out
+}
+
+fn main() -> i32 {
+    return checked_add(3, 7)
+}
+FZY
+
+fz check /tmp/code_contracts_safety.fzy --json
 ```
 
-Verify artifact files exist:
+## 14) Runtime/task semantics: timeout, cancel, checkpoint, yield, spawn/join
 
 ```bash
-ls -la artifacts/live_server.code.trace.json*
-# expected to include trace/report/timeline/explore/shrink/scenarios/manifest files
+cat > /tmp/code_runtime_tasks.fzy <<'FZY'
+use core.thread;
+
+async fn worker(v: i32) -> i32 {
+    timeout(50)
+    checkpoint()
+    yield()
+    pulse()
+    if recv() != 0 { return -1 }
+    return v + 100
+}
+
+fn main() -> i32 {
+    let h = spawn(worker)
+    let out = join(h)
+    let _ = out
+    cancel()
+    return 0
+}
+FZY
+
+fz check /tmp/code_runtime_tasks.fzy --json
 ```
 
-## 3) Replay lifecycle on a recorded trace
+## 15) Task-group API surface
 
 ```bash
-fz replay artifacts/live_server.code.trace.json --json
-fz ci artifacts/live_server.code.trace.json --json
-fz shrink artifacts/live_server.code.trace.json --json
+cat > /tmp/code_task_groups.fzy <<'FZY'
+fn job_a() -> i32 { return 0 }
+fn job_b() -> i32 { return 0 }
+
+fn main() -> i32 {
+    let g = task.group_begin()
+    let _ = task.group_spawn(g, job_a)
+    let _ = task.group_spawn(g, job_b)
+    let _ = task.group_join(g)
+    let _ = task.group_cancel(g)
+    return 0
+}
+FZY
+
+fz check /tmp/code_task_groups.fzy --json
 ```
 
-Verify replay/ci status:
+## 16) FFI exports/imports + panic policy attribute
 
 ```bash
-fz ci artifacts/live_server.code.trace.json --json | jq -r '.ok // .status'
-# expected: true or pass
+cat > /tmp/code_ffi_full.fzy <<'FZY'
+extern "C" fn c_add(left: i32, right: i32) -> i32;
+
+#[ffi_panic(abort)]
+pub extern "C" fn add_safe(left: i32, right: i32) -> i32 {
+    return left + right
+}
+
+fn main() -> i32 {
+    let local = add_safe(5, 6)
+    let _ = c_add
+    return local
+}
+FZY
+
+fz check /tmp/code_ffi_full.fzy --json
 ```
 
-## 4) Header generation from extern declarations
+## 17) `#[repr(C)]` layout contracts on structs/enums
 
 ```bash
-fz headers examples/fullstack --out artifacts/fullstack.from-code.h --json
+cat > /tmp/code_repr_c.fzy <<'FZY'
+#[repr(C)]
+struct Header {
+    version: u32,
+    flags: u32,
+    payload_len: usize,
+}
+
+#[repr(C)]
+enum Kind {
+    Kind::A,
+    Kind::B,
+}
+
+fn main() -> i32 {
+    let h = Header { version: 1, flags: 0, payload_len: 8 }
+    let _ = h
+    let k = Kind::A
+    let _ = k
+    return 0
+}
+FZY
+
+fz check /tmp/code_repr_c.fzy --json
 ```
 
-Verify header output:
+## 18) RPC declarations
 
 ```bash
-test -f artifacts/fullstack.from-code.h && echo ok
-# expected: ok
+cat > /tmp/code_rpc.fzy <<'FZY'
+rpc Ping(req: i32) -> i32;
+rpc Put(key: i32, value: i32) -> i32;
+
+fn main() -> i32 {
+    let _ = Ping(1)
+    let _ = Put(2, 3)
+    return 0
+}
+FZY
+
+fz check /tmp/code_rpc.fzy --json
 ```
 
-## 5) RPC schema and stubs generation
+## 19) Test blocks: deterministic and nondeterministic forms
 
 ```bash
-fz rpc gen examples/fullstack --out-dir artifacts/fullstack.rpc --json
+cat > /tmp/code_tests_surface.fzy <<'FZY'
+fn add(x: i32, y: i32) -> i32 { return x + y }
+
+test "det-add" {
+    let v = add(2, 3)
+    assert.eq_i32(v, 5)
+}
+
+test "nondet-smoke" nondet {
+    pulse()
+}
+
+fn main() -> i32 {
+    return add(1, 1)
+}
+FZY
+
+fz test /tmp/code_tests_surface.fzy --det --json
 ```
 
-Verify generated files:
+## 20) Native parity probe for language completeness
 
 ```bash
-ls -la artifacts/fullstack.rpc
-# expected: rpc.schema.json, rpc.client.fzy, rpc.server.fzy
+fz parity tests/fixtures/native_completeness/main.fzy --seed 4242 --json
+fz equivalence tests/fixtures/native_completeness/main.fzy --seed 4242 --json
 ```
 
-## 6) ABI compatibility check
-
-```bash
-fz abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json
-```
-
-Verify ABI check passes:
-
-```bash
-fz abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json | jq -r '.ok // .status'
-# expected: true or ok
-```
-
-## 7) Project convention gate (layout + module rules)
-
-```bash
-fz dx-check examples/fullstack --strict --json
-fz dx-check examples/robust_cli --strict --json
-fz dx-check examples/live_server --strict --json
-```
-
-Verify all three pass by exit code:
-
-```bash
-fz dx-check examples/fullstack --strict --json >/dev/null && echo fullstack-ok
-fz dx-check examples/robust_cli --strict --json >/dev/null && echo robust-ok
-fz dx-check examples/live_server --strict --json >/dev/null && echo live-ok
-```
-
-## 8) Formatting a directory of `.fzy` code
+## 21) Formatting convention gate on source trees
 
 ```bash
 fz fmt examples/fullstack/src --json
 fz fmt examples/robust_cli/src --json
-```
-
-Optional strict check via standalone formatter:
-
-```bash
 cargo run -q -p fozzyfmt -- examples/fullstack/src examples/robust_cli/src --check
-# expected: "fozzyfmt: clean" when formatted
 ```
 
-## 9) Generate API docs from `.fzy` source
+## 22) End-to-end synthesis snippet (feature blend)
 
 ```bash
-cargo run -q -p fozzydoc -- examples/robust_cli/src --format markdown --out artifacts/robust_cli.api.from-code.md
-```
+cat > /tmp/code_synthesis.fzy <<'FZY'
+use core.time;
 
-Verify docs output:
+const C: i32 = 2;
+static S: i32 = 3;
+static mut M: i32 = 0;
 
-```bash
-test -f artifacts/robust_cli.api.from-code.md && rg -n "API Documentation|rpc|fn" artifacts/robust_cli.api.from-code.md
-```
+fn bump() -> i32 {
+    M += 1
+    return M
+}
 
-## 10) Deterministic run on a scenario file
+fn apply(cb: fn(i32) -> i32, x: i32) -> i32 {
+    return cb(x)
+}
 
-```bash
-fz run tests/run.pass.fozzy.json --det --record artifacts/run.pass.from-code.fozzy --json
-```
+fn main() -> i32 {
+    requires true
 
-Verify trace written:
+    let values = [5, 8, 13]
+    let mut idx = 1
+    idx += 1
 
-```bash
-test -f artifacts/run.pass.from-code.fozzy && echo recorded
-# expected: recorded
-```
+    let lam = |x: i32| x + values[idx] + C + S
+    let out = apply(lam, time.now() % 7) + bump()
 
-## 11) Host-backed confidence run (real backends)
+    match out % 3 {
+        0 => return out,
+        1 => return out + 1,
+        _ => {
+            ensures out >= 0
+            return out + 2
+        }
+    }
+}
+FZY
 
-```bash
-fz run tests/host.pass.fozzy.json --host-backends --json
-```
-
-Verify host-backed run status:
-
-```bash
-fz run tests/host.pass.fozzy.json --host-backends --json | jq -r '.status // .ok'
-# expected: pass or true
-```
-
-## 12) Full “real work” sequence for a feature branch
-
-```bash
-# 1) format + static validation
-fz fmt examples/fullstack/src --json
-fz check examples/fullstack --json
-fz dx-check examples/fullstack --strict --json
-
-# 2) deterministic tests + trace artifacts
-fz test examples/fullstack --det --seed 101 --record artifacts/fullstack.feature.trace.json --rich-artifacts --json
-
-# 3) replay integrity
-fz replay artifacts/fullstack.feature.trace.json --json
-fz ci artifacts/fullstack.feature.trace.json --json
-
-# 4) output interfaces
-fz headers examples/fullstack --out artifacts/fullstack.feature.h --json
-fz rpc gen examples/fullstack --out-dir artifacts/fullstack.feature.rpc --json
-fz abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json
-```
-
-Verify final gate quickly:
-
-```bash
-fz ci artifacts/fullstack.feature.trace.json --json | jq
-```
-
-## 13) Useful one-liners during debugging
-
-```bash
-# show CLI surface
-fz --help
-
-# inspect compiler version
-fz version
-
-# IR emission
-fz emit-ir examples/fullstack --json
-
-# parity/equivalence probes
-fz parity examples/fullstack --seed 13 --json
-fz equivalence examples/fullstack --seed 13 --json
-
-# safety map
-fz audit unsafe examples/fullstack --json
-```
-
-## 14) Known-good paths used in this repo
-
-- fzy source examples: `examples/*/src/**/*.fzy`
-- scenarios: `tests/*.fozzy.json`
-- artifacts output: `artifacts/`
-- runtime/cached compiler output: `.fz/`
-
-## 15) Troubleshooting quick checks
-
-If a command fails unexpectedly:
-
-```bash
-# 1) ensure CLI is wired
-which fz
-fz version
-
-# 2) rebuild workspace metadata quickly
-cargo check --workspace
-
-# 3) rerun the failing command with --json
-fz <command> ... --json
-```
-
-If deterministic replay fails:
-
-```bash
-# regenerate deterministic trace and replay
-fz test examples/fullstack --det --seed 41 --record artifacts/repro.trace.json --json
-fz replay artifacts/repro.trace.json --json
+fz check /tmp/code_synthesis.fzy --json
+fz build /tmp/code_synthesis.fzy --backend llvm --json
+fz build /tmp/code_synthesis.fzy --backend cranelift --json
 ```

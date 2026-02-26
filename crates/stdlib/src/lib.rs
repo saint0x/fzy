@@ -1,6 +1,6 @@
 pub mod alloc;
 pub mod bytes;
-pub mod capability;
+pub mod core;
 pub mod collections;
 pub mod concurrency;
 pub mod deploy;

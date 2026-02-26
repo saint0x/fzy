@@ -21,7 +21,7 @@ The v1 stdlib provides production baseline primitives for:
 
 ## Module Contracts
 
-### `capability`
+### `core`
 
 - `require_capability(token, required) -> Result<(), CapabilityError>`
 - `parse_capability(name) -> Result<Capability, CapabilityError>`

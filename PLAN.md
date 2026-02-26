@@ -345,6 +345,48 @@
 - [✅] Add execute-and-compare parity fixtures covering full construct families (including arrays/index + advanced expression forms) under both native backends.
 - [✅] Add release gate hard-fail when any construct marked `implemented` in language docs is missing in native lowering.
 
+### Core Namespace Parity + Stdlib Ergonomics Expansion (Production Program)
+- [ ] Rename stdlib `net` module boundary to first-class `http` naming for app-facing semantics:
+- [ ] Add `core.http` as canonical module surface for request/response/client/server/limits APIs.
+- [ ] Migrate existing `net`-centric HTTP entrypoints to `http` equivalents with no dual-surface compatibility shims.
+- [ ] Ensure docs/examples/fixtures stop presenting HTTP under `net` namespace.
+- [ ] Harden `core.http` with production-grade contracts:
+- [ ] request/response builders and validation helpers.
+- [ ] header map + canonicalization + bounded parsing rules.
+- [ ] explicit timeout/retry/backoff policy helpers.
+- [ ] deterministic + host backend parity hooks for all new APIs.
+- [ ] Expand string/text ergonomics for DX completeness:
+- [ ] split/join/trim/replace/contains/starts_with/ends_with primitives.
+- [ ] structured formatting utilities for safe interpolation and deterministic rendering.
+- [ ] explicit UTF-8/byte-boundary behavior contracts and diagnostics.
+- [ ] Expand error/result ergonomics:
+- [ ] typed error composition/context chaining helpers.
+- [ ] ergonomic `Result`/`Option` combinators used in idiomatic app code.
+- [ ] deterministic error classification surfaces (transport/parse/timeout/policy).
+- [ ] Expand container ergonomics:
+- [ ] iterator helpers for `Vec`/`Map`/`Set` with deterministic ordering guarantees documented.
+- [ ] map/set convenience APIs (`get_or_insert`, update/retain/filter patterns).
+- [ ] stable deterministic traversal contracts across backends.
+- [ ] Add async/task utility layer for production workflows:
+- [ ] reusable timeout/retry/cancellation-safe wrappers.
+- [ ] bounded fan-out/fan-in helpers with structured-concurrency defaults.
+- [ ] explicit failure-mode contracts for cancellation/timeout propagation.
+- [ ] Strengthen ABI-safe value helpers for non-scalar signatures:
+- [ ] codify ABI-safe wrapper/value-passing conventions for arrays/slices/struct-like payloads.
+- [ ] reduce pointer-sized ambiguity by documenting and enforcing canonical pass/return patterns.
+- [ ] add gate fixtures covering non-scalar ABI interactions in both native backends.
+- [ ] Rename internal crate/package `capabilities` to `core` for full namespace parity:
+- [ ] rename crate directory/package metadata and workspace references (`Cargo.toml`, lockfile, crate imports, docs).
+- [ ] replace all `use capabilities::...` imports with `use core::...`-equivalent crate path.
+- [ ] ensure no residual `capabilities` crate/path strings remain in first-party code/docs/tooling.
+- [ ] update release artifacts/docs that still reference old crate name.
+- [ ] Add mandatory migration + validation gates for this program:
+- [ ] `cargo check --workspace`, `cargo test --workspace`, and warning-free gate.
+- [ ] strict deterministic Fozzy lifecycle (`doctor --deep`, `test --det --strict`, `run --record`, `trace verify`, `replay`, `ci`).
+- [ ] host-backed runtime checks for HTTP/process/fs paths.
+- [ ] example + smoke repo compile/build/test/run closure under new names.
+- [ ] claim-integrity/docs-drift gates updated so public naming and contracts are always truthful.
+
 ### System Safety + Trust Model Assessment (No Proof-Depth Expansion Scope)
 - [✅] Assessment: safety posture remains strong and enforceable-by-default, but adoption trust depends on strict claim-vs-enforcement alignment.
 - [✅] Assessment: current caveats about non-Rust-equivalent proof depth are correct and should remain explicit until guarantees materially change.
