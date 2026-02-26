@@ -12,6 +12,9 @@ A quick way to think about fzy is zig but safer, rust but more sane.
 - Canonical production workflow: `docs/production-workflow-v1.md`
 - System safety/trust model: `docs/system-safety-trust-model-v1.md`
 - Unsafe islands/metadata authoring: `docs/unsafe-contract-authoring-v1.md`
+- Language stability tiers: `docs/language-stability-v1.md`
+- Workspace policy inheritance: `docs/workspace-policy-v1.md`
+- Operational insights (`lint`/`perf`/dashboard): `docs/operational-insights-v1.md`
 - `fozzy`: [ariacomputecompany/fozzy](https://github.com/ariacomputecompany/fozzy)
 - `fzyllm`: [saint0x/fzyllm](https://github.com/saint0x/fzyllm)
 
@@ -83,8 +86,7 @@ For the complete syntax and workflow coverage:
 ## What This Repo Contains
 
 - compiler CLI (binary: `fz`) (build/run/test/verify/emit-ir/rpc gen/headers)
-- `apps/fozzyfmt`: formatter
-- `apps/fozzydoc`: docs extractor/generator
+- formatting and docs generation are built into `fz` (`fz fmt`, `fz doc gen`)
 - `crates/parser`, `crates/ast`, `crates/hir`, `crates/fir`: front-end + IR pipeline
 - `crates/verifier`: correctness/safety/capability checks
 - `crates/runtime`: deterministic scheduler/executor primitives
@@ -134,12 +136,16 @@ fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backe
 # Test source/project or .fozzy scenario (path defaults to current working directory)
 fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
 
-# Verify/check/IR
+# Verify/check/IR/docs
+fz fmt [path ...] [--check] [--json]
 fz check [path] [--json]
 fz verify [path] [--json]
+fz lint [path] [--tier production|pedantic|compat] [--json]
 fz dx-check [project] [--strict] [--json]
 fz spec-check [--json]
 fz emit-ir [path] [--json]
+fz perf [--artifact artifacts/bench_corelibs_rust_vs_fzy.json] [--json]
+fz stability-dashboard [--json]
 fz parity [path] [--seed N] [--json]
 fz equivalence [path] [--seed N] [--json]
 fz audit unsafe [path] [--workspace] [--json]
@@ -156,6 +162,7 @@ fz lsp serve [--path <workspace>] [--json]
 # FFI / RPC outputs
 fz headers [path] [--out path] [--json]
 fz rpc gen [path] [--out-dir dir] [--json]
+fz doc gen [path] [--format json|html|markdown] [--out path] [--reference path] [--json]
 ```
 
 VS Code editor integration is available under `tooling/vscode` (language config, TextMate grammar, LSP client bootstrap to `fz lsp serve`).

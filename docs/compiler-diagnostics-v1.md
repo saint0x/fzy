@@ -7,6 +7,8 @@ This document defines the production diagnostics contract for `fz` and `fz lsp d
 - Deterministic and enforceable diagnostics.
 - Human-readable output with actionable remediation.
 - Shared diagnostic model across CLI text, CLI JSON, and LSP.
+- Stable diagnostic catalog lookups via `fz explain`.
+- Repro token + repro command surfaced in text diagnostics.
 
 ## Schema
 
@@ -44,6 +46,11 @@ Domain prefixes:
 - `VER` verifier policy/safety checks
 - `NAT` native lowerability checks
 - `DRV` driver-level fallback and pipeline diagnostics
+
+Catalog:
+
+- `fz explain <code>` returns family guidance + catalog summary/example.
+- `fz explain catalog` returns the typed catalog index (`fozzylang.diagnostic_catalog.v1`).
 
 ## Output Modes
 

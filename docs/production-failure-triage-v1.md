@@ -123,7 +123,7 @@ Fix workflow:
 2. Fix clippy/rustc warning source instead of suppressing globally.
 3. Re-run warning-free check.
 
-### `fozzyfmt --check` failure
+### `fz fmt --check` failure
 
 Symptoms:
 
@@ -131,11 +131,11 @@ Symptoms:
 
 Fix workflow:
 
-1. Run `cargo run -q -p fozzyfmt -- <paths>`.
+1. Run `fz fmt <paths>`.
 2. Re-run `--check`.
 3. Commit formatting changes with associated code change.
 
-### `fozzydoc` smoke failure
+### `fz doc gen` smoke failure
 
 Symptoms:
 
@@ -144,7 +144,7 @@ Symptoms:
 
 Fix workflow:
 
-1. Run `fozzydoc` command manually with same args.
+1. Run `fz doc gen` command manually with same args.
 2. Fix malformed declarations/comments in source.
 3. Ensure output directory exists and is writable.
 4. Re-run smoke and verify non-empty output.

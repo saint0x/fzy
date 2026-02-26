@@ -22,8 +22,8 @@ You will mainly use these tools:
 
 - `fz`: language/compiler/project workflow CLI
 - `fozzy`: deterministic scenario testing, replay, fuzzing, diagnosis
-- `fozzyfmt`: source formatter for `.fzy`
-- `fozzydoc`: API docs extractor/generator for `.fzy`
+- `fz fmt`: source formatter for `.fzy`
+- `fz doc gen`: API docs extractor/generator for `.fzy`
 
 In this repo, the canonical way to invoke local binaries is:
 
@@ -35,8 +35,8 @@ Examples:
 
 ```bash
 cargo run -q -p fz -- check examples/fullstack --json
-cargo run -q -p fozzyfmt -- examples/fullstack/src --check
-cargo run -q -p fozzydoc -- examples/fullstack/src --format markdown --out artifacts/fullstack.api.md
+cargo run -q -p fz -- fmt examples/fullstack/src --check
+cargo run -q -p fz -- doc gen examples/fullstack/src --format markdown --out artifacts/fullstack.api.md
 ```
 
 If you have globally installed binaries, direct usage also works:
@@ -76,8 +76,8 @@ cargo run -q -p fz -- test examples/fullstack --det --seed 41 --json
 ### 3.2 Format and generate docs
 
 ```bash
-cargo run -q -p fozzyfmt -- examples/fullstack/src --check
-cargo run -q -p fozzydoc -- examples/fullstack/src --format markdown --out artifacts/fullstack.api.md
+cargo run -q -p fz -- fmt examples/fullstack/src --check
+cargo run -q -p fz -- doc gen examples/fullstack/src --format markdown --out artifacts/fullstack.api.md
 ```
 
 ### 3.3 Run Fozzy deterministic confidence flow
@@ -151,6 +151,7 @@ Runtime logging defaults:
 fz fmt [path]
 fz check [path]
 fz verify [path]
+fz lint [path] [--tier production|pedantic|compat]
 fz explain <diag-code>
 fz doctor project [path] [--strict]
 fz devloop [path] [--backend llvm|cranelift]
@@ -172,6 +173,8 @@ Recommended order for feature work:
 
 ```bash
 fz emit-ir [path]
+fz perf [--artifact artifacts/bench_corelibs_rust_vs_fzy.json]
+fz stability-dashboard
 fz parity [path] [--seed N]
 fz equivalence [path] [--seed N]
 fz audit unsafe [path] [--workspace]
@@ -312,28 +315,28 @@ fozzy validate <scenario> --json
 
 ## 7. Formatting and Documentation Tools
 
-## 7.1 `fozzyfmt`
+## 7.1 `fz fmt`
 
 ```bash
-fozzyfmt <path> [<path> ...] [--check]
+fz fmt <path> [<path> ...] [--check]
 ```
 
 Use `--check` in CI/pre-commit to fail on style drift without rewriting files.
 
-## 7.2 `fozzydoc`
+## 7.2 `fz doc gen`
 
 ```bash
-fozzydoc <path> [--format json|html|markdown] [--out <file>] [--reference <language-reference.md>]
+fz doc gen <path> [--format json|html|markdown] [--out <file>] [--reference <language-reference.md>]
 ```
 
 Typical workflows:
 
 ```bash
 # Generate API doc snapshot
-fozzydoc examples/robust_cli/src --format markdown --out artifacts/robust_cli.api.md
+fz doc gen examples/robust_cli/src --format markdown --out artifacts/robust_cli.api.md
 
 # Keep language reference synced with extracted API section
-fozzydoc examples/robust_cli/src --format markdown --reference docs/language-reference-v1.md --out artifacts/robust_cli.api.md
+fz doc gen examples/robust_cli/src --format markdown --reference docs/language-reference-v1.md --out artifacts/robust_cli.api.md
 ```
 
 ## 8. Repository Conventions You Must Follow
@@ -376,7 +379,7 @@ fz dx-check [project] --strict
 ## 9.1 Add or change feature code
 
 1. Edit source.
-2. `fozzyfmt <paths>`
+2. `fz fmt <paths>`
 3. `fz check [project] --json`
 4. `fz dx-check [project] --strict --json`
 5. `fz test [project] --det --seed <seed> --json`

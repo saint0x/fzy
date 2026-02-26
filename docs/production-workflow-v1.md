@@ -67,9 +67,10 @@ This gate includes:
 - safety-claim integrity gate (`scripts/safety_claim_integrity_gate.py`)
 - release-blocking FFI examples gate (`fz headers` + `fz abi-check`)
 - strict deterministic and host-backed Fozzy lifecycle
+- determinism flake-budget enforcement (`scripts/determinism_flake_budget_gate.py`)
 - full command-surface checks
 - LSP editor + determinism/protocol smoke
-- strict `fozzyfmt` and `fozzydoc` smokes
+- strict `fz fmt` and `fz doc gen` smokes
 - pedantic hotspot closure
 - unsafe-budget enforcement
 

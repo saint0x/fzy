@@ -4,8 +4,6 @@ members = [
   "apps/live_server",
   "apps/robust_cli",
   "apps/fozzyc",
-  "apps/fozzyfmt",
-  "apps/fozzydoc",
   "apps/text_bench_rust",
   "crates/ast",
   "crates/parser",

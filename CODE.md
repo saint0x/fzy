@@ -572,7 +572,7 @@ fz equivalence tests/fixtures/native_completeness/main.fzy --seed 4242 --json
 ```bash
 fz fmt examples/fullstack/src --json
 fz fmt examples/robust_cli/src --json
-cargo run -q -p fozzyfmt -- examples/fullstack/src examples/robust_cli/src --check
+fz fmt examples/fullstack/src examples/robust_cli/src --check
 ```
 
 ## 22) End-to-end synthesis snippet (feature blend)

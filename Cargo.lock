@@ -352,6 +352,7 @@ dependencies = [
  "serde_json",
  "session",
  "sha2",
+ "toml",
  "verifier",
 ]
 
@@ -385,22 +386,6 @@ checksum = "d9c4f5dac5e15c24eb999c26181a6ca40b39fe946cbe4c263c7209467bc83af2"
 [[package]]
 name = "formatter"
 version = "0.1.0"
-
-[[package]]
-name = "fozzydoc"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "fozzyfmt"
-version = "0.1.0"
-dependencies = [
- "formatter",
-]
 
 [[package]]
 name = "fz"

@@ -80,7 +80,7 @@
 ### Tooling + DX Solidification (High Value, Not Overkill)
 - [✅] Stabilize LSP production ergonomics: eliminate dead-code/warning drift, tighten protocol behavior, and keep diagnostics/hover/rename deterministic.
 - [✅] Publish one canonical "production workflow" doc path (author -> check -> verify -> gate -> release) and keep command outputs aligned.
-- [✅] Add strict smoke for `fozzyfmt` and `fozzydoc` into production gate.
+- [✅] Add strict smoke for `fz fmt` and `fz doc gen` into production gate.
 - [✅] Add structured failure triage playbook mapping common failures to exact fix workflows.
 - [✅] Harden LSP rename/references from identifier-token matching to scope-aware semantic symbol resolution so rename does not over-touch unrelated symbols.
 - [✅] Upgrade LSP completion from keyword/token aggregation to typed + scope-ranked semantic completion with stable ordering guarantees.

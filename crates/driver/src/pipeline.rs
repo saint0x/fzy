@@ -10,6 +10,7 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variab
 use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use sha2::{Digest, Sha256};
+use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
@@ -842,6 +843,8 @@ pub fn compile_file_with_backend(
 ) -> Result<BuildArtifact> {
     let resolved = resolve_source_path(path)?;
     let parsed = parse_program(&resolved.source_path)?;
+    let experimental_diagnostics =
+        experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let backend = resolve_native_backend(profile, backend_override)?;
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
@@ -868,11 +871,15 @@ pub fn compile_file_with_backend(
         .diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_experimental_errors = experimental_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let has_native_lowerability_errors = !native_lowerability_errors.is_empty();
     let has_backend_risks = backend_risks
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
-    let status = if has_native_lowerability_errors
+    let status = if has_experimental_errors
+        || has_native_lowerability_errors
         || has_backend_risks
         || (checks_enabled && has_verifier_errors)
     {
@@ -880,7 +887,8 @@ pub fn compile_file_with_backend(
     } else {
         "ok"
     };
-    let mut diagnostic_details = native_lowerability_errors;
+    let mut diagnostic_details = experimental_diagnostics;
+    diagnostic_details.extend(native_lowerability_errors);
     diagnostic_details.extend(backend_risks);
     diagnostic_details.extend(report.diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
@@ -914,6 +922,8 @@ pub fn compile_library_with_backend(
 ) -> Result<LibraryArtifact> {
     let resolved = resolve_source_path_with_target(path, true)?;
     let parsed = parse_program(&resolved.source_path)?;
+    let experimental_diagnostics =
+        experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let backend = resolve_native_backend(profile, backend_override)?;
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
@@ -940,11 +950,15 @@ pub fn compile_library_with_backend(
         .diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_experimental_errors = experimental_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let has_native_lowerability_errors = !native_lowerability_errors.is_empty();
     let has_backend_risks = backend_risks
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
-    let status = if has_native_lowerability_errors
+    let status = if has_experimental_errors
+        || has_native_lowerability_errors
         || has_backend_risks
         || (checks_enabled && has_verifier_errors)
     {
@@ -952,7 +966,8 @@ pub fn compile_library_with_backend(
     } else {
         "ok"
     };
-    let mut diagnostic_details = native_lowerability_errors;
+    let mut diagnostic_details = experimental_diagnostics;
+    diagnostic_details.extend(native_lowerability_errors);
     diagnostic_details.extend(backend_risks);
     diagnostic_details.extend(report.diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
@@ -1017,7 +1032,9 @@ pub fn verify_file(path: &Path) -> Result<Output> {
             });
         }
     };
-    let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
+    let mut diagnostics =
+        experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
+    diagnostics.extend(native_lowerability_diagnostics(&parsed.module));
     let (_typed, fir) = lower_fir_cached(&parsed);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
@@ -5964,6 +5981,22 @@ struct ResolvedSource {
     dependency_graph_hash: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WorkspacePolicyFile {
+    #[serde(default)]
+    policy: WorkspacePolicySection,
+    #[serde(default)]
+    packages: HashMap<String, WorkspacePolicySection>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct WorkspacePolicySection {
+    language_tier: Option<String>,
+    allow_experimental: Option<bool>,
+    unsafe_enforce_verify: Option<bool>,
+    unsafe_enforce_release: Option<bool>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LockfileMode {
     ValidateOrCreate,
@@ -6033,13 +6066,65 @@ fn load_manifest(
     let primary = dir.join("fozzy.toml");
     let contents = std::fs::read_to_string(&primary)
         .with_context(|| format!("no valid compiler manifest found at {}", primary.display()))?;
-    let parsed = manifest::load(&contents).context("failed parsing fozzy.toml")?;
+    let mut parsed = manifest::load(&contents).context("failed parsing fozzy.toml")?;
+    apply_workspace_policy(dir, &mut parsed)?;
     parsed
         .validate()
         .map_err(|err| anyhow!("invalid fozzy.toml: {err}"))?;
     validate_dependency_paths(dir, &parsed)?;
     let graph_hash = write_lockfile(dir, &parsed, &contents, lock_mode)?;
     Ok((parsed, primary, graph_hash))
+}
+
+fn apply_workspace_policy(dir: &Path, manifest: &mut manifest::Manifest) -> Result<()> {
+    let Some((_, policy)) = load_workspace_policy(dir)? else {
+        return Ok(());
+    };
+    let mut merged = policy.policy.clone();
+    if let Some(package_override) = policy.packages.get(&manifest.package.name) {
+        if package_override.language_tier.is_some() {
+            merged.language_tier = package_override.language_tier.clone();
+        }
+        if package_override.allow_experimental.is_some() {
+            merged.allow_experimental = package_override.allow_experimental;
+        }
+        if package_override.unsafe_enforce_verify.is_some() {
+            merged.unsafe_enforce_verify = package_override.unsafe_enforce_verify;
+        }
+        if package_override.unsafe_enforce_release.is_some() {
+            merged.unsafe_enforce_release = package_override.unsafe_enforce_release;
+        }
+    }
+
+    if let Some(tier) = merged.language_tier {
+        manifest.language.tier = tier;
+    }
+    if let Some(allow) = merged.allow_experimental {
+        manifest.language.allow_experimental = allow;
+    }
+    if let Some(value) = merged.unsafe_enforce_verify {
+        manifest.unsafe_policy.enforce_verify = Some(value);
+    }
+    if let Some(value) = merged.unsafe_enforce_release {
+        manifest.unsafe_policy.enforce_release = Some(value);
+    }
+    Ok(())
+}
+
+fn load_workspace_policy(dir: &Path) -> Result<Option<(PathBuf, WorkspacePolicyFile)>> {
+    let mut cursor = Some(dir.to_path_buf());
+    while let Some(current) = cursor {
+        let candidate = current.join("fozzy.workspace.toml");
+        if candidate.exists() {
+            let text = std::fs::read_to_string(&candidate)
+                .with_context(|| format!("failed reading {}", candidate.display()))?;
+            let parsed: WorkspacePolicyFile = toml::from_str(&text)
+                .with_context(|| format!("failed parsing {}", candidate.display()))?;
+            return Ok(Some((candidate, parsed)));
+        }
+        cursor = current.parent().map(Path::to_path_buf);
+    }
+    Ok(None)
 }
 
 fn validate_dependency_paths(dir: &Path, manifest: &manifest::Manifest) -> Result<()> {
@@ -8679,6 +8764,54 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
         &mut diagnostics,
         diagnostics::DiagnosticDomain::NativeLowering,
     );
+    diagnostics
+}
+
+fn experimental_feature_diagnostics(
+    module: &ast::Module,
+    manifest: Option<&manifest::Manifest>,
+) -> Vec<diagnostics::Diagnostic> {
+    let tier = manifest
+        .map(|value| value.language.tier.as_str())
+        .unwrap_or("core_v1");
+    let allow_experimental = manifest
+        .map(|value| value.language.allow_experimental)
+        .unwrap_or(false);
+    if tier == "experimental" && allow_experimental {
+        return Vec::new();
+    }
+
+    let mut diagnostics = Vec::new();
+    for item in &module.items {
+        let ast::Item::Function(function) = item else {
+            continue;
+        };
+        let has_experimental_shape = function_body_contains_unsupported_try_catch_usage(&function.body)
+            || function_body_contains_unsupported_closure_usage(&function.body)
+            || function_body_contains_unsupported_let_pattern_variant_binding(&function.body)
+            || function_body_contains_unsupported_let_pattern_struct_binding(&function.body)
+            || function_body_contains_unsupported_match_variant_binding(&function.body)
+            || function_body_contains_unsupported_match_struct_binding(&function.body)
+            || function_body_contains_unsupported_partial_native_expression_usage(&function.body);
+        if !has_experimental_shape {
+            continue;
+        }
+        diagnostics.push(
+            diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "function `{}` uses experimental language semantics while manifest tier is `{}`",
+                    function.name, tier
+                ),
+                Some(
+                    "switch manifest to [language] tier=\"experimental\" and allow_experimental=true, or rewrite to Core v1 forms"
+                        .to_string(),
+                ),
+            )
+            .with_fix("set `[language] tier = \"experimental\"` and `allow_experimental = true`"),
+        );
+    }
+    diagnostics::assign_stable_codes(&mut diagnostics, diagnostics::DiagnosticDomain::Verifier);
     diagnostics
 }
 
@@ -17386,5 +17519,70 @@ mod tests {
         assert_eq!(llvm_exit, 7);
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn core_tier_rejects_experimental_shapes() {
+        let project_name = format!(
+            "fozzylang-core-tier-exp-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[language]\ntier=\"core_v1\"\nallow_experimental=false\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let v = try risky() catch 0\n    return v\n}\nfn risky() -> i32 { return 1 }\n",
+        )
+        .expect("source should be written");
+
+        let output = verify_file(&root).expect("verify should run");
+        assert!(output
+            .diagnostic_details
+            .iter()
+            .any(|d| d.message.contains("experimental language semantics")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn workspace_policy_can_override_package_language_tier() {
+        let project_name = format!(
+            "fozzylang-workspace-policy-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.workspace.toml"),
+            "[policy]\nlanguage_tier=\"core_v1\"\nallow_experimental=false\n\n[packages.demo]\nlanguage_tier=\"experimental\"\nallow_experimental=true\n",
+        )
+        .expect("workspace policy should be written");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let v = try risky() catch 0\n    return v\n}\nfn risky() -> i32 { return 1 }\n",
+        )
+        .expect("source should be written");
+
+        let output = verify_file(&root).expect("verify should run");
+        assert!(!output
+            .diagnostic_details
+            .iter()
+            .any(|d| d.message.contains("experimental language semantics")));
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -21,6 +21,8 @@ pub struct Manifest {
     pub profiles: Profiles,
     #[serde(default)]
     pub ffi: Ffi,
+    #[serde(default)]
+    pub language: LanguagePolicy,
     #[serde(default, rename = "unsafe")]
     pub unsafe_policy: UnsafePolicy,
 }
@@ -87,6 +89,27 @@ pub struct Profile {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Ffi {
     pub panic_boundary: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LanguagePolicy {
+    #[serde(default = "default_language_tier")]
+    pub tier: String,
+    #[serde(default)]
+    pub allow_experimental: bool,
+}
+
+impl Default for LanguagePolicy {
+    fn default() -> Self {
+        Self {
+            tier: default_language_tier(),
+            allow_experimental: false,
+        }
+    }
+}
+
+fn default_language_tier() -> String {
+    "core_v1".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +194,15 @@ impl Manifest {
             if mode != "abort" && mode != "error" {
                 return Err("ffi.panic_boundary must be `abort` or `error`".to_string());
             }
+        }
+        if self.language.tier != "core_v1" && self.language.tier != "experimental" {
+            return Err("language.tier must be `core_v1` or `experimental`".to_string());
+        }
+        if self.language.tier == "experimental" && !self.language.allow_experimental {
+            return Err(
+                "language.tier=`experimental` requires language.allow_experimental=true"
+                    .to_string(),
+            );
         }
         if let Some(mode) = self.unsafe_policy.contracts.as_deref() {
             if mode != "compiler" {
@@ -359,5 +391,68 @@ mod tests {
             .validate()
             .expect_err("empty unsafe scope should fail validation");
         assert!(err.contains("unsafe.deny_unsafe_in"));
+    }
+
+    #[test]
+    fn validates_language_core_tier_defaults() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        manifest
+            .validate()
+            .expect("default language policy should validate");
+        assert_eq!(manifest.language.tier, "core_v1");
+        assert!(!manifest.language.allow_experimental);
+    }
+
+    #[test]
+    fn rejects_unknown_language_tier() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [language]
+            tier = "next"
+            allow_experimental = true
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        let err = manifest
+            .validate()
+            .expect_err("unknown language tier should fail validation");
+        assert!(err.contains("language.tier"));
+    }
+
+    #[test]
+    fn rejects_experimental_tier_without_explicit_opt_in() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [language]
+            tier = "experimental"
+            allow_experimental = false
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        let err = manifest
+            .validate()
+            .expect_err("experimental tier must require explicit opt-in");
+        assert!(err.contains("allow_experimental"));
     }
 }

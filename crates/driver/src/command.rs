@@ -78,13 +78,18 @@ pub enum Command {
         filter: Option<String>,
     },
     Fmt {
-        path: PathBuf,
+        targets: Vec<PathBuf>,
+        check: bool,
     },
     Check {
         path: PathBuf,
     },
     Verify {
         path: PathBuf,
+    },
+    Lint {
+        path: PathBuf,
+        tier: String,
     },
     Explain {
         diag_code: String,
@@ -105,6 +110,10 @@ pub enum Command {
     EmitIr {
         path: PathBuf,
     },
+    Perf {
+        artifact: Option<PathBuf>,
+    },
+    StabilityDashboard,
     Parity {
         path: PathBuf,
         seed: Option<u64>,
@@ -175,6 +184,12 @@ pub enum Command {
     RpcGen {
         path: PathBuf,
         out_dir: Option<PathBuf>,
+    },
+    DocGen {
+        path: PathBuf,
+        format: String,
+        out: Option<PathBuf>,
+        reference: Option<PathBuf>,
     },
     Version,
 }
@@ -703,22 +718,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 .to_string()),
             }
         }
-        Command::Fmt { path } => {
-            ensure_exists(&path)?;
-            let formatted_count = format_source_target(&path)?;
-            let message = if formatted_count == 0 {
-                format!("already formatted {}", path.display())
-            } else if path.is_dir() {
-                format!(
-                    "formatted {} file(s) under {}",
-                    formatted_count,
-                    path.display()
-                )
-            } else {
-                format!("formatted {}", path.display())
-            };
-            Ok(render(format, &message))
-        }
+        Command::Fmt { targets, check } => fmt_command(&targets, check, format),
         Command::Check { path } => {
             let output = verify_file_with_root_guidance(&path)?;
             let rendered = render_output(format, output);
@@ -731,6 +731,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let unsafe_docs = maybe_generate_unsafe_docs(&path);
             Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
         }
+        Command::Lint { path, tier } => lint_command(&path, &tier, format),
         Command::Explain { diag_code } => explain_command(&diag_code, format),
         Command::DoctorProject { path, strict } => doctor_project_command(&path, strict, format),
         Command::DevLoop { path, backend } => devloop_command(&path, backend.as_deref(), format),
@@ -740,6 +741,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let output = emit_ir(&path)?;
             Ok(render_output(format, output))
         }
+        Command::Perf { artifact } => perf_command(artifact.as_deref(), format),
+        Command::StabilityDashboard => stability_dashboard_command(format),
         Command::Parity { path, seed } => parity_command(&path, seed.unwrap_or(1), format),
         Command::Equivalence { path, seed } => {
             equivalence_command(&path, seed.unwrap_or(1), format)
@@ -779,6 +782,20 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::RpcGen { path, out_dir } => {
             let generated = generate_rpc_artifacts(&path, out_dir.as_deref())?;
             Ok(render_rpc_artifacts(format, generated))
+        }
+        Command::DocGen {
+            path,
+            format: doc_format,
+            out,
+            reference,
+        } => {
+            let generated = generate_doc_artifacts(
+                &path,
+                &doc_format,
+                out.as_deref(),
+                reference.as_deref(),
+            )?;
+            Ok(render_doc_artifacts(format, generated))
         }
         Command::Version => Ok(render(format, env!("CARGO_PKG_VERSION"))),
     }
@@ -1389,6 +1406,14 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
             out.push_str(&format!(" explain: fz explain {code}\n"));
         }
         out.push_str(&format!(" verify_with: {verify_with}\n"));
+        out.push_str(&format!(
+            " repro_token: {}\n",
+            diagnostic_repro_token(diagnostic)
+        ));
+        out.push_str(&format!(
+            " repro_with: {}\n",
+            diagnostic_repro_command(diagnostic)
+        ));
         for note in &diagnostic.notes {
             out.push_str(&format!(" note: {note}\n"));
         }
@@ -1397,6 +1422,36 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
         }
     }
     out.trim_end().to_string()
+}
+
+fn diagnostic_repro_token(diagnostic: &diagnostics::Diagnostic) -> String {
+    let code = diagnostic.code.as_deref().unwrap_or("NO-CODE");
+    let path = diagnostic.path.as_deref().unwrap_or("<path>");
+    format!(
+        "schema=v1;code={code};profile=verify;backend=compiler;seed=1;path={path}"
+    )
+}
+
+fn diagnostic_repro_command(diagnostic: &diagnostics::Diagnostic) -> String {
+    if let Some(path) = &diagnostic.path {
+        format!(
+            "fz check {} --json && fz verify {} --json",
+            shell_escape(path),
+            shell_escape(path)
+        )
+    } else {
+        "fz check <path> --json && fz verify <path> --json".to_string()
+    }
+}
+
+fn shell_escape(input: &str) -> String {
+    if input
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+    {
+        return input.to_string();
+    }
+    format!("'{}'", input.replace('\'', "'\"'\"'"))
 }
 
 fn render_code_frame(
@@ -1536,6 +1591,26 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
     if normalized.is_empty() {
         bail!("missing diagnostic code: usage `fz explain <diag-code>`");
     }
+    let catalog = diagnostic_catalog();
+    if normalized == "CATALOG" || normalized == "--CATALOG" {
+        return match format {
+            Format::Text => Ok(catalog
+                .iter()
+                .map(|entry| {
+                    format!(
+                        "code_prefix: {}\nfamily: {}\nsummary: {}\nexample: {}\nnext_command: {}",
+                        entry.code_prefix, entry.family, entry.summary, entry.example, entry.next_command
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n")),
+            Format::Json => Ok(serde_json::json!({
+                "schemaVersion": "fozzylang.diagnostic_catalog.v1",
+                "entries": catalog,
+            })
+            .to_string()),
+        };
+    }
     let family = if normalized.starts_with("E-PAR-") || normalized.starts_with("W-PAR-") {
         "parser"
     } else if normalized.starts_with("E-HIR-") || normalized.starts_with("W-HIR-") {
@@ -1559,23 +1634,408 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
         "driver" => "Fix project/configuration issue and rerun the failing command.",
         _ => "Run `fz check <path>` to regenerate diagnostics with spans and helps.",
     };
+    let catalog_entry = catalog
+        .iter()
+        .find(|entry| normalized.starts_with(&entry.code_prefix))
+        .cloned();
     match format {
-        Format::Text => Ok(render_text_fields(&[
-            ("code", normalized),
-            ("family", family.to_string()),
-            ("root_cause", "Diagnostic codes are stable hashes of message+span in their domain".to_string()),
-            ("likely_fix", likely_fix.to_string()),
-            ("verify_with", "fz check <path> --json".to_string()),
-        ])),
+        Format::Text => {
+            let mut fields = vec![
+                ("code", normalized),
+                ("family", family.to_string()),
+                (
+                    "root_cause",
+                    "Diagnostic codes are stable hashes of message+span in their domain"
+                        .to_string(),
+                ),
+                ("likely_fix", likely_fix.to_string()),
+                ("verify_with", "fz check <path> --json".to_string()),
+            ];
+            if let Some(entry) = catalog_entry {
+                fields.push(("catalog_summary", entry.summary));
+                fields.push(("catalog_example", entry.example));
+                fields.push(("next_command", entry.next_command));
+            }
+            Ok(render_text_fields(&fields))
+        }
         Format::Json => Ok(serde_json::json!({
             "code": normalized,
             "family": family,
             "rootCause": "Diagnostic code encodes severity/domain and a stable hash of diagnostic content.",
             "likelyFix": likely_fix,
             "verifyWith": "fz check <path> --json",
+            "catalog": catalog_entry,
         })
         .to_string()),
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DiagnosticCatalogEntry {
+    code_prefix: String,
+    family: String,
+    summary: String,
+    example: String,
+    next_command: String,
+}
+
+fn diagnostic_catalog() -> Vec<DiagnosticCatalogEntry> {
+    vec![
+        DiagnosticCatalogEntry {
+            code_prefix: "E-PAR-".to_string(),
+            family: "parser".to_string(),
+            summary: "Syntax/grammar parse failure at source text boundary.".to_string(),
+            example: "E-PAR-xxxx: expected `catch` in try/catch expression".to_string(),
+            next_command: "fz check <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            code_prefix: "E-HIR-".to_string(),
+            family: "hir".to_string(),
+            summary: "Type/name/call graph semantic mismatch in typed lowering.".to_string(),
+            example: "E-HIR-xxxx: unresolved call target `missing_symbol`".to_string(),
+            next_command: "fz check <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "Policy/safety contract violation in verification.".to_string(),
+            example: "E-VER-xxxx: missing required capability: http".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            code_prefix: "E-NAT-".to_string(),
+            family: "native-lowering".to_string(),
+            summary: "Native backend lowerability contract violation.".to_string(),
+            example: "E-NAT-xxxx: native backend does not support `try/catch` expressions".to_string(),
+            next_command: "fz build <path> --backend llvm --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            code_prefix: "E-DRV-".to_string(),
+            family: "driver".to_string(),
+            summary: "Driver pipeline/configuration/runtime orchestration failure.".to_string(),
+            example: "E-DRV-xxxx: lockfile drift detected".to_string(),
+            next_command: "fz doctor project <path> --strict --json".to_string(),
+        },
+    ]
+}
+
+fn lint_command(path: &Path, tier: &str, format: Format) -> Result<String> {
+    let tier = normalize_lint_tier(tier)?;
+    let verify = verify_file_with_root_guidance(path)?;
+    let mut items = verify.diagnostic_details;
+    if tier == "pedantic" {
+        items.extend(pedantic_lint_findings(path)?);
+    } else if tier == "compat" {
+        items.extend(compat_lint_findings(path)?);
+    } else {
+        items.extend(production_lint_findings(path)?);
+    }
+    let errors = items
+        .iter()
+        .filter(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error))
+        .count();
+    let warnings = items
+        .iter()
+        .filter(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Warning))
+        .count();
+    let status = if errors > 0 {
+        "error"
+    } else if tier == "pedantic" && warnings > 0 {
+        "warn"
+    } else {
+        "ok"
+    };
+    match format {
+        Format::Text => {
+            let mut out = render_text_fields(&[
+                ("status", status.to_string()),
+                ("mode", "lint".to_string()),
+                ("tier", tier.to_string()),
+                ("errors", errors.to_string()),
+                ("warnings", warnings.to_string()),
+                (
+                    "policy",
+                    policy_summary_text("verify", Some("compiler"), Some("compiler"), true),
+                ),
+            ]);
+            let details = render_diagnostics_text(&items);
+            if !details.is_empty() {
+                out.push('\n');
+                out.push_str(&details);
+            }
+            Ok(out)
+        }
+        Format::Json => Ok(serde_json::json!({
+            "status": status,
+            "mode": "lint",
+            "tier": tier,
+            "errors": errors,
+            "warnings": warnings,
+            "items": items,
+            "policy": {
+                "profile": "verify",
+                "unsafeEnforcement": "strict",
+                "memorySafetyMode": "production",
+                "backend": "compiler",
+                "lockfileState": "present-or-created",
+            }
+        })
+        .to_string()),
+    }
+}
+
+fn normalize_lint_tier(tier: &str) -> Result<&'static str> {
+    match tier.trim().to_ascii_lowercase().as_str() {
+        "" | "production" => Ok("production"),
+        "pedantic" => Ok("pedantic"),
+        "compat" => Ok("compat"),
+        _ => bail!("invalid lint tier `{tier}`; expected production|pedantic|compat"),
+    }
+}
+
+fn collect_lint_sources(path: &Path) -> Result<Vec<(PathBuf, String)>> {
+    let mut out = Vec::new();
+    if path.is_file() {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("failed reading {}", path.display()))?;
+        out.push((path.to_path_buf(), text));
+        return Ok(out);
+    }
+    if !path.is_dir() {
+        bail!("lint target must be a file or project directory: {}", path.display());
+    }
+    let roots = discover_project_roots(path)?;
+    if roots.is_empty() {
+        bail!("no project roots found under {}", path.display());
+    }
+    for root in roots {
+        let src = root.join("src");
+        if !src.exists() {
+            continue;
+        }
+        for file in walk_fzy_files(&src)? {
+            let text = std::fs::read_to_string(&file)
+                .with_context(|| format!("failed reading {}", file.display()))?;
+            out.push((file, text));
+        }
+    }
+    Ok(out)
+}
+
+fn walk_fzy_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .with_context(|| format!("failed reading directory {}", dir.display()))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|v| v.to_str()) == Some("fzy") {
+                out.push(path);
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn pedantic_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
+    let sources = collect_lint_sources(path)?;
+    let mut out = Vec::new();
+    for (file, text) in sources {
+        if text.contains("discard ") && !text.contains("requires ") {
+            out.push(
+                diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Warning,
+                    "pedantic lint: module uses `discard` without explicit contract clauses",
+                    Some("prefer adding requires/ensures to make side-effect expectations explicit".to_string()),
+                )
+                .with_path(file.display().to_string()),
+            );
+        }
+        if text.matches("spawn(").count() > text.matches("yield()").count().saturating_add(2) {
+            out.push(
+                diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Warning,
+                    "pedantic lint: spawn/yield imbalance may increase starvation pressure",
+                    Some("add yield/checkpoint/join boundaries to keep scheduler pressure visible and bounded".to_string()),
+                )
+                .with_path(file.display().to_string()),
+            );
+        }
+    }
+    diagnostics::assign_stable_codes(&mut out, diagnostics::DiagnosticDomain::Driver);
+    Ok(out)
+}
+
+fn compat_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
+    let sources = collect_lint_sources(path)?;
+    let mut out = Vec::new();
+    for (file, text) in sources {
+        if text.contains("unsafe_reason(") || text.contains("unsafe(") {
+            out.push(
+                diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Warning,
+                    "compat lint: removed unsafe metadata syntax detected",
+                    Some("migrate to first-class `unsafe fn` / `unsafe { ... }` with compiler-generated contract docs".to_string()),
+                )
+                .with_path(file.display().to_string()),
+            );
+        }
+        if text.contains("extern \"C\"") {
+            out.push(
+                diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Warning,
+                    "compat lint: legacy extern syntax detected",
+                    Some("prefer `pubext c fn` / `ext unsafe c fn` for production C interop contracts".to_string()),
+                )
+                .with_path(file.display().to_string()),
+            );
+        }
+    }
+    diagnostics::assign_stable_codes(&mut out, diagnostics::DiagnosticDomain::Driver);
+    Ok(out)
+}
+
+fn production_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
+    let mut out = Vec::new();
+    if path.is_dir() {
+        let roots = discover_project_roots(path)?;
+        for root in roots {
+            let manifest_path = root.join("fozzy.toml");
+            if !manifest_path.exists() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&manifest_path)
+                .with_context(|| format!("failed reading {}", manifest_path.display()))?;
+            let manifest = manifest::load(&text).context("failed parsing fozzy.toml")?;
+            if manifest.unsafe_policy.enforce_verify == Some(false)
+                || manifest.unsafe_policy.enforce_release == Some(false)
+            {
+                out.push(
+                    diagnostics::Diagnostic::new(
+                        diagnostics::Severity::Warning,
+                        "production lint: unsafe enforcement is relaxed",
+                        Some("set [unsafe].enforce_verify=true and enforce_release=true".to_string()),
+                    )
+                    .with_path(manifest_path.display().to_string()),
+                );
+            }
+        }
+    }
+    diagnostics::assign_stable_codes(&mut out, diagnostics::DiagnosticDomain::Driver);
+    Ok(out)
+}
+
+fn perf_command(artifact: Option<&Path>, format: Format) -> Result<String> {
+    let path = artifact
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("artifacts/bench_corelibs_rust_vs_fzy.json"));
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed reading benchmark artifact {}", path.display()))?;
+    let payload: serde_json::Value =
+        serde_json::from_str(&text).context("invalid benchmark artifact JSON")?;
+    let benches = payload
+        .get("benches")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow!("benchmark artifact missing `benches` array"))?;
+    let mut worst = ("".to_string(), 0.0f64);
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for bench in benches {
+        let name = bench
+            .get("bench")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        let ratio = bench
+            .get("ratio_fzy_over_rust")
+            .and_then(serde_json::Value::as_f64)
+            .unwrap_or(0.0);
+        if ratio > worst.1 {
+            worst = (name, ratio);
+        }
+        sum += ratio;
+        count += 1;
+    }
+    let avg = if count == 0 { 0.0 } else { sum / count as f64 };
+    match format {
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "perf".to_string()),
+            ("artifact", path.display().to_string()),
+            ("bench_count", count.to_string()),
+            ("average_ratio_fzy_over_rust", format!("{avg:.6}")),
+            ("worst_kernel", worst.0),
+            ("worst_ratio_fzy_over_rust", format!("{:.6}", worst.1)),
+        ])),
+        Format::Json => Ok(serde_json::json!({
+            "status": "ok",
+            "mode": "perf",
+            "artifact": path.display().to_string(),
+            "benchCount": count,
+            "averageRatioFzyOverRust": avg,
+            "worstKernel": worst.0,
+            "worstRatioFzyOverRust": worst.1,
+        })
+        .to_string()),
+    }
+}
+
+fn stability_dashboard_command(format: Format) -> Result<String> {
+    let exit_status = ProcessCommand::new("python3")
+        .arg("scripts/exit_criteria.py")
+        .arg("status")
+        .output()
+        .context("failed to run exit criteria status command")?;
+    if !exit_status.status.success() {
+        bail!("exit criteria status failed");
+    }
+    let exit_payload: serde_json::Value = serde_json::from_slice(&exit_status.stdout)
+        .context("invalid exit criteria payload")?;
+    let dashboard = serde_json::json!({
+        "schemaVersion": "fozzylang.stability_dashboard.v1",
+        "generatedAt": chrono_like_now_utc(),
+        "maturity": exit_payload.get("seriousSystemsLanguageMaturity").cloned().unwrap_or(serde_json::Value::Bool(false)),
+        "criteria": exit_payload.get("criteria").cloned().unwrap_or(serde_json::json!({})),
+        "sources": {
+            "exitCriteria": "release/exit_criteria_state.json",
+            "plan": "PLAN.md",
+            "perfArtifact": "artifacts/bench_corelibs_rust_vs_fzy.json"
+        }
+    });
+    let path = PathBuf::from("artifacts/stability_dashboard.json");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating {}", parent.display()))?;
+    }
+    std::fs::write(&path, serde_json::to_vec_pretty(&dashboard)?)
+        .with_context(|| format!("failed writing {}", path.display()))?;
+    match format {
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "stability-dashboard".to_string()),
+            ("artifact", path.display().to_string()),
+        ])),
+        Format::Json => Ok(serde_json::json!({
+            "status": "ok",
+            "mode": "stability-dashboard",
+            "artifact": path.display().to_string(),
+            "dashboard": dashboard,
+        })
+        .to_string()),
+    }
+}
+
+fn chrono_like_now_utc() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    format!("{now}")
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5132,6 +5592,26 @@ impl From<&TaskEvent> for TaskEventRecord {
                     "channel={channel} bytes={bytes} payload_hash={payload_hash}"
                 )),
             },
+            TaskEvent::MemoryPressure {
+                task_id,
+                bytes,
+                level,
+            } => Self {
+                event: "memory_pressure",
+                task_id: *task_id,
+                detached: None,
+                message: Some(format!("bytes={bytes} level={level}")),
+            },
+            TaskEvent::ResourceLeak {
+                task_id,
+                subsystem,
+                resource,
+            } => Self {
+                event: "resource_leak",
+                task_id: *task_id,
+                detached: None,
+                message: Some(format!("subsystem={subsystem} resource={resource}")),
+            },
             TaskEvent::Detached { task_id } => Self {
                 event: "detached",
                 task_id: *task_id,
@@ -5687,7 +6167,9 @@ fn derive_runtime_semantic_evidence(
             | TaskEvent::IoWait { task_id, .. }
             | TaskEvent::IoReady { task_id, .. }
             | TaskEvent::ChannelSend { task_id, .. }
-            | TaskEvent::ChannelRecv { task_id, .. } => {
+            | TaskEvent::ChannelRecv { task_id, .. }
+            | TaskEvent::MemoryPressure { task_id, .. }
+            | TaskEvent::ResourceLeak { task_id, .. } => {
                 let op = task_ops.get(task_id);
                 runtime_events.push(RuntimeSemanticEvent {
                     task_id: *task_id,
@@ -6108,7 +6590,9 @@ fn thread_health_findings(
             | TaskEvent::IoWait { .. }
             | TaskEvent::IoReady { .. }
             | TaskEvent::ChannelSend { .. }
-            | TaskEvent::ChannelRecv { .. } => {}
+            | TaskEvent::ChannelRecv { .. }
+            | TaskEvent::MemoryPressure { .. }
+            | TaskEvent::ResourceLeak { .. } => {}
         }
     }
     let mut findings = Vec::new();
@@ -8368,6 +8852,395 @@ fn is_fozzy_scenario(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+fn fmt_command(targets: &[PathBuf], check: bool, format: Format) -> Result<String> {
+    let effective_targets = if targets.is_empty() {
+        vec![std::env::current_dir().context("failed to resolve current working directory")?]
+    } else {
+        targets.to_vec()
+    };
+    for target in &effective_targets {
+        ensure_exists(target)?;
+    }
+    let mut changed_files = Vec::<PathBuf>::new();
+    for target in &effective_targets {
+        changed_files.extend(format_source_target(target, check)?);
+    }
+    changed_files.sort();
+    changed_files.dedup();
+
+    let status = if check && !changed_files.is_empty() {
+        "error"
+    } else {
+        "ok"
+    };
+    match format {
+        Format::Text => {
+            let mut out = render_text_fields(&[
+                ("status", status.to_string()),
+                ("mode", "fmt".to_string()),
+                ("check", check.to_string()),
+                ("targets", effective_targets.len().to_string()),
+                ("changed_files", changed_files.len().to_string()),
+            ]);
+            for file in changed_files {
+                out.push('\n');
+                out.push_str(&format!("file: {}", file.display()));
+            }
+            Ok(out)
+        }
+        Format::Json => Ok(serde_json::json!({
+            "status": status,
+            "mode": "fmt",
+            "check": check,
+            "targets": effective_targets.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+            "changedFiles": changed_files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
+        })
+        .to_string()),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DocItem {
+    kind: String,
+    name: String,
+    signature: String,
+    module: String,
+    path: String,
+    line: usize,
+    docs: String,
+}
+
+#[derive(Debug, Clone)]
+struct DocArtifacts {
+    mode: String,
+    output_format: String,
+    item_count: usize,
+    output_path: Option<PathBuf>,
+    reference_path: Option<PathBuf>,
+    rendered: String,
+}
+
+const DOC_REF_START: &str = "<!-- fozzydoc:api:start -->";
+const DOC_REF_END: &str = "<!-- fozzydoc:api:end -->";
+
+fn generate_doc_artifacts(
+    path: &Path,
+    output_format: &str,
+    out: Option<&Path>,
+    reference: Option<&Path>,
+) -> Result<DocArtifacts> {
+    let files = discover_doc_sources(path)?;
+    let mut items = Vec::<DocItem>::new();
+    for file in files {
+        items.extend(extract_doc_items(&file)?);
+    }
+    items.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
+    let rendered = match output_format.trim().to_ascii_lowercase().as_str() {
+        "json" => serde_json::to_string_pretty(&items)?,
+        "markdown" | "md" => render_docs_markdown(&items),
+        "html" => render_docs_html(&items),
+        other => bail!("unsupported doc format `{other}` (expected json|html|markdown)"),
+    };
+
+    if let Some(reference_path) = reference {
+        integrate_doc_reference(reference_path, &items)?;
+    }
+    if let Some(out_path) = out {
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed creating {}", parent.display()))?;
+        }
+        std::fs::write(out_path, rendered.as_bytes())
+            .with_context(|| format!("failed writing {}", out_path.display()))?;
+    }
+
+    Ok(DocArtifacts {
+        mode: "doc-gen".to_string(),
+        output_format: output_format.to_ascii_lowercase(),
+        item_count: items.len(),
+        output_path: out.map(Path::to_path_buf),
+        reference_path: reference.map(Path::to_path_buf),
+        rendered,
+    })
+}
+
+fn render_doc_artifacts(format: Format, artifacts: DocArtifacts) -> String {
+    match format {
+        Format::Text => render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", artifacts.mode),
+            ("format", artifacts.output_format),
+            ("items", artifacts.item_count.to_string()),
+            (
+                "out",
+                artifacts
+                    .output_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<stdout>".to_string()),
+            ),
+            (
+                "reference",
+                artifacts
+                    .reference_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ]),
+        Format::Json => serde_json::json!({
+            "status": "ok",
+            "mode": artifacts.mode,
+            "format": artifacts.output_format,
+            "items": artifacts.item_count,
+            "outputPath": artifacts.output_path.map(|p| p.display().to_string()),
+            "referencePath": artifacts.reference_path.map(|p| p.display().to_string()),
+            "rendered": artifacts.rendered,
+        })
+        .to_string(),
+    }
+}
+
+fn discover_doc_sources(path: &Path) -> Result<Vec<PathBuf>> {
+    if path.is_file() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    if !path.is_dir() {
+        bail!("input path is neither a file nor directory: {}", path.display());
+    }
+    let mut files = Vec::<PathBuf>::new();
+    collect_fzy_files(path, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn collect_fzy_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    for entry in
+        std::fs::read_dir(dir).with_context(|| format!("failed reading {}", dir.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed iterating {}", dir.display()))?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_fzy_files(&path, files)?;
+            continue;
+        }
+        if is_fzy_source_path(&path) {
+            files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn extract_doc_items(path: &Path) -> Result<Vec<DocItem>> {
+    let source = std::fs::read_to_string(path)
+        .with_context(|| format!("failed reading source file: {}", path.display()))?;
+    let module = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("unknown")
+        .to_string();
+    let path_string = path.display().to_string();
+
+    let mut items = Vec::new();
+    let mut pending_docs = Vec::<String>::new();
+    let mut in_block_doc = false;
+    for (index, raw) in source.lines().enumerate() {
+        let line_number = index + 1;
+        let line = raw.trim();
+        if in_block_doc {
+            if let Some(prefix) = line.strip_suffix("*/") {
+                let cleaned = prefix.trim_start_matches('*').trim();
+                if !cleaned.is_empty() {
+                    pending_docs.push(cleaned.to_string());
+                }
+                in_block_doc = false;
+                continue;
+            }
+            let cleaned = line.trim_start_matches('*').trim();
+            if !cleaned.is_empty() {
+                pending_docs.push(cleaned.to_string());
+            }
+            continue;
+        }
+        if let Some(doc) = line.strip_prefix("///") {
+            pending_docs.push(doc.trim().to_string());
+            continue;
+        }
+        if let Some(after) = line.strip_prefix("/**") {
+            if let Some(mid) = after.strip_suffix("*/") {
+                let cleaned = mid.trim();
+                if !cleaned.is_empty() {
+                    pending_docs.push(cleaned.to_string());
+                }
+            } else {
+                let cleaned = after.trim_start_matches('*').trim();
+                if !cleaned.is_empty() {
+                    pending_docs.push(cleaned.to_string());
+                }
+                in_block_doc = true;
+            }
+            continue;
+        }
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let without_attrs = strip_doc_leading_attributes(line);
+        if without_attrs.is_empty() {
+            continue;
+        }
+        if let Some((kind, name, signature)) = parse_doc_decl(&without_attrs) {
+            items.push(DocItem {
+                kind,
+                name,
+                signature,
+                module: module.clone(),
+                path: path_string.clone(),
+                line: line_number,
+                docs: pending_docs.join("\n"),
+            });
+            pending_docs.clear();
+            continue;
+        }
+        pending_docs.clear();
+    }
+    Ok(items)
+}
+
+fn strip_doc_leading_attributes(line: &str) -> String {
+    let mut cursor = line.trim();
+    while let Some(rest) = cursor.strip_prefix("#[") {
+        if let Some(close) = rest.find(']') {
+            cursor = rest[(close + 1)..].trim_start();
+        } else {
+            break;
+        }
+    }
+    cursor.to_string()
+}
+
+fn parse_doc_decl(line: &str) -> Option<(String, String, String)> {
+    if let Some(rest) = line.strip_prefix("fn ") {
+        let name = rest.split('(').next()?.trim();
+        return Some(("fn".to_string(), clean_doc_name(name), line.to_string()));
+    }
+    if let Some(rest) = line.strip_prefix("struct ") {
+        let name = rest.split('{').next()?.trim();
+        return Some(("struct".to_string(), clean_doc_name(name), line.to_string()));
+    }
+    if let Some(rest) = line.strip_prefix("enum ") {
+        let name = rest.split('{').next()?.trim();
+        return Some(("enum".to_string(), clean_doc_name(name), line.to_string()));
+    }
+    if let Some(rest) = line.strip_prefix("trait ") {
+        let name = rest.split('{').next()?.trim();
+        return Some(("trait".to_string(), clean_doc_name(name), line.to_string()));
+    }
+    if let Some(rest) = line.strip_prefix("impl ") {
+        let name = rest.split('{').next()?.trim();
+        return Some(("impl".to_string(), clean_doc_name(name), line.to_string()));
+    }
+    if let Some(rest) = line.strip_prefix("rpc ") {
+        let name = rest.split('(').next()?.trim();
+        return Some(("rpc".to_string(), clean_doc_name(name), line.to_string()));
+    }
+    if let Some(rest) = line.strip_prefix("test ") {
+        let name = rest
+            .trim()
+            .trim_start_matches('"')
+            .split('"')
+            .next()
+            .unwrap_or(rest.trim())
+            .trim();
+        return Some(("test".to_string(), clean_doc_name(name), line.to_string()));
+    }
+    None
+}
+
+fn clean_doc_name(raw: &str) -> String {
+    raw.trim()
+        .trim_matches('{')
+        .trim_matches('(')
+        .trim_matches(')')
+        .trim_matches(';')
+        .to_string()
+}
+
+fn render_docs_markdown(items: &[DocItem]) -> String {
+    if items.is_empty() {
+        return "# API Documentation\n\n_No documented items found._\n".to_string();
+    }
+    let mut out = String::from("# API Documentation\n\n");
+    for item in items {
+        out.push_str(&format!(
+            "## `{}` `{}`\n\n- module: `{}`\n- path: `{}`:{}\n- signature: `{}`\n\n",
+            item.kind, item.name, item.module, item.path, item.line, item.signature
+        ));
+        if item.docs.is_empty() {
+            out.push_str("_No docs provided._\n\n");
+        } else {
+            out.push_str(&format!("{}\n\n", item.docs));
+        }
+    }
+    out
+}
+
+fn render_docs_html(items: &[DocItem]) -> String {
+    let mut out = String::from(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>fz doc</title></head><body>",
+    );
+    out.push_str("<h1>API Documentation</h1>");
+    if items.is_empty() {
+        out.push_str("<p><em>No documented items found.</em></p>");
+    } else {
+        for item in items {
+            out.push_str(&format!(
+                "<section><h2><code>{}</code> <code>{}</code></h2><ul><li>module: <code>{}</code></li><li>path: <code>{}:{}</code></li><li>signature: <code>{}</code></li></ul><pre>{}</pre></section>",
+                html_escape(&item.kind),
+                html_escape(&item.name),
+                html_escape(&item.module),
+                html_escape(&item.path),
+                item.line,
+                html_escape(&item.signature),
+                html_escape(&item.docs),
+            ));
+        }
+    }
+    out.push_str("</body></html>");
+    out
+}
+
+fn html_escape(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn integrate_doc_reference(reference_path: &Path, items: &[DocItem]) -> Result<()> {
+    let source = std::fs::read_to_string(reference_path)
+        .with_context(|| format!("failed reading {}", reference_path.display()))?;
+    let start = source
+        .find(DOC_REF_START)
+        .ok_or_else(|| anyhow!("reference marker missing: {}", DOC_REF_START))?;
+    let end = source
+        .find(DOC_REF_END)
+        .ok_or_else(|| anyhow!("reference marker missing: {}", DOC_REF_END))?;
+    if end <= start {
+        bail!("invalid reference markers ordering in {}", reference_path.display());
+    }
+    let replacement = format!(
+        "{DOC_REF_START}\n\n{}\n{DOC_REF_END}",
+        render_docs_markdown(items).trim_end()
+    );
+    let mut updated = String::new();
+    updated.push_str(&source[..start]);
+    updated.push_str(&replacement);
+    updated.push_str(&source[(end + DOC_REF_END.len())..]);
+    std::fs::write(reference_path, updated.as_bytes())
+        .with_context(|| format!("failed writing {}", reference_path.display()))?;
+    Ok(())
+}
+
 fn format_source_file(path: &Path) -> Result<bool> {
     let original = std::fs::read_to_string(path)
         .with_context(|| format!("failed reading file for formatting: {}", path.display()))?;
@@ -8382,9 +9255,9 @@ fn format_source_file(path: &Path) -> Result<bool> {
     }
 }
 
-fn format_source_target(path: &Path) -> Result<usize> {
+fn format_source_target(path: &Path, check: bool) -> Result<Vec<PathBuf>> {
+    let mut changed = Vec::<PathBuf>::new();
     if path.is_dir() {
-        let mut changed = 0usize;
         for entry in std::fs::read_dir(path).with_context(|| {
             format!(
                 "failed reading directory for formatting: {}",
@@ -8399,24 +9272,41 @@ fn format_source_target(path: &Path) -> Result<usize> {
             })?;
             let entry_path = entry.path();
             if entry_path.is_dir() {
-                changed += format_source_target(&entry_path)?;
+                changed.extend(format_source_target(&entry_path, check)?);
                 continue;
             }
             if entry_path.is_file()
                 && is_fzy_source_path(&entry_path)
-                && format_source_file(&entry_path)?
+                && (if check {
+                    let original = std::fs::read_to_string(&entry_path).with_context(|| {
+                        format!("failed reading file for formatting: {}", entry_path.display())
+                    })?;
+                    format_source(&original) != original
+                } else {
+                    format_source_file(&entry_path)?
+                })
             {
-                changed += 1;
+                changed.push(entry_path);
             }
         }
         return Ok(changed);
     }
 
     if !is_fzy_source_path(path) {
-        return Ok(0);
+        return Ok(changed);
     }
-
-    Ok(usize::from(format_source_file(path)?))
+    if check {
+        let original = std::fs::read_to_string(path)
+            .with_context(|| format!("failed reading file for formatting: {}", path.display()))?;
+        if format_source(&original) != original {
+            changed.push(path.to_path_buf());
+        }
+        return Ok(changed);
+    }
+    if format_source_file(path)? {
+        changed.push(path.to_path_buf());
+    }
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -8503,8 +9393,8 @@ mod tests {
         std::fs::write(&second, "fn helper() -> i32 {   \n    return 0\n}\n")
             .expect("second source should be written");
 
-        let changed = format_source_target(&root).expect("directory format should succeed");
-        assert_eq!(changed, 2);
+        let changed = format_source_target(&root, false).expect("directory format should succeed");
+        assert_eq!(changed.len(), 2);
         let first_content = std::fs::read_to_string(&first).expect("first source should be read");
         let second_content =
             std::fs::read_to_string(&second).expect("second source should be read");
@@ -10686,6 +11576,40 @@ mod tests {
         .expect("check command should return diagnostics");
         assert!(output.contains("must be declared `ext unsafe c fn`"));
 
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn explain_catalog_returns_entries() {
+        let output = run(
+            Command::Explain {
+                diag_code: "catalog".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("catalog explain should succeed");
+        assert!(output.contains("\"schemaVersion\":\"fozzylang.diagnostic_catalog.v1\""));
+        assert!(output.contains("\"code_prefix\":\"E-HIR-\""));
+    }
+
+    #[test]
+    fn lint_command_supports_tiers() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-lint-tier-{suffix}.fzy"));
+        std::fs::write(&source, "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("source should be written");
+        let output = run(
+            Command::Lint {
+                path: source.clone(),
+                tier: "production".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("lint should succeed");
+        assert!(output.contains("\"mode\":\"lint\""));
         let _ = std::fs::remove_file(source);
     }
 }

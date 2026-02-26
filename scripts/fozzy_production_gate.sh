@@ -101,8 +101,8 @@ fozzy usage --json >/dev/null
 
 echo "[gate] tooling DX strict smokes"
 RUSTFLAGS="-D warnings" cargo check -p driver --all-targets >/dev/null
-cargo run -q -p fozzyfmt -- examples/fullstack/src examples/robust_cli/src --check >/dev/null
-cargo run -q -p fozzydoc -- examples/fullstack/src --format markdown --out "$ARTIFACT_DIR/fullstack.api.md" >/dev/null
+"${FZ_CMD[@]}" fmt examples/fullstack/src examples/robust_cli/src --check >/dev/null
+"${FZ_CMD[@]}" doc gen examples/fullstack/src --format markdown --out "$ARTIFACT_DIR/fullstack.api.md" >/dev/null
 test -s "$ARTIFACT_DIR/fullstack.api.md"
 
 echo "[gate] pedantic topology closure"
@@ -116,6 +116,9 @@ print(f"requiredHotspotCount={required} uncoveredHotspotCount={uncovered}")
 if uncovered != 0:
     raise SystemExit(2)
 PY
+
+echo "[gate] determinism flake budget gate"
+python3 ./scripts/determinism_flake_budget_gate.py "${FLAKE_BUDGET:-0}" >/dev/null
 
 echo "[gate] unsafe budget gate"
 UNSAFE_JSON="$("${FZ_CMD[@]}" audit unsafe "$UNSAFE_AUDIT_TARGET" --workspace --json)"

@@ -59,7 +59,10 @@ fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|status| status == "error")
                 .then_some(1),
-            Command::DoctorProject { .. } | Command::DevLoop { .. } => payload
+            Command::DoctorProject { .. }
+            | Command::DevLoop { .. }
+            | Command::Lint { .. }
+            | Command::Fmt { .. } => payload
                 .get("status")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|status| status == "error")
@@ -128,7 +131,10 @@ fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
                 None
             }
         }
-        Command::DoctorProject { .. } | Command::DevLoop { .. } => {
+        Command::DoctorProject { .. }
+        | Command::DevLoop { .. }
+        | Command::Lint { .. }
+        | Command::Fmt { .. } => {
             if output.contains("status: error") {
                 Some(1)
             } else {
@@ -235,14 +241,25 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 filter,
             })
         }
-        Some("fmt") => Ok(Command::Fmt {
-            path: arg_path_or_cwd(args, 1)?,
-        }),
+        Some("fmt") => {
+            let check = has_flag(args, "--check");
+            let targets = args
+                .iter()
+                .skip(1)
+                .filter(|arg| !arg.starts_with("--"))
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            Ok(Command::Fmt { targets, check })
+        }
         Some("check") => Ok(Command::Check {
             path: arg_path_or_cwd(args, 1)?,
         }),
         Some("verify") => Ok(Command::Verify {
             path: arg_path_or_cwd(args, 1)?,
+        }),
+        Some("lint") => Ok(Command::Lint {
+            path: arg_path_or_cwd(args, 1)?,
+            tier: parse_string_flag(args, "--tier")?.unwrap_or_else(|| "production".to_string()),
         }),
         Some("explain") => Ok(Command::Explain {
             diag_code: args
@@ -272,6 +289,10 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("emit-ir") => Ok(Command::EmitIr {
             path: arg_path_or_cwd(args, 1)?,
         }),
+        Some("perf") => Ok(Command::Perf {
+            artifact: parse_path_flag(args, "--artifact")?,
+        }),
+        Some("stability-dashboard") => Ok(Command::StabilityDashboard),
         Some("parity") => Ok(Command::Parity {
             path: arg_path_or_cwd(args, 1)?,
             seed: parse_u64_flag(args, "--seed")?,
@@ -374,6 +395,19 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 bail!("unknown rpc subcommand")
             }
         },
+        Some("doc") => match args.get(1).map(String::as_str) {
+            Some("gen") => Ok(Command::DocGen {
+                path: arg_path_or_cwd(args, 2)?,
+                format: parse_string_flag(args, "--format")?
+                    .unwrap_or_else(|| "json".to_string()),
+                out: parse_path_flag(args, "--out")?,
+                reference: parse_path_flag(args, "--reference")?,
+            }),
+            _ => {
+                print_help();
+                bail!("unknown doc subcommand")
+            }
+        },
         Some("version") => Ok(Command::Version),
         Some("--version") => Ok(Command::Version),
         _ => {
@@ -408,15 +442,18 @@ commands:\n\
   build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name]\n\
   run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [-- <args>]\n\
   test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
-  fmt [path]\n\
+  fmt [path ...] [--check]\n\
   check [path]\n\
   verify [path]\n\
+  lint [path] [--tier production|pedantic|compat]\n\
   explain <diag-code>\n\
   doctor project [path] [--strict]\n\
   devloop [path] [--backend llvm|cranelift]\n\
   dx-check [project] [--strict]\n\
   spec-check\n\
   emit-ir [path]\n\
+  perf [--artifact path]\n\
+  stability-dashboard\n\
   parity [path] [--seed N]\n\
   equivalence [path] [--seed N]\n\
   audit unsafe [path] [--workspace]\n\
@@ -431,6 +468,7 @@ commands:\n\
   lsp smoke [path]\n\
   headers [path] [--out path]\n\
   rpc gen [path] [--out-dir dir]\n\
+  doc gen [path] [--format json|html|markdown] [--out path] [--reference path]\n\
   fuzz <scenario>\n\
   explore <scenario>\n\
   replay <trace>\n\
@@ -442,6 +480,7 @@ flags:\n\
   --json\n\
   --det\n\
   --strict-verify\n\
+  --check\n\
   --seed <u64>\n\
   --record <path>\n\
   --host-backends\n\
@@ -455,7 +494,10 @@ flags:\n\
   --filter <substring>\n\
   --rich-artifacts\n\
   --out <path>\n\
+  --reference <path>\n\
   --out-dir <dir>\n\
+  --tier <production|pedantic|compat>\n\
+  --artifact <path>\n\
   --baseline <path>\n\
   --strict"
     );
@@ -679,5 +721,37 @@ mod tests {
             }
             _ => panic!("expected devloop command"),
         }
+    }
+
+    #[test]
+    fn parse_lint_command_with_tier() {
+        let args = vec![
+            "lint".to_string(),
+            "examples/fullstack".to_string(),
+            "--tier".to_string(),
+            "pedantic".to_string(),
+        ];
+        let command = parse_command(&args).expect("lint should parse");
+        match command {
+            Command::Lint { path, tier } => {
+                assert_eq!(path, PathBuf::from("examples/fullstack"));
+                assert_eq!(tier, "pedantic");
+            }
+            _ => panic!("expected lint command"),
+        }
+    }
+
+    #[test]
+    fn parse_perf_command_defaults_to_default_artifact() {
+        let args = vec!["perf".to_string()];
+        let command = parse_command(&args).expect("perf should parse");
+        assert!(matches!(command, Command::Perf { artifact: None }));
+    }
+
+    #[test]
+    fn parse_stability_dashboard_command() {
+        let args = vec!["stability-dashboard".to_string()];
+        let command = parse_command(&args).expect("stability dashboard should parse");
+        assert!(matches!(command, Command::StabilityDashboard));
     }
 }

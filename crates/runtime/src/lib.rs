@@ -203,6 +203,16 @@ pub enum TaskEvent {
         bytes: usize,
         payload_hash: u64,
     },
+    MemoryPressure {
+        task_id: TaskId,
+        bytes: usize,
+        level: String,
+    },
+    ResourceLeak {
+        task_id: TaskId,
+        subsystem: String,
+        resource: String,
+    },
     Detached {
         task_id: TaskId,
     },
@@ -425,6 +435,44 @@ impl DeterministicExecutor {
         }
         entry.detached = true;
         self.record_event(TaskEvent::Detached { task_id });
+        true
+    }
+
+    pub fn simulate_memory_pressure(&mut self, task_id: TaskId, bytes: usize) -> bool {
+        if !self.tasks.contains_key(&task_id) {
+            return false;
+        }
+        let level = if bytes >= (1usize << 30) {
+            "critical"
+        } else if bytes >= (1usize << 28) {
+            "high"
+        } else if bytes >= (1usize << 24) {
+            "medium"
+        } else {
+            "low"
+        };
+        self.record_event(TaskEvent::MemoryPressure {
+            task_id,
+            bytes,
+            level: level.to_string(),
+        });
+        true
+    }
+
+    pub fn report_resource_leak(
+        &mut self,
+        task_id: TaskId,
+        subsystem: impl Into<String>,
+        resource: impl Into<String>,
+    ) -> bool {
+        if !self.tasks.contains_key(&task_id) {
+            return false;
+        }
+        self.record_event(TaskEvent::ResourceLeak {
+            task_id,
+            subsystem: subsystem.into(),
+            resource: resource.into(),
+        });
         true
     }
 
@@ -933,5 +981,21 @@ mod tests {
         assert!(!token.is_cancelled());
         token.cancel();
         assert!(token.is_cancelled());
+    }
+
+    #[test]
+    fn memory_pressure_and_resource_leak_events_are_recorded() {
+        let mut executor = DeterministicExecutor::new();
+        let task_id = executor.spawn(Box::new(|| {}));
+        assert!(executor.simulate_memory_pressure(task_id, 1 << 29));
+        assert!(executor.report_resource_leak(task_id, "process", "fd:7"));
+        assert!(executor.trace().iter().any(|event| matches!(
+            event,
+            TaskEvent::MemoryPressure { task_id: id, .. } if *id == task_id
+        )));
+        assert!(executor.trace().iter().any(|event| matches!(
+            event,
+            TaskEvent::ResourceLeak { task_id: id, subsystem, .. } if *id == task_id && subsystem == "process"
+        )));
     }
 }
