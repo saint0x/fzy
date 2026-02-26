@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlags, Type as ClifType};
 use cranelift_codegen::settings::{self, Configurable};
-use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
+use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use sha2::{Digest, Sha256};
@@ -2154,6 +2154,11 @@ enum ControlFlowTerminator {
         then_target: CfgBlockId,
         else_target: CfgBlockId,
     },
+    Switch {
+        scrutinee: ast::Expr,
+        cases: Vec<(i32, CfgBlockId)>,
+        default_target: CfgBlockId,
+    },
     Unreachable,
 }
 
@@ -2645,61 +2650,164 @@ impl ControlFlowBuilder {
                             value: scrutinee.clone(),
                         },
                     )?;
-                    let end_block = self.new_block();
-                    let mut dispatch = current;
+                    let all_returning = arms.iter().all(|arm| arm.returns);
+                    let end_block = if all_returning {
+                        None
+                    } else {
+                        Some(self.new_block())
+                    };
+                    let has_terminal_catchall = arms
+                        .last()
+                        .is_some_and(|arm| arm.guard.is_none() && pattern_is_catchall(&arm.pattern));
+                    let mut fallback_block = if let Some(end_block) = end_block {
+                        end_block
+                    } else if has_terminal_catchall {
+                        usize::MAX
+                    } else {
+                        let unreachable_block = self.new_block();
+                        self.terminate(unreachable_block, ControlFlowTerminator::Unreachable)?;
+                        unreachable_block
+                    };
+                    let mut switch_cases = Vec::<(i32, CfgBlockId)>::new();
+                    let mut switch_default = fallback_block;
+                    let mut switch_seen = HashSet::<i32>::new();
+                    let mut switch_viable = true;
+                    let mut arm_blocks = Vec::<CfgBlockId>::with_capacity(arms.len());
                     for (index, arm) in arms.iter().enumerate() {
                         let arm_block = self.new_block();
-                        let is_last = index + 1 == arms.len();
-                        let else_block = if is_last { end_block } else { self.new_block() };
-                        let mut condition = pattern_to_expr(&scrutinee_name, &arm.pattern);
-                        if let Some(guard) = &arm.guard {
-                            condition = ast::Expr::Binary {
-                                op: ast::BinaryOp::And,
-                                left: Box::new(condition),
-                                right: Box::new(guard.clone()),
-                            };
+                        arm_blocks.push(arm_block);
+                        if arm.guard.is_some() {
+                            switch_viable = false;
+                        } else if pattern_is_catchall(&arm.pattern) {
+                            if index + 1 != arms.len() || switch_default != fallback_block {
+                                switch_viable = false;
+                            } else {
+                                switch_default = arm_block;
+                            }
+                        } else if let Some(values) = pattern_switch_values(&arm.pattern) {
+                            for value in values {
+                                if !switch_seen.insert(value) {
+                                    switch_viable = false;
+                                    break;
+                                }
+                                switch_cases.push((value, arm_block));
+                            }
+                        } else {
+                            switch_viable = false;
+                        }
+                    }
+
+                    if switch_viable && !switch_cases.is_empty() {
+                        if switch_default == usize::MAX {
+                            let unreachable_block = self.new_block();
+                            self.terminate(unreachable_block, ControlFlowTerminator::Unreachable)?;
+                            switch_default = unreachable_block;
                         }
                         self.terminate(
-                            dispatch,
-                            ControlFlowTerminator::Branch {
-                                condition,
-                                then_target: arm_block,
-                                else_target: else_block,
+                            current,
+                            ControlFlowTerminator::Switch {
+                                scrutinee: ast::Expr::Ident(scrutinee_name.clone()),
+                                cases: switch_cases,
+                                default_target: switch_default,
                             },
                         )?;
-                        let binding_stmts = if arm.guard.is_some() {
-                            if pattern_has_variant_payload_bindings(&arm.pattern)
-                                || pattern_has_struct_field_bindings(&arm.pattern)
-                            {
-                                bail!(
-                                    "native backend does not support match guards that depend on payload or struct-field bindings"
-                                );
+                        for (arm, arm_block) in arms.iter().zip(arm_blocks.iter().copied()) {
+                            let binding_stmts = bindings_for_match_arm_pattern(&arm.pattern, scrutinee)?;
+                            for stmt in binding_stmts {
+                                self.append_stmt(arm_block, stmt)?;
                             }
-                            Vec::new()
-                        } else {
-                            bindings_for_match_arm_pattern(&arm.pattern, scrutinee)?
-                        };
-                        for stmt in binding_stmts {
-                            self.append_stmt(arm_block, stmt)?;
+                            if arm.returns {
+                                self.terminate(
+                                    arm_block,
+                                    ControlFlowTerminator::Return(Some(arm.value.clone())),
+                                )?;
+                            } else {
+                                let end_block = end_block.expect("non-returning match must have end block");
+                                self.append_stmt(arm_block, ast::Stmt::Expr(arm.value.clone()))?;
+                                self.terminate(
+                                    arm_block,
+                                    ControlFlowTerminator::Jump {
+                                        target: end_block,
+                                        edge: ControlFlowEdge::Normal,
+                                    },
+                                )?;
+                            }
                         }
-                        if arm.returns {
-                            self.terminate(
-                                arm_block,
-                                ControlFlowTerminator::Return(Some(arm.value.clone())),
-                            )?;
+                        if let Some(end_block) = end_block {
+                            current = end_block;
                         } else {
-                            self.append_stmt(arm_block, ast::Stmt::Expr(arm.value.clone()))?;
+                            return Ok(None);
+                        }
+                    } else {
+                        if fallback_block == usize::MAX {
+                            let unreachable_block = self.new_block();
+                            self.terminate(unreachable_block, ControlFlowTerminator::Unreachable)?;
+                            fallback_block = unreachable_block;
+                        }
+                        let mut dispatch = current;
+                        for (index, arm) in arms.iter().enumerate() {
+                            let arm_block = arm_blocks[index];
+                            let is_last = index + 1 == arms.len();
+                            let else_block = if is_last {
+                                fallback_block
+                            } else {
+                                self.new_block()
+                            };
+                            let mut condition = pattern_to_expr(&scrutinee_name, &arm.pattern);
+                            if let Some(guard) = &arm.guard {
+                                condition = ast::Expr::Binary {
+                                    op: ast::BinaryOp::And,
+                                    left: Box::new(condition),
+                                    right: Box::new(guard.clone()),
+                                };
+                            }
                             self.terminate(
-                                arm_block,
-                                ControlFlowTerminator::Jump {
-                                    target: end_block,
-                                    edge: ControlFlowEdge::Normal,
+                                dispatch,
+                                ControlFlowTerminator::Branch {
+                                    condition,
+                                    then_target: arm_block,
+                                    else_target: else_block,
                                 },
                             )?;
+                            let binding_stmts = if arm.guard.is_some() {
+                                if pattern_has_variant_payload_bindings(&arm.pattern)
+                                    || pattern_has_struct_field_bindings(&arm.pattern)
+                                {
+                                    bail!(
+                                        "native backend does not support match guards that depend on payload or struct-field bindings"
+                                    );
+                                }
+                                Vec::new()
+                            } else {
+                                bindings_for_match_arm_pattern(&arm.pattern, scrutinee)?
+                            };
+                            for stmt in binding_stmts {
+                                self.append_stmt(arm_block, stmt)?;
+                            }
+                            if arm.returns {
+                                self.terminate(
+                                    arm_block,
+                                    ControlFlowTerminator::Return(Some(arm.value.clone())),
+                                )?;
+                            } else {
+                                let end_block = end_block.expect("non-returning match must have end block");
+                                self.append_stmt(arm_block, ast::Stmt::Expr(arm.value.clone()))?;
+                                self.terminate(
+                                    arm_block,
+                                    ControlFlowTerminator::Jump {
+                                        target: end_block,
+                                        edge: ControlFlowEdge::Normal,
+                                    },
+                                )?;
+                            }
+                            dispatch = else_block;
                         }
-                        dispatch = else_block;
+                        if let Some(end_block) = end_block {
+                            current = end_block;
+                        } else {
+                            return Ok(None);
+                        }
                     }
-                    current = end_block;
                 }
             }
         }
@@ -2806,6 +2914,32 @@ fn pattern_to_expr(scrutinee_name: &str, pattern: &ast::Pattern) -> ast::Expr {
                 right: Box::new(pattern_to_expr(scrutinee_name, pattern)),
             })
         }
+    }
+}
+
+fn pattern_is_catchall(pattern: &ast::Pattern) -> bool {
+    matches!(pattern, ast::Pattern::Wildcard | ast::Pattern::Ident(_))
+}
+
+fn pattern_switch_values(pattern: &ast::Pattern) -> Option<Vec<i32>> {
+    match pattern {
+        ast::Pattern::Int(value) => i32::try_from(*value).ok().map(|v| vec![v]),
+        ast::Pattern::Bool(value) => Some(vec![if *value { 1 } else { 0 }]),
+        ast::Pattern::Variant {
+            enum_name, variant, ..
+        } => {
+            let key = format!("{enum_name}::{variant}");
+            Some(vec![variant_tag(&key)])
+        }
+        ast::Pattern::Or(patterns) => {
+            let mut out = Vec::new();
+            for pattern in patterns {
+                let mut values = pattern_switch_values(pattern)?;
+                out.append(&mut values);
+            }
+            Some(out)
+        }
+        ast::Pattern::Wildcard | ast::Pattern::Ident(_) | ast::Pattern::Struct { .. } => None,
     }
 }
 
@@ -3093,6 +3227,32 @@ fn verify_control_flow_cfg(cfg: &ControlFlowCfg) -> Result<()> {
                 stack.push(*then_target);
                 stack.push(*else_target);
             }
+            ControlFlowTerminator::Switch {
+                cases,
+                default_target,
+                ..
+            } => {
+                if *default_target >= cfg.blocks.len() {
+                    bail!(
+                        "control-flow cfg block {} has invalid switch default target {}",
+                        block_id,
+                        default_target
+                    );
+                }
+                for (_, target) in cases {
+                    if *target >= cfg.blocks.len() {
+                        bail!(
+                            "control-flow cfg block {} has invalid switch case target {}",
+                            block_id,
+                            target
+                        );
+                    }
+                }
+                stack.push(*default_target);
+                for (_, target) in cases {
+                    stack.push(*target);
+                }
+            }
         }
     }
     for (index, is_reachable) in reachable.iter().enumerate() {
@@ -3293,6 +3453,22 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> St
                                 condition, then_target, else_target
                             );
                         }
+                        ControlFlowTerminator::Switch {
+                            scrutinee,
+                            cases,
+                            default_target,
+                        } => {
+                            let rendered_cases = cases
+                                .iter()
+                                .map(|(value, target)| format!("{value}->block{target}"))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let _ = writeln!(
+                                &mut out,
+                                "  switch {:?}, [{}], default=block{}",
+                                scrutinee, rendered_cases, default_target
+                            );
+                        }
                         ControlFlowTerminator::Unreachable => {
                             let _ = writeln!(&mut out, "  trap");
                         }
@@ -3440,6 +3616,29 @@ fn llvm_emit_function(
                 ctx.code.push_str(&format!(
                     "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{then_label}, label %{else_label}\n"
                 ));
+            }
+            ControlFlowTerminator::Switch {
+                scrutinee,
+                cases,
+                default_target,
+            } => {
+                let value = llvm_emit_expr(scrutinee, &mut ctx, string_literal_ids, task_ref_ids);
+                let default_label = labels.get(default_target).ok_or_else(|| {
+                    anyhow!(
+                        "missing llvm label for cfg switch default target {}",
+                        default_target
+                    )
+                })?;
+                ctx.code
+                    .push_str(&format!("  switch i32 {value}, label %{default_label} [\n"));
+                for (case_value, target) in cases {
+                    let target_label = labels.get(target).ok_or_else(|| {
+                        anyhow!("missing llvm label for cfg switch target {}", target)
+                    })?;
+                    ctx.code
+                        .push_str(&format!("    i32 {case_value}, label %{target_label}\n"));
+                }
+                ctx.code.push_str("  ]\n");
             }
             ControlFlowTerminator::Unreachable => {
                 ctx.code.push_str("  unreachable\n");
@@ -5895,6 +6094,16 @@ fn clif_emit_cfg(
                 predecessor_count[*then_target] += 1;
                 predecessor_count[*else_target] += 1;
             }
+            ControlFlowTerminator::Switch {
+                cases,
+                default_target,
+                ..
+            } => {
+                predecessor_count[*default_target] += 1;
+                for (_, target) in cases {
+                    predecessor_count[*target] += 1;
+                }
+            }
         }
     }
 
@@ -5979,6 +6188,35 @@ fn clif_emit_cfg(
                 }
                 queue.push(*else_target);
                 queue.push(*then_target);
+            }
+            ControlFlowTerminator::Switch {
+                scrutinee,
+                cases,
+                default_target,
+            } => {
+                let cond_val = clif_emit_expr(builder, ctx, scrutinee, locals, next_var)?;
+                let cond_val = cast_clif_value(builder, cond_val, default_int_clif_type())?;
+                let mut switch = Switch::new();
+                for (value, target) in cases {
+                    switch.set_entry(*value as u128, clif_blocks[*target]);
+                    observed_predecessors[*target] += 1;
+                    if !sealed[*target]
+                        && observed_predecessors[*target] >= predecessor_count[*target]
+                    {
+                        builder.seal_block(clif_blocks[*target]);
+                        sealed[*target] = true;
+                    }
+                    queue.push(*target);
+                }
+                observed_predecessors[*default_target] += 1;
+                if !sealed[*default_target]
+                    && observed_predecessors[*default_target] >= predecessor_count[*default_target]
+                {
+                    builder.seal_block(clif_blocks[*default_target]);
+                    sealed[*default_target] = true;
+                }
+                queue.push(*default_target);
+                switch.emit(builder, cond_val.value, clif_blocks[*default_target]);
             }
             ControlFlowTerminator::Unreachable => {
                 if let Some(return_ty) = return_ty {
@@ -13552,8 +13790,8 @@ mod tests {
 
     use super::{
         compile_file, compile_file_with_backend, compile_library_with_backend,
-        derive_anchors_from_message, emit_ir, lower_llvm_ir, parse_program, refresh_lockfile,
-        render_native_runtime_shim, verify_file, BuildProfile,
+        derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir, parse_program,
+        refresh_lockfile, render_native_runtime_shim, verify_file, BackendKind, BuildProfile,
     };
 
     fn run_native_exit(exe: &Path) -> i32 {
@@ -13679,6 +13917,18 @@ mod tests {
         let ir = lower_llvm_ir(&fir, true);
         assert!(ir.contains("declare i32 @c_add(i32, i32)"));
         assert!(!ir.contains("define i32 @c_add("));
+    }
+
+    #[test]
+    fn enum_match_lowers_to_switch_for_eligible_arms() {
+        let source = "enum ErrorCode { InvalidInput, NotFound, Conflict, Timeout, Io, Internal }\nfn classify(code: ErrorCode) -> i32 {\n    match code {\n        ErrorCode::Io => return 11,\n        ErrorCode::InvalidInput => return 17,\n        ErrorCode::Timeout => return 23,\n        ErrorCode::Conflict => return 31,\n        _ => return 43,\n    }\n}\nfn main() -> i32 {\n    return classify(ErrorCode::Io)\n}\n";
+        let module = parser::parse(source, "match_switch").expect("source should parse");
+        let typed = hir::lower(&module);
+        let fir = fir::build_owned(typed);
+        let llvm = lower_llvm_ir(&fir, true);
+        let clif = lower_backend_ir(&fir, BackendKind::Cranelift);
+        assert!(llvm.contains("switch i32"));
+        assert!(clif.contains("switch"));
     }
 
     #[test]
