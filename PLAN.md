@@ -330,6 +330,7 @@
 - [✅] native `match` payload-binding slice delivered for literal enum scrutinees without guards, with explicit diagnostics for unsupported binding shapes.
 - [✅] struct-pattern destructuring slice delivered: first-class `Struct { field, alias: binding }` patterns in `let` and `match`, type-checked field binding semantics in HIR/evaluator, native lowering for literal struct sources, and explicit native diagnostics for unsupported non-literal struct-field binding shapes.
 - [ ] expression/control construct completeness parity across parser/type/lowering/runtime/native
+- [✅] expression/control hard-reject slice delivered: parser-recognized `try/catch` now triggers explicit native compatibility diagnostics instead of silently lowering with partial semantics.
 - [ ] Ensure every parser-recognized construct is end-to-end executable with native parity or hard-rejected with explicit diagnostics and fix guidance (no silent partial semantics).
 - [✅] parser-recognized `let` pattern destructuring now lowers natively for supported pattern families (with deterministic cross-backend execution parity coverage).
 - [✅] non-lowerable native pattern cases now hard-reject with explicit diagnostics (`let` variant payload binding from non-literal sources, and `match` variant payload bindings) instead of silently degrading at emit/runtime.

@@ -6717,6 +6717,19 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
+        if function_body_contains_unsupported_try_catch_usage(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend does not support `try/catch` expressions in function `{}`",
+                    function.name
+                ),
+                Some(
+                    "replace `try/catch` with explicit error-result control flow before native compilation"
+                        .to_string(),
+                ),
+            ));
+        }
     }
 
     let defined_functions = module
@@ -7177,6 +7190,61 @@ fn stmt_contains_unsupported_match_struct_binding(stmt: &ast::Stmt) -> bool {
     }
 }
 
+fn function_body_contains_unsupported_try_catch_usage(body: &[ast::Stmt]) -> bool {
+    body.iter().any(stmt_contains_try_catch_usage)
+}
+
+fn stmt_contains_try_catch_usage(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Defer(value) => expr_contains_try_catch(value),
+        ast::Stmt::Return(value) => value.as_ref().is_some_and(expr_contains_try_catch),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_try_catch(condition)
+                || function_body_contains_unsupported_try_catch_usage(then_body)
+                || function_body_contains_unsupported_try_catch_usage(else_body)
+        }
+        ast::Stmt::While { condition, body } => {
+            expr_contains_try_catch(condition)
+                || function_body_contains_unsupported_try_catch_usage(body)
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().is_some_and(stmt_contains_try_catch_usage)
+                || condition.as_ref().is_some_and(expr_contains_try_catch)
+                || step.as_deref().is_some_and(stmt_contains_try_catch_usage)
+                || function_body_contains_unsupported_try_catch_usage(body)
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            expr_contains_try_catch(iterable)
+                || function_body_contains_unsupported_try_catch_usage(body)
+        }
+        ast::Stmt::Loop { body } => function_body_contains_unsupported_try_catch_usage(body),
+        ast::Stmt::Match { scrutinee, arms } => {
+            expr_contains_try_catch(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_contains_try_catch)
+                        || expr_contains_try_catch(&arm.value)
+                })
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => false,
+    }
+}
+
 fn expr_contains_closure(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::Closure { .. } => true,
@@ -7202,6 +7270,40 @@ fn expr_contains_closure(expr: &ast::Expr) -> bool {
         ast::Expr::Index { base, index } => {
             expr_contains_closure(base) || expr_contains_closure(index)
         }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => false,
+    }
+}
+
+fn expr_contains_try_catch(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::TryCatch {
+            try_expr: _,
+            catch_expr: _,
+        } => true,
+        ast::Expr::Call { args, .. } => args.iter().any(expr_contains_try_catch),
+        ast::Expr::FieldAccess { base, .. } => expr_contains_try_catch(base),
+        ast::Expr::StructInit { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| expr_contains_try_catch(value)),
+        ast::Expr::EnumInit { payload, .. } => payload.iter().any(expr_contains_try_catch),
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) => expr_contains_try_catch(inner),
+        ast::Expr::Unary { expr, .. } => expr_contains_try_catch(expr),
+        ast::Expr::Binary { left, right, .. } => {
+            expr_contains_try_catch(left) || expr_contains_try_catch(right)
+        }
+        ast::Expr::Range { start, end, .. } => {
+            expr_contains_try_catch(start) || expr_contains_try_catch(end)
+        }
+        ast::Expr::ArrayLiteral(items) => items.iter().any(expr_contains_try_catch),
+        ast::Expr::Index { base, index } => {
+            expr_contains_try_catch(base) || expr_contains_try_catch(index)
+        }
+        ast::Expr::Closure { body, .. } => expr_contains_try_catch(body),
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
         | ast::Expr::Char(_)
@@ -14067,6 +14169,31 @@ mod tests {
         assert!(output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("only supports match-arm struct-field bindings for literal struct scrutinees without guards")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_native_try_catch_expressions() {
+        let file_name = format!(
+            "fozzylang-native-try-catch-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    let x = try fail() catch 7;\n    return x\n}\nfn fail() -> i32 {\n    return 1\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("native backend does not support `try/catch` expressions")
         }));
 
         let _ = std::fs::remove_file(path);
