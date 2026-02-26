@@ -443,9 +443,9 @@
 - [✅] PR-F: pedantic coverage closure + production gate enforcement.
 
 ### Native Direct-to-Memory Lowering Unification (No Backwards Compatibility, No Shims)
-- [ ] Hard-break architecture decision: native perf path is direct-memory-first; runtime-handle path is not retained for local data operations.
-- [ ] Remove compatibility objective for current native collection/string runtime-handle ABI on optimized native builds.
-- [ ] Freeze new architectural invariant: a single canonical native-lowering pipeline feeds both LLVM and Cranelift backends.
+- [✅] Hard-break architecture decision: native perf path is direct-memory-first; runtime-handle path is not retained for local data operations.
+- [✅] Remove compatibility objective for current native collection/string runtime-handle ABI on optimized native builds.
+- [✅] Freeze new architectural invariant: a single canonical native-lowering pipeline feeds both LLVM and Cranelift backends.
 
 #### Canonical Pipeline Cutover (Single Execution Model)
 - [ ] Introduce a canonical low-level native IR (post-HIR/FIR) that encodes:

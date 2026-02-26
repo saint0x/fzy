@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+PIPELINE = ROOT / "crates" / "driver" / "src" / "pipeline.rs"
+
+
+def read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
+def main() -> int:
+    src = read_text(PIPELINE)
+    errors: list[str] = []
+
+    legacy_array_symbols = [
+        "__native.array_new",
+        "__native.array_push",
+        "__native.array_get",
+    ]
+    for symbol in legacy_array_symbols:
+        if symbol in src:
+            errors.append(f"legacy array data-plane symbol reintroduced: `{symbol}`")
+
+    if "build_control_flow_cfg(&function.body)" in src:
+        errors.append(
+            "backend lowering drift: found CFG build callsite without shared variant-tag map"
+        )
+
+    if "ControlFlowBuilder::new(variant_tags.clone()).finish(body)" not in src:
+        errors.append("canonical CFG pipeline missing shared variant-tag entrypoint")
+
+    if "variant_tag_for_key(" not in src:
+        errors.append("canonical discriminant mapping helper missing")
+
+    if (
+        "array/index expressions" in src
+        and "detected parser-recognized expressions without full lowering parity" in src
+    ):
+        errors.append(
+            "array/index semantic exception drift: partial-native rejection diagnostic reappeared"
+        )
+
+    if errors:
+        print("direct-memory architecture gate failed:", file=sys.stderr)
+        for err in errors:
+            print(f"- {err}", file=sys.stderr)
+        return 2
+
+    print("direct-memory architecture gate passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -25,6 +25,9 @@ fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed "$SEED" 
 echo "[gate] language primitive drift gate"
 python3 ./scripts/language_primitive_drift_gate.py >/dev/null
 
+echo "[gate] direct-memory architecture gate"
+python3 ./scripts/direct_memory_architecture_gate.py >/dev/null
+
 echo "[gate] safety claim integrity gate"
 python3 ./scripts/safety_claim_integrity_gate.py >/dev/null
 
