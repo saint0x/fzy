@@ -53,6 +53,14 @@ def main() -> int:
         and "fn parse_lambda_expr(" in parser_src
         and "Value::Closure" in hir_src
     )
+    has_array_index_surface = (
+        "Expr::ArrayLiteral" in ast_src
+        and "Expr::Index {" in ast_src
+        and "Expr::ArrayLiteral(items)" in parser_src
+        and "expr = Expr::Index {" in parser_src
+        and "Expr::ArrayLiteral(items)" in hir_src
+        and "Expr::Index { base, index }" in hir_src
+    )
     has_native_closure_lowering = (
         "LlvmClosureBinding" in pipeline_src
         and "ClifClosureBinding" in pipeline_src
@@ -79,6 +87,15 @@ def main() -> int:
     has_native_match_struct_literal_guardrail = (
         "only supports match-arm struct-field bindings for literal struct scrutinees without guards"
         in pipeline_src
+    )
+    has_native_array_index_lowering = (
+        'native_runtime_import_for_callee("__native.array_new")' in pipeline_src
+        and 'native_runtime_import_for_callee("__native.array_push")' in pipeline_src
+        and 'native_runtime_import_for_callee("__native.array_get")' in pipeline_src
+    )
+    has_native_array_index_partial_reject = "array/index expressions" in pipeline_src
+    has_cross_backend_native_completeness_parity = (
+        "cross_backend_native_completeness_fixture_execute_consistently" in pipeline_src
     )
 
     expected_status = {
@@ -115,6 +132,7 @@ def main() -> int:
         and "pub mutable: bool," in ast_src
         else "missing",
         "closure_lambda_values": "implemented" if has_closure else "missing",
+        "array_index_expression_family": "implemented" if has_array_index_surface else "missing",
         "expanded_item_visibility_struct_enum_trait_impl": "implemented"
         if "pub is_pub: bool" in ast_src
         and "self.parse_struct(true)" in parser_src
@@ -146,6 +164,20 @@ def main() -> int:
         if not has_native_closure_non_let_diag:
             errors.append(
                 "closure diagnostic drift: docs mention explicit unsupported closure placements but diagnostic is missing"
+            )
+
+    if matrix.get("array_index_expression_family") == "implemented":
+        if not has_native_array_index_lowering:
+            errors.append(
+                "array/index native lowering drift: docs mark implemented but native integer-array lowering hooks are missing"
+            )
+        if has_native_array_index_partial_reject:
+            errors.append(
+                "array/index partial drift: docs mark implemented but native partial-expression rejection still includes array/index"
+            )
+        if not has_cross_backend_native_completeness_parity:
+            errors.append(
+                "array/index parity drift: docs mark implemented but cross-backend completeness fixture parity test is missing"
             )
 
     if matrix.get("let_pattern_destructuring") == "partial":

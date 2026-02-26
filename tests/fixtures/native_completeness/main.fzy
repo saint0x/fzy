@@ -1,0 +1,8 @@
+fn main() -> i32 {
+    let values = [2, 4, 6, 8]
+    let idx = 1 + 1
+    let picked = values[idx]
+    let mix = (values[0] * 2) + (values[3] / 2)
+    let more = [picked, mix, 11]
+    return more[0] + more[1] + more[2]
+}

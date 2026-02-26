@@ -16,4 +16,5 @@
 | `static_mut_surface` | implemented | `static mut NAME: Type = const_expr;` parses/typed-checks and lowers through native backends as mutable global storage. |
 | `expanded_item_visibility_struct_enum_trait_impl` | implemented | `pub` visibility now applies to `struct`/`enum`/`trait`/`impl` items in AST/parser. |
 | `closure_lambda_values` | implemented | Typed lambda expressions with lexical capture are supported in parser/HIR/FIR/evaluator and lower natively for direct `let`-bound closure invocation; unsupported non-`let` closure placements fail with explicit native diagnostics. |
+| `array_index_expression_family` | implemented | Array literals and index expressions are supported in parser/HIR/FIR/evaluator and lower natively in both LLVM and Cranelift via dedicated native integer-array runtime imports (with cross-backend execute-and-compare parity coverage). |
 | `module_import_alias_reexport_wildcard_support` | implemented | Ergonomic alias/re-export/wildcard forms are supported in parser/module import metadata. |

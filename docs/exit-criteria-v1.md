@@ -64,3 +64,4 @@ Strict fail-unless-ready gate:
 - CI evidence is intentionally not required in this local workflow.
 - The tracker is strict: missing/dirty evidence does not count toward readiness.
 - Re-running a record command updates evidence for the same date (`record-day`) or same RC id (`record-rc`).
+- Safety claim integrity is release-blocking through `scripts/safety_claim_integrity_gate.py` (wired by `scripts/ship_release_gate.sh` and production gate workflow).

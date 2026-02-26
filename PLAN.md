@@ -339,21 +339,47 @@
 - [✅] Strengthen language-primitive drift gate to assert native closure lowering hooks and partial-pattern diagnostic guardrails so docs remain enforceably truthful.
 
 ### Native Completeness Closure (Adoption Blocker #3)
-- [ ] Close remaining native lowering gaps so supported language constructs do not fail late in native paths.
+- [✅] Close remaining native lowering gaps so supported language constructs do not fail late in native paths.
 - [✅] Remove native-lowering rejection for array/index expression families by implementing full backend lowering semantics.
-- [ ] Enforce backend completeness contract: supported-by-language implies supported-by-LLVM and supported-by-Cranelift under release gates.
-- [ ] Add execute-and-compare parity fixtures covering full construct families (including arrays/index + advanced expression forms) under both native backends.
-- [ ] Add release gate hard-fail when any construct marked `implemented` in language docs is missing in native lowering.
+- [✅] Enforce backend completeness contract: supported-by-language implies supported-by-LLVM and supported-by-Cranelift under release gates.
+- [✅] Add execute-and-compare parity fixtures covering full construct families (including arrays/index + advanced expression forms) under both native backends.
+- [✅] Add release gate hard-fail when any construct marked `implemented` in language docs is missing in native lowering.
 
 ### System Safety + Trust Model Assessment (No Proof-Depth Expansion Scope)
 - [✅] Assessment: safety posture remains strong and enforceable-by-default, but adoption trust depends on strict claim-vs-enforcement alignment.
 - [✅] Assessment: current caveats about non-Rust-equivalent proof depth are correct and should remain explicit until guarantees materially change.
-- [ ] Add a formal trust-model section in PLAN that enumerates:
-- [ ] what safety guarantees are enforced today by verifier/runtime/gates
-- [ ] what remains explicitly out-of-scope (without weakening language)
-- [ ] what evidence artifacts are required to justify each public safety claim
-- [ ] Add release-blocking claim-integrity checks so user-facing docs/README/guide cannot overstate safety guarantees relative to enforceable behavior.
-- [ ] Add a safety-claim review checklist to release gate workflow (memory model, borrow/alias coverage statements, unsafe-budget posture, FFI boundary guarantees).
+- [✅] Add a formal trust-model section in PLAN that enumerates:
+- [✅] what safety guarantees are enforced today by verifier/runtime/gates
+- [✅] what remains explicitly out-of-scope (without weakening language)
+- [✅] what evidence artifacts are required to justify each public safety claim
+- [✅] Add release-blocking claim-integrity checks so user-facing docs/README/guide cannot overstate safety guarantees relative to enforceable behavior.
+- [✅] Add a safety-claim review checklist to release gate workflow (memory model, borrow/alias coverage statements, unsafe-budget posture, FFI boundary guarantees).
+
+#### Formal Trust Model (Production v1)
+- Enforced guarantees today (`verifier`/`runtime`/`gates`):
+- Ownership/borrow checks are enforced in shipped verifier scope, including documented async-suspension constraints.
+- Native lowering fails fast on unsupported/partial constructs with explicit diagnostics (no silent partial semantics on documented guardrails).
+- Capability-sensitive and limit-sensitive runtime behavior is fail-closed by default.
+- Unsafe posture is release-gated (`fz audit unsafe`) with missing-reason rejection and budget enforcement.
+- FFI boundaries are policy-checked (`ffi_panic` contract + ABI/header gate path).
+- Deterministic reproducibility claims are gate-backed via doctor/test + trace lifecycle (`run --record`, `trace verify`, `replay`, `ci`).
+
+- Explicit out-of-scope today (without weakening language):
+- Rust-equivalent theorem-proven soundness claims.
+- Complete alias/lifetime theorem proving over all low-level patterns.
+- Arbitrary OS-preemptive interleaving coverage beyond the documented deterministic scheduling model.
+- Universal formal verification of every safety property end-to-end.
+
+- Required evidence artifacts per public safety claim:
+- Deterministic correctness: `fozzy doctor --deep ...` + `fozzy test --det --strict ...`.
+- Replay/reproducibility: `fozzy run --det --record ...` + `fozzy trace verify ... --strict` + `fozzy replay ...` + `fozzy ci ...`.
+- Host-backed realism: `fozzy run ... --proc-backend host --fs-backend host --http-backend host`.
+- Unsafe posture: `fz audit unsafe <target> --json` with missing-reason zero and budget compliance.
+- FFI boundary guarantees: `fz headers ...` + `fz abi-check ... --baseline ...`.
+- Release-readiness integrity: `scripts/ship_release_gate.sh` + `scripts/exit_criteria_gate.sh`.
+
+- Canonical trust-model/checklist doc:
+- `docs/system-safety-trust-model-v1.md`.
 
 ### Release Flow
 - [✅] Phase 1: correctness fixes (listen, partial I/O, timeout correctness).

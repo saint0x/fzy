@@ -25,12 +25,20 @@ fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed "$SEED" 
 echo "[gate] language primitive drift gate"
 python3 ./scripts/language_primitive_drift_gate.py >/dev/null
 
+echo "[gate] safety claim integrity gate"
+python3 ./scripts/safety_claim_integrity_gate.py >/dev/null
+
 echo "[gate] deterministic strict tests"
 fozzy test --det --strict tests/*.fozzy.json --seed "$SEED" --json >/dev/null
 
 echo "[gate] primitive parity/equivalence probes"
 "${FZ_CMD[@]}" parity tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" equivalence tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity tests/fixtures/native_completeness/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence tests/fixtures/native_completeness/main.fzy --seed "$SEED" --json >/dev/null
+
+echo "[gate] native completeness execute-and-compare"
+cargo test -q -p driver pipeline::tests::cross_backend_native_completeness_fixture_execute_consistently -- --exact >/dev/null
 
 echo "[gate] deterministic memory doctor/tests"
 fozzy doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null

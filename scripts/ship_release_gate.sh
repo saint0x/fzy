@@ -29,10 +29,14 @@ cargo test --workspace >/dev/null
 echo "[ship] language primitive drift gate"
 python3 ./scripts/language_primitive_drift_gate.py >/dev/null
 
+echo "[ship] safety claim integrity gate"
+python3 ./scripts/safety_claim_integrity_gate.py >/dev/null
+
 echo "[ship] parity/equivalence representative probes"
 PROBE_A="$TMP_DIR/parity_probe_a.fzy"
 PROBE_B="$TMP_DIR/parity_probe_b.fzy"
 PROBE_C="$ROOT/tests/fixtures/primitive_parity/main.fzy"
+PROBE_D="$ROOT/tests/fixtures/native_completeness/main.fzy"
 cat > "$PROBE_A" <<'FZY'
 fn main() -> i32 {
     return 0
@@ -57,9 +61,12 @@ FZY
 "${FZ_CMD[@]}" equivalence "$PROBE_B" --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity "$PROBE_C" --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" equivalence "$PROBE_C" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity "$PROBE_D" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence "$PROBE_D" --seed "$SEED" --json >/dev/null
 
 echo "[ship] native backend execute-and-compare control-flow parity"
 cargo test -q -p driver pipeline::tests::cross_backend_primitive_control_flow_and_operator_fixture_execute_consistently -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::cross_backend_native_completeness_fixture_execute_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_non_i32_and_aggregate_signatures_execute_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::non_entry_infinite_loop_function_fixture_stays_non_regressing -- --exact >/dev/null
 

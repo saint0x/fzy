@@ -445,6 +445,21 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "__native.array_new",
+        symbol: "fz_native_array_new",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "__native.array_push",
+        symbol: "fz_native_array_push",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "__native.array_get",
+        symbol: "fz_native_array_get",
+        arity: 2,
+    },
+    NativeRuntimeImport {
         callee: "list.new",
         symbol: "fz_native_list_new",
         arity: 0,
@@ -3843,14 +3858,41 @@ fn llvm_emit_expr(
             llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids)
         }
         ast::Expr::ArrayLiteral(items) => {
-            if let Some(first) = items.first() {
-                llvm_emit_expr(first, ctx, string_literal_ids, task_ref_ids)
-            } else {
-                "0".to_string()
+            let new_symbol = native_mangle_symbol(
+                native_runtime_import_for_callee("__native.array_new")
+                    .expect("__native.array_new native runtime import should exist")
+                    .symbol,
+            );
+            let handle = ctx.value();
+            ctx.code
+                .push_str(&format!("  {handle} = call i32 @{new_symbol}()\n"));
+            let push_symbol = native_mangle_symbol(
+                native_runtime_import_for_callee("__native.array_push")
+                    .expect("__native.array_push native runtime import should exist")
+                    .symbol,
+            );
+            for item in items {
+                let item_value = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
+                let push_result = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {push_result} = call i32 @{push_symbol}(i32 {handle}, i32 {item_value})\n"
+                ));
             }
+            handle
         }
-        ast::Expr::Index { base, .. } => {
-            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
+        ast::Expr::Index { base, index } => {
+            let base_value = llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids);
+            let index_value = llvm_emit_expr(index, ctx, string_literal_ids, task_ref_ids);
+            let get_symbol = native_mangle_symbol(
+                native_runtime_import_for_callee("__native.array_get")
+                    .expect("__native.array_get native runtime import should exist")
+                    .symbol,
+            );
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = call i32 @{get_symbol}(i32 {base_value}, i32 {index_value})\n"
+            ));
+            out
         }
         ast::Expr::Call { callee, args } => {
             if let Some(binding) = ctx.closures.get(callee).cloned() {
@@ -4405,11 +4447,26 @@ fn collect_used_runtime_imports_from_expr(
             collect_used_runtime_imports_from_expr(end, seen, used);
         }
         ast::Expr::ArrayLiteral(items) => {
+            if let Some(import) = native_runtime_import_for_callee("__native.array_new") {
+                if seen.insert(import.symbol) {
+                    used.push(import);
+                }
+            }
+            if let Some(import) = native_runtime_import_for_callee("__native.array_push") {
+                if seen.insert(import.symbol) {
+                    used.push(import);
+                }
+            }
             for item in items {
                 collect_used_runtime_imports_from_expr(item, seen, used);
             }
         }
         ast::Expr::Index { base, index } => {
+            if let Some(import) = native_runtime_import_for_callee("__native.array_get") {
+                if seen.insert(import.symbol) {
+                    used.push(import);
+                }
+            }
             collect_used_runtime_imports_from_expr(base, seen, used);
             collect_used_runtime_imports_from_expr(index, seen, used);
         }
@@ -6343,16 +6400,86 @@ fn clif_emit_expr(
             .or_else(|_| clif_emit_expr(builder, ctx, catch_expr, locals, next_var))?,
         ast::Expr::Range { start, .. } => clif_emit_expr(builder, ctx, start, locals, next_var)?,
         ast::Expr::ArrayLiteral(items) => {
-            if let Some(first) = items.first() {
-                clif_emit_expr(builder, ctx, first, locals, next_var)?
-            } else {
-                ClifValue {
-                    value: builder.ins().iconst(pointer_sized_clif_type(), 0),
-                    ty: pointer_sized_clif_type(),
-                }
+            let list_new_id = ctx
+                .function_ids
+                .get("__native.array_new")
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!("missing native runtime import signature for `__native.array_new`")
+                })?;
+            let list_new_sig = ctx
+                .function_signatures
+                .get("__native.array_new")
+                .ok_or_else(|| {
+                    anyhow!("missing native runtime import metadata for `__native.array_new`")
+                })?;
+            let list_new_ref = ctx.module.declare_func_in_func(list_new_id, builder.func);
+            let list_new_call = builder.ins().call(list_new_ref, &[]);
+            let handle = builder
+                .inst_results(list_new_call)
+                .first()
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!("native runtime import `__native.array_new` did not return a value")
+                })?;
+            let list_push_id = ctx
+                .function_ids
+                .get("__native.array_push")
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!("missing native runtime import signature for `__native.array_push`")
+                })?;
+            let list_push_sig = ctx
+                .function_signatures
+                .get("__native.array_push")
+                .ok_or_else(|| {
+                    anyhow!("missing native runtime import metadata for `__native.array_push`")
+                })?;
+            let list_push_ref = ctx.module.declare_func_in_func(list_push_id, builder.func);
+            for item in items {
+                let lowered = clif_emit_expr(builder, ctx, item, locals, next_var)?;
+                let lowered = cast_clif_value(builder, lowered, list_push_sig.params[1])?;
+                let _ = builder.ins().call(list_push_ref, &[handle, lowered.value]);
+            }
+            ClifValue {
+                value: handle,
+                ty: list_new_sig.ret.unwrap_or(default_int_clif_type()),
             }
         }
-        ast::Expr::Index { base, .. } => clif_emit_expr(builder, ctx, base, locals, next_var)?,
+        ast::Expr::Index { base, index } => {
+            let list_get_id = ctx
+                .function_ids
+                .get("__native.array_get")
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!("missing native runtime import signature for `__native.array_get`")
+                })?;
+            let list_get_sig = ctx
+                .function_signatures
+                .get("__native.array_get")
+                .ok_or_else(|| {
+                    anyhow!("missing native runtime import metadata for `__native.array_get`")
+                })?;
+            let list_get_ref = ctx.module.declare_func_in_func(list_get_id, builder.func);
+            let base_value = clif_emit_expr(builder, ctx, base, locals, next_var)?;
+            let base_value = cast_clif_value(builder, base_value, list_get_sig.params[0])?;
+            let index_value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
+            let index_value = cast_clif_value(builder, index_value, list_get_sig.params[1])?;
+            let call = builder
+                .ins()
+                .call(list_get_ref, &[base_value.value, index_value.value]);
+            let value = builder
+                .inst_results(call)
+                .first()
+                .copied()
+                .ok_or_else(|| {
+                    anyhow!("native runtime import `__native.array_get` did not return a value")
+                })?;
+            ClifValue {
+                value,
+                ty: list_get_sig.ret.unwrap_or(default_int_clif_type()),
+            }
+        }
         ast::Expr::Binary { op, left, right } => {
             let lhs = clif_emit_expr(builder, ctx, left, locals, next_var)?;
             match op {
@@ -6738,7 +6865,7 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                     function.name
                 ),
                 Some(
-                    "native builds require explicit rewrites for residual partial forms (range outside `for-in`, array/index expressions, non-identifier field access chains, and unsupported struct literal placement)"
+                    "native builds require explicit rewrites for residual partial forms (range outside `for-in`, non-identifier field access chains, and unsupported struct literal placement)"
                         .to_string(),
                 ),
             ));
@@ -7374,7 +7501,16 @@ fn expr_contains_unsupported_partial_native_expression(
                     NativeExprContext::Default,
                 )
         }
-        ast::Expr::ArrayLiteral(_) | ast::Expr::Index { .. } => true,
+        ast::Expr::ArrayLiteral(items) => items.iter().any(|item| {
+            expr_contains_unsupported_partial_native_expression(item, NativeExprContext::Default)
+        }),
+        ast::Expr::Index { base, index } => {
+            expr_contains_unsupported_partial_native_expression(base, NativeExprContext::Default)
+                || expr_contains_unsupported_partial_native_expression(
+                    index,
+                    NativeExprContext::Default,
+                )
+        }
         ast::Expr::StructInit { fields, .. } => {
             if !matches!(
                 context,
@@ -8163,6 +8299,12 @@ typedef struct {
 typedef struct {
   int in_use;
   int count;
+  int32_t items[FZ_MAX_LIST_ITEMS];
+} fz_array_state;
+
+typedef struct {
+  int in_use;
+  int count;
   char* keys[FZ_MAX_MAP_ENTRIES];
   char* values[FZ_MAX_MAP_ENTRIES];
 } fz_map_state;
@@ -8184,6 +8326,7 @@ static int32_t fz_proc_default_timeout_ms = 30000;
 static int32_t fz_proc_last_error_id = 0;
 static int32_t fz_last_exit_class = 0;
 static fz_list_state fz_lists[FZ_MAX_LISTS];
+static fz_array_state fz_arrays[FZ_MAX_LISTS];
 static fz_map_state fz_maps[FZ_MAX_MAPS];
 static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
 static fz_json_value_state fz_json_values[FZ_MAX_JSON_VALUES];
@@ -8368,6 +8511,33 @@ static int fz_list_push_cstr(fz_list_state* list, const char* value) {
     return -1;
   }
   list->items[list->count++] = dup;
+  return 0;
+}
+
+static int32_t fz_array_alloc(void) {
+  for (int i = 0; i < FZ_MAX_LISTS; i++) {
+    if (!fz_arrays[i].in_use) {
+      memset(&fz_arrays[i], 0, sizeof(fz_arrays[i]));
+      fz_arrays[i].in_use = 1;
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+static fz_array_state* fz_array_get(int32_t handle) {
+  if (handle <= 0 || handle > FZ_MAX_LISTS) {
+    return NULL;
+  }
+  fz_array_state* array = &fz_arrays[handle - 1];
+  return array->in_use ? array : NULL;
+}
+
+static int fz_array_push_i32(fz_array_state* array, int32_t value) {
+  if (array == NULL || array->count >= FZ_MAX_LIST_ITEMS) {
+    return -1;
+  }
+  array->items[array->count++] = value;
   return 0;
 }
 
@@ -9981,6 +10151,33 @@ int32_t fz_native_json_object4(
     int32_t v4_id) {
   int32_t ids[] = {k1_id, v1_id, k2_id, v2_id, k3_id, v3_id, k4_id, v4_id};
   return fz_native_json_object_from_pairs(ids, 4);
+}
+
+int32_t fz_native_array_new(void) {
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_array_alloc();
+  pthread_mutex_unlock(&fz_collections_lock);
+  return handle;
+}
+
+int32_t fz_native_array_push(int32_t handle, int32_t value) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_array_state* array = fz_array_get(handle);
+  int ok = fz_array_push_i32(array, value) == 0 ? 0 : -1;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return ok;
+}
+
+int32_t fz_native_array_get(int32_t handle, int32_t index) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_array_state* array = fz_array_get(handle);
+  if (array == NULL || index < 0 || index >= array->count) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  int32_t value = array->items[index];
+  pthread_mutex_unlock(&fz_collections_lock);
+  return value;
 }
 
 int32_t fz_native_list_new(void) {
@@ -13675,6 +13872,9 @@ mod tests {
         ));
         assert!(shim.contains("int32_t fz_native_json_object3("));
         assert!(shim.contains("int32_t fz_native_json_object4("));
+        assert!(shim.contains("int32_t fz_native_array_new(void)"));
+        assert!(shim.contains("int32_t fz_native_array_push(int32_t handle, int32_t value)"));
+        assert!(shim.contains("int32_t fz_native_array_get(int32_t handle, int32_t index)"));
         assert!(shim.contains("posix_spawnp"));
         assert!(shim.contains("int32_t fz_native_proc_spawnv("));
         assert!(shim.contains("int32_t fz_native_proc_runv("));
@@ -13812,7 +14012,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "#[repr(C)]\nstruct Pair { lo: i32, hi: i32 }\nfn id64(v: i64) -> i64 {\n    return v\n}\nfn gate(flag: bool) -> bool {\n    return flag\n}\nfn make_pair() -> Pair {\n    return Pair { lo: 1, hi: 2 }\n}\nfn main() -> i64 {\n    let p: Pair = make_pair()\n    let _ = p\n    if gate(true) {\n        return id64(3000000000)\n    }\n    return id64(3000000000)\n}\n",
+            "#[repr(C)]\nstruct Pair { lo: i32, hi: i32 }\nfn id64(v: i64) -> i64 {\n    return v\n}\nfn gate(flag: bool) -> bool {\n    return flag\n}\nfn make_pair() -> Pair {\n    let p: Pair = Pair { lo: 1, hi: 2 }\n    return p\n}\nfn main() -> i64 {\n    let p: Pair = make_pair()\n    let _ = p\n    if gate(true) {\n        return id64(3000000000)\n    }\n    return id64(3000000000)\n}\n",
         )
         .expect("source should be written");
 
@@ -13879,6 +14079,52 @@ mod tests {
                 .expect("llvm artifact output should exist"),
         );
         assert_eq!(cranelift_exit, llvm_exit);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_native_completeness_fixture_execute_consistently() {
+        let project_name = format!(
+            "fozzylang-native-completeness-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        let fixture = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/native_completeness/main.fzy"),
+        )
+        .expect("native completeness fixture should be readable");
+        std::fs::write(root.join("src/main.fzy"), fixture).expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 25);
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -14405,9 +14651,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_native_array_index_expression_shapes() {
+    fn verify_accepts_native_array_index_expression_shapes() {
         let file_name = format!(
-            "fozzylang-native-array-index-unsupported-{}.fzy",
+            "fozzylang-native-array-index-supported-{}.fzy",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after epoch")
@@ -14416,12 +14662,12 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "fn main() -> i32 {\n    let values = [3, 5, 8];\n    return values[1]\n}\n",
+            "fn main() -> i32 {\n    let values = [3, 5, 8];\n    let idx = 1;\n    return values[idx]\n}\n",
         )
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("detected parser-recognized expressions without full lowering parity")
         }));
