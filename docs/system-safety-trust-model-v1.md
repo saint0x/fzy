@@ -43,5 +43,5 @@ This document defines what can be claimed publicly today, what is intentionally 
 
 - [x] Memory model claims align with `docs/production-memory-model-v1.md` and do not exceed documented scope.
 - [x] Borrow/alias coverage statements explicitly preserve non-theorem-proof caveats.
-- [x] Unsafe-budget posture claims are backed by `fz audit unsafe` gate output and structured-contract/proof-ref rejection.
+- [x] Unsafe-budget posture claims are backed by `fz audit unsafe` gate output and missing-reason rejection.
 - [x] FFI boundary guarantees are backed by panic-contract enforcement and ABI/header gate checks.

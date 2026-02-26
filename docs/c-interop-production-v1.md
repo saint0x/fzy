@@ -6,7 +6,10 @@ This guide covers production C interoperability for Fozzy in both directions:
 - Fozzy code importing C linker symbols.
 
 ## Contract
-- `#[ffi_panic(abort)]` or `#[ffi_panic(error)]` is required on every exported `pub extern "C" fn`.
+- `pubext fn` is the primary C-export surface.
+- `fozzy.toml` is the policy source of truth for C panic boundary:
+  - `[ffi] panic_boundary = "abort"` or `"error"` is required for projects with C interop symbols.
+- `#[ffi_panic(...)]` is per-symbol override only.
 - Mixed panic modes across exports are rejected.
 - Missing panic contract rejects header/ABI generation.
 
@@ -14,10 +17,14 @@ This guide covers production C interoperability for Fozzy in both directions:
 1. Declare C exports in `.fzy`:
 
 ```fzy
-#[ffi_panic(abort)]
-pub extern "C" fn add(left: i32, right: i32) -> i32 {
+pubext fn add(left: i32, right: i32) -> i32 {
     return left + right
 }
+```
+
+```toml
+[ffi]
+panic_boundary = "abort"
 ```
 
 2. Build production libraries and headers:
@@ -45,6 +52,7 @@ pub extern "C" fn call_mul(left: i32, right: i32) -> i32 {
 ```
 
 Extern declaration imports are lowered as real linker imports (no generated stub definitions).
+`extern "C"` remains accepted as migration syntax, but `pubext` is the canonical documented export form.
 
 ## Link Configuration
 `fz build` supports explicit linker inputs:

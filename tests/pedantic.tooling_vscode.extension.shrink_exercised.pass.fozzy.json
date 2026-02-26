@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "pedantic-tooling-vscode-extension-shrink-exercised-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "print('tooling-vscode-extension-shrink-pass')"
+      ],
+      "exit_code": 0,
+      "stdout": "tooling-vscode-extension-shrink-pass\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "print('tooling-vscode-extension-shrink-pass')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "tooling-vscode-extension-shrink-pass\n"
+    }
+  ]
+}

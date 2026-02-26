@@ -1819,7 +1819,9 @@ pub fn canonicalize_header_name(name: &str) -> Result<String, NetError> {
         return Err(NetError::Parse("header name is empty".to_string()));
     }
     if trimmed.contains(':') || trimmed.bytes().any(|byte| byte.is_ascii_control()) {
-        return Err(NetError::Parse("header name contains invalid bytes".to_string()));
+        return Err(NetError::Parse(
+            "header name contains invalid bytes".to_string(),
+        ));
     }
     Ok(trimmed.to_ascii_lowercase())
 }
@@ -2161,7 +2163,11 @@ mod tests {
     fn header_map_canonicalizes_and_bounds_entries() {
         let mut headers = HeaderMap::default();
         headers
-            .insert(" Content-Type ", "application/json", HeaderLimits::default())
+            .insert(
+                " Content-Type ",
+                "application/json",
+                HeaderLimits::default(),
+            )
             .expect("insert should work");
         assert_eq!(headers.get("content-type"), Some("application/json"));
         assert!(canonicalize_header_name("X-Trace").is_ok());

@@ -3,7 +3,7 @@
 ## Stability Contract
 
 - ABI manifests use schema `fozzylang.ffi_abi.v1`.
-- Exported symbols are derived from `pub extern "C" fn` declarations only.
+- Exported symbols are derived from `pubext fn` declarations (or migration-compatible `pub extern "C" fn`).
 - ABI compatibility in v1 is defined by normalized export signatures and explicit contract metadata:
   - function name
   - ordered C parameter types
@@ -23,9 +23,10 @@
 ## Panic Boundary Policy
 
 - Panics must not cross the C boundary.
-- If panic markers exist in exported modules, a panic contract attribute is required:
-  - `#[ffi_panic(abort)]` or
-  - `#[ffi_panic(error)]`
+- Projects with C interop symbols must define panic boundary policy in `fozzy.toml`:
+  - `[ffi] panic_boundary = "abort"` or
+  - `[ffi] panic_boundary = "error"`
+- `#[ffi_panic(...)]` is allowed as explicit per-symbol override.
 - `panicBoundary` in ABI manifests is compatibility-checked against baseline.
 
 ## Breaking Change Policy

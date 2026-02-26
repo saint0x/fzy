@@ -251,25 +251,25 @@
 - [✅] Publish production interop guide.
 
 ### C Core Stdlib + `pubext` Surface (Option A, Production, No Backwards Compatibility)
-- [ ] Create first-class `std.c` core library surface for interop ergonomics (header import/export helpers, ownership views, callback/context contracts, ABI metadata helpers).
-- [ ] Define `fozzy.toml` as policy source-of-truth for C boundary defaults:
-- [ ] add mandatory `[ffi] panic_boundary = "abort|error"` for projects that import/export C symbols.
-- [ ] remove per-symbol `#[ffi_panic(...)]` requirement when project policy default is present.
-- [ ] keep explicit per-symbol override only for exceptional symbols.
-- [ ] Introduce `pubext fn` and `pubext async fn` syntax as language-native C-ABI export surface:
-- [ ] `pubext fn` lowers to `pub extern "C" fn` under Option A policy.
-- [ ] define `pubext async fn` adapter ABI semantics (or reject with stable diagnostics until adapter ABI is finalized).
-- [ ] keep existing `extern "C"` parse surface only as migration-compatible syntax, but make `pubext` the documented primary form.
-- [ ] Extend verifier/driver/header generation so panic/ABI policy is sourced from TOML first, then symbol override.
-- [ ] Enforce single panic-boundary policy across exports unless explicit override is declared and ABI-checked.
-- [ ] Maintain release-blocking ABI compatibility checks for contract/policy weakening.
-- [ ] Add template primitives in `std.c` for pointer+length views, ownership transfer (`owned|borrowed|out|inout`), callback bindings, and context lifetime anchors.
+- [✅] Create first-class `std.c` core library surface for interop ergonomics (header import/export helpers, ownership views, callback/context contracts, ABI metadata helpers).
+- [✅] Define `fozzy.toml` as policy source-of-truth for C boundary defaults:
+- [✅] add mandatory `[ffi] panic_boundary = "abort|error"` for projects that import/export C symbols.
+- [✅] remove per-symbol `#[ffi_panic(...)]` requirement when project policy default is present.
+- [✅] keep explicit per-symbol override only for exceptional symbols.
+- [✅] Introduce `pubext fn` and `pubext async fn` syntax as language-native C-ABI export surface:
+- [✅] `pubext fn` lowers to `pub extern "C" fn` under Option A policy.
+- [✅] define `pubext async fn` adapter ABI semantics (or reject with stable diagnostics until adapter ABI is finalized).
+- [✅] keep existing `extern "C"` parse surface only as migration-compatible syntax, but make `pubext` the documented primary form.
+- [✅] Extend verifier/driver/header generation so panic/ABI policy is sourced from TOML first, then symbol override.
+- [✅] Enforce single panic-boundary policy across exports unless explicit override is declared and ABI-checked.
+- [✅] Maintain release-blocking ABI compatibility checks for contract/policy weakening.
+- [✅] Add template primitives in `std.c` for pointer+length views, ownership transfer (`owned|borrowed|out|inout`), callback bindings, and context lifetime anchors.
 - [ ] Publish ergonomic cookbook examples: import third-party C libs, export Fzy APIs, and callback lifecycle handling.
 - [ ] Publish ecosystem guidance: other languages/frameworks should target stabilized C ABI contracts instead of bespoke direct runtime hooks.
 - [ ] Benchmark-first gate before implementation cutover:
-- [ ] add `c_interop_contract_kernel` to Rust-vs-Fzy core-library benchmark matrix.
-- [ ] benchmark Rust implementation vs native Fzy scratch implementation for this kernel and capture artifact trend.
-- [ ] gate implementation start on completed benchmark evidence (deterministic test + trace lifecycle records).
+- [✅] add `c_interop_contract_kernel` to Rust-vs-Fzy core-library benchmark matrix.
+- [✅] benchmark Rust implementation vs native Fzy scratch implementation for this kernel and capture artifact trend.
+- [✅] gate implementation start on completed benchmark evidence (deterministic test + trace lifecycle records).
 
 ### Editor Tooling (Syntax Highlighting + LSP)
 - [✅] Define and freeze grammar/token classes for editor-facing syntax categories.

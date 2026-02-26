@@ -52,7 +52,11 @@ pub fn ends_with(value: &str, suffix: &str) -> bool {
     value.ends_with(suffix)
 }
 
-pub fn slice_at_utf8_boundaries(value: &str, start: usize, end: usize) -> Result<String, TextError> {
+pub fn slice_at_utf8_boundaries(
+    value: &str,
+    start: usize,
+    end: usize,
+) -> Result<String, TextError> {
     if start > end || end > value.len() {
         return Err(TextError::InvalidUtf8Boundary);
     }
@@ -101,7 +105,10 @@ mod tests {
     fn utf8_boundary_checks_are_explicit() {
         let value = "h\u{00e9}llo";
         assert!(slice_at_utf8_boundaries(value, 0, 3).is_ok());
-        assert_eq!(slice_at_utf8_boundaries(value, 0, 2), Err(TextError::InvalidUtf8Boundary));
+        assert_eq!(
+            slice_at_utf8_boundaries(value, 0, 2),
+            Err(TextError::InvalidUtf8Boundary)
+        );
     }
 
     #[test]

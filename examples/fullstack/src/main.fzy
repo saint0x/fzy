@@ -11,24 +11,20 @@ mod services;
 mod runtime;
 mod cli;
 mod tests;
-
 const FEATURE_CONST: i32 = 2;
 static FEATURE_STATIC: i32 = 3;
 static mut FEATURE_COUNTER: i32 = 0;
-
 fn bump_feature_counter() -> i32 {
-    FEATURE_COUNTER += 1;
+    FEATURE_COUNTER = FEATURE_COUNTER + 1;
     return FEATURE_COUNTER;
 }
-
 fn feature_surface_demo(seed: i32) -> i32 {
     let mut idx = 1;
-    idx += FEATURE_CONST - 1;
+    idx = idx + FEATURE_CONST - 1;
     let values = [seed, seed + 1, seed + 2 + FEATURE_STATIC];
-    let add = |x: i32| x + values[idx];
+    let add = | x: i32 | x + values [idx];
     return add(2) + bump_feature_counter();
 }
-
 fn main() -> i32 {
     let surface = feature_surface_demo(time.now());
     if surface > 0 {

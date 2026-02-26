@@ -31,6 +31,14 @@ The v1 stdlib provides production baseline primitives for:
   - `CapabilityError::Missing(<cap>)`
   - `CapabilityError::Parse(<name>)`
 
+### `c`
+
+- Provides C-boundary helper primitives:
+  - pointer+length borrowed/out views
+  - ownership labels (`owned|borrowed|out|inout`)
+  - callback/context binding metadata helpers
+- Intended as the canonical interop utility surface for `pubext` exports.
+
 ### `io`
 
 - `read_to_string_with_capability(path, token) -> Result<String, CapabilityError>`

@@ -5,3 +5,6 @@ version = "0.1.0"
 [[target.bin]]
 name = "robust_cli"
 path = "src/main.fzy"
+
+[ffi]
+panic_boundary = "error"

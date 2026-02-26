@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "pedantic-scripts-bench-corelibs-rust-vs-fzy-explore-schedule-faults-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "print('bench-corelibs-explore-pass')"
+      ],
+      "exit_code": 0,
+      "stdout": "bench-corelibs-explore-pass\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "print('bench-corelibs-explore-pass')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "bench-corelibs-explore-pass\n"
+    }
+  ]
+}

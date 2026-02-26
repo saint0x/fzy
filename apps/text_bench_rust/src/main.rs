@@ -1,5 +1,5 @@
-use std::hint::black_box;
 use core::Capability as FxCapability;
+use std::hint::black_box;
 use stdlib::abi::AbiPairI32;
 use stdlib::bytes::ByteBuf;
 use stdlib::duration::DurationSpan;

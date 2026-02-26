@@ -4,21 +4,18 @@ use core.http;
 use core.proc;
 use core.mem;
 use core.thread;
-
 mod api;
 mod model;
 mod services;
 mod runtime;
 mod cli;
 mod tests;
-
 fn feature_surface_demo(seed: i32) -> i32 {
     let values = [seed, seed + 1, seed + 2];
     let idx = 1;
-    let add = |x: i32| x + values[idx];
+    let add = | x: i32 | x + values [idx];
     return add(2);
 }
-
 fn main() -> i32 {
     requires true;
     let surface = feature_surface_demo(time.now());
@@ -35,9 +32,7 @@ fn main() -> i32 {
     api.touch();
     let session_seed: i32 = time.now();
     match session_seed {
-        0 => pulse(),
-        1 => pulse(),
-        _ => pulse(),
+        0 => pulse(), 1 => pulse(), _ => pulse(),
     }
     cli.commands.cmd_init();
     cli.commands.cmd_set();

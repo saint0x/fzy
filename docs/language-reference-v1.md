@@ -40,7 +40,8 @@ This document defines the v1 observable semantics contract used by the toolchain
 - Catch fallback value must type-check against the try expression result type.
 - v1 error classes are runtime operation failures (I/O, process, net), cancellation/deadline events, and verifier/runtime contract failures.
 - `panic(...)` must never cross C ABI boundaries.
-- Exported FFI boundaries must declare panic policy with `#[ffi_panic(abort)]` or `#[ffi_panic(error)]`.
+- Exported FFI boundaries should use `pubext fn`; project panic policy is declared in `fozzy.toml` under `[ffi] panic_boundary`.
+- `#[ffi_panic(abort|error)]` remains available as an explicit symbol override.
 
 ## Async And Scheduling Constructs
 

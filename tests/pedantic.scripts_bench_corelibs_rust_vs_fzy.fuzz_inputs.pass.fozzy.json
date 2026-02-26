@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "pedantic-scripts-bench-corelibs-rust-vs-fzy-fuzz-inputs-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "print('bench-corelibs-fuzz-pass')"
+      ],
+      "exit_code": 0,
+      "stdout": "bench-corelibs-fuzz-pass\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "print('bench-corelibs-fuzz-pass')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "bench-corelibs-fuzz-pass\n"
+    }
+  ]
+}

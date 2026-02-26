@@ -19,6 +19,8 @@ pub struct Manifest {
     pub deps: BTreeMap<String, Dependency>,
     #[serde(default)]
     pub profiles: Profiles,
+    #[serde(default)]
+    pub ffi: Ffi,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -80,6 +82,11 @@ pub struct Profile {
     pub checks: Option<bool>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Ffi {
+    pub panic_boundary: Option<String>,
+}
+
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
         if self.package.name.trim().is_empty() {
@@ -131,6 +138,11 @@ impl Manifest {
                         return Err(format!("deps.{name}.rev cannot be empty"));
                     }
                 }
+            }
+        }
+        if let Some(mode) = self.ffi.panic_boundary.as_deref() {
+            if mode != "abort" && mode != "error" {
+                return Err("ffi.panic_boundary must be `abort` or `error`".to_string());
             }
         }
         Ok(())
@@ -220,5 +232,46 @@ mod tests {
         assert_eq!(manifest.link.libs.len(), 2);
         assert_eq!(manifest.link.search.len(), 1);
         assert_eq!(manifest.link.frameworks.len(), 1);
+    }
+
+    #[test]
+    fn validates_ffi_panic_boundary() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [ffi]
+            panic_boundary = "error"
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        manifest
+            .validate()
+            .expect("manifest should accept valid ffi panic boundary");
+    }
+
+    #[test]
+    fn rejects_invalid_ffi_panic_boundary() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [ffi]
+            panic_boundary = "ignore"
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        let err = manifest
+            .validate()
+            .expect_err("invalid ffi panic boundary should be rejected");
+        assert!(err.contains("ffi.panic_boundary"));
     }
 }

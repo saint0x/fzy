@@ -2917,7 +2917,10 @@ fn parse_abi_manifest(value: &serde_json::Value, path: &Path) -> Result<AbiManif
             .and_then(|item| item.get("contract"))
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        let export_contract = export.get("contract").cloned().unwrap_or(serde_json::Value::Null);
+        let export_contract = export
+            .get("contract")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let contract_signature = serde_json::to_string(&serde_json::json!({
             "params": param_contracts,
             "return": return_contract,
@@ -6084,7 +6087,12 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
         .iter()
         .map(|layout| layout.name.clone())
         .collect::<BTreeSet<_>>();
-    validate_ffi_contract(&parsed.module, &exports, &repr_c_names)?;
+    validate_ffi_contract(
+        &parsed.module,
+        &exports,
+        &repr_c_names,
+        resolved.manifest.as_ref(),
+    )?;
 
     let header_path = output
         .map(Path::to_path_buf)
@@ -6107,7 +6115,7 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
     std::fs::write(&header_path, header)
         .with_context(|| format!("failed writing header: {}", header_path.display()))?;
     let abi_manifest = header_path.with_extension("abi.json");
-    let panic_boundary = detect_ffi_panic_boundary(&exports);
+    let panic_boundary = detect_ffi_panic_boundary(&exports, resolved.manifest.as_ref())?;
     let (target_triple, data_layout_hash, compiler_identity_hash) = abi_identity_fields();
     let package_json = serde_json::json!({
         "name": package_name,
@@ -6317,21 +6325,41 @@ fn render_repr_c_type_defs(module: &ast::Module) -> String {
 }
 
 fn validate_ffi_contract(
-    _module: &ast::Module,
+    module: &ast::Module,
     exports: &[&ast::Function],
     repr_c_names: &BTreeSet<String>,
+    manifest: Option<&manifest::Manifest>,
 ) -> Result<()> {
+    let has_c_symbols = module.items.iter().any(|item| {
+        matches!(
+            item,
+            ast::Item::Function(function)
+                if function.is_extern
+                    && function
+                        .abi
+                        .as_deref()
+                        .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+        )
+    });
+    let project_default = manifest
+        .and_then(|value| value.ffi.panic_boundary.as_deref())
+        .filter(|mode| *mode == "abort" || *mode == "error");
+    if has_c_symbols && manifest.is_some() && project_default.is_none() {
+        bail!(
+            "project defines C interop symbols but fozzy.toml is missing [ffi] panic_boundary = \"abort\"|\"error\""
+        );
+    }
     if exports.is_empty() {
         return Ok(());
     }
     let mut panic_mode: Option<&str> = None;
     for function in exports {
-        let Some(mode) = function.ffi_panic.as_deref() else {
-            bail!(
-                "ffi panic contract missing on export `{}`: add `#[ffi_panic(abort)]` or `#[ffi_panic(error)]`",
+        let mode = function.ffi_panic.as_deref().or(project_default).ok_or_else(|| {
+            anyhow!(
+                "ffi panic contract missing on export `{}`: set [ffi].panic_boundary in fozzy.toml or add #[ffi_panic(...)] override",
                 function.name
-            );
-        };
+            )
+        })?;
         if mode != "abort" && mode != "error" {
             bail!(
                 "invalid ffi panic mode `{}` on export `{}`; expected `abort` or `error`",
@@ -6552,18 +6580,27 @@ fn align_up(value: usize, align: usize) -> usize {
     }
 }
 
-fn detect_ffi_panic_boundary(exports: &[&ast::Function]) -> &'static str {
+fn detect_ffi_panic_boundary(
+    exports: &[&ast::Function],
+    manifest: Option<&manifest::Manifest>,
+) -> Result<&'static str> {
+    let project_default = manifest
+        .and_then(|value| value.ffi.panic_boundary.as_deref())
+        .filter(|mode| *mode == "abort" || *mode == "error");
+    if let Some(mode) = project_default {
+        return Ok(if mode == "error" { "error" } else { "abort" });
+    }
     for function in exports {
         if let Some(mode) = function.ffi_panic.as_deref() {
             if mode == "abort" {
-                return "abort";
+                return Ok("abort");
             }
             if mode == "error" {
-                return "error";
+                return Ok("error");
             }
         }
     }
-    "abort-or-translate"
+    Ok("abort-or-translate")
 }
 
 fn pointer_base_name(name: &str) -> String {
@@ -7494,7 +7531,7 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).expect("project src should be created");
         std::fs::write(
             root.join("fozzy.toml"),
-            "[package]\nname=\"headers_project\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"headers_project\"\npath=\"src/main.fzy\"\n",
+            "[package]\nname=\"headers_project\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"headers_project\"\npath=\"src/main.fzy\"\n\n[ffi]\npanic_boundary=\"abort\"\n",
         )
         .expect("manifest should be written");
         std::fs::write(

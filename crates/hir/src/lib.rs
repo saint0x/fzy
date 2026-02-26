@@ -1164,9 +1164,7 @@ fn capability_name_from_type(ty: &Type) -> Option<String> {
         Type::Named { name, args } if args.is_empty() => {
             core::Capability::parse(name).map(|cap| cap.as_str().to_string())
         }
-        Type::TypeVar(name) => {
-            core::Capability::parse(name).map(|cap| cap.as_str().to_string())
-        }
+        Type::TypeVar(name) => core::Capability::parse(name).map(|cap| cap.as_str().to_string()),
         _ => None,
     }
 }

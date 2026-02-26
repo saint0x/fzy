@@ -104,11 +104,6 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
-        callee: "http.header",
-        symbol: "fz_native_http_header",
-        arity: 2,
-    },
-    NativeRuntimeImport {
         callee: "http.post_json",
         symbol: "fz_native_http_post_json",
         arity: 2,
@@ -2544,9 +2539,9 @@ impl ControlFlowBuilder {
                     } else {
                         Some(self.new_block())
                     };
-                    let has_terminal_catchall = arms
-                        .last()
-                        .is_some_and(|arm| arm.guard.is_none() && pattern_is_catchall(&arm.pattern));
+                    let has_terminal_catchall = arms.last().is_some_and(|arm| {
+                        arm.guard.is_none() && pattern_is_catchall(&arm.pattern)
+                    });
                     let mut fallback_block = if let Some(end_block) = end_block {
                         end_block
                     } else if has_terminal_catchall {
@@ -2602,7 +2597,8 @@ impl ControlFlowBuilder {
                             },
                         )?;
                         for (arm, arm_block) in arms.iter().zip(arm_blocks.iter().copied()) {
-                            let binding_stmts = bindings_for_match_arm_pattern(&arm.pattern, scrutinee)?;
+                            let binding_stmts =
+                                bindings_for_match_arm_pattern(&arm.pattern, scrutinee)?;
                             for stmt in binding_stmts {
                                 self.append_stmt(arm_block, stmt)?;
                             }
@@ -2612,7 +2608,8 @@ impl ControlFlowBuilder {
                                     ControlFlowTerminator::Return(Some(arm.value.clone())),
                                 )?;
                             } else {
-                                let end_block = end_block.expect("non-returning match must have end block");
+                                let end_block =
+                                    end_block.expect("non-returning match must have end block");
                                 self.append_stmt(arm_block, ast::Stmt::Expr(arm.value.clone()))?;
                                 self.terminate(
                                     arm_block,
@@ -2643,11 +2640,8 @@ impl ControlFlowBuilder {
                             } else {
                                 self.new_block()
                             };
-                            let mut condition = pattern_to_expr(
-                                &scrutinee_name,
-                                &arm.pattern,
-                                &self.variant_tags,
-                            );
+                            let mut condition =
+                                pattern_to_expr(&scrutinee_name, &arm.pattern, &self.variant_tags);
                             if let Some(guard) = &arm.guard {
                                 condition = ast::Expr::Binary {
                                     op: ast::BinaryOp::And,
@@ -2684,7 +2678,8 @@ impl ControlFlowBuilder {
                                     ControlFlowTerminator::Return(Some(arm.value.clone())),
                                 )?;
                             } else {
-                                let end_block = end_block.expect("non-returning match must have end block");
+                                let end_block =
+                                    end_block.expect("non-returning match must have end block");
                                 self.append_stmt(arm_block, ast::Stmt::Expr(arm.value.clone()))?;
                                 self.terminate(
                                     arm_block,
@@ -2800,7 +2795,7 @@ fn pattern_to_expr(
                 op: ast::BinaryOp::Eq,
                 left: Box::new(ast::Expr::Ident(scrutinee_name.to_string())),
                 right: Box::new(ast::Expr::Int(
-                    variant_tag_for_key(&key, variant_tags) as i128,
+                    variant_tag_for_key(&key, variant_tags) as i128
                 )),
             }
         }
@@ -3523,12 +3518,7 @@ fn collect_native_data_ops_for_function(function: &hir::TypedFunction) -> Vec<Na
                 collect_native_data_ops_from_expr(scrutinee, array_lengths, const_strings, out);
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
-                        collect_native_data_ops_from_expr(
-                            guard,
-                            array_lengths,
-                            const_strings,
-                            out,
-                        );
+                        collect_native_data_ops_from_expr(guard, array_lengths, const_strings, out);
                     }
                     collect_native_data_ops_from_expr(
                         &arm.value,
@@ -3548,10 +3538,7 @@ fn collect_native_data_ops_for_function(function: &hir::TypedFunction) -> Vec<Na
     out
 }
 
-fn compute_forced_main_return(
-    fir: &fir::FirModule,
-    enforce_contract_checks: bool,
-) -> Option<i32> {
+fn compute_forced_main_return(fir: &fir::FirModule, enforce_contract_checks: bool) -> Option<i32> {
     if !enforce_contract_checks {
         return None;
     }
@@ -3585,7 +3572,10 @@ fn build_native_cfg_map(
             verify_control_flow_cfg(&cfg)?;
             Ok(cfg)
         });
-        cfg_by_function.insert(function.name.clone(), cfg.map_err(|error| error.to_string()));
+        cfg_by_function.insert(
+            function.name.clone(),
+            cfg.map_err(|error| error.to_string()),
+        );
     }
     cfg_by_function
 }
@@ -4200,7 +4190,8 @@ fn llvm_emit_linear_stmts(
                     ctx.code
                         .push_str(&format!("  {storage} = alloca [{len} x i32]\n"));
                     for (idx, item) in items.iter().enumerate() {
-                        let item_value = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
+                        let item_value =
+                            llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
                         let element_ptr = ctx.value();
                         ctx.code.push_str(&format!(
                             "  {element_ptr} = getelementptr inbounds [{len} x i32], ptr {storage}, i32 0, i64 {idx}\n  store i32 {item_value}, ptr {element_ptr}\n"
@@ -4277,7 +4268,8 @@ fn llvm_emit_linear_stmts(
                     ctx.code
                         .push_str(&format!("  {storage} = alloca [{len} x i32]\n"));
                     for (idx, item) in items.iter().enumerate() {
-                        let item_value = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
+                        let item_value =
+                            llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
                         let element_ptr = ctx.value();
                         ctx.code.push_str(&format!(
                             "  {element_ptr} = getelementptr inbounds [{len} x i32], ptr {storage}, i32 0, i64 {idx}\n  store i32 {item_value}, ptr {element_ptr}\n"
@@ -4507,7 +4499,8 @@ fn llvm_emit_expr(
             "0".to_string()
         }
         ast::Expr::Index { base, index } => {
-            let index_value = if let Some((base_name, offset)) = canonicalize_array_index_window(index)
+            let index_value = if let Some((base_name, offset)) =
+                canonicalize_array_index_window(index)
             {
                 if let Some(slot) = ctx.slots.get(&base_name).cloned() {
                     let base_loaded = ctx.value();
@@ -4519,9 +4512,8 @@ fn llvm_emit_expr(
                         let adjusted = ctx.value();
                         let op = if offset >= 0 { "add" } else { "sub" };
                         let rhs = offset.unsigned_abs();
-                        ctx.code.push_str(&format!(
-                            "  {adjusted} = {op} i32 {base_loaded}, {rhs}\n"
-                        ));
+                        ctx.code
+                            .push_str(&format!("  {adjusted} = {op} i32 {base_loaded}, {rhs}\n"));
                         adjusted
                     }
                 } else {
@@ -4562,8 +4554,9 @@ fn llvm_emit_expr(
                     ));
                     ctx.code
                         .push_str(&format!("  {ok} = and i1 {nonneg}, {ltlen}\n"));
-                    ctx.code
-                        .push_str(&format!("  br i1 {ok}, label %{in_label}, label %{out_label}\n"));
+                    ctx.code.push_str(&format!(
+                        "  br i1 {ok}, label %{in_label}, label %{out_label}\n"
+                    ));
                     ctx.code.push_str(&format!("{in_label}:\n"));
                     let idx64 = ctx.value();
                     let elem_ptr = ctx.value();
@@ -4576,11 +4569,9 @@ fn llvm_emit_expr(
                     ));
                     ctx.code
                         .push_str(&format!("  {loaded} = load i32, ptr {elem_ptr}\n"));
-                    ctx.code
-                        .push_str(&format!("  br label %{merge_label}\n"));
+                    ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                     ctx.code.push_str(&format!("{out_label}:\n"));
-                    ctx.code
-                        .push_str(&format!("  br label %{merge_label}\n"));
+                    ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                     ctx.code.push_str(&format!("{merge_label}:\n"));
                     let selected = ctx.value();
                     ctx.code.push_str(&format!(
@@ -4769,6 +4760,30 @@ fn native_runtime_import_for_callee(callee: &str) -> Option<&'static NativeRunti
         .find(|import| import.callee == callee)
 }
 
+fn native_runtime_import_contract_errors() -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut seen = HashSet::<&'static str>::new();
+    for import in NATIVE_RUNTIME_IMPORTS {
+        if !seen.insert(import.callee) {
+            errors.push(format!(
+                "duplicate native runtime import callee `{}` in boundary import table",
+                import.callee
+            ));
+        }
+
+        if import.callee.starts_with("str.")
+            || import.callee.starts_with("list.")
+            || import.callee.starts_with("map.")
+        {
+            errors.push(format!(
+                "native runtime boundary import table cannot include local data-plane callee `{}`",
+                import.callee
+            ));
+        }
+    }
+    errors
+}
+
 fn is_extern_c_import_decl(function: &hir::TypedFunction) -> bool {
     function.is_extern
         && function
@@ -4929,9 +4944,9 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
                     collect_from_expr(value, const_strings, out);
                 }
             }
-            ast::Expr::Closure { body, .. }
-            | ast::Expr::Group(body)
-            | ast::Expr::Await(body) => collect_from_expr(body, const_strings, out),
+            ast::Expr::Closure { body, .. } | ast::Expr::Group(body) | ast::Expr::Await(body) => {
+                collect_from_expr(body, const_strings, out)
+            }
             ast::Expr::Unary { expr, .. } => collect_from_expr(expr, const_strings, out),
             ast::Expr::TryCatch {
                 try_expr,
@@ -4971,7 +4986,9 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
 }
 
 fn collect_native_string_literals(fir: &fir::FirModule) -> Vec<String> {
-    let mut merged = collect_string_literals(fir).into_iter().collect::<HashSet<_>>();
+    let mut merged = collect_string_literals(fir)
+        .into_iter()
+        .collect::<HashSet<_>>();
     for folded in collect_folded_temp_string_literals(fir) {
         merged.insert(folded);
     }
@@ -5416,8 +5433,12 @@ fn eval_const_string_call(
         }
         "str.slice" if args.len() == 3 => {
             let value = eval_const_string_expr(&args[0], const_strings)?;
-            let start = eval_const_i32_expr(&args[1], const_strings).unwrap_or(0).max(0) as usize;
-            let span = eval_const_i32_expr(&args[2], const_strings).unwrap_or(0).max(0) as usize;
+            let start = eval_const_i32_expr(&args[1], const_strings)
+                .unwrap_or(0)
+                .max(0) as usize;
+            let span = eval_const_i32_expr(&args[2], const_strings)
+                .unwrap_or(0)
+                .max(0) as usize;
             let len = value.len();
             let s = start.min(len);
             let e = s.saturating_add(span).min(len);
@@ -7054,6 +7075,9 @@ fn clif_emit_cfg(
                 let mut switch = Switch::new();
                 for (value, target) in cases {
                     switch.set_entry(*value as u128, clif_blocks[*target]);
+                }
+                switch.emit(builder, cond_val.value, clif_blocks[*default_target]);
+                for (_, target) in cases {
                     observed_predecessors[*target] += 1;
                     if !sealed[*target]
                         && observed_predecessors[*target] >= predecessor_count[*target]
@@ -7071,7 +7095,6 @@ fn clif_emit_cfg(
                     sealed[*default_target] = true;
                 }
                 queue.push(*default_target);
-                switch.emit(builder, cond_val.value, clif_blocks[*default_target]);
             }
             ControlFlowTerminator::Unreachable => {
                 if let Some(return_ty) = return_ty {
@@ -7263,9 +7286,10 @@ fn clif_emit_let_pattern(
             bindings,
         } => {
             let key = format!("{enum_name}::{variant}");
-            let expected_tag = builder
-                .ins()
-                .iconst(lowered.ty, variant_tag_for_key(&key, ctx.variant_tags) as i64);
+            let expected_tag = builder.ins().iconst(
+                lowered.ty,
+                variant_tag_for_key(&key, ctx.variant_tags) as i64,
+            );
             let _ = builder
                 .ins()
                 .icmp(IntCC::Equal, lowered.value, expected_tag);
@@ -7330,13 +7354,12 @@ fn clif_emit_linear_stmts(
                         clif_array_layout_from_values(&lowered_items);
                     let slot_size = (lowered_items.len() as u32) * u32::from(element_stride);
                     let align_shift = element_align.trailing_zeros() as u8;
-                    let stack_slot = builder.create_sized_stack_slot(
-                        cranelift_codegen::ir::StackSlotData::new(
+                    let stack_slot =
+                        builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
                             cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
                             slot_size,
                             align_shift,
-                        ),
-                    );
+                        ));
                     for (idx, mut item_val) in lowered_items.into_iter().enumerate() {
                         item_val = cast_clif_value(builder, item_val, element_ty)?;
                         let ptr = builder.ins().stack_addr(
@@ -7344,9 +7367,7 @@ fn clif_emit_linear_stmts(
                             stack_slot,
                             (idx as i32) * i32::from(element_stride),
                         );
-                        builder
-                            .ins()
-                            .store(MemFlags::new(), item_val.value, ptr, 0);
+                        builder.ins().store(MemFlags::new(), item_val.value, ptr, 0);
                     }
                     ctx.array_bindings.insert(
                         name.clone(),
@@ -7439,13 +7460,12 @@ fn clif_emit_linear_stmts(
                         clif_array_layout_from_values(&lowered_items);
                     let slot_size = (lowered_items.len() as u32) * u32::from(element_stride);
                     let align_shift = element_align.trailing_zeros() as u8;
-                    let stack_slot = builder.create_sized_stack_slot(
-                        cranelift_codegen::ir::StackSlotData::new(
+                    let stack_slot =
+                        builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
                             cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
                             slot_size,
                             align_shift,
-                        ),
-                    );
+                        ));
                     for (idx, mut item_val) in lowered_items.into_iter().enumerate() {
                         item_val = cast_clif_value(builder, item_val, element_ty)?;
                         let ptr = builder.ins().stack_addr(
@@ -7453,9 +7473,7 @@ fn clif_emit_linear_stmts(
                             stack_slot,
                             (idx as i32) * i32::from(element_stride),
                         );
-                        builder
-                            .ins()
-                            .store(MemFlags::new(), item_val.value, ptr, 0);
+                        builder.ins().store(MemFlags::new(), item_val.value, ptr, 0);
                     }
                     ctx.array_bindings.insert(
                         target.clone(),
@@ -7753,12 +7771,10 @@ fn clif_emit_expr(
             }
             let key = format!("{enum_name}::{variant}");
             ClifValue {
-                value: builder
-                    .ins()
-                    .iconst(
-                        default_int_clif_type(),
-                        variant_tag_for_key(&key, ctx.variant_tags) as i64,
-                    ),
+                value: builder.ins().iconst(
+                    default_int_clif_type(),
+                    variant_tag_for_key(&key, ctx.variant_tags) as i64,
+                ),
                 ty: default_int_clif_type(),
             }
         }
@@ -7779,36 +7795,36 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::Index { base, index } => {
-            let index_value = if let Some((base_name, offset)) = canonicalize_array_index_window(index)
-            {
-                if let Some(binding) = locals.get(&base_name).copied() {
-                    let base_raw = builder.use_var(binding.var);
-                    let base = cast_clif_value(
-                        builder,
+            let index_value =
+                if let Some((base_name, offset)) = canonicalize_array_index_window(index) {
+                    if let Some(binding) = locals.get(&base_name).copied() {
+                        let base_raw = builder.use_var(binding.var);
+                        let base = cast_clif_value(
+                            builder,
+                            ClifValue {
+                                value: base_raw,
+                                ty: binding.ty,
+                            },
+                            default_int_clif_type(),
+                        )?
+                        .value;
+                        let value = if offset == 0 {
+                            base
+                        } else {
+                            builder.ins().iadd_imm(base, i64::from(offset))
+                        };
                         ClifValue {
-                            value: base_raw,
-                            ty: binding.ty,
-                        },
-                        default_int_clif_type(),
-                    )?
-                    .value;
-                    let value = if offset == 0 {
-                        base
+                            value,
+                            ty: default_int_clif_type(),
+                        }
                     } else {
-                        builder.ins().iadd_imm(base, i64::from(offset))
-                    };
-                    ClifValue {
-                        value,
-                        ty: default_int_clif_type(),
+                        let value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
+                        cast_clif_value(builder, value, default_int_clif_type())?
                     }
                 } else {
                     let value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
                     cast_clif_value(builder, value, default_int_clif_type())?
-                }
-            } else {
-                let value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
-                cast_clif_value(builder, value, default_int_clif_type())?
-            };
+                };
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_bindings.get(name) {
                     if binding.len == 0 {
@@ -7840,28 +7856,26 @@ fn clif_emit_expr(
                     builder.append_block_param(merge_block, binding.element_ty);
 
                     let zero = builder.ins().iconst(default_int_clif_type(), 0);
-                    let len_const =
-                        builder
-                            .ins()
-                            .iconst(default_int_clif_type(), binding.len as i64);
-                    let nonneg = builder
+                    let len_const = builder
                         .ins()
-                        .icmp(IntCC::SignedGreaterThanOrEqual, index_value.value, zero);
+                        .iconst(default_int_clif_type(), binding.len as i64);
+                    let nonneg = builder.ins().icmp(
+                        IntCC::SignedGreaterThanOrEqual,
+                        index_value.value,
+                        zero,
+                    );
                     let below_len =
                         builder
                             .ins()
                             .icmp(IntCC::SignedLessThan, index_value.value, len_const);
                     let in_range = builder.ins().band(nonneg, below_len);
-                    builder
-                        .ins()
-                        .brif(in_range, in_block, &[], out_block, &[]);
+                    builder.ins().brif(in_range, in_block, &[], out_block, &[]);
 
                     builder.switch_to_block(in_block);
-                    let base_ptr = builder.ins().stack_addr(
-                        pointer_sized_clif_type(),
-                        binding.stack_slot,
-                        0,
-                    );
+                    let base_ptr =
+                        builder
+                            .ins()
+                            .stack_addr(pointer_sized_clif_type(), binding.stack_slot, 0);
                     let idx_ptr = if pointer_sized_clif_type() == default_int_clif_type() {
                         index_value.value
                     } else {
@@ -7869,15 +7883,13 @@ fn clif_emit_expr(
                             .ins()
                             .uextend(pointer_sized_clif_type(), index_value.value)
                     };
-                    let byte_offset =
-                        builder
-                            .ins()
-                            .imul_imm(idx_ptr, i64::from(binding.element_stride));
+                    let byte_offset = builder
+                        .ins()
+                        .imul_imm(idx_ptr, i64::from(binding.element_stride));
                     let addr = builder.ins().iadd(base_ptr, byte_offset);
-                    let loaded =
-                        builder
-                            .ins()
-                            .load(binding.element_ty, MemFlags::new(), addr, 0);
+                    let loaded = builder
+                        .ins()
+                        .load(binding.element_ty, MemFlags::new(), addr, 0);
                     builder.ins().jump(merge_block, &[loaded]);
 
                     builder.switch_to_block(out_block);
@@ -7889,7 +7901,11 @@ fn clif_emit_expr(
                     builder.switch_to_block(merge_block);
                     builder.seal_block(merge_block);
                     let selected = builder.block_params(merge_block)[0];
-                    let _ = (binding.element_bits, binding.element_align, binding.element_stride);
+                    let _ = (
+                        binding.element_bits,
+                        binding.element_align,
+                        binding.element_stride,
+                    );
                     return Ok(ClifValue {
                         value: selected,
                         ty: binding.element_ty,
@@ -8183,6 +8199,16 @@ fn clif_emit_expr(
 
 fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Diagnostic> {
     let mut diagnostics = Vec::new();
+    diagnostics.extend(native_runtime_import_contract_errors().into_iter().map(|message| {
+        diagnostics::Diagnostic::new(
+            diagnostics::Severity::Error,
+            message,
+            Some(
+                "runtime shim imports are reserved for capability/host-effect boundaries; local data-plane paths must lower directly"
+                    .to_string(),
+            ),
+        )
+    }));
     for item in &module.items {
         let ast::Item::Function(function) = item else {
             continue;
@@ -8960,12 +8986,8 @@ fn stmt_contains_unsupported_partial_native_expression_usage(stmt: &ast::Stmt) -
 }
 
 fn function_body_contains_unsupported_dynamic_string_data_plane_calls(body: &[ast::Stmt]) -> bool {
-    fn body_contains(
-        body: &[ast::Stmt],
-        const_strings: &mut HashMap<String, String>,
-    ) -> bool {
-        body.iter()
-            .any(|stmt| stmt_contains(stmt, const_strings))
+    fn body_contains(body: &[ast::Stmt], const_strings: &mut HashMap<String, String>) -> bool {
+        body.iter().any(|stmt| stmt_contains(stmt, const_strings))
     }
 
     fn stmt_contains(stmt: &ast::Stmt, const_strings: &mut HashMap<String, String>) -> bool {
@@ -8998,7 +9020,9 @@ fn function_body_contains_unsupported_dynamic_string_data_plane_calls(body: &[as
             | ast::Stmt::Requires(value)
             | ast::Stmt::Ensures(value)
             | ast::Stmt::Defer(value) => expr_contains(value, const_strings),
-            ast::Stmt::Return(value) => value.as_ref().is_some_and(|value| expr_contains(value, const_strings)),
+            ast::Stmt::Return(value) => value
+                .as_ref()
+                .is_some_and(|value| expr_contains(value, const_strings)),
             ast::Stmt::If {
                 condition,
                 then_body,
@@ -9062,7 +9086,9 @@ fn function_body_contains_unsupported_dynamic_string_data_plane_calls(body: &[as
             ast::Expr::EnumInit { payload, .. } | ast::Expr::ArrayLiteral(payload) => payload
                 .iter()
                 .any(|value| expr_contains(value, const_strings)),
-            ast::Expr::Group(inner) | ast::Expr::Await(inner) => expr_contains(inner, const_strings),
+            ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+                expr_contains(inner, const_strings)
+            }
             ast::Expr::Unary { expr, .. } => expr_contains(expr, const_strings),
             ast::Expr::TryCatch {
                 try_expr,
@@ -9141,7 +9167,9 @@ fn stmt_contains_unsupported_list_map_data_plane_calls(stmt: &ast::Stmt) -> bool
             expr_contains_unsupported_list_map_data_plane_calls(iterable)
                 || function_body_contains_unsupported_list_map_data_plane_calls(body)
         }
-        ast::Stmt::Loop { body } => function_body_contains_unsupported_list_map_data_plane_calls(body),
+        ast::Stmt::Loop { body } => {
+            function_body_contains_unsupported_list_map_data_plane_calls(body)
+        }
         ast::Stmt::Match { scrutinee, arms } => {
             expr_contains_unsupported_list_map_data_plane_calls(scrutinee)
                 || arms.iter().any(|arm| {
@@ -9164,7 +9192,9 @@ fn expr_contains_unsupported_list_map_data_plane_calls(expr: &ast::Expr) -> bool
                     .any(expr_contains_unsupported_list_map_data_plane_calls)
         }
         ast::Expr::UnsafeContract(_) => false,
-        ast::Expr::FieldAccess { base, .. } => expr_contains_unsupported_list_map_data_plane_calls(base),
+        ast::Expr::FieldAccess { base, .. } => {
+            expr_contains_unsupported_list_map_data_plane_calls(base)
+        }
         ast::Expr::StructInit { fields, .. } => fields
             .iter()
             .any(|(_, value)| expr_contains_unsupported_list_map_data_plane_calls(value)),
@@ -9197,7 +9227,9 @@ fn expr_contains_unsupported_list_map_data_plane_calls(expr: &ast::Expr) -> bool
             expr_contains_unsupported_list_map_data_plane_calls(base)
                 || expr_contains_unsupported_list_map_data_plane_calls(index)
         }
-        ast::Expr::Closure { body, .. } => expr_contains_unsupported_list_map_data_plane_calls(body),
+        ast::Expr::Closure { body, .. } => {
+            expr_contains_unsupported_list_map_data_plane_calls(body)
+        }
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
         | ast::Expr::Char(_)
@@ -14895,7 +14927,8 @@ mod tests {
     use super::{
         compile_file, compile_file_with_backend, compile_library_with_backend,
         derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir, parse_program,
-        refresh_lockfile, render_native_runtime_shim, verify_file, BackendKind, BuildProfile,
+        native_runtime_import_contract_errors, native_runtime_import_for_callee, refresh_lockfile,
+        render_native_runtime_shim, verify_file, BackendKind, BuildProfile,
     };
 
     fn run_native_exit(exe: &Path) -> i32 {
@@ -15076,8 +15109,7 @@ mod tests {
                 .as_nanos()
         );
         let root = std::env::temp_dir().join(project_name);
-        std::fs::create_dir_all(root.join("src/services"))
-            .expect("project dir should be created");
+        std::fs::create_dir_all(root.join("src/services")).expect("project dir should be created");
         std::fs::write(
             root.join("fozzy.toml"),
             "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
@@ -15370,6 +15402,20 @@ mod tests {
         assert!(error.to_string().contains("unknown backend"));
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn native_runtime_import_table_is_boundary_only_and_unique() {
+        let errors = native_runtime_import_contract_errors();
+        assert!(
+            errors.is_empty(),
+            "runtime import contract errors: {}",
+            errors.join("; ")
+        );
+
+        let import = native_runtime_import_for_callee("http.header")
+            .expect("http.header runtime import should exist");
+        assert_eq!(import.symbol, "fz_native_net_header");
     }
 
     #[test]

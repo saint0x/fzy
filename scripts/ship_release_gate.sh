@@ -32,6 +32,9 @@ python3 ./scripts/language_primitive_drift_gate.py >/dev/null
 echo "[ship] direct-memory architecture gate"
 python3 ./scripts/direct_memory_architecture_gate.py >/dev/null
 
+echo "[ship] runtime corelib execution path gate"
+python3 ./scripts/runtime_corelib_execution_path_gate.py >/dev/null
+
 echo "[ship] direct-memory perf exit gate"
 python3 ./scripts/direct_memory_perf_gate.py >/dev/null
 
@@ -103,6 +106,8 @@ done
 echo "[ship] anthropic smoke matrix (llvm + cranelift)"
 ANTHROPIC_SMOKE="$TMP_DIR/anthropic_smoke.fzy"
 cat > "$ANTHROPIC_SMOKE" <<'FZY'
+use core.http;
+
 fn main() -> i32 {
     http.post_json_capture("https://api.anthropic.com/v1/messages", "{}")
     let emsg = error.message()

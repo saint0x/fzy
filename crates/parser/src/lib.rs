@@ -17,6 +17,7 @@ enum TokenKind {
     Str(String),
     KwFn,
     KwPub,
+    KwPubext,
     KwConst,
     KwStatic,
     KwExtern,
@@ -300,7 +301,11 @@ impl Parser {
         if self.pending_ffi_panic.is_some()
             && !matches!(
                 self.peek_kind(),
-                TokenKind::KwFn | TokenKind::KwAsync | TokenKind::KwPub | TokenKind::KwExtern
+                TokenKind::KwFn
+                    | TokenKind::KwAsync
+                    | TokenKind::KwPub
+                    | TokenKind::KwPubext
+                    | TokenKind::KwExtern
             )
         {
             self.push_diag_here("`#[ffi_panic(...)]` applies only to functions");
@@ -404,6 +409,7 @@ impl Parser {
             body: Vec::new(),
             is_async: false,
             is_pub: false,
+            is_pubext: false,
             is_extern: true,
             abi: Some("rpc".to_string()),
             ffi_panic: None,
@@ -805,10 +811,25 @@ impl Parser {
     }
 
     fn parse_function(&mut self) -> Option<ast::Item> {
-        let is_async = self.consume(&TokenKind::KwAsync);
-        let is_pub = self.consume(&TokenKind::KwPub);
-        let is_extern = self.consume(&TokenKind::KwExtern);
-        let abi = if is_extern {
+        let is_pubext = self.consume(&TokenKind::KwPubext);
+        let is_async = if is_pubext {
+            self.consume(&TokenKind::KwAsync)
+        } else {
+            self.consume(&TokenKind::KwAsync)
+        };
+        let is_pub = if is_pubext {
+            true
+        } else {
+            self.consume(&TokenKind::KwPub)
+        };
+        let is_extern = if is_pubext {
+            true
+        } else {
+            self.consume(&TokenKind::KwExtern)
+        };
+        let abi = if is_pubext {
+            Some("C".to_string())
+        } else if is_extern {
             match self.advance()?.kind {
                 TokenKind::Str(v) => Some(v),
                 _ => {
@@ -820,7 +841,7 @@ impl Parser {
             None
         };
         if !self.consume(&TokenKind::KwFn) {
-            if is_pub || is_extern {
+            if is_pub || is_extern || is_pubext {
                 self.push_diag_here("expected `fn` declaration");
             }
             return None;
@@ -888,6 +909,7 @@ impl Parser {
             body,
             is_async,
             is_pub,
+            is_pubext,
             is_extern,
             abi,
             ffi_panic: self.pending_ffi_panic.take(),
@@ -1105,10 +1127,7 @@ impl Parser {
     fn parse_then_control_stmt(&mut self) -> Option<Stmt> {
         if self.consume(&TokenKind::KwReturn) {
             let expr = match self.peek_kind() {
-                TokenKind::Semi
-                | TokenKind::KwElse
-                | TokenKind::RBrace
-                | TokenKind::Eof => None,
+                TokenKind::Semi | TokenKind::KwElse | TokenKind::RBrace | TokenKind::Eof => None,
                 _ => Some(self.parse_expr(0)?),
             };
             return Some(Stmt::Return(expr));
@@ -2100,6 +2119,7 @@ impl Parser {
             TokenKind::Ident(value) => Some(value),
             TokenKind::KwFn => Some("fn".to_string()),
             TokenKind::KwPub => Some("pub".to_string()),
+            TokenKind::KwPubext => Some("pubext".to_string()),
             TokenKind::KwConst => Some("const".to_string()),
             TokenKind::KwStatic => Some("static".to_string()),
             TokenKind::KwExtern => Some("extern".to_string()),
@@ -2175,6 +2195,7 @@ impl Parser {
             TokenKind::KwMod,
             TokenKind::KwFn,
             TokenKind::KwPub,
+            TokenKind::KwPubext,
             TokenKind::KwConst,
             TokenKind::KwStatic,
             TokenKind::KwExtern,
@@ -2784,6 +2805,7 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
     match ident {
         "fn" => TokenKind::KwFn,
         "pub" => TokenKind::KwPub,
+        "pubext" => TokenKind::KwPubext,
         "const" => TokenKind::KwConst,
         "static" => TokenKind::KwStatic,
         "extern" => TokenKind::KwExtern,
@@ -3127,6 +3149,45 @@ mod tests {
     }
 
     #[test]
+    fn parses_pubext_function_as_c_export() {
+        let source = r#"
+            pubext fn add(left: i32, right: i32) -> i32;
+        "#;
+        let module = parse(source, "ffi").expect("parse should succeed");
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "add" => Some(function),
+                _ => None,
+            })
+            .expect("ffi function should exist");
+        assert!(function.is_pub);
+        assert!(function.is_pubext);
+        assert!(function.is_extern);
+        assert_eq!(function.abi.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn parses_pubext_async_function() {
+        let source = r#"
+            pubext async fn flush(code: i32) -> i32;
+        "#;
+        let module = parse(source, "ffi").expect("parse should succeed");
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "flush" => Some(function),
+                _ => None,
+            })
+            .expect("ffi function should exist");
+        assert!(function.is_async);
+        assert!(function.is_pubext);
+        assert_eq!(function.abi.as_deref(), Some("C"));
+    }
+
+    #[test]
     fn rejects_invalid_ffi_panic_mode() {
         let source = r#"
             #[ffi_panic(ignore)]
@@ -3326,9 +3387,9 @@ mod tests {
             }
         "#;
         let diagnostics = parse(source, "main").expect_err("parse should fail");
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.message.contains("`..=` is removed; use `range.closed(start, end)`")));
+        assert!(diagnostics.iter().any(|d| d
+            .message
+            .contains("`..=` is removed; use `range.closed(start, end)`")));
     }
 
     #[test]
@@ -3340,9 +3401,9 @@ mod tests {
             }
         "#;
         let diagnostics = parse(source, "main").expect_err("parse should fail");
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.message.contains("`let _ = ...` is removed; use `discard <expr>`")));
+        assert!(diagnostics.iter().any(|d| d
+            .message
+            .contains("`let _ = ...` is removed; use `discard <expr>`")));
     }
 
     #[test]

@@ -154,7 +154,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                     "{} unsafe escape site(s) missing required contract fields",
                     missing_reasons
                 ),
-                Some("use full unsafe contract: reason,invariant,owner,scope,risk_class,proof_ref".to_string()),
+                Some(
+                    "use full unsafe contract: reason,invariant,owner,scope,risk_class,proof_ref"
+                        .to_string(),
+                ),
             ));
         }
     }
