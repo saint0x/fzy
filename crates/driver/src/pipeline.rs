@@ -4961,9 +4961,14 @@ fn collect_used_runtime_imports_from_expr(
 ) {
     match expr {
         ast::Expr::Call { callee, args } => {
-            if let Some(import) = native_runtime_import_for_callee(callee) {
-                if seen.insert(import.symbol) {
-                    used.push(import);
+            let empty_const_strings = HashMap::<String, String>::new();
+            let folded_const = eval_const_string_call(callee, args, &empty_const_strings).is_some()
+                || eval_const_i32_call(callee, args, &empty_const_strings).is_some();
+            if !folded_const {
+                if let Some(import) = native_runtime_import_for_callee(callee) {
+                    if seen.insert(import.symbol) {
+                        used.push(import);
+                    }
                 }
             }
             for arg in args {
@@ -15453,6 +15458,83 @@ mod tests {
         let ir = output.backend_ir.expect("backend ir should be available");
         assert!(ir.contains("@services.web.start_listener"));
         assert!(!ir.contains("@web.start_listener"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn direct_memory_backend_contract_array_index_lowers_without_data_plane_runtime_calls() {
+        let source = "fn main() -> i32 {\n    let values = [3, 5, 8];\n    let idx = 2;\n    return values[idx]\n}\n";
+        let module = parser::parse(source, "direct_memory_array").expect("source should parse");
+        let typed = hir::lower(&module);
+        let fir = fir::build_owned(typed);
+        let llvm = lower_backend_ir(&fir, BackendKind::Llvm);
+        let clif = lower_backend_ir(&fir, BackendKind::Cranelift);
+
+        assert!(!llvm.contains("__native.array_"));
+        assert!(!llvm.contains("fz_native_list_"));
+        assert!(!clif.contains("__native.array_"));
+        assert!(!clif.contains("fz_native_list_"));
+    }
+
+    #[test]
+    fn direct_memory_backend_contract_switch_and_constant_string_chain_lowering_is_parity_safe() {
+        let source = "enum ErrorCode { InvalidInput, NotFound, Conflict, Timeout, Io, Internal }\nfn classify(code: ErrorCode) -> i32 {\n    match code {\n        ErrorCode::Io => return 11,\n        ErrorCode::InvalidInput => return 17,\n        ErrorCode::Timeout => return 23,\n        ErrorCode::Conflict => return 31,\n        _ => return 43,\n    }\n}\nfn main() -> i32 {\n    let values = [4, 6, 9]\n    let idx = 1\n    let score = values[idx]\n    if str.contains(str.replace(str.trim(\"  xax  \"), \"a\", \"b\"), \"b\") == 1 {\n        return classify(ErrorCode::Io) + score + str.len(str.replace(str.trim(\"  xax  \"), \"a\", \"b\"))\n    }\n    return 0\n}\n";
+        let module = parser::parse(source, "direct_memory_contract").expect("source should parse");
+        let typed = hir::lower(&module);
+        let fir = fir::build_owned(typed);
+        let llvm = lower_backend_ir(&fir, BackendKind::Llvm);
+        let clif = lower_backend_ir(&fir, BackendKind::Cranelift);
+
+        assert!(llvm.contains("switch i32"));
+        assert!(clif.contains("switch"));
+        assert!(!llvm.contains("declare i32 @fz_native_str_trim("));
+        assert!(!llvm.contains("declare i32 @fz_native_str_replace("));
+        assert!(!llvm.contains("declare i32 @fz_native_str_contains("));
+        assert!(!llvm.contains("declare i32 @fz_native_str_len("));
+    }
+
+    #[test]
+    fn cross_backend_direct_memory_contract_fixture_executes_consistently() {
+        let project_name = format!(
+            "fozzylang-direct-memory-contract-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let values = [4, 6, 9]\n    let idx = 1\n    let score = values[idx]\n    let text = str.replace(str.trim(\"  xax  \"), \"a\", \"b\")\n    if str.contains(text, \"b\") == 1 {\n        return score + str.len(text)\n    }\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 9);
 
         let _ = std::fs::remove_dir_all(root);
     }

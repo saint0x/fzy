@@ -69,6 +69,9 @@ cargo test -q -p driver pipeline::tests::cross_backend_primitive_control_flow_an
 cargo test -q -p driver pipeline::tests::cross_backend_native_completeness_fixture_execute_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_non_i32_and_aggregate_signatures_execute_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::non_entry_infinite_loop_function_fixture_stays_non_regressing -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::direct_memory_backend_contract_array_index_lowers_without_data_plane_runtime_calls -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::direct_memory_backend_contract_switch_and_constant_string_chain_lowering_is_parity_safe -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_contract_fixture_executes_consistently -- --exact >/dev/null
 
 echo "[ship] examples conformance on default production backend"
 for example_root in "$ROOT"/examples/*; do

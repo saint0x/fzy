@@ -487,10 +487,10 @@
 - [ ] Remove global lock + linear-scan intern overhead from hot local string pipelines.
 
 #### LLVM + Cranelift Backend Contract Unification
-- [ ] Define backend-agnostic lowering contract test suite for canonical native IR operations.
-- [ ] Require parity: LLVM and Cranelift must emit equivalent observable semantics for the same canonical IR test corpus.
-- [ ] Remove backend-specific semantic exceptions for arrays/indexing/string temporaries in optimized native mode.
-- [ ] Add backend conformance gate to release criteria for direct-memory lowering features.
+- [✅] Define backend-agnostic lowering contract test suite for canonical native IR operations.
+- [✅] Require parity: LLVM and Cranelift must emit equivalent observable semantics for the same canonical IR test corpus.
+- [✅] Remove backend-specific semantic exceptions for arrays/indexing/string temporaries in optimized native mode.
+- [✅] Add backend conformance gate to release criteria for direct-memory lowering features.
 
 #### Type/Layout + ABI Constraints for Direct Memory
 - [ ] Tighten internal type/layout metadata flow so element width/align/stride are available at canonical IR level.
