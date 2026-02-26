@@ -392,6 +392,10 @@ fn collect_stmt_semantics(
                 },
             );
         }
+        ast::Stmt::LetPattern { pattern, value, .. } => {
+            collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
+            collect_pattern_bindings(pattern, scope_id, scopes, decls, positions);
+        }
         ast::Stmt::Assign { target, value } => {
             collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
             resolve_reference(target, scope_id, scopes, decls, refs, positions);

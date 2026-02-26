@@ -2091,6 +2091,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
 ) {
     match stmt {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
@@ -3950,6 +3951,7 @@ fn count_async_hooks_in_module(module: &ast::Module) -> usize {
 fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
     match stmt {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
@@ -4074,6 +4076,7 @@ fn analyze_workload_shape(module: &ast::Module) -> WorkloadShape {
 fn analyze_workload_stmt(stmt: &ast::Stmt) -> (usize, usize) {
     match stmt {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
@@ -4503,6 +4506,7 @@ fn collect_call_sequence(module: &ast::Module) -> Vec<String> {
 fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
     match statement {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)

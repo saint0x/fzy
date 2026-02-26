@@ -133,6 +133,12 @@ pub enum Stmt {
         ty: Option<Type>,
         value: Expr,
     },
+    LetPattern {
+        pattern: Pattern,
+        mutable: bool,
+        ty: Option<Type>,
+        value: Expr,
+    },
     Assign {
         target: String,
         value: Expr,
@@ -285,6 +291,21 @@ pub enum Pattern {
     Or(Vec<Pattern>),
 }
 
+impl Pattern {
+    pub fn bound_names(&self, out: &mut Vec<String>) {
+        match self {
+            Pattern::Ident(name) => out.push(name.clone()),
+            Pattern::Variant { bindings, .. } => out.extend(bindings.iter().cloned()),
+            Pattern::Or(patterns) => {
+                for pattern in patterns {
+                    pattern.bound_names(out);
+                }
+            }
+            Pattern::Wildcard | Pattern::Int(_) | Pattern::Bool(_) => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     Void,
@@ -425,6 +446,7 @@ pub trait AstVisitor {
 pub fn walk_stmt<V: AstVisitor + ?Sized>(visitor: &mut V, stmt: &Stmt) {
     match stmt {
         Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Defer(value)
         | Stmt::Requires(value)
         | Stmt::Ensures(value)

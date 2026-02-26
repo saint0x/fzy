@@ -252,6 +252,16 @@ fn lower_stmts_into_block(
                     ty: ty.as_ref().map(to_value_type).unwrap_or(ValueType::Unknown),
                 });
             }
+            ast::Stmt::LetPattern { pattern, ty, .. } => {
+                let mut names = Vec::new();
+                pattern.bound_names(&mut names);
+                for name in names {
+                    current.instructions.push(Instruction::Let {
+                        name,
+                        ty: ty.as_ref().map(to_value_type).unwrap_or(ValueType::Unknown),
+                    });
+                }
+            }
             ast::Stmt::Assign { target, .. } => {
                 current.instructions.push(Instruction::Assign {
                     name: target.clone(),

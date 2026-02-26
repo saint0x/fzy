@@ -86,7 +86,7 @@ enum Value {
     Enum {
         enum_name: String,
         variant: String,
-        _payload: Vec<Value>,
+        payload: Vec<Value>,
     },
     FnRef(String),
 }
@@ -681,6 +681,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
 
     match stmt {
         Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Assign { value, .. }
         | Stmt::CompoundAssign { value, .. }
         | Stmt::Return(Some(value))
@@ -740,6 +741,7 @@ fn analyze_call_token_propagation(
     for stmt in body {
         match stmt {
             Stmt::Let { .. }
+            | Stmt::LetPattern { .. }
             | Stmt::Assign { .. }
             | Stmt::CompoundAssign { .. }
             | Stmt::Return(_)
@@ -897,6 +899,7 @@ fn analyze_call_token_propagation(
 fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
     match stmt {
         Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Return(Some(value))
         | Stmt::Defer(value)
         | Stmt::Requires(value)
@@ -1287,6 +1290,7 @@ fn function_body_has_await(body: &[Stmt]) -> bool {
 fn stmt_has_await(stmt: &Stmt) -> bool {
     match stmt {
         Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Assign { value, .. }
         | Stmt::CompoundAssign { value, .. }
         | Stmt::Return(Some(value))
@@ -1370,6 +1374,7 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
                 } if is_linear_type(ty) => {
                     linear_owned.insert(name.clone());
                 }
+                Stmt::LetPattern { .. } => {}
                 Stmt::Expr(Expr::Call { callee, args })
                     if callee == "free" || callee.ends_with(".free") =>
                 {
@@ -1629,6 +1634,14 @@ fn analyze_ownership_block(
                         moved.remove(name);
                     }
                 }
+                if is_partial_move_expr(value, owners) {
+                    violations.push(format!(
+                        "function `{}` performs partial move from owned aggregate; partial moves are forbidden in v0",
+                        function_name
+                    ));
+                }
+            }
+            Stmt::LetPattern { value, .. } => {
                 if is_partial_move_expr(value, owners) {
                     violations.push(format!(
                         "function `{}` performs partial move from owned aggregate; partial moves are forbidden in v0",
@@ -1899,6 +1912,7 @@ fn build_function_memory_summaries(
 fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
     match stmt {
         Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Assign { value, .. }
         | Stmt::CompoundAssign { value, .. }
         | Stmt::Return(Some(value))
@@ -2072,6 +2086,7 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
                         }
                     }
                 }
+                Stmt::LetPattern { .. } => {}
                 Stmt::Assign {
                     target,
                     value: Expr::Ident(from),
@@ -2279,6 +2294,7 @@ fn collect_stmt_idents(stmt: &Stmt) -> Vec<String> {
     let mut out = Vec::new();
     match stmt {
         Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Assign { value, .. }
         | Stmt::CompoundAssign { value, .. }
         | Stmt::Return(Some(value))
@@ -2498,8 +2514,12 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
                     collect_type_instantiation(&param.ty, &mut out);
                 }
                 for statement in &function.body {
-                    if let Stmt::Let { ty: Some(ty), .. } = statement {
-                        collect_type_instantiation(ty, &mut out);
+                    match statement {
+                        Stmt::Let { ty: Some(ty), .. }
+                        | Stmt::LetPattern { ty: Some(ty), .. } => {
+                            collect_type_instantiation(ty, &mut out);
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -2642,6 +2662,7 @@ fn collect_semantic_hints_from_stmt(
         } if ty.is_pointer_like() => {
             linear_resources.push(name.clone());
         }
+        Stmt::LetPattern { .. } => {}
         Stmt::Defer(expr) => {
             if let Some(resource) = deferred_resource(expr) {
                 deferred_resources.push(resource);
@@ -2980,6 +3001,56 @@ fn type_check_stmt(
             };
             scopes.insert(name.clone(), final_ty, *mutable);
         }
+        Stmt::LetPattern {
+            pattern,
+            mutable,
+            ty,
+            value,
+        } => {
+            let inferred = infer_expr_type(value, scopes, env, state);
+            let final_ty = match (ty, inferred.clone()) {
+                (Some(explicit), Some(actual)) => {
+                    if !type_compatible(explicit, &actual) {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!(
+                                "let pattern type mismatch: expected `{}`, got `{}`",
+                                explicit, actual
+                            ),
+                        );
+                    }
+                    explicit.clone()
+                }
+                (Some(explicit), None) => explicit.clone(),
+                (None, Some(actual)) => actual,
+                (None, None) => {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        "cannot infer type for let pattern; add an explicit type annotation"
+                            .to_string(),
+                    );
+                    Type::Void
+                }
+            };
+            check_pattern_compatibility(
+                pattern,
+                Some(&final_ty),
+                enum_defs,
+                state.errors,
+                state.type_error_details,
+            );
+            bind_pattern_types(
+                pattern,
+                &final_ty,
+                *mutable,
+                scopes,
+                enum_defs,
+                state.errors,
+                state.type_error_details,
+            );
+        }
         Stmt::Assign { target, value } => {
             if !scopes.is_mutable(target) {
                 record_type_error(
@@ -3197,6 +3268,7 @@ fn type_check_stmt(
         Stmt::Match { scrutinee, arms } => {
             let scrutinee_ty = infer_expr_type(scrutinee, scopes, env, state);
             for arm in arms {
+                scopes.push();
                 if let Some(guard) = &arm.guard {
                     let guard_ty = infer_expr_type(guard, scopes, env, state);
                     if !is_bool_or_integer(guard_ty.as_ref()) {
@@ -3211,7 +3283,6 @@ fn type_check_stmt(
                         );
                     }
                 }
-                let value_ty = infer_expr_type(&arm.value, scopes, env, state);
                 check_pattern_compatibility(
                     &arm.pattern,
                     scrutinee_ty.as_ref(),
@@ -3219,6 +3290,18 @@ fn type_check_stmt(
                     state.errors,
                     state.type_error_details,
                 );
+                if let Some(scrutinee_ty) = scrutinee_ty.as_ref() {
+                    bind_pattern_types(
+                        &arm.pattern,
+                        scrutinee_ty,
+                        false,
+                        scopes,
+                        enum_defs,
+                        state.errors,
+                        state.type_error_details,
+                    );
+                }
+                let value_ty = infer_expr_type(&arm.value, scopes, env, state);
                 if arm.returns {
                     if let Some(actual) = value_ty.as_ref() {
                         if !type_compatible(expected_return, actual) {
@@ -3234,6 +3317,7 @@ fn type_check_stmt(
                     }
                 }
                 let _ = value_ty;
+                scopes.pop();
             }
         }
         Stmt::Defer(expr) | Stmt::Requires(expr) | Stmt::Ensures(expr) | Stmt::Expr(expr) => {
@@ -4554,6 +4638,73 @@ fn check_pattern_compatibility(
     }
 }
 
+fn bind_pattern_types(
+    pattern: &ast::Pattern,
+    scrutinee_ty: &Type,
+    mutable: bool,
+    scopes: &mut SymbolScopes,
+    enum_defs: &HashMap<String, ast::Enum>,
+    errors: &mut usize,
+    type_error_details: &mut Vec<String>,
+) {
+    match pattern {
+        ast::Pattern::Ident(name) => {
+            scopes.insert(name.clone(), scrutinee_ty.clone(), mutable);
+        }
+        ast::Pattern::Variant {
+            enum_name,
+            variant,
+            bindings,
+        } => {
+            let Type::Named { name, .. } = scrutinee_ty else {
+                return;
+            };
+            if name != enum_name {
+                return;
+            }
+            let Some(enum_def) = enum_defs.get(enum_name) else {
+                return;
+            };
+            let Some(found_variant) = enum_def
+                .variants
+                .iter()
+                .find(|candidate| candidate.name == *variant)
+            else {
+                return;
+            };
+            if found_variant.payload.len() != bindings.len() {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!(
+                        "pattern `{enum_name}::{variant}` binding arity mismatch: expected {}, got {}",
+                        found_variant.payload.len(),
+                        bindings.len()
+                    ),
+                );
+                return;
+            }
+            for (name, ty) in bindings.iter().zip(found_variant.payload.iter()) {
+                scopes.insert(name.clone(), ty.clone(), mutable);
+            }
+        }
+        ast::Pattern::Or(patterns) => {
+            if let Some(first) = patterns.first() {
+                bind_pattern_types(
+                    first,
+                    scrutinee_ty,
+                    mutable,
+                    scopes,
+                    enum_defs,
+                    errors,
+                    type_error_details,
+                );
+            }
+        }
+        ast::Pattern::Wildcard | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => {}
+    }
+}
+
 fn type_compatible(expected: &Type, actual: &Type) -> bool {
     match (expected, actual) {
         (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
@@ -4716,6 +4867,7 @@ fn stmt_has_explicit_return(stmt: &Stmt) -> bool {
             .iter()
             .any(|arm| arm.returns || expr_has_nested_return(&arm.value)),
         Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
         | Stmt::Assign { value, .. }
         | Stmt::CompoundAssign { value, .. }
         | Stmt::Expr(value)
@@ -4759,6 +4911,17 @@ fn eval_block_control<'a>(
                     return EvalOutcome::Continue;
                 };
                 env.insert(name.clone(), val);
+            }
+            Stmt::LetPattern { pattern, value, .. } => {
+                let Some(val) = eval_expr(value, env, functions) else {
+                    return EvalOutcome::Continue;
+                };
+                let mut bindings = BTreeMap::new();
+                if bind_pattern_values(pattern, &val, &mut bindings) {
+                    for (name, value) in bindings {
+                        env.insert(name, value);
+                    }
+                }
             }
             Stmt::Assign { target, value } => {
                 let Some(val) = eval_expr(value, env, functions) else {
@@ -4921,23 +5084,31 @@ fn eval_block_control<'a>(
                     return EvalOutcome::Continue;
                 };
                 for arm in arms {
+                    let mut arm_env = env.clone();
+                    let mut bindings = BTreeMap::new();
+                    if !bind_pattern_values(&arm.pattern, &value, &mut bindings) {
+                        continue;
+                    }
+                    for (name, value) in bindings {
+                        arm_env.insert(name, value);
+                    }
                     let guard_ok = match &arm.guard {
                         Some(guard) => {
-                            let Some(guard_val) = eval_expr(guard, env, functions) else {
+                            let Some(guard_val) = eval_expr(guard, &arm_env, functions) else {
                                 return EvalOutcome::Continue;
                             };
                             truthy(&guard_val)
                         }
                         None => true,
                     };
-                    if guard_ok && pattern_matches(&arm.pattern, &value) {
+                    if guard_ok {
                         if arm.returns {
-                            let Some(out) = eval_expr(&arm.value, env, functions) else {
+                            let Some(out) = eval_expr(&arm.value, &arm_env, functions) else {
                                 return EvalOutcome::Continue;
                             };
                             return EvalOutcome::Return(out);
                         }
-                        let _ = eval_expr(&arm.value, env, functions);
+                        let _ = eval_expr(&arm.value, &arm_env, functions);
                         break;
                     }
                 }
@@ -5095,7 +5266,7 @@ fn eval_expr<'a>(
             Some(Value::Enum {
                 enum_name: enum_name.clone(),
                 variant: variant.clone(),
-                _payload: values,
+                payload: values,
             })
         }
         Expr::TryCatch {
@@ -5223,24 +5394,53 @@ fn truthy(v: &Value) -> bool {
     }
 }
 
-fn pattern_matches(pattern: &ast::Pattern, value: &Value) -> bool {
+fn bind_pattern_values(
+    pattern: &ast::Pattern,
+    value: &Value,
+    bindings: &mut BTreeMap<String, Value>,
+) -> bool {
     match (pattern, value) {
         (ast::Pattern::Wildcard, _) => true,
         (ast::Pattern::Int(a), Value::I32(b)) => i128::from(*b) == *a,
         (ast::Pattern::Bool(a), Value::Bool(b)) => a == b,
-        (ast::Pattern::Ident(_), _) => true,
+        (ast::Pattern::Ident(name), value) => {
+            bindings.insert(name.clone(), value.clone());
+            true
+        }
         (
             ast::Pattern::Variant {
-                enum_name, variant, ..
+                enum_name,
+                variant,
+                bindings: pattern_bindings,
             },
             Value::Enum {
                 enum_name: value_enum_name,
                 variant: value_variant,
-                ..
+                payload,
             },
-        ) => enum_name == value_enum_name && variant == value_variant,
+        ) => {
+            if enum_name != value_enum_name
+                || variant != value_variant
+                || pattern_bindings.len() != payload.len()
+            {
+                return false;
+            }
+            for (name, value) in pattern_bindings.iter().zip(payload.iter()) {
+                bindings.insert(name.clone(), value.clone());
+            }
+            true
+        }
         (ast::Pattern::Variant { .. }, _) => false,
-        (ast::Pattern::Or(patterns), value) => patterns.iter().any(|p| pattern_matches(p, value)),
+        (ast::Pattern::Or(patterns), value) => {
+            for candidate in patterns {
+                let mut local = bindings.clone();
+                if bind_pattern_values(candidate, value, &mut local) {
+                    *bindings = local;
+                    return true;
+                }
+            }
+            false
+        }
         _ => false,
     }
 }
@@ -5532,7 +5732,7 @@ mod tests {
             fn main() -> i32 {
                 let m = Maybe::Some(7);
                 match m {
-                    Maybe::Some(v) => 1,
+                    Maybe::Some(v) => return v,
                     Maybe::None => 0,
                     _ => 0,
                 }
@@ -5542,6 +5742,22 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+        assert_eq!(typed.entry_return_const_i32, Some(7));
+    }
+
+    #[test]
+    fn let_pattern_variant_binding_is_available_after_destructure() {
+        let source = r#"
+            enum Maybe { Some(i32), None }
+            fn main() -> i32 {
+                let Maybe::Some(v) = Maybe::Some(9);
+                return v;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert_eq!(typed.entry_return_const_i32, Some(9));
     }
 
     #[test]

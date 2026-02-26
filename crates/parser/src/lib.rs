@@ -887,7 +887,11 @@ impl Parser {
     fn parse_stmt(&mut self) -> Option<Stmt> {
         if self.consume(&TokenKind::KwLet) {
             let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
-            let name = self.expect_ident("expected let binding name")?;
+            let pattern = self.parse_pattern()?;
+            if matches!(pattern, Pattern::Or(_)) {
+                self.push_diag_here("or-patterns are not supported in `let` bindings");
+                return None;
+            }
             let ty = if self.consume(&TokenKind::Colon) {
                 self.parse_type()
             } else {
@@ -899,11 +903,19 @@ impl Parser {
             }
             let value = self.parse_expr(0)?;
             let _ = self.consume(&TokenKind::Semi);
-            return Some(Stmt::Let {
-                name,
-                mutable,
-                ty,
-                value,
+            return Some(match pattern {
+                Pattern::Ident(name) => Stmt::Let {
+                    name,
+                    mutable,
+                    ty,
+                    value,
+                },
+                pattern => Stmt::LetPattern {
+                    pattern,
+                    mutable,
+                    ty,
+                    value,
+                },
             });
         }
 
@@ -1110,7 +1122,11 @@ impl Parser {
     fn parse_for_clause_stmt(&mut self, expect_trailing_semi: bool) -> Option<Stmt> {
         let stmt = if self.consume(&TokenKind::KwLet) {
             let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
-            let name = self.expect_ident("expected let binding name")?;
+            let pattern = self.parse_pattern()?;
+            if matches!(pattern, Pattern::Or(_)) {
+                self.push_diag_here("or-patterns are not supported in `let` bindings");
+                return None;
+            }
             let ty = if self.consume(&TokenKind::Colon) {
                 self.parse_type()
             } else {
@@ -1121,11 +1137,19 @@ impl Parser {
                 return None;
             }
             let value = self.parse_expr(0)?;
-            Stmt::Let {
-                name,
-                mutable,
-                ty,
-                value,
+            match pattern {
+                Pattern::Ident(name) => Stmt::Let {
+                    name,
+                    mutable,
+                    ty,
+                    value,
+                },
+                pattern => Stmt::LetPattern {
+                    pattern,
+                    mutable,
+                    ty,
+                    value,
+                },
             }
         } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_)))
             && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Eq)
@@ -3275,5 +3299,53 @@ mod tests {
             item,
             ast::Item::Function(ast::Function { name, .. }) if name == "apply_id"
         )));
+    }
+
+    #[test]
+    fn let_pattern_variant_parses_as_first_class_statement() {
+        let source = r#"
+            enum Maybe { Some(i32), None }
+            fn main() -> i32 {
+                let Maybe::Some(v) = Maybe::Some(7);
+                return v;
+            }
+        "#;
+        let module = parse(source, "main").expect("parser should accept let patterns");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        let ast::Stmt::LetPattern { pattern, .. } = &main_fn.body[0] else {
+            panic!("expected let-pattern statement");
+        };
+        let ast::Pattern::Variant {
+            enum_name,
+            variant,
+            bindings,
+        } = pattern
+        else {
+            panic!("expected variant pattern");
+        };
+        assert_eq!(enum_name, "Maybe");
+        assert_eq!(variant, "Some");
+        assert_eq!(bindings, &vec!["v".to_string()]);
+    }
+
+    #[test]
+    fn let_pattern_rejects_or_pattern() {
+        let source = r#"
+            fn main() -> i32 {
+                let a | b = 1;
+                return 0;
+            }
+        "#;
+        let diags = parse(source, "main").expect_err("or-patterns in let should be rejected");
+        assert!(diags
+            .iter()
+            .any(|diag| diag.message.contains("or-patterns are not supported in `let` bindings")));
     }
 }

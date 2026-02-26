@@ -1358,6 +1358,7 @@ fn qualify_stmt(
 ) {
     match stmt {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
@@ -1566,6 +1567,7 @@ fn canonicalize_stmt_calls(
 ) {
     match stmt {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
@@ -2189,6 +2191,7 @@ impl ControlFlowBuilder {
         for stmt in body {
             match stmt {
                 ast::Stmt::Let { .. }
+                | ast::Stmt::LetPattern { .. }
                 | ast::Stmt::Assign { .. }
                 | ast::Stmt::CompoundAssign { .. }
                 | ast::Stmt::Defer(_)
@@ -2690,6 +2693,7 @@ fn stmt_contains_break_at_depth(stmt: &ast::Stmt, depth: usize) -> bool {
         | ast::Stmt::Ensures(_)
         | ast::Stmt::Expr(_)
         | ast::Stmt::Let { .. }
+        | ast::Stmt::LetPattern { .. }
         | ast::Stmt::Assign { .. }
         | ast::Stmt::CompoundAssign { .. } => false,
     }
@@ -3186,6 +3190,9 @@ fn llvm_emit_linear_stmts(
                     }
                 }
             }
+            ast::Stmt::LetPattern { .. } => {
+                bail!("llvm linear emission does not support pattern let lowering yet");
+            }
             ast::Stmt::Assign { target, value } => {
                 let value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
                 let slot = ctx
@@ -3554,6 +3561,7 @@ fn collect_string_literals(fir: &fir::FirModule) -> Vec<String> {
 fn collect_string_literals_from_stmt(stmt: &ast::Stmt, literals: &mut HashSet<String>) {
     match stmt {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
@@ -3743,6 +3751,7 @@ fn collect_used_runtime_imports_from_stmt(
 ) {
     match stmt {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
@@ -5263,6 +5272,9 @@ fn clif_emit_linear_stmts(
                     }
                 }
             }
+            ast::Stmt::LetPattern { .. } => {
+                bail!("cranelift linear emission does not support pattern let lowering yet");
+            }
             ast::Stmt::Assign { target, value } => {
                 let val = clif_emit_expr(builder, ctx, value, locals)?;
                 let binding = if let Some(existing) = locals.get(target).copied() {
@@ -5977,6 +5989,7 @@ fn collect_unresolved_calls_from_stmt(
 ) {
     match stmt {
         ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
