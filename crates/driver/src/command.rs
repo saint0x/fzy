@@ -10,6 +10,7 @@ use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEven
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
     compile_file_with_backend, compile_library_with_backend, emit_ir, parse_program,
@@ -83,6 +84,17 @@ pub enum Command {
     },
     Verify {
         path: PathBuf,
+    },
+    Explain {
+        diag_code: String,
+    },
+    DoctorProject {
+        path: PathBuf,
+        strict: bool,
+    },
+    DevLoop {
+        path: PathBuf,
+        backend: Option<String>,
     },
     DxCheck {
         path: PathBuf,
@@ -189,18 +201,24 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let runtime_config = persist_runtime_threads_config(&path, threads)?;
             let _link_scope = BuildLinkArgsScope::new(&link_libs, &link_search, &frameworks);
             if lib {
-                let artifact = compile_library_with_backend(&path, profile, backend.as_deref())?;
+                let artifact =
+                    compile_library_with_backend_with_root_guidance(&path, profile, backend.as_deref())?;
                 let headers = generate_c_headers(&path, None)?;
-                Ok(render_library_artifact(
+                let rendered = render_library_artifact(
                     format,
                     artifact,
                     headers,
                     threads,
                     runtime_config,
-                ))
+                );
+                let unsafe_docs = maybe_generate_unsafe_docs(&path);
+                Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
             } else {
-                let artifact = compile_file_with_backend(&path, profile, backend.as_deref())?;
-                Ok(render_artifact(format, artifact, threads, runtime_config))
+                let artifact =
+                    compile_file_with_backend_with_root_guidance(&path, profile, backend.as_deref())?;
+                let rendered = render_artifact(format, artifact, threads, runtime_config);
+                let unsafe_docs = maybe_generate_unsafe_docs(&path);
+                Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
             }
         }
         Command::Run {
@@ -268,8 +286,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     .to_string()),
                 };
             }
+            let unsafe_docs = maybe_generate_unsafe_docs(&path).map(|value| value.display().to_string());
             if deterministic && !host_backends {
-                let plan = run_non_scenario_test_plan(
+                let plan = run_non_scenario_test_plan_with_root_guidance(
                     &path,
                     NonScenarioPlanRequest {
                         deterministic: true,
@@ -297,6 +316,19 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                             plan.async_checkpoint_count.to_string(),
                         ),
                         ("rpc_frames", plan.rpc_frame_count.to_string()),
+                        (
+                            "policy",
+                            policy_summary_text(
+                                "verify",
+                                Some(if strict_verify { "strict" } else { "profile-driven" }),
+                                Some("deterministic-model"),
+                                true,
+                            ),
+                        ),
+                        (
+                            "unsafe_docs",
+                            unsafe_docs.clone().unwrap_or_else(|| "<none>".to_string()),
+                        ),
                     ])),
                     Format::Json => Ok(serde_json::json!({
                         "module": plan.module,
@@ -309,6 +341,14 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "productionMemorySafety": true,
                         "seed": seed,
                         "hostBackends": host_backends,
+                        "policy": {
+                            "profile": "verify",
+                            "unsafeEnforcement": if strict_verify { "strict" } else { "profile-driven" },
+                            "memorySafetyMode": "production",
+                            "backend": "deterministic-model",
+                            "lockfileState": "present-or-created",
+                        },
+                        "unsafeDocs": unsafe_docs,
                         "routing": {
                             "mode": "deterministic-language-async-model",
                             "reason": "non-scenario deterministic run uses parser/AST/HIR semantics and runtime deterministic model directly",
@@ -347,7 +387,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 };
             }
 
-            let artifact = compile_file_with_backend(
+            let artifact = compile_file_with_backend_with_root_guidance(
                 &path,
                 if safe_profile {
                     BuildProfile::Verify
@@ -416,6 +456,19 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         ("stdout", "<streamed-live>".to_string()),
                         ("stderr", "<streamed-live>".to_string()),
                         ("exit_code", exit_code.to_string()),
+                        (
+                            "policy",
+                            policy_summary_text(
+                                if safe_profile { "verify" } else { "dev" },
+                                Some(if strict_verify { "strict" } else { "profile-driven" }),
+                                Some(routing_mode),
+                                true,
+                            ),
+                        ),
+                        (
+                            "unsafe_docs",
+                            unsafe_docs.clone().unwrap_or_else(|| "<none>".to_string()),
+                        ),
                     ]);
                     if exit_code != 0 {
                         return Err(CommandFailure {
@@ -450,6 +503,14 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "seed": seed,
                         "hostBackends": host_backends,
                         "deterministicApplied": deterministic && !host_backends,
+                        "policy": {
+                            "profile": if safe_profile { "verify" } else { "dev" },
+                            "unsafeEnforcement": if strict_verify { "strict" } else { "profile-driven" },
+                            "memorySafetyMode": "production",
+                            "backend": routing_mode,
+                            "lockfileState": "present-or-created",
+                        },
+                        "unsafeDocs": unsafe_docs,
                         "routing": {
                             "mode": routing_mode,
                             "reason": if host_backends && deterministic {
@@ -527,8 +588,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "--host-backends is unsupported for native `.fzy` tests; use a `.fozzy.json` scenario for host-backed execution"
                 );
             }
+            let unsafe_docs = maybe_generate_unsafe_docs(&path).map(|value| value.display().to_string());
 
-            let test_plan = run_non_scenario_test_plan(
+            let test_plan = run_non_scenario_test_plan_with_root_guidance(
                 &path,
                 NonScenarioPlanRequest {
                     deterministic,
@@ -551,6 +613,19 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 ("executed_tasks", test_plan.executed_tasks.to_string()),
                 ("order", format!("{:?}", test_plan.execution_order)),
                 (
+                    "policy",
+                    policy_summary_text(
+                        if strict_verify { "verify" } else { "dev" },
+                        Some(if strict_verify { "strict" } else { "profile-driven" }),
+                        Some("deterministic-model"),
+                        true,
+                    ),
+                ),
+                (
+                    "unsafe_docs",
+                    unsafe_docs.clone().unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
                     "artifacts",
                     test_plan
                         .artifacts
@@ -567,6 +642,14 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "strictVerify": strict_verify,
                     "safeProfile": safe_profile,
                     "productionMemorySafety": true,
+                    "policy": {
+                        "profile": if strict_verify { "verify" } else { "dev" },
+                        "unsafeEnforcement": if strict_verify { "strict" } else { "profile-driven" },
+                        "memorySafetyMode": "production",
+                        "backend": "deterministic-model",
+                        "lockfileState": "present-or-created",
+                    },
+                    "unsafeDocs": unsafe_docs,
                     "mode": test_plan.mode,
                     "scheduler": test_plan.scheduler,
                     "diagnostics": test_plan.diagnostics,
@@ -625,13 +708,20 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             Ok(render(format, &message))
         }
         Command::Check { path } => {
-            let output = verify_file(&path)?;
-            Ok(render_output(format, output))
+            let output = verify_file_with_root_guidance(&path)?;
+            let rendered = render_output(format, output);
+            let unsafe_docs = maybe_generate_unsafe_docs(&path);
+            Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
         }
         Command::Verify { path } => {
-            let output = verify_file(&path)?;
-            Ok(render_output(format, output))
+            let output = verify_file_with_root_guidance(&path)?;
+            let rendered = render_output(format, output);
+            let unsafe_docs = maybe_generate_unsafe_docs(&path);
+            Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
         }
+        Command::Explain { diag_code } => explain_command(&diag_code, format),
+        Command::DoctorProject { path, strict } => doctor_project_command(&path, strict, format),
+        Command::DevLoop { path, backend } => devloop_command(&path, backend.as_deref(), format),
         Command::DxCheck { path, strict } => dx_check_command(&path, strict, format),
         Command::SpecCheck => spec_check(format),
         Command::EmitIr { path } => {
@@ -878,18 +968,50 @@ fn init_project(name: &str) -> Result<()> {
 }
 
 fn render(format: Format, message: &str) -> String {
-    match format {
-        Format::Text => message.to_string(),
-        Format::Json => serde_json::json!({"message": message}).to_string(),
-    }
+    cli_output::format_message(format, message)
 }
 
 fn render_text_fields(fields: &[(&str, String)]) -> String {
-    fields
-        .iter()
-        .map(|(key, value)| format!("{key}: {value}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    cli_output::format_fields(fields)
+}
+
+fn render_json(value: serde_json::Value) -> String {
+    cli_output::format_json_value(&value)
+}
+
+fn policy_summary_text(
+    profile: &str,
+    unsafe_enforcement: Option<&str>,
+    backend: Option<&str>,
+    lockfile_present: bool,
+) -> String {
+    format!(
+        "profile={profile}; unsafe={}; memory=production; backend={}; lockfile={}",
+        unsafe_enforcement.unwrap_or("profile-driven"),
+        backend.unwrap_or("auto"),
+        if lockfile_present { "present" } else { "n/a" }
+    )
+}
+
+fn append_unsafe_docs_field(rendered: String, format: Format, unsafe_docs: Option<PathBuf>) -> String {
+    match format {
+        Format::Text => {
+            if let Some(path) = unsafe_docs {
+                format!("{rendered}\nunsafe_docs: {}", path.display())
+            } else {
+                rendered
+            }
+        }
+        Format::Json => {
+            let Ok(mut payload) = serde_json::from_str::<serde_json::Value>(&rendered) else {
+                return rendered;
+            };
+            if let Some(path) = unsafe_docs {
+                payload["unsafeDocs"] = serde_json::Value::String(path.display().to_string());
+            }
+            render_json(payload)
+        }
+    }
 }
 
 fn render_artifact(
@@ -933,6 +1055,19 @@ fn render_artifact(
                         .clone()
                         .unwrap_or_else(|| "<none>".to_string()),
                 ),
+                (
+                    "policy",
+                    policy_summary_text(
+                        match artifact.profile {
+                            BuildProfile::Dev => "dev",
+                            BuildProfile::Release => "release",
+                            BuildProfile::Verify => "verify",
+                        },
+                        Some("compiler"),
+                        None,
+                        artifact.dependency_graph_hash.is_some(),
+                    ),
+                ),
             ]);
             let details = render_diagnostics_text(&artifact.diagnostic_details);
             if !details.is_empty() {
@@ -948,6 +1083,17 @@ fn render_artifact(
             "diagnostics": artifact.diagnostics,
             "items": artifact.diagnostic_details,
             "dependencyGraphHash": artifact.dependency_graph_hash,
+            "policy": {
+                "profile": match artifact.profile {
+                    BuildProfile::Dev => "dev",
+                    BuildProfile::Release => "release",
+                    BuildProfile::Verify => "verify",
+                },
+                "unsafeEnforcement": "profile-driven",
+                "memorySafetyMode": "production",
+                "backend": "compiler",
+                "lockfileState": if artifact.dependency_graph_hash.is_some() { "present" } else { "n/a" },
+            },
             "threads": threads,
             "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
             "output": artifact
@@ -1011,6 +1157,19 @@ fn render_library_artifact(
                         .clone()
                         .unwrap_or_else(|| "<none>".to_string()),
                 ),
+                (
+                    "policy",
+                    policy_summary_text(
+                        match artifact.profile {
+                            BuildProfile::Dev => "dev",
+                            BuildProfile::Release => "release",
+                            BuildProfile::Verify => "verify",
+                        },
+                        Some("compiler"),
+                        None,
+                        artifact.dependency_graph_hash.is_some(),
+                    ),
+                ),
             ]);
             let details = render_diagnostics_text(&artifact.diagnostic_details);
             if !details.is_empty() {
@@ -1026,6 +1185,17 @@ fn render_library_artifact(
             "diagnostics": artifact.diagnostics,
             "items": artifact.diagnostic_details,
             "dependencyGraphHash": artifact.dependency_graph_hash,
+            "policy": {
+                "profile": match artifact.profile {
+                    BuildProfile::Dev => "dev",
+                    BuildProfile::Release => "release",
+                    BuildProfile::Verify => "verify",
+                },
+                "unsafeEnforcement": "profile-driven",
+                "memorySafetyMode": "production",
+                "backend": "compiler",
+                "lockfileState": if artifact.dependency_graph_hash.is_some() { "present" } else { "n/a" },
+            },
             "threads": threads,
             "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
             "buildMode": "lib",
@@ -1064,6 +1234,10 @@ fn render_output(format: Format, output: Output) -> String {
                 ("diagnostics", output.diagnostics.to_string()),
                 ("errors", errors.to_string()),
                 ("warnings", warnings.to_string()),
+                (
+                    "policy",
+                    policy_summary_text("verify", Some("compiler"), None, true),
+                ),
             ]);
             let details = render_diagnostics_text(&output.diagnostic_details);
             if !details.is_empty() {
@@ -1083,6 +1257,13 @@ fn render_output(format: Format, output: Output) -> String {
             "diagnostics": output.diagnostics,
             "errors": errors,
             "warnings": warnings,
+            "policy": {
+                "profile": "verify",
+                "unsafeEnforcement": "strict",
+                "memorySafetyMode": "production",
+                "backend": "compiler",
+                "lockfileState": "present-or-created",
+            },
             "items": output.diagnostic_details,
             "backendIr": output.backend_ir,
         })
@@ -1174,6 +1355,19 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
         if let Some(fix) = &diagnostic.fix {
             out.push_str(&format!(" fix: {fix}\n"));
         }
+        out.push_str(&format!(
+            " root_cause: {}\n",
+            diagnostic.message
+        ));
+        let verify_with = diagnostic
+            .path
+            .as_deref()
+            .map(|path| format!("fz check {path}"))
+            .unwrap_or_else(|| "fz check <path>".to_string());
+        if let Some(code) = &diagnostic.code {
+            out.push_str(&format!(" explain: fz explain {code}\n"));
+        }
+        out.push_str(&format!(" verify_with: {verify_with}\n"));
         for note in &diagnostic.notes {
             out.push_str(&format!(" note: {note}\n"));
         }
@@ -1236,6 +1430,427 @@ fn render_code_frame(
         }
     }
     Some(frame)
+}
+
+fn verify_file_with_root_guidance(path: &Path) -> Result<Output> {
+    verify_file(path).map_err(|error| attach_project_root_guidance(path, error))
+}
+
+fn compile_file_with_backend_with_root_guidance(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+) -> Result<BuildArtifact> {
+    compile_file_with_backend(path, profile, backend_override)
+        .map_err(|error| attach_project_root_guidance(path, error))
+}
+
+fn compile_library_with_backend_with_root_guidance(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+) -> Result<LibraryArtifact> {
+    compile_library_with_backend(path, profile, backend_override)
+        .map_err(|error| attach_project_root_guidance(path, error))
+}
+
+fn run_non_scenario_test_plan_with_root_guidance(
+    path: &Path,
+    request: NonScenarioPlanRequest<'_>,
+) -> Result<NonScenarioTestPlan> {
+    run_non_scenario_test_plan(path, request).map_err(|error| attach_project_root_guidance(path, error))
+}
+
+fn attach_project_root_guidance(path: &Path, error: anyhow::Error) -> anyhow::Error {
+    let text = error.to_string();
+    if !(text.contains("no valid compiler manifest found")
+        || text.contains("path is neither a source file nor a project directory"))
+    {
+        return error;
+    }
+    if path.is_file() {
+        return error;
+    }
+    let manifest_path = path.join("fozzy.toml");
+    if manifest_path.exists() {
+        return error;
+    }
+    let nested = discover_nested_project_roots(path);
+    if nested.is_empty() {
+        anyhow!(
+            "directory `{}` is not a Fozzy project root (missing {}). initialize a project here with `fz init <name>` or run against a project directory/file explicitly",
+            path.display(),
+            manifest_path.display()
+        )
+    } else {
+        anyhow!(
+            "directory `{}` is not a Fozzy project root (missing {}). detected nested project(s): {}. run the command against one of those project roots explicitly",
+            path.display(),
+            manifest_path.display(),
+            nested
+                .iter()
+                .map(|candidate| candidate.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+fn maybe_generate_unsafe_docs(path: &Path) -> Option<PathBuf> {
+    let resolved = resolve_source(path).ok()?;
+    let parsed = parse_program(&resolved.source_path).ok()?;
+    if parsed.module.unsafe_sites == 0 {
+        return None;
+    }
+    if audit_unsafe_command(&resolved.project_root, false, Format::Json).is_ok() {
+        Some(resolved.project_root.join(".fz/unsafe-docs.md"))
+    } else {
+        None
+    }
+}
+
+fn explain_command(diag_code: &str, format: Format) -> Result<String> {
+    let normalized = diag_code.trim().to_ascii_uppercase();
+    if normalized.is_empty() {
+        bail!("missing diagnostic code: usage `fz explain <diag-code>`");
+    }
+    let family = if normalized.starts_with("E-PAR-") || normalized.starts_with("W-PAR-") {
+        "parser"
+    } else if normalized.starts_with("E-HIR-") || normalized.starts_with("W-HIR-") {
+        "hir"
+    } else if normalized.starts_with("E-VER-") || normalized.starts_with("W-VER-") {
+        "verifier"
+    } else if normalized.starts_with("E-NAT-") || normalized.starts_with("W-NAT-") {
+        "native-lowering"
+    } else if normalized.starts_with("E-DRV-") || normalized.starts_with("W-DRV-") {
+        "driver"
+    } else {
+        "unknown"
+    };
+    let likely_fix = match family {
+        "parser" => "Fix syntax at the primary span, then rerun `fz check <path>`.",
+        "hir" => "Fix name/type mismatch and rerun `fz check <path>`.",
+        "verifier" => "Fix policy/type contract violation and rerun `fz verify <path>`.",
+        "native-lowering" => "Adjust unsupported lowering shape or switch backend, then rerun `fz build <path>`.",
+        "driver" => "Fix project/configuration issue and rerun the failing command.",
+        _ => "Run `fz check <path>` to regenerate diagnostics with spans and helps.",
+    };
+    match format {
+        Format::Text => Ok(render_text_fields(&[
+            ("code", normalized),
+            ("family", family.to_string()),
+            ("root_cause", "Diagnostic codes are stable hashes of message+span in their domain".to_string()),
+            ("likely_fix", likely_fix.to_string()),
+            ("verify_with", "fz check <path> --json".to_string()),
+        ])),
+        Format::Json => Ok(serde_json::json!({
+            "code": normalized,
+            "family": family,
+            "rootCause": "Diagnostic code encodes severity/domain and a stable hash of diagnostic content.",
+            "likelyFix": likely_fix,
+            "verifyWith": "fz check <path> --json",
+        })
+        .to_string()),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct DoctorCheck {
+    name: String,
+    status: String,
+    detail: String,
+    fix: String,
+}
+
+fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<String> {
+    let project_root = if path.is_file() {
+        path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+    } else {
+        path.to_path_buf()
+    };
+    if !project_root.is_dir() {
+        bail!(
+            "doctor project requires a project directory (or file within a project): {}",
+            path.display()
+        );
+    }
+    let manifest_path = project_root.join("fozzy.toml");
+    let mut checks = Vec::<DoctorCheck>::new();
+    let mut errors = 0usize;
+    let mut warnings = 0usize;
+
+    let manifest_text = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => {
+            checks.push(DoctorCheck {
+                name: "manifest".to_string(),
+                status: "ok".to_string(),
+                detail: format!("loaded {}", manifest_path.display()),
+                fix: "n/a".to_string(),
+            });
+            text
+        }
+        Err(_) => {
+            checks.push(DoctorCheck {
+                name: "manifest".to_string(),
+                status: "error".to_string(),
+                detail: format!("missing {}", manifest_path.display()),
+                fix: "add fozzy.toml or run `fz init <name>`".to_string(),
+            });
+            errors += 1;
+            String::new()
+        }
+    };
+
+    let manifest = if manifest_text.is_empty() {
+        None
+    } else {
+        match manifest::load(&manifest_text)
+            .map_err(anyhow::Error::from)
+            .and_then(|loaded| loaded.validate().map(|_| loaded).map_err(|e| anyhow!(e)))
+        {
+            Ok(parsed) => Some(parsed),
+            Err(err) => {
+                checks.push(DoctorCheck {
+                    name: "manifest-validate".to_string(),
+                    status: "error".to_string(),
+                    detail: err.to_string(),
+                    fix: "fix fozzy.toml to satisfy manifest schema".to_string(),
+                });
+                errors += 1;
+                None
+            }
+        }
+    };
+
+    if manifest.is_some() {
+        let lock_status = match refresh_lockfile(&project_root) {
+            Ok(lock_hash) => DoctorCheck {
+                name: "lockfile".to_string(),
+                status: "ok".to_string(),
+                detail: format!("fozzy.lock validated (hash={lock_hash})"),
+                fix: "n/a".to_string(),
+            },
+            Err(err) => {
+                errors += 1;
+                DoctorCheck {
+                    name: "lockfile".to_string(),
+                    status: "error".to_string(),
+                    detail: err.to_string(),
+                    fix: "run `fz vendor <project-root>` after fixing dependency graph issues".to_string(),
+                }
+            }
+        };
+        checks.push(lock_status);
+        let vendor_manifest = project_root.join("vendor/fozzy-vendor.json");
+        if vendor_manifest.exists() {
+            checks.push(DoctorCheck {
+                name: "vendor".to_string(),
+                status: "ok".to_string(),
+                detail: format!("found {}", vendor_manifest.display()),
+                fix: "n/a".to_string(),
+            });
+        } else {
+            warnings += 1;
+            checks.push(DoctorCheck {
+                name: "vendor".to_string(),
+                status: "warn".to_string(),
+                detail: "vendor manifest missing".to_string(),
+                fix: "run `fz vendor <project-root>` for fully reproducible dependency snapshots".to_string(),
+            });
+        }
+    }
+
+    if let Ok(resolved) = resolve_source(&project_root) {
+        if let Ok(parsed) = parse_program(&resolved.source_path) {
+            let mut deprecated_unsafe_meta = 0usize;
+            let mut async_unsafe_overlap = 0usize;
+            let mut backend_risk_ops = 0usize;
+            for module_path in &parsed.module_paths {
+                if let Ok(text) = std::fs::read_to_string(module_path) {
+                    deprecated_unsafe_meta += text.matches("unsafe_reason(").count();
+                    deprecated_unsafe_meta += text.matches("unsafe(").count();
+                    if text.contains("async fn") && text.contains("unsafe") {
+                        async_unsafe_overlap += 1;
+                    }
+                    if text.contains("process.run(") || text.contains("http.poll_next") {
+                        backend_risk_ops += 1;
+                    }
+                }
+            }
+            if deprecated_unsafe_meta > 0 {
+                errors += 1;
+                checks.push(DoctorCheck {
+                    name: "unsupported-syntax".to_string(),
+                    status: "error".to_string(),
+                    detail: format!("detected {deprecated_unsafe_meta} removed unsafe metadata syntax use(s)"),
+                    fix: "remove inline unsafe metadata and rely on compiler-generated contracts/docs".to_string(),
+                });
+            } else {
+                checks.push(DoctorCheck {
+                    name: "unsupported-syntax".to_string(),
+                    status: "ok".to_string(),
+                    detail: "no removed unsafe metadata syntax detected".to_string(),
+                    fix: "n/a".to_string(),
+                });
+            }
+            if async_unsafe_overlap > 0 {
+                warnings += 1;
+                checks.push(DoctorCheck {
+                    name: "async-unsafe".to_string(),
+                    status: "warn".to_string(),
+                    detail: format!("{async_unsafe_overlap} module(s) combine async and unsafe constructs"),
+                    fix: "audit unsafe invariants in async contexts and keep strict verify enabled".to_string(),
+                });
+            } else {
+                checks.push(DoctorCheck {
+                    name: "async-unsafe".to_string(),
+                    status: "ok".to_string(),
+                    detail: "no async+unsafe overlap detected".to_string(),
+                    fix: "n/a".to_string(),
+                });
+            }
+            if backend_risk_ops > 0 {
+                warnings += 1;
+                checks.push(DoctorCheck {
+                    name: "backend-risk".to_string(),
+                    status: "warn".to_string(),
+                    detail: format!("{backend_risk_ops} backend-risk operation pattern(s) detected"),
+                    fix: "prefer host-backed `fozzy run` plus explicit backend in CI for these modules".to_string(),
+                });
+            } else {
+                checks.push(DoctorCheck {
+                    name: "backend-risk".to_string(),
+                    status: "ok".to_string(),
+                    detail: "no obvious backend-risk operations detected".to_string(),
+                    fix: "n/a".to_string(),
+                });
+            }
+            if let Some(manifest) = manifest.as_ref() {
+                let strict_release = manifest.unsafe_policy.enforce_release.unwrap_or(true);
+                let strict_verify = manifest.unsafe_policy.enforce_verify.unwrap_or(true);
+                if strict_release && strict_verify {
+                    checks.push(DoctorCheck {
+                        name: "unsafe-posture".to_string(),
+                        status: "ok".to_string(),
+                        detail: "verify/release unsafe enforcement enabled".to_string(),
+                        fix: "n/a".to_string(),
+                    });
+                } else {
+                    warnings += 1;
+                    checks.push(DoctorCheck {
+                        name: "unsafe-posture".to_string(),
+                        status: "warn".to_string(),
+                        detail: "unsafe enforcement is relaxed for verify/release".to_string(),
+                        fix: "set [unsafe].enforce_verify=true and enforce_release=true".to_string(),
+                    });
+                }
+            }
+        }
+    }
+
+    if strict && warnings > 0 {
+        errors += warnings;
+    }
+    let status = if errors > 0 { "error" } else { "ok" };
+    match format {
+        Format::Text => Ok(render_text_fields(&[
+            ("status", status.to_string()),
+            ("mode", "doctor-project".to_string()),
+            ("project", project_root.display().to_string()),
+            ("errors", errors.to_string()),
+            ("warnings", warnings.to_string()),
+            (
+                "policy",
+                policy_summary_text("verify", Some("profile-driven"), Some("compiler"), true),
+            ),
+            (
+                "checks",
+                checks
+                    .iter()
+                    .map(|c| format!("{}:{}:{}", c.name, c.status, c.detail))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+            ),
+        ])),
+        Format::Json => Ok(serde_json::json!({
+            "status": status,
+            "mode": "doctor-project",
+            "project": project_root.display().to_string(),
+            "strict": strict,
+            "errors": errors,
+            "warnings": warnings,
+            "policy": {
+                "profile": "verify",
+                "unsafeEnforcement": "profile-driven",
+                "memorySafetyMode": "production",
+                "backend": "compiler",
+                "lockfileState": "present-or-created",
+            },
+            "checks": checks,
+        })
+        .to_string()),
+    }
+}
+
+fn devloop_command(path: &Path, backend: Option<&str>, format: Format) -> Result<String> {
+    let verify = verify_file_with_root_guidance(path)?;
+    let compile = compile_file_with_backend_with_root_guidance(path, BuildProfile::Dev, backend)?;
+    let plan = run_non_scenario_test_plan_with_root_guidance(
+        path,
+        NonScenarioPlanRequest {
+            deterministic: true,
+            strict_verify: true,
+            safe_profile: false,
+            scheduler: Some("fifo".to_string()),
+            seed: Some(1),
+            record: None,
+            rich_artifacts: false,
+            filter: None,
+        },
+    )?;
+    let unsafe_docs = maybe_generate_unsafe_docs(path).map(|value| value.display().to_string());
+    match format {
+        Format::Text => Ok(render_text_fields(&[
+            ("status", compile.status.to_string()),
+            ("mode", "devloop".to_string()),
+            ("module", compile.module),
+            ("verify_diagnostics", verify.diagnostics.to_string()),
+            ("compile_diagnostics", compile.diagnostics.to_string()),
+            ("scheduler", plan.scheduler),
+            ("executed_tasks", plan.executed_tasks.to_string()),
+            (
+                "backend",
+                backend.unwrap_or("cranelift").to_string(),
+            ),
+            (
+                "policy",
+                policy_summary_text("dev", Some("strict-verify"), backend, true),
+            ),
+            (
+                "unsafe_docs",
+                unsafe_docs.unwrap_or_else(|| "<none>".to_string()),
+            ),
+        ])),
+        Format::Json => Ok(serde_json::json!({
+            "status": compile.status,
+            "mode": "devloop",
+            "module": compile.module,
+            "verifyDiagnostics": verify.diagnostics,
+            "compileDiagnostics": compile.diagnostics,
+            "scheduler": plan.scheduler,
+            "executedTasks": plan.executed_tasks,
+            "backend": backend.unwrap_or("cranelift"),
+            "policy": {
+                "profile": "dev",
+                "unsafeEnforcement": "strict-verify",
+                "memorySafetyMode": "production",
+                "backend": backend.unwrap_or("cranelift"),
+                "lockfileState": "present-or-created",
+            },
+            "unsafeDocs": unsafe_docs,
+        })
+        .to_string()),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1987,6 +2602,7 @@ fn semantic_signature(value: &serde_json::Value) -> Result<String> {
 
 #[derive(Debug, Clone, Serialize)]
 struct UnsafeEntry {
+    site_id: String,
     kind: String,
     project: String,
     file: String,
@@ -2157,18 +2773,20 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
         unsafe_context_violations
     ));
     markdown.push_str(
-        "| Kind | Function | Snippet | Reason | Owner | Risk |\n|---|---|---|---|---|---|\n",
+        "| Site ID | Kind | Function | Snippet | Reason | Owner | Risk | Proof |\n|---|---|---|---|---|---|---|---|\n",
     );
     if let Some(entries) = payload["entries"].as_array() {
         for entry in entries {
+            let site_id = entry["site_id"].as_str().unwrap_or("missing");
             let kind = entry["kind"].as_str().unwrap_or("unknown");
             let function = entry["function"].as_str().unwrap_or("?");
             let snippet = entry["snippet"].as_str().unwrap_or("?");
             let reason = entry["reason"].as_str().unwrap_or("metadata missing");
             let owner = entry["owner"].as_str().unwrap_or("metadata missing");
             let risk = entry["risk_class"].as_str().unwrap_or("metadata missing");
+            let proof = entry["proof_ref"].as_str().unwrap_or("metadata missing");
             markdown.push_str(&format!(
-                "| {kind} | {function} | `{snippet}` | {reason} | {owner} | {risk} |\n"
+                "| `{site_id}` | {kind} | {function} | `{snippet}` | {reason} | {owner} | {risk} | `{proof}` |\n"
             ));
         }
     }
@@ -2287,7 +2905,7 @@ fn generated_unsafe_contract(
     function_name: &str,
     owner: &str,
     callee: Option<&str>,
-) -> (String, String, String, String, String, String) {
+) -> (String, String, String, String, String) {
     let reason = match kind {
         "unsafe_import" => format!("compiler-generated: unsafe FFI import `{function_name}`"),
         "unsafe_fn" => format!("compiler-generated: unsafe function `{function_name}`"),
@@ -2304,16 +2922,51 @@ fn generated_unsafe_contract(
     } else {
         "memory".to_string()
     };
-    let site_slug = kind.replace(' ', "_");
-    let proof_ref = format!("gate://compiler-generated/{function_name}/{site_slug}");
-    (
-        reason,
-        invariant,
-        owner.to_string(),
-        scope,
-        risk_class,
-        proof_ref,
-    )
+    (reason, invariant, owner.to_string(), scope, risk_class)
+}
+
+fn unsafe_site_id(
+    kind: &str,
+    project_root: &Path,
+    module_path: &Path,
+    function_name: &str,
+    snippet: &str,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(project_root.display().to_string().as_bytes());
+    hasher.update(b"|");
+    hasher.update(module_path.display().to_string().as_bytes());
+    hasher.update(b"|");
+    hasher.update(kind.as_bytes());
+    hasher.update(b"|");
+    hasher.update(function_name.as_bytes());
+    hasher.update(b"|");
+    hasher.update(snippet.as_bytes());
+    let digest = hasher.finalize();
+    let mut id = String::from("usite_");
+    for byte in digest.iter().take(12) {
+        id.push_str(&format!("{byte:02x}"));
+    }
+    id
+}
+
+fn bind_proof_ref(project_root: &Path, site_id: &str, fallback: &str) -> String {
+    let artifact_dir = project_root.join("artifacts");
+    if let Ok(entries) = std::fs::read_dir(&artifact_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+            if name.ends_with(".trace.fozzy") || name.ends_with(".fozzy") {
+                return format!("trace://{}#site={site_id}", path.display());
+            }
+            if name.ends_with(".trace.json") {
+                return format!("run://{}#site={site_id}", path.display());
+            }
+        }
+    }
+    format!("{fallback}#site={site_id}")
 }
 
 fn collect_semantic_unsafe_entries(
@@ -2335,15 +2988,29 @@ fn collect_semantic_unsafe_entries(
         };
         let default_owner = generated_unsafe_owner(function);
         if function.is_unsafe {
-            let (reason, invariant, owner, scope, risk_class, proof_ref) =
+            let snippet = format!("unsafe fn {}", function.name);
+            let site_id = unsafe_site_id(
+                "unsafe_fn",
+                project_root,
+                module_path,
+                &function.name,
+                &snippet,
+            );
+            let (reason, invariant, owner, scope, risk_class) =
                 generated_unsafe_contract("unsafe_fn", &function.name, &default_owner, None);
+            let proof_ref = bind_proof_ref(
+                project_root,
+                &site_id,
+                &format!("gate://compiler-generated/{}/unsafe_fn", function.name),
+            );
             entries.push(UnsafeEntry {
+                site_id,
                 kind: "unsafe_fn".to_string(),
                 project: project_root.display().to_string(),
                 file: module_path.display().to_string(),
                 function: function.name.clone(),
                 line: 0,
-                snippet: format!("unsafe fn {}", function.name),
+                snippet,
                 reason: Some(reason),
                 invariant: Some(invariant),
                 owner: Some(owner),
@@ -2353,15 +3020,29 @@ fn collect_semantic_unsafe_entries(
             });
         }
         if function.is_extern && function.abi.as_deref() == Some("c") && function.is_unsafe {
-            let (reason, invariant, owner, scope, risk_class, proof_ref) =
+            let snippet = format!("ext unsafe c fn {}", function.name);
+            let site_id = unsafe_site_id(
+                "unsafe_import",
+                project_root,
+                module_path,
+                &function.name,
+                &snippet,
+            );
+            let (reason, invariant, owner, scope, risk_class) =
                 generated_unsafe_contract("unsafe_import", &function.name, &default_owner, None);
+            let proof_ref = bind_proof_ref(
+                project_root,
+                &site_id,
+                &format!("gate://compiler-generated/{}/unsafe_import", function.name),
+            );
             entries.push(UnsafeEntry {
+                site_id,
                 kind: "unsafe_import".to_string(),
                 project: project_root.display().to_string(),
                 file: module_path.display().to_string(),
                 function: function.name.clone(),
                 line: 0,
-                snippet: format!("ext unsafe c fn {}", function.name),
+                snippet,
                 reason: Some(reason),
                 invariant: Some(invariant),
                 owner: Some(owner),
@@ -2637,15 +3318,29 @@ fn collect_semantic_unsafe_entries_from_expr(
 ) {
     match expr {
         ast::Expr::UnsafeBlock { body, .. } => {
-            let (reason, invariant, owner, scope, risk_class, proof_ref) =
+            let snippet = format!("{function_name}: unsafe {{ ... }}");
+            let site_id = unsafe_site_id(
+                "unsafe_block",
+                project_root,
+                module_path,
+                function_name,
+                &snippet,
+            );
+            let (reason, invariant, owner, scope, risk_class) =
                 generated_unsafe_contract("unsafe_block", function_name, default_owner, None);
+            let proof_ref = bind_proof_ref(
+                project_root,
+                &site_id,
+                &format!("gate://compiler-generated/{function_name}/unsafe_block"),
+            );
             entries.push(UnsafeEntry {
+                site_id,
                 kind: "unsafe_block".to_string(),
                 project: project_root.display().to_string(),
                 file: module_path.display().to_string(),
                 function: function_name.to_string(),
                 line: 0,
-                snippet: format!("{function_name}: unsafe {{ ... }}"),
+                snippet,
                 reason: Some(reason),
                 invariant: Some(invariant),
                 owner: Some(owner),
@@ -2668,13 +3363,22 @@ fn collect_semantic_unsafe_entries_from_expr(
         }
         ast::Expr::Call { callee, args } => {
             if !in_unsafe_context && unsafe_callees.contains(callee) {
+                let snippet = format!("{function_name}: call to unsafe `{callee}`");
+                let site_id = unsafe_site_id(
+                    "unsafe_violation_callsite",
+                    project_root,
+                    module_path,
+                    function_name,
+                    &snippet,
+                );
                 entries.push(UnsafeEntry {
+                    site_id,
                     kind: "unsafe_violation_callsite".to_string(),
                     project: project_root.display().to_string(),
                     file: module_path.display().to_string(),
                     function: function_name.to_string(),
                     line: 0,
-                    snippet: format!("{function_name}: call to unsafe `{callee}`"),
+                    snippet,
                     reason: None,
                     invariant: None,
                     owner: None,
@@ -5792,7 +6496,8 @@ fn passthrough_fozzy(command: &str, target: &Path, format: Format) -> Result<Str
     if matches!(format, Format::Json) {
         args.push("--json".to_string());
     }
-    fozzy_invoke(&args)
+    let output = fozzy_invoke(&args)?;
+    Ok(cli_output::normalize_cli_output(format, &output))
 }
 
 fn replay_like(command: &str, target: &Path, format: Format) -> Result<String> {

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use driver::{run as driver_run, Command, CommandFailure, Format};
+use driver::{cli_output, run as driver_run, Command, CommandFailure, Format};
 
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -15,7 +15,7 @@ pub fn run() -> Result<()> {
     }
     if args.len() == 1 && args[0] == "--version" {
         let output = driver_run(Command::Version, Format::Text)?;
-        println!("{output}");
+        println!("{}", cli_output::normalize_cli_output(Format::Text, &output));
         return Ok(());
     }
 
@@ -24,20 +24,24 @@ pub fn run() -> Result<()> {
     let filtered: Vec<String> = args.into_iter().filter(|a| a != "--json").collect();
 
     let command = parse_command(&filtered)?;
-    let output = match driver_run(command.clone(), format) {
+    let raw_output = match driver_run(command.clone(), format) {
         Ok(output) => output,
         Err(error) => {
             if let Some(command_error) = error.downcast_ref::<CommandFailure>() {
                 if !command_error.output.trim().is_empty() {
-                    println!("{}", command_error.output);
+                    println!(
+                        "{}",
+                        cli_output::normalize_cli_output(format, &command_error.output)
+                    );
                 }
                 std::process::exit(command_error.exit_code);
             }
             return Err(error);
         }
     };
+    let output = cli_output::normalize_cli_output(format, &raw_output);
     println!("{output}");
-    if let Some(exit_code) = infer_exit_code(&command, &output, json) {
+    if let Some(exit_code) = infer_exit_code(&command, &raw_output, json) {
         std::process::exit(exit_code);
     }
     Ok(())
@@ -48,6 +52,11 @@ fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
         let payload: serde_json::Value = serde_json::from_str(output).ok()?;
         return match command {
             Command::Build { .. } => payload
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|status| status == "error")
+                .then_some(1),
+            Command::DoctorProject { .. } | Command::DevLoop { .. } => payload
                 .get("status")
                 .and_then(serde_json::Value::as_str)
                 .is_some_and(|status| status == "error")
@@ -111,6 +120,13 @@ fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
                 .and_then(|raw| raw.trim().parse::<usize>().ok())
                 .unwrap_or(0);
             if errors > 0 || output.contains("ok=false") {
+                Some(1)
+            } else {
+                None
+            }
+        }
+        Command::DoctorProject { .. } | Command::DevLoop { .. } => {
+            if output.contains("status: error") {
                 Some(1)
             } else {
                 None
@@ -224,6 +240,26 @@ fn parse_command(args: &[String]) -> Result<Command> {
         }),
         Some("verify") => Ok(Command::Verify {
             path: arg_path_or_cwd(args, 1)?,
+        }),
+        Some("explain") => Ok(Command::Explain {
+            diag_code: args
+                .get(1)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing <diag-code>"))?,
+        }),
+        Some("doctor") => match args.get(1).map(String::as_str) {
+            Some("project") => Ok(Command::DoctorProject {
+                path: arg_path_or_cwd(args, 2)?,
+                strict: has_flag(args, "--strict"),
+            }),
+            _ => {
+                print_help();
+                bail!("unknown doctor subcommand")
+            }
+        },
+        Some("devloop") => Ok(Command::DevLoop {
+            path: arg_path_or_cwd(args, 1)?,
+            backend: parse_backend_flag(args)?,
         }),
         Some("dx-check") => Ok(Command::DxCheck {
             path: arg_path_or_cwd(args, 1)?,
@@ -372,6 +408,9 @@ commands:\n\
   fmt [path]\n\
   check [path]\n\
   verify [path]\n\
+  explain <diag-code>\n\
+  doctor project [path] [--strict]\n\
+  devloop [path] [--backend llvm|cranelift]\n\
   dx-check [project] [--strict]\n\
   spec-check\n\
   emit-ir [path]\n\
@@ -505,6 +544,7 @@ fn parse_repeated_value_flags(args: &[String], flags: &[&str]) -> Result<Vec<Str
 mod tests {
     use super::parse_command;
     use driver::Command;
+    use std::path::PathBuf;
     #[test]
     fn parse_command_accepts_long_version_flag_alias() {
         let args = vec!["--version".to_string()];
@@ -594,6 +634,47 @@ mod tests {
         match command {
             Command::LspDiagnostics { path } => assert_eq!(path, cwd),
             _ => panic!("expected lsp diagnostics command"),
+        }
+    }
+
+    #[test]
+    fn parse_explain_command() {
+        let args = vec!["explain".to_string(), "E-DRV-1234ABCD".to_string()];
+        let command = parse_command(&args).expect("explain should parse");
+        match command {
+            Command::Explain { diag_code } => assert_eq!(diag_code, "E-DRV-1234ABCD"),
+            _ => panic!("expected explain command"),
+        }
+    }
+
+    #[test]
+    fn parse_doctor_project_defaults_to_current_directory() {
+        let args = vec!["doctor".to_string(), "project".to_string()];
+        let command = parse_command(&args).expect("doctor project should parse");
+        match command {
+            Command::DoctorProject { path, strict } => {
+                assert_eq!(path, std::env::current_dir().expect("cwd"));
+                assert!(!strict);
+            }
+            _ => panic!("expected doctor project command"),
+        }
+    }
+
+    #[test]
+    fn parse_devloop_command() {
+        let args = vec![
+            "devloop".to_string(),
+            "examples/minimal_runtime".to_string(),
+            "--backend".to_string(),
+            "cranelift".to_string(),
+        ];
+        let command = parse_command(&args).expect("devloop should parse");
+        match command {
+            Command::DevLoop { path, backend } => {
+                assert_eq!(path, PathBuf::from("examples/minimal_runtime"));
+                assert_eq!(backend.as_deref(), Some("cranelift"));
+            }
+            _ => panic!("expected devloop command"),
         }
     }
 }

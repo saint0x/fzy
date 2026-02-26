@@ -151,6 +151,9 @@ Runtime logging defaults:
 fz fmt [path]
 fz check [path]
 fz verify [path]
+fz explain <diag-code>
+fz doctor project [path] [--strict]
+fz devloop [path] [--backend llvm|cranelift]
 fz dx-check [project] [--strict]
 fz spec-check
 ```
@@ -159,9 +162,11 @@ Recommended order for feature work:
 
 1. `fmt`
 2. `check`
-3. `dx-check --strict`
-4. `test --det`
-5. `verify` or `spec-check` when relevant to your gate
+3. `doctor project --strict`
+4. `devloop`
+5. `dx-check --strict`
+6. `test --det`
+7. `verify` or `spec-check` when relevant to your gate
 
 ## 5.4 Analysis and debugging commands
 

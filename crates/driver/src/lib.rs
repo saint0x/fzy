@@ -1,3 +1,4 @@
+pub mod cli_output;
 pub mod command;
 pub mod lsp;
 pub mod pipeline;
