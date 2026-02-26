@@ -7,6 +7,8 @@ This guide covers production C interoperability for Fozzy in both directions:
 
 ## Contract
 - `pubext c fn` is the C-export surface.
+- `pubext async c fn` exports use async-handle ABI (`*_async_start/poll/await/drop`).
+- `ext c fn` is the C-import surface.
 - `fozzy.toml` is the policy source of truth for C panic boundary:
   - `[ffi] panic_boundary = "abort"` or `"error"` is required for projects with C interop symbols.
 - `#[ffi_panic(...)]` is per-symbol override only.
@@ -19,6 +21,15 @@ This guide covers production C interoperability for Fozzy in both directions:
 ```fzy
 pubext c fn add(left: i32, right: i32) -> i32 {
     return left + right
+}
+```
+
+Async export:
+
+```fzy
+pubext async c fn flush(code: i32) -> i32 {
+    checkpoint()
+    return code
 }
 ```
 
@@ -38,6 +49,17 @@ fz build path/to/module.fzy --lib --release --json
 - `sharedLib`: `.so` or `.dylib`
 - `header`: installable C header
 - `abiManifest`: ABI manifest JSON
+
+For async exports, generated headers expose:
+- `typedef uint64_t fz_async_handle_t;`
+- `int32_t <name>_async_start(..., fz_async_handle_t* handle_out);`
+- `int32_t <name>_async_poll(fz_async_handle_t handle, int32_t* done_out);`
+- `int32_t <name>_async_await(fz_async_handle_t handle, int32_t* result_out);`
+- `int32_t <name>_async_drop(fz_async_handle_t handle);`
+
+Async export requirements:
+- must be defined (no declaration-only `;` exports),
+- must return `i32` for `async-handle-v1`.
 
 ## Importing C into Fozzy
 Declare linker imports with `ext` declarations:

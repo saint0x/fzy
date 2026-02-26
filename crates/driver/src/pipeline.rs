@@ -4800,6 +4800,111 @@ fn collect_extern_c_imports(fir: &fir::FirModule) -> Vec<&hir::TypedFunction> {
         .collect()
 }
 
+#[derive(Debug, Clone)]
+struct NativeAsyncExport {
+    name: String,
+    mangled_symbol: String,
+    params: Vec<(String, String)>,
+}
+
+fn collect_async_c_exports(fir: &fir::FirModule) -> Vec<NativeAsyncExport> {
+    fir.typed_functions
+        .iter()
+        .filter(|function| {
+            function.is_async
+                && function.is_extern
+                && function
+                    .abi
+                    .as_deref()
+                    .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+                && !function.body.is_empty()
+                && matches!(
+                    function.return_type,
+                    ast::Type::Int {
+                        signed: true,
+                        bits: 32
+                    }
+                )
+        })
+        .map(|function| NativeAsyncExport {
+            name: function.name.clone(),
+            mangled_symbol: native_mangle_symbol(&function.name),
+            params: function
+                .params
+                .iter()
+                .map(|param| {
+                    (
+                        ffi_signature_type_to_c_type(&param.ty),
+                        native_mangle_symbol(&param.name),
+                    )
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn ffi_signature_type_to_c_type(ty: &ast::Type) -> String {
+    match ty {
+        ast::Type::Ptr { mutable, to } => {
+            if *mutable {
+                format!("{}*", ffi_signature_type_to_c_type(to))
+            } else {
+                format!("const {}*", ffi_signature_type_to_c_type(to))
+            }
+        }
+        ast::Type::Void => "void".to_string(),
+        ast::Type::Bool => "bool".to_string(),
+        ast::Type::ISize => "ssize_t".to_string(),
+        ast::Type::USize => "size_t".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 8,
+        } => "int8_t".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 16,
+        } => "int16_t".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 32,
+        } => "int32_t".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 64,
+        } => "int64_t".to_string(),
+        ast::Type::Int {
+            signed: true,
+            bits: 128,
+        } => "__int128_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 8,
+        } => "uint8_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 16,
+        } => "uint16_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 32,
+        } => "uint32_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 64,
+        } => "uint64_t".to_string(),
+        ast::Type::Int {
+            signed: false,
+            bits: 128,
+        } => "__uint128_t".to_string(),
+        ast::Type::Float { bits: 32 } => "float".to_string(),
+        ast::Type::Float { bits: 64 } => "double".to_string(),
+        ast::Type::Char => "uint32_t".to_string(),
+        ast::Type::Str => "const char*".to_string(),
+        ast::Type::Named { name, .. } => name.clone(),
+        _ => "void*".to_string(),
+    }
+}
+
 fn collect_used_native_runtime_imports(fir: &fir::FirModule) -> Vec<&'static NativeRuntimeImport> {
     let mut seen = HashSet::<&'static str>::new();
     let mut used = Vec::<&'static NativeRuntimeImport>::new();
@@ -6089,8 +6194,13 @@ fn emit_native_libraries_llvm(
 
     let string_literals = collect_native_string_literals(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
-    let runtime_shim_path =
-        ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
+    let async_exports = collect_async_c_exports(fir);
+    let runtime_shim_path = ensure_native_runtime_shim(
+        &build_dir,
+        &string_literals,
+        &spawn_task_symbols,
+        &async_exports,
+    )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks);
     std::fs::write(&ll_path, llvm_ir)
@@ -6384,8 +6494,13 @@ fn emit_native_libraries_cranelift(
         )
     })?;
 
-    let runtime_shim_path =
-        ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
+    let async_exports = collect_async_c_exports(fir);
+    let runtime_shim_path = ensure_native_runtime_shim(
+        &build_dir,
+        &string_literals,
+        &spawn_task_symbols,
+        &async_exports,
+    )?;
     compile_runtime_shim_object(&runtime_shim_path, &shim_obj_path, profile, manifest)?;
     create_static_archive(
         &static_path,
@@ -6607,8 +6722,13 @@ fn emit_native_artifact_llvm(
     let bin_path = build_dir.join(fir.name.as_str());
     let string_literals = collect_native_string_literals(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
-    let runtime_shim_path =
-        ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
+    let async_exports = collect_async_c_exports(fir);
+    let runtime_shim_path = ensure_native_runtime_shim(
+        &build_dir,
+        &string_literals,
+        &spawn_task_symbols,
+        &async_exports,
+    )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks);
     std::fs::write(&ll_path, llvm_ir)
@@ -6777,8 +6897,13 @@ fn emit_native_artifact_cranelift(
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
-    let runtime_shim_path =
-        ensure_native_runtime_shim(&build_dir, &string_literals, &spawn_task_symbols)?;
+    let async_exports = collect_async_c_exports(fir);
+    let runtime_shim_path = ensure_native_runtime_shim(
+        &build_dir,
+        &string_literals,
+        &spawn_task_symbols,
+        &async_exports,
+    )?;
 
     for function in &fir.typed_functions {
         if is_extern_c_import_decl(function) {
@@ -9884,6 +10009,7 @@ fn ensure_native_runtime_shim(
     build_dir: &Path,
     string_literals: &[String],
     task_symbols: &[String],
+    async_exports: &[NativeAsyncExport],
 ) -> Result<PathBuf> {
     let mut hasher = Sha256::new();
     for literal in string_literals {
@@ -9894,12 +10020,24 @@ fn ensure_native_runtime_shim(
         hasher.update(symbol.as_bytes());
         hasher.update([0u8]);
     }
+    for export in async_exports {
+        hasher.update(export.name.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(export.mangled_symbol.as_bytes());
+        hasher.update([0u8]);
+        for (ty, name) in &export.params {
+            hasher.update(ty.as_bytes());
+            hasher.update([0u8]);
+            hasher.update(name.as_bytes());
+            hasher.update([0u8]);
+        }
+    }
     let digest = hasher.finalize();
     let tag = hex_encode(&digest[..8]);
     let runtime_shim_path = build_dir.join(format!("fz_native_runtime_{tag}.c"));
     std::fs::write(
         &runtime_shim_path,
-        render_native_runtime_shim(string_literals, task_symbols),
+        render_native_runtime_shim(string_literals, task_symbols, async_exports),
     )
     .with_context(|| {
         format!(
@@ -9910,7 +10048,116 @@ fn ensure_native_runtime_shim(
     Ok(runtime_shim_path)
 }
 
-fn render_native_runtime_shim(string_literals: &[String], task_symbols: &[String]) -> String {
+fn render_async_export_shim_code(async_exports: &[NativeAsyncExport]) -> String {
+    if async_exports.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+    out.push_str(
+        r#"
+#define FZ_MAX_ASYNC_EXPORT_STATES 4096
+
+typedef struct {
+  int in_use;
+  int done;
+  int32_t result_i32;
+} fz_async_export_state;
+
+static fz_async_export_state fz_async_export_states[FZ_MAX_ASYNC_EXPORT_STATES];
+static pthread_mutex_t fz_async_export_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static int fz_async_export_slot_from_handle(uint64_t handle) {
+  if (handle == 0) {
+    return -1;
+  }
+  uint64_t slot = handle - 1;
+  if (slot >= (uint64_t)FZ_MAX_ASYNC_EXPORT_STATES) {
+    return -1;
+  }
+  return (int)slot;
+}
+
+"#,
+    );
+
+    for export in async_exports {
+        let params = if export.params.is_empty() {
+            "void".to_string()
+        } else {
+            export
+                .params
+                .iter()
+                .map(|(ty, name)| format!("{ty} {name}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let invoke_args = export
+            .params
+            .iter()
+            .map(|(_, name)| name.clone())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let start_params = if export.params.is_empty() {
+            "fz_async_handle_t* handle_out".to_string()
+        } else {
+            format!("{params}, fz_async_handle_t* handle_out")
+        };
+        let call_expr = if invoke_args.is_empty() {
+            format!("{}()", export.mangled_symbol)
+        } else {
+            format!("{}({invoke_args})", export.mangled_symbol)
+        };
+        let _ = writeln!(
+            &mut out,
+            "extern int32_t {}({});",
+            export.mangled_symbol, params
+        );
+        let _ = writeln!(
+            &mut out,
+            "int32_t {}_async_start({}) {{",
+            export.name, start_params
+        );
+        out.push_str(
+            "  if (handle_out == NULL) {\n    return -1;\n  }\n  int slot = -1;\n  pthread_mutex_lock(&fz_async_export_lock);\n  for (int i = 0; i < FZ_MAX_ASYNC_EXPORT_STATES; i++) {\n    if (!fz_async_export_states[i].in_use) {\n      fz_async_export_states[i].in_use = 1;\n      fz_async_export_states[i].done = 0;\n      fz_async_export_states[i].result_i32 = 0;\n      slot = i;\n      break;\n    }\n  }\n  pthread_mutex_unlock(&fz_async_export_lock);\n  if (slot < 0) {\n    return -3;\n  }\n",
+        );
+        let _ = writeln!(&mut out, "  int32_t result = {};", call_expr);
+        out.push_str(
+            "  pthread_mutex_lock(&fz_async_export_lock);\n  fz_async_export_states[slot].result_i32 = result;\n  fz_async_export_states[slot].done = 1;\n  pthread_mutex_unlock(&fz_async_export_lock);\n  *handle_out = (uint64_t)(slot + 1);\n  return 0;\n}\n",
+        );
+        let _ = writeln!(
+            &mut out,
+            "int32_t {}_async_poll(fz_async_handle_t handle, int32_t* done_out) {{",
+            export.name
+        );
+        out.push_str(
+            "  if (done_out == NULL) {\n    return -1;\n  }\n  int slot = fz_async_export_slot_from_handle(handle);\n  if (slot < 0) {\n    return -2;\n  }\n  pthread_mutex_lock(&fz_async_export_lock);\n  if (!fz_async_export_states[slot].in_use) {\n    pthread_mutex_unlock(&fz_async_export_lock);\n    return -2;\n  }\n  *done_out = fz_async_export_states[slot].done ? 1 : 0;\n  pthread_mutex_unlock(&fz_async_export_lock);\n  return 0;\n}\n",
+        );
+        let _ = writeln!(
+            &mut out,
+            "int32_t {}_async_await(fz_async_handle_t handle, int32_t* result_out) {{",
+            export.name
+        );
+        out.push_str(
+            "  if (result_out == NULL) {\n    return -1;\n  }\n  int slot = fz_async_export_slot_from_handle(handle);\n  if (slot < 0) {\n    return -2;\n  }\n  for (;;) {\n    pthread_mutex_lock(&fz_async_export_lock);\n    int in_use = fz_async_export_states[slot].in_use;\n    int done = fz_async_export_states[slot].done;\n    int32_t value = fz_async_export_states[slot].result_i32;\n    pthread_mutex_unlock(&fz_async_export_lock);\n    if (!in_use) {\n      return -2;\n    }\n    if (done) {\n      *result_out = value;\n      return 0;\n    }\n    sched_yield();\n  }\n}\n",
+        );
+        let _ = writeln!(
+            &mut out,
+            "int32_t {}_async_drop(fz_async_handle_t handle) {{",
+            export.name
+        );
+        out.push_str(
+            "  int slot = fz_async_export_slot_from_handle(handle);\n  if (slot < 0) {\n    return -2;\n  }\n  pthread_mutex_lock(&fz_async_export_lock);\n  if (!fz_async_export_states[slot].in_use) {\n    pthread_mutex_unlock(&fz_async_export_lock);\n    return -2;\n  }\n  fz_async_export_states[slot].in_use = 0;\n  fz_async_export_states[slot].done = 0;\n  fz_async_export_states[slot].result_i32 = 0;\n  pthread_mutex_unlock(&fz_async_export_lock);\n  return 0;\n}\n",
+        );
+    }
+    out
+}
+
+fn render_native_runtime_shim(
+    string_literals: &[String],
+    task_symbols: &[String],
+    async_exports: &[NativeAsyncExport],
+) -> String {
     let mut literal_entries = String::new();
     for literal in string_literals {
         let _ = writeln!(&mut literal_entries, "  \"{}\",", escape_c_string(literal));
@@ -9938,6 +10185,7 @@ fn render_native_runtime_shim(string_literals: &[String], task_symbols: &[String
     if task_entries.is_empty() {
         task_entries.push_str("  NULL,\n");
     }
+    let async_export_shim = render_async_export_shim_code(async_exports);
     let count = string_literals.len();
     let task_count = task_symbols.len();
     let mut c = String::new();
@@ -9970,6 +10218,7 @@ extern char** environ;
     );
     c.push_str("typedef int32_t (*fz_task_entry_fn)(void);\n");
     c.push_str("typedef int32_t (*fz_callback_i32_v0)(int32_t);\n");
+    c.push_str("typedef uint64_t fz_async_handle_t;\n");
     c.push_str(&task_declarations);
     c.push_str("static fz_task_entry_fn fz_task_entries[] = {\n");
     c.push_str(&task_entries);
@@ -14833,6 +15082,7 @@ int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg) {
 }
 "#,
     );
+    c.push_str(&async_export_shim);
     c
 }
 
@@ -14929,6 +15179,7 @@ mod tests {
         derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir,
         native_runtime_import_contract_errors, native_runtime_import_for_callee, parse_program,
         refresh_lockfile, render_native_runtime_shim, verify_file, BackendKind, BuildProfile,
+        NativeAsyncExport,
     };
 
     fn run_native_exit(exe: &Path) -> i32 {
@@ -15427,6 +15678,7 @@ mod tests {
                 "{\"ok\":true}".to_string(),
             ],
             &["worker.run".to_string()],
+            &[],
         );
         assert!(shim.contains("int32_t fz_native_net_method(int32_t conn_fd)"));
         assert!(shim.contains("int32_t fz_native_net_path(int32_t conn_fd)"));
@@ -15504,15 +15756,38 @@ mod tests {
 
     #[test]
     fn native_runtime_shim_does_not_use_env_response_templates() {
-        let shim = render_native_runtime_shim(&[], &[]);
+        let shim = render_native_runtime_shim(&[], &[], &[]);
         assert!(!shim.contains("FZ_NET_WRITE_JSON_BODY"));
         assert!(!shim.contains("FZ_NET_WRITE_BODY"));
         assert!(!shim.contains("fz_env_or_default"));
     }
 
     #[test]
+    fn native_runtime_shim_emits_async_export_handle_wrappers() {
+        let shim = render_native_runtime_shim(
+            &[],
+            &[],
+            &[NativeAsyncExport {
+                name: "flush".to_string(),
+                mangled_symbol: "flush".to_string(),
+                params: vec![("int32_t".to_string(), "code".to_string())],
+            }],
+        );
+        assert!(shim.contains("extern int32_t flush(int32_t code);"));
+        assert!(
+            shim.contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out)")
+        );
+        assert!(
+            shim.contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out)")
+        );
+        assert!(shim
+            .contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out)"));
+        assert!(shim.contains("int32_t flush_async_drop(fz_async_handle_t handle)"));
+    }
+
+    #[test]
     fn native_runtime_shim_uses_documented_bind_defaults_and_visibility() {
-        let shim = render_native_runtime_shim(&[], &[]);
+        let shim = render_native_runtime_shim(&[], &[], &[]);
         assert!(shim.contains("int port = 8787;"));
         assert!(shim.contains("[fz-runtime] listen active addr=%s port=%d"));
         assert!(shim.contains("host_source=%s port_source=%s"));
@@ -15520,14 +15795,14 @@ mod tests {
 
     #[test]
     fn native_runtime_shim_sanitizes_invalid_json_http_bodies() {
-        let shim = render_native_runtime_shim(&[], &[]);
+        let shim = render_native_runtime_shim(&[], &[], &[]);
         assert!(shim.contains("invalid_json_payload"));
         assert!(shim.contains("http.write_json sanitized non-JSON body"));
     }
 
     #[test]
     fn native_runtime_shim_bootstraps_dotenv_for_env_and_http() {
-        let shim = render_native_runtime_shim(&[], &[]);
+        let shim = render_native_runtime_shim(&[], &[], &[]);
         assert!(shim.contains("FZ_DOTENV_PATH"));
         assert!(shim.contains("ANTHROPIC_API_KEY missing"));
         assert!(shim.contains("--connect-timeout"));

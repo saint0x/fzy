@@ -152,6 +152,13 @@ pubext async c fn fz_health(code: i32) -> i32 {
     return code;
 }
 
+// Generated C ABI surface for async export:
+// typedef uint64_t fz_async_handle_t;
+// int32_t fz_health_async_start(int32_t code, fz_async_handle_t* handle_out);
+// int32_t fz_health_async_poll(fz_async_handle_t handle, int32_t* done_out);
+// int32_t fz_health_async_await(fz_async_handle_t handle, int32_t* result_out);
+// int32_t fz_health_async_drop(fz_async_handle_t handle);
+
 // ------------------------------------------------------------
 // SECTION C: repr(C) layouts + canonical enum variants
 // ------------------------------------------------------------

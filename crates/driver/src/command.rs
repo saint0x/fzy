@@ -2899,6 +2899,15 @@ fn parse_abi_manifest(value: &serde_json::Value, path: &Path) -> Result<AbiManif
             .get("symbolVersion")
             .and_then(|item| item.as_u64())
             .unwrap_or(1);
+        let export_mode = if export
+            .get("async")
+            .and_then(|item| item.as_bool())
+            .unwrap_or(false)
+        {
+            "async"
+        } else {
+            "sync"
+        };
         let param_contracts = export
             .get("params")
             .and_then(|item| item.as_array())
@@ -2930,7 +2939,7 @@ fn parse_abi_manifest(value: &serde_json::Value, path: &Path) -> Result<AbiManif
         exports.insert(
             name.clone(),
             AbiExport {
-                normalized_signature: format!("{name}({params})->{ret}"),
+                normalized_signature: format!("{name}:{export_mode}({params})->{ret}"),
                 contract_signature,
                 symbol_version,
             },
@@ -6150,6 +6159,7 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
         "exports": exports.iter().map(|function| {
             serde_json::json!({
                 "name": function.name.as_str(),
+                "async": function.is_async,
                 "symbolVersion": 1u64,
                 "params": function.params.iter().map(|param| {
                     let contract = ffi_param_contract(function, param);
@@ -6166,7 +6176,9 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
                     "contract": ffi_return_contract(&function.return_type),
                 },
                 "contract": {
+                    "execution": if function.is_async { "async-handle-v1" } else { "sync" },
                     "callbackBindings": ffi_callback_bindings(function),
+                    "asyncBoundary": ffi_async_contract(function),
                 },
             })
         }).collect::<Vec<_>>(),
@@ -6276,22 +6288,45 @@ fn render_c_header(package_name: &str, module: &ast::Module, exports: &[&ast::Fu
     header
         .push_str("int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb);\n");
     header.push_str("int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg);\n\n");
+    if exports.iter().any(|function| function.is_async) {
+        header.push_str("typedef uint64_t fz_async_handle_t;\n\n");
+    }
     header.push_str(&render_repr_c_type_defs(module));
     if !header.ends_with("\n\n") {
         header.push('\n');
     }
     for function in exports {
-        header.push_str(&format!(
-            "{} {}({});\n",
-            to_c_type(&function.return_type),
-            function.name,
-            function
-                .params
-                .iter()
-                .map(|param| format!("{} {}", to_c_type(&param.ty), param.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        if function.is_async {
+            let params = render_c_params(function);
+            let start_params = if params == "void" {
+                "fz_async_handle_t* handle_out".to_string()
+            } else {
+                format!("{params}, fz_async_handle_t* handle_out")
+            };
+            header.push_str(&format!(
+                "int32_t {}_async_start({});\n",
+                function.name, start_params
+            ));
+            header.push_str(&format!(
+                "int32_t {}_async_poll(fz_async_handle_t handle, int32_t* done_out);\n",
+                function.name
+            ));
+            header.push_str(&format!(
+                "int32_t {}_async_await(fz_async_handle_t handle, int32_t* result_out);\n",
+                function.name
+            ));
+            header.push_str(&format!(
+                "int32_t {}_async_drop(fz_async_handle_t handle);\n",
+                function.name
+            ));
+        } else {
+            header.push_str(&format!(
+                "{} {}({});\n",
+                to_c_type(&function.return_type),
+                function.name,
+                render_c_params(function)
+            ));
+        }
     }
     if exports.is_empty() {
         header.push_str("/* no exported extern \"C\" functions found */\n");
@@ -6381,6 +6416,20 @@ fn validate_ffi_contract(
         }
     }
     for function in exports {
+        if function.is_async {
+            if function.body.is_empty() {
+                bail!(
+                    "extern async export `{}` must define a body; declaration-only async exports are not allowed",
+                    function.name
+                );
+            }
+            if !is_i32_type(&function.return_type) {
+                bail!(
+                    "extern async export `{}` must return `i32` for async-handle-v1 ABI",
+                    function.name
+                );
+            }
+        }
         if !is_ffi_stable_type(&function.return_type, repr_c_names) {
             bail!(
                 "extern export `{}` uses unstable return type `{}`",
@@ -6623,6 +6672,30 @@ fn has_len_pair(function: &ast::Function, pointer_param_name: &str) -> bool {
     })
 }
 
+fn is_i32_type(ty: &ast::Type) -> bool {
+    matches!(
+        ty,
+        ast::Type::Int {
+            signed: true,
+            bits: 32
+        }
+    )
+}
+
+fn render_c_params(function: &ast::Function) -> String {
+    let params = function
+        .params
+        .iter()
+        .map(|param| format!("{} {}", to_c_type(&param.ty), param.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if params.is_empty() {
+        "void".to_string()
+    } else {
+        params
+    }
+}
+
 fn ffi_ownership_kind(name: &str) -> &'static str {
     if name.ends_with("_owned") {
         "owned"
@@ -6717,6 +6790,20 @@ fn ffi_callback_bindings(function: &ast::Function) -> Vec<serde_json::Value> {
         }));
     }
     out
+}
+
+fn ffi_async_contract(function: &ast::Function) -> serde_json::Value {
+    if !function.is_async {
+        return serde_json::Value::Null;
+    }
+    serde_json::json!({
+        "model": "async-handle-v1",
+        "startSymbol": format!("{}_async_start", function.name),
+        "pollSymbol": format!("{}_async_poll", function.name),
+        "awaitSymbol": format!("{}_async_await", function.name),
+        "dropSymbol": format!("{}_async_drop", function.name),
+        "resultType": to_c_type(&function.return_type),
+    })
 }
 
 fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
@@ -7414,6 +7501,76 @@ mod tests {
     }
 
     #[test]
+    fn headers_command_generates_async_export_handle_api() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-headers-async-{suffix}.fzy"));
+        let header = std::env::temp_dir().join(format!("fozzylang-headers-async-{suffix}.h"));
+        std::fs::write(
+            &source,
+            "#[ffi_panic(abort)]\npubext async c fn flush(code: i32) -> i32 {\n    return code\n}\n",
+        )
+        .expect("source should be written");
+
+        run(
+            Command::Headers {
+                path: source.clone(),
+                output: Some(header.clone()),
+            },
+            Format::Text,
+        )
+        .expect("headers command should succeed");
+        let header_text = std::fs::read_to_string(&header).expect("header should be created");
+        assert!(header_text.contains("typedef uint64_t fz_async_handle_t;"));
+        assert!(header_text
+            .contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out);"));
+        assert!(header_text
+            .contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out);"));
+        assert!(header_text
+            .contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out);"));
+        assert!(header_text.contains("int32_t flush_async_drop(fz_async_handle_t handle);"));
+        assert!(!header_text.contains("int32_t flush(int32_t code);"));
+
+        let abi_path = header.with_extension("abi.json");
+        let abi_text = std::fs::read_to_string(&abi_path).expect("abi manifest should be created");
+        assert!(abi_text.contains("\"async\": true"));
+        assert!(abi_text.contains("\"execution\": \"async-handle-v1\""));
+        assert!(abi_text.contains("\"startSymbol\": \"flush_async_start\""));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(header);
+        let _ = std::fs::remove_file(abi_path);
+    }
+
+    #[test]
+    fn headers_command_rejects_async_export_without_i32_return() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-headers-async-ret-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "#[ffi_panic(abort)]\npubext async c fn flush(code: i32) -> i64 {\n    return code\n}\n",
+        )
+        .expect("source should be written");
+
+        let error = run(
+            Command::Headers {
+                path: source.clone(),
+                output: None,
+            },
+            Format::Text,
+        )
+        .expect_err("headers command should reject non-i32 async return");
+        assert!(error.to_string().contains("must return `i32`"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn headers_command_maps_pointer_sized_ints_to_size_t_semantics() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -7744,7 +7901,7 @@ mod tests {
         )
         .expect("abi-check should pass for additive exports");
         assert!(output.contains("\"ok\":true"));
-        assert!(output.contains("sub(int32_t,int32_t)->int32_t"));
+        assert!(output.contains("sub:sync(int32_t,int32_t)->int32_t"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -7863,6 +8020,69 @@ mod tests {
         assert!(error
             .to_string()
             .contains("contract weakened/changed for export `consume`"));
+
+        let _ = std::fs::remove_file(baseline);
+        let _ = std::fs::remove_file(current);
+    }
+
+    #[test]
+    fn abi_check_rejects_sync_to_async_mode_change() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let baseline =
+            std::env::temp_dir().join(format!("fozzylang-abi-baseline-async-mode-{suffix}.json"));
+        let current =
+            std::env::temp_dir().join(format!("fozzylang-abi-current-async-mode-{suffix}.json"));
+        std::fs::write(
+            &baseline,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.ffi_abi.v1",
+                "package": {"name":"demo","version":"0.1.0"},
+                "panicBoundary": "abort",
+                "exports": [{
+                    "name":"flush",
+                    "async": false,
+                    "symbolVersion":1,
+                    "params":[{"name":"code","fzy":"i32","c":"int32_t"}],
+                    "return":{"fzy":"i32","c":"int32_t"},
+                    "contract":{"execution":"sync","callbackBindings":[]}
+                }]
+            })
+            .to_string(),
+        )
+        .expect("baseline abi should be written");
+        std::fs::write(
+            &current,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.ffi_abi.v1",
+                "package": {"name":"demo","version":"0.2.0"},
+                "panicBoundary": "abort",
+                "exports": [{
+                    "name":"flush",
+                    "async": true,
+                    "symbolVersion":1,
+                    "params":[{"name":"code","fzy":"i32","c":"int32_t"}],
+                    "return":{"fzy":"i32","c":"int32_t"},
+                    "contract":{"execution":"async-handle-v1","callbackBindings":[]}
+                }]
+            })
+            .to_string(),
+        )
+        .expect("current abi should be written");
+
+        let error = run(
+            Command::AbiCheck {
+                current: current.clone(),
+                baseline: baseline.clone(),
+            },
+            Format::Text,
+        )
+        .expect_err("abi-check should fail for async mode changes");
+        assert!(error
+            .to_string()
+            .contains("signature changed for export `flush`"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
