@@ -9,6 +9,7 @@ fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, 
 - Full user manual: `USAGE.md`
 - Canonical production workflow: `docs/production-workflow-v1.md`
 - System safety/trust model: `docs/system-safety-trust-model-v1.md`
+- Unsafe contract authoring: `docs/unsafe-contract-authoring-v1.md`
 - `fozzy`: [ariacomputecompany/fozzy](https://github.com/ariacomputecompany/fozzy)
 - `fzyllm`: [saint0x/fzyllm](https://github.com/saint0x/fzyllm)
 
@@ -200,6 +201,7 @@ Spec: `docs/dependency-locking-v1.md`
   - package identity
   - panic boundary compatibility
   - baseline export presence + signature immutability
+  - baseline contract immutability (contract weakening is breaking)
   - symbol version non-regression
 - Additive exports are allowed.
 

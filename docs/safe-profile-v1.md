@@ -34,6 +34,6 @@ Required auditable unsafe contract form:
 
 - `unsafe("reason:...", "invariant:...", "owner:...", "scope:...", "risk_class:...", "proof_ref:...")`
 
-`unsafe_reason(...)` is removed. `fz audit unsafe --workspace` emits `.fz/unsafe-map.workspace.json` and fails if any site has missing contract fields.
+`unsafe_reason(...)` is removed. `fz audit unsafe --workspace` emits `.fz/unsafe-map.workspace.json` and fails if any site has missing contract fields or invalid `proof_ref`.
 
 See [unsafe-contract-authoring-v1.md](unsafe-contract-authoring-v1.md) for the full authoring guide (Fzy + Rust boundary code).

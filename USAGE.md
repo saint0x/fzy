@@ -174,6 +174,7 @@ fz debug-check [path]
 ```
 
 Use these when behavior is correct in one mode but drifts in another, or when hardening safety properties.
+Unsafe contract details and DSL are documented in `docs/unsafe-contract-authoring-v1.md`.
 
 Recommended native completeness probe:
 
@@ -213,6 +214,7 @@ Typical use:
 - generate or refresh C headers and RPC outputs
 - compare ABI manifests before merge/release
 - `#[ffi_panic(abort|error)]` is required on exported `pub extern "C" fn`
+- ABI contract weakening is breaking and rejected by `abi-check`
 - full production interop contract: `docs/c-interop-production-v1.md`
 
 ## 5.7 Dependency locking and vendor

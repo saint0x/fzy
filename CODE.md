@@ -403,7 +403,7 @@ fn checked_add(x: i32, y: i32) -> i32 {
     let p = alloc(8)
     unsafe(
         "reason:manual FFI boundary contract audited",
-        "invariant:pointer remains valid for this scope",
+        "invariant:owner_live(p) && ptr_nonnull(p) && ptr_len_ge(p,8)",
         "owner:p",
         "scope:checked_add",
         "risk_class:memory",
