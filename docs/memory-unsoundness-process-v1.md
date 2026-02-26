@@ -12,7 +12,7 @@ This process applies to any memory-safety unsoundness event in compiler, verifie
 ## Unsafe Budget
 
 - Unsafe sites are tracked as release budgets.
-- Missing reason/invariant/owner contracts are release-blocking.
+- Missing/invalid structured unsafe contracts (`reason/invariant/owner/scope/risk_class/proof_ref`) are release-blocking.
 - Budget increases require explicit approval.
 
 ## Release Sign-Off

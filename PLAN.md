@@ -165,11 +165,11 @@
 - [✅] required fields: `reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`.
 - [✅] remove all legacy string-contains fallback acceptance paths.
 - [✅] fail parse/verify on malformed or missing contract fields with stable diagnostics.
-- [ ] Require unsafe contracts to bind to typed ownership/provenance facts:
+- [✅] Require unsafe contracts to bind to typed ownership/provenance facts:
 - [✅] owner must resolve to a live symbol/provenance root.
-- [ ] invariant must map to verifier-checkable predicates (or explicit unsupported rejection).
+- [✅] invariant must map to verifier-checkable predicates (or explicit unsupported rejection).
 - [✅] proof references must be machine-linkable to evidence artifacts (trace/test id, RFC id, or gate record id).
-- [ ] Promote unsafe contract checks from heuristic linting to release-blocking semantic obligations in all build/test/run entrypoints.
+- [✅] Promote unsafe contract checks from heuristic linting to release-blocking semantic obligations in all build/test/run entrypoints.
 - [✅] Expand `fz audit unsafe` from project-local call collection to repository-wide unsafe accountability mode:
 - [✅] add a workspace/root scan mode covering all first-party Fzy modules and generated build targets.
 - [✅] emit per-module and aggregate unsafe budgets (`entries`, `missing`, `by_risk_class`, `by_owner`, `by_scope`).
@@ -180,30 +180,30 @@
 - [✅] require justification metadata on each Rust unsafe block and reject undocumented unsafe blocks in release gate.
 - [✅] bind Rust unsafe inventory into the same budget policy surface as Fzy unsafe contracts.
 - [✅] add drift gate: fail release on unsafe count increase without explicit approved budget delta.
-- [ ] Harden known Rust unsafe hotspots with contractized wrappers and targeted tests:
-- [ ] process pre-exec/rlimit/setuid-setgid path (`crates/stdlib/src/process.rs`) safety preconditions and regression probes.
-- [ ] secret zeroization path (`crates/stdlib/src/security.rs`) guarantees for compiler-fence and volatile-write semantics.
-- [ ] Add explicit “unsafe island” module boundaries and forbid ad-hoc unsafe spread outside approved modules.
-- [ ] Extend FFI stable type model to support high-performance structured payloads without sacrificing safety:
+- [✅] Harden known Rust unsafe hotspots with contractized wrappers and targeted tests:
+- [✅] process pre-exec/rlimit/setuid-setgid path (`crates/stdlib/src/process.rs`) safety preconditions and regression probes.
+- [✅] secret zeroization path (`crates/stdlib/src/security.rs`) guarantees for compiler-fence and volatile-write semantics.
+- [✅] Add explicit “unsafe island” module boundaries and forbid ad-hoc unsafe spread outside approved modules.
+- [✅] Extend FFI stable type model to support high-performance structured payloads without sacrificing safety:
 - [✅] allow named `repr(C)` structs/enums/unions that pass strict layout and field-type validation.
-- [ ] define ABI-safe pointer+length view types and ownership transfer contracts as first-class FFI schema types.
+- [✅] define ABI-safe pointer+length view types and ownership transfer contracts as first-class FFI schema types.
 - [✅] reject non-validated named/opaque/generic types with targeted diagnostics; no implicit coercion fallback.
 - [✅] preserve strict panic boundary policy (`ffi_panic`) and enforce consistent mode across exports.
-- [ ] Upgrade ABI manifest schema to encode structured ownership/lifetime/alias contracts:
-- [ ] per-param ownership kind (`owned|borrowed|out|inout`), nullability, mutability, and lifetime anchor ids.
-- [ ] callback context/lifetime binding ids and transitive safety obligations.
-- [ ] compatibility checker must treat contract weakening as ABI break.
-- [ ] Add mandatory stress suites for unsafe+FFI boundary correctness:
-- [ ] adversarial pointer misuse scenarios (double-free, UAF, invalid out-param, alias violations).
-- [ ] cross-language callback lifecycle misuse probes.
-- [ ] deterministic + host-backed replayable traces for each unsafe boundary class.
-- [ ] Add production gate wiring:
-- [ ] ship gate must run repo-wide Fzy unsafe audit + Rust unsafe inventory + ABI contract compatibility checks.
+- [✅] Upgrade ABI manifest schema to encode structured ownership/lifetime/alias contracts:
+- [✅] per-param ownership kind (`owned|borrowed|out|inout`), nullability, mutability, and lifetime anchor ids.
+- [✅] callback context/lifetime binding ids and transitive safety obligations.
+- [✅] compatibility checker must treat contract weakening as ABI break.
+- [✅] Add mandatory stress suites for unsafe+FFI boundary correctness:
+- [✅] adversarial pointer misuse scenarios (double-free, UAF, invalid out-param, alias violations).
+- [✅] cross-language callback lifecycle misuse probes.
+- [✅] deterministic + host-backed replayable traces for each unsafe boundary class.
+- [✅] Add production gate wiring:
+- [✅] ship gate must run repo-wide Fzy unsafe audit + Rust unsafe inventory + ABI contract compatibility checks.
 - [✅] forbid release when any unsafe contract is missing/invalid/unproven or any budget exceeds approved thresholds.
 - [✅] publish gate artifacts in `artifacts/` with stable schema and diff-friendly output.
-- [ ] Documentation hardening:
+- [✅] Documentation hardening:
 - [✅] update memory model, safe profile, ABI policy, and C interop docs to reflect structured unsafe contracts and no-compatibility cutover.
-- [ ] publish unsafe contract authoring guide with examples for Fzy and Rust boundary code.
+- [✅] publish unsafe contract authoring guide with examples for Fzy and Rust boundary code.
 - [✅] explicitly remove obsolete string-tag unsafe guidance from docs and code snippets.
 
 ### Runtime Networking + HTTP

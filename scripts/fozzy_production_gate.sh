@@ -134,6 +134,18 @@ if count > budget:
 PY
 
 echo "[gate] rust unsafe inventory gate"
-python3 ./scripts/rust_unsafe_inventory.py --root "$ROOT" --out "$ARTIFACT_DIR/rust_unsafe_inventory.json" --budget "$RUST_UNSAFE_BUDGET"
+python3 ./scripts/rust_unsafe_inventory.py --root "$ROOT" --out "$ARTIFACT_DIR/rust_unsafe_inventory.json" --budget "$RUST_UNSAFE_BUDGET" --policy "$ROOT/policy/rust_unsafe_islands.json"
+
+echo "[gate] ffi abi compatibility gate"
+while IFS= read -r manifest; do
+  project_root="$(dirname "$(dirname "$manifest")")"
+  project_name="$(basename "$project_root")"
+  gen_dir="$ARTIFACT_DIR/abi/$project_name"
+  mkdir -p "$gen_dir"
+  gen_header="$gen_dir/${project_name}.h"
+  "${FZ_CMD[@]}" headers "$project_root" --out "$gen_header" >/dev/null
+  gen_abi="${gen_header%.h}.abi.json"
+  "${FZ_CMD[@]}" abi-check "$gen_abi" --baseline "$manifest" --json >/dev/null
+done < <(find "$ROOT/examples" -type f -name '*.abi.json' | sort)
 
 echo "[gate] PASS"

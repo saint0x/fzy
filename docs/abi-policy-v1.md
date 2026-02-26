@@ -2,14 +2,17 @@
 
 ## Stability Contract
 
-- ABI manifests use schema `fozzylang.ffi_abi.v0`.
+- ABI manifests use schema `fozzylang.ffi_abi.v1`.
 - Exported symbols are derived from `pub extern "C" fn` declarations only.
-- ABI compatibility in v1 is defined by normalized export signatures:
+- ABI compatibility in v1 is defined by normalized export signatures and explicit contract metadata:
   - function name
   - ordered C parameter types
   - C return type
+  - per-parameter contract (`ownership`, `nullability`, `mutability`, `lifetimeAnchor`, view shape)
+  - callback/context binding obligations
 - Additive exports are allowed.
 - Existing export signatures are immutable across compatible revisions.
+- Existing export contracts are immutable across compatible revisions (contract weakening is a breaking change).
 
 ## Stable Layout Rules
 
@@ -50,6 +53,7 @@ Use `fz abi-check <current.abi.json> --baseline <baseline.abi.json>` to gate com
 - baseline export presence
 - baseline export signature immutability
 - symbol version non-regression
+- contract non-weakening for baseline exports
 
 ## Explicitly Unsupported At FFI Boundary (v1)
 

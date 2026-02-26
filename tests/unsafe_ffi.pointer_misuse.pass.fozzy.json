@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "name": "unsafe-ffi-pointer-misuse-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "bash",
+      "args": ["scripts/unsafe_ffi_stress.sh", "pointer_misuse"],
+      "exit_code": 0,
+      "stdout": "unsafe-ffi-stress-ok\n",
+      "stderr": "",
+      "times": 1
+    }
+  ]
+}

@@ -64,14 +64,18 @@ impl std::fmt::Debug for Secret {
 
 impl Drop for Secret {
     fn drop(&mut self) {
-        for byte in &mut self.bytes {
-            // Safety: secure zeroing write for key material.
-            unsafe {
-                std::ptr::write_volatile(byte as *mut u8, 0);
-            }
-        }
-        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+        secure_zeroize_in_place(&mut self.bytes);
     }
+}
+
+pub fn secure_zeroize_in_place(bytes: &mut [u8]) {
+    for byte in bytes.iter_mut() {
+        // Safety: volatile write prevents optimization from removing zeroization.
+        unsafe {
+            std::ptr::write_volatile(byte as *mut u8, 0);
+        }
+    }
+    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,7 +281,8 @@ mod tests {
 
     use super::{
         aes_gcm_decrypt, aes_gcm_encrypt, audit_privileged_operation_with_sink, hmac_sha256,
-        sha256, sha512, AuditLogger, AuditSink, PrivilegedOperation, RequestThrottler, Secret,
+        secure_zeroize_in_place, sha256, sha512, AuditLogger, AuditSink, PrivilegedOperation,
+        RequestThrottler, Secret,
     };
 
     #[test]
@@ -326,5 +331,12 @@ mod tests {
         let text = std::fs::read_to_string(&path).expect("audit file");
         assert!(text.contains("NetworkBind"));
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn secure_zeroize_clears_all_bytes() {
+        let mut bytes = vec![0xAA, 0xBB, 0xCC, 0xDD];
+        secure_zeroize_in_place(&mut bytes);
+        assert_eq!(bytes, vec![0, 0, 0, 0]);
     }
 }

@@ -7,7 +7,7 @@ This document defines what can be claimed publicly today, what is intentionally 
 - Verifier-enforced ownership/borrow constraints in shipped rule scope (including documented async suspension constraints).
 - Runtime fail-closed defaults for capability-sensitive and limit-sensitive paths.
 - Native-lowering fail-fast diagnostics for unsupported or partial language shapes (no silent partial semantics on documented guardrails).
-- Unsafe budget enforcement with missing-reason rejection.
+- Unsafe budget enforcement with missing/invalid structured-contract rejection.
 - FFI boundary policy enforcement for panic contracts and boundary-shape diagnostics.
 - Deterministic replay/trace verification gate coverage for reproducibility and incident triage.
 
@@ -31,7 +31,7 @@ This document defines what can be claimed publicly today, what is intentionally 
 - Host-backed claim evidence:
   - `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
 - Unsafe posture claim evidence:
-  - `fz audit unsafe <target> --json`
+  - `fz audit unsafe <target> --workspace --json`
 - FFI boundary guarantee evidence:
   - `fz headers ... --json`
   - `fz abi-check ... --baseline ... --json`
@@ -43,5 +43,5 @@ This document defines what can be claimed publicly today, what is intentionally 
 
 - [x] Memory model claims align with `docs/production-memory-model-v1.md` and do not exceed documented scope.
 - [x] Borrow/alias coverage statements explicitly preserve non-theorem-proof caveats.
-- [x] Unsafe-budget posture claims are backed by `fz audit unsafe` gate output and missing-reason rejection.
+- [x] Unsafe-budget posture claims are backed by `fz audit unsafe` gate output and structured-contract/proof-ref rejection.
 - [x] FFI boundary guarantees are backed by panic-contract enforcement and ABI/header gate checks.

@@ -2059,7 +2059,9 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
         .count();
     let invalid_proof_ref_count = entries
         .iter()
-        .filter(|entry| !entry.proof_ref.trim().is_empty() && !proof_ref_machine_linkable(&entry.proof_ref))
+        .filter(|entry| {
+            !entry.proof_ref.trim().is_empty() && !proof_ref_machine_linkable(&entry.proof_ref)
+        })
         .count();
 
     let out_root = if workspace {
@@ -2075,18 +2077,24 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
     } else {
         out_dir.join("unsafe-map.json")
     };
-    let by_risk_class = entries.iter().fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
-        *acc.entry(item.risk_class.clone()).or_default() += 1;
-        acc
-    });
-    let by_owner = entries.iter().fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
-        *acc.entry(item.owner.clone()).or_default() += 1;
-        acc
-    });
-    let by_scope = entries.iter().fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
-        *acc.entry(item.scope.clone()).or_default() += 1;
-        acc
-    });
+    let by_risk_class = entries
+        .iter()
+        .fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
+            *acc.entry(item.risk_class.clone()).or_default() += 1;
+            acc
+        });
+    let by_owner = entries
+        .iter()
+        .fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
+            *acc.entry(item.owner.clone()).or_default() += 1;
+            acc
+        });
+    let by_scope = entries
+        .iter()
+        .fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
+            *acc.entry(item.scope.clone()).or_default() += 1;
+            acc
+        });
     let payload = serde_json::json!({
         "schemaVersion": "fozzylang.unsafe_map.v1",
         "workspaceMode": workspace,
@@ -2149,7 +2157,9 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
 
 fn proof_ref_machine_linkable(value: &str) -> bool {
     let value = value.trim();
-    let schemes = ["trace://", "test://", "rfc://", "gate://", "run://", "ci://"];
+    let schemes = [
+        "trace://", "test://", "rfc://", "gate://", "run://", "ci://",
+    ];
     schemes.iter().any(|scheme| value.starts_with(scheme))
 }
 
@@ -2191,15 +2201,13 @@ fn collect_semantic_unsafe_entries_from_stmt(
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => {
-            collect_semantic_unsafe_entries_from_expr(
-                value,
-                module_path,
-                project_root,
-                function_name,
-                entries,
-            )
-        }
+        | ast::Stmt::Expr(value) => collect_semantic_unsafe_entries_from_expr(
+            value,
+            module_path,
+            project_root,
+            function_name,
+            entries,
+        ),
         ast::Stmt::Return(value) => {
             if let Some(value) = value {
                 collect_semantic_unsafe_entries_from_expr(
@@ -2758,6 +2766,12 @@ fn abi_check_command(current: &Path, baseline: &Path, format: Format) -> Result<
                 name, current_export.normalized_signature, baseline_export.normalized_signature
             ));
         }
+        if current_export.contract_signature != baseline_export.contract_signature {
+            issues.push(format!(
+                "contract weakened/changed for export `{}`: current={} baseline={}",
+                name, current_export.contract_signature, baseline_export.contract_signature
+            ));
+        }
         if current_export.symbol_version < baseline_export.symbol_version {
             issues.push(format!(
                 "symbolVersion regressed for `{}`: current={} baseline={}",
@@ -2815,6 +2829,7 @@ struct AbiManifest {
 #[derive(Debug, Clone)]
 struct AbiExport {
     normalized_signature: String,
+    contract_signature: String,
     symbol_version: u64,
 }
 
@@ -2829,9 +2844,9 @@ fn parse_abi_manifest(value: &serde_json::Value, path: &Path) -> Result<AbiManif
         .get("schemaVersion")
         .and_then(|item| item.as_str())
         .ok_or_else(|| anyhow!("abi manifest missing schemaVersion: {}", path.display()))?;
-    if schema != "fozzylang.ffi_abi.v0" {
+    if schema != "fozzylang.ffi_abi.v1" {
         bail!(
-            "unsupported abi schema `{}` in {}; expected fozzylang.ffi_abi.v0",
+            "unsupported abi schema `{}` in {}; expected fozzylang.ffi_abi.v1",
             schema,
             path.display()
         );
@@ -2884,10 +2899,36 @@ fn parse_abi_manifest(value: &serde_json::Value, path: &Path) -> Result<AbiManif
             .get("symbolVersion")
             .and_then(|item| item.as_u64())
             .unwrap_or(1);
+        let param_contracts = export
+            .get("params")
+            .and_then(|item| item.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .iter()
+            .map(|param| {
+                serde_json::json!({
+                    "name": param.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                    "contract": param.get("contract").cloned().unwrap_or(serde_json::Value::Null),
+                })
+            })
+            .collect::<Vec<_>>();
+        let return_contract = export
+            .get("return")
+            .and_then(|item| item.get("contract"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        let export_contract = export.get("contract").cloned().unwrap_or(serde_json::Value::Null);
+        let contract_signature = serde_json::to_string(&serde_json::json!({
+            "params": param_contracts,
+            "return": return_contract,
+            "export": export_contract,
+        }))
+        .unwrap_or_else(|_| "{}".to_string());
         exports.insert(
             name.clone(),
             AbiExport {
                 normalized_signature: format!("{name}({params})->{ret}"),
+                contract_signature,
                 symbol_version,
             },
         );
@@ -6077,7 +6118,7 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
             .unwrap_or("0.0.0-dev"),
     });
     let abi_payload = serde_json::json!({
-        "schemaVersion": "fozzylang.ffi_abi.v0",
+        "schemaVersion": "fozzylang.ffi_abi.v1",
         "package": package_json,
         "abiRevision": 1u64,
         "targetTriple": target_triple,
@@ -6088,7 +6129,8 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
             "reprCStableOnly": true,
             "nonReprCUnstable": true,
         },
-        "symbolVersioning": "strict-name-signature-v0",
+        "symbolVersioning": "strict-name-signature-v1",
+        "contractSchema": "fozzylang.ffi_contracts.v1",
         "reprCLayouts": repr_c_layouts.iter().map(|layout| {
             serde_json::json!({
                 "name": layout.name,
@@ -6102,16 +6144,22 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
                 "name": function.name.as_str(),
                 "symbolVersion": 1u64,
                 "params": function.params.iter().map(|param| {
+                    let contract = ffi_param_contract(function, param);
                     serde_json::json!({
                         "name": param.name.as_str(),
                         "fzy": param.ty.to_string(),
                         "c": to_c_type(&param.ty),
+                        "contract": contract,
                     })
                 }).collect::<Vec<_>>(),
                 "return": {
                     "fzy": function.return_type.to_string(),
                     "c": to_c_type(&function.return_type),
-                }
+                    "contract": ffi_return_contract(&function.return_type),
+                },
+                "contract": {
+                    "callbackBindings": ffi_callback_bindings(function),
+                },
             })
         }).collect::<Vec<_>>(),
     });
@@ -6326,12 +6374,22 @@ fn validate_ffi_contract(
             if matches!(param.ty, ast::Type::Ptr { .. }) {
                 let tagged = param.name.ends_with("_owned")
                     || param.name.ends_with("_borrowed")
-                    || param.name.ends_with("_out");
+                    || param.name.ends_with("_out")
+                    || param.name.ends_with("_inout");
                 if !tagged {
                     bail!(
-                        "extern export `{}` pointer param `{}` must declare ownership transfer tag suffix (`_owned`, `_borrowed`, `_out`)",
+                        "extern export `{}` pointer param `{}` must declare ownership transfer tag suffix (`_owned`, `_borrowed`, `_out`, `_inout`)",
                         function.name,
                         param.name
+                    );
+                }
+                let ctx_param = param.name.ends_with("_ctx") || param.name.ends_with("_context");
+                if !ctx_param && !has_len_pair(function, &param.name) {
+                    bail!(
+                        "extern export `{}` pointer param `{}` must declare paired length parameter (`{}_len` or `len`)",
+                        function.name,
+                        param.name,
+                        pointer_base_name(&param.name),
                     );
                 }
             }
@@ -6506,6 +6564,122 @@ fn detect_ffi_panic_boundary(exports: &[&ast::Function]) -> &'static str {
         }
     }
     "abort-or-translate"
+}
+
+fn pointer_base_name(name: &str) -> String {
+    for suffix in ["_borrowed", "_owned", "_out", "_inout"] {
+        if let Some(stripped) = name.strip_suffix(suffix) {
+            return stripped.to_string();
+        }
+    }
+    name.to_string()
+}
+
+fn has_len_pair(function: &ast::Function, pointer_param_name: &str) -> bool {
+    let base = pointer_base_name(pointer_param_name);
+    let expected = format!("{base}_len");
+    function.params.iter().any(|candidate| {
+        matches!(candidate.ty, ast::Type::USize)
+            && (candidate.name == "len"
+                || candidate.name == expected
+                || candidate.name == format!("{base}_bytes"))
+    })
+}
+
+fn ffi_ownership_kind(name: &str) -> &'static str {
+    if name.ends_with("_owned") {
+        "owned"
+    } else if name.ends_with("_out") {
+        "out"
+    } else if name.ends_with("_inout") {
+        "inout"
+    } else {
+        "borrowed"
+    }
+}
+
+fn ffi_param_contract(function: &ast::Function, param: &ast::Param) -> serde_json::Value {
+    let mut lifetime_anchor = serde_json::Value::Null;
+    let mut ownership = "value";
+    let mut nullability = "n/a";
+    let mut mutability = "const";
+    let mut view = serde_json::Value::Null;
+    if let ast::Type::Ptr { mutable, .. } = &param.ty {
+        ownership = ffi_ownership_kind(&param.name);
+        nullability = if param.name.contains("_nullable") {
+            "nullable"
+        } else {
+            "non_null"
+        };
+        mutability = if *mutable { "mut" } else { "const" };
+        let base = pointer_base_name(&param.name);
+        lifetime_anchor = serde_json::json!(format!("loan:{base}"));
+        let len_name = format!("{base}_len");
+        if function.params.iter().any(|p| p.name == len_name) {
+            view = serde_json::json!({
+                "kind": "ptr_len",
+                "lengthParam": len_name,
+            });
+        } else if function.params.iter().any(|p| p.name == "len") {
+            view = serde_json::json!({
+                "kind": "ptr_len",
+                "lengthParam": "len",
+            });
+        }
+    }
+    serde_json::json!({
+        "ownership": ownership,
+        "nullability": nullability,
+        "mutability": mutability,
+        "lifetimeAnchor": lifetime_anchor,
+        "view": view,
+    })
+}
+
+fn ffi_return_contract(ty: &ast::Type) -> serde_json::Value {
+    let (ownership, nullability, mutability) = match ty {
+        ast::Type::Ptr { mutable, .. } => {
+            ("owned", "non_null", if *mutable { "mut" } else { "const" })
+        }
+        _ => ("value", "n/a", "const"),
+    };
+    serde_json::json!({
+        "ownership": ownership,
+        "nullability": nullability,
+        "mutability": mutability,
+    })
+}
+
+fn ffi_callback_bindings(function: &ast::Function) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    for param in &function.params {
+        let name_lc = param.name.to_ascii_lowercase();
+        if !(name_lc.contains("callback") || name_lc.starts_with("cb")) {
+            continue;
+        }
+        let base = param
+            .name
+            .trim_end_matches("_callback")
+            .trim_end_matches("_cb");
+        let context_name = function
+            .params
+            .iter()
+            .find(|candidate| {
+                candidate.name == format!("{base}_ctx")
+                    || candidate.name == format!("{base}_context")
+                    || candidate.name == "cb_ctx"
+                    || candidate.name == "callback_ctx"
+            })
+            .map(|candidate| candidate.name.clone())
+            .unwrap_or_else(|| "missing_ctx".to_string());
+        out.push(serde_json::json!({
+            "callbackParam": param.name,
+            "contextParam": context_name,
+            "bindingId": format!("cbctx:{base}"),
+            "obligation": "context_outlives_callback_registration",
+        }));
+    }
+    out
 }
 
 fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
@@ -7094,7 +7268,9 @@ mod tests {
             Format::Text,
         )
         .expect_err("audit should fail when unsafe contract fields are missing");
-        assert!(error.to_string().contains("unsafe contract requires exactly 6"));
+        assert!(error
+            .to_string()
+            .contains("unsafe contract requires exactly 6"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -7108,7 +7284,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-audit-reasoned-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "fn main() -> i32 {\n    let p = alloc(8)\n    unsafe(\"reason:ffi boundary\", \"invariant:pointer is valid for 8 bytes\", \"owner:p\", \"scope:fn-main\", \"risk_class:memory\", \"proof_ref:trace://unsafe-001\")\n    free(p)\n    return 0\n}\n",
+            "fn main() -> i32 {\n    let p = alloc(8)\n    unsafe(\"reason:ffi boundary\", \"invariant:owner_live(p) && ptr_nonnull(p) && ptr_len_ge(p,8)\", \"owner:p\", \"scope:fn-main\", \"risk_class:memory\", \"proof_ref:trace://unsafe-001\")\n    free(p)\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -7154,7 +7330,7 @@ mod tests {
             },
             Format::Text,
         )
-            .expect_err("audit should fail for non-project root path");
+        .expect_err("audit should fail for non-project root path");
         let msg = err.to_string();
         assert!(msg.contains("not a Fozzy project root"));
         assert!(msg.contains("detected nested project(s)"));
@@ -7235,6 +7411,30 @@ mod tests {
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(header);
         let _ = std::fs::remove_file(abi_path);
+    }
+
+    #[test]
+    fn headers_command_rejects_pointer_without_length_contract() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-headers-nolen-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "#[ffi_panic(abort)]\npub extern \"C\" fn write(buf_borrowed: *u8) -> i32;\n",
+        )
+        .expect("source should be written");
+        let error = run(
+            Command::Headers {
+                path: source.clone(),
+                output: None,
+            },
+            Format::Text,
+        )
+        .expect_err("headers command should reject pointer without len");
+        assert!(error.to_string().contains("paired length parameter"));
+        let _ = std::fs::remove_file(source);
     }
 
     #[test]
@@ -7458,7 +7658,7 @@ mod tests {
         std::fs::write(
             &baseline,
             serde_json::json!({
-                "schemaVersion": "fozzylang.ffi_abi.v0",
+                "schemaVersion": "fozzylang.ffi_abi.v1",
                 "package": {"name":"demo","version":"0.1.0"},
                 "panicBoundary": "abort",
                 "exports": [
@@ -7476,7 +7676,7 @@ mod tests {
         std::fs::write(
             &current,
             serde_json::json!({
-                "schemaVersion": "fozzylang.ffi_abi.v0",
+                "schemaVersion": "fozzylang.ffi_abi.v1",
                 "package": {"name":"demo","version":"0.2.0"},
                 "panicBoundary": "abort",
                 "exports": [
@@ -7525,7 +7725,7 @@ mod tests {
         std::fs::write(
             &baseline,
             serde_json::json!({
-                "schemaVersion": "fozzylang.ffi_abi.v0",
+                "schemaVersion": "fozzylang.ffi_abi.v1",
                 "package": {"name":"demo","version":"0.1.0"},
                 "panicBoundary": "abort",
                 "exports": [
@@ -7543,7 +7743,7 @@ mod tests {
         std::fs::write(
             &current,
             serde_json::json!({
-                "schemaVersion": "fozzylang.ffi_abi.v0",
+                "schemaVersion": "fozzylang.ffi_abi.v1",
                 "package": {"name":"demo","version":"0.2.0"},
                 "panicBoundary": "abort",
                 "exports": [
@@ -7570,6 +7770,62 @@ mod tests {
         assert!(error
             .to_string()
             .contains("signature changed for export `add`"));
+
+        let _ = std::fs::remove_file(baseline);
+        let _ = std::fs::remove_file(current);
+    }
+
+    #[test]
+    fn abi_check_rejects_contract_weakening() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let baseline =
+            std::env::temp_dir().join(format!("fozzylang-abi-baseline-contract-{suffix}.json"));
+        let current =
+            std::env::temp_dir().join(format!("fozzylang-abi-current-contract-{suffix}.json"));
+        std::fs::write(
+            &baseline,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.ffi_abi.v1",
+                "package": {"name":"demo","version":"0.1.0"},
+                "panicBoundary": "abort",
+                "exports": [{
+                    "name":"consume",
+                    "symbolVersion":1,
+                    "params":[{"name":"buf_borrowed","fzy":"*u8","c":"uint8_t*","contract":{"ownership":"borrowed","nullability":"non_null","mutability":"mut","lifetimeAnchor":"loan:buf","view":{"kind":"ptr_len","lengthParam":"buf_len"}}},{"name":"buf_len","fzy":"usize","c":"size_t","contract":{"ownership":"value","nullability":"n/a","mutability":"const","lifetimeAnchor":null,"view":null}}],
+                    "return":{"fzy":"i32","c":"int32_t","contract":{"ownership":"value","nullability":"n/a","mutability":"const"}},
+                    "contract":{"callbackBindings":[]}
+                }]
+            }).to_string(),
+        ).expect("baseline abi should be written");
+        std::fs::write(
+            &current,
+            serde_json::json!({
+                "schemaVersion": "fozzylang.ffi_abi.v1",
+                "package": {"name":"demo","version":"0.2.0"},
+                "panicBoundary": "abort",
+                "exports": [{
+                    "name":"consume",
+                    "symbolVersion":1,
+                    "params":[{"name":"buf_borrowed","fzy":"*u8","c":"uint8_t*","contract":{"ownership":"borrowed","nullability":"nullable","mutability":"mut","lifetimeAnchor":"loan:buf","view":{"kind":"ptr_len","lengthParam":"buf_len"}}},{"name":"buf_len","fzy":"usize","c":"size_t","contract":{"ownership":"value","nullability":"n/a","mutability":"const","lifetimeAnchor":null,"view":null}}],
+                    "return":{"fzy":"i32","c":"int32_t","contract":{"ownership":"value","nullability":"n/a","mutability":"const"}},
+                    "contract":{"callbackBindings":[]}
+                }]
+            }).to_string(),
+        ).expect("current abi should be written");
+        let error = run(
+            Command::AbiCheck {
+                current: current.clone(),
+                baseline: baseline.clone(),
+            },
+            Format::Text,
+        )
+        .expect_err("abi-check should fail for weakened contracts");
+        assert!(error
+            .to_string()
+            .contains("contract weakened/changed for export `consume`"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);

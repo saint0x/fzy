@@ -1,49 +1,107 @@
 {
   "abiRevision": 1,
   "compilerIdentityHash": "2f94649a8a371971b258cab36540b6e23fb8dcfa574a9ad138f357b1aaa1c1d7",
+  "contractSchema": "fozzylang.ffi_contracts.v1",
   "dataLayoutHash": "4ef19cf377b4271c24656e2451536d23b76c8d7e35289fdb42706f8eff5d7afa",
   "exports": [
     {
+      "contract": {
+        "callbackBindings": []
+      },
       "name": "server_hash32",
       "params": [
         {
           "c": "const uint8_t*",
+          "contract": {
+            "lifetimeAnchor": "loan:ptr",
+            "mutability": "const",
+            "nullability": "non_null",
+            "ownership": "borrowed",
+            "view": {
+              "kind": "ptr_len",
+              "lengthParam": "len"
+            }
+          },
           "fzy": "*u8",
           "name": "ptr_borrowed"
         },
         {
           "c": "size_t",
+          "contract": {
+            "lifetimeAnchor": null,
+            "mutability": "const",
+            "nullability": "n/a",
+            "ownership": "value",
+            "view": null
+          },
           "fzy": "usize",
           "name": "len"
         }
       ],
       "return": {
         "c": "uint32_t",
+        "contract": {
+          "mutability": "const",
+          "nullability": "n/a",
+          "ownership": "value"
+        },
         "fzy": "u32"
       },
       "symbolVersion": 1
     },
     {
+      "contract": {
+        "callbackBindings": []
+      },
       "name": "server_write",
       "params": [
         {
           "c": "int32_t",
+          "contract": {
+            "lifetimeAnchor": null,
+            "mutability": "const",
+            "nullability": "n/a",
+            "ownership": "value",
+            "view": null
+          },
           "fzy": "i32",
           "name": "fd"
         },
         {
           "c": "const uint8_t*",
+          "contract": {
+            "lifetimeAnchor": "loan:ptr",
+            "mutability": "const",
+            "nullability": "non_null",
+            "ownership": "borrowed",
+            "view": {
+              "kind": "ptr_len",
+              "lengthParam": "len"
+            }
+          },
           "fzy": "*u8",
           "name": "ptr_borrowed"
         },
         {
           "c": "size_t",
+          "contract": {
+            "lifetimeAnchor": null,
+            "mutability": "const",
+            "nullability": "n/a",
+            "ownership": "value",
+            "view": null
+          },
           "fzy": "usize",
           "name": "len"
         }
       ],
       "return": {
         "c": "int32_t",
+        "contract": {
+          "mutability": "const",
+          "nullability": "n/a",
+          "ownership": "value"
+        },
         "fzy": "i32"
       },
       "symbolVersion": 1
@@ -72,7 +130,7 @@
       "size": 4
     }
   ],
-  "schemaVersion": "fozzylang.ffi_abi.v0",
-  "symbolVersioning": "strict-name-signature-v0",
+  "schemaVersion": "fozzylang.ffi_abi.v1",
+  "symbolVersioning": "strict-name-signature-v1",
   "targetTriple": "aarch64-apple-darwin"
 }

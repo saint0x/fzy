@@ -187,6 +187,13 @@ pub fn run_child_process(spec: &ProcessSpec, cancelled: bool) -> ProcessResult {
     let limits = spec.limits.clone();
     let drop_uid = spec.drop_uid;
     let drop_gid = spec.drop_gid;
+    if drop_uid.is_some() && drop_gid.is_none() {
+        return ProcessResult {
+            class: ExitClass::SpawnError,
+            stdout: String::new(),
+            stderr: "unsafe pre_exec contract violated: drop_uid requires drop_gid".to_string(),
+        };
+    }
     // Safety: pre_exec only performs async-signal-safe libc calls to configure child process.
     unsafe {
         command.pre_exec(move || {
@@ -331,5 +338,19 @@ mod tests {
         let result = run_child_process(&spec, false);
         assert_eq!(result.class, ExitClass::Success);
         assert_eq!(result.stdout, "hello");
+    }
+
+    #[test]
+    fn process_runner_rejects_uid_drop_without_gid_drop_contract() {
+        let spec = ProcessSpec {
+            program: "true".to_string(),
+            timeout_ms: 250,
+            drop_uid: Some(501),
+            drop_gid: None,
+            ..ProcessSpec::default()
+        };
+        let result = run_child_process(&spec, false);
+        assert_eq!(result.class, ExitClass::SpawnError);
+        assert!(result.stderr.contains("drop_uid requires drop_gid"));
     }
 }

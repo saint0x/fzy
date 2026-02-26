@@ -89,8 +89,14 @@ def main() -> int:
         in pipeline_src
     )
     has_native_array_index_lowering = (
-        "array_slots: HashMap<String, Vec<String>>" in pipeline_src
-        and "array_bindings: HashMap<String, Vec<LocalBinding>>" in pipeline_src
+        (
+            "array_slots: HashMap<String, Vec<String>>" in pipeline_src
+            or "array_slots: HashMap<String, LlvmArrayBinding>" in pipeline_src
+        )
+        and (
+            "array_bindings: HashMap<String, Vec<LocalBinding>>" in pipeline_src
+            or "array_bindings: HashMap<String, ClifArrayBinding>" in pipeline_src
+        )
         and "__native.array_get" not in pipeline_src
     )
     has_native_array_index_partial_reject = "array/index expressions" in pipeline_src

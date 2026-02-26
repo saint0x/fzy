@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "fozzylang.rust_unsafe_policy.v1",
+  "baselineCount": 2,
+  "approvedDelta": 0,
+  "allowedFiles": [
+    "crates/stdlib/src/process.rs",
+    "crates/stdlib/src/security.rs"
+  ]
+}

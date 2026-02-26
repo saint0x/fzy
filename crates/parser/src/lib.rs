@@ -447,11 +447,7 @@ impl Parser {
             return false;
         };
         let full_path = if let Some(prefix) = prefix {
-            prefix
-                .iter()
-                .cloned()
-                .chain(local_path)
-                .collect::<Vec<_>>()
+            prefix.iter().cloned().chain(local_path).collect::<Vec<_>>()
         } else {
             local_path
         };
@@ -1566,6 +1562,24 @@ impl Parser {
         let scope = self.parse_unsafe_contract_field(&args[3], "scope")?;
         let risk_class = self.parse_unsafe_contract_field(&args[4], "risk_class")?;
         let proof_ref = self.parse_unsafe_contract_field(&args[5], "proof_ref")?;
+        if !Self::unsafe_invariant_supported(&invariant) {
+            self.push_diag_here(
+                "unsafe contract `invariant` must use supported predicate DSL (e.g. `owner_live(x) && ptr_nonnull(p) && ptr_len_ge(p,8)`)",
+            );
+            return None;
+        }
+        if !Self::unsafe_risk_class_supported(&risk_class) {
+            self.push_diag_here(
+                "unsafe contract `risk_class` must be one of: memory, ffi, process, io, concurrency, crypto, other",
+            );
+            return None;
+        }
+        if !Self::unsafe_proof_ref_supported(&proof_ref) {
+            self.push_diag_here(
+                "unsafe contract `proof_ref` must use one of: trace:// test:// rfc:// gate:// run:// ci://",
+            );
+            return None;
+        }
 
         Some(UnsafeContract {
             reason,
@@ -1602,6 +1616,68 @@ impl Parser {
             return None;
         }
         Some(normalized.to_string())
+    }
+
+    fn unsafe_invariant_supported(value: &str) -> bool {
+        let allowed = [
+            "owner_live",
+            "ptr_nonnull",
+            "ptr_aligned",
+            "ptr_len_ge",
+            "no_alias",
+            "range_within",
+        ];
+        let clauses = value
+            .split("&&")
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect::<Vec<_>>();
+        if clauses.is_empty() {
+            return false;
+        }
+        clauses.iter().all(|clause| {
+            let Some(open) = clause.find('(') else {
+                return false;
+            };
+            let Some(close) = clause.rfind(')') else {
+                return false;
+            };
+            if close <= open + 1 || close + 1 != clause.len() {
+                return false;
+            }
+            let predicate = clause[..open].trim();
+            if !allowed.contains(&predicate) {
+                return false;
+            }
+            clause[open + 1..close]
+                .split(',')
+                .map(str::trim)
+                .all(Self::unsafe_invariant_arg_supported)
+        })
+    }
+
+    fn unsafe_invariant_arg_supported(value: &str) -> bool {
+        if value.is_empty() {
+            return false;
+        }
+        value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
+    }
+
+    fn unsafe_risk_class_supported(value: &str) -> bool {
+        matches!(
+            value,
+            "memory" | "ffi" | "process" | "io" | "concurrency" | "crypto" | "other"
+        )
+    }
+
+    fn unsafe_proof_ref_supported(value: &str) -> bool {
+        [
+            "trace://", "test://", "rfc://", "gate://", "run://", "ci://",
+        ]
+        .iter()
+        .any(|scheme| value.starts_with(scheme))
     }
 
     fn parse_type(&mut self) -> Option<Type> {
@@ -3006,6 +3082,36 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("ffi_panic mode must be")));
+    }
+
+    #[test]
+    fn rejects_unsafe_contract_with_unsupported_invariant() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(8);
+                unsafe("reason:x", "invariant:pointer is valid", "owner:p", "scope:main", "risk_class:memory", "proof_ref:trace://x");
+                return 0;
+            }
+        "#;
+        let diagnostics = parse(source, "unsafe").expect_err("unsupported invariant should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("supported predicate DSL")));
+    }
+
+    #[test]
+    fn rejects_unsafe_contract_with_invalid_risk_class() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(8);
+                unsafe("reason:x", "invariant:owner_live(p) && ptr_nonnull(p)", "owner:p", "scope:main", "risk_class:network", "proof_ref:trace://x");
+                return 0;
+            }
+        "#;
+        let diagnostics = parse(source, "unsafe").expect_err("invalid risk class should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("risk_class")));
     }
 
     #[test]
