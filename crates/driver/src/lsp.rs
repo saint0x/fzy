@@ -539,6 +539,25 @@ fn collect_pattern_bindings(
                 );
             }
         }
+        ast::Pattern::Struct { fields, .. } => {
+            for (_, binding) in fields {
+                if binding == "_" {
+                    continue;
+                }
+                let _ = declare_symbol(
+                    decls,
+                    scopes,
+                    positions,
+                    scope_id,
+                    DeclInfo {
+                        name: binding.clone(),
+                        kind: "variable".to_string(),
+                        detail: format!("match {binding}"),
+                        signature: None,
+                    },
+                );
+            }
+        }
         ast::Pattern::Or(items) => {
             for item in items {
                 collect_pattern_bindings(item, scope_id, scopes, decls, positions);

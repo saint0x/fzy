@@ -288,6 +288,10 @@ pub enum Pattern {
     Int(i128),
     Bool(bool),
     Ident(String),
+    Struct {
+        name: String,
+        fields: Vec<(String, String)>,
+    },
     Variant {
         enum_name: String,
         variant: String,
@@ -300,6 +304,11 @@ impl Pattern {
     pub fn bound_names(&self, out: &mut Vec<String>) {
         match self {
             Pattern::Ident(name) => out.push(name.clone()),
+            Pattern::Struct { fields, .. } => out.extend(
+                fields
+                    .iter()
+                    .filter_map(|(_, binding)| (binding != "_").then_some(binding.clone())),
+            ),
             Pattern::Variant { bindings, .. } => out.extend(bindings.iter().cloned()),
             Pattern::Or(patterns) => {
                 for pattern in patterns {

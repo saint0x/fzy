@@ -2634,9 +2634,11 @@ impl ControlFlowBuilder {
                             },
                         )?;
                         let binding_stmts = if arm.guard.is_some() {
-                            if pattern_has_variant_payload_bindings(&arm.pattern) {
+                            if pattern_has_variant_payload_bindings(&arm.pattern)
+                                || pattern_has_struct_field_bindings(&arm.pattern)
+                            {
                                 bail!(
-                                    "native backend does not support match guards that depend on variant payload bindings"
+                                    "native backend does not support match guards that depend on payload or struct-field bindings"
                                 );
                             }
                             Vec::new()
@@ -2757,6 +2759,7 @@ fn pattern_to_expr(scrutinee_name: &str, pattern: &ast::Pattern) -> ast::Expr {
                 right: Box::new(ast::Expr::Int(variant_tag(&key) as i128)),
             }
         }
+        ast::Pattern::Struct { .. } => ast::Expr::Bool(true),
         ast::Pattern::Or(patterns) => {
             let mut iter = patterns.iter();
             let first = iter
@@ -2779,7 +2782,20 @@ fn pattern_has_variant_payload_bindings(pattern: &ast::Pattern) -> bool {
         ast::Pattern::Wildcard
         | ast::Pattern::Int(_)
         | ast::Pattern::Bool(_)
+        | ast::Pattern::Struct { .. }
         | ast::Pattern::Ident(_) => false,
+    }
+}
+
+fn pattern_has_struct_field_bindings(pattern: &ast::Pattern) -> bool {
+    match pattern {
+        ast::Pattern::Struct { fields, .. } => fields.iter().any(|(_, binding)| binding != "_"),
+        ast::Pattern::Or(patterns) => patterns.iter().any(pattern_has_struct_field_bindings),
+        ast::Pattern::Wildcard
+        | ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_)
+        | ast::Pattern::Ident(_)
+        | ast::Pattern::Variant { .. } => false,
     }
 }
 
@@ -2815,8 +2831,47 @@ fn variant_payload_bindings_supported_for_scrutinee(
         ast::Pattern::Wildcard
         | ast::Pattern::Int(_)
         | ast::Pattern::Bool(_)
+        | ast::Pattern::Struct { .. }
         | ast::Pattern::Ident(_) => true,
     }
+}
+
+fn struct_field_bindings_supported_for_value(pattern: &ast::Pattern, value: &ast::Expr) -> bool {
+    match pattern {
+        ast::Pattern::Struct { name, fields } => {
+            if fields.iter().all(|(_, binding)| binding == "_") {
+                return true;
+            }
+            let ast::Expr::StructInit {
+                name: value_name,
+                fields: value_fields,
+            } = value
+            else {
+                return false;
+            };
+            if value_name != name {
+                return false;
+            }
+            fields
+                .iter()
+                .all(|(field_name, _)| value_fields.iter().any(|(field, _)| field == field_name))
+        }
+        ast::Pattern::Or(patterns) => patterns
+            .iter()
+            .all(|pattern| struct_field_bindings_supported_for_value(pattern, value)),
+        ast::Pattern::Wildcard
+        | ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_)
+        | ast::Pattern::Ident(_)
+        | ast::Pattern::Variant { .. } => true,
+    }
+}
+
+fn struct_field_bindings_supported_for_scrutinee(
+    pattern: &ast::Pattern,
+    scrutinee: &ast::Expr,
+) -> bool {
+    struct_field_bindings_supported_for_value(pattern, scrutinee)
 }
 
 fn bindings_for_match_arm_pattern(
@@ -2842,7 +2897,10 @@ fn bindings_for_match_arm_pattern(
                     "native backend requires literal enum scrutinee for match-arm payload bindings"
                 );
             };
-            if value_enum != enum_name || value_variant != variant || payload.len() != bindings.len() {
+            if value_enum != enum_name
+                || value_variant != variant
+                || payload.len() != bindings.len()
+            {
                 bail!(
                     "native backend requires exact literal enum variant match for payload bindings"
                 );
@@ -2858,9 +2916,49 @@ fn bindings_for_match_arm_pattern(
             }
             Ok(stmts)
         }
+        ast::Pattern::Struct { name, fields } => {
+            let binding_fields = fields
+                .iter()
+                .filter(|(_, binding)| binding != "_")
+                .collect::<Vec<_>>();
+            if binding_fields.is_empty() {
+                return Ok(Vec::new());
+            }
+            let ast::Expr::StructInit {
+                name: value_name,
+                fields: value_fields,
+            } = scrutinee
+            else {
+                bail!(
+                    "native backend requires literal struct scrutinee for match-arm struct bindings"
+                );
+            };
+            if value_name != name {
+                bail!(
+                    "native backend requires exact literal struct type match for struct bindings"
+                );
+            }
+            let mut stmts = Vec::with_capacity(binding_fields.len());
+            for (field_name, binding_name) in binding_fields {
+                let Some((_, field_expr)) =
+                    value_fields.iter().find(|(field, _)| field == field_name)
+                else {
+                    bail!("native backend requires struct literal fields to cover every bound pattern field");
+                };
+                stmts.push(ast::Stmt::Let {
+                    name: binding_name.clone(),
+                    mutable: false,
+                    ty: None,
+                    value: field_expr.clone(),
+                });
+            }
+            Ok(stmts)
+        }
         ast::Pattern::Or(patterns) => {
-            if patterns.iter().any(pattern_has_variant_payload_bindings) {
-                bail!("native backend does not support payload bindings within or-pattern match arms");
+            if patterns.iter().any(pattern_has_variant_payload_bindings)
+                || patterns.iter().any(pattern_has_struct_field_bindings)
+            {
+                bail!("native backend does not support payload or struct-field bindings within or-pattern match arms");
             }
             Ok(Vec::new())
         }
@@ -3385,7 +3483,11 @@ fn llvm_emit_inlined_closure_call(
     }
 
     let mut value = llvm_emit_expr(&binding.body, ctx, string_literal_ids, task_ref_ids);
-    if binding.return_type.as_ref().is_some_and(|ty| *ty == ast::Type::Void) {
+    if binding
+        .return_type
+        .as_ref()
+        .is_some_and(|ty| *ty == ast::Type::Void)
+    {
         value = "0".to_string();
     }
     llvm_restore_shadowed_slots(ctx, saved, inserted);
@@ -3417,8 +3519,43 @@ fn llvm_emit_let_pattern(
         ast::Pattern::Bool(expected) => {
             let cmp = ctx.value();
             let expected_i32 = if *expected { 1 } else { 0 };
-            ctx.code
-                .push_str(&format!("  {cmp} = icmp eq i32 {rendered}, {expected_i32}\n"));
+            ctx.code.push_str(&format!(
+                "  {cmp} = icmp eq i32 {rendered}, {expected_i32}\n"
+            ));
+        }
+        ast::Pattern::Struct { name, fields } => {
+            let ast::Expr::StructInit {
+                name: value_name,
+                fields: value_fields,
+            } = value
+            else {
+                bail!("native backend requires literal struct initializer for `let` struct destructuring");
+            };
+            if value_name != name {
+                bail!(
+                    "native backend requires exact literal struct type match for `let` struct destructuring"
+                );
+            }
+            for (field_name, binding_name) in fields {
+                if binding_name == "_" {
+                    continue;
+                }
+                let Some((_, field_expr)) =
+                    value_fields.iter().find(|(field, _)| field == field_name)
+                else {
+                    bail!("native backend requires struct literal fields to cover every bound pattern field");
+                };
+                let field_value = llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
+                let slot = format!(
+                    "%slot_{}_{}",
+                    native_mangle_symbol(binding_name),
+                    ctx.next_value
+                );
+                ctx.code.push_str(&format!(
+                    "  {slot} = alloca i32\n  store i32 {field_value}, ptr {slot}\n"
+                ));
+                ctx.slots.insert(binding_name.clone(), slot);
+            }
         }
         ast::Pattern::Variant {
             enum_name,
@@ -3526,7 +3663,8 @@ fn llvm_emit_linear_stmts(
                 if !ctx.code.contains(&format!("{slot} = alloca i32")) {
                     ctx.code.push_str(&format!("  {slot} = alloca i32\n"));
                 }
-                ctx.code.push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+                ctx.code
+                    .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
             }
             ast::Stmt::CompoundAssign { target, op, value } => {
                 let combined_expr = ast::Expr::Binary {
@@ -3548,7 +3686,8 @@ fn llvm_emit_linear_stmts(
                 if !ctx.code.contains(&format!("{slot} = alloca i32")) {
                     ctx.code.push_str(&format!("  {slot} = alloca i32\n"));
                 }
-                ctx.code.push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+                ctx.code
+                    .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -5776,6 +5915,42 @@ fn clif_emit_let_pattern(
                 .ins()
                 .icmp(IntCC::Equal, lowered.value, expected_value);
         }
+        ast::Pattern::Struct { name, fields } => {
+            let ast::Expr::StructInit {
+                name: value_name,
+                fields: value_fields,
+            } = value
+            else {
+                bail!("native backend requires literal struct initializer for `let` struct destructuring");
+            };
+            if value_name != name {
+                bail!(
+                    "native backend requires exact literal struct type match for `let` struct destructuring"
+                );
+            }
+            for (field_name, binding_name) in fields {
+                if binding_name == "_" {
+                    continue;
+                }
+                let Some((_, field_expr)) =
+                    value_fields.iter().find(|(field, _)| field == field_name)
+                else {
+                    bail!("native backend requires struct literal fields to cover every bound pattern field");
+                };
+                let payload_val = clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
+                let var = Variable::from_u32(*next_var as u32);
+                *next_var += 1;
+                builder.declare_var(var, payload_val.ty);
+                builder.def_var(var, payload_val.value);
+                locals.insert(
+                    binding_name.clone(),
+                    LocalBinding {
+                        var,
+                        ty: payload_val.ty,
+                    },
+                );
+            }
+        }
         ast::Pattern::Variant {
             enum_name,
             variant,
@@ -5783,7 +5958,9 @@ fn clif_emit_let_pattern(
         } => {
             let key = format!("{enum_name}::{variant}");
             let expected_tag = builder.ins().iconst(lowered.ty, variant_tag(&key) as i64);
-            let _ = builder.ins().icmp(IntCC::Equal, lowered.value, expected_tag);
+            let _ = builder
+                .ins()
+                .icmp(IntCC::Equal, lowered.value, expected_tag);
             if let ast::Expr::EnumInit {
                 enum_name: value_enum,
                 variant: value_variant,
@@ -5868,8 +6045,7 @@ fn clif_emit_linear_stmts(
                 builder.def_var(binding.var, val.value);
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
-                        let field_val =
-                            clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
+                        let field_val = clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
                         let field_var = Variable::from_u32(*next_var as u32);
                         *next_var += 1;
                         builder.declare_var(field_var, field_val.ty);
@@ -6502,6 +6678,19 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
+        if function_body_contains_unsupported_let_pattern_struct_binding(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend supports `let` struct-field binding only when the initializer is the same literal struct value in function `{}`",
+                    function.name
+                ),
+                Some(
+                    "materialize the struct literal directly in the `let` initializer or avoid struct-field destructuring on native backends"
+                        .to_string(),
+                ),
+            ));
+        }
         if function_body_contains_unsupported_match_variant_binding(&function.body) {
             diagnostics.push(diagnostics::Diagnostic::new(
                 diagnostics::Severity::Error,
@@ -6511,6 +6700,19 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
                 Some(
                     "use a literal enum scrutinee and avoid guards on payload-binding arms, or remove payload bindings for native builds"
+                        .to_string(),
+                ),
+            ));
+        }
+        if function_body_contains_unsupported_match_struct_binding(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend only supports match-arm struct-field bindings for literal struct scrutinees without guards in function `{}`",
+                    function.name
+                ),
+                Some(
+                    "use a literal struct scrutinee and avoid guards on struct-binding arms, or remove struct-field bindings for native builds"
                         .to_string(),
                 ),
             ));
@@ -6730,7 +6932,8 @@ fn stmt_contains_unsupported_closure_usage(stmt: &ast::Stmt) -> bool {
                 || function_body_contains_unsupported_closure_usage(else_body)
         }
         ast::Stmt::While { condition, body } => {
-            expr_contains_closure(condition) || function_body_contains_unsupported_closure_usage(body)
+            expr_contains_closure(condition)
+                || function_body_contains_unsupported_closure_usage(body)
         }
         ast::Stmt::For {
             init,
@@ -6747,7 +6950,8 @@ fn stmt_contains_unsupported_closure_usage(stmt: &ast::Stmt) -> bool {
                 || function_body_contains_unsupported_closure_usage(body)
         }
         ast::Stmt::ForIn { iterable, body, .. } => {
-            expr_contains_closure(iterable) || function_body_contains_unsupported_closure_usage(body)
+            expr_contains_closure(iterable)
+                || function_body_contains_unsupported_closure_usage(body)
         }
         ast::Stmt::Loop { body } => function_body_contains_unsupported_closure_usage(body),
         ast::Stmt::Match { scrutinee, arms } => {
@@ -6825,6 +7029,55 @@ fn stmt_contains_unsupported_let_pattern_variant_binding(stmt: &ast::Stmt) -> bo
     }
 }
 
+fn function_body_contains_unsupported_let_pattern_struct_binding(body: &[ast::Stmt]) -> bool {
+    body.iter()
+        .any(stmt_contains_unsupported_let_pattern_struct_binding)
+}
+
+fn stmt_contains_unsupported_let_pattern_struct_binding(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::LetPattern { pattern, value, .. } => {
+            pattern_has_struct_field_bindings(pattern)
+                && !struct_field_bindings_supported_for_value(pattern, value)
+        }
+        ast::Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            function_body_contains_unsupported_let_pattern_struct_binding(then_body)
+                || function_body_contains_unsupported_let_pattern_struct_binding(else_body)
+        }
+        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
+            function_body_contains_unsupported_let_pattern_struct_binding(body)
+        }
+        ast::Stmt::For {
+            init, step, body, ..
+        } => {
+            init.as_deref()
+                .is_some_and(stmt_contains_unsupported_let_pattern_struct_binding)
+                || step
+                    .as_deref()
+                    .is_some_and(stmt_contains_unsupported_let_pattern_struct_binding)
+                || function_body_contains_unsupported_let_pattern_struct_binding(body)
+        }
+        ast::Stmt::ForIn { body, .. } => {
+            function_body_contains_unsupported_let_pattern_struct_binding(body)
+        }
+        ast::Stmt::Match { .. } => false,
+        ast::Stmt::Let { .. }
+        | ast::Stmt::Assign { .. }
+        | ast::Stmt::CompoundAssign { .. }
+        | ast::Stmt::Break
+        | ast::Stmt::Continue
+        | ast::Stmt::Return(_)
+        | ast::Stmt::Defer(_)
+        | ast::Stmt::Requires(_)
+        | ast::Stmt::Ensures(_)
+        | ast::Stmt::Expr(_) => false,
+    }
+}
+
 fn stmt_contains_unsupported_match_variant_binding(stmt: &ast::Stmt) -> bool {
     match stmt {
         ast::Stmt::Match { scrutinee, arms } => arms.iter().any(|arm| {
@@ -6855,7 +7108,61 @@ fn stmt_contains_unsupported_match_variant_binding(stmt: &ast::Stmt) -> bool {
                     .is_some_and(stmt_contains_unsupported_match_variant_binding)
                 || function_body_contains_unsupported_match_variant_binding(body)
         }
-        ast::Stmt::ForIn { body, .. } => function_body_contains_unsupported_match_variant_binding(body),
+        ast::Stmt::ForIn { body, .. } => {
+            function_body_contains_unsupported_match_variant_binding(body)
+        }
+        ast::Stmt::Let { .. }
+        | ast::Stmt::LetPattern { .. }
+        | ast::Stmt::Assign { .. }
+        | ast::Stmt::CompoundAssign { .. }
+        | ast::Stmt::Break
+        | ast::Stmt::Continue
+        | ast::Stmt::Return(_)
+        | ast::Stmt::Defer(_)
+        | ast::Stmt::Requires(_)
+        | ast::Stmt::Ensures(_)
+        | ast::Stmt::Expr(_) => false,
+    }
+}
+
+fn function_body_contains_unsupported_match_struct_binding(body: &[ast::Stmt]) -> bool {
+    body.iter()
+        .any(stmt_contains_unsupported_match_struct_binding)
+}
+
+fn stmt_contains_unsupported_match_struct_binding(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Match { scrutinee, arms } => arms.iter().any(|arm| {
+            if arm.guard.is_some() && pattern_has_struct_field_bindings(&arm.pattern) {
+                return true;
+            }
+            pattern_has_struct_field_bindings(&arm.pattern)
+                && !struct_field_bindings_supported_for_scrutinee(&arm.pattern, scrutinee)
+        }),
+        ast::Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            function_body_contains_unsupported_match_struct_binding(then_body)
+                || function_body_contains_unsupported_match_struct_binding(else_body)
+        }
+        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
+            function_body_contains_unsupported_match_struct_binding(body)
+        }
+        ast::Stmt::For {
+            init, step, body, ..
+        } => {
+            init.as_deref()
+                .is_some_and(stmt_contains_unsupported_match_struct_binding)
+                || step
+                    .as_deref()
+                    .is_some_and(stmt_contains_unsupported_match_struct_binding)
+                || function_body_contains_unsupported_match_struct_binding(body)
+        }
+        ast::Stmt::ForIn { body, .. } => {
+            function_body_contains_unsupported_match_struct_binding(body)
+        }
         ast::Stmt::Let { .. }
         | ast::Stmt::LetPattern { .. }
         | ast::Stmt::Assign { .. }
@@ -6918,9 +7225,12 @@ fn collect_unresolved_calls_from_stmt(
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => {
-            collect_unresolved_calls_from_expr(value, defined_functions, local_callables, unresolved)
-        }
+        | ast::Stmt::Expr(value) => collect_unresolved_calls_from_expr(
+            value,
+            defined_functions,
+            local_callables,
+            unresolved,
+        ),
         ast::Stmt::Return(value) => {
             if let Some(value) = value {
                 collect_unresolved_calls_from_expr(
@@ -7083,11 +7393,21 @@ fn collect_unresolved_calls_from_expr(
                 unresolved.insert(callee.clone());
             }
             for arg in args {
-                collect_unresolved_calls_from_expr(arg, defined_functions, local_callables, unresolved);
+                collect_unresolved_calls_from_expr(
+                    arg,
+                    defined_functions,
+                    local_callables,
+                    unresolved,
+                );
             }
         }
         ast::Expr::FieldAccess { base, .. } => {
-            collect_unresolved_calls_from_expr(base, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                base,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
@@ -7110,16 +7430,36 @@ fn collect_unresolved_calls_from_expr(
             }
         }
         ast::Expr::Closure { body, .. } => {
-            collect_unresolved_calls_from_expr(body, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                body,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::Group(inner) => {
-            collect_unresolved_calls_from_expr(inner, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                inner,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::Await(inner) => {
-            collect_unresolved_calls_from_expr(inner, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                inner,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::Unary { expr, .. } => {
-            collect_unresolved_calls_from_expr(expr, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                expr,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::TryCatch {
             try_expr,
@@ -7139,7 +7479,12 @@ fn collect_unresolved_calls_from_expr(
             );
         }
         ast::Expr::Binary { left, right, .. } => {
-            collect_unresolved_calls_from_expr(left, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                left,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
             collect_unresolved_calls_from_expr(
                 right,
                 defined_functions,
@@ -7148,7 +7493,12 @@ fn collect_unresolved_calls_from_expr(
             );
         }
         ast::Expr::Range { start, end, .. } => {
-            collect_unresolved_calls_from_expr(start, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                start,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
             collect_unresolved_calls_from_expr(end, defined_functions, local_callables, unresolved);
         }
         ast::Expr::ArrayLiteral(items) => {
@@ -7162,7 +7512,12 @@ fn collect_unresolved_calls_from_expr(
             }
         }
         ast::Expr::Index { base, index } => {
-            collect_unresolved_calls_from_expr(base, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                base,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
             collect_unresolved_calls_from_expr(
                 index,
                 defined_functions,
@@ -13496,6 +13851,51 @@ mod tests {
     }
 
     #[test]
+    fn cross_backend_struct_pattern_destructuring_executes_consistently() {
+        let project_name = format!(
+            "fozzylang-struct-pattern-native-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "struct Pair { left: i32, right: i32 }\nfn main() -> i32 {\n    let Pair { left, right: r } = Pair { left: 12, right: 30 };\n    match Pair { left: left, right: r } {\n        Pair { left: a, right: b } => return a + b,\n    }\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 42);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn verify_accepts_native_let_pattern_lowering() {
         let file_name = format!(
             "fozzylang-native-let-pattern-supported-{}.fzy",
@@ -13513,7 +13913,8 @@ mod tests {
 
         let output = verify_file(&path).expect("verify should run");
         assert!(!output.diagnostic_details.iter().any(|diag| {
-            diag.message.contains("pattern destructuring in `let` statements")
+            diag.message
+                .contains("pattern destructuring in `let` statements")
         }));
 
         let _ = std::fs::remove_file(path);
@@ -13536,9 +13937,10 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(!output.diagnostic_details.iter().any(|diag| {
-            diag.message.contains("closure/lambda expressions")
-        }));
+        assert!(!output
+            .diagnostic_details
+            .iter()
+            .any(|diag| { diag.message.contains("closure/lambda expressions") }));
 
         let _ = std::fs::remove_file(path);
     }
@@ -13561,8 +13963,9 @@ mod tests {
 
         let output = verify_file(&path).expect("verify should run");
         assert!(output.diagnostic_details.iter().any(|diag| {
-            diag.message
-                .contains("native backend only supports closures bound directly in `let` statements")
+            diag.message.contains(
+                "native backend only supports closures bound directly in `let` statements",
+            )
         }));
 
         let _ = std::fs::remove_file(path);
@@ -13613,6 +14016,57 @@ mod tests {
         assert!(output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("only supports match-arm variant payload bindings for literal enum scrutinees without guards")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_unsupported_native_let_pattern_struct_binding_source() {
+        let file_name = format!(
+            "fozzylang-native-let-struct-pattern-source-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "struct Pair { left: i32, right: i32 }\nfn make(v: i32) -> Pair { return Pair { left: v, right: 1 } }\nfn main() -> i32 {\n    let source = make(7)\n    let Pair { left, right: r } = source;\n    return left + r\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message.contains(
+                "supports `let` struct-field binding only when the initializer is the same literal struct value",
+            )
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_unsupported_native_match_struct_payload_bindings() {
+        let file_name = format!(
+            "fozzylang-native-match-struct-pattern-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "struct Pair { left: i32, right: i32 }\nfn make(v: i32) -> Pair { return Pair { left: v, right: 1 } }\nfn main() -> i32 {\n    let source = make(9)\n    match source {\n        Pair { left, right: r } => return left + r,\n    }\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("only supports match-arm struct-field bindings for literal struct scrutinees without guards")
         }));
 
         let _ = std::fs::remove_file(path);

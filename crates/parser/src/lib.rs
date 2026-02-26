@@ -1188,6 +1188,36 @@ impl Parser {
 
     fn parse_single_pattern(&mut self) -> Option<Pattern> {
         let token = self.peek()?.clone();
+        if let TokenKind::Ident(struct_name) = token.kind.clone() {
+            if self
+                .peek_n(1)
+                .is_some_and(|tok| tok.kind == TokenKind::LBrace)
+            {
+                let _ = self.advance();
+                let _ = self.consume(&TokenKind::LBrace);
+                let mut fields = Vec::new();
+                while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                    let field_name = self.expect_ident("expected field name in struct pattern")?;
+                    let binding = if self.consume(&TokenKind::Colon) {
+                        self.expect_ident("expected binding name in struct pattern field")?
+                    } else {
+                        field_name.clone()
+                    };
+                    fields.push((field_name, binding));
+                    if !self.consume(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                if !self.consume(&TokenKind::RBrace) {
+                    self.push_diag_here("expected `}` to close struct pattern");
+                    return None;
+                }
+                return Some(Pattern::Struct {
+                    name: struct_name,
+                    fields,
+                });
+            }
+        }
         let expr = self.parse_prefix_expr()?;
         match expr {
             Expr::Int(v) => Some(Pattern::Int(v)),
@@ -3372,6 +3402,40 @@ mod tests {
     }
 
     #[test]
+    fn let_pattern_struct_parses_as_first_class_statement() {
+        let source = r#"
+            struct Pair { left: i32, right: i32 }
+            fn main() -> i32 {
+                let Pair { left, right: r } = Pair { left: 7, right: 9 };
+                return left + r;
+            }
+        "#;
+        let module = parse(source, "main").expect("parser should accept struct let patterns");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        let ast::Stmt::LetPattern { pattern, .. } = &main_fn.body[0] else {
+            panic!("expected let-pattern statement");
+        };
+        let ast::Pattern::Struct { name, fields } = pattern else {
+            panic!("expected struct pattern");
+        };
+        assert_eq!(name, "Pair");
+        assert_eq!(
+            fields,
+            &vec![
+                ("left".to_string(), "left".to_string()),
+                ("right".to_string(), "r".to_string())
+            ]
+        );
+    }
+
+    #[test]
     fn let_pattern_rejects_or_pattern() {
         let source = r#"
             fn main() -> i32 {
@@ -3380,9 +3444,9 @@ mod tests {
             }
         "#;
         let diags = parse(source, "main").expect_err("or-patterns in let should be rejected");
-        assert!(diags
-            .iter()
-            .any(|diag| diag.message.contains("or-patterns are not supported in `let` bindings")));
+        assert!(diags.iter().any(|diag| diag
+            .message
+            .contains("or-patterns are not supported in `let` bindings")));
     }
 
     #[test]

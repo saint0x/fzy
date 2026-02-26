@@ -2556,8 +2556,7 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
                 }
                 for statement in &function.body {
                     match statement {
-                        Stmt::Let { ty: Some(ty), .. }
-                        | Stmt::LetPattern { ty: Some(ty), .. } => {
+                        Stmt::Let { ty: Some(ty), .. } | Stmt::LetPattern { ty: Some(ty), .. } => {
                             collect_type_instantiation(ty, &mut out);
                         }
                         _ => {}
@@ -3006,6 +3005,7 @@ fn type_check_stmt(
     state: &mut TypeCheckState<'_>,
 ) {
     let enum_defs = env.enum_defs;
+    let struct_defs = env.struct_defs;
     match stmt {
         Stmt::Let {
             name,
@@ -3080,6 +3080,7 @@ fn type_check_stmt(
             check_pattern_compatibility(
                 pattern,
                 Some(&final_ty),
+                struct_defs,
                 enum_defs,
                 state.errors,
                 state.type_error_details,
@@ -3089,6 +3090,7 @@ fn type_check_stmt(
                 &final_ty,
                 *mutable,
                 scopes,
+                struct_defs,
                 enum_defs,
                 state.errors,
                 state.type_error_details,
@@ -3104,7 +3106,9 @@ fn type_check_stmt(
                     format!("assignment to immutable binding `{target}`; declare with `let mut`"),
                 );
             }
-            let target_ty = scopes.get(target).or_else(|| env.global_types.get(target).cloned());
+            let target_ty = scopes
+                .get(target)
+                .or_else(|| env.global_types.get(target).cloned());
             let value_ty = infer_expr_type(value, scopes, env, state);
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
                 if !type_compatible(&target_ty, &value_ty) {
@@ -3131,7 +3135,9 @@ fn type_check_stmt(
                     ),
                 );
             }
-            let target_ty = scopes.get(target).or_else(|| env.global_types.get(target).cloned());
+            let target_ty = scopes
+                .get(target)
+                .or_else(|| env.global_types.get(target).cloned());
             let value_ty = infer_expr_type(value, scopes, env, state);
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
                 if !type_compatible(&target_ty, &value_ty) {
@@ -3333,6 +3339,7 @@ fn type_check_stmt(
                 check_pattern_compatibility(
                     &arm.pattern,
                     scrutinee_ty.as_ref(),
+                    struct_defs,
                     enum_defs,
                     state.errors,
                     state.type_error_details,
@@ -3343,6 +3350,7 @@ fn type_check_stmt(
                         scrutinee_ty,
                         false,
                         scopes,
+                        struct_defs,
                         enum_defs,
                         state.errors,
                         state.type_error_details,
@@ -4626,6 +4634,7 @@ fn runtime_default_value(ty: &Type) -> Option<Value> {
 fn check_pattern_compatibility(
     pattern: &ast::Pattern,
     scrutinee_ty: Option<&Type>,
+    struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
     errors: &mut usize,
     type_error_details: &mut Vec<String>,
@@ -4634,6 +4643,41 @@ fn check_pattern_compatibility(
         (ast::Pattern::Int(_), Some(ty)) if is_integer_type(ty) => {}
         (ast::Pattern::Bool(_), Some(Type::Bool)) => {}
         (ast::Pattern::Wildcard, _) | (ast::Pattern::Ident(_), _) => {}
+        (
+            ast::Pattern::Struct { name, fields },
+            Some(Type::Named {
+                name: scrutinee_name,
+                ..
+            }),
+        ) => {
+            if scrutinee_name != name {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!(
+                        "pattern `{name} {{ ... }}` does not match scrutinee type `{scrutinee_name}`"
+                    ),
+                );
+                return;
+            }
+            let Some(struct_def) = struct_defs.get(name) else {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!("match pattern references unknown struct `{name}`"),
+                );
+                return;
+            };
+            for (field, _) in fields {
+                if !struct_def.fields.iter().any(|candidate| candidate.name == *field) {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!("struct `{name}` has no field `{field}`"),
+                    );
+                }
+            }
+        }
         (
             ast::Pattern::Variant {
                 enum_name,
@@ -4684,11 +4728,13 @@ fn check_pattern_compatibility(
                 );
             }
         }
-        (ast::Pattern::Variant { enum_name, variant, .. }, Some(actual)) => record_type_error(
-            errors,
-            type_error_details,
-            format!("pattern `{enum_name}::{variant}` expects enum scrutinee, got `{actual}`"),
-        ),
+        (ast::Pattern::Variant { enum_name, variant, .. }, Some(actual)) => {
+            record_type_error(
+                errors,
+                type_error_details,
+                format!("pattern `{enum_name}::{variant}` expects enum scrutinee, got `{actual}`"),
+            )
+        }
         (ast::Pattern::Variant { enum_name, variant, .. }, None) => record_type_error(
             errors,
             type_error_details,
@@ -4696,9 +4742,28 @@ fn check_pattern_compatibility(
                 "pattern `{enum_name}::{variant}` could not be validated because scrutinee type is unknown"
             ),
         ),
+        (ast::Pattern::Struct { name, .. }, Some(actual)) => record_type_error(
+            errors,
+            type_error_details,
+            format!("pattern `{name} {{ ... }}` expects struct scrutinee, got `{actual}`"),
+        ),
+        (ast::Pattern::Struct { name, .. }, None) => record_type_error(
+            errors,
+            type_error_details,
+            format!(
+                "pattern `{name} {{ ... }}` could not be validated because scrutinee type is unknown"
+            ),
+        ),
         (ast::Pattern::Or(patterns), ty) => {
             for pattern in patterns {
-                check_pattern_compatibility(pattern, ty, enum_defs, errors, type_error_details);
+                check_pattern_compatibility(
+                    pattern,
+                    ty,
+                    struct_defs,
+                    enum_defs,
+                    errors,
+                    type_error_details,
+                );
             }
         }
         (ast::Pattern::Int(_), Some(actual)) => record_type_error(
@@ -4724,6 +4789,7 @@ fn bind_pattern_types(
     scrutinee_ty: &Type,
     mutable: bool,
     scopes: &mut SymbolScopes,
+    struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
     errors: &mut usize,
     type_error_details: &mut Vec<String>,
@@ -4731,6 +4797,37 @@ fn bind_pattern_types(
     match pattern {
         ast::Pattern::Ident(name) => {
             scopes.insert(name.clone(), scrutinee_ty.clone(), mutable);
+        }
+        ast::Pattern::Struct { name, fields } => {
+            let Type::Named {
+                name: scrutinee, ..
+            } = scrutinee_ty
+            else {
+                return;
+            };
+            if name != scrutinee {
+                return;
+            }
+            let Some(struct_def) = struct_defs.get(name) else {
+                return;
+            };
+            for (field_name, binding_name) in fields {
+                let Some(field) = struct_def
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.name == *field_name)
+                else {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!("struct `{name}` has no field `{field_name}`"),
+                    );
+                    continue;
+                };
+                if binding_name != "_" {
+                    scopes.insert(binding_name.clone(), field.ty.clone(), mutable);
+                }
+            }
         }
         ast::Pattern::Variant {
             enum_name,
@@ -4776,6 +4873,7 @@ fn bind_pattern_types(
                     scrutinee_ty,
                     mutable,
                     scopes,
+                    struct_defs,
                     enum_defs,
                     errors,
                     type_error_details,
@@ -5305,10 +5403,7 @@ fn eval_expr<'a>(
                 let value = eval_expr(&closure.body, &local, functions);
                 if value.is_none() {
                     return runtime_default_value(
-                        closure
-                            .return_type
-                            .as_ref()
-                            .unwrap_or(&Type::Void),
+                        closure.return_type.as_ref().unwrap_or(&Type::Void),
                     );
                 }
                 return value;
@@ -5522,6 +5617,29 @@ fn bind_pattern_values(
             true
         }
         (
+            ast::Pattern::Struct {
+                name,
+                fields: pattern_fields,
+            },
+            Value::Struct {
+                _name: value_name,
+                fields,
+            },
+        ) => {
+            if name != value_name {
+                return false;
+            }
+            for (field_name, binding_name) in pattern_fields {
+                let Some(field_value) = fields.get(field_name) else {
+                    return false;
+                };
+                if binding_name != "_" {
+                    bindings.insert(binding_name.clone(), field_value.clone());
+                }
+            }
+            true
+        }
+        (
             ast::Pattern::Variant {
                 enum_name,
                 variant,
@@ -5545,6 +5663,7 @@ fn bind_pattern_values(
             true
         }
         (ast::Pattern::Variant { .. }, _) => false,
+        (ast::Pattern::Struct { .. }, _) => false,
         (ast::Pattern::Or(patterns), value) => {
             for candidate in patterns {
                 let mut local = bindings.clone();
@@ -5563,7 +5682,10 @@ fn pattern_is_catchall(pattern: &ast::Pattern) -> bool {
     match pattern {
         ast::Pattern::Wildcard | ast::Pattern::Ident(_) => true,
         ast::Pattern::Or(patterns) => patterns.iter().any(pattern_is_catchall),
-        ast::Pattern::Int(_) | ast::Pattern::Bool(_) | ast::Pattern::Variant { .. } => false,
+        ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_)
+        | ast::Pattern::Struct { .. }
+        | ast::Pattern::Variant { .. } => false,
     }
 }
 
@@ -5874,6 +5996,24 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
         assert_eq!(typed.entry_return_const_i32, Some(9));
+    }
+
+    #[test]
+    fn struct_patterns_bind_fields_in_let_and_match() {
+        let source = r#"
+            struct Pair { left: i32, right: i32 }
+            fn main() -> i32 {
+                let Pair { left, right: r } = Pair { left: 4, right: 9 };
+                match Pair { left: left, right: r } {
+                    Pair { left: a, right: b } => return a + b,
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert_eq!(typed.entry_return_const_i32, Some(13));
     }
 
     #[test]

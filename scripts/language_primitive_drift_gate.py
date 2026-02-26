@@ -71,6 +71,15 @@ def main() -> int:
         "only supports match-arm variant payload bindings for literal enum scrutinees without guards"
         in pipeline_src
     )
+    has_struct_pattern_surface = "Pattern::Struct" in ast_src and "struct pattern" in parser_src
+    has_native_let_struct_literal_diag = (
+        "supports `let` struct-field binding only when the initializer is the same literal struct value"
+        in pipeline_src
+    )
+    has_native_match_struct_literal_guardrail = (
+        "only supports match-arm struct-field bindings for literal struct scrutinees without guards"
+        in pipeline_src
+    )
 
     expected_status = {
         "function_type_surface": "implemented"
@@ -147,6 +156,18 @@ def main() -> int:
         if not has_native_match_variant_literal_guardrail:
             errors.append(
                 "match-pattern partial drift: expected guarded/literal-scrutinee diagnostic for unsupported native payload binding shapes"
+            )
+        if not has_struct_pattern_surface:
+            errors.append(
+                "let-pattern partial drift: expected first-class struct-pattern surface in parser/AST"
+            )
+        if not has_native_let_struct_literal_diag:
+            errors.append(
+                "let-struct-pattern partial drift: expected literal-source diagnostic for unsupported native struct-field binding"
+            )
+        if not has_native_match_struct_literal_guardrail:
+            errors.append(
+                "match-struct-pattern partial drift: expected guarded/literal-scrutinee diagnostic for unsupported native struct-field binding shapes"
             )
 
     if errors:
