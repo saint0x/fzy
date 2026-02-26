@@ -7,6 +7,40 @@
 - Measured runs: 30
 - Bootstrap samples: 5000
 
+## What This Measures (Simple)
+
+This report compares the same core-library-style workloads implemented two ways:
+
+- Rust implementation (`apps/text_bench_rust`)
+- Native Fzy scratch implementation (`examples/benchmarks/*.fzy`)
+
+Each benchmark returns a deterministic checksum so both versions must produce the same result before timing is accepted.
+
+## How The Benchmark Was Run
+
+- Each kernel runs `8,000,000` iterations.
+- We run warmups first (`5`), then measured runs (`30`).
+- Rust and Fzy runs are alternated to reduce temperature/order bias.
+- We report mean latency and a bootstrap 95% confidence interval for the ratio.
+- Ratio definition: `Fzy time / Rust time`.
+  - `< 1.0` means Fzy is faster.
+  - `> 1.0` means Rust is faster.
+- Verdict thresholds:
+  - `fzy_faster` if ratio `< 0.95`
+  - `near_parity` if `0.95 <= ratio <= 1.05`
+  - `rust_faster` if ratio `> 1.05`
+
+## Fozzy Validation Context
+
+The timing loop itself is done by the benchmark harness, then validated through Fozzy gates:
+
+- benchmark matrix checksum verification (`scripts/verify_corelibs_bench_matrix.py`)
+- deterministic scenario checks (`tests/corelibs.bench_matrix.pass.fozzy.json`) via:
+  - `fozzy doctor --deep ...`
+  - `fozzy test --det --strict ...`
+
+This gives reproducibility/consistency checks around the benchmark matrix in addition to raw timing.
+
 | Benchmark | Rust mean (ms) | Fzy mean (ms) | Ratio (Fzy/Rust) | 95% CI | Verdict |
 |---|---:|---:|---:|---:|---|
 | resultx_classify | 15.460 | 15.404 | 0.996x | [0.982, 1.008] | near_parity |
