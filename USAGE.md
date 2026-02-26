@@ -180,6 +180,12 @@ fz debug-check [path]
 
 Use these when behavior is correct in one mode but drifts in another, or when hardening safety properties.
 Unsafe island details (`unsafe fn`, `unsafe { ... }`, optional metadata, strict audit mode) are documented in `docs/unsafe-contract-authoring-v1.md`.
+`fz audit unsafe --workspace` emits compiler-generated unsafe docs/inventory artifacts:
+- `.fz/unsafe-map.workspace.json`
+- `.fz/unsafe-docs.workspace.json`
+- `.fz/unsafe-docs.workspace.md`
+- `.fz/unsafe-docs.workspace.html`
+Default production policy keeps missing metadata non-blocking; strict CI/release policy can make missing/invalid metadata blocking.
 
 Recommended native completeness probe:
 

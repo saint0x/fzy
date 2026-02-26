@@ -142,6 +142,7 @@ fn next_counter() -> i32 {
 
 ext unsafe c fn c_add(left: i32, right: i32) -> i32;
 // Compiler-generated unsafe contracts/docs include reason/invariant/owner/scope/risk_class/proof_ref.
+// Missing metadata is non-blocking by default; strict CI/release policy can make it blocking.
 unsafe fn c_add_unsafe(left: i32, right: i32) -> i32 {
     // Compiler-generated unsafe contracts/docs include reason/invariant/owner/scope/risk_class/proof_ref.
     unsafe {

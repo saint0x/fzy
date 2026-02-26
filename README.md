@@ -228,6 +228,17 @@ Spec: `docs/dependency-locking-v1.md`
 - Prefer `ext unsafe c fn` for unsafe C imports and call them only inside `unsafe { ... }`.
 - `fz build --lib` emits static/shared libraries plus installable header + ABI manifest.
 
+## Unsafe Docs Artifacts
+
+- Unsafe is first-class via `unsafe fn` and `unsafe { ... }`.
+- `fz audit unsafe --workspace --json` emits compiler-generated unsafe inventory/docs:
+  - `.fz/unsafe-map.workspace.json`
+  - `.fz/unsafe-docs.workspace.json`
+  - `.fz/unsafe-docs.workspace.md`
+  - `.fz/unsafe-docs.workspace.html`
+- Metadata fields (`reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`) are compiler-generated and policy-driven.
+- Default production flow is non-blocking for missing metadata unless strict unsafe policy is enabled in CI/release.
+
 ## Fozzy-First Validation Contract
 
 Use this exact sequence for strict confidence:

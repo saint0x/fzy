@@ -77,7 +77,10 @@ def run(cmd, cwd=ROOT, check=True):
 
 def run_json(cmd):
     out = run(cmd).stdout.strip()
-    return json.loads(out.splitlines()[-1])
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return json.loads(out.splitlines()[-1])
 
 
 def timed_run(cmd, ok_returncodes):
