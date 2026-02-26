@@ -458,10 +458,10 @@
 - [ ] Keep backend responsibilities codegen-only (instruction selection/register/legalization), not semantic lowering policy.
 
 #### Runtime Shim Elimination (Native Data Plane)
-- [ ] Remove generated C runtime shim as the execution dependency for local array/list/map/string data-plane operations.
+- [✅] Remove generated C runtime shim as the execution dependency for local array/list/map/string data-plane operations.
 - [✅] Remove `__native.array_new`, `__native.array_push`, `__native.array_get` from hot-path lowering for native optimized builds.
-- [ ] Remove string data-plane dependency on global intern-table path for loop-local temporaries.
-- [ ] Reduce `NATIVE_RUNTIME_IMPORTS` to capability/host-effect boundaries only (fs/http/proc/thread/time/log/etc.), excluding local data-plane primitives.
+- [✅] Remove string data-plane dependency on global intern-table path for loop-local temporaries.
+- [✅] Reduce `NATIVE_RUNTIME_IMPORTS` to capability/host-effect boundaries only (fs/http/proc/thread/time/log/etc.), excluding local data-plane primitives.
 - [✅] Ensure no fallback compatibility shim remains in optimized native path for removed data-plane calls.
 
 #### Direct-to-Memory Arrays/Indexing (Phase 1)

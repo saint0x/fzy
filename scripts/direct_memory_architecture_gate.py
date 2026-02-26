@@ -25,6 +25,13 @@ def main() -> int:
         if symbol in src:
             errors.append(f"legacy array data-plane symbol reintroduced: `{symbol}`")
 
+    legacy_runtime_import_prefixes = ['callee: "str.', 'callee: "list.', 'callee: "map.']
+    for marker in legacy_runtime_import_prefixes:
+        if marker in src:
+            errors.append(
+                f"legacy data-plane runtime import reintroduced in native import table: `{marker}`"
+            )
+
     if "build_control_flow_cfg(&function.body)" in src:
         errors.append(
             "backend lowering drift: found CFG build callsite without shared variant-tag map"

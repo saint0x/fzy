@@ -102,66 +102,6 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
-        callee: "str.concat",
-        symbol: "fz_native_str_concat2",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "str.concat2",
-        symbol: "fz_native_str_concat2",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "str.concat3",
-        symbol: "fz_native_str_concat3",
-        arity: 3,
-    },
-    NativeRuntimeImport {
-        callee: "str.concat4",
-        symbol: "fz_native_str_concat4",
-        arity: 4,
-    },
-    NativeRuntimeImport {
-        callee: "str.contains",
-        symbol: "fz_native_str_contains",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "str.starts_with",
-        symbol: "fz_native_str_starts_with",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "str.ends_with",
-        symbol: "fz_native_str_ends_with",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "str.replace",
-        symbol: "fz_native_str_replace",
-        arity: 3,
-    },
-    NativeRuntimeImport {
-        callee: "str.trim",
-        symbol: "fz_native_str_trim",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "str.split",
-        symbol: "fz_native_str_split",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "str.len",
-        symbol: "fz_native_str_len",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "str.slice",
-        symbol: "fz_native_str_slice",
-        arity: 3,
-    },
-    NativeRuntimeImport {
         callee: "http.header",
         symbol: "fz_native_http_header",
         arity: 2,
@@ -459,81 +399,6 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "path.normalize",
         symbol: "fz_native_path_normalize",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "list.new",
-        symbol: "fz_native_list_new",
-        arity: 0,
-    },
-    NativeRuntimeImport {
-        callee: "list.push",
-        symbol: "fz_native_list_push",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "list.pop",
-        symbol: "fz_native_list_pop",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "list.len",
-        symbol: "fz_native_list_len",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "list.get",
-        symbol: "fz_native_list_get",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "list.set",
-        symbol: "fz_native_list_set",
-        arity: 3,
-    },
-    NativeRuntimeImport {
-        callee: "list.clear",
-        symbol: "fz_native_list_clear",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "list.join",
-        symbol: "fz_native_list_join",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "map.new",
-        symbol: "fz_native_map_new",
-        arity: 0,
-    },
-    NativeRuntimeImport {
-        callee: "map.set",
-        symbol: "fz_native_map_set",
-        arity: 3,
-    },
-    NativeRuntimeImport {
-        callee: "map.get",
-        symbol: "fz_native_map_get",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "map.has",
-        symbol: "fz_native_map_has",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "map.delete",
-        symbol: "fz_native_map_delete",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "map.keys",
-        symbol: "fz_native_map_keys",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "map.len",
-        symbol: "fz_native_map_len",
         arity: 1,
     },
     NativeRuntimeImport {
@@ -4911,6 +4776,34 @@ fn eval_const_i32_call(
     }
 }
 
+fn is_native_data_plane_string_call(callee: &str) -> bool {
+    matches!(
+        callee,
+        "str.concat"
+            | "str.concat2"
+            | "str.concat3"
+            | "str.concat4"
+            | "str.contains"
+            | "str.starts_with"
+            | "str.ends_with"
+            | "str.replace"
+            | "str.trim"
+            | "str.split"
+            | "str.len"
+            | "str.slice"
+    )
+}
+
+fn is_native_data_plane_list_map_call(callee: &str) -> bool {
+    callee.starts_with("list.") || callee.starts_with("map.")
+}
+
+fn native_data_plane_string_call_is_const_foldable(callee: &str, args: &[ast::Expr]) -> bool {
+    let empty_const_strings = HashMap::<String, String>::new();
+    eval_const_i32_call(callee, args, &empty_const_strings).is_some()
+        || eval_const_string_call(callee, args, &empty_const_strings).is_some()
+}
+
 fn collect_used_runtime_imports_from_stmt(
     stmt: &ast::Stmt,
     seen: &mut HashSet<&'static str>,
@@ -7581,6 +7474,32 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
+        if function_body_contains_unsupported_dynamic_string_data_plane_calls(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend removed dynamic string data-plane runtime calls in function `{}`",
+                    function.name
+                ),
+                Some(
+                    "rewrite to compile-time-foldable `str.*` expressions or move the operation outside the native direct-memory path"
+                        .to_string(),
+                ),
+            ));
+        }
+        if function_body_contains_unsupported_list_map_data_plane_calls(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend removed list/map runtime-handle data-plane calls in function `{}`",
+                    function.name
+                ),
+                Some(
+                    "replace runtime-handle list/map operations with direct-memory native constructs before native compilation"
+                        .to_string(),
+                ),
+            ));
+        }
     }
 
     let defined_functions = module
@@ -8208,6 +8127,247 @@ fn stmt_contains_unsupported_partial_native_expression_usage(stmt: &ast::Stmt) -
     }
 }
 
+fn function_body_contains_unsupported_dynamic_string_data_plane_calls(body: &[ast::Stmt]) -> bool {
+    body.iter()
+        .any(stmt_contains_unsupported_dynamic_string_data_plane_calls)
+}
+
+fn stmt_contains_unsupported_dynamic_string_data_plane_calls(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Defer(value) => expr_contains_unsupported_dynamic_string_data_plane_calls(value),
+        ast::Stmt::Return(value) => value
+            .as_ref()
+            .is_some_and(expr_contains_unsupported_dynamic_string_data_plane_calls),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(condition)
+                || function_body_contains_unsupported_dynamic_string_data_plane_calls(then_body)
+                || function_body_contains_unsupported_dynamic_string_data_plane_calls(else_body)
+        }
+        ast::Stmt::While { condition, body } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(condition)
+                || function_body_contains_unsupported_dynamic_string_data_plane_calls(body)
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(stmt_contains_unsupported_dynamic_string_data_plane_calls)
+                || condition
+                    .as_ref()
+                    .is_some_and(expr_contains_unsupported_dynamic_string_data_plane_calls)
+                || step
+                    .as_deref()
+                    .is_some_and(stmt_contains_unsupported_dynamic_string_data_plane_calls)
+                || function_body_contains_unsupported_dynamic_string_data_plane_calls(body)
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(iterable)
+                || function_body_contains_unsupported_dynamic_string_data_plane_calls(body)
+        }
+        ast::Stmt::Loop { body } => {
+            function_body_contains_unsupported_dynamic_string_data_plane_calls(body)
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(expr_contains_unsupported_dynamic_string_data_plane_calls)
+                        || expr_contains_unsupported_dynamic_string_data_plane_calls(&arm.value)
+                })
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => false,
+    }
+}
+
+fn expr_contains_unsupported_dynamic_string_data_plane_calls(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            (is_native_data_plane_string_call(callee)
+                && !native_data_plane_string_call_is_const_foldable(callee, args))
+                || args
+                    .iter()
+                    .any(expr_contains_unsupported_dynamic_string_data_plane_calls)
+        }
+        ast::Expr::FieldAccess { base, .. } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(base)
+        }
+        ast::Expr::StructInit { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| expr_contains_unsupported_dynamic_string_data_plane_calls(value)),
+        ast::Expr::EnumInit { payload, .. } => payload
+            .iter()
+            .any(expr_contains_unsupported_dynamic_string_data_plane_calls),
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(inner)
+        }
+        ast::Expr::Unary { expr, .. } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(expr)
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(try_expr)
+                || expr_contains_unsupported_dynamic_string_data_plane_calls(catch_expr)
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(left)
+                || expr_contains_unsupported_dynamic_string_data_plane_calls(right)
+        }
+        ast::Expr::Range { start, end, .. } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(start)
+                || expr_contains_unsupported_dynamic_string_data_plane_calls(end)
+        }
+        ast::Expr::ArrayLiteral(items) => items
+            .iter()
+            .any(expr_contains_unsupported_dynamic_string_data_plane_calls),
+        ast::Expr::Index { base, index } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(base)
+                || expr_contains_unsupported_dynamic_string_data_plane_calls(index)
+        }
+        ast::Expr::Closure { body, .. } => {
+            expr_contains_unsupported_dynamic_string_data_plane_calls(body)
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => false,
+    }
+}
+
+fn function_body_contains_unsupported_list_map_data_plane_calls(body: &[ast::Stmt]) -> bool {
+    body.iter()
+        .any(stmt_contains_unsupported_list_map_data_plane_calls)
+}
+
+fn stmt_contains_unsupported_list_map_data_plane_calls(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Defer(value) => expr_contains_unsupported_list_map_data_plane_calls(value),
+        ast::Stmt::Return(value) => value
+            .as_ref()
+            .is_some_and(expr_contains_unsupported_list_map_data_plane_calls),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_unsupported_list_map_data_plane_calls(condition)
+                || function_body_contains_unsupported_list_map_data_plane_calls(then_body)
+                || function_body_contains_unsupported_list_map_data_plane_calls(else_body)
+        }
+        ast::Stmt::While { condition, body } => {
+            expr_contains_unsupported_list_map_data_plane_calls(condition)
+                || function_body_contains_unsupported_list_map_data_plane_calls(body)
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(stmt_contains_unsupported_list_map_data_plane_calls)
+                || condition
+                    .as_ref()
+                    .is_some_and(expr_contains_unsupported_list_map_data_plane_calls)
+                || step
+                    .as_deref()
+                    .is_some_and(stmt_contains_unsupported_list_map_data_plane_calls)
+                || function_body_contains_unsupported_list_map_data_plane_calls(body)
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            expr_contains_unsupported_list_map_data_plane_calls(iterable)
+                || function_body_contains_unsupported_list_map_data_plane_calls(body)
+        }
+        ast::Stmt::Loop { body } => function_body_contains_unsupported_list_map_data_plane_calls(body),
+        ast::Stmt::Match { scrutinee, arms } => {
+            expr_contains_unsupported_list_map_data_plane_calls(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(expr_contains_unsupported_list_map_data_plane_calls)
+                        || expr_contains_unsupported_list_map_data_plane_calls(&arm.value)
+                })
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => false,
+    }
+}
+
+fn expr_contains_unsupported_list_map_data_plane_calls(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            is_native_data_plane_list_map_call(callee)
+                || args
+                    .iter()
+                    .any(expr_contains_unsupported_list_map_data_plane_calls)
+        }
+        ast::Expr::FieldAccess { base, .. } => expr_contains_unsupported_list_map_data_plane_calls(base),
+        ast::Expr::StructInit { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| expr_contains_unsupported_list_map_data_plane_calls(value)),
+        ast::Expr::EnumInit { payload, .. } => payload
+            .iter()
+            .any(expr_contains_unsupported_list_map_data_plane_calls),
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+            expr_contains_unsupported_list_map_data_plane_calls(inner)
+        }
+        ast::Expr::Unary { expr, .. } => expr_contains_unsupported_list_map_data_plane_calls(expr),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            expr_contains_unsupported_list_map_data_plane_calls(try_expr)
+                || expr_contains_unsupported_list_map_data_plane_calls(catch_expr)
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            expr_contains_unsupported_list_map_data_plane_calls(left)
+                || expr_contains_unsupported_list_map_data_plane_calls(right)
+        }
+        ast::Expr::Range { start, end, .. } => {
+            expr_contains_unsupported_list_map_data_plane_calls(start)
+                || expr_contains_unsupported_list_map_data_plane_calls(end)
+        }
+        ast::Expr::ArrayLiteral(items) => items
+            .iter()
+            .any(expr_contains_unsupported_list_map_data_plane_calls),
+        ast::Expr::Index { base, index } => {
+            expr_contains_unsupported_list_map_data_plane_calls(base)
+                || expr_contains_unsupported_list_map_data_plane_calls(index)
+        }
+        ast::Expr::Closure { body, .. } => expr_contains_unsupported_list_map_data_plane_calls(body),
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => false,
+    }
+}
+
 fn expr_contains_unsupported_partial_native_expression(
     expr: &ast::Expr,
     context: NativeExprContext,
@@ -8803,6 +8963,8 @@ fn collect_local_callable_bindings_from_expr(expr: &ast::Expr, out: &mut HashSet
 
 fn native_backend_supports_call(callee: &str) -> bool {
     native_runtime_import_for_callee(callee).is_some()
+        || is_native_data_plane_string_call(callee)
+        || is_native_data_plane_list_map_call(callee)
 }
 
 fn declare_native_runtime_imports(
@@ -15454,6 +15616,56 @@ mod tests {
     }
 
     #[test]
+    fn verify_rejects_dynamic_string_data_plane_calls_on_native_backend() {
+        let file_name = format!(
+            "fozzylang-native-dynamic-str-data-plane-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    let s = \"abc\"\n    if str.contains(s, \"a\") == 1 {\n        return 1\n    }\n    return 0\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("removed dynamic string data-plane runtime calls")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_list_map_data_plane_calls_on_native_backend() {
+        let file_name = format!(
+            "fozzylang-native-list-map-data-plane-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    let l = list.new()\n    list.push(l, \"x\")\n    return list.len(l)\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("removed list/map runtime-handle data-plane calls")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn parse_program_fails_for_missing_declared_module() {
         let root_name = format!(
             "fozzylang-mod-missing-{}",
@@ -15591,7 +15803,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "fn main() -> i32 {\n    let values = [4, 6, 9]\n    let idx = 1\n    let score = values[idx]\n    let text = str.replace(str.trim(\"  xax  \"), \"a\", \"b\")\n    if str.contains(text, \"b\") == 1 {\n        return score + str.len(text)\n    }\n    return 0\n}\n",
+            "fn main() -> i32 {\n    let values = [4, 6, 9]\n    let idx = 1\n    let score = values[idx]\n    if str.contains(str.replace(str.trim(\"  xax  \"), \"a\", \"b\"), \"b\") == 1 {\n        return score + str.len(str.replace(str.trim(\"  xax  \"), \"a\", \"b\"))\n    }\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -15727,7 +15939,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "fn main() -> i32 {\n    let s = str.slice(\"abcdef\", 1, 3)\n    if str.starts_with(s, \"bcd\") == 1 {\n        return str.len(s) + 16\n    }\n    return 0\n}\n",
+            "fn main() -> i32 {\n    if str.starts_with(str.slice(\"abcdef\", 1, 3), \"bcd\") == 1 {\n        return str.len(str.slice(\"abcdef\", 1, 3)) + 16\n    }\n    return 0\n}\n",
         )
         .expect("source should be written");
 

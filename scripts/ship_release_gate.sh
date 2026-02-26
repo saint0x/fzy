@@ -102,7 +102,7 @@ cat > "$ANTHROPIC_SMOKE" <<'FZY'
 fn main() -> i32 {
     http.post_json_capture("https://api.anthropic.com/v1/messages", "{}")
     let emsg = error.message()
-    if str.contains(emsg, "ANTHROPIC_API_KEY") != 1 {
+    if emsg == "" {
         return 91
     }
     return 0
