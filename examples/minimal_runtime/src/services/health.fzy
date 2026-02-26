@@ -1,4 +1,6 @@
 use core.time;
+
 fn check() -> i32 {
-    time.now() return 0
+    time.now();
+    return 0;
 }

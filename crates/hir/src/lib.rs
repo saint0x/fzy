@@ -3209,7 +3209,10 @@ fn infer_expr_type(
                 record_type_error(
                     state.errors,
                     state.type_error_details,
-                    format!("call target `{}` is not callable (found `{}`)", base_callee, found),
+                    format!(
+                        "call target `{}` is not callable (found `{}`)",
+                        base_callee, found
+                    ),
                 );
                 return None;
             }

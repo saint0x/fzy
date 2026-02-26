@@ -2062,6 +2062,778 @@ enum BackendKind {
     Cranelift,
 }
 
+type CfgBlockId = usize;
+
+#[derive(Debug, Clone)]
+struct ControlFlowCfg {
+    entry: CfgBlockId,
+    blocks: Vec<ControlFlowBlock>,
+    loops: Vec<ControlFlowLoop>,
+}
+
+#[derive(Debug, Clone)]
+struct ControlFlowLoop {
+    id: usize,
+    break_target: CfgBlockId,
+    continue_target: CfgBlockId,
+}
+
+#[derive(Debug, Clone)]
+struct ControlFlowBlock {
+    stmts: Vec<ast::Stmt>,
+    terminator: ControlFlowTerminator,
+}
+
+#[derive(Debug, Clone)]
+enum ControlFlowTerminator {
+    Return(Option<ast::Expr>),
+    Jump {
+        target: CfgBlockId,
+        edge: ControlFlowEdge,
+    },
+    Branch {
+        condition: ast::Expr,
+        then_target: CfgBlockId,
+        else_target: CfgBlockId,
+    },
+    Unreachable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlFlowEdge {
+    Normal,
+    LoopBack { loop_id: usize },
+    Break { loop_id: usize },
+    Continue { loop_id: usize },
+}
+
+#[derive(Clone, Copy)]
+struct ActiveLoop {
+    id: usize,
+    break_target: CfgBlockId,
+    continue_target: CfgBlockId,
+}
+
+#[derive(Clone)]
+struct CfgBuildBlock {
+    stmts: Vec<ast::Stmt>,
+    terminator: Option<ControlFlowTerminator>,
+}
+
+struct ControlFlowBuilder {
+    blocks: Vec<CfgBuildBlock>,
+    loops: Vec<ControlFlowLoop>,
+    active_loops: Vec<ActiveLoop>,
+    next_loop_id: usize,
+    next_temp: usize,
+}
+
+impl ControlFlowBuilder {
+    fn new() -> Self {
+        Self {
+            blocks: vec![CfgBuildBlock {
+                stmts: Vec::new(),
+                terminator: None,
+            }],
+            loops: Vec::new(),
+            active_loops: Vec::new(),
+            next_loop_id: 0,
+            next_temp: 0,
+        }
+    }
+
+    fn new_block(&mut self) -> CfgBlockId {
+        let id = self.blocks.len();
+        self.blocks.push(CfgBuildBlock {
+            stmts: Vec::new(),
+            terminator: None,
+        });
+        id
+    }
+
+    fn append_stmt(&mut self, block: CfgBlockId, stmt: ast::Stmt) -> Result<()> {
+        let current = self
+            .blocks
+            .get_mut(block)
+            .ok_or_else(|| anyhow!("control-flow builder referenced missing block {}", block))?;
+        if current.terminator.is_some() {
+            bail!("control-flow builder attempted to append into terminated block {block}");
+        }
+        current.stmts.push(stmt);
+        Ok(())
+    }
+
+    fn terminate(&mut self, block: CfgBlockId, terminator: ControlFlowTerminator) -> Result<()> {
+        let current = self
+            .blocks
+            .get_mut(block)
+            .ok_or_else(|| anyhow!("control-flow builder referenced missing block {}", block))?;
+        if current.terminator.is_some() {
+            bail!("control-flow builder attempted to re-terminate block {block}");
+        }
+        current.terminator = Some(terminator);
+        Ok(())
+    }
+
+    fn next_temp_name(&mut self, prefix: &str) -> String {
+        let name = format!("__cfg_{prefix}_{}", self.next_temp);
+        self.next_temp += 1;
+        name
+    }
+
+    fn lower_stmt_seq(
+        &mut self,
+        mut current: CfgBlockId,
+        body: &[ast::Stmt],
+    ) -> Result<Option<CfgBlockId>> {
+        for stmt in body {
+            match stmt {
+                ast::Stmt::Let { .. }
+                | ast::Stmt::Assign { .. }
+                | ast::Stmt::CompoundAssign { .. }
+                | ast::Stmt::Defer(_)
+                | ast::Stmt::Requires(_)
+                | ast::Stmt::Ensures(_)
+                | ast::Stmt::Expr(_) => {
+                    self.append_stmt(current, stmt.clone())?;
+                }
+                ast::Stmt::Return(expr) => {
+                    self.terminate(current, ControlFlowTerminator::Return(expr.clone()))?;
+                    return Ok(None);
+                }
+                ast::Stmt::Break => {
+                    let active = self.active_loops.last().copied().ok_or_else(|| {
+                        anyhow!("control-flow lowering encountered `break` outside loop scope")
+                    })?;
+                    self.terminate(
+                        current,
+                        ControlFlowTerminator::Jump {
+                            target: active.break_target,
+                            edge: ControlFlowEdge::Break { loop_id: active.id },
+                        },
+                    )?;
+                    return Ok(None);
+                }
+                ast::Stmt::Continue => {
+                    let active = self.active_loops.last().copied().ok_or_else(|| {
+                        anyhow!("control-flow lowering encountered `continue` outside loop scope")
+                    })?;
+                    self.terminate(
+                        current,
+                        ControlFlowTerminator::Jump {
+                            target: active.continue_target,
+                            edge: ControlFlowEdge::Continue { loop_id: active.id },
+                        },
+                    )?;
+                    return Ok(None);
+                }
+                ast::Stmt::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    let then_block = self.new_block();
+                    let else_block = self.new_block();
+                    self.terminate(
+                        current,
+                        ControlFlowTerminator::Branch {
+                            condition: condition.clone(),
+                            then_target: then_block,
+                            else_target: else_block,
+                        },
+                    )?;
+                    let then_tail = self.lower_stmt_seq(then_block, then_body)?;
+                    let else_tail = self.lower_stmt_seq(else_block, else_body)?;
+                    match (then_tail, else_tail) {
+                        (None, None) => return Ok(None),
+                        (then_tail, else_tail) => {
+                            let cont = self.new_block();
+                            if let Some(tail) = then_tail {
+                                self.terminate(
+                                    tail,
+                                    ControlFlowTerminator::Jump {
+                                        target: cont,
+                                        edge: ControlFlowEdge::Normal,
+                                    },
+                                )?;
+                            }
+                            if let Some(tail) = else_tail {
+                                self.terminate(
+                                    tail,
+                                    ControlFlowTerminator::Jump {
+                                        target: cont,
+                                        edge: ControlFlowEdge::Normal,
+                                    },
+                                )?;
+                            }
+                            current = cont;
+                        }
+                    }
+                }
+                ast::Stmt::While { condition, body } => {
+                    let head = self.new_block();
+                    let loop_body = self.new_block();
+                    let exit = self.new_block();
+                    let loop_id = self.next_loop_id;
+                    self.next_loop_id += 1;
+                    self.loops.push(ControlFlowLoop {
+                        id: loop_id,
+                        break_target: exit,
+                        continue_target: head,
+                    });
+                    self.terminate(
+                        current,
+                        ControlFlowTerminator::Jump {
+                            target: head,
+                            edge: ControlFlowEdge::Normal,
+                        },
+                    )?;
+                    self.terminate(
+                        head,
+                        ControlFlowTerminator::Branch {
+                            condition: condition.clone(),
+                            then_target: loop_body,
+                            else_target: exit,
+                        },
+                    )?;
+                    self.active_loops.push(ActiveLoop {
+                        id: loop_id,
+                        break_target: exit,
+                        continue_target: head,
+                    });
+                    let body_tail = self.lower_stmt_seq(loop_body, body)?;
+                    let _ = self.active_loops.pop();
+                    if let Some(tail) = body_tail {
+                        self.terminate(
+                            tail,
+                            ControlFlowTerminator::Jump {
+                                target: head,
+                                edge: ControlFlowEdge::LoopBack { loop_id },
+                            },
+                        )?;
+                    }
+                    current = exit;
+                }
+                ast::Stmt::For {
+                    init,
+                    condition,
+                    step,
+                    body,
+                } => {
+                    if let Some(init) = init {
+                        let Some(next) =
+                            self.lower_stmt_seq(current, std::slice::from_ref(init.as_ref()))?
+                        else {
+                            return Ok(None);
+                        };
+                        current = next;
+                    }
+                    let head = self.new_block();
+                    let loop_body = self.new_block();
+                    let step_block = self.new_block();
+                    let exit = self.new_block();
+                    let loop_id = self.next_loop_id;
+                    self.next_loop_id += 1;
+                    self.loops.push(ControlFlowLoop {
+                        id: loop_id,
+                        break_target: exit,
+                        continue_target: step_block,
+                    });
+                    self.terminate(
+                        current,
+                        ControlFlowTerminator::Jump {
+                            target: head,
+                            edge: ControlFlowEdge::Normal,
+                        },
+                    )?;
+                    if let Some(condition) = condition {
+                        self.terminate(
+                            head,
+                            ControlFlowTerminator::Branch {
+                                condition: condition.clone(),
+                                then_target: loop_body,
+                                else_target: exit,
+                            },
+                        )?;
+                    } else {
+                        self.terminate(
+                            head,
+                            ControlFlowTerminator::Jump {
+                                target: loop_body,
+                                edge: ControlFlowEdge::LoopBack { loop_id },
+                            },
+                        )?;
+                    }
+                    self.active_loops.push(ActiveLoop {
+                        id: loop_id,
+                        break_target: exit,
+                        continue_target: step_block,
+                    });
+                    let body_tail = self.lower_stmt_seq(loop_body, body)?;
+                    let _ = self.active_loops.pop();
+                    if let Some(tail) = body_tail {
+                        self.terminate(
+                            tail,
+                            ControlFlowTerminator::Jump {
+                                target: step_block,
+                                edge: ControlFlowEdge::Normal,
+                            },
+                        )?;
+                    }
+                    if let Some(step) = step {
+                        if let Some(step_tail) =
+                            self.lower_stmt_seq(step_block, std::slice::from_ref(step.as_ref()))?
+                        {
+                            self.terminate(
+                                step_tail,
+                                ControlFlowTerminator::Jump {
+                                    target: head,
+                                    edge: ControlFlowEdge::LoopBack { loop_id },
+                                },
+                            )?;
+                        }
+                    } else {
+                        self.terminate(
+                            step_block,
+                            ControlFlowTerminator::Jump {
+                                target: head,
+                                edge: ControlFlowEdge::LoopBack { loop_id },
+                            },
+                        )?;
+                    }
+                    current = exit;
+                }
+                ast::Stmt::ForIn {
+                    binding,
+                    iterable,
+                    body,
+                } => {
+                    if let ast::Expr::Range {
+                        start,
+                        end,
+                        inclusive,
+                    } = iterable
+                    {
+                        self.append_stmt(
+                            current,
+                            ast::Stmt::Let {
+                                name: binding.clone(),
+                                ty: Some(ast::Type::Int {
+                                    signed: true,
+                                    bits: 32,
+                                }),
+                                value: *start.clone(),
+                            },
+                        )?;
+                        let head = self.new_block();
+                        let loop_body = self.new_block();
+                        let step_block = self.new_block();
+                        let exit = self.new_block();
+                        let loop_id = self.next_loop_id;
+                        self.next_loop_id += 1;
+                        self.loops.push(ControlFlowLoop {
+                            id: loop_id,
+                            break_target: exit,
+                            continue_target: step_block,
+                        });
+                        self.terminate(
+                            current,
+                            ControlFlowTerminator::Jump {
+                                target: head,
+                                edge: ControlFlowEdge::Normal,
+                            },
+                        )?;
+                        let cond_expr = ast::Expr::Binary {
+                            op: if *inclusive {
+                                ast::BinaryOp::Lte
+                            } else {
+                                ast::BinaryOp::Lt
+                            },
+                            left: Box::new(ast::Expr::Ident(binding.clone())),
+                            right: Box::new(*end.clone()),
+                        };
+                        self.terminate(
+                            head,
+                            ControlFlowTerminator::Branch {
+                                condition: cond_expr,
+                                then_target: loop_body,
+                                else_target: exit,
+                            },
+                        )?;
+                        self.active_loops.push(ActiveLoop {
+                            id: loop_id,
+                            break_target: exit,
+                            continue_target: step_block,
+                        });
+                        let body_tail = self.lower_stmt_seq(loop_body, body)?;
+                        let _ = self.active_loops.pop();
+                        if let Some(tail) = body_tail {
+                            self.terminate(
+                                tail,
+                                ControlFlowTerminator::Jump {
+                                    target: step_block,
+                                    edge: ControlFlowEdge::Normal,
+                                },
+                            )?;
+                        }
+                        let step_stmt = ast::Stmt::CompoundAssign {
+                            target: binding.clone(),
+                            op: ast::BinaryOp::Add,
+                            value: ast::Expr::Int(1),
+                        };
+                        self.append_stmt(step_block, step_stmt)?;
+                        self.terminate(
+                            step_block,
+                            ControlFlowTerminator::Jump {
+                                target: head,
+                                edge: ControlFlowEdge::LoopBack { loop_id },
+                            },
+                        )?;
+                        current = exit;
+                    } else {
+                        let body_block = self.new_block();
+                        let exit = self.new_block();
+                        let loop_id = self.next_loop_id;
+                        self.next_loop_id += 1;
+                        self.loops.push(ControlFlowLoop {
+                            id: loop_id,
+                            break_target: exit,
+                            continue_target: exit,
+                        });
+                        self.terminate(
+                            current,
+                            ControlFlowTerminator::Jump {
+                                target: body_block,
+                                edge: ControlFlowEdge::Normal,
+                            },
+                        )?;
+                        self.active_loops.push(ActiveLoop {
+                            id: loop_id,
+                            break_target: exit,
+                            continue_target: exit,
+                        });
+                        let body_tail = self.lower_stmt_seq(body_block, body)?;
+                        let _ = self.active_loops.pop();
+                        if let Some(tail) = body_tail {
+                            self.terminate(
+                                tail,
+                                ControlFlowTerminator::Jump {
+                                    target: exit,
+                                    edge: ControlFlowEdge::Normal,
+                                },
+                            )?;
+                        }
+                        current = exit;
+                    }
+                }
+                ast::Stmt::Loop { body } => {
+                    let head = self.new_block();
+                    let has_loop_break = body_contains_break_at_depth(body, 0);
+                    let exit = if has_loop_break {
+                        Some(self.new_block())
+                    } else {
+                        None
+                    };
+                    let loop_id = self.next_loop_id;
+                    self.next_loop_id += 1;
+                    self.loops.push(ControlFlowLoop {
+                        id: loop_id,
+                        break_target: exit.unwrap_or(head),
+                        continue_target: head,
+                    });
+                    self.terminate(
+                        current,
+                        ControlFlowTerminator::Jump {
+                            target: head,
+                            edge: ControlFlowEdge::Normal,
+                        },
+                    )?;
+                    self.active_loops.push(ActiveLoop {
+                        id: loop_id,
+                        break_target: exit.unwrap_or(head),
+                        continue_target: head,
+                    });
+                    let body_tail = self.lower_stmt_seq(head, body)?;
+                    let _ = self.active_loops.pop();
+                    if let Some(tail) = body_tail {
+                        self.terminate(
+                            tail,
+                            ControlFlowTerminator::Jump {
+                                target: head,
+                                edge: ControlFlowEdge::LoopBack { loop_id },
+                            },
+                        )?;
+                    }
+                    if let Some(exit) = exit {
+                        current = exit;
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                ast::Stmt::Match { scrutinee, arms } => {
+                    if arms.is_empty() {
+                        self.terminate(current, ControlFlowTerminator::Unreachable)?;
+                        return Ok(None);
+                    }
+                    let scrutinee_name = self.next_temp_name("match");
+                    self.append_stmt(
+                        current,
+                        ast::Stmt::Let {
+                            name: scrutinee_name.clone(),
+                            ty: None,
+                            value: scrutinee.clone(),
+                        },
+                    )?;
+                    let end_block = self.new_block();
+                    let mut dispatch = current;
+                    for (index, arm) in arms.iter().enumerate() {
+                        let arm_block = self.new_block();
+                        let is_last = index + 1 == arms.len();
+                        let else_block = if is_last { end_block } else { self.new_block() };
+                        let mut condition = pattern_to_expr(&scrutinee_name, &arm.pattern);
+                        if let Some(guard) = &arm.guard {
+                            condition = ast::Expr::Binary {
+                                op: ast::BinaryOp::And,
+                                left: Box::new(condition),
+                                right: Box::new(guard.clone()),
+                            };
+                        }
+                        self.terminate(
+                            dispatch,
+                            ControlFlowTerminator::Branch {
+                                condition,
+                                then_target: arm_block,
+                                else_target: else_block,
+                            },
+                        )?;
+                        if arm.returns {
+                            self.terminate(
+                                arm_block,
+                                ControlFlowTerminator::Return(Some(arm.value.clone())),
+                            )?;
+                        } else {
+                            self.append_stmt(arm_block, ast::Stmt::Expr(arm.value.clone()))?;
+                            self.terminate(
+                                arm_block,
+                                ControlFlowTerminator::Jump {
+                                    target: end_block,
+                                    edge: ControlFlowEdge::Normal,
+                                },
+                            )?;
+                        }
+                        dispatch = else_block;
+                    }
+                    current = end_block;
+                }
+            }
+        }
+        Ok(Some(current))
+    }
+
+    fn finish(mut self, body: &[ast::Stmt]) -> Result<ControlFlowCfg> {
+        if let Some(tail) = self.lower_stmt_seq(0, body)? {
+            self.terminate(tail, ControlFlowTerminator::Return(None))?;
+        }
+        let blocks = self
+            .blocks
+            .into_iter()
+            .enumerate()
+            .map(|(id, block)| {
+                let terminator = block.terminator.ok_or_else(|| {
+                    anyhow!("control-flow builder emitted block {id} without terminator")
+                })?;
+                Ok(ControlFlowBlock {
+                    stmts: block.stmts,
+                    terminator,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ControlFlowCfg {
+            entry: 0,
+            blocks,
+            loops: self.loops,
+        })
+    }
+}
+
+fn build_control_flow_cfg(body: &[ast::Stmt]) -> Result<ControlFlowCfg> {
+    ControlFlowBuilder::new().finish(body)
+}
+
+fn body_contains_break_at_depth(body: &[ast::Stmt], depth: usize) -> bool {
+    body.iter()
+        .any(|stmt| stmt_contains_break_at_depth(stmt, depth))
+}
+
+fn stmt_contains_break_at_depth(stmt: &ast::Stmt, depth: usize) -> bool {
+    match stmt {
+        ast::Stmt::Break => depth == 0,
+        ast::Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            body_contains_break_at_depth(then_body, depth)
+                || body_contains_break_at_depth(else_body, depth)
+        }
+        ast::Stmt::While { body, .. }
+        | ast::Stmt::For { body, .. }
+        | ast::Stmt::ForIn { body, .. }
+        | ast::Stmt::Loop { body } => body_contains_break_at_depth(body, depth + 1),
+        ast::Stmt::Match { .. }
+        | ast::Stmt::Continue
+        | ast::Stmt::Return(_)
+        | ast::Stmt::Defer(_)
+        | ast::Stmt::Requires(_)
+        | ast::Stmt::Ensures(_)
+        | ast::Stmt::Expr(_)
+        | ast::Stmt::Let { .. }
+        | ast::Stmt::Assign { .. }
+        | ast::Stmt::CompoundAssign { .. } => false,
+    }
+}
+
+fn pattern_to_expr(scrutinee_name: &str, pattern: &ast::Pattern) -> ast::Expr {
+    match pattern {
+        ast::Pattern::Wildcard | ast::Pattern::Ident(_) => ast::Expr::Bool(true),
+        ast::Pattern::Int(value) => ast::Expr::Binary {
+            op: ast::BinaryOp::Eq,
+            left: Box::new(ast::Expr::Ident(scrutinee_name.to_string())),
+            right: Box::new(ast::Expr::Int(*value)),
+        },
+        ast::Pattern::Bool(value) => ast::Expr::Binary {
+            op: ast::BinaryOp::Eq,
+            left: Box::new(ast::Expr::Ident(scrutinee_name.to_string())),
+            right: Box::new(ast::Expr::Bool(*value)),
+        },
+        ast::Pattern::Variant {
+            enum_name, variant, ..
+        } => {
+            let key = format!("{enum_name}::{variant}");
+            ast::Expr::Binary {
+                op: ast::BinaryOp::Eq,
+                left: Box::new(ast::Expr::Ident(scrutinee_name.to_string())),
+                right: Box::new(ast::Expr::Int(variant_tag(&key) as i128)),
+            }
+        }
+        ast::Pattern::Or(patterns) => {
+            let mut iter = patterns.iter();
+            let first = iter
+                .next()
+                .map(|pattern| pattern_to_expr(scrutinee_name, pattern))
+                .unwrap_or(ast::Expr::Bool(true));
+            iter.fold(first, |acc, pattern| ast::Expr::Binary {
+                op: ast::BinaryOp::Or,
+                left: Box::new(acc),
+                right: Box::new(pattern_to_expr(scrutinee_name, pattern)),
+            })
+        }
+    }
+}
+
+fn verify_control_flow_cfg(cfg: &ControlFlowCfg) -> Result<()> {
+    if cfg.blocks.is_empty() {
+        bail!("control-flow cfg must include at least one block");
+    }
+    if cfg.entry >= cfg.blocks.len() {
+        bail!(
+            "control-flow cfg entry {} out of range (blocks={})",
+            cfg.entry,
+            cfg.blocks.len()
+        );
+    }
+    let loop_map = cfg
+        .loops
+        .iter()
+        .map(|loop_cfg| (loop_cfg.id, loop_cfg))
+        .collect::<HashMap<_, _>>();
+    let mut reachable = vec![false; cfg.blocks.len()];
+    let mut stack = vec![cfg.entry];
+    while let Some(block_id) = stack.pop() {
+        if reachable[block_id] {
+            continue;
+        }
+        reachable[block_id] = true;
+        match &cfg.blocks[block_id].terminator {
+            ControlFlowTerminator::Return(_) | ControlFlowTerminator::Unreachable => {}
+            ControlFlowTerminator::Jump { target, edge } => {
+                if *target >= cfg.blocks.len() {
+                    bail!(
+                        "control-flow cfg block {} jumps to invalid target {}",
+                        block_id,
+                        target
+                    );
+                }
+                match edge {
+                    ControlFlowEdge::Break { loop_id } => {
+                        let loop_cfg = loop_map.get(loop_id).ok_or_else(|| {
+                            anyhow!(
+                                "control-flow cfg block {} references unknown break loop id {}",
+                                block_id,
+                                loop_id
+                            )
+                        })?;
+                        if loop_cfg.break_target != *target {
+                            bail!(
+                                "control-flow cfg block {} break edge target {} does not match loop {} break target {}",
+                                block_id,
+                                target,
+                                loop_id,
+                                loop_cfg.break_target
+                            );
+                        }
+                    }
+                    ControlFlowEdge::Continue { loop_id } => {
+                        let loop_cfg = loop_map.get(loop_id).ok_or_else(|| {
+                            anyhow!(
+                                "control-flow cfg block {} references unknown continue loop id {}",
+                                block_id,
+                                loop_id
+                            )
+                        })?;
+                        if loop_cfg.continue_target != *target {
+                            bail!(
+                                "control-flow cfg block {} continue edge target {} does not match loop {} continue target {}",
+                                block_id,
+                                target,
+                                loop_id,
+                                loop_cfg.continue_target
+                            );
+                        }
+                    }
+                    ControlFlowEdge::Normal | ControlFlowEdge::LoopBack { .. } => {}
+                }
+                stack.push(*target);
+            }
+            ControlFlowTerminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => {
+                if *then_target >= cfg.blocks.len() || *else_target >= cfg.blocks.len() {
+                    bail!(
+                        "control-flow cfg block {} has invalid branch targets ({}, {})",
+                        block_id,
+                        then_target,
+                        else_target
+                    );
+                }
+                stack.push(*then_target);
+                stack.push(*else_target);
+            }
+        }
+    }
+    for (index, is_reachable) in reachable.iter().enumerate() {
+        if !is_reachable {
+            bail!(
+                "control-flow cfg contains unreachable declared block {}",
+                index
+            );
+        }
+    }
+    Ok(())
+}
+
 fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> String {
     match backend {
         BackendKind::Llvm => lower_llvm_ir(fir, true),
@@ -2134,38 +2906,127 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
         if is_extern_c_import_decl(function) {
             continue;
         }
-        out.push_str(&llvm_emit_function(
+        let lowered = llvm_emit_function(
             function,
             forced_main_return.filter(|_| function.name == "main"),
             &string_literal_ids,
             &task_ref_ids,
-        ));
+        )
+        .unwrap_or_else(|error| {
+            format!(
+                "define i32 @{}() {{\nentry:\n  ; cfg lowering failed: {}\n  ret i32 0\n}}\n",
+                native_mangle_symbol(&function.name),
+                error
+            )
+        });
+        out.push_str(&lowered);
         out.push('\n');
     }
     out
 }
 
+fn native_mangle_symbol(name: &str) -> String {
+    name.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String {
-    let ret = if enforce_contract_checks {
+    let forced_main_return = if enforce_contract_checks {
         if fir
             .entry_requires
             .iter()
             .any(|condition| matches!(condition, Some(false)))
         {
-            120
+            Some(120)
         } else if fir
             .entry_ensures
             .iter()
             .any(|condition| matches!(condition, Some(false)))
         {
-            121
+            Some(121)
         } else {
-            fir.entry_return_const_i32.unwrap_or(0)
+            None
         }
     } else {
-        fir.entry_return_const_i32.unwrap_or(0)
+        None
     };
-    format!("function %main() -> i32 {{\nblock0:\n  v0 = iconst.i32 {ret}\n  return v0\n}}\n")
+
+    let mut out = String::new();
+    for function in &fir.typed_functions {
+        if is_extern_c_import_decl(function) {
+            continue;
+        }
+        let _ = writeln!(
+            &mut out,
+            "function %{}() -> i32 {{",
+            native_mangle_symbol(&function.name)
+        );
+        match build_control_flow_cfg(&function.body).and_then(|cfg| {
+            verify_control_flow_cfg(&cfg)?;
+            Ok(cfg)
+        }) {
+            Ok(cfg) => {
+                for (block_id, block) in cfg.blocks.iter().enumerate() {
+                    let _ = writeln!(&mut out, "block{block_id}:");
+                    for stmt in &block.stmts {
+                        let _ = writeln!(&mut out, "  ; {:?}", stmt);
+                    }
+                    match &block.terminator {
+                        ControlFlowTerminator::Return(Some(expr)) => {
+                            let _ = writeln!(&mut out, "  return {:?}", expr);
+                        }
+                        ControlFlowTerminator::Return(None) => {
+                            if function.name == "main" {
+                                let fallback = forced_main_return
+                                    .or(fir.entry_return_const_i32)
+                                    .unwrap_or(0);
+                                let _ = writeln!(&mut out, "  return {}", fallback);
+                            } else {
+                                let _ = writeln!(&mut out, "  return 0");
+                            }
+                        }
+                        ControlFlowTerminator::Jump { target, edge } => {
+                            let _ = writeln!(&mut out, "  jump block{} ; {:?}", target, edge);
+                        }
+                        ControlFlowTerminator::Branch {
+                            condition,
+                            then_target,
+                            else_target,
+                        } => {
+                            let _ = writeln!(
+                                &mut out,
+                                "  br {:?}, block{}, block{}",
+                                condition, then_target, else_target
+                            );
+                        }
+                        ControlFlowTerminator::Unreachable => {
+                            let _ = writeln!(&mut out, "  trap");
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                let _ = writeln!(&mut out, "block0:");
+                let _ = writeln!(&mut out, "  ; cfg-error: {}", error);
+                let _ = writeln!(&mut out, "  return 0");
+            }
+        }
+        out.push_str("}\n\n");
+    }
+    if out.is_empty() {
+        let fallback = forced_main_return
+            .or(fir.entry_return_const_i32)
+            .unwrap_or(0);
+        return format!("function %main() -> i32 {{\nblock0:\n  return {fallback}\n}}\n");
+    }
+    out
 }
 
 struct LlvmFuncCtx {
@@ -2173,7 +3034,6 @@ struct LlvmFuncCtx {
     next_label: usize,
     slots: HashMap<String, String>,
     code: String,
-    loop_targets: Vec<(String, String)>,
 }
 
 impl LlvmFuncCtx {
@@ -2183,7 +3043,6 @@ impl LlvmFuncCtx {
             next_label: 0,
             slots: HashMap::new(),
             code: String::new(),
-            loop_targets: Vec::new(),
         }
     }
 
@@ -2205,7 +3064,7 @@ fn llvm_emit_function(
     forced_return: Option<i32>,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
-) -> String {
+) -> Result<String> {
     let params = function
         .params
         .iter()
@@ -2214,7 +3073,10 @@ fn llvm_emit_function(
         .collect::<Vec<_>>()
         .join(", ");
     let mut ctx = LlvmFuncCtx::new();
-    let mut out = format!("define i32 @{}({params}) {{\nentry:\n", function.name);
+    let mut out = format!(
+        "define i32 @{}({params}) {{\nentry:\n",
+        native_mangle_symbol(&function.name)
+    );
     for (index, param) in function.params.iter().enumerate() {
         let slot = format!("%slot_{}", param.name);
         ctx.code.push_str(&format!(
@@ -2222,22 +3084,80 @@ fn llvm_emit_function(
         ));
         ctx.slots.insert(param.name.clone(), slot);
     }
-    let terminated = llvm_emit_block(&function.body, &mut ctx, string_literal_ids, task_ref_ids);
-    out.push_str(&ctx.code);
-    if !terminated {
-        let fallback = forced_return.unwrap_or(0);
-        out.push_str(&format!("  ret i32 {fallback}\n"));
+    let cfg = build_control_flow_cfg(&function.body)
+        .and_then(|cfg| {
+            verify_control_flow_cfg(&cfg)?;
+            Ok(cfg)
+        })
+        .with_context(|| format!("building control-flow cfg for `{}`", function.name))?;
+    let labels = cfg
+        .blocks
+        .iter()
+        .enumerate()
+        .map(|(id, _)| (id, format!("bb{id}")))
+        .collect::<HashMap<_, _>>();
+    let entry = labels
+        .get(&cfg.entry)
+        .ok_or_else(|| anyhow!("missing llvm label for cfg entry block {}", cfg.entry))?;
+    if cfg.entry != 0 {
+        ctx.code.push_str(&format!("  br label %{entry}\n"));
     }
+    for (block_id, block) in cfg.blocks.iter().enumerate() {
+        let label = labels
+            .get(&block_id)
+            .ok_or_else(|| anyhow!("missing llvm label for cfg block {}", block_id))?;
+        if !(block_id == cfg.entry && cfg.entry == 0) {
+            ctx.code.push_str(&format!("{label}:\n"));
+        }
+        llvm_emit_linear_stmts(&block.stmts, &mut ctx, string_literal_ids, task_ref_ids)?;
+        match &block.terminator {
+            ControlFlowTerminator::Return(Some(expr)) => {
+                let value = llvm_emit_expr(expr, &mut ctx, string_literal_ids, task_ref_ids);
+                ctx.code.push_str(&format!("  ret i32 {value}\n"));
+            }
+            ControlFlowTerminator::Return(None) => {
+                let fallback = forced_return.unwrap_or(0);
+                ctx.code.push_str(&format!("  ret i32 {fallback}\n"));
+            }
+            ControlFlowTerminator::Jump { target, .. } => {
+                let target_label = labels
+                    .get(target)
+                    .ok_or_else(|| anyhow!("missing llvm label for cfg jump target {target}"))?;
+                ctx.code.push_str(&format!("  br label %{target_label}\n"));
+            }
+            ControlFlowTerminator::Branch {
+                condition,
+                then_target,
+                else_target,
+            } => {
+                let cond = llvm_emit_expr(condition, &mut ctx, string_literal_ids, task_ref_ids);
+                let pred = ctx.value();
+                let then_label = labels.get(then_target).ok_or_else(|| {
+                    anyhow!("missing llvm label for cfg branch target {}", then_target)
+                })?;
+                let else_label = labels.get(else_target).ok_or_else(|| {
+                    anyhow!("missing llvm label for cfg branch target {}", else_target)
+                })?;
+                ctx.code.push_str(&format!(
+                    "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{then_label}, label %{else_label}\n"
+                ));
+            }
+            ControlFlowTerminator::Unreachable => {
+                ctx.code.push_str("  unreachable\n");
+            }
+        }
+    }
+    out.push_str(&ctx.code);
     out.push_str("}\n");
-    out
+    Ok(out)
 }
 
-fn llvm_emit_block(
+fn llvm_emit_linear_stmts(
     body: &[ast::Stmt],
     ctx: &mut LlvmFuncCtx,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
-) -> bool {
+) -> Result<()> {
     for stmt in body {
         match stmt {
             ast::Stmt::Let { name, value, .. } => {
@@ -2290,312 +3210,26 @@ fn llvm_emit_block(
                 ctx.code
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
             }
-            ast::Stmt::Return(expr) => {
-                let value = expr
-                    .as_ref()
-                    .map(|expr| llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids))
-                    .unwrap_or_else(|| "0".to_string());
-                ctx.code.push_str(&format!("  ret i32 {value}\n"));
-                return true;
-            }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
             | ast::Stmt::Ensures(expr)
             | ast::Stmt::Defer(expr) => {
                 let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
             }
-            ast::Stmt::If {
-                condition,
-                then_body,
-                else_body,
-            } => {
-                let cond = llvm_emit_expr(condition, ctx, string_literal_ids, task_ref_ids);
-                let pred = ctx.value();
-                let then_label = ctx.label("then");
-                let else_label = ctx.label("else");
-                let cont_label = ctx.label("ifend");
-                ctx.code.push_str(&format!(
-                    "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{then_label}, label %{else_label}\n{then_label}:\n"
-                ));
-                let then_terminated =
-                    llvm_emit_block(then_body, ctx, string_literal_ids, task_ref_ids);
-                if !then_terminated {
-                    ctx.code.push_str(&format!("  br label %{cont_label}\n"));
-                }
-                ctx.code.push_str(&format!("{else_label}:\n"));
-                let else_terminated =
-                    llvm_emit_block(else_body, ctx, string_literal_ids, task_ref_ids);
-                if !else_terminated {
-                    ctx.code.push_str(&format!("  br label %{cont_label}\n"));
-                }
-                if then_terminated && else_terminated {
-                    return true;
-                }
-                ctx.code.push_str(&format!("{cont_label}:\n"));
-            }
-            ast::Stmt::While { condition, body } => {
-                let head_label = ctx.label("while_head");
-                let body_label = ctx.label("while_body");
-                let end_label = ctx.label("while_end");
-                ctx.code
-                    .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
-                let cond = llvm_emit_expr(condition, ctx, string_literal_ids, task_ref_ids);
-                let pred = ctx.value();
-                ctx.code.push_str(&format!(
-                    "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{body_label}, label %{end_label}\n{body_label}:\n"
-                ));
-                ctx.loop_targets
-                    .push((end_label.clone(), head_label.clone()));
-                let terminated = llvm_emit_block(body, ctx, string_literal_ids, task_ref_ids);
-                let _ = ctx.loop_targets.pop();
-                if !terminated {
-                    ctx.code.push_str(&format!("  br label %{head_label}\n"));
-                }
-                ctx.code.push_str(&format!("{end_label}:\n"));
-            }
-            ast::Stmt::For {
-                init,
-                condition,
-                step,
-                body,
-            } => {
-                if let Some(init) = init {
-                    let _ = llvm_emit_block(
-                        std::slice::from_ref(init.as_ref()),
-                        ctx,
-                        string_literal_ids,
-                        task_ref_ids,
-                    );
-                }
-                let head_label = ctx.label("for_head");
-                let body_label = ctx.label("for_body");
-                let step_label = ctx.label("for_step");
-                let end_label = ctx.label("for_end");
-                ctx.code
-                    .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
-                if let Some(condition) = condition {
-                    let cond = llvm_emit_expr(condition, ctx, string_literal_ids, task_ref_ids);
-                    let pred = ctx.value();
-                    ctx.code.push_str(&format!(
-                        "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{body_label}, label %{end_label}\n"
-                    ));
-                } else {
-                    ctx.code.push_str(&format!("  br label %{body_label}\n"));
-                }
-                ctx.code.push_str(&format!("{body_label}:\n"));
-                ctx.loop_targets
-                    .push((end_label.clone(), step_label.clone()));
-                let body_terminated = llvm_emit_block(body, ctx, string_literal_ids, task_ref_ids);
-                let _ = ctx.loop_targets.pop();
-                if !body_terminated {
-                    ctx.code.push_str(&format!("  br label %{step_label}\n"));
-                }
-                ctx.code.push_str(&format!("{step_label}:\n"));
-                if let Some(step) = step {
-                    let _ = llvm_emit_block(
-                        std::slice::from_ref(step.as_ref()),
-                        ctx,
-                        string_literal_ids,
-                        task_ref_ids,
-                    );
-                }
-                ctx.code.push_str(&format!("  br label %{head_label}\n"));
-                ctx.code.push_str(&format!("{end_label}:\n"));
-            }
-            ast::Stmt::ForIn {
-                binding,
-                iterable,
-                body,
-            } => {
-                if let ast::Expr::Range {
-                    start,
-                    end,
-                    inclusive,
-                } = iterable
-                {
-                    let start_value = llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids);
-                    let end_value = llvm_emit_expr(end, ctx, string_literal_ids, task_ref_ids);
-                    let slot = format!("%slot_{}_{}", binding, ctx.next_value);
-                    ctx.code.push_str(&format!(
-                        "  {slot} = alloca i32\n  store i32 {start_value}, ptr {slot}\n"
-                    ));
-                    ctx.slots.insert(binding.clone(), slot.clone());
-                    let head_label = ctx.label("forin_head");
-                    let body_label = ctx.label("forin_body");
-                    let step_label = ctx.label("forin_step");
-                    let end_label = ctx.label("forin_end");
-                    ctx.code
-                        .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
-                    let current = ctx.value();
-                    ctx.code
-                        .push_str(&format!("  {current} = load i32, ptr {slot}\n"));
-                    let pred = ctx.value();
-                    let cmp = if *inclusive { "sle" } else { "slt" };
-                    ctx.code.push_str(&format!(
-                        "  {pred} = icmp {cmp} i32 {current}, {end_value}\n  br i1 {pred}, label %{body_label}, label %{end_label}\n{body_label}:\n"
-                    ));
-                    ctx.loop_targets
-                        .push((end_label.clone(), step_label.clone()));
-                    let body_terminated =
-                        llvm_emit_block(body, ctx, string_literal_ids, task_ref_ids);
-                    let _ = ctx.loop_targets.pop();
-                    if !body_terminated {
-                        ctx.code.push_str(&format!("  br label %{step_label}\n"));
-                    }
-                    ctx.code.push_str(&format!("{step_label}:\n"));
-                    let current = ctx.value();
-                    let next = ctx.value();
-                    ctx.code.push_str(&format!(
-                        "  {current} = load i32, ptr {slot}\n  {next} = add i32 {current}, 1\n  store i32 {next}, ptr {slot}\n  br label %{head_label}\n{end_label}:\n"
-                    ));
-                } else {
-                    for nested in body {
-                        let _ = llvm_emit_block(
-                            std::slice::from_ref(nested),
-                            ctx,
-                            string_literal_ids,
-                            task_ref_ids,
-                        );
-                    }
-                }
-            }
-            ast::Stmt::Loop { body } => {
-                let head_label = ctx.label("loop_head");
-                let end_label = ctx.label("loop_end");
-                ctx.code
-                    .push_str(&format!("  br label %{head_label}\n{head_label}:\n"));
-                ctx.loop_targets
-                    .push((end_label.clone(), head_label.clone()));
-                let body_terminated = llvm_emit_block(body, ctx, string_literal_ids, task_ref_ids);
-                let _ = ctx.loop_targets.pop();
-                if !body_terminated {
-                    ctx.code.push_str(&format!("  br label %{head_label}\n"));
-                }
-                ctx.code.push_str(&format!("{end_label}:\n"));
-            }
-            ast::Stmt::Break => {
-                if let Some((break_label, _)) = ctx.loop_targets.last() {
-                    ctx.code.push_str(&format!("  br label %{break_label}\n"));
-                    return true;
-                }
-            }
-            ast::Stmt::Continue => {
-                if let Some((_, continue_label)) = ctx.loop_targets.last() {
-                    ctx.code
-                        .push_str(&format!("  br label %{continue_label}\n"));
-                    return true;
-                }
-            }
-            ast::Stmt::Match { scrutinee, arms } => {
-                let scrutinee_value =
-                    llvm_emit_expr(scrutinee, ctx, string_literal_ids, task_ref_ids);
-                let end_label = ctx.label("match_end");
-                let mut next_label = ctx.label("match_next");
-                ctx.code.push_str(&format!("  br label %{next_label}\n"));
-                for (index, arm) in arms.iter().enumerate() {
-                    let arm_label = ctx.label("match_arm");
-                    ctx.code.push_str(&format!("{next_label}:\n"));
-                    let pred = llvm_emit_match_pattern_pred(&scrutinee_value, &arm.pattern, ctx);
-                    let guarded_pred = if let Some(guard) = &arm.guard {
-                        let guard_value =
-                            llvm_emit_expr(guard, ctx, string_literal_ids, task_ref_ids);
-                        let guard_pred = ctx.value();
-                        ctx.code
-                            .push_str(&format!("  {guard_pred} = icmp ne i32 {guard_value}, 0\n"));
-                        let both = ctx.value();
-                        ctx.code
-                            .push_str(&format!("  {both} = and i1 {pred}, {guard_pred}\n"));
-                        both
-                    } else {
-                        pred
-                    };
-                    if index + 1 == arms.len() {
-                        ctx.code.push_str(&format!(
-                            "  br i1 {guarded_pred}, label %{arm_label}, label %{end_label}\n"
-                        ));
-                    } else {
-                        next_label = ctx.label("match_next");
-                        ctx.code.push_str(&format!(
-                            "  br i1 {guarded_pred}, label %{arm_label}, label %{next_label}\n"
-                        ));
-                    }
-                    ctx.code.push_str(&format!("{arm_label}:\n"));
-                    let arm_value =
-                        llvm_emit_expr(&arm.value, ctx, string_literal_ids, task_ref_ids);
-                    if arm.returns {
-                        ctx.code.push_str(&format!("  ret i32 {arm_value}\n"));
-                    } else {
-                        ctx.code.push_str(&format!("  br label %{end_label}\n"));
-                    }
-                }
-                ctx.code.push_str(&format!("{end_label}:\n"));
+            ast::Stmt::Return(_)
+            | ast::Stmt::If { .. }
+            | ast::Stmt::While { .. }
+            | ast::Stmt::For { .. }
+            | ast::Stmt::ForIn { .. }
+            | ast::Stmt::Loop { .. }
+            | ast::Stmt::Break
+            | ast::Stmt::Continue
+            | ast::Stmt::Match { .. } => {
+                bail!("llvm linear emission received non-linear control-flow statement");
             }
         }
     }
-    false
-}
-
-fn llvm_emit_match_pattern_pred(
-    scrutinee_value: &str,
-    pattern: &ast::Pattern,
-    ctx: &mut LlvmFuncCtx,
-) -> String {
-    match pattern {
-        ast::Pattern::Wildcard | ast::Pattern::Ident(_) => {
-            let pred = ctx.value();
-            ctx.code.push_str(&format!(
-                "  {pred} = icmp eq i32 {scrutinee_value}, {scrutinee_value}\n"
-            ));
-            pred
-        }
-        ast::Pattern::Int(v) => {
-            let pred = ctx.value();
-            ctx.code
-                .push_str(&format!("  {pred} = icmp eq i32 {scrutinee_value}, {v}\n"));
-            pred
-        }
-        ast::Pattern::Bool(v) => {
-            let as_i32 = if *v { 1 } else { 0 };
-            let pred = ctx.value();
-            ctx.code.push_str(&format!(
-                "  {pred} = icmp eq i32 {scrutinee_value}, {as_i32}\n"
-            ));
-            pred
-        }
-        ast::Pattern::Variant {
-            enum_name, variant, ..
-        } => {
-            let key = format!("{enum_name}::{variant}");
-            let tag = variant_tag(&key);
-            let pred = ctx.value();
-            ctx.code.push_str(&format!(
-                "  {pred} = icmp eq i32 {scrutinee_value}, {tag}\n"
-            ));
-            pred
-        }
-        ast::Pattern::Or(patterns) => {
-            let mut merged: Option<String> = None;
-            for sub in patterns {
-                let pred = llvm_emit_match_pattern_pred(scrutinee_value, sub, ctx);
-                merged = Some(match merged {
-                    Some(existing) => {
-                        let out = ctx.value();
-                        ctx.code
-                            .push_str(&format!("  {out} = or i1 {existing}, {pred}\n"));
-                        out
-                    }
-                    None => pred,
-                });
-            }
-            merged.unwrap_or_else(|| {
-                let pred = ctx.value();
-                ctx.code.push_str(&format!(
-                    "  {pred} = icmp eq i32 {scrutinee_value}, {scrutinee_value}\n"
-                ));
-                pred
-            })
-        }
-    }
+    Ok(())
 }
 
 fn llvm_emit_expr(
@@ -2728,6 +3362,7 @@ fn llvm_emit_expr(
             let symbol = native_runtime_import_for_callee(callee)
                 .map(|import| import.symbol)
                 .unwrap_or(callee.as_str());
+            let symbol = native_mangle_symbol(symbol);
             let val = ctx.value();
             ctx.code
                 .push_str(&format!("  {val} = call i32 @{symbol}({args})\n"));
@@ -3774,8 +4409,13 @@ fn emit_native_libraries_cranelift(
         } else {
             Linkage::Export
         };
+        let symbol_name = if is_extern_c_import_decl(function) {
+            function.name.clone()
+        } else {
+            native_mangle_symbol(&function.name)
+        };
         let id = module
-            .declare_function(function.name.as_str(), linkage, &sig)
+            .declare_function(symbol_name.as_str(), linkage, &sig)
             .map_err(|error| {
                 anyhow!(
                     "failed declaring cranelift ffi symbol `{}`: {error}",
@@ -3822,7 +4462,6 @@ fn emit_native_libraries_cranelift(
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
-        builder.seal_block(entry);
 
         let mut locals = HashMap::<String, LocalBinding>::new();
         for (index, param) in function.params.iter().enumerate() {
@@ -3837,7 +4476,11 @@ fn emit_native_libraries_cranelift(
             locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
         let mut next_var = function.params.len();
-        let terminated = {
+        let cfg = build_control_flow_cfg(&function.body).and_then(|cfg| {
+            verify_control_flow_cfg(&cfg)?;
+            Ok(cfg)
+        })?;
+        {
             let mut ctx = ClifLoweringCtx {
                 module: &mut module,
                 function_ids: &function_ids,
@@ -3845,22 +4488,16 @@ fn emit_native_libraries_cranelift(
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
             };
-            clif_emit_block(
+            clif_emit_cfg(
                 &mut builder,
                 &mut ctx,
-                &function.body,
+                &cfg,
+                entry,
                 &mut locals,
                 signature.ret,
                 &mut next_var,
-            )?
-        };
-        if !terminated {
-            if let Some(ret_ty) = signature.ret {
-                let ret = zero_for_type(&mut builder, ret_ty);
-                builder.ins().return_(&[ret]);
-            } else {
-                builder.ins().return_(&[]);
-            }
+                None,
+            )?;
         }
         builder.finalize();
         module
@@ -4253,8 +4890,13 @@ fn emit_native_artifact_cranelift(
         } else {
             Linkage::Export
         };
+        let symbol_name = if is_extern_c_import_decl(function) {
+            function.name.clone()
+        } else {
+            native_mangle_symbol(&function.name)
+        };
         let id = module
-            .declare_function(function.name.as_str(), linkage, &sig)
+            .declare_function(symbol_name.as_str(), linkage, &sig)
             .map_err(|error| {
                 anyhow!(
                     "failed declaring cranelift symbol `{}`: {error}",
@@ -4304,7 +4946,6 @@ fn emit_native_artifact_cranelift(
         let entry = builder.create_block();
         builder.append_block_params_for_function_params(entry);
         builder.switch_to_block(entry);
-        builder.seal_block(entry);
 
         let mut locals = HashMap::<String, LocalBinding>::new();
         for (index, param) in function.params.iter().enumerate() {
@@ -4319,8 +4960,11 @@ fn emit_native_artifact_cranelift(
             locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
         let mut next_var = function.params.len();
-
-        let terminated = {
+        let cfg = build_control_flow_cfg(&function.body).and_then(|cfg| {
+            verify_control_flow_cfg(&cfg)?;
+            Ok(cfg)
+        })?;
+        {
             let mut ctx = ClifLoweringCtx {
                 module: &mut module,
                 function_ids: &function_ids,
@@ -4328,33 +4972,24 @@ fn emit_native_artifact_cranelift(
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
             };
-            clif_emit_block(
+            clif_emit_cfg(
                 &mut builder,
                 &mut ctx,
-                &function.body,
+                &cfg,
+                entry,
                 &mut locals,
                 signature.ret,
                 &mut next_var,
-            )?
-        };
-        if !terminated {
-            let fallback = if function.name == "main" && signature.ret == Some(types::I32) {
-                forced_main_return
-                    .or(fir.entry_return_const_i32)
-                    .unwrap_or(0)
-            } else {
-                0
-            };
-            if let Some(ret_ty) = signature.ret {
-                let ret = if ret_ty == types::I32 {
-                    builder.ins().iconst(types::I32, fallback as i64)
+                if function.name == "main" && signature.ret == Some(types::I32) {
+                    Some(
+                        forced_main_return
+                            .or(fir.entry_return_const_i32)
+                            .unwrap_or(0),
+                    )
                 } else {
-                    zero_for_type(&mut builder, ret_ty)
-                };
-                builder.ins().return_(&[ret]);
-            } else {
-                builder.ins().return_(&[]);
-            }
+                    None
+                },
+            )?;
         }
         builder.finalize();
 
@@ -4418,14 +5053,155 @@ struct ClifLoweringCtx<'a> {
     task_ref_ids: &'a HashMap<String, i32>,
 }
 
-fn clif_emit_block(
+fn clif_emit_cfg(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    cfg: &ControlFlowCfg,
+    entry_block: cranelift_codegen::ir::Block,
+    locals: &mut HashMap<String, LocalBinding>,
+    return_ty: Option<ClifType>,
+    next_var: &mut usize,
+    forced_return_i32: Option<i32>,
+) -> Result<()> {
+    let mut clif_blocks = Vec::with_capacity(cfg.blocks.len());
+    for block_id in 0..cfg.blocks.len() {
+        if block_id == cfg.entry {
+            clif_blocks.push(entry_block);
+        } else {
+            clif_blocks.push(builder.create_block());
+        }
+    }
+
+    let mut predecessor_count = vec![0usize; cfg.blocks.len()];
+    for block in &cfg.blocks {
+        match &block.terminator {
+            ControlFlowTerminator::Return(_) | ControlFlowTerminator::Unreachable => {}
+            ControlFlowTerminator::Jump { target, .. } => {
+                predecessor_count[*target] += 1;
+            }
+            ControlFlowTerminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => {
+                predecessor_count[*then_target] += 1;
+                predecessor_count[*else_target] += 1;
+            }
+        }
+    }
+
+    let mut observed_predecessors = vec![0usize; cfg.blocks.len()];
+    let mut sealed = vec![false; cfg.blocks.len()];
+    if predecessor_count[cfg.entry] == 0 {
+        builder.seal_block(clif_blocks[cfg.entry]);
+        sealed[cfg.entry] = true;
+    }
+
+    let mut emitted = vec![false; cfg.blocks.len()];
+    let mut queue = vec![cfg.entry];
+    while let Some(block_id) = queue.pop() {
+        if emitted[block_id] {
+            continue;
+        }
+        emitted[block_id] = true;
+        builder.switch_to_block(clif_blocks[block_id]);
+        clif_emit_linear_stmts(builder, ctx, &cfg.blocks[block_id].stmts, locals, next_var)?;
+        match &cfg.blocks[block_id].terminator {
+            ControlFlowTerminator::Return(Some(expr)) => {
+                if let Some(return_ty) = return_ty {
+                    let value = clif_emit_expr(builder, ctx, expr, locals)?;
+                    let value = cast_clif_value(builder, value, return_ty)?;
+                    builder.ins().return_(&[value.value]);
+                } else {
+                    builder.ins().return_(&[]);
+                }
+            }
+            ControlFlowTerminator::Return(None) => {
+                if let Some(return_ty) = return_ty {
+                    let ret = if return_ty == types::I32 {
+                        builder
+                            .ins()
+                            .iconst(types::I32, forced_return_i32.unwrap_or(0) as i64)
+                    } else {
+                        zero_for_type(builder, return_ty)
+                    };
+                    builder.ins().return_(&[ret]);
+                } else {
+                    builder.ins().return_(&[]);
+                }
+            }
+            ControlFlowTerminator::Jump { target, .. } => {
+                builder.ins().jump(clif_blocks[*target], &[]);
+                observed_predecessors[*target] += 1;
+                if !sealed[*target] && observed_predecessors[*target] >= predecessor_count[*target]
+                {
+                    builder.seal_block(clif_blocks[*target]);
+                    sealed[*target] = true;
+                }
+                queue.push(*target);
+            }
+            ControlFlowTerminator::Branch {
+                condition,
+                then_target,
+                else_target,
+            } => {
+                let cond_val = clif_emit_expr(builder, ctx, condition, locals)?;
+                let zero = zero_for_type(builder, cond_val.ty);
+                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
+                builder.ins().brif(
+                    cond,
+                    clif_blocks[*then_target],
+                    &[],
+                    clif_blocks[*else_target],
+                    &[],
+                );
+                observed_predecessors[*then_target] += 1;
+                observed_predecessors[*else_target] += 1;
+                if !sealed[*then_target]
+                    && observed_predecessors[*then_target] >= predecessor_count[*then_target]
+                {
+                    builder.seal_block(clif_blocks[*then_target]);
+                    sealed[*then_target] = true;
+                }
+                if !sealed[*else_target]
+                    && observed_predecessors[*else_target] >= predecessor_count[*else_target]
+                {
+                    builder.seal_block(clif_blocks[*else_target]);
+                    sealed[*else_target] = true;
+                }
+                queue.push(*else_target);
+                queue.push(*then_target);
+            }
+            ControlFlowTerminator::Unreachable => {
+                if let Some(return_ty) = return_ty {
+                    let ret = zero_for_type(builder, return_ty);
+                    builder.ins().return_(&[ret]);
+                } else {
+                    builder.ins().return_(&[]);
+                }
+            }
+        }
+    }
+
+    if emitted.iter().any(|done| !*done) {
+        bail!("cranelift cfg emission left one or more reachable blocks un-emitted");
+    }
+    for (index, block) in clif_blocks.iter().enumerate() {
+        if !sealed[index] {
+            builder.seal_block(*block);
+            sealed[index] = true;
+        }
+    }
+    Ok(())
+}
+
+fn clif_emit_linear_stmts(
     builder: &mut FunctionBuilder,
     ctx: &mut ClifLoweringCtx<'_>,
     body: &[ast::Stmt],
     locals: &mut HashMap<String, LocalBinding>,
-    return_ty: Option<ClifType>,
     next_var: &mut usize,
-) -> Result<bool> {
+) -> Result<()> {
     for stmt in body {
         match stmt {
             ast::Stmt::Let {
@@ -4501,311 +5277,26 @@ fn clif_emit_block(
                 let val = cast_clif_value(builder, val, binding.ty)?;
                 builder.def_var(binding.var, val.value);
             }
-            ast::Stmt::Return(expr) => {
-                if let Some(expr) = expr {
-                    let mut value = clif_emit_expr(builder, ctx, expr, locals)?;
-                    if let Some(return_ty) = return_ty {
-                        value = cast_clif_value(builder, value, return_ty)?;
-                        builder.ins().return_(&[value.value]);
-                    } else {
-                        builder.ins().return_(&[]);
-                    }
-                } else {
-                    let value = return_ty.map(|ty| zero_for_type(builder, ty));
-                    if let Some(value) = value {
-                        builder.ins().return_(&[value]);
-                    } else {
-                        builder.ins().return_(&[]);
-                    }
-                }
-                return Ok(true);
-            }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
             | ast::Stmt::Ensures(expr)
             | ast::Stmt::Defer(expr) => {
                 let _ = clif_emit_expr(builder, ctx, expr, locals)?;
             }
-            ast::Stmt::If {
-                condition,
-                then_body,
-                else_body,
-            } => {
-                let cond_val = clif_emit_expr(builder, ctx, condition, locals)?;
-                let zero = zero_for_type(builder, cond_val.ty);
-                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
-                let then_block = builder.create_block();
-                let else_block = builder.create_block();
-                let cont_block = builder.create_block();
-                builder.ins().brif(cond, then_block, &[], else_block, &[]);
-
-                builder.switch_to_block(then_block);
-                let then_terminated =
-                    clif_emit_block(builder, ctx, then_body, locals, return_ty, next_var)?;
-                if !then_terminated {
-                    builder.ins().jump(cont_block, &[]);
-                }
-                builder.seal_block(then_block);
-
-                builder.switch_to_block(else_block);
-                let else_terminated =
-                    clif_emit_block(builder, ctx, else_body, locals, return_ty, next_var)?;
-                if !else_terminated {
-                    builder.ins().jump(cont_block, &[]);
-                }
-                builder.seal_block(else_block);
-
-                if then_terminated && else_terminated {
-                    return Ok(true);
-                }
-                builder.switch_to_block(cont_block);
-                builder.seal_block(cont_block);
-            }
-            ast::Stmt::While { condition, body } => {
-                let head = builder.create_block();
-                let loop_body = builder.create_block();
-                let exit = builder.create_block();
-                builder.ins().jump(head, &[]);
-                builder.switch_to_block(head);
-                let cond_val = clif_emit_expr(builder, ctx, condition, locals)?;
-                let zero = zero_for_type(builder, cond_val.ty);
-                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
-                builder.ins().brif(cond, loop_body, &[], exit, &[]);
-
-                builder.switch_to_block(loop_body);
-                let body_terminated =
-                    clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
-                if !body_terminated {
-                    builder.ins().jump(head, &[]);
-                }
-                builder.seal_block(loop_body);
-                builder.seal_block(head);
-
-                builder.switch_to_block(exit);
-                builder.seal_block(exit);
-            }
-            ast::Stmt::For {
-                init,
-                condition,
-                step,
-                body,
-            } => {
-                if let Some(init) = init {
-                    let _ = clif_emit_block(
-                        builder,
-                        ctx,
-                        std::slice::from_ref(init.as_ref()),
-                        locals,
-                        return_ty,
-                        next_var,
-                    )?;
-                }
-                let head = builder.create_block();
-                let loop_body = builder.create_block();
-                let step_block = builder.create_block();
-                let exit = builder.create_block();
-                builder.ins().jump(head, &[]);
-                builder.switch_to_block(head);
-                if let Some(condition) = condition {
-                    let cond_val = clif_emit_expr(builder, ctx, condition, locals)?;
-                    let zero = zero_for_type(builder, cond_val.ty);
-                    let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
-                    builder.ins().brif(cond, loop_body, &[], exit, &[]);
-                } else {
-                    builder.ins().jump(loop_body, &[]);
-                }
-                builder.switch_to_block(loop_body);
-                let body_terminated =
-                    clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
-                if !body_terminated {
-                    builder.ins().jump(step_block, &[]);
-                }
-                builder.seal_block(loop_body);
-                builder.switch_to_block(step_block);
-                if let Some(step) = step {
-                    let _ = clif_emit_block(
-                        builder,
-                        ctx,
-                        std::slice::from_ref(step.as_ref()),
-                        locals,
-                        return_ty,
-                        next_var,
-                    )?;
-                }
-                builder.ins().jump(head, &[]);
-                builder.seal_block(step_block);
-                builder.seal_block(head);
-                builder.switch_to_block(exit);
-                builder.seal_block(exit);
-            }
-            ast::Stmt::ForIn {
-                binding,
-                iterable,
-                body,
-            } => {
-                if let ast::Expr::Range {
-                    start,
-                    end,
-                    inclusive,
-                } = iterable
-                {
-                    let start_val = clif_emit_expr(builder, ctx, start, locals)?;
-                    let end_val = clif_emit_expr(builder, ctx, end, locals)?;
-                    let binding_var = if let Some(existing) = locals.get(binding).copied() {
-                        existing
-                    } else {
-                        let var = Variable::from_u32(*next_var as u32);
-                        *next_var += 1;
-                        builder.declare_var(var, default_int_clif_type());
-                        let binding_ref = LocalBinding {
-                            var,
-                            ty: default_int_clif_type(),
-                        };
-                        locals.insert(binding.clone(), binding_ref);
-                        binding_ref
-                    };
-                    let start_val = cast_clif_value(builder, start_val, binding_var.ty)?;
-                    let end_val = cast_clif_value(builder, end_val, binding_var.ty)?;
-                    builder.def_var(binding_var.var, start_val.value);
-                    let head = builder.create_block();
-                    let loop_body = builder.create_block();
-                    let step_block = builder.create_block();
-                    let exit = builder.create_block();
-                    builder.ins().jump(head, &[]);
-                    builder.switch_to_block(head);
-                    let current = builder.use_var(binding_var.var);
-                    let pred = if *inclusive {
-                        builder
-                            .ins()
-                            .icmp(IntCC::SignedLessThanOrEqual, current, end_val.value)
-                    } else {
-                        builder
-                            .ins()
-                            .icmp(IntCC::SignedLessThan, current, end_val.value)
-                    };
-                    builder.ins().brif(pred, loop_body, &[], exit, &[]);
-                    builder.switch_to_block(loop_body);
-                    let body_terminated =
-                        clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
-                    if !body_terminated {
-                        builder.ins().jump(step_block, &[]);
-                    }
-                    builder.seal_block(loop_body);
-                    builder.switch_to_block(step_block);
-                    let one = builder.ins().iconst(binding_var.ty, 1);
-                    let current = builder.use_var(binding_var.var);
-                    let next = builder.ins().iadd(current, one);
-                    builder.def_var(binding_var.var, next);
-                    builder.ins().jump(head, &[]);
-                    builder.seal_block(step_block);
-                    builder.seal_block(head);
-                    builder.switch_to_block(exit);
-                    builder.seal_block(exit);
-                } else {
-                    let _ = clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
-                }
-            }
-            ast::Stmt::Loop { body } => {
-                let head = builder.create_block();
-                builder.ins().jump(head, &[]);
-                builder.switch_to_block(head);
-                let body_terminated =
-                    clif_emit_block(builder, ctx, body, locals, return_ty, next_var)?;
-                if !body_terminated {
-                    builder.ins().jump(head, &[]);
-                }
-                builder.seal_block(head);
-            }
-            ast::Stmt::Break | ast::Stmt::Continue => {}
-            ast::Stmt::Match { scrutinee, arms } => {
-                let scrutinee_val = clif_emit_expr(builder, ctx, scrutinee, locals)?;
-                let end_block = builder.create_block();
-                let mut next_block = builder.create_block();
-                builder.ins().jump(next_block, &[]);
-                for (index, arm) in arms.iter().enumerate() {
-                    let arm_block = builder.create_block();
-                    builder.switch_to_block(next_block);
-                    builder.seal_block(next_block);
-                    let pred = clif_emit_match_pattern_pred(builder, scrutinee_val, &arm.pattern);
-                    let guarded_pred = if let Some(guard) = &arm.guard {
-                        let guard_val = clif_emit_expr(builder, ctx, guard, locals)?;
-                        let zero = zero_for_type(builder, guard_val.ty);
-                        let guard_pred = builder.ins().icmp(IntCC::NotEqual, guard_val.value, zero);
-                        builder.ins().band(pred, guard_pred)
-                    } else {
-                        pred
-                    };
-                    if index + 1 == arms.len() {
-                        builder
-                            .ins()
-                            .brif(guarded_pred, arm_block, &[], end_block, &[]);
-                    } else {
-                        let else_block = builder.create_block();
-                        builder
-                            .ins()
-                            .brif(guarded_pred, arm_block, &[], else_block, &[]);
-                        next_block = else_block;
-                    }
-
-                    builder.switch_to_block(arm_block);
-                    let arm_value = clif_emit_expr(builder, ctx, &arm.value, locals)?;
-                    if arm.returns {
-                        builder.ins().return_(&[arm_value.value]);
-                    } else {
-                        builder.ins().jump(end_block, &[]);
-                    }
-                    builder.seal_block(arm_block);
-                }
-                builder.switch_to_block(end_block);
-                builder.seal_block(end_block);
+            ast::Stmt::Return(_)
+            | ast::Stmt::If { .. }
+            | ast::Stmt::While { .. }
+            | ast::Stmt::For { .. }
+            | ast::Stmt::ForIn { .. }
+            | ast::Stmt::Loop { .. }
+            | ast::Stmt::Break
+            | ast::Stmt::Continue
+            | ast::Stmt::Match { .. } => {
+                bail!("cranelift linear emission received non-linear control-flow statement");
             }
         }
     }
-    Ok(false)
-}
-
-fn clif_emit_match_pattern_pred(
-    builder: &mut FunctionBuilder,
-    scrutinee: ClifValue,
-    pattern: &ast::Pattern,
-) -> cranelift_codegen::ir::Value {
-    match pattern {
-        ast::Pattern::Wildcard | ast::Pattern::Ident(_) => {
-            builder
-                .ins()
-                .icmp(IntCC::Equal, scrutinee.value, scrutinee.value)
-        }
-        ast::Pattern::Int(v) => {
-            let rhs = builder.ins().iconst(scrutinee.ty, *v as i64);
-            builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
-        }
-        ast::Pattern::Bool(v) => {
-            let rhs = builder.ins().iconst(scrutinee.ty, if *v { 1 } else { 0 });
-            builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
-        }
-        ast::Pattern::Variant {
-            enum_name, variant, ..
-        } => {
-            let key = format!("{enum_name}::{variant}");
-            let rhs = builder.ins().iconst(scrutinee.ty, variant_tag(&key) as i64);
-            builder.ins().icmp(IntCC::Equal, scrutinee.value, rhs)
-        }
-        ast::Pattern::Or(patterns) => {
-            let mut merged: Option<cranelift_codegen::ir::Value> = None;
-            for sub in patterns {
-                let pred = clif_emit_match_pattern_pred(builder, scrutinee, sub);
-                merged = Some(match merged {
-                    Some(existing) => builder.ins().bor(existing, pred),
-                    None => pred,
-                });
-            }
-            merged.unwrap_or_else(|| {
-                builder
-                    .ins()
-                    .icmp(IntCC::Equal, scrutinee.value, scrutinee.value)
-            })
-        }
-    }
+    Ok(())
 }
 
 fn variant_tag(variant: &str) -> i32 {
@@ -5801,10 +6292,11 @@ fn render_native_runtime_shim(string_literals: &[String], task_symbols: &[String
     let mut task_declarations = String::new();
     let mut task_entries = String::new();
     for (index, symbol) in task_symbols.iter().enumerate() {
+        let native_symbol = native_mangle_symbol(symbol);
         let linker_symbol = if cfg!(target_vendor = "apple") {
-            format!("_{}", symbol)
+            format!("_{}", native_symbol)
         } else {
-            symbol.clone()
+            native_symbol
         };
         let _ = writeln!(
             &mut task_declarations,
@@ -10971,6 +11463,7 @@ fn profile_config(
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
@@ -10978,6 +11471,14 @@ mod tests {
         derive_anchors_from_message, emit_ir, lower_llvm_ir, parse_program, refresh_lockfile,
         render_native_runtime_shim, verify_file, BuildProfile,
     };
+
+    fn run_native_exit(exe: &Path) -> i32 {
+        Command::new(exe)
+            .status()
+            .expect("native artifact should execute")
+            .code()
+            .expect("native artifact should exit with code")
+    }
 
     #[test]
     fn compile_file_runs_pipeline() {
@@ -11564,7 +12065,7 @@ mod tests {
     }
 
     #[test]
-    fn cross_backend_non_i32_and_aggregate_signatures_compile() {
+    fn cross_backend_non_i32_and_aggregate_signatures_execute_consistently() {
         let project_name = format!(
             "fozzylang-non-i32-cross-backend-{}",
             SystemTime::now()
@@ -11591,12 +12092,24 @@ mod tests {
         let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
             .expect("llvm build should succeed");
         assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
 
         let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
-    fn cross_backend_primitive_control_flow_and_operator_fixture_compile() {
+    fn cross_backend_primitive_control_flow_and_operator_fixture_execute_consistently() {
         let project_name = format!(
             "fozzylang-primitive-cross-backend-{}",
             SystemTime::now()
@@ -11624,6 +12137,62 @@ mod tests {
         let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
             .expect("llvm build should succeed");
         assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn non_entry_infinite_loop_function_fixture_stays_non_regressing() {
+        let project_name = format!(
+            "fozzylang-spin-fixture-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        let fixture = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/control_flow_spin/main.fzy"),
+        )
+        .expect("spin fixture should be readable");
+        std::fs::write(root.join("src/main.fzy"), fixture).expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 7);
 
         let _ = std::fs::remove_dir_all(root);
     }

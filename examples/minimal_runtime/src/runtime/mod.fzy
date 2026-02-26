@@ -1,4 +1,6 @@
-mod loop;
+mod worker;
+
 fn start() -> i32 {
-    spawn(loop.run) return 0
+    spawn(worker.run);
+    return 0;
 }

@@ -1,25 +1,65 @@
+fn lang_id(v: i32) -> i32 {
+    return v;
+}
+
 test "det_server_boot" {
-    model.preflight() cli.boot() services.boot_all() runtime.start() api.touch()
+    model.preflight();
+    cli.boot();
+    services.boot_all();
+    runtime.start();
+    api.touch();
 }
+
 test "det_http_routes" {
-    services.http.listen_public() services.http.route_health() services.http.route_users() services.store.read_user() services.store.write_user()
+    services.http.listen_public();
+    services.http.route_health();
+    services.http.route_users();
+    services.store.read_user();
+    services.store.write_user();
 }
+
 test "det_session_flow" {
-    services.sessions.issue_token() services.sessions.validate_token() services.replication.push_state()
+    services.sessions.issue_token();
+    services.sessions.validate_token();
+    services.replication.push_state();
 }
+
 test "det_latency_metrics" {
-    services.metrics.record_req() services.metrics.record_err() services.telemetry.log_latency_bucket() services.telemetry.log_perf_snapshot() services.telemetry.flush_runtime_stats()
+    services.metrics.record_req();
+    services.metrics.record_err();
+    services.telemetry.log_latency_bucket();
+    services.telemetry.log_perf_snapshot();
+    services.telemetry.flush_runtime_stats();
 }
+
 test "chaos_server" nondet {
-    spawn(runtime.acceptor.run)
-    spawn(runtime.worker.run)
+    spawn(runtime.acceptor.run);
+    spawn(runtime.worker.run);
     for i in 0..4 {
         if i == 2 {
-            checkpoint()
-            continue
+            checkpoint();
+            continue;
         }
-        yield()
+        yield();
     }
-    timeout(20)
-    cancel()
+    timeout(20);
+    cancel();
+}
+
+test "det_language_surface" {
+    for n in 0..4 {
+        let _ = n;
+    }
+    let mask: i32 = (~7) ^ 3;
+    let selected: fn(i32) -> i32 = lang_id;
+    let _ = selected;
+    let routed: i32 = mask % 5;
+    let ok: bool = !(routed == 0);
+    if ok {
+        pulse();
+    } else {
+        pulse();
+    }
+    timeout(5);
+    cancel();
 }

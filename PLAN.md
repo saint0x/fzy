@@ -258,6 +258,47 @@
 - [✅] Implement test-block body semantics as first-class compiled statements (no body discard), aligned with documented test semantics.
 - [✅] Expand module/import ergonomics expected by production users (import aliases/re-exports/wildcards, or document explicit non-support with hard diagnostics).
 - [✅] Expand visibility model beyond minimal function-level `pub` where required by production modularity contracts.
+
+### Backend Control-Flow Semantic Convergence (Cranelift/LLVM/Deterministic) — Production Blocker
+- [✅] Investigate Cranelift native panic end-to-end with concrete reproductions (`anthropic_smoke` and minimized local repro) and capture stack evidence.
+- [✅] Confirm architecture-level root cause: backend control-flow lowering drift (not isolated syntax bug), with Cranelift block-termination contract violations.
+- [✅] Confirm semantic divergence: Cranelift `break`/`continue` behavior mismatches LLVM and deterministic model for equivalent programs.
+- [✅] Confirm current cross-backend fixture gate is compile-only and does not enforce runtime semantic parity.
+- [✅] Introduce a backend-neutral control-flow IR (CFG) with explicit blocks, edges, and terminators as the single lowering contract for native codegen.
+- [✅] Define one canonical terminator model for language constructs: `return`, `jump`, conditional branch, loop back-edge, function exit, and unreachable.
+- [✅] Move loop-context handling (`break`/`continue` target resolution) out of per-backend ad hoc logic into shared CFG construction.
+- [✅] Enforce no implicit fallthrough after terminator in shared lowering (compile-time invariant, not backend best-effort).
+- [✅] Add a CFG verifier pass that hard-fails invalid IR before backend emission:
+- [✅] every block must end with exactly one terminator
+- [✅] no instruction emission into terminated blocks
+- [✅] no sealed/closed block re-entry in backend builders
+- [✅] all branch targets must be declared and reachable by construction
+- [✅] break/continue edges must resolve only within active loop scope
+- [✅] Rewrite Cranelift backend as a pure CFG consumer (no independent control-flow semantics).
+- [✅] Keep LLVM backend on the same shared CFG consumer model; backend differences must be codegen-only, never semantic.
+- [✅] Add explicit lowering parity tests for `if/else`, `while`, `for`, `for-in`, `loop`, nested loops, `break`, `continue`, and `match` arm return forms.
+- [✅] Add cross-engine differential runtime tests (deterministic interpreter vs LLVM vs Cranelift) with identical expected outcomes.
+- [✅] Promote parity tests from compile-only to execute-and-compare gates for representative primitive/control-flow fixtures.
+- [✅] Add a dedicated repro fixture for infinite/non-returning loop functions in non-entry functions (`fn spin() -> i32 { loop { ... } }`) to prevent regression.
+- [✅] Add Fozzy strict deterministic-first gating for new control-flow parity fixtures:
+- [✅] `fozzy doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json`
+- [✅] `fozzy test --det --strict <scenarios...> --json`
+- [✅] `fozzy run --det --record <trace.fozzy> --json`
+- [✅] `fozzy trace verify <trace.fozzy> --strict --json`
+- [✅] `fozzy replay <trace.fozzy> --json`
+- [✅] `fozzy ci <trace.fozzy> --json`
+- [✅] Add host-backed parity checks where feasible for the same control-flow fixture family:
+- [✅] `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
+- [✅] Add release gate rule: fail ship if any backend differs in observable semantics (exit code/output/trace-normalized behavior) for mandatory parity fixtures.
+- [✅] Add release gate rule: fail ship on any Cranelift frontend panic or backend-internal lowering panic on production fixtures/examples.
+- [ ] Add example and Anthropic smoke conformance gate:
+- [ ] all `examples/` must `check/build/test/run` under default production backend
+- [ ] Anthropic smoke must `check/build/test/run` under both LLVM and Cranelift (or Cranelift explicitly blocked with tracked P0 and release gate fail)
+- [✅] Add architecture doc: control-flow lowering contract, CFG invariants, and backend responsibilities (what is shared vs backend-specific).
+- [✅] Add incident-prevention checklist for future language-surface additions:
+- [✅] every new control-flow primitive must be modeled in shared CFG first
+- [✅] parity execution tests required before merge
+- [✅] deterministic + native equivalence evidence required before release promotion
 - [✅] Add exhaustive parser/type/lowering conformance suite for each primitive family above (positive + negative + ambiguity cases).
 - [✅] Add cross-backend parity tests (LLVM/Cranelift) for all new primitives and edge-case semantics.
 - [✅] Add deterministic replay/equivalence coverage specifically for new control-flow and operator semantics.

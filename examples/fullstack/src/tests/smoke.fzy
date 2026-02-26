@@ -1,8 +1,29 @@
-test "det_boot" {
+fn lang_id(v: i32) -> i32 {
+    return v;
 }
-test "det_cli_ops" {
-}
-test "det_rpc_sync" {
-}
-test "chaos_mode" nondet {
+
+test "det_boot" {}
+
+test "det_cli_ops" {}
+
+test "det_rpc_sync" {}
+
+test "chaos_mode" nondet {}
+
+test "det_language_surface" {
+    for n in 0..4 {
+        let _ = n;
+    }
+    let mask: i32 = (~7) ^ 3;
+    let selected: fn(i32) -> i32 = lang_id;
+    let _ = selected;
+    let routed: i32 = mask % 5;
+    let ok: bool = !(routed == 0);
+    if ok {
+        pulse();
+    } else {
+        pulse();
+    }
+    timeout(5);
+    cancel();
 }

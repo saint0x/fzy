@@ -1,18 +1,58 @@
+fn lang_id(v: i32) -> i32 {
+    return v;
+}
+
 test "det_cli_boot" {
-    model.preflight() runtime.configure_profile() cli.boot() services.boot_all() api.touch()
+    model.preflight();
+    runtime.configure_profile();
+    cli.boot();
+    services.boot_all();
+    api.touch();
 }
+
 test "det_set_get" {
-    services.store.open_db() cli.commands.cmd_set() services.store.write_kv() cli.commands.cmd_get() services.store.read_kv()
+    services.store.open_db();
+    cli.commands.cmd_set();
+    services.store.write_kv();
+    cli.commands.cmd_get();
+    services.store.read_kv();
 }
+
 test "det_scan" {
-    services.store.open_db() services.store.scan_kv() cli.commands.cmd_list() runtime.scheduler.tick()
+    services.store.open_db();
+    services.store.scan_kv();
+    cli.commands.cmd_list();
+    runtime.scheduler.tick();
 }
+
 test "chaos_cli" nondet {
-    spawn(runtime.worker.run) spawn(runtime.scheduler.tick) for i in 0..3 {
+    spawn(runtime.worker.run);
+    spawn(runtime.scheduler.tick);
+    for i in 0..3 {
         if i == 1 {
-            checkpoint() continue
+            checkpoint();
+            continue;
         }
-        yield()
+        yield();
     }
-    timeout(10) cancel()
+    timeout(10);
+    cancel();
+}
+
+test "det_language_surface" {
+    for n in 0..4 {
+        let _ = n;
+    }
+    let mask: i32 = (~7) ^ 3;
+    let selected: fn(i32) -> i32 = lang_id;
+    let _ = selected;
+    let routed: i32 = mask % 5;
+    let ok: bool = !(routed == 0);
+    if ok {
+        pulse();
+    } else {
+        pulse();
+    }
+    timeout(5);
+    cancel();
 }

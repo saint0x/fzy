@@ -1,0 +1,12 @@
+{
+  "dependencyGraphHash": "859f1bb49c87cde957b1e828d63f2887e30b60e9cc4721681acb94535d693b3d",
+  "graph": {
+    "deps": [],
+    "package": {
+      "manifestHash": "b4a205d43c41d4bc80db975cffd1df936b33d65a6fb974df6a59b82c47822bb6",
+      "name": "service_app",
+      "version": "0.1.0"
+    }
+  },
+  "schemaVersion": "fozzylang.lock.v0"
+}

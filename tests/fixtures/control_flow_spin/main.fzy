@@ -1,0 +1,8 @@
+fn spin() -> i32 {
+    loop {
+    }
+}
+
+fn main() -> i32 {
+    return 7
+}

@@ -58,6 +58,11 @@ FZY
 "${FZ_CMD[@]}" parity "$PROBE_C" --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" equivalence "$PROBE_C" --seed "$SEED" --json >/dev/null
 
+echo "[ship] native backend execute-and-compare control-flow parity"
+cargo test -q -p driver pipeline::tests::cross_backend_primitive_control_flow_and_operator_fixture_execute_consistently -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::cross_backend_non_i32_and_aggregate_signatures_execute_consistently -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::non_entry_infinite_loop_function_fixture_stays_non_regressing -- --exact >/dev/null
+
 echo "[ship] FFI release-blocking examples (headers + abi-check)"
 for example in fullstack live_server; do
   example_root="$ROOT/examples/$example"

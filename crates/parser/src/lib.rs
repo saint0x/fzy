@@ -3080,9 +3080,13 @@ mod tests {
                 _ => None,
             })
             .expect("main function should exist");
-        assert!(main_fn.body.iter().any(
-            |stmt| matches!(stmt, ast::Stmt::Let { ty: Some(ast::Type::Int { .. }), .. })
-        ));
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                ty: Some(ast::Type::Int { .. }),
+                ..
+            }
+        )));
         assert!(module.items.iter().any(|item| matches!(
             item,
             ast::Item::Function(ast::Function { name, .. }) if name == "apply_id"
