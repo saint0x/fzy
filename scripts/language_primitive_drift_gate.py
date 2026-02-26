@@ -28,6 +28,7 @@ def main() -> int:
     parser_src = read_text(ROOT / "crates" / "parser" / "src" / "lib.rs")
     ast_src = read_text(ROOT / "crates" / "ast" / "src" / "lib.rs")
     hir_src = read_text(ROOT / "crates" / "hir" / "src" / "lib.rs")
+    pipeline_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline.rs")
 
     has_use_alias = (
         "fn parse_use_tree(" in parser_src
@@ -52,9 +53,23 @@ def main() -> int:
         and "fn parse_lambda_expr(" in parser_src
         and "Value::Closure" in hir_src
     )
-    has_native_closure_reject = (
-        "native backend does not support closure/lambda expressions" in
-        read_text(ROOT / "crates" / "driver" / "src" / "pipeline.rs")
+    has_native_closure_lowering = (
+        "LlvmClosureBinding" in pipeline_src
+        and "ClifClosureBinding" in pipeline_src
+        and "llvm_emit_inlined_closure_call" in pipeline_src
+        and "clif_emit_inlined_closure_call" in pipeline_src
+    )
+    has_native_closure_non_let_diag = (
+        "native backend only supports closures bound directly in `let` statements"
+        in pipeline_src
+    )
+    has_native_let_variant_literal_diag = (
+        "supports `let` variant payload binding only when the initializer is the same literal enum variant"
+        in pipeline_src
+    )
+    has_native_match_variant_literal_guardrail = (
+        "only supports match-arm variant payload bindings for literal enum scrutinees without guards"
+        in pipeline_src
     )
 
     expected_status = {
@@ -89,11 +104,7 @@ def main() -> int:
         "static_mut_surface": "missing"
         if "`static mut` is not supported in v1" in parser_src
         else "implemented",
-        "closure_lambda_values": (
-            "partial"
-            if has_closure and has_native_closure_reject
-            else ("implemented" if has_closure else "missing")
-        ),
+        "closure_lambda_values": "implemented" if has_closure else "missing",
         "expanded_item_visibility_struct_enum_trait_impl": "implemented"
         if "pub is_pub: bool" in ast_src
         and "self.parse_struct(true)" in parser_src
@@ -115,6 +126,26 @@ def main() -> int:
         if documented != expected:
             errors.append(
                 f"primitive `{key}` drifted: doc={documented} implementation={expected}"
+            )
+
+    if matrix.get("closure_lambda_values") == "implemented":
+        if not has_native_closure_lowering:
+            errors.append(
+                "closure native lowering drift: docs mark implemented but native lowering hooks are missing"
+            )
+        if not has_native_closure_non_let_diag:
+            errors.append(
+                "closure diagnostic drift: docs mention explicit unsupported closure placements but diagnostic is missing"
+            )
+
+    if matrix.get("let_pattern_destructuring") == "partial":
+        if not has_native_let_variant_literal_diag:
+            errors.append(
+                "let-pattern partial drift: expected literal-source diagnostic for unsupported native payload binding"
+            )
+        if not has_native_match_variant_literal_guardrail:
+            errors.append(
+                "match-pattern partial drift: expected guarded/literal-scrutinee diagnostic for unsupported native payload binding shapes"
             )
 
     if errors:
