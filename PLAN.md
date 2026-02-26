@@ -312,7 +312,7 @@
 - [✅] Improve root-level command UX for mixed tool configs (for example `fz audit unsafe .`): detect non-project roots and emit actionable project-target guidance instead of raw manifest-parse failures.
 
 ### Language Ergonomics + Completeness Closure (Adoption-Critical, No CI/Deps Scope)
-- [ ] Resolve language-surface drift between plan claims, language-reference docs, parser diagnostics, and actual shipped behavior so declared support is strictly truthful.
+- [✅] Resolve language-surface drift between plan claims, language-reference docs, parser diagnostics, and actual shipped behavior so declared support is strictly truthful.
 - [✅] Ship closure/lambda values with capture semantics as first-class language constructs (syntax, AST/HIR/FIR, verifier, native backends, docs, examples, tests).
 - [✅] closure/lambda slice delivered: typed lambda syntax (`|x: T| expr`, optional `-> Ret`) now lowers through AST/HIR/FIR with lexical capture semantics in evaluator/type-checking and parser/HIR/driver tests.
 - [✅] closure/lambda native lowering parity delivered in both native backends with lexical capture lowering and cross-backend execution tests.
@@ -332,6 +332,7 @@
 - [✅] parser-recognized `let` pattern destructuring now lowers natively for supported pattern families (with deterministic cross-backend execution parity coverage).
 - [✅] non-lowerable native pattern cases now hard-reject with explicit diagnostics (`let` variant payload binding from non-literal sources, and `match` variant payload bindings) instead of silently degrading at emit/runtime.
 - [✅] Upgrade docs to publish one authoritative language-construct matrix (`implemented` / `partial` / `missing`) and gate release on matrix truthfulness.
+- [✅] Strengthen language-primitive drift gate to assert native closure lowering hooks and partial-pattern diagnostic guardrails so docs remain enforceably truthful.
 
 ### Native Completeness Closure (Adoption Blocker #3)
 - [ ] Close remaining native lowering gaps so supported language constructs do not fail late in native paths.
