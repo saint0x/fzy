@@ -3177,28 +3177,86 @@ fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> String {
     }
 }
 
-fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String {
-    let forced_main_return = if enforce_contract_checks {
-        if fir
-            .entry_requires
-            .iter()
-            .any(|condition| matches!(condition, Some(false)))
-        {
-            Some(120)
-        } else if fir
-            .entry_ensures
-            .iter()
-            .any(|condition| matches!(condition, Some(false)))
-        {
-            Some(121)
-        } else {
-            None
-        }
+#[derive(Clone)]
+struct NativeCanonicalPlan {
+    forced_main_return: Option<i32>,
+    string_literal_ids: HashMap<String, i32>,
+    global_const_i32: HashMap<String, i32>,
+    variant_tags: HashMap<String, i32>,
+    mutable_static_i32: HashMap<String, i32>,
+    task_ref_ids: HashMap<String, i32>,
+    cfg_by_function: HashMap<String, Result<ControlFlowCfg, String>>,
+}
+
+fn compute_forced_main_return(
+    fir: &fir::FirModule,
+    enforce_contract_checks: bool,
+) -> Option<i32> {
+    if !enforce_contract_checks {
+        return None;
+    }
+    if fir
+        .entry_requires
+        .iter()
+        .any(|condition| matches!(condition, Some(false)))
+    {
+        Some(120)
+    } else if fir
+        .entry_ensures
+        .iter()
+        .any(|condition| matches!(condition, Some(false)))
+    {
+        Some(121)
     } else {
         None
-    };
+    }
+}
+
+fn build_native_cfg_map(
+    fir: &fir::FirModule,
+    variant_tags: &HashMap<String, i32>,
+) -> HashMap<String, Result<ControlFlowCfg, String>> {
+    let mut cfg_by_function = HashMap::new();
+    for function in &fir.typed_functions {
+        if is_extern_c_import_decl(function) {
+            continue;
+        }
+        let cfg = build_control_flow_cfg(&function.body, variant_tags).and_then(|cfg| {
+            verify_control_flow_cfg(&cfg)?;
+            Ok(cfg)
+        });
+        cfg_by_function.insert(function.name.clone(), cfg.map_err(|error| error.to_string()));
+    }
+    cfg_by_function
+}
+
+fn build_native_canonical_plan(
+    fir: &fir::FirModule,
+    enforce_contract_checks: bool,
+) -> NativeCanonicalPlan {
+    let variant_tags = build_variant_tag_map(fir);
+    let cfg_by_function = build_native_cfg_map(fir, &variant_tags);
+    let spawn_task_symbols = collect_spawn_task_symbols(fir);
+    let mut task_ref_ids = HashMap::<String, i32>::new();
+    for (index, symbol) in spawn_task_symbols.iter().enumerate() {
+        task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
+    }
+    NativeCanonicalPlan {
+        forced_main_return: compute_forced_main_return(fir, enforce_contract_checks),
+        string_literal_ids: build_string_literal_ids(&collect_string_literals(fir)),
+        global_const_i32: build_global_const_i32_map(fir),
+        mutable_static_i32: build_mutable_static_i32_map(fir),
+        variant_tags,
+        task_ref_ids,
+        cfg_by_function,
+    }
+}
+
+fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String {
+    let plan = build_native_canonical_plan(fir, enforce_contract_checks);
     if fir.typed_functions.is_empty() {
-        let ret = forced_main_return
+        let ret = plan
+            .forced_main_return
             .or(fir.entry_return_const_i32)
             .unwrap_or(0);
         return format!(
@@ -3232,12 +3290,12 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
     if !used_imports.is_empty() || !extern_imports.is_empty() {
         out.push('\n');
     }
-    let string_literal_ids = build_string_literal_ids(&collect_string_literals(fir));
-    let global_const_i32 = build_global_const_i32_map(fir);
-    let variant_tags = build_variant_tag_map(fir);
-    let mutable_static_i32 = build_mutable_static_i32_map(fir);
     let mut mutable_global_symbols = HashMap::<String, String>::new();
-    let mut mutable_globals_sorted = mutable_static_i32.into_iter().collect::<Vec<_>>();
+    let mut mutable_globals_sorted = plan
+        .mutable_static_i32
+        .iter()
+        .map(|(name, value)| (name.clone(), *value))
+        .collect::<Vec<_>>();
     mutable_globals_sorted.sort_by(|a, b| a.0.cmp(&b.0));
     for (name, value) in &mutable_globals_sorted {
         let symbol = llvm_static_symbol_name(name);
@@ -3247,31 +3305,38 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
     if !mutable_global_symbols.is_empty() {
         out.push('\n');
     }
-    let spawn_task_symbols = collect_spawn_task_symbols(fir);
-    let mut task_ref_ids = HashMap::<String, i32>::new();
-    for (index, symbol) in spawn_task_symbols.iter().enumerate() {
-        task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
-    }
     for function in &fir.typed_functions {
         if is_extern_c_import_decl(function) {
             continue;
         }
-        let lowered = llvm_emit_function(
-            function,
-            forced_main_return.filter(|_| function.name == "main"),
-            &global_const_i32,
-            &variant_tags,
-            &mutable_global_symbols,
-            &string_literal_ids,
-            &task_ref_ids,
-        )
-        .unwrap_or_else(|error| {
-            format!(
+        let lowered = match plan.cfg_by_function.get(&function.name) {
+            Some(Ok(cfg)) => llvm_emit_function(
+                function,
+                plan.forced_main_return.filter(|_| function.name == "main"),
+                &plan.global_const_i32,
+                &plan.variant_tags,
+                &mutable_global_symbols,
+                &plan.string_literal_ids,
+                &plan.task_ref_ids,
+                Some(cfg),
+            )
+            .unwrap_or_else(|error| {
+                format!(
+                    "define i32 @{}() {{\nentry:\n  ; cfg lowering failed: {}\n  ret i32 0\n}}\n",
+                    native_mangle_symbol(&function.name),
+                    error
+                )
+            }),
+            Some(Err(error)) => format!(
                 "define i32 @{}() {{\nentry:\n  ; cfg lowering failed: {}\n  ret i32 0\n}}\n",
                 native_mangle_symbol(&function.name),
                 error
-            )
-        });
+            ),
+            None => format!(
+                "define i32 @{}() {{\nentry:\n  ; cfg lowering failed: missing canonical cfg\n  ret i32 0\n}}\n",
+                native_mangle_symbol(&function.name)
+            ),
+        };
         out.push_str(&lowered);
         out.push('\n');
     }
@@ -3291,27 +3356,7 @@ fn native_mangle_symbol(name: &str) -> String {
 }
 
 fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String {
-    let forced_main_return = if enforce_contract_checks {
-        if fir
-            .entry_requires
-            .iter()
-            .any(|condition| matches!(condition, Some(false)))
-        {
-            Some(120)
-        } else if fir
-            .entry_ensures
-            .iter()
-            .any(|condition| matches!(condition, Some(false)))
-        {
-            Some(121)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    let variant_tags = build_variant_tag_map(fir);
+    let plan = build_native_canonical_plan(fir, enforce_contract_checks);
     let mut out = String::new();
     for function in &fir.typed_functions {
         if is_extern_c_import_decl(function) {
@@ -3322,11 +3367,8 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> St
             "function %{}() -> i32 {{",
             native_mangle_symbol(&function.name)
         );
-        match build_control_flow_cfg(&function.body, &variant_tags).and_then(|cfg| {
-            verify_control_flow_cfg(&cfg)?;
-            Ok(cfg)
-        }) {
-            Ok(cfg) => {
+        match plan.cfg_by_function.get(&function.name) {
+            Some(Ok(cfg)) => {
                 for (block_id, block) in cfg.blocks.iter().enumerate() {
                     let _ = writeln!(&mut out, "block{block_id}:");
                     for stmt in &block.stmts {
@@ -3338,7 +3380,8 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> St
                         }
                         ControlFlowTerminator::Return(None) => {
                             if function.name == "main" {
-                                let fallback = forced_main_return
+                                let fallback = plan
+                                    .forced_main_return
                                     .or(fir.entry_return_const_i32)
                                     .unwrap_or(0);
                                 let _ = writeln!(&mut out, "  return {}", fallback);
@@ -3382,16 +3425,22 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> St
                     }
                 }
             }
-            Err(error) => {
+            Some(Err(error)) => {
                 let _ = writeln!(&mut out, "block0:");
                 let _ = writeln!(&mut out, "  ; cfg-error: {}", error);
+                let _ = writeln!(&mut out, "  return 0");
+            }
+            None => {
+                let _ = writeln!(&mut out, "block0:");
+                let _ = writeln!(&mut out, "  ; cfg-error: missing canonical cfg");
                 let _ = writeln!(&mut out, "  return 0");
             }
         }
         out.push_str("}\n\n");
     }
     if out.is_empty() {
-        let fallback = forced_main_return
+        let fallback = plan
+            .forced_main_return
             .or(fir.entry_return_const_i32)
             .unwrap_or(0);
         return format!("function %main() -> i32 {{\nblock0:\n  return {fallback}\n}}\n");
@@ -3453,6 +3502,7 @@ fn llvm_emit_function(
     mutable_globals: &HashMap<String, String>,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
+    cfg_override: Option<&ControlFlowCfg>,
 ) -> Result<String> {
     let params = function
         .params
@@ -3477,12 +3527,16 @@ fn llvm_emit_function(
         ));
         ctx.slots.insert(param.name.clone(), slot);
     }
-    let cfg = build_control_flow_cfg(&function.body, variant_tags)
-        .and_then(|cfg| {
-            verify_control_flow_cfg(&cfg)?;
-            Ok(cfg)
-        })
-        .with_context(|| format!("building control-flow cfg for `{}`", function.name))?;
+    let cfg = if let Some(cfg) = cfg_override {
+        cfg.clone()
+    } else {
+        build_control_flow_cfg(&function.body, variant_tags)
+            .and_then(|cfg| {
+                verify_control_flow_cfg(&cfg)?;
+                Ok(cfg)
+            })
+            .with_context(|| format!("building control-flow cfg for `{}`", function.name))?
+    };
     let labels = cfg
         .blocks
         .iter()
