@@ -102,6 +102,7 @@ pub enum Command {
     },
     AuditUnsafe {
         path: PathBuf,
+        workspace: bool,
     },
     Vendor {
         path: PathBuf,
@@ -641,7 +642,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::Equivalence { path, seed } => {
             equivalence_command(&path, seed.unwrap_or(1), format)
         }
-        Command::AuditUnsafe { path } => audit_unsafe_command(&path, format),
+        Command::AuditUnsafe { path, workspace } => audit_unsafe_command(&path, workspace, format),
         Command::Vendor { path } => vendor_command(&path, format),
         Command::AbiCheck { current, baseline } => abi_check_command(&current, &baseline, format),
         Command::DebugCheck { path } => debug_check_command(&path, format),
@@ -1986,58 +1987,124 @@ fn semantic_signature(value: &serde_json::Value) -> Result<String> {
 
 #[derive(Debug, Clone, Serialize)]
 struct UnsafeEntry {
+    project: String,
     file: String,
+    function: String,
     line: usize,
     snippet: String,
-    reason: Option<String>,
+    reason: String,
+    invariant: String,
+    owner: String,
+    scope: String,
+    risk_class: String,
+    proof_ref: String,
 }
 
-fn audit_unsafe_command(path: &Path, format: Format) -> Result<String> {
-    let resolved = resolve_source(path)?;
-    let parsed = parse_program(&resolved.source_path)?;
-    let mut entries = Vec::new();
-    for module_path in &parsed.module_paths {
-        let source = std::fs::read_to_string(module_path).with_context(|| {
-            format!(
-                "failed reading module for unsafe audit: {}",
-                module_path.display()
-            )
-        })?;
-        let module_name = module_path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| anyhow!("invalid module filename for {}", module_path.display()))?;
-        let module = parser::parse(&source, module_name).map_err(|diagnostics| {
-            let detail = diagnostics
-                .first()
-                .map(|diag| diag.message.clone())
-                .unwrap_or_else(|| "unknown parse failure".to_string());
-            anyhow!(
-                "failed parsing module for unsafe audit: {} ({detail})",
-                module_path.display()
-            )
-        })?;
-        entries.extend(collect_semantic_unsafe_entries(module_path, &module.items));
+fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<String> {
+    let mut project_roots = if workspace {
+        discover_project_roots(path)?
+    } else {
+        vec![path.to_path_buf()]
+    };
+    project_roots.sort();
+    project_roots.dedup();
+    if project_roots.is_empty() {
+        bail!(
+            "no Fozzy projects discovered under {}; expected at least one fozzy.toml root",
+            path.display()
+        );
     }
-    let missing_reasons = entries
+    let mut entries = Vec::new();
+    for project_root in &project_roots {
+        let resolved = resolve_source(project_root)?;
+        let parsed = parse_program(&resolved.source_path)?;
+        for module_path in &parsed.module_paths {
+            let source = std::fs::read_to_string(module_path).with_context(|| {
+                format!(
+                    "failed reading module for unsafe audit: {}",
+                    module_path.display()
+                )
+            })?;
+            let module_name = module_path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| anyhow!("invalid module filename for {}", module_path.display()))?;
+            let module = parser::parse(&source, module_name).map_err(|diagnostics| {
+                let detail = diagnostics
+                    .first()
+                    .map(|diag| diag.message.clone())
+                    .unwrap_or_else(|| "unknown parse failure".to_string());
+                anyhow!(
+                    "failed parsing module for unsafe audit: {} ({detail})",
+                    module_path.display()
+                )
+            })?;
+            entries.extend(collect_semantic_unsafe_entries(
+                module_path,
+                project_root,
+                &module.items,
+            ));
+        }
+    }
+    let missing_contract_count = entries
         .iter()
-        .filter(|entry| entry.reason.is_none())
+        .filter(|entry| {
+            entry.reason.trim().is_empty()
+                || entry.invariant.trim().is_empty()
+                || entry.owner.trim().is_empty()
+                || entry.scope.trim().is_empty()
+                || entry.risk_class.trim().is_empty()
+                || entry.proof_ref.trim().is_empty()
+        })
         .count();
-    let out_dir = resolved.project_root.join(".fz");
+    let invalid_proof_ref_count = entries
+        .iter()
+        .filter(|entry| !entry.proof_ref.trim().is_empty() && !proof_ref_machine_linkable(&entry.proof_ref))
+        .count();
+
+    let out_root = if workspace {
+        std::env::current_dir().context("failed to resolve current working directory")?
+    } else {
+        resolve_source(path)?.project_root
+    };
+    let out_dir = out_root.join(".fz");
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed creating unsafe audit dir: {}", out_dir.display()))?;
-    let unsafe_map = out_dir.join("unsafe-map.json");
+    let unsafe_map = if workspace {
+        out_dir.join("unsafe-map.workspace.json")
+    } else {
+        out_dir.join("unsafe-map.json")
+    };
+    let by_risk_class = entries.iter().fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
+        *acc.entry(item.risk_class.clone()).or_default() += 1;
+        acc
+    });
+    let by_owner = entries.iter().fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
+        *acc.entry(item.owner.clone()).or_default() += 1;
+        acc
+    });
+    let by_scope = entries.iter().fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
+        *acc.entry(item.scope.clone()).or_default() += 1;
+        acc
+    });
     let payload = serde_json::json!({
-        "schemaVersion": "fozzylang.unsafe_map.v0",
+        "schemaVersion": "fozzylang.unsafe_map.v1",
+        "workspaceMode": workspace,
+        "projects": project_roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         "entries": entries,
-        "missingReasonCount": missing_reasons,
+        "missingContractCount": missing_contract_count,
+        "invalidProofRefCount": invalid_proof_ref_count,
+        "riskClassCounts": by_risk_class,
+        "byOwner": by_owner,
+        "byScope": by_scope,
     });
     std::fs::write(&unsafe_map, serde_json::to_vec_pretty(&payload)?)
         .with_context(|| format!("failed writing unsafe map: {}", unsafe_map.display()))?;
-    if missing_reasons > 0 {
+    if missing_contract_count > 0 || invalid_proof_ref_count > 0 {
         bail!(
-            "unsafe audit found {} site(s) without reason string; map={}",
-            missing_reasons,
+            "unsafe audit found missing/invalid contract fields (missing={}, invalid_proof_ref={}); map={}",
+            missing_contract_count,
+            invalid_proof_ref_count,
             unsafe_map.display()
         );
     }
@@ -2045,9 +2112,18 @@ fn audit_unsafe_command(path: &Path, format: Format) -> Result<String> {
         Format::Text => Ok(render_text_fields(&[
             ("status", "ok".to_string()),
             ("mode", "unsafe-audit".to_string()),
+            ("workspace", workspace.to_string()),
             (
                 "entries",
                 payload["entries"]
+                    .as_array()
+                    .map(|items| items.len())
+                    .unwrap_or(0)
+                    .to_string(),
+            ),
+            (
+                "projects",
+                payload["projects"]
                     .as_array()
                     .map(|items| items.len())
                     .unwrap_or(0)
@@ -2057,15 +2133,31 @@ fn audit_unsafe_command(path: &Path, format: Format) -> Result<String> {
         ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
+            "workspace": workspace,
             "entries": payload["entries"],
+            "projects": payload["projects"],
             "map": unsafe_map.display().to_string(),
-            "missingReasonCount": missing_reasons,
+            "missingContractCount": missing_contract_count,
+            "invalidProofRefCount": invalid_proof_ref_count,
+            "riskClassCounts": payload["riskClassCounts"],
+            "byOwner": payload["byOwner"],
+            "byScope": payload["byScope"],
         })
         .to_string()),
     }
 }
 
-fn collect_semantic_unsafe_entries(module_path: &Path, items: &[ast::Item]) -> Vec<UnsafeEntry> {
+fn proof_ref_machine_linkable(value: &str) -> bool {
+    let value = value.trim();
+    let schemes = ["trace://", "test://", "rfc://", "gate://", "run://", "ci://"];
+    schemes.iter().any(|scheme| value.starts_with(scheme))
+}
+
+fn collect_semantic_unsafe_entries(
+    module_path: &Path,
+    project_root: &Path,
+    items: &[ast::Item],
+) -> Vec<UnsafeEntry> {
     let mut entries = Vec::new();
     for item in items {
         let ast::Item::Function(function) = item else {
@@ -2075,6 +2167,7 @@ fn collect_semantic_unsafe_entries(module_path: &Path, items: &[ast::Item]) -> V
             collect_semantic_unsafe_entries_from_stmt(
                 stmt,
                 module_path,
+                project_root,
                 &function.name,
                 &mut entries,
             );
@@ -2086,6 +2179,7 @@ fn collect_semantic_unsafe_entries(module_path: &Path, items: &[ast::Item]) -> V
 fn collect_semantic_unsafe_entries_from_stmt(
     stmt: &ast::Stmt,
     module_path: &Path,
+    project_root: &Path,
     function_name: &str,
     entries: &mut Vec<UnsafeEntry>,
 ) {
@@ -2098,13 +2192,20 @@ fn collect_semantic_unsafe_entries_from_stmt(
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => {
-            collect_semantic_unsafe_entries_from_expr(value, module_path, function_name, entries)
+            collect_semantic_unsafe_entries_from_expr(
+                value,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            )
         }
         ast::Stmt::Return(value) => {
             if let Some(value) = value {
                 collect_semantic_unsafe_entries_from_expr(
                     value,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2118,6 +2219,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
             collect_semantic_unsafe_entries_from_expr(
                 condition,
                 module_path,
+                project_root,
                 function_name,
                 entries,
             );
@@ -2125,6 +2227,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2133,6 +2236,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2142,6 +2246,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
             collect_semantic_unsafe_entries_from_expr(
                 condition,
                 module_path,
+                project_root,
                 function_name,
                 entries,
             );
@@ -2149,6 +2254,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2164,6 +2270,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_stmt(
                     init,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2172,6 +2279,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_expr(
                     condition,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2180,6 +2288,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_stmt(
                     step,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2188,6 +2297,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2197,6 +2307,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
             collect_semantic_unsafe_entries_from_expr(
                 iterable,
                 module_path,
+                project_root,
                 function_name,
                 entries,
             );
@@ -2204,6 +2315,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2214,6 +2326,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2224,6 +2337,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
             collect_semantic_unsafe_entries_from_expr(
                 scrutinee,
                 module_path,
+                project_root,
                 function_name,
                 entries,
             );
@@ -2232,6 +2346,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     collect_semantic_unsafe_entries_from_expr(
                         guard,
                         module_path,
+                        project_root,
                         function_name,
                         entries,
                     );
@@ -2239,6 +2354,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 collect_semantic_unsafe_entries_from_expr(
                     &arm.value,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2250,32 +2366,52 @@ fn collect_semantic_unsafe_entries_from_stmt(
 fn collect_semantic_unsafe_entries_from_expr(
     expr: &ast::Expr,
     module_path: &Path,
+    project_root: &Path,
     function_name: &str,
     entries: &mut Vec<UnsafeEntry>,
 ) {
     match expr {
-        ast::Expr::Call { callee, args } => {
-            if matches!(callee.as_str(), "unsafe" | "unsafe_reason") {
-                let reason = args.first().and_then(extract_unsafe_reason_expr);
-                entries.push(UnsafeEntry {
-                    file: module_path.display().to_string(),
-                    line: 0,
-                    snippet: format!("{function_name}: {}(...)", callee),
-                    reason,
-                });
-            }
+        ast::Expr::UnsafeContract(contract) => {
+            entries.push(UnsafeEntry {
+                project: project_root.display().to_string(),
+                file: module_path.display().to_string(),
+                function: function_name.to_string(),
+                line: 0,
+                snippet: format!("{function_name}: unsafe(...)"),
+                reason: contract.reason.clone(),
+                invariant: contract.invariant.clone(),
+                owner: contract.owner.clone(),
+                scope: contract.scope.clone(),
+                risk_class: contract.risk_class.clone(),
+                proof_ref: contract.proof_ref.clone(),
+            });
+        }
+        ast::Expr::Call { args, .. } => {
             for arg in args {
-                collect_semantic_unsafe_entries_from_expr(arg, module_path, function_name, entries);
+                collect_semantic_unsafe_entries_from_expr(
+                    arg,
+                    module_path,
+                    project_root,
+                    function_name,
+                    entries,
+                );
             }
         }
         ast::Expr::FieldAccess { base, .. } => {
-            collect_semantic_unsafe_entries_from_expr(base, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(
+                base,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
         }
         ast::Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
                 collect_semantic_unsafe_entries_from_expr(
                     value,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
@@ -2286,19 +2422,38 @@ fn collect_semantic_unsafe_entries_from_expr(
                 collect_semantic_unsafe_entries_from_expr(
                     value,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
             }
         }
         ast::Expr::Closure { body, .. } => {
-            collect_semantic_unsafe_entries_from_expr(body, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(
+                body,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
         }
         ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
-            collect_semantic_unsafe_entries_from_expr(inner, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(
+                inner,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
         }
         ast::Expr::Unary { expr, .. } => {
-            collect_semantic_unsafe_entries_from_expr(expr, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(
+                expr,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
         }
         ast::Expr::TryCatch {
             try_expr,
@@ -2307,37 +2462,76 @@ fn collect_semantic_unsafe_entries_from_expr(
             collect_semantic_unsafe_entries_from_expr(
                 try_expr,
                 module_path,
+                project_root,
                 function_name,
                 entries,
             );
             collect_semantic_unsafe_entries_from_expr(
                 catch_expr,
                 module_path,
+                project_root,
                 function_name,
                 entries,
             );
         }
         ast::Expr::Binary { left, right, .. } => {
-            collect_semantic_unsafe_entries_from_expr(left, module_path, function_name, entries);
-            collect_semantic_unsafe_entries_from_expr(right, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(
+                left,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
+            collect_semantic_unsafe_entries_from_expr(
+                right,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
         }
         ast::Expr::Range { start, end, .. } => {
-            collect_semantic_unsafe_entries_from_expr(start, module_path, function_name, entries);
-            collect_semantic_unsafe_entries_from_expr(end, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(
+                start,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
+            collect_semantic_unsafe_entries_from_expr(
+                end,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
         }
         ast::Expr::ArrayLiteral(items) => {
             for item in items {
                 collect_semantic_unsafe_entries_from_expr(
                     item,
                     module_path,
+                    project_root,
                     function_name,
                     entries,
                 );
             }
         }
         ast::Expr::Index { base, index } => {
-            collect_semantic_unsafe_entries_from_expr(base, module_path, function_name, entries);
-            collect_semantic_unsafe_entries_from_expr(index, module_path, function_name, entries);
+            collect_semantic_unsafe_entries_from_expr(
+                base,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
+            collect_semantic_unsafe_entries_from_expr(
+                index,
+                module_path,
+                project_root,
+                function_name,
+                entries,
+            );
         }
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
@@ -2345,20 +2539,6 @@ fn collect_semantic_unsafe_entries_from_expr(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
-    }
-}
-
-fn extract_unsafe_reason_expr(expr: &ast::Expr) -> Option<String> {
-    match expr {
-        ast::Expr::Str(value) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        }
-        _ => None,
     }
 }
 
@@ -4021,6 +4201,7 @@ fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
             let self_hook = usize::from(matches!(callee.as_str(), "yield" | "checkpoint"));
             self_hook + args.iter().map(count_async_hooks_in_expr).sum::<usize>()
         }
+        ast::Expr::UnsafeContract(_) => 0,
         ast::Expr::FieldAccess { base, .. } => count_async_hooks_in_expr(base),
         ast::Expr::StructInit { fields, .. } => fields
             .iter()
@@ -4198,6 +4379,7 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
             }
             (spawns, yields)
         }
+        ast::Expr::UnsafeContract(_) => (0, 0),
         ast::Expr::Await(inner) | ast::Expr::Group(inner) => analyze_workload_expr(inner),
         ast::Expr::Unary { expr, .. } => analyze_workload_expr(expr),
         ast::Expr::FieldAccess { base, .. } => analyze_workload_expr(base),
@@ -4593,6 +4775,7 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
                 collect_call_names_from_expr(arg, out);
             }
         }
+        ast::Expr::UnsafeContract(_) => {}
         ast::Expr::FieldAccess { base, .. } => collect_call_names_from_expr(base, out),
         ast::Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
@@ -5855,8 +6038,12 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
             _ => None,
         })
         .collect();
-    validate_ffi_contract(&parsed.module, &exports)?;
     let repr_c_layouts = collect_repr_c_layouts(&parsed.module)?;
+    let repr_c_names = repr_c_layouts
+        .iter()
+        .map(|layout| layout.name.clone())
+        .collect::<BTreeSet<_>>();
+    validate_ffi_contract(&parsed.module, &exports, &repr_c_names)?;
 
     let header_path = output
         .map(Path::to_path_buf)
@@ -5875,7 +6062,7 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
         .as_ref()
         .map(|manifest| manifest.package.name.as_str())
         .unwrap_or(module_name);
-    let header = render_c_header(package_name, &exports);
+    let header = render_c_header(package_name, &parsed.module, &exports);
     std::fs::write(&header_path, header)
         .with_context(|| format!("failed writing header: {}", header_path.display()))?;
     let abi_manifest = header_path.with_extension("abi.json");
@@ -6018,7 +6205,7 @@ fn generate_rpc_artifacts(path: &Path, out_dir: Option<&Path>) -> Result<RpcArti
     })
 }
 
-fn render_c_header(package_name: &str, exports: &[&ast::Function]) -> String {
+fn render_c_header(package_name: &str, module: &ast::Module, exports: &[&ast::Function]) -> String {
     let guard = format!("FOZZY_{}_H", package_name.to_ascii_uppercase());
     let mut header = String::new();
     header.push_str("#ifndef ");
@@ -6033,6 +6220,10 @@ fn render_c_header(package_name: &str, exports: &[&ast::Function]) -> String {
     header
         .push_str("int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb);\n");
     header.push_str("int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg);\n\n");
+    header.push_str(&render_repr_c_type_defs(module));
+    if !header.ends_with("\n\n") {
+        header.push('\n');
+    }
     for function in exports {
         header.push_str(&format!(
             "{} {}({});\n",
@@ -6053,7 +6244,35 @@ fn render_c_header(package_name: &str, exports: &[&ast::Function]) -> String {
     header
 }
 
-fn validate_ffi_contract(_module: &ast::Module, exports: &[&ast::Function]) -> Result<()> {
+fn render_repr_c_type_defs(module: &ast::Module) -> String {
+    let mut out = String::new();
+    for item in &module.items {
+        match item {
+            ast::Item::Struct(item) if is_repr_c(item.repr.as_deref()) => {
+                out.push_str(&format!("typedef struct {} {{\n", item.name));
+                for field in &item.fields {
+                    out.push_str(&format!("    {} {};\n", to_c_type(&field.ty), field.name));
+                }
+                out.push_str(&format!("}} {};\n\n", item.name));
+            }
+            ast::Item::Enum(item) if is_repr_c(item.repr.as_deref()) => {
+                out.push_str(&format!("typedef enum {} {{\n", item.name));
+                for (idx, variant) in item.variants.iter().enumerate() {
+                    out.push_str(&format!("    {}_{} = {},\n", item.name, variant.name, idx));
+                }
+                out.push_str(&format!("}} {};\n\n", item.name));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn validate_ffi_contract(
+    _module: &ast::Module,
+    exports: &[&ast::Function],
+    repr_c_names: &BTreeSet<String>,
+) -> Result<()> {
     if exports.is_empty() {
         return Ok(());
     }
@@ -6086,7 +6305,7 @@ fn validate_ffi_contract(_module: &ast::Module, exports: &[&ast::Function]) -> R
         }
     }
     for function in exports {
-        if !is_ffi_stable_type(&function.return_type) {
+        if !is_ffi_stable_type(&function.return_type, repr_c_names) {
             bail!(
                 "extern export `{}` uses unstable return type `{}`",
                 function.name,
@@ -6096,7 +6315,7 @@ fn validate_ffi_contract(_module: &ast::Module, exports: &[&ast::Function]) -> R
         let mut has_callback_param = false;
         let mut has_callback_context = false;
         for param in &function.params {
-            if !is_ffi_stable_type(&param.ty) {
+            if !is_ffi_stable_type(&param.ty, repr_c_names) {
                 bail!(
                     "extern export `{}` param `{}` uses unstable type `{}`",
                     function.name,
@@ -6289,7 +6508,7 @@ fn detect_ffi_panic_boundary(exports: &[&ast::Function]) -> &'static str {
     "abort-or-translate"
 }
 
-fn is_ffi_stable_type(ty: &ast::Type) -> bool {
+fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
     match ty {
         ast::Type::Void
         | ast::Type::Bool
@@ -6298,7 +6517,8 @@ fn is_ffi_stable_type(ty: &ast::Type) -> bool {
         | ast::Type::ISize
         | ast::Type::USize
         | ast::Type::Int { .. } => true,
-        ast::Type::Ptr { to, .. } => is_ffi_stable_type(to),
+        ast::Type::Ptr { to, .. } => is_ffi_stable_type(to, repr_c_names),
+        ast::Type::Named { name, args } => args.is_empty() && repr_c_names.contains(name),
         ast::Type::Str
         | ast::Type::Slice(_)
         | ast::Type::Result { .. }
@@ -6307,7 +6527,6 @@ fn is_ffi_stable_type(ty: &ast::Type) -> bool {
         | ast::Type::Ref { .. }
         | ast::Type::Array { .. }
         | ast::Type::Function { .. }
-        | ast::Type::Named { .. }
         | ast::Type::TypeVar(_) => false,
     }
 }
@@ -6369,6 +6588,7 @@ fn to_c_type(ty: &ast::Type) -> String {
         ast::Type::Float { bits: 64 } => "double".to_string(),
         ast::Type::Char => "uint32_t".to_string(),
         ast::Type::Str => "const char*".to_string(),
+        ast::Type::Named { name, .. } => name.clone(),
         _ => "void*".to_string(),
     }
 }
@@ -6467,6 +6687,74 @@ fn discover_nested_project_roots(path: &Path) -> Vec<PathBuf> {
     }
     out.sort();
     out
+}
+
+fn discover_project_roots(path: &Path) -> Result<Vec<PathBuf>> {
+    if path.is_file() {
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow!("path `{}` has no parent directory", path.display()))?;
+        return discover_project_roots(parent);
+    }
+    if !path.exists() {
+        bail!("path does not exist: {}", path.display());
+    }
+    if !path.is_dir() {
+        bail!(
+            "workspace unsafe audit expects a directory root: {}",
+            path.display()
+        );
+    }
+
+    let mut out = Vec::<PathBuf>::new();
+    if is_valid_project_root(path) {
+        out.push(path.to_path_buf());
+    }
+    let mut queue = VecDeque::from([path.to_path_buf()]);
+    while let Some(root) = queue.pop_front() {
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let candidate = entry.path();
+            if !candidate.is_dir() {
+                continue;
+            }
+            let name = candidate
+                .file_name()
+                .and_then(|v| v.to_str())
+                .unwrap_or_default();
+            if name.starts_with('.')
+                || name == "target"
+                || name == "artifacts"
+                || name == "vendor"
+                || name == "node_modules"
+            {
+                continue;
+            }
+            if is_valid_project_root(&candidate) {
+                out.push(candidate.clone());
+            }
+            queue.push_back(candidate);
+        }
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
+}
+
+fn is_valid_project_root(path: &Path) -> bool {
+    let manifest_path = path.join("fozzy.toml");
+    let text = match std::fs::read_to_string(&manifest_path) {
+        Ok(text) => text,
+        Err(_) => return false,
+    };
+    let manifest = match manifest::load(&text) {
+        Ok(manifest) => manifest,
+        Err(_) => return false,
+    };
+    manifest.validate().is_ok()
 }
 
 fn default_header_path(resolved: &ResolvedSource) -> PathBuf {
@@ -6774,6 +7062,7 @@ mod tests {
         let output = run(
             Command::AuditUnsafe {
                 path: source.clone(),
+                workspace: false,
             },
             Format::Json,
         )
@@ -6784,7 +7073,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_unsafe_rejects_missing_reason_in_semantic_call() {
+    fn audit_unsafe_rejects_missing_contract_in_semantic_call() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -6800,17 +7089,18 @@ mod tests {
         let error = run(
             Command::AuditUnsafe {
                 path: source.clone(),
+                workspace: false,
             },
             Format::Text,
         )
-        .expect_err("audit should fail when unsafe reason is missing");
-        assert!(error.to_string().contains("without reason string"));
+        .expect_err("audit should fail when unsafe contract fields are missing");
+        assert!(error.to_string().contains("unsafe contract requires exactly 6"));
 
         let _ = std::fs::remove_file(source);
     }
 
     #[test]
-    fn audit_unsafe_collects_reason_from_semantic_call() {
+    fn audit_unsafe_collects_structured_contract_from_semantic_call() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -6818,18 +7108,19 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-audit-reasoned-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "fn main() -> i32 {\n    unsafe(\"ffi boundary\")\n    return 0\n}\n",
+            "fn main() -> i32 {\n    let p = alloc(8)\n    unsafe(\"reason:ffi boundary\", \"invariant:pointer is valid for 8 bytes\", \"owner:p\", \"scope:fn-main\", \"risk_class:memory\", \"proof_ref:trace://unsafe-001\")\n    free(p)\n    return 0\n}\n",
         )
         .expect("source should be written");
 
         let output = run(
             Command::AuditUnsafe {
                 path: source.clone(),
+                workspace: false,
             },
             Format::Json,
         )
         .expect("audit should succeed");
-        assert!(output.contains("\"missingReasonCount\":0"));
+        assert!(output.contains("\"missingContractCount\":0"));
         assert!(output.contains("ffi boundary"));
 
         let _ = std::fs::remove_file(source);
@@ -6856,7 +7147,13 @@ mod tests {
         )
         .expect("source should be written");
 
-        let err = run(Command::AuditUnsafe { path: root.clone() }, Format::Text)
+        let err = run(
+            Command::AuditUnsafe {
+                path: root.clone(),
+                workspace: false,
+            },
+            Format::Text,
+        )
             .expect_err("audit should fail for non-project root path");
         let msg = err.to_string();
         assert!(msg.contains("not a Fozzy project root"));

@@ -151,10 +151,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                     Severity::Warning
                 },
                 format!(
-                    "{} unsafe escape site(s) missing reason string (use `unsafe(\"reason\")`)",
+                    "{} unsafe escape site(s) missing required contract fields",
                     missing_reasons
                 ),
-                Some("add explicit reason string for every unsafe escape".to_string()),
+                Some("use full unsafe contract: reason,invariant,owner,scope,risk_class,proof_ref".to_string()),
             ));
         }
     }

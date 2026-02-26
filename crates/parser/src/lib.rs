@@ -1,4 +1,4 @@
-use ast::{BinaryOp, Expr, MatchArm, Module, Pattern, Stmt, Type, UnaryOp};
+use ast::{BinaryOp, Expr, MatchArm, Module, Pattern, Stmt, Type, UnaryOp, UnsafeContract};
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
 
 #[derive(Debug, Clone)]
@@ -1484,7 +1484,18 @@ impl Parser {
                     self.push_diag_here("callee must be an identifier");
                     return None;
                 };
-                expr = Expr::Call { callee, args };
+                if callee == "unsafe_reason" {
+                    self.push_diag_here(
+                        "`unsafe_reason(...)` is removed; use `unsafe(\"reason:...\", \"invariant:...\", \"owner:...\", \"scope:...\", \"risk_class:...\", \"proof_ref:...\")`",
+                    );
+                    return None;
+                }
+                if callee == "unsafe" {
+                    let contract = self.parse_unsafe_contract_args(&args)?;
+                    expr = Expr::UnsafeContract(contract);
+                } else {
+                    expr = Expr::Call { callee, args };
+                }
                 continue;
             }
             if self.consume(&TokenKind::LBracket) {
@@ -1539,6 +1550,58 @@ impl Parser {
             return_type,
             body: Box::new(body),
         })
+    }
+
+    fn parse_unsafe_contract_args(&mut self, args: &[Expr]) -> Option<UnsafeContract> {
+        if args.len() != 6 {
+            self.push_diag_here(
+                "unsafe contract requires exactly 6 string args: reason,invariant,owner,scope,risk_class,proof_ref",
+            );
+            return None;
+        }
+
+        let reason = self.parse_unsafe_contract_field(&args[0], "reason")?;
+        let invariant = self.parse_unsafe_contract_field(&args[1], "invariant")?;
+        let owner = self.parse_unsafe_contract_field(&args[2], "owner")?;
+        let scope = self.parse_unsafe_contract_field(&args[3], "scope")?;
+        let risk_class = self.parse_unsafe_contract_field(&args[4], "risk_class")?;
+        let proof_ref = self.parse_unsafe_contract_field(&args[5], "proof_ref")?;
+
+        Some(UnsafeContract {
+            reason,
+            invariant,
+            owner,
+            scope,
+            risk_class,
+            proof_ref,
+        })
+    }
+
+    fn parse_unsafe_contract_field(&mut self, expr: &Expr, field: &str) -> Option<String> {
+        let Expr::Str(value) = expr else {
+            self.push_diag_here(&format!(
+                "unsafe contract field `{field}` must be a string in `{field}:...` form"
+            ));
+            return None;
+        };
+        let Some((label, raw)) = value.split_once(':') else {
+            self.push_diag_here(&format!(
+                "unsafe contract field must include `{field}:...` label"
+            ));
+            return None;
+        };
+        if label.trim() != field {
+            self.push_diag_here(&format!(
+                "unsafe contract arg expected `{field}:...` but got `{label}:...`"
+            ));
+            return None;
+        }
+        let normalized = raw.trim();
+        if normalized.is_empty() {
+            self.push_diag_here(&format!("unsafe contract `{field}` must not be empty"));
+            return None;
+        }
+        Some(normalized.to_string())
     }
 
     fn parse_type(&mut self) -> Option<Type> {

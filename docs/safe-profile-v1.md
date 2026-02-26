@@ -28,11 +28,10 @@
 - Returning a reference requires matching annotated region proof from an input or another proven binding.
 - Missing annotations or mismatched return lifetimes are verifier violations.
 
-## Unsafe Reason Syntax
+## Unsafe Contract Syntax
 
-Preferred forms for auditable unsafe reasons:
+Required auditable unsafe contract form:
 
-- `unsafe("reason text")`
-- `unsafe_reason("reason text")`
+- `unsafe("reason:...", "invariant:...", "owner:...", "scope:...", "risk_class:...", "proof_ref:...")`
 
-`fz audit unsafe` emits `.fz/unsafe-map.json` using semantic AST call analysis and fails if any unsafe site is missing a reason.
+`unsafe_reason(...)` is removed. `fz audit unsafe --workspace` emits `.fz/unsafe-map.workspace.json` and fails if any site has missing contract fields.

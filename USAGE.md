@@ -169,7 +169,7 @@ Recommended order for feature work:
 fz emit-ir [path]
 fz parity [path] [--seed N]
 fz equivalence [path] [--seed N]
-fz audit unsafe [path]
+fz audit unsafe [path] [--workspace]
 fz debug-check [path]
 ```
 

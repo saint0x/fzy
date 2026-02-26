@@ -585,6 +585,9 @@ fn collect_expr_semantics(
                 collect_expr_semantics(arg, scope_id, scopes, decls, refs, positions);
             }
         }
+        ast::Expr::UnsafeContract(contract) => {
+            resolve_reference(&contract.owner, scope_id, scopes, decls, refs, positions);
+        }
         ast::Expr::FieldAccess { base, .. } => {
             collect_expr_semantics(base, scope_id, scopes, decls, refs, positions);
         }

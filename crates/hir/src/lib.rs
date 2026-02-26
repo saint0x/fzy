@@ -664,6 +664,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 }
                 args.iter().any(expr_has_cap_intrinsic)
             }
+            Expr::UnsafeContract(_) => false,
             Expr::FieldAccess { base, .. } => expr_has_cap_intrinsic(base),
             Expr::StructInit { fields, .. } => fields
                 .iter()
@@ -986,6 +987,7 @@ fn analyze_expr_call_tokens(
                 );
             }
         }
+        Expr::UnsafeContract(_) => {}
         Expr::FieldAccess { base, .. } => analyze_expr_call_tokens(
             function_name,
             Some(base),
@@ -1364,6 +1366,7 @@ fn expr_has_await(expr: &Expr) -> bool {
     match expr {
         Expr::Await(_) => true,
         Expr::Call { args, .. } => args.iter().any(expr_has_await),
+        Expr::UnsafeContract(_) => false,
         Expr::FieldAccess { base, .. } => expr_has_await(base),
         Expr::StructInit { fields, .. } => fields.iter().any(|(_, value)| expr_has_await(value)),
         Expr::EnumInit { payload, .. } => payload.iter().any(expr_has_await),
@@ -1715,19 +1718,18 @@ fn analyze_ownership_block(
                         }
                     }
                 }
-                if matches!(callee.as_str(), "unsafe" | "unsafe_reason") && !unsafe_has_reason(args)
-                {
+            }
+            Stmt::Expr(Expr::UnsafeContract(contract)) => {
+                if !unsafe_contract_complete(contract) {
                     violations.push(format!(
-                        "function `{}` has unsafe site without required reason string",
+                        "function `{}` has unsafe contract with missing required fields",
                         function_name
                     ));
                 }
-                if matches!(callee.as_str(), "unsafe" | "unsafe_reason")
-                    && !unsafe_has_invariant_and_owner(args)
-                {
+                if !owners.contains_key(&contract.owner) {
                     violations.push(format!(
-                        "function `{}` has unsafe site missing invariant and ownership tags (`invariant:...`, `owner:...`)",
-                        function_name
+                        "function `{}` unsafe contract owner `{}` does not resolve to a live provenance root",
+                        function_name, contract.owner
                     ));
                 }
             }
@@ -1872,11 +1874,12 @@ fn build_function_memory_summaries(
                         if is_close_callee(callee) {
                             *self.close_sites += 1;
                         }
-                        if matches!(callee.as_str(), "unsafe" | "unsafe_reason") {
-                            *self.unsafe_sites += 1;
-                            if unsafe_has_reason(args) {
-                                *self.unsafe_reasoned_sites += 1;
-                            }
+                        let _ = args;
+                    }
+                    Expr::UnsafeContract(contract) => {
+                        *self.unsafe_sites += 1;
+                        if unsafe_contract_complete(contract) {
+                            *self.unsafe_reasoned_sites += 1;
                         }
                     }
                     Expr::Await(_) => {
@@ -2001,6 +2004,7 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
     match expr {
         Expr::Ident(name) => name == target,
         Expr::Call { args, .. } => args.iter().any(|arg| expr_uses_ident(arg, target)),
+        Expr::UnsafeContract(contract) => contract.owner == target,
         Expr::FieldAccess { base, .. } => expr_uses_ident(base, target),
         Expr::StructInit { fields, .. } => fields
             .iter()
@@ -2057,27 +2061,13 @@ fn is_close_callee(callee: &str) -> bool {
     callee == "close" || callee.ends_with(".close")
 }
 
-fn unsafe_has_reason(args: &[Expr]) -> bool {
-    args.first()
-        .is_some_and(|expr| matches!(expr, Expr::Str(value) if !value.trim().is_empty()))
-}
-
-fn unsafe_has_invariant_and_owner(args: &[Expr]) -> bool {
-    let mut has_invariant = false;
-    let mut has_owner = false;
-    for arg in args {
-        let Expr::Str(value) = arg else {
-            continue;
-        };
-        let normalized = value.to_ascii_lowercase();
-        if normalized.contains("invariant:") {
-            has_invariant = true;
-        }
-        if normalized.contains("owner:") {
-            has_owner = true;
-        }
-    }
-    has_invariant && has_owner
+fn unsafe_contract_complete(contract: &ast::UnsafeContract) -> bool {
+    !contract.reason.trim().is_empty()
+        && !contract.invariant.trim().is_empty()
+        && !contract.owner.trim().is_empty()
+        && !contract.scope.trim().is_empty()
+        && !contract.risk_class.trim().is_empty()
+        && !contract.proof_ref.trim().is_empty()
 }
 
 fn is_alloc_expr(expr: &Expr) -> bool {
@@ -2406,6 +2396,7 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
                 collect_expr_idents(arg, out);
             }
         }
+        Expr::UnsafeContract(contract) => out.push(contract.owner.clone()),
         Expr::FieldAccess { base, .. } => collect_expr_idents(base, out),
         Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
@@ -2796,21 +2787,21 @@ fn collect_effect_markers(
         }
         impl AstVisitor for Counter {
             fn visit_expr(&mut self, expr: &Expr) {
-                if let Expr::Call { callee, args } = expr {
+                if let Expr::Call { callee, .. } = expr {
                     if callee.starts_with("syscall.") {
                         self.host_syscall_sites += 1;
-                    }
-                    if matches!(callee.as_str(), "unsafe" | "unsafe_reason") {
-                        self.unsafe_sites += 1;
-                        if unsafe_has_reason(args) {
-                            self.unsafe_reasoned_sites += 1;
-                        }
                     }
                     if is_alloc_callee(callee) {
                         self.alloc_sites += 1;
                     }
                     if is_free_callee(callee) {
                         self.free_sites += 1;
+                    }
+                }
+                if let Expr::UnsafeContract(contract) = expr {
+                    self.unsafe_sites += 1;
+                    if unsafe_contract_complete(contract) {
+                        self.unsafe_reasoned_sites += 1;
                     }
                 }
                 ast::walk_expr(self, expr);
@@ -2852,6 +2843,7 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             ast::Expr::Ident(name) => Some(name.clone()),
             _ => None,
         }),
+        ast::Expr::UnsafeContract(contract) => Some(contract.owner.clone()),
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -3473,6 +3465,7 @@ fn infer_expr_type(
             );
             None
         }
+        Expr::UnsafeContract(_) => Some(Type::Void),
         Expr::Closure {
             params,
             return_type,
@@ -5370,6 +5363,7 @@ fn eval_expr<'a>(
                 None
             }
         }),
+        Expr::UnsafeContract(_) => Some(Value::I32(0)),
         Expr::Closure {
             params,
             return_type,

@@ -9,7 +9,8 @@ ARTIFACT_DIR="${ARTIFACT_DIR:-artifacts}"
 TRACE_PATH="$ARTIFACT_DIR/production-gate.trace.fozzy"
 MEM_TRACE_PATH="$ARTIFACT_DIR/production-memory.trace.fozzy"
 UNSAFE_BUDGET="${UNSAFE_BUDGET:-0}"
-UNSAFE_AUDIT_TARGET="${UNSAFE_AUDIT_TARGET:-examples/fullstack}"
+UNSAFE_AUDIT_TARGET="${UNSAFE_AUDIT_TARGET:-.}"
+RUST_UNSAFE_BUDGET="${RUST_UNSAFE_BUDGET:-2}"
 
 if command -v fz >/dev/null 2>&1; then
   FZ_CMD=(fz)
@@ -114,18 +115,25 @@ if uncovered != 0:
 PY
 
 echo "[gate] unsafe budget gate"
-UNSAFE_JSON="$("${FZ_CMD[@]}" audit unsafe "$UNSAFE_AUDIT_TARGET" --json)"
+UNSAFE_JSON="$("${FZ_CMD[@]}" audit unsafe "$UNSAFE_AUDIT_TARGET" --workspace --json)"
 python3 - <<'PY' "$UNSAFE_JSON" "$UNSAFE_BUDGET"
 import json, sys
 payload = json.loads(sys.argv[1])
 budget = int(sys.argv[2])
 count = len(payload.get("entries", []))
-missing = int(payload.get("missingReasonCount", 0))
-print(f"unsafe_entries={count} missing_reason={missing} budget={budget}")
+missing = int(payload.get("missingContractCount", 0))
+invalid = int(payload.get("invalidProofRefCount", 0))
+projects = len(payload.get("projects", []))
+print(f"unsafe_entries={count} missing_contract={missing} invalid_proof_ref={invalid} projects={projects} budget={budget}")
 if missing > 0:
     raise SystemExit(2)
+if invalid > 0:
+    raise SystemExit(4)
 if count > budget:
     raise SystemExit(3)
 PY
+
+echo "[gate] rust unsafe inventory gate"
+python3 ./scripts/rust_unsafe_inventory.py --root "$ROOT" --out "$ARTIFACT_DIR/rust_unsafe_inventory.json" --budget "$RUST_UNSAFE_BUDGET"
 
 echo "[gate] PASS"

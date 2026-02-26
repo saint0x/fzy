@@ -165,12 +165,12 @@ Fix workflow:
 
 Symptoms:
 
-- `missingReasonCount > 0`
+- `missingContractCount > 0`
 - unsafe entries exceed budget
 
 Fix workflow:
 
-1. Run `fz audit unsafe [target] --json`.
-2. Add missing unsafe reason metadata.
+1. Run `fz audit unsafe [target] --workspace --json`.
+2. Add missing unsafe contract metadata (`reason/invariant/owner/scope/risk_class/proof_ref`).
 3. Remove unnecessary unsafe usage or explicitly approve budget changes.
 4. Re-run gate and confirm budget compliance.

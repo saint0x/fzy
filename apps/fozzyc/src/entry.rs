@@ -244,6 +244,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("audit") => match args.get(1).map(String::as_str) {
             Some("unsafe") => Ok(Command::AuditUnsafe {
                 path: arg_path_or_cwd(args, 2)?,
+                workspace: has_flag(args, "--workspace"),
             }),
             _ => {
                 print_help();
@@ -376,7 +377,7 @@ commands:\n\
   emit-ir [path]\n\
   parity [path] [--seed N]\n\
   equivalence [path] [--seed N]\n\
-  audit unsafe [path]\n\
+  audit unsafe [path] [--workspace]\n\
   vendor [project]\n\
   abi-check <current.abi.json> --baseline <baseline.abi.json>\n\
   debug-check [path]\n\

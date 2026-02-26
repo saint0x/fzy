@@ -207,6 +207,7 @@ pub enum Expr {
         callee: String,
         args: Vec<Expr>,
     },
+    UnsafeContract(UnsafeContract),
     FieldAccess {
         base: Box<Expr>,
         field: String,
@@ -250,6 +251,16 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnsafeContract {
+    pub reason: String,
+    pub invariant: String,
+    pub owner: String,
+    pub scope: String,
+    pub risk_class: String,
+    pub proof_ref: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -550,6 +561,7 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
                 visitor.visit_expr(arg);
             }
         }
+        Expr::UnsafeContract(_) => {}
         Expr::FieldAccess { base, .. } => visitor.visit_expr(base),
         Expr::StructInit { fields, .. } => {
             for (_, value) in fields {

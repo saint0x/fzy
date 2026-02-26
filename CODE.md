@@ -400,8 +400,16 @@ cat > /tmp/code_contracts_safety.fzy <<'FZY'
 fn checked_add(x: i32, y: i32) -> i32 {
     requires x >= 0
     defer pulse()
-    unsafe_reason("manual FFI boundary contract audited")
-    unsafe("pointer/lifetime preconditions validated externally")
+    let p = alloc(8)
+    unsafe(
+        "reason:manual FFI boundary contract audited",
+        "invariant:pointer remains valid for this scope",
+        "owner:p",
+        "scope:checked_add",
+        "risk_class:memory",
+        "proof_ref:trace://unsafe-checked-add-001"
+    )
+    free(p)
     let out = x + y
     ensures out >= x
     return out

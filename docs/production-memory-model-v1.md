@@ -3,7 +3,7 @@
 ## Safety Target
 
 - Safe-by-default semantics are mandatory for production run/test/build pipelines.
-- Unsafe behavior is allowed only through explicit `unsafe(...)`/`unsafe_reason(...)` islands with reason strings and invariants.
+- Unsafe behavior is allowed only through explicit structured `unsafe(...)` contracts.
 - Production policy target is enforceable high-assurance default safety with no unsound default fallback path.
 - The implementation intentionally does not claim full theorem-proved equivalence to Rust’s borrow checker.
 
@@ -61,9 +61,12 @@
 ## Unsafe Islands
 
 - Unsafe sites must include:
-  - reason string
-  - `invariant:` tag
-  - `owner:` tag
+  - `reason:...`
+  - `invariant:...`
+  - `owner:...`
+  - `scope:...`
+  - `risk_class:...`
+  - `proof_ref:...`
 - Unsafe sites without these contracts are release-blocking.
 
 ## Production Gates
@@ -77,4 +80,4 @@ Mandatory for memory safety releases:
 - `fozzy replay <trace.fozzy> --json`
 - `fozzy ci <trace.fozzy> --json`
 - host-backed parity run for memory scenario
-- unsafe budget gate (missing-reason count must be zero; entry count must be within budget)
+- unsafe budget gate (missing-contract count must be zero; entry count must be within budget)
