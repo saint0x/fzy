@@ -3318,7 +3318,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
                 &mutable_global_symbols,
                 &plan.string_literal_ids,
                 &plan.task_ref_ids,
-                Some(cfg),
+                cfg,
             )
             .unwrap_or_else(|error| {
                 format!(
@@ -3502,7 +3502,7 @@ fn llvm_emit_function(
     mutable_globals: &HashMap<String, String>,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
-    cfg_override: Option<&ControlFlowCfg>,
+    cfg: &ControlFlowCfg,
 ) -> Result<String> {
     let params = function
         .params
@@ -3527,16 +3527,6 @@ fn llvm_emit_function(
         ));
         ctx.slots.insert(param.name.clone(), slot);
     }
-    let cfg = if let Some(cfg) = cfg_override {
-        cfg.clone()
-    } else {
-        build_control_flow_cfg(&function.body, variant_tags)
-            .and_then(|cfg| {
-                verify_control_flow_cfg(&cfg)?;
-                Ok(cfg)
-            })
-            .with_context(|| format!("building control-flow cfg for `{}`", function.name))?
-    };
     let labels = cfg
         .blocks
         .iter()
