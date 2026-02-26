@@ -329,6 +329,16 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("debug-check") => Ok(Command::DebugCheck {
             path: arg_path_or_cwd(args, 1)?,
         }),
+        Some("pgo") => match args.get(1).map(String::as_str) {
+            Some("merge") => Ok(Command::PgoMerge {
+                path: arg_path_or_cwd(args, 2)?,
+                output: parse_path_flag(args, "--out")?,
+            }),
+            _ => {
+                print_help();
+                bail!("unknown pgo subcommand")
+            }
+        },
         Some("lsp") => match args.get(1).map(String::as_str) {
             Some("serve") => Ok(Command::LspServe {
                 path: parse_path_flag(args, "--path")?,
@@ -467,6 +477,7 @@ commands:\n\
   vendor [project]\n\
   abi-check <current.abi.json> --baseline <baseline.abi.json>\n\
   debug-check [path]\n\
+  pgo merge [path] [--out file]\n\
   lsp serve [--path workspace]\n\
   lsp diagnostics [path]\n\
   lsp definition <path> <symbol>\n\
@@ -829,5 +840,37 @@ mod tests {
         assert!(error
             .to_string()
             .contains("--pgo-generate and --pgo-use are mutually exclusive"));
+    }
+
+    #[test]
+    fn parse_pgo_merge_defaults_to_current_directory() {
+        let args = vec!["pgo".to_string(), "merge".to_string()];
+        let command = parse_command(&args).expect("pgo merge should parse");
+        match command {
+            Command::PgoMerge { path, output } => {
+                assert_eq!(path, std::env::current_dir().expect("cwd"));
+                assert!(output.is_none());
+            }
+            _ => panic!("expected pgo merge command"),
+        }
+    }
+
+    #[test]
+    fn parse_pgo_merge_with_path_and_output() {
+        let args = vec![
+            "pgo".to_string(),
+            "merge".to_string(),
+            ".fz/pgo/default".to_string(),
+            "--out".to_string(),
+            "artifacts/default.profdata".to_string(),
+        ];
+        let command = parse_command(&args).expect("pgo merge should parse");
+        match command {
+            Command::PgoMerge { path, output } => {
+                assert_eq!(path, PathBuf::from(".fz/pgo/default"));
+                assert_eq!(output, Some(PathBuf::from("artifacts/default.profdata")));
+            }
+            _ => panic!("expected pgo merge command"),
+        }
     }
 }

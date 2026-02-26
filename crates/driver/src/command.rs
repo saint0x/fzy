@@ -138,6 +138,10 @@ pub enum Command {
     DebugCheck {
         path: PathBuf,
     },
+    PgoMerge {
+        path: PathBuf,
+        output: Option<PathBuf>,
+    },
     LspDiagnostics {
         path: PathBuf,
     },
@@ -757,6 +761,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::Vendor { path } => vendor_command(&path, format),
         Command::AbiCheck { current, baseline } => abi_check_command(&current, &baseline, format),
         Command::DebugCheck { path } => debug_check_command(&path, format),
+        Command::PgoMerge { path, output } => pgo_merge_command(&path, output.as_deref(), format),
         Command::LspDiagnostics { path } => lsp_diagnostics_command(&path, format),
         Command::LspDefinition { path, symbol } => lsp_definition_command(&path, &symbol, format),
         Command::LspHover { path, symbol } => lsp_hover_command(&path, &symbol, format),
@@ -896,6 +901,105 @@ fn resolve_pgo_dir(path: &Path) -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("."))
     };
     root.join(".fz").join("pgo").join("default")
+}
+
+fn collect_pgo_profile_inputs(path: &Path) -> Result<Vec<PathBuf>> {
+    if path.is_file() {
+        return Ok(vec![path.to_path_buf()]);
+    }
+    if !path.exists() {
+        bail!("PGO input path not found: {}", path.display());
+    }
+    if !path.is_dir() {
+        bail!("PGO input path is neither a file nor directory: {}", path.display());
+    }
+
+    let mut inputs = Vec::new();
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)
+            .with_context(|| format!("failed reading PGO input directory: {}", dir.display()))?
+        {
+            let entry = entry.with_context(|| {
+                format!("failed reading directory entry while scanning {}", dir.display())
+            })?;
+            let entry_path = entry.path();
+            if entry_path.is_dir() {
+                stack.push(entry_path);
+                continue;
+            }
+            let ext = entry_path.extension().and_then(|value| value.to_str());
+            if matches!(ext, Some("profraw") | Some("profdata")) {
+                inputs.push(entry_path);
+            }
+        }
+    }
+    inputs.sort();
+    inputs.dedup();
+    Ok(inputs)
+}
+
+fn pgo_merge_command(path: &Path, output: Option<&Path>, format: Format) -> Result<String> {
+    let inputs = collect_pgo_profile_inputs(path)?;
+    if inputs.is_empty() {
+        bail!(
+            "no PGO profile inputs found under {}; expected .profraw or .profdata files",
+            path.display()
+        );
+    }
+    let output_path = output
+        .map(PathBuf::from)
+        .unwrap_or_else(|| path.join("merged.profdata"));
+    if let Some(parent) = output_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "failed creating output directory for merged profile: {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let mut command = ProcessCommand::new("llvm-profdata");
+    command.arg("merge").arg("-sparse").arg("-o").arg(&output_path);
+    for input in &inputs {
+        command.arg(input);
+    }
+    let output = command.output().with_context(|| {
+        "failed invoking llvm-profdata; ensure LLVM toolchain is installed and llvm-profdata is in PATH"
+    })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        bail!(
+            "llvm-profdata merge failed for {} input(s): {}",
+            inputs.len(),
+            if stderr.is_empty() {
+                "<no stderr>".to_string()
+            } else {
+                stderr
+            }
+        );
+    }
+
+    let rendered = match format {
+        Format::Text => render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "pgo-merge".to_string()),
+            ("input_count", inputs.len().to_string()),
+            ("output", output_path.display().to_string()),
+        ]),
+        Format::Json => serde_json::json!({
+            "status": "ok",
+            "mode": "pgo-merge",
+            "inputCount": inputs.len(),
+            "output": output_path.display().to_string(),
+            "inputs": inputs
+                .iter()
+                .map(|value| value.display().to_string())
+                .collect::<Vec<_>>(),
+        })
+        .to_string(),
+    };
+    Ok(rendered)
 }
 
 impl BuildLinkArgsScope {
