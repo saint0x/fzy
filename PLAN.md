@@ -493,10 +493,10 @@
 - [✅] Add backend conformance gate to release criteria for direct-memory lowering features.
 
 #### Type/Layout + ABI Constraints for Direct Memory
-- [ ] Tighten internal type/layout metadata flow so element width/align/stride are available at canonical IR level.
-- [ ] Eliminate pointer-sized/i32 surrogate usage for local data-plane values where concrete layout is known.
-- [ ] Keep external ABI stable while allowing internal representation changes for optimized native lowering.
-- [ ] Add layout/alias validation tests for arrays/slices/strings under both backends.
+- [✅] Tighten internal type/layout metadata flow so element width/align/stride are available at canonical IR level.
+- [✅] Eliminate pointer-sized/i32 surrogate usage for local data-plane values where concrete layout is known.
+- [✅] Keep external ABI stable while allowing internal representation changes for optimized native lowering.
+- [✅] Add layout/alias validation tests for arrays/slices/strings under both backends.
 
 #### Determinism + Safety Gates (Mandatory)
 - [✅] Add deterministic differential tests: direct-memory mode vs capability-boundary mode must be behaviorally equivalent at language level.

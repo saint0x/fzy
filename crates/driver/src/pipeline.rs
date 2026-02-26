@@ -46,6 +46,23 @@ struct ClifClosureBinding {
     captures: HashMap<String, LocalBinding>,
 }
 
+#[derive(Clone)]
+struct LlvmArrayBinding {
+    slots: Vec<String>,
+    element_bits: u16,
+    element_align: u8,
+    element_stride: u8,
+}
+
+#[derive(Clone)]
+struct ClifArrayBinding {
+    elements: Vec<LocalBinding>,
+    element_ty: ClifType,
+    element_bits: u16,
+    element_align: u8,
+    element_stride: u8,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct NativeRuntimeImport {
     callee: &'static str,
@@ -3519,7 +3536,7 @@ struct LlvmFuncCtx {
     next_value: usize,
     next_label: usize,
     slots: HashMap<String, String>,
-    array_slots: HashMap<String, Vec<String>>,
+    array_slots: HashMap<String, LlvmArrayBinding>,
     const_strings: HashMap<String, String>,
     closures: HashMap<String, LlvmClosureBinding>,
     globals: HashMap<String, i32>,
@@ -3895,12 +3912,20 @@ fn llvm_emit_linear_stmts(
                         ));
                         element_slots.push(slot);
                     }
-                    ctx.array_slots.insert(name.clone(), element_slots);
+                    ctx.array_slots.insert(
+                        name.clone(),
+                        LlvmArrayBinding {
+                            slots: element_slots,
+                            element_bits: 32,
+                            element_align: 4,
+                            element_stride: 4,
+                        },
+                    );
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
-                    if let Some(source_slots) = ctx.array_slots.get(source).cloned() {
-                        ctx.array_slots.insert(name.clone(), source_slots);
+                    if let Some(source_binding) = ctx.array_slots.get(source).cloned() {
+                        ctx.array_slots.insert(name.clone(), source_binding);
                         continue;
                     }
                 }
@@ -3961,12 +3986,20 @@ fn llvm_emit_linear_stmts(
                         ));
                         element_slots.push(slot);
                     }
-                    ctx.array_slots.insert(target.clone(), element_slots);
+                    ctx.array_slots.insert(
+                        target.clone(),
+                        LlvmArrayBinding {
+                            slots: element_slots,
+                            element_bits: 32,
+                            element_align: 4,
+                            element_stride: 4,
+                        },
+                    );
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
-                    if let Some(source_slots) = ctx.array_slots.get(source).cloned() {
-                        ctx.array_slots.insert(target.clone(), source_slots);
+                    if let Some(source_binding) = ctx.array_slots.get(source).cloned() {
+                        ctx.array_slots.insert(target.clone(), source_binding);
                         continue;
                     }
                 }
@@ -4178,12 +4211,12 @@ fn llvm_emit_expr(
         ast::Expr::Index { base, index } => {
             let index_value = llvm_emit_expr(index, ctx, string_literal_ids, task_ref_ids);
             if let ast::Expr::Ident(name) = base.as_ref() {
-                if let Some(elements) = ctx.array_slots.get(name).cloned() {
-                    if elements.is_empty() {
+                if let Some(binding) = ctx.array_slots.get(name).cloned() {
+                    if binding.slots.is_empty() {
                         return "0".to_string();
                     }
                     let mut selected = "0".to_string();
-                    for (idx, slot) in elements.iter().enumerate().rev() {
+                    for (idx, slot) in binding.slots.iter().enumerate().rev() {
                         let loaded = ctx.value();
                         let cmp = ctx.value();
                         let out = ctx.value();
@@ -4194,6 +4227,11 @@ fn llvm_emit_expr(
                         ));
                         selected = out;
                     }
+                    let _ = (
+                        binding.element_bits,
+                        binding.element_align,
+                        binding.element_stride,
+                    );
                     return selected;
                 }
             }
@@ -6266,7 +6304,7 @@ struct ClifLoweringCtx<'a> {
     variant_tags: &'a HashMap<String, i32>,
     mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
     closures: HashMap<String, ClifClosureBinding>,
-    array_bindings: HashMap<String, Vec<LocalBinding>>,
+    array_bindings: HashMap<String, ClifArrayBinding>,
     const_strings: HashMap<String, String>,
 }
 
@@ -6677,20 +6715,34 @@ fn clif_emit_linear_stmts(
                     continue;
                 }
                 if let ast::Expr::ArrayLiteral(items) = value {
-                    let mut bindings = Vec::with_capacity(items.len());
+                    let mut lowered_items = Vec::with_capacity(items.len());
                     for item in items {
-                        let mut item_val = clif_emit_expr(builder, ctx, item, locals, next_var)?;
-                        item_val = cast_clif_value(builder, item_val, default_int_clif_type())?;
+                        lowered_items.push(clif_emit_expr(builder, ctx, item, locals, next_var)?);
+                    }
+                    let (element_ty, element_bits, element_align, element_stride) =
+                        clif_array_layout_from_values(&lowered_items);
+                    let mut bindings = Vec::with_capacity(lowered_items.len());
+                    for mut item_val in lowered_items {
+                        item_val = cast_clif_value(builder, item_val, element_ty)?;
                         let var = Variable::from_u32(*next_var as u32);
                         *next_var += 1;
-                        builder.declare_var(var, default_int_clif_type());
+                        builder.declare_var(var, element_ty);
                         builder.def_var(var, item_val.value);
                         bindings.push(LocalBinding {
                             var,
-                            ty: default_int_clif_type(),
+                            ty: element_ty,
                         });
                     }
-                    ctx.array_bindings.insert(name.clone(), bindings);
+                    ctx.array_bindings.insert(
+                        name.clone(),
+                        ClifArrayBinding {
+                            elements: bindings,
+                            element_ty,
+                            element_bits,
+                            element_align,
+                            element_stride,
+                        },
+                    );
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
@@ -6763,20 +6815,34 @@ fn clif_emit_linear_stmts(
                     continue;
                 }
                 if let ast::Expr::ArrayLiteral(items) = value {
-                    let mut bindings = Vec::with_capacity(items.len());
+                    let mut lowered_items = Vec::with_capacity(items.len());
                     for item in items {
-                        let mut item_val = clif_emit_expr(builder, ctx, item, locals, next_var)?;
-                        item_val = cast_clif_value(builder, item_val, default_int_clif_type())?;
+                        lowered_items.push(clif_emit_expr(builder, ctx, item, locals, next_var)?);
+                    }
+                    let (element_ty, element_bits, element_align, element_stride) =
+                        clif_array_layout_from_values(&lowered_items);
+                    let mut bindings = Vec::with_capacity(lowered_items.len());
+                    for mut item_val in lowered_items {
+                        item_val = cast_clif_value(builder, item_val, element_ty)?;
                         let var = Variable::from_u32(*next_var as u32);
                         *next_var += 1;
-                        builder.declare_var(var, default_int_clif_type());
+                        builder.declare_var(var, element_ty);
                         builder.def_var(var, item_val.value);
                         bindings.push(LocalBinding {
                             var,
-                            ty: default_int_clif_type(),
+                            ty: element_ty,
                         });
                     }
-                    ctx.array_bindings.insert(target.clone(), bindings);
+                    ctx.array_bindings.insert(
+                        target.clone(),
+                        ClifArrayBinding {
+                            elements: bindings,
+                            element_ty,
+                            element_bits,
+                            element_align,
+                            element_stride,
+                        },
+                    );
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
@@ -7091,10 +7157,10 @@ fn clif_emit_expr(
             let index_value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
             let index_value = cast_clif_value(builder, index_value, default_int_clif_type())?;
             if let ast::Expr::Ident(name) = base.as_ref() {
-                if let Some(elements) = ctx.array_bindings.get(name) {
-                    let mut selected = builder.ins().iconst(default_int_clif_type(), 0);
-                    for (idx, binding) in elements.iter().enumerate().rev() {
-                        let candidate = builder.use_var(binding.var);
+                if let Some(binding) = ctx.array_bindings.get(name) {
+                    let mut selected = builder.ins().iconst(binding.element_ty, 0);
+                    for (idx, element) in binding.elements.iter().enumerate().rev() {
+                        let candidate = builder.use_var(element.var);
                         let idx_const = builder.ins().iconst(default_int_clif_type(), idx as i64);
                         let pred =
                             builder
@@ -7102,9 +7168,10 @@ fn clif_emit_expr(
                                 .icmp(IntCC::Equal, index_value.value, idx_const);
                         selected = builder.ins().select(pred, candidate, selected);
                     }
+                    let _ = (binding.element_bits, binding.element_align, binding.element_stride);
                     return Ok(ClifValue {
                         value: selected,
-                        ty: default_int_clif_type(),
+                        ty: binding.element_ty,
                     });
                 }
             }
@@ -7606,6 +7673,18 @@ fn pointer_sized_clif_type() -> ClifType {
 
 fn default_int_clif_type() -> ClifType {
     types::I32
+}
+
+fn clif_array_layout_from_values(values: &[ClifValue]) -> (ClifType, u16, u8, u8) {
+    let element_ty = if values.iter().any(|value| value.ty == types::I64) {
+        types::I64
+    } else {
+        types::I32
+    };
+    let element_bits = element_ty.bits() as u16;
+    let element_stride = (element_bits / 8) as u8;
+    let element_align = element_stride;
+    (element_ty, element_bits, element_align, element_stride)
 }
 
 fn zero_for_type(builder: &mut FunctionBuilder, ty: ClifType) -> cranelift_codegen::ir::Value {
@@ -15581,6 +15660,96 @@ mod tests {
         );
         assert_eq!(cranelift_exit, llvm_exit);
         assert_eq!(cranelift_exit, 68);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_direct_memory_i64_array_layout_executes_consistently() {
+        let project_name = format!(
+            "fozzylang-direct-memory-i64-array-layout-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let values = [3000000000, 4000000000]\n    let picked = values[0]\n    if picked > 2147483648 {\n        return 77\n    }\n    return 33\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 77);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_direct_memory_string_slice_executes_consistently() {
+        let project_name = format!(
+            "fozzylang-direct-memory-string-slice-layout-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let s = str.slice(\"abcdef\", 1, 3)\n    if str.starts_with(s, \"bcd\") == 1 {\n        return str.len(s) + 16\n    }\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 19);
 
         let _ = std::fs::remove_dir_all(root);
     }
