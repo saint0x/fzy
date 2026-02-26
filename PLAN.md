@@ -291,9 +291,9 @@
 - [✅] `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
 - [✅] Add release gate rule: fail ship if any backend differs in observable semantics (exit code/output/trace-normalized behavior) for mandatory parity fixtures.
 - [✅] Add release gate rule: fail ship on any Cranelift frontend panic or backend-internal lowering panic on production fixtures/examples.
-- [ ] Add example and Anthropic smoke conformance gate:
-- [ ] all `examples/` must `check/build/test/run` under default production backend
-- [ ] Anthropic smoke must `check/build/test/run` under both LLVM and Cranelift (or Cranelift explicitly blocked with tracked P0 and release gate fail)
+- [✅] Add example and Anthropic smoke conformance gate:
+- [✅] all `examples/` must `check/build/test/run` under default production backend
+- [✅] Anthropic smoke must `check/build/test/run` under both LLVM and Cranelift (or Cranelift explicitly blocked with tracked P0 and release gate fail)
 - [✅] Add architecture doc: control-flow lowering contract, CFG invariants, and backend responsibilities (what is shared vs backend-specific).
 - [✅] Add incident-prevention checklist for future language-surface additions:
 - [✅] every new control-flow primitive must be modeled in shared CFG first

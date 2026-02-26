@@ -63,6 +63,37 @@ cargo test -q -p driver pipeline::tests::cross_backend_primitive_control_flow_an
 cargo test -q -p driver pipeline::tests::cross_backend_non_i32_and_aggregate_signatures_execute_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::non_entry_infinite_loop_function_fixture_stays_non_regressing -- --exact >/dev/null
 
+echo "[ship] examples conformance on default production backend"
+for example_root in "$ROOT"/examples/*; do
+  [[ -d "$example_root" ]] || continue
+  [[ -f "$example_root/fozzy.toml" ]] || continue
+  "${FZ_CMD[@]}" check "$example_root" --json >/dev/null
+  "${FZ_CMD[@]}" build "$example_root" --release --json >/dev/null
+  "${FZ_CMD[@]}" test "$example_root" --strict-verify --seed "$SEED" --json >/dev/null
+  "${FZ_CMD[@]}" run "$example_root" --strict-verify --seed "$SEED" --json >/dev/null
+  echo "[ship] example ok: $(basename "$example_root")"
+done
+
+echo "[ship] anthropic smoke matrix (llvm + cranelift)"
+ANTHROPIC_SMOKE="$TMP_DIR/anthropic_smoke.fzy"
+cat > "$ANTHROPIC_SMOKE" <<'FZY'
+fn main() -> i32 {
+    http.post_json_capture("https://api.anthropic.com/v1/messages", "{}")
+    let emsg = error.message()
+    if str.contains(emsg, "ANTHROPIC_API_KEY") != 1 {
+        return 91
+    }
+    return 0
+}
+FZY
+for backend in llvm cranelift; do
+  "${FZ_CMD[@]}" check "$ANTHROPIC_SMOKE" --json >/dev/null
+  "${FZ_CMD[@]}" build "$ANTHROPIC_SMOKE" --backend "$backend" --json >/dev/null
+  "${FZ_CMD[@]}" test "$ANTHROPIC_SMOKE" --backend "$backend" --seed "$SEED" --json >/dev/null
+  "${FZ_CMD[@]}" run "$ANTHROPIC_SMOKE" --backend "$backend" --seed "$SEED" --json >/dev/null
+  echo "[ship] anthropic smoke ok: $backend"
+done
+
 echo "[ship] FFI release-blocking examples (headers + abi-check)"
 for example in fullstack live_server; do
   example_root="$ROOT/examples/$example"
