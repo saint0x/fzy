@@ -57,6 +57,8 @@ pub struct Function {
     pub params: Vec<Param>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
+    pub is_unsafe: bool,
+    pub unsafe_meta: Option<UnsafeMeta>,
     pub is_async: bool,
     pub is_pub: bool,
     pub is_pubext: bool,
@@ -208,7 +210,10 @@ pub enum Expr {
         callee: String,
         args: Vec<Expr>,
     },
-    UnsafeContract(UnsafeContract),
+    UnsafeBlock {
+        body: Vec<Stmt>,
+        meta: Option<UnsafeMeta>,
+    },
     FieldAccess {
         base: Box<Expr>,
         field: String,
@@ -255,7 +260,7 @@ pub enum Expr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnsafeContract {
+pub struct UnsafeMeta {
     pub reason: String,
     pub invariant: String,
     pub owner: String,
@@ -562,7 +567,11 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
                 visitor.visit_expr(arg);
             }
         }
-        Expr::UnsafeContract(_) => {}
+        Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                visitor.visit_stmt(stmt);
+            }
+        }
         Expr::FieldAccess { base, .. } => visitor.visit_expr(base),
         Expr::StructInit { fields, .. } => {
             for (_, value) in fields {

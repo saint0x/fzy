@@ -1372,7 +1372,11 @@ fn qualify_expr(
                 qualify_expr(arg, namespace, local_functions, module_aliases);
             }
         }
-        ast::Expr::UnsafeContract(_) => {}
+        ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+            }
+        }
         ast::Expr::FieldAccess { base, .. } => {
             qualify_expr(base, namespace, local_functions, module_aliases);
         }
@@ -1594,7 +1598,11 @@ fn canonicalize_expr_calls(
                 canonicalize_expr_calls(arg, namespace, known_functions);
             }
         }
-        ast::Expr::UnsafeContract(_) => {}
+        ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                canonicalize_stmt_calls(stmt, namespace, known_functions);
+            }
+        }
         ast::Expr::FieldAccess { base, .. } => {
             canonicalize_expr_calls(base, namespace, known_functions);
         }
@@ -3344,7 +3352,7 @@ fn collect_native_data_ops_from_expr(
                 collect_native_data_ops_from_expr(arg, array_lengths, const_strings, out);
             }
         }
-        ast::Expr::UnsafeContract(_) => {}
+        ast::Expr::UnsafeBlock { .. } => {}
         ast::Expr::Index { base, index } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(len) = array_lengths.get(name) {
@@ -4624,7 +4632,10 @@ fn llvm_emit_expr(
                 .push_str(&format!("  {val} = call i32 @{symbol}({args})\n"));
             val
         }
-        ast::Expr::UnsafeContract(_) => "0".to_string(),
+        ast::Expr::UnsafeBlock { body, .. } => {
+            let _ = llvm_emit_linear_stmts(body, ctx, string_literal_ids, task_ref_ids);
+            "0".to_string()
+        }
         ast::Expr::Binary { op, left, right } => {
             let lhs = llvm_emit_expr(left, ctx, string_literal_ids, task_ref_ids);
             let out = ctx.value();
@@ -5037,7 +5048,7 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
                     collect_from_expr(arg, const_strings, out);
                 }
             }
-            ast::Expr::UnsafeContract(_) => {}
+            ast::Expr::UnsafeBlock { .. } => {}
             ast::Expr::FieldAccess { base, .. } => collect_from_expr(base, const_strings, out),
             ast::Expr::StructInit { fields, .. } => {
                 for (_, value) in fields {
@@ -5189,7 +5200,7 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
                 collect_string_literals_from_expr(arg, literals);
             }
         }
-        ast::Expr::UnsafeContract(_) => {}
+        ast::Expr::UnsafeBlock { .. } => {}
         ast::Expr::FieldAccess { base, .. } => collect_string_literals_from_expr(base, literals),
         ast::Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
@@ -5388,7 +5399,7 @@ fn collect_variant_keys_from_expr(expr: &ast::Expr, out: &mut BTreeSet<String>) 
                 collect_variant_keys_from_expr(arg, out);
             }
         }
-        ast::Expr::UnsafeContract(_) => {}
+        ast::Expr::UnsafeBlock { .. } => {}
         ast::Expr::FieldAccess { base, .. } => collect_variant_keys_from_expr(base, out),
         ast::Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
@@ -5747,7 +5758,7 @@ fn collect_used_runtime_imports_from_expr(
                 collect_used_runtime_imports_from_expr(arg, seen, used);
             }
         }
-        ast::Expr::UnsafeContract(_) => {}
+        ast::Expr::UnsafeBlock { .. } => {}
         ast::Expr::FieldAccess { base, .. } => {
             collect_used_runtime_imports_from_expr(base, seen, used);
         }
@@ -8315,10 +8326,13 @@ fn clif_emit_expr(
                 ));
             }
         }
-        ast::Expr::UnsafeContract(_) => ClifValue {
-            value: builder.ins().iconst(default_int_clif_type(), 0),
-            ty: default_int_clif_type(),
-        },
+        ast::Expr::UnsafeBlock { body, .. } => {
+            clif_emit_linear_stmts(builder, ctx, body, locals, next_var)?;
+            ClifValue {
+                value: builder.ins().iconst(default_int_clif_type(), 0),
+                ty: default_int_clif_type(),
+            }
+        }
     })
 }
 
@@ -9203,7 +9217,7 @@ fn function_body_contains_unsupported_dynamic_string_data_plane_calls(body: &[as
                     && eval_const_string_call(callee, args, const_strings).is_none())
                     || args.iter().any(|arg| expr_contains(arg, const_strings))
             }
-            ast::Expr::UnsafeContract(_) => false,
+            ast::Expr::UnsafeBlock { .. } => false,
             ast::Expr::FieldAccess { base, .. } => expr_contains(base, const_strings),
             ast::Expr::StructInit { fields, .. } => fields
                 .iter()
@@ -9316,7 +9330,7 @@ fn expr_contains_unsupported_list_map_data_plane_calls(expr: &ast::Expr) -> bool
                     .iter()
                     .any(expr_contains_unsupported_list_map_data_plane_calls)
         }
-        ast::Expr::UnsafeContract(_) => false,
+        ast::Expr::UnsafeBlock { .. } => false,
         ast::Expr::FieldAccess { base, .. } => {
             expr_contains_unsupported_list_map_data_plane_calls(base)
         }
@@ -9369,7 +9383,7 @@ fn expr_contains_unsupported_partial_native_expression(
     context: NativeExprContext,
 ) -> bool {
     match expr {
-        ast::Expr::UnsafeContract(_) => false,
+        ast::Expr::UnsafeBlock { .. } => false,
         ast::Expr::TryCatch { .. } => false,
         ast::Expr::Range { start, end, .. } => {
             if context != NativeExprContext::ForInIterable {
@@ -9445,7 +9459,7 @@ fn expr_contains_closure(expr: &ast::Expr) -> bool {
     match expr {
         ast::Expr::Closure { .. } => true,
         ast::Expr::Call { args, .. } => args.iter().any(expr_contains_closure),
-        ast::Expr::UnsafeContract(_) => false,
+        ast::Expr::UnsafeBlock { .. } => false,
         ast::Expr::FieldAccess { base, .. } => expr_contains_closure(base),
         ast::Expr::StructInit { fields, .. } => {
             fields.iter().any(|(_, value)| expr_contains_closure(value))
@@ -9483,7 +9497,7 @@ fn expr_contains_try_catch(expr: &ast::Expr) -> bool {
             catch_expr: _,
         } => true,
         ast::Expr::Call { args, .. } => args.iter().any(expr_contains_try_catch),
-        ast::Expr::UnsafeContract(_) => false,
+        ast::Expr::UnsafeBlock { .. } => false,
         ast::Expr::FieldAccess { base, .. } => expr_contains_try_catch(base),
         ast::Expr::StructInit { fields, .. } => fields
             .iter()
@@ -9701,7 +9715,11 @@ fn collect_unresolved_calls_from_expr(
                 );
             }
         }
-        ast::Expr::UnsafeContract(_) => {}
+        ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                collect_unresolved_calls_from_stmt(stmt, defined_functions, local_callables, unresolved);
+            }
+        }
         ast::Expr::FieldAccess { base, .. } => {
             collect_unresolved_calls_from_expr(
                 base,
@@ -9912,8 +9930,8 @@ fn collect_local_callable_bindings_from_expr(expr: &ast::Expr, out: &mut HashSet
                 collect_local_callable_bindings_from_expr(arg, out);
             }
         }
-        ast::Expr::UnsafeContract(_) => {
-            out.insert("unsafe".to_string());
+        ast::Expr::UnsafeBlock { body, .. } => {
+            collect_local_callable_bindings(body, out);
         }
         ast::Expr::FieldAccess { base, .. } => collect_local_callable_bindings_from_expr(base, out),
         ast::Expr::StructInit { fields, .. } => {

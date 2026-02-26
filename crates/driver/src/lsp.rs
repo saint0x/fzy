@@ -585,8 +585,13 @@ fn collect_expr_semantics(
                 collect_expr_semantics(arg, scope_id, scopes, decls, refs, positions);
             }
         }
-        ast::Expr::UnsafeContract(contract) => {
-            resolve_reference(&contract.owner, scope_id, scopes, decls, refs, positions);
+        ast::Expr::UnsafeBlock { body, meta } => {
+            if let Some(meta) = meta {
+                resolve_reference(&meta.owner, scope_id, scopes, decls, refs, positions);
+            }
+            for stmt in body {
+                collect_stmt_semantic_refs(stmt, scope_id, scopes, decls, refs, positions);
+            }
         }
         ast::Expr::FieldAccess { base, .. } => {
             collect_expr_semantics(base, scope_id, scopes, decls, refs, positions);
@@ -643,6 +648,92 @@ fn collect_expr_semantics(
         | ast::Expr::Char(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_) => {}
+    }
+}
+
+fn collect_stmt_semantic_refs(
+    stmt: &ast::Stmt,
+    scope_id: usize,
+    scopes: &[Scope],
+    decls: &[SemanticDecl],
+    refs: &mut Vec<SemanticRef>,
+    positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => {
+            collect_expr_semantics(value, scope_id, scopes, decls, refs, positions)
+        }
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_expr_semantics(condition, scope_id, scopes, decls, refs, positions);
+            for nested in then_body {
+                collect_stmt_semantic_refs(nested, scope_id, scopes, decls, refs, positions);
+            }
+            for nested in else_body {
+                collect_stmt_semantic_refs(nested, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_expr_semantics(condition, scope_id, scopes, decls, refs, positions);
+            for nested in body {
+                collect_stmt_semantic_refs(nested, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_stmt_semantic_refs(init, scope_id, scopes, decls, refs, positions);
+            }
+            if let Some(condition) = condition {
+                collect_expr_semantics(condition, scope_id, scopes, decls, refs, positions);
+            }
+            if let Some(step) = step {
+                collect_stmt_semantic_refs(step, scope_id, scopes, decls, refs, positions);
+            }
+            for nested in body {
+                collect_stmt_semantic_refs(nested, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_expr_semantics(iterable, scope_id, scopes, decls, refs, positions);
+            for nested in body {
+                collect_stmt_semantic_refs(nested, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_stmt_semantic_refs(nested, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_expr_semantics(scrutinee, scope_id, scopes, decls, refs, positions);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_expr_semantics(guard, scope_id, scopes, decls, refs, positions);
+                }
+                collect_expr_semantics(&arm.value, scope_id, scopes, decls, refs, positions);
+            }
+        }
+        ast::Stmt::Break | ast::Stmt::Continue => {}
     }
 }
 

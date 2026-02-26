@@ -9,6 +9,8 @@ pub struct TypedFunction {
     pub params: Vec<ast::Param>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
+    pub is_unsafe: bool,
+    pub unsafe_meta: Option<ast::UnsafeMeta>,
     pub is_async: bool,
     pub is_extern: bool,
     pub abi: Option<String>,
@@ -49,6 +51,7 @@ pub struct TypedModule {
     pub type_error_details: Vec<String>,
     pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
     pub ownership_violations: Vec<String>,
+    pub unsafe_context_violations: Vec<String>,
     pub capability_token_violations: Vec<String>,
     pub trait_violations: Vec<String>,
     pub reference_lifetime_violations: Vec<String>,
@@ -332,6 +335,8 @@ pub fn lower(module: &Module) -> TypedModule {
                     params: function.params.clone(),
                     return_type: function.return_type.clone(),
                     body: function.body.clone(),
+                    is_unsafe: function.is_unsafe,
+                    unsafe_meta: function.unsafe_meta.clone(),
                     is_async: function.is_async,
                     is_extern: function.is_extern,
                     abi: function.abi.clone(),
@@ -350,6 +355,8 @@ pub fn lower(module: &Module) -> TypedModule {
                     params: Vec::new(),
                     return_type: Type::Void,
                     body: test.body.clone(),
+                    is_unsafe: false,
+                    unsafe_meta: None,
                     is_async: false,
                     is_extern: false,
                     abi: None,
@@ -477,6 +484,7 @@ pub fn lower(module: &Module) -> TypedModule {
     let generic_instantiations = collect_generic_instantiations(module);
     let call_graph = build_call_graph(module);
     let ownership_violations = analyze_ownership(&typed_functions, &call_graph);
+    let unsafe_context_violations = analyze_unsafe_context_violations(&typed_functions);
     let mut capability_token_violations = if capability_token_mode_enabled(&typed_functions) {
         analyze_capability_token_contracts(&typed_functions, &function_capability_requirements)
     } else {
@@ -518,6 +526,7 @@ pub fn lower(module: &Module) -> TypedModule {
         type_error_details,
         function_capability_requirements,
         ownership_violations,
+        unsafe_context_violations,
         capability_token_violations,
         trait_violations,
         reference_lifetime_violations,
@@ -664,7 +673,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 }
                 args.iter().any(expr_has_cap_intrinsic)
             }
-            Expr::UnsafeContract(_) => false,
+            Expr::UnsafeBlock { .. } => false,
             Expr::FieldAccess { base, .. } => expr_has_cap_intrinsic(base),
             Expr::StructInit { fields, .. } => fields
                 .iter()
@@ -987,7 +996,15 @@ fn analyze_expr_call_tokens(
                 );
             }
         }
-        Expr::UnsafeContract(_) => {}
+        Expr::UnsafeBlock { body, .. } => {
+            analyze_call_token_propagation(
+                function_name,
+                body,
+                local_types,
+                requirement_map,
+                violations,
+            );
+        }
         Expr::FieldAccess { base, .. } => analyze_expr_call_tokens(
             function_name,
             Some(base),
@@ -1364,7 +1381,7 @@ fn expr_has_await(expr: &Expr) -> bool {
     match expr {
         Expr::Await(_) => true,
         Expr::Call { args, .. } => args.iter().any(expr_has_await),
-        Expr::UnsafeContract(_) => false,
+        Expr::UnsafeBlock { body, .. } => body.iter().any(stmt_has_await),
         Expr::FieldAccess { base, .. } => expr_has_await(base),
         Expr::StructInit { fields, .. } => fields.iter().any(|(_, value)| expr_has_await(value)),
         Expr::EnumInit { payload, .. } => payload.iter().any(expr_has_await),
@@ -1629,6 +1646,382 @@ fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)
     violations
 }
 
+fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String> {
+    fn resolve_unsafe_callee(unsafe_functions: &BTreeSet<String>, callee: &str) -> Option<String> {
+        if unsafe_functions.contains(callee) {
+            return Some(callee.to_string());
+        }
+        let suffix = format!(".{callee}");
+        let mut matched: Option<String> = None;
+        for candidate in unsafe_functions {
+            if candidate.ends_with(&suffix) {
+                if matched.is_some() {
+                    return None;
+                }
+                matched = Some(candidate.clone());
+            }
+        }
+        matched
+    }
+
+    fn analyze_stmt(
+        function_name: &str,
+        stmt: &Stmt,
+        in_unsafe_context: bool,
+        unsafe_functions: &BTreeSet<String>,
+        violations: &mut Vec<String>,
+    ) {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::CompoundAssign { value, .. }
+            | Stmt::Defer(value)
+            | Stmt::Requires(value)
+            | Stmt::Ensures(value)
+            | Stmt::Expr(value) => analyze_expr(
+                function_name,
+                value,
+                in_unsafe_context,
+                unsafe_functions,
+                violations,
+            ),
+            Stmt::Return(value) => {
+                if let Some(value) = value {
+                    analyze_expr(
+                        function_name,
+                        value,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                analyze_expr(
+                    function_name,
+                    condition,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                for nested in then_body {
+                    analyze_stmt(
+                        function_name,
+                        nested,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+                for nested in else_body {
+                    analyze_stmt(
+                        function_name,
+                        nested,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Stmt::While { condition, body } => {
+                analyze_expr(
+                    function_name,
+                    condition,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                for nested in body {
+                    analyze_stmt(
+                        function_name,
+                        nested,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    analyze_stmt(
+                        function_name,
+                        init,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+                if let Some(condition) = condition {
+                    analyze_expr(
+                        function_name,
+                        condition,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+                if let Some(step) = step {
+                    analyze_stmt(
+                        function_name,
+                        step,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+                for nested in body {
+                    analyze_stmt(
+                        function_name,
+                        nested,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Stmt::ForIn { iterable, body, .. } => {
+                analyze_expr(
+                    function_name,
+                    iterable,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                for nested in body {
+                    analyze_stmt(
+                        function_name,
+                        nested,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Stmt::Loop { body } => {
+                for nested in body {
+                    analyze_stmt(
+                        function_name,
+                        nested,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                analyze_expr(
+                    function_name,
+                    scrutinee,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        analyze_expr(
+                            function_name,
+                            guard,
+                            in_unsafe_context,
+                            unsafe_functions,
+                            violations,
+                        );
+                    }
+                    analyze_expr(
+                        function_name,
+                        &arm.value,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+
+    fn analyze_expr(
+        function_name: &str,
+        expr: &Expr,
+        in_unsafe_context: bool,
+        unsafe_functions: &BTreeSet<String>,
+        violations: &mut Vec<String>,
+    ) {
+        match expr {
+            Expr::Call { callee, args } => {
+                if !in_unsafe_context {
+                    if let Some(unsafe_callee) = resolve_unsafe_callee(unsafe_functions, callee) {
+                        violations.push(format!(
+                            "function `{}` calls unsafe function `{}` outside `unsafe` context",
+                            function_name, unsafe_callee
+                        ));
+                    }
+                }
+                for arg in args {
+                    analyze_expr(
+                        function_name,
+                        arg,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Expr::UnsafeBlock { body, .. } => {
+                for stmt in body {
+                    analyze_stmt(function_name, stmt, true, unsafe_functions, violations);
+                }
+            }
+            Expr::FieldAccess { base, .. } => analyze_expr(
+                function_name,
+                base,
+                in_unsafe_context,
+                unsafe_functions,
+                violations,
+            ),
+            Expr::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    analyze_expr(
+                        function_name,
+                        value,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Expr::EnumInit { payload, .. } => {
+                for value in payload {
+                    analyze_expr(
+                        function_name,
+                        value,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Expr::Closure { body, .. } => analyze_expr(
+                function_name,
+                body,
+                in_unsafe_context,
+                unsafe_functions,
+                violations,
+            ),
+            Expr::Group(inner) | Expr::Await(inner) | Expr::Unary { expr: inner, .. } => {
+                analyze_expr(
+                    function_name,
+                    inner,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                )
+            }
+            Expr::TryCatch {
+                try_expr,
+                catch_expr,
+            } => {
+                analyze_expr(
+                    function_name,
+                    try_expr,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                analyze_expr(
+                    function_name,
+                    catch_expr,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+            }
+            Expr::Binary { left, right, .. } | Expr::Range {
+                start: left,
+                end: right,
+                ..
+            } => {
+                analyze_expr(
+                    function_name,
+                    left,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                analyze_expr(
+                    function_name,
+                    right,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+            }
+            Expr::ArrayLiteral(items) => {
+                for item in items {
+                    analyze_expr(
+                        function_name,
+                        item,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Expr::Index { base, index } => {
+                analyze_expr(
+                    function_name,
+                    base,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                analyze_expr(
+                    function_name,
+                    index,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+            }
+            Expr::Int(_)
+            | Expr::Float { .. }
+            | Expr::Char(_)
+            | Expr::Bool(_)
+            | Expr::Str(_)
+            | Expr::Ident(_) => {}
+        }
+    }
+
+    let unsafe_functions = functions
+        .iter()
+        .filter(|function| function.is_unsafe)
+        .map(|function| function.name.clone())
+        .collect::<BTreeSet<_>>();
+    let mut violations = Vec::new();
+    for function in functions {
+        let context = function.is_unsafe;
+        for stmt in &function.body {
+            analyze_stmt(
+                &function.name,
+                stmt,
+                context,
+                &unsafe_functions,
+                &mut violations,
+            );
+        }
+    }
+    violations
+}
+
 fn analyze_ownership_block(
     body: &[Stmt],
     owners: &mut BTreeMap<String, usize>,
@@ -1717,18 +2110,20 @@ fn analyze_ownership_block(
                     }
                 }
             }
-            Stmt::Expr(Expr::UnsafeContract(contract)) => {
-                if !unsafe_contract_complete(contract) {
-                    violations.push(format!(
-                        "function `{}` has unsafe contract with missing required fields",
-                        function_name
-                    ));
-                }
-                if !owners.contains_key(&contract.owner) {
-                    violations.push(format!(
-                        "function `{}` unsafe contract owner `{}` does not resolve to a live provenance root",
-                        function_name, contract.owner
-                    ));
+            Stmt::Expr(Expr::UnsafeBlock { meta, .. }) => {
+                if let Some(meta) = meta {
+                    if !unsafe_meta_complete(meta) {
+                        violations.push(format!(
+                            "function `{}` has unsafe metadata with missing required fields",
+                            function_name
+                        ));
+                    }
+                    if !owners.contains_key(&meta.owner) {
+                        violations.push(format!(
+                            "function `{}` unsafe metadata owner `{}` does not resolve to a live provenance root",
+                            function_name, meta.owner
+                        ));
+                    }
                 }
             }
             Stmt::Return(Some(Expr::Ident(name))) => {
@@ -1874,9 +2269,9 @@ fn build_function_memory_summaries(
                         }
                         let _ = args;
                     }
-                    Expr::UnsafeContract(contract) => {
+                    Expr::UnsafeBlock { meta, .. } => {
                         *self.unsafe_sites += 1;
-                        if unsafe_contract_complete(contract) {
+                        if meta.as_ref().is_some_and(unsafe_meta_complete) {
                             *self.unsafe_reasoned_sites += 1;
                         }
                     }
@@ -2002,7 +2397,10 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
     match expr {
         Expr::Ident(name) => name == target,
         Expr::Call { args, .. } => args.iter().any(|arg| expr_uses_ident(arg, target)),
-        Expr::UnsafeContract(contract) => contract.owner == target,
+        Expr::UnsafeBlock { body, meta } => {
+            meta.as_ref().is_some_and(|m| m.owner == target)
+                || body.iter().any(|stmt| stmt_uses_ident(stmt, target))
+        }
         Expr::FieldAccess { base, .. } => expr_uses_ident(base, target),
         Expr::StructInit { fields, .. } => fields
             .iter()
@@ -2059,7 +2457,7 @@ fn is_close_callee(callee: &str) -> bool {
     callee == "close" || callee.ends_with(".close")
 }
 
-fn unsafe_contract_complete(contract: &ast::UnsafeContract) -> bool {
+fn unsafe_meta_complete(contract: &ast::UnsafeMeta) -> bool {
     !contract.reason.trim().is_empty()
         && !contract.invariant.trim().is_empty()
         && !contract.owner.trim().is_empty()
@@ -2394,7 +2792,14 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
                 collect_expr_idents(arg, out);
             }
         }
-        Expr::UnsafeContract(contract) => out.push(contract.owner.clone()),
+        Expr::UnsafeBlock { body, meta } => {
+            if let Some(meta) = meta {
+                out.push(meta.owner.clone());
+            }
+            for stmt in body {
+                out.extend(collect_stmt_idents(stmt));
+            }
+        }
         Expr::FieldAccess { base, .. } => collect_expr_idents(base, out),
         Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
@@ -2796,9 +3201,9 @@ fn collect_effect_markers(
                         self.free_sites += 1;
                     }
                 }
-                if let Expr::UnsafeContract(contract) = expr {
+                if let Expr::UnsafeBlock { meta, .. } = expr {
                     self.unsafe_sites += 1;
-                    if unsafe_contract_complete(contract) {
+                    if meta.as_ref().is_some_and(unsafe_meta_complete) {
                         self.unsafe_reasoned_sites += 1;
                     }
                 }
@@ -2841,7 +3246,7 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             ast::Expr::Ident(name) => Some(name.clone()),
             _ => None,
         }),
-        ast::Expr::UnsafeContract(contract) => Some(contract.owner.clone()),
+        ast::Expr::UnsafeBlock { meta, .. } => meta.as_ref().map(|m| m.owner.clone()),
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -3463,7 +3868,7 @@ fn infer_expr_type(
             );
             None
         }
-        Expr::UnsafeContract(_) => Some(Type::Void),
+        Expr::UnsafeBlock { .. } => Some(Type::Void),
         Expr::Closure {
             params,
             return_type,
@@ -5361,7 +5766,11 @@ fn eval_expr<'a>(
                 None
             }
         }),
-        Expr::UnsafeContract(_) => Some(Value::I32(0)),
+        Expr::UnsafeBlock { body, .. } => {
+            let mut local = env.clone();
+            let _ = eval_block(body, &mut local, functions);
+            Some(Value::I32(0))
+        }
         Expr::Closure {
             params,
             return_type,
@@ -6418,5 +6827,23 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
         assert_eq!(typed.entry_return_const_i32, Some(27));
+    }
+
+    #[test]
+    fn detects_unsafe_call_outside_unsafe_context() {
+        let source = r#"
+            unsafe fn danger(v: i32) -> i32 {
+                return v + 1;
+            }
+            fn main() -> i32 {
+                return danger(1);
+            }
+        "#;
+        let module = parser::parse(source, "unsafe_ctx").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .unsafe_context_violations
+            .iter()
+            .any(|detail| detail.contains("outside `unsafe` context")));
     }
 }

@@ -1,4 +1,4 @@
-use ast::{BinaryOp, Expr, MatchArm, Module, Pattern, Stmt, Type, UnaryOp, UnsafeContract};
+use ast::{BinaryOp, Expr, MatchArm, Module, Pattern, Stmt, Type, UnaryOp, UnsafeMeta};
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
 
 #[derive(Debug, Clone)]
@@ -21,6 +21,7 @@ enum TokenKind {
     KwConst,
     KwStatic,
     KwExt,
+    KwUnsafe,
     KwAsync,
     KwAwait,
     KwRpc,
@@ -303,6 +304,7 @@ impl Parser {
                 self.peek_kind(),
                 TokenKind::KwFn
                     | TokenKind::KwAsync
+                    | TokenKind::KwUnsafe
                     | TokenKind::KwPub
                     | TokenKind::KwPubext
                     | TokenKind::KwExt
@@ -407,6 +409,8 @@ impl Parser {
             params,
             return_type,
             body: Vec::new(),
+            is_unsafe: false,
+            unsafe_meta: None,
             is_async: false,
             is_pub: false,
             is_pubext: false,
@@ -812,11 +816,7 @@ impl Parser {
 
     fn parse_function(&mut self) -> Option<ast::Item> {
         let is_pubext = self.consume(&TokenKind::KwPubext);
-        let is_async = if is_pubext {
-            self.consume(&TokenKind::KwAsync)
-        } else {
-            self.consume(&TokenKind::KwAsync)
-        };
+        let is_async = self.consume(&TokenKind::KwAsync);
         let is_pub = if is_pubext {
             true
         } else {
@@ -826,6 +826,11 @@ impl Parser {
             true
         } else {
             self.consume(&TokenKind::KwExt)
+        };
+        let is_unsafe = if is_extern {
+            self.consume(&TokenKind::KwUnsafe)
+        } else {
+            self.consume(&TokenKind::KwUnsafe)
         };
         if is_pub && is_extern && !is_pubext {
             self.push_diag_here("use `pubext c fn` for exported C symbols");
@@ -908,6 +913,8 @@ impl Parser {
             params,
             return_type,
             body,
+            is_unsafe,
+            unsafe_meta: None,
             is_async,
             is_pub,
             is_pubext,
@@ -1405,6 +1412,35 @@ impl Parser {
             let awaited = self.parse_prefix_expr()?;
             return Some(Expr::Await(Box::new(awaited)));
         }
+        if self.consume(&TokenKind::KwUnsafe) {
+            let meta = if self.at(&TokenKind::LParen) {
+                let _ = self.consume(&TokenKind::LParen);
+                let mut args = Vec::new();
+                while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                    args.push(self.parse_expr(0)?);
+                    if !self.consume(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                let _ = self.consume(&TokenKind::RParen);
+                Some(self.parse_unsafe_meta_args(&args)?)
+            } else {
+                None
+            };
+            if !self.consume(&TokenKind::LBrace) {
+                self.push_diag_here("expected `{` after `unsafe`");
+                return None;
+            }
+            let mut body = Vec::new();
+            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                match self.parse_stmt() {
+                    Some(stmt) => body.push(stmt),
+                    None => self.recover_stmt(),
+                }
+            }
+            let _ = self.consume(&TokenKind::RBrace);
+            return Some(Expr::UnsafeBlock { body, meta });
+        }
         if self.consume(&TokenKind::Bang) {
             let expr = self.parse_prefix_expr()?;
             return Some(Expr::Unary {
@@ -1541,13 +1577,15 @@ impl Parser {
                 };
                 if callee == "unsafe_reason" {
                     self.push_diag_here(
-                        "`unsafe_reason(...)` is removed; use `unsafe(\"reason:...\", \"invariant:...\", \"owner:...\", \"scope:...\", \"risk_class:...\", \"proof_ref:...\")`",
+                        "`unsafe_reason(...)` is removed; use `unsafe { ... }` (optionally `unsafe(\"reason:...\", \"invariant:...\", \"owner:...\", \"scope:...\", \"risk_class:...\", \"proof_ref:...\") { ... }`)",
                     );
                     return None;
                 }
                 if callee == "unsafe" {
-                    let contract = self.parse_unsafe_contract_args(&args)?;
-                    expr = Expr::UnsafeContract(contract);
+                    self.push_diag_here(
+                        "`unsafe(...)` expression form is removed; use `unsafe { ... }`",
+                    );
+                    return None;
                 } else if callee == "range.closed" {
                     if args.len() != 2 {
                         self.push_diag_here("`range.closed` requires exactly 2 arguments");
@@ -1617,7 +1655,7 @@ impl Parser {
         })
     }
 
-    fn parse_unsafe_contract_args(&mut self, args: &[Expr]) -> Option<UnsafeContract> {
+    fn parse_unsafe_meta_args(&mut self, args: &[Expr]) -> Option<UnsafeMeta> {
         if args.len() != 6 {
             self.push_diag_here(
                 "unsafe contract requires exactly 6 string args: reason,invariant,owner,scope,risk_class,proof_ref",
@@ -1650,7 +1688,7 @@ impl Parser {
             return None;
         }
 
-        Some(UnsafeContract {
+        Some(UnsafeMeta {
             reason,
             invariant,
             owner,
@@ -2124,6 +2162,7 @@ impl Parser {
             TokenKind::KwConst => Some("const".to_string()),
             TokenKind::KwStatic => Some("static".to_string()),
             TokenKind::KwExt => Some("ext".to_string()),
+            TokenKind::KwUnsafe => Some("unsafe".to_string()),
             TokenKind::KwAsync => Some("async".to_string()),
             TokenKind::KwAwait => Some("await".to_string()),
             TokenKind::KwRpc => Some("rpc".to_string()),
@@ -2200,6 +2239,7 @@ impl Parser {
             TokenKind::KwConst,
             TokenKind::KwStatic,
             TokenKind::KwExt,
+            TokenKind::KwUnsafe,
             TokenKind::KwAsync,
             TokenKind::KwRpc,
             TokenKind::KwStruct,
@@ -2810,6 +2850,7 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "const" => TokenKind::KwConst,
         "static" => TokenKind::KwStatic,
         "ext" => TokenKind::KwExt,
+        "unsafe" => TokenKind::KwUnsafe,
         "async" => TokenKind::KwAsync,
         "await" => TokenKind::KwAwait,
         "rpc" => TokenKind::KwRpc,
@@ -3212,11 +3253,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsafe_contract_with_unsupported_invariant() {
+    fn rejects_unsafe_metadata_with_unsupported_invariant() {
         let source = r#"
             fn main() -> i32 {
                 let p = alloc(8);
-                unsafe("reason:x", "invariant:pointer is valid", "owner:p", "scope:main", "risk_class:memory", "proof_ref:trace://x");
+                unsafe("reason:x", "invariant:pointer is valid", "owner:p", "scope:main", "risk_class:memory", "proof_ref:trace://x") {
+                    free(p);
+                }
                 return 0;
             }
         "#;
@@ -3227,11 +3270,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsafe_contract_with_invalid_risk_class() {
+    fn rejects_unsafe_metadata_with_invalid_risk_class() {
         let source = r#"
             fn main() -> i32 {
                 let p = alloc(8);
-                unsafe("reason:x", "invariant:owner_live(p) && ptr_nonnull(p)", "owner:p", "scope:main", "risk_class:network", "proof_ref:trace://x");
+                unsafe("reason:x", "invariant:owner_live(p) && ptr_nonnull(p)", "owner:p", "scope:main", "risk_class:network", "proof_ref:trace://x") {
+                    free(p);
+                }
                 return 0;
             }
         "#;
@@ -3239,6 +3284,43 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("risk_class")));
+    }
+
+    #[test]
+    fn parses_unsafe_function_and_ext_unsafe_import() {
+        let source = r#"
+            ext unsafe c fn c_write(ptr: *u8) -> i32;
+            unsafe fn write(ptr: *u8) -> i32 {
+                unsafe {
+                    return c_write(ptr);
+                }
+            }
+        "#;
+        let module = parse(source, "unsafe").expect("parse should succeed");
+        let c_write = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "c_write" => Some(function),
+                _ => None,
+            })
+            .expect("c_write import should exist");
+        assert!(c_write.is_extern);
+        assert!(c_write.is_unsafe);
+
+        let write = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "write" => Some(function),
+                _ => None,
+            })
+            .expect("write function should exist");
+        assert!(write.is_unsafe);
+        assert!(write
+            .body
+            .iter()
+            .any(|stmt| matches!(stmt, ast::Stmt::Expr(ast::Expr::UnsafeBlock { .. }))));
     }
 
     #[test]

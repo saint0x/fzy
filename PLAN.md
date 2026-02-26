@@ -105,6 +105,42 @@
 
 ## Checklist: Needs To Be Done
 
+### Undone: First-Class Unsafe Islands + Unsafe DX/Docs (Production)
+- [ ] Replace metadata-call-only unsafe semantics with first-class language unsafe constructs:
+- [ ] add `unsafe fn` declarations and `unsafe { ... }` block expressions to parser/AST/HIR.
+- [ ] remove runtime semantic dependency on `unsafe("...")` expression form (no compatibility path for execution semantics).
+- [ ] Enforce compile-time unsafe boundaries globally:
+- [ ] classify unsafe-required operations (unsafe C imports, raw pointer/memory intrinsics, future unsafe intrinsics).
+- [ ] hard-error when unsafe-required operations occur outside unsafe context.
+- [ ] require unsafe context for calls to `ext unsafe c fn` imports.
+- [ ] Add explicit FFI unsafety surface:
+- [ ] support `ext unsafe c fn ...;` as first-class import syntax.
+- [ ] keep `ext c fn` available for safe contracts only; reject accidental unsafe operations through safe imports.
+- [ ] Keep unsafe metadata non-blocking by default (developer empowerment first):
+- [ ] optional unsafe contract metadata attached to unsafe islands/functions (`reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`).
+- [ ] missing metadata must not block normal compile/build/check by default.
+- [ ] malformed metadata should produce diagnostics in lint mode; become blocking only in strict unsafe-audit policy modes.
+- [ ] Add policy-driven strictness controls in `fozzy.toml` and CLI:
+- [ ] unsafe policy defaults: compile enforcement of unsafe context on, metadata-required off.
+- [ ] strict mode toggles for CI/release: fail on missing/invalid metadata and fail on unsafe budget drift.
+- [ ] unsafe scope controls (`deny_unsafe_in` / allowlisted modules) for hardened repositories.
+- [ ] Upgrade compiler/runtime observability with zero release overhead:
+- [ ] dev/verify traces should include unsafe enter/exit site accounting and contract hash when metadata exists.
+- [ ] release path must keep unsafe boundary checks compile-time only with no hot-path runtime tax.
+- [ ] Upgrade `fz` DX surfaces to make unsafe behavior obvious and auditable:
+- [ ] `fz check`/`fz build` report exact unsafe-context violations with fix guidance.
+- [ ] `fz audit unsafe` must report real unsafe islands/functions/imports (not metadata expressions), risk classes, coverage, and budgets.
+- [ ] workspace-level aggregate unsafe inventory and drift reports must be first-class outputs.
+- [ ] Add compiler-generated unsafe documentation output (new docs generator requirement):
+- [ ] docs generator must emit unsafe API/usage docs from compiler semantic model (functions, unsafe blocks, unsafe imports, callsites, risk summaries).
+- [ ] if metadata exists, include it in generated docs; if absent, still emit complete structural unsafe docs with “metadata missing” markers.
+- [ ] generated unsafe docs should be machine-readable (JSON) + human-readable (Markdown/HTML) artifacts.
+- [ ] Add comprehensive production tests and gates:
+- [ ] parser/AST/HIR/verifier tests for `unsafe fn`, `unsafe {}`, and unsafe-context enforcement.
+- [ ] backend parity tests (LLVM/Cranelift) proving identical unsafe semantics and diagnostics.
+- [ ] deterministic + host-backed Fozzy lifecycle checks for unsafe+FFI scenarios (`doctor`, `test --det --strict`, `run --record`, `trace verify`, `replay`, `ci`).
+- [ ] release gate must fail on unsafe semantic regressions, policy violations, or unsafe inventory drift beyond approved thresholds.
+
 ### Async Semantics + Concurrency Unification
 - [✅] Carry `async` as first-class semantics from parser through AST/HIR function models.
 - [✅] Add first-class await syntax + AST/HIR representation (not call-name heuristic).

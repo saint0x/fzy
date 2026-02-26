@@ -1987,17 +1987,18 @@ fn semantic_signature(value: &serde_json::Value) -> Result<String> {
 
 #[derive(Debug, Clone, Serialize)]
 struct UnsafeEntry {
+    kind: String,
     project: String,
     file: String,
     function: String,
     line: usize,
     snippet: String,
-    reason: String,
-    invariant: String,
-    owner: String,
-    scope: String,
-    risk_class: String,
-    proof_ref: String,
+    reason: Option<String>,
+    invariant: Option<String>,
+    owner: Option<String>,
+    scope: Option<String>,
+    risk_class: Option<String>,
+    proof_ref: Option<String>,
 }
 
 fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<String> {
@@ -2048,20 +2049,28 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
     }
     let missing_contract_count = entries
         .iter()
+        .filter(|entry| entry.kind != "unsafe_violation_callsite")
         .filter(|entry| {
-            entry.reason.trim().is_empty()
-                || entry.invariant.trim().is_empty()
-                || entry.owner.trim().is_empty()
-                || entry.scope.trim().is_empty()
-                || entry.risk_class.trim().is_empty()
-                || entry.proof_ref.trim().is_empty()
+            entry.reason.as_deref().is_none_or(str::is_empty)
+                || entry.invariant.as_deref().is_none_or(str::is_empty)
+                || entry.owner.as_deref().is_none_or(str::is_empty)
+                || entry.scope.as_deref().is_none_or(str::is_empty)
+                || entry.risk_class.as_deref().is_none_or(str::is_empty)
+                || entry.proof_ref.as_deref().is_none_or(str::is_empty)
         })
         .count();
     let invalid_proof_ref_count = entries
         .iter()
         .filter(|entry| {
-            !entry.proof_ref.trim().is_empty() && !proof_ref_machine_linkable(&entry.proof_ref)
+            entry
+                .proof_ref
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty() && !proof_ref_machine_linkable(value))
         })
+        .count();
+    let unsafe_context_violations = entries
+        .iter()
+        .filter(|entry| entry.kind == "unsafe_violation_callsite")
         .count();
 
     let out_root = if workspace {
@@ -2080,39 +2089,111 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
     let by_risk_class = entries
         .iter()
         .fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
-            *acc.entry(item.risk_class.clone()).or_default() += 1;
+            *acc.entry(item.risk_class.clone().unwrap_or_else(|| "missing".to_string()))
+                .or_default() += 1;
             acc
         });
     let by_owner = entries
         .iter()
         .fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
-            *acc.entry(item.owner.clone()).or_default() += 1;
+            *acc.entry(item.owner.clone().unwrap_or_else(|| "missing".to_string()))
+                .or_default() += 1;
             acc
         });
     let by_scope = entries
         .iter()
         .fold(BTreeMap::<String, usize>::new(), |mut acc, item| {
-            *acc.entry(item.scope.clone()).or_default() += 1;
+            *acc.entry(item.scope.clone().unwrap_or_else(|| "missing".to_string()))
+                .or_default() += 1;
             acc
         });
+    let strict_unsafe_audit = std::env::var("FZ_UNSAFE_STRICT")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"));
     let payload = serde_json::json!({
-        "schemaVersion": "fozzylang.unsafe_map.v1",
+        "schemaVersion": "fozzylang.unsafe_map.v2",
         "workspaceMode": workspace,
         "projects": project_roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         "entries": entries,
         "missingContractCount": missing_contract_count,
         "invalidProofRefCount": invalid_proof_ref_count,
+        "unsafeContextViolationCount": unsafe_context_violations,
+        "strictUnsafeAudit": strict_unsafe_audit,
         "riskClassCounts": by_risk_class,
         "byOwner": by_owner,
         "byScope": by_scope,
     });
     std::fs::write(&unsafe_map, serde_json::to_vec_pretty(&payload)?)
         .with_context(|| format!("failed writing unsafe map: {}", unsafe_map.display()))?;
-    if missing_contract_count > 0 || invalid_proof_ref_count > 0 {
+    let unsafe_docs_json = if workspace {
+        out_dir.join("unsafe-docs.workspace.json")
+    } else {
+        out_dir.join("unsafe-docs.json")
+    };
+    let unsafe_docs_md = if workspace {
+        out_dir.join("unsafe-docs.workspace.md")
+    } else {
+        out_dir.join("unsafe-docs.md")
+    };
+    let unsafe_docs_html = if workspace {
+        out_dir.join("unsafe-docs.workspace.html")
+    } else {
+        out_dir.join("unsafe-docs.html")
+    };
+    std::fs::write(&unsafe_docs_json, serde_json::to_vec_pretty(&payload)?).with_context(|| {
+        format!(
+            "failed writing unsafe docs json artifact: {}",
+            unsafe_docs_json.display()
+        )
+    })?;
+    let mut markdown = String::from("# Unsafe Inventory\n\n");
+    markdown.push_str(&format!(
+        "- Entries: {}\n- Missing metadata: {}\n- Invalid proof refs: {}\n- Unsafe context violations: {}\n\n",
+        payload["entries"].as_array().map(|v| v.len()).unwrap_or(0),
+        missing_contract_count,
+        invalid_proof_ref_count,
+        unsafe_context_violations
+    ));
+    markdown.push_str("| Kind | Function | Snippet | Reason | Owner | Risk |\n|---|---|---|---|---|---|\n");
+    if let Some(entries) = payload["entries"].as_array() {
+        for entry in entries {
+            let kind = entry["kind"].as_str().unwrap_or("unknown");
+            let function = entry["function"].as_str().unwrap_or("?");
+            let snippet = entry["snippet"].as_str().unwrap_or("?");
+            let reason = entry["reason"].as_str().unwrap_or("metadata missing");
+            let owner = entry["owner"].as_str().unwrap_or("metadata missing");
+            let risk = entry["risk_class"].as_str().unwrap_or("metadata missing");
+            markdown.push_str(&format!(
+                "| {kind} | {function} | `{snippet}` | {reason} | {owner} | {risk} |\n"
+            ));
+        }
+    }
+    std::fs::write(&unsafe_docs_md, markdown.as_bytes()).with_context(|| {
+        format!(
+            "failed writing unsafe docs markdown artifact: {}",
+            unsafe_docs_md.display()
+        )
+    })?;
+    let html = format!(
+        "<html><body><pre>{}</pre></body></html>",
+        markdown.replace('&', "&amp;").replace('<', "&lt;")
+    );
+    std::fs::write(&unsafe_docs_html, html.as_bytes()).with_context(|| {
+        format!(
+            "failed writing unsafe docs html artifact: {}",
+            unsafe_docs_html.display()
+        )
+    })?;
+    if strict_unsafe_audit
+        && (missing_contract_count > 0
+            || invalid_proof_ref_count > 0
+            || unsafe_context_violations > 0)
+    {
         bail!(
-            "unsafe audit found missing/invalid contract fields (missing={}, invalid_proof_ref={}); map={}",
+            "strict unsafe audit failed (missing={}, invalid_proof_ref={}, context_violations={}); map={}",
             missing_contract_count,
             invalid_proof_ref_count,
+            unsafe_context_violations,
             unsafe_map.display()
         );
     }
@@ -2137,7 +2218,14 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
                     .unwrap_or(0)
                     .to_string(),
             ),
+            (
+                "unsafe_context_violations",
+                unsafe_context_violations.to_string(),
+            ),
             ("map", unsafe_map.display().to_string()),
+            ("docs_json", unsafe_docs_json.display().to_string()),
+            ("docs_md", unsafe_docs_md.display().to_string()),
+            ("docs_html", unsafe_docs_html.display().to_string()),
         ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
@@ -2145,8 +2233,13 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
             "entries": payload["entries"],
             "projects": payload["projects"],
             "map": unsafe_map.display().to_string(),
+            "docsJson": unsafe_docs_json.display().to_string(),
+            "docsMarkdown": unsafe_docs_md.display().to_string(),
+            "docsHtml": unsafe_docs_html.display().to_string(),
             "missingContractCount": missing_contract_count,
             "invalidProofRefCount": invalid_proof_ref_count,
+            "unsafeContextViolationCount": unsafe_context_violations,
+            "strictUnsafeAudit": strict_unsafe_audit,
             "riskClassCounts": payload["riskClassCounts"],
             "byOwner": payload["byOwner"],
             "byScope": payload["byScope"],
@@ -2169,16 +2262,57 @@ fn collect_semantic_unsafe_entries(
     items: &[ast::Item],
 ) -> Vec<UnsafeEntry> {
     let mut entries = Vec::new();
+    let unsafe_callees = items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Function(function) if function.is_unsafe => Some(function.name.clone()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
     for item in items {
         let ast::Item::Function(function) = item else {
             continue;
         };
+        if function.is_unsafe {
+            entries.push(UnsafeEntry {
+                kind: "unsafe_fn".to_string(),
+                project: project_root.display().to_string(),
+                file: module_path.display().to_string(),
+                function: function.name.clone(),
+                line: 0,
+                snippet: format!("unsafe fn {}", function.name),
+                reason: function.unsafe_meta.as_ref().map(|m| m.reason.clone()),
+                invariant: function.unsafe_meta.as_ref().map(|m| m.invariant.clone()),
+                owner: function.unsafe_meta.as_ref().map(|m| m.owner.clone()),
+                scope: function.unsafe_meta.as_ref().map(|m| m.scope.clone()),
+                risk_class: function.unsafe_meta.as_ref().map(|m| m.risk_class.clone()),
+                proof_ref: function.unsafe_meta.as_ref().map(|m| m.proof_ref.clone()),
+            });
+        }
+        if function.is_extern && function.abi.as_deref() == Some("c") && function.is_unsafe {
+            entries.push(UnsafeEntry {
+                kind: "unsafe_import".to_string(),
+                project: project_root.display().to_string(),
+                file: module_path.display().to_string(),
+                function: function.name.clone(),
+                line: 0,
+                snippet: format!("ext unsafe c fn {}", function.name),
+                reason: function.unsafe_meta.as_ref().map(|m| m.reason.clone()),
+                invariant: function.unsafe_meta.as_ref().map(|m| m.invariant.clone()),
+                owner: function.unsafe_meta.as_ref().map(|m| m.owner.clone()),
+                scope: function.unsafe_meta.as_ref().map(|m| m.scope.clone()),
+                risk_class: function.unsafe_meta.as_ref().map(|m| m.risk_class.clone()),
+                proof_ref: function.unsafe_meta.as_ref().map(|m| m.proof_ref.clone()),
+            });
+        }
         for stmt in &function.body {
             collect_semantic_unsafe_entries_from_stmt(
                 stmt,
                 module_path,
                 project_root,
                 &function.name,
+                function.is_unsafe,
+                &unsafe_callees,
                 &mut entries,
             );
         }
@@ -2191,6 +2325,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
     module_path: &Path,
     project_root: &Path,
     function_name: &str,
+    in_unsafe_context: bool,
+    unsafe_callees: &BTreeSet<String>,
     entries: &mut Vec<UnsafeEntry>,
 ) {
     match stmt {
@@ -2206,6 +2342,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
             module_path,
             project_root,
             function_name,
+            in_unsafe_context,
+            unsafe_callees,
             entries,
         ),
         ast::Stmt::Return(value) => {
@@ -2215,6 +2353,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2229,6 +2369,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
             for nested in then_body {
@@ -2237,6 +2379,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2246,6 +2390,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2256,6 +2402,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
             for nested in body {
@@ -2264,6 +2412,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2280,6 +2430,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2289,6 +2441,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2298,6 +2452,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2307,6 +2463,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2317,6 +2475,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
             for nested in body {
@@ -2325,6 +2485,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2336,6 +2498,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2347,6 +2511,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
             for arm in arms {
@@ -2356,6 +2522,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                         module_path,
                         project_root,
                         function_name,
+                        in_unsafe_context,
+                        unsafe_callees,
                         entries,
                     );
                 }
@@ -2364,6 +2532,8 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2376,31 +2546,63 @@ fn collect_semantic_unsafe_entries_from_expr(
     module_path: &Path,
     project_root: &Path,
     function_name: &str,
+    in_unsafe_context: bool,
+    unsafe_callees: &BTreeSet<String>,
     entries: &mut Vec<UnsafeEntry>,
 ) {
     match expr {
-        ast::Expr::UnsafeContract(contract) => {
+        ast::Expr::UnsafeBlock { body, meta } => {
             entries.push(UnsafeEntry {
+                kind: "unsafe_block".to_string(),
                 project: project_root.display().to_string(),
                 file: module_path.display().to_string(),
                 function: function_name.to_string(),
                 line: 0,
-                snippet: format!("{function_name}: unsafe(...)"),
-                reason: contract.reason.clone(),
-                invariant: contract.invariant.clone(),
-                owner: contract.owner.clone(),
-                scope: contract.scope.clone(),
-                risk_class: contract.risk_class.clone(),
-                proof_ref: contract.proof_ref.clone(),
+                snippet: format!("{function_name}: unsafe {{ ... }}"),
+                reason: meta.as_ref().map(|m| m.reason.clone()),
+                invariant: meta.as_ref().map(|m| m.invariant.clone()),
+                owner: meta.as_ref().map(|m| m.owner.clone()),
+                scope: meta.as_ref().map(|m| m.scope.clone()),
+                risk_class: meta.as_ref().map(|m| m.risk_class.clone()),
+                proof_ref: meta.as_ref().map(|m| m.proof_ref.clone()),
             });
+            for stmt in body {
+                collect_semantic_unsafe_entries_from_stmt(
+                    stmt,
+                    module_path,
+                    project_root,
+                    function_name,
+                    true,
+                    unsafe_callees,
+                    entries,
+                );
+            }
         }
-        ast::Expr::Call { args, .. } => {
+        ast::Expr::Call { callee, args } => {
+            if !in_unsafe_context && unsafe_callees.contains(callee) {
+                entries.push(UnsafeEntry {
+                    kind: "unsafe_violation_callsite".to_string(),
+                    project: project_root.display().to_string(),
+                    file: module_path.display().to_string(),
+                    function: function_name.to_string(),
+                    line: 0,
+                    snippet: format!("{function_name}: call to unsafe `{callee}`"),
+                    reason: None,
+                    invariant: None,
+                    owner: None,
+                    scope: None,
+                    risk_class: None,
+                    proof_ref: None,
+                });
+            }
             for arg in args {
                 collect_semantic_unsafe_entries_from_expr(
                     arg,
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2411,6 +2613,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
         }
@@ -2421,6 +2625,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2432,6 +2638,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2442,6 +2650,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
         }
@@ -2451,6 +2661,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
         }
@@ -2460,6 +2672,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
         }
@@ -2472,6 +2686,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
             collect_semantic_unsafe_entries_from_expr(
@@ -2479,6 +2695,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
         }
@@ -2488,6 +2706,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
             collect_semantic_unsafe_entries_from_expr(
@@ -2495,6 +2715,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
         }
@@ -2504,6 +2726,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
             collect_semantic_unsafe_entries_from_expr(
@@ -2511,6 +2735,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
         }
@@ -2521,6 +2747,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                     module_path,
                     project_root,
                     function_name,
+                    in_unsafe_context,
+                    unsafe_callees,
                     entries,
                 );
             }
@@ -2531,6 +2759,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
             collect_semantic_unsafe_entries_from_expr(
@@ -2538,6 +2768,8 @@ fn collect_semantic_unsafe_entries_from_expr(
                 module_path,
                 project_root,
                 function_name,
+                in_unsafe_context,
+                unsafe_callees,
                 entries,
             );
         }
@@ -4254,7 +4486,7 @@ fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
             let self_hook = usize::from(matches!(callee.as_str(), "yield" | "checkpoint"));
             self_hook + args.iter().map(count_async_hooks_in_expr).sum::<usize>()
         }
-        ast::Expr::UnsafeContract(_) => 0,
+        ast::Expr::UnsafeBlock { .. } => 0,
         ast::Expr::FieldAccess { base, .. } => count_async_hooks_in_expr(base),
         ast::Expr::StructInit { fields, .. } => fields
             .iter()
@@ -4432,7 +4664,7 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
             }
             (spawns, yields)
         }
-        ast::Expr::UnsafeContract(_) => (0, 0),
+        ast::Expr::UnsafeBlock { .. } => (0, 0),
         ast::Expr::Await(inner) | ast::Expr::Group(inner) => analyze_workload_expr(inner),
         ast::Expr::Unary { expr, .. } => analyze_workload_expr(expr),
         ast::Expr::FieldAccess { base, .. } => analyze_workload_expr(base),
@@ -4828,7 +5060,7 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
                 collect_call_names_from_expr(arg, out);
             }
         }
-        ast::Expr::UnsafeContract(_) => {}
+        ast::Expr::UnsafeBlock { .. } => {}
         ast::Expr::FieldAccess { base, .. } => collect_call_names_from_expr(base, out),
         ast::Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
@@ -7371,7 +7603,7 @@ mod tests {
     }
 
     #[test]
-    fn audit_unsafe_rejects_missing_contract_in_semantic_call() {
+    fn audit_unsafe_reports_missing_contract_on_unsafe_block() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -7380,21 +7612,19 @@ mod tests {
             std::env::temp_dir().join(format!("fozzylang-audit-missing-reason-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "fn main() -> i32 {\n    unsafe()\n    return 0\n}\n",
+            "fn main() -> i32 {\n    unsafe {\n        return 0\n    }\n}\n",
         )
         .expect("source should be written");
 
-        let error = run(
+        let output = run(
             Command::AuditUnsafe {
                 path: source.clone(),
                 workspace: false,
             },
-            Format::Text,
+            Format::Json,
         )
-        .expect_err("audit should fail when unsafe contract fields are missing");
-        assert!(error
-            .to_string()
-            .contains("unsafe contract requires exactly 6"));
+        .expect("audit should succeed in non-strict mode");
+        assert!(output.contains("\"missingContractCount\":1"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -7408,7 +7638,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-audit-reasoned-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "fn main() -> i32 {\n    let p = alloc(8)\n    unsafe(\"reason:ffi boundary\", \"invariant:owner_live(p) && ptr_nonnull(p) && ptr_len_ge(p,8)\", \"owner:p\", \"scope:fn-main\", \"risk_class:memory\", \"proof_ref:trace://unsafe-001\")\n    free(p)\n    return 0\n}\n",
+            "fn main() -> i32 {\n    let p = alloc(8)\n    unsafe(\"reason:ffi boundary\", \"invariant:owner_live(p) && ptr_nonnull(p) && ptr_len_ge(p,8)\", \"owner:p\", \"scope:fn-main\", \"risk_class:memory\", \"proof_ref:trace://unsafe-001\") {\n        free(p)\n    }\n    return 0\n}\n",
         )
         .expect("source should be written");
 
