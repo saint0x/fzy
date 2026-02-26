@@ -5816,6 +5816,19 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
+        if function_body_contains_let_pattern(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend does not support pattern destructuring in `let` statements for function `{}`",
+                    function.name
+                ),
+                Some(
+                    "use regular `let` bindings in native builds until closure/destructuring native lowering is implemented"
+                        .to_string(),
+                ),
+            ));
+        }
     }
 
     let defined_functions = module
@@ -5852,6 +5865,46 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
         diagnostics::DiagnosticDomain::NativeLowering,
     );
     diagnostics
+}
+
+fn function_body_contains_let_pattern(body: &[ast::Stmt]) -> bool {
+    body.iter().any(stmt_contains_let_pattern)
+}
+
+fn stmt_contains_let_pattern(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::LetPattern { .. } => true,
+        ast::Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            function_body_contains_let_pattern(then_body)
+                || function_body_contains_let_pattern(else_body)
+        }
+        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
+            function_body_contains_let_pattern(body)
+        }
+        ast::Stmt::For {
+            init, step, body, ..
+        } => {
+            init.as_deref().is_some_and(stmt_contains_let_pattern)
+                || step.as_deref().is_some_and(stmt_contains_let_pattern)
+                || function_body_contains_let_pattern(body)
+        }
+        ast::Stmt::ForIn { body, .. } => function_body_contains_let_pattern(body),
+        ast::Stmt::Match { .. } => false,
+        ast::Stmt::Let { .. }
+        | ast::Stmt::Assign { .. }
+        | ast::Stmt::CompoundAssign { .. }
+        | ast::Stmt::Break
+        | ast::Stmt::Continue
+        | ast::Stmt::Return(_)
+        | ast::Stmt::Defer(_)
+        | ast::Stmt::Requires(_)
+        | ast::Stmt::Ensures(_)
+        | ast::Stmt::Expr(_) => false,
+    }
 }
 
 fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {
@@ -12184,6 +12237,32 @@ mod tests {
         assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("native backend does not support parameter type")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_reports_unsupported_native_let_pattern_lowering() {
+        let file_name = format!(
+            "fozzylang-native-let-pattern-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "enum Maybe { Some(i32), None }\nfn main() -> i32 {\n    let Maybe::Some(v) = Maybe::Some(7);\n    return v\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message.contains(
+                "native backend does not support pattern destructuring in `let` statements",
+            )
         }));
 
         let _ = std::fs::remove_file(path);

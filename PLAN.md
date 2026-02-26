@@ -326,6 +326,7 @@
 - [✅] pattern/destructuring slice delivered: first-class `let` pattern statements (`let Enum::Variant(...) = ...`) with scoped pattern bindings in `let` and `match`, HIR type-checking/evaluator binding semantics, FIR/driver traversal support, and parser/HIR regressions.
 - [ ] expression/control construct completeness parity across parser/type/lowering/runtime/native
 - [ ] Ensure every parser-recognized construct is end-to-end executable with native parity or hard-rejected with explicit diagnostics and fix guidance (no silent partial semantics).
+- [✅] parser-recognized `let` pattern destructuring now fails native lowerability early with explicit diagnostics and fix guidance until native lowering parity lands.
 - [✅] Upgrade docs to publish one authoritative language-construct matrix (`implemented` / `partial` / `missing`) and gate release on matrix truthfulness.
 
 ### Native Completeness Closure (Adoption Blocker #3)
