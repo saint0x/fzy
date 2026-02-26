@@ -6268,6 +6268,32 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
+        if function_body_contains_unsupported_let_pattern_variant_binding(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend supports `let` variant payload binding only when the initializer is the same literal enum variant in function `{}`",
+                    function.name
+                ),
+                Some(
+                    "materialize the enum variant literal directly in the `let` initializer or avoid payload destructuring on native backends"
+                        .to_string(),
+                ),
+            ));
+        }
+        if function_body_contains_unsupported_match_variant_binding(&function.body) {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "native backend does not yet support variant payload bindings in `match` arms for function `{}`",
+                    function.name
+                ),
+                Some(
+                    "match on the variant tag only (no payload bindings) or route execution through deterministic/scenario backends"
+                        .to_string(),
+                ),
+            ));
+        }
     }
 
     let defined_functions = module
@@ -6445,6 +6471,16 @@ fn function_body_contains_unsupported_closure_usage(body: &[ast::Stmt]) -> bool 
     body.iter().any(stmt_contains_unsupported_closure_usage)
 }
 
+fn function_body_contains_unsupported_let_pattern_variant_binding(body: &[ast::Stmt]) -> bool {
+    body.iter()
+        .any(stmt_contains_unsupported_let_pattern_variant_binding)
+}
+
+fn function_body_contains_unsupported_match_variant_binding(body: &[ast::Stmt]) -> bool {
+    body.iter()
+        .any(stmt_contains_unsupported_match_variant_binding)
+}
+
 fn stmt_contains_unsupported_closure_usage(stmt: &ast::Stmt) -> bool {
     match stmt {
         ast::Stmt::Let { value, .. } => {
@@ -6500,6 +6536,121 @@ fn stmt_contains_unsupported_closure_usage(stmt: &ast::Stmt) -> bool {
                         || expr_contains_closure(&arm.value)
                 })
         }
+    }
+}
+
+fn stmt_contains_unsupported_let_pattern_variant_binding(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::LetPattern { pattern, value, .. } => {
+            let ast::Pattern::Variant {
+                enum_name,
+                variant,
+                bindings,
+            } = pattern
+            else {
+                return false;
+            };
+            if bindings.is_empty() {
+                return false;
+            }
+            match value {
+                ast::Expr::EnumInit {
+                    enum_name: value_enum,
+                    variant: value_variant,
+                    payload,
+                } => {
+                    value_enum != enum_name
+                        || value_variant != variant
+                        || payload.len() != bindings.len()
+                }
+                _ => true,
+            }
+        }
+        ast::Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            function_body_contains_unsupported_let_pattern_variant_binding(then_body)
+                || function_body_contains_unsupported_let_pattern_variant_binding(else_body)
+        }
+        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
+            function_body_contains_unsupported_let_pattern_variant_binding(body)
+        }
+        ast::Stmt::For {
+            init, step, body, ..
+        } => {
+            init.as_deref()
+                .is_some_and(stmt_contains_unsupported_let_pattern_variant_binding)
+                || step
+                    .as_deref()
+                    .is_some_and(stmt_contains_unsupported_let_pattern_variant_binding)
+                || function_body_contains_unsupported_let_pattern_variant_binding(body)
+        }
+        ast::Stmt::ForIn { body, .. } => {
+            function_body_contains_unsupported_let_pattern_variant_binding(body)
+        }
+        ast::Stmt::Match { .. } => false,
+        ast::Stmt::Let { .. }
+        | ast::Stmt::Assign { .. }
+        | ast::Stmt::CompoundAssign { .. }
+        | ast::Stmt::Break
+        | ast::Stmt::Continue
+        | ast::Stmt::Return(_)
+        | ast::Stmt::Defer(_)
+        | ast::Stmt::Requires(_)
+        | ast::Stmt::Ensures(_)
+        | ast::Stmt::Expr(_) => false,
+    }
+}
+
+fn stmt_contains_unsupported_match_variant_binding(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Match { arms, .. } => {
+            arms.iter().any(|arm| match &arm.pattern {
+                ast::Pattern::Variant { bindings, .. } => !bindings.is_empty(),
+                ast::Pattern::Or(patterns) => patterns.iter().any(|pattern| {
+                    matches!(
+                        pattern,
+                        ast::Pattern::Variant { bindings, .. } if !bindings.is_empty()
+                    )
+                }),
+                _ => false,
+            })
+        }
+        ast::Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            function_body_contains_unsupported_match_variant_binding(then_body)
+                || function_body_contains_unsupported_match_variant_binding(else_body)
+        }
+        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
+            function_body_contains_unsupported_match_variant_binding(body)
+        }
+        ast::Stmt::For {
+            init, step, body, ..
+        } => {
+            init.as_deref()
+                .is_some_and(stmt_contains_unsupported_match_variant_binding)
+                || step
+                    .as_deref()
+                    .is_some_and(stmt_contains_unsupported_match_variant_binding)
+                || function_body_contains_unsupported_match_variant_binding(body)
+        }
+        ast::Stmt::ForIn { body, .. } => function_body_contains_unsupported_match_variant_binding(body),
+        ast::Stmt::Let { .. }
+        | ast::Stmt::LetPattern { .. }
+        | ast::Stmt::Assign { .. }
+        | ast::Stmt::CompoundAssign { .. }
+        | ast::Stmt::Break
+        | ast::Stmt::Continue
+        | ast::Stmt::Return(_)
+        | ast::Stmt::Defer(_)
+        | ast::Stmt::Requires(_)
+        | ast::Stmt::Ensures(_)
+        | ast::Stmt::Expr(_) => false,
     }
 }
 
@@ -13151,6 +13302,56 @@ mod tests {
         assert!(output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("native backend only supports closures bound directly in `let` statements")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_unsupported_native_let_pattern_variant_binding_source() {
+        let file_name = format!(
+            "fozzylang-native-let-pattern-source-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "enum Maybe { Some(i32), None }\nfn id(v: Maybe) -> Maybe { return v }\nfn main() -> i32 {\n    let source = id(Maybe::Some(7))\n    let Maybe::Some(v) = source;\n    return v\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("supports `let` variant payload binding only when the initializer is the same literal enum variant")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_unsupported_native_match_variant_payload_bindings() {
+        let file_name = format!(
+            "fozzylang-native-match-pattern-unsupported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "enum Maybe { Some(i32), None }\nfn main() -> i32 {\n    let source = Maybe::Some(9)\n    match source {\n        Maybe::Some(v) => return v,\n        _ => return 0,\n    }\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("does not yet support variant payload bindings in `match` arms")
         }));
 
         let _ = std::fs::remove_file(path);

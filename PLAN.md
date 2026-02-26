@@ -329,6 +329,7 @@
 - [ ] expression/control construct completeness parity across parser/type/lowering/runtime/native
 - [ ] Ensure every parser-recognized construct is end-to-end executable with native parity or hard-rejected with explicit diagnostics and fix guidance (no silent partial semantics).
 - [✅] parser-recognized `let` pattern destructuring now lowers natively for supported pattern families (with deterministic cross-backend execution parity coverage).
+- [✅] non-lowerable native pattern cases now hard-reject with explicit diagnostics (`let` variant payload binding from non-literal sources, and `match` variant payload bindings) instead of silently degrading at emit/runtime.
 - [✅] Upgrade docs to publish one authoritative language-construct matrix (`implemented` / `partial` / `missing`) and gate release on matrix truthfulness.
 
 ### Native Completeness Closure (Adoption Blocker #3)
