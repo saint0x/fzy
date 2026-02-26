@@ -328,9 +328,9 @@ fn host_and_io_showcase() -> i32 {
     let _exit = proc.wait(proc_id);
 
     unsafe(
-        "ffi pointer bridge",
-        "owner_live(buf) && ptr_nonnull(buf) && ptr_len_ge(buf,16)",
-        "buf",
+        "reason:ffi pointer bridge",
+        "invariant:owner_live(buf) && ptr_nonnull(buf) && ptr_len_ge(buf,16)",
+        "owner:buf",
         "scope:host_and_io_showcase",
         "risk_class:memory",
         "proof_ref:trace://ffi-bridge-001"

@@ -3,6 +3,7 @@
 Correctness-first systems language toolchain with deterministic verification workflows.
 
 fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, replay, and artifact-driven debugging are first-class, not bolt-ons.
+
 A quick way to think about fzy is zig but safer, rust but more sane.
 
 ## Start Here
