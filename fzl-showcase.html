@@ -111,6 +111,8 @@ use core.encoding;
 use core.error;
 use core.path;
 use core.collections;
+use services::registry::list_tools as list_tools_alias;
+pub use services::telemetry::boot_metrics;
 
 // These `mod` lines declare local project modules.
 mod api;
@@ -119,6 +121,18 @@ mod runtime;
 mod services;
 mod cli;
 mod tests;
+
+// ------------------------------------------------------------
+// SECTION 1B: globals and mutable static state
+// ------------------------------------------------------------
+const BUILD_ID: i32 = 20260226;
+static GLOBAL_SCALE: i32 = 3;
+static mut GLOBAL_COUNTER: i32 = 0;
+
+fn next_counter() -> i32 {
+    GLOBAL_COUNTER += 1;
+    return GLOBAL_COUNTER
+}
 
 // ------------------------------------------------------------
 // SECTION 2: C-compatible data layout
@@ -296,7 +310,7 @@ fn arrays_and_indexing() -> i32 {
 }
 
 // ------------------------------------------------------------
-// SECTION 9: function types / higher-order shape
+// SECTION 9: function types / higher-order shape + lambda syntax
 // ------------------------------------------------------------
 fn higher_order(cb: fn(i32) -> i32, v: i32) -> i32 {
     // `_` pattern intentionally ignores value while keeping type surface.
@@ -306,6 +320,14 @@ fn higher_order(cb: fn(i32) -> i32, v: i32) -> i32 {
 
 // Identity function used by higher-order demo.
 fn id(v: i32) -> i32 { return v }
+
+fn closure_and_mutability_demo(seed: i32) -> i32 {
+    let mut idx: i32 = 1
+    idx += GLOBAL_SCALE
+    let values = [seed, seed + 1, seed + 2, seed + 3, seed + 4]
+    let pick = |x: i32| x + values[idx % 5]
+    return pick(BUILD_ID % 11) + next_counter()
+}
 
 // ------------------------------------------------------------
 // SECTION 10: async + scheduler primitives
@@ -455,12 +477,13 @@ fn full_pipeline(seed: i32) -> i32 {
     let em = enum_demo(Message::Ping)
     let idx = arrays_and_indexing()
     let ho = higher_order(id, seed)
+    let lam = closure_and_mutability_demo(seed)
     let cc = concurrency_parallel_demo()
     let io = host_and_io_showcase()
     let sf = safety_surface()
     let ct = contracts_and_errors(true)
 
-    let result = ops + mixed + mm + em + idx + ho + cc + io + sf + ct
+    let result = ops + mixed + mm + em + idx + ho + lam + cc + io + sf + ct
     if result > 0 {
         return result
     }
@@ -525,7 +548,7 @@ test "syntax-showcase-match" {
   <script>
     const KEYWORDS = new Set([
       "use","mod","fn","return","if","else","match","while","for","in","loop",
-      "break","continue","let","trait","impl","struct","enum","extern","pub","async",
+      "break","continue","let","const","static","trait","impl","struct","enum","extern","pub","async",
       "await","requires","ensures","defer","test"
     ]);
     const TYPES = new Set([
