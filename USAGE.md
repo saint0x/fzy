@@ -186,6 +186,9 @@ Unsafe island details (`unsafe fn`, `unsafe { ... }`, optional metadata, strict 
 - `.fz/unsafe-docs.workspace.md`
 - `.fz/unsafe-docs.workspace.html`
 Default production policy keeps missing metadata non-blocking; strict CI/release policy can make missing/invalid metadata blocking.
+Hardened repositories can scope unsafe usage in `fozzy.toml`:
+- `[unsafe].deny_unsafe_in = ["tests::*"]`
+- `[unsafe].allow_unsafe_in = ["runtime::*"]`
 
 Recommended native completeness probe:
 

@@ -59,6 +59,9 @@ Strict CI/release mode:
 - `enforce_verify = true` / `enforce_release = true` in `[unsafe]`
 - Fails on missing/invalid generated contracts.
 - Fails on unsafe-context violations (unsafe calls outside unsafe context).
+- Optional hardened scope controls in `[unsafe]`:
+  - `deny_unsafe_in = ["tests::*"]` denies unsafe sites in matching modules.
+  - `allow_unsafe_in = ["runtime::*"]` allows unsafe sites only in matching modules.
 
 ## Rust Unsafe Boundary Rules
 

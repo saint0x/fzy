@@ -103,6 +103,22 @@ for example_root in "$ROOT"/examples/*; do
   echo "[ship] example ok: $(basename "$example_root")"
 done
 
+echo "[ship] cross-repo anthropic_smoke conformance"
+ANTHROPIC_SMOKE_ROOT="${ANTHROPIC_SMOKE_ROOT:-$ROOT/../fzllm/anthropic_smoke}"
+if [[ ! -f "$ANTHROPIC_SMOKE_ROOT/fozzy.toml" ]]; then
+  echo "missing anthropic smoke repo at $ANTHROPIC_SMOKE_ROOT (expected fozzy.toml)" >&2
+  exit 2
+fi
+ANTHROPIC_TRACE="$ARTIFACT_DIR/anthropic_smoke.crossrepo.trace.fozzy"
+"${FZ_CMD[@]}" check "$ANTHROPIC_SMOKE_ROOT" --json >/dev/null
+"${FZ_CMD[@]}" build "$ANTHROPIC_SMOKE_ROOT" --release --json >/dev/null
+"${FZ_CMD[@]}" test "$ANTHROPIC_SMOKE_ROOT" --det --strict-verify --seed "$SEED" --record "$ANTHROPIC_TRACE" --json >/dev/null
+"${FZ_CMD[@]}" run "$ANTHROPIC_SMOKE_ROOT" --strict-verify --seed "$SEED" --json >/dev/null
+fozzy trace verify "$ANTHROPIC_TRACE" --strict --json >/dev/null
+fozzy replay "$ANTHROPIC_TRACE" --json >/dev/null
+fozzy ci "$ANTHROPIC_TRACE" --json >/dev/null
+echo "[ship] anthropic_smoke cross-repo ok"
+
 echo "[ship] anthropic smoke matrix (llvm + cranelift)"
 ANTHROPIC_SMOKE="$TMP_DIR/anthropic_smoke.fzy"
 cat > "$ANTHROPIC_SMOKE" <<'FZY'

@@ -847,12 +847,15 @@ pub fn compile_file_with_backend(
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
     let (_typed, fir) = lower_fir_cached(&parsed);
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
+    let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
             production_memory_safety: true,
             strict_unsafe_contracts,
+            deny_unsafe_in,
+            allow_unsafe_in,
         },
     );
 
@@ -916,12 +919,15 @@ pub fn compile_library_with_backend(
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
     let (_typed, fir) = lower_fir_cached(&parsed);
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
+    let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
             safe_profile: matches!(profile, BuildProfile::Verify),
             production_memory_safety: true,
             strict_unsafe_contracts,
+            deny_unsafe_in,
+            allow_unsafe_in,
         },
     );
 
@@ -1013,12 +1019,15 @@ pub fn verify_file(path: &Path) -> Result<Output> {
     };
     let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
     let (_typed, fir) = lower_fir_cached(&parsed);
+    let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
             safe_profile: false,
             production_memory_safety: true,
             strict_unsafe_contracts: true,
+            deny_unsafe_in,
+            allow_unsafe_in,
         },
     );
     diagnostics.extend(report.diagnostics);
@@ -15388,6 +15397,16 @@ fn unsafe_contracts_enforced(manifest: Option<&manifest::Manifest>, profile: Bui
     !matches!(profile, BuildProfile::Dev)
 }
 
+fn unsafe_scope_policy(manifest: Option<&manifest::Manifest>) -> (Vec<String>, Vec<String>) {
+    let Some(manifest) = manifest else {
+        return (Vec::new(), Vec::new());
+    };
+    (
+        manifest.unsafe_policy.deny_unsafe_in.clone(),
+        manifest.unsafe_policy.allow_unsafe_in.clone(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -17312,5 +17331,39 @@ mod tests {
         assert_eq!(cranelift_exit, 100);
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_unsafe_local_function_calls_execute_consistently() {
+        let file_name = format!(
+            "fozzylang-unsafe-local-backend-parity-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn lang_id(v: i32) -> i32 {\n    return v\n}\nunsafe fn lang_unsafe_id(v: i32) -> i32 {\n    return v\n}\nfn main() -> i32 {\n    let routed = lang_id(7)\n    discard lang_unsafe_id\n    unsafe {\n        discard lang_id(routed)\n    }\n    return routed\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&path, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift should compile unsafe local-call fixture");
+        let llvm = compile_file_with_backend(&path, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm should compile unsafe local-call fixture");
+
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_ref()
+                .expect("cranelift output should exist"),
+        );
+        let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
+        assert_eq!(cranelift_exit, 7);
+        assert_eq!(llvm_exit, 7);
+
+        let _ = std::fs::remove_file(path);
     }
 }

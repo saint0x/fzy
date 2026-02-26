@@ -461,8 +461,14 @@ pub fn lower(module: &Module) -> TypedModule {
         match_duplicate_catchall_arms,
     ) = collect_semantic_hints(&typed_functions);
     let (entry_requires, entry_ensures) = collect_entry_contracts(&typed_functions, &fn_sigs);
-    let (host_syscall_sites, _unsafe_sites_markers, _unsafe_reasoned_sites_markers, reference_sites, alloc_sites, free_sites) =
-        collect_effect_markers(&typed_functions);
+    let (
+        host_syscall_sites,
+        _unsafe_sites_markers,
+        _unsafe_reasoned_sites_markers,
+        reference_sites,
+        alloc_sites,
+        free_sites,
+    ) = collect_effect_markers(&typed_functions);
     let unsafe_contract_sites = collect_unsafe_contract_sites(&typed_functions);
     let unsafe_sites = unsafe_contract_sites
         .iter()
@@ -3839,7 +3845,11 @@ fn generated_unsafe_contract_site(
     }
 }
 
-fn unsafe_violation_site(function_name: &str, snippet: &str, async_context: bool) -> UnsafeContractSite {
+fn unsafe_violation_site(
+    function_name: &str,
+    snippet: &str,
+    async_context: bool,
+) -> UnsafeContractSite {
     let site_id = stable_unsafe_site_id("unsafe_violation_callsite", function_name, snippet);
     UnsafeContractSite {
         site_id,

@@ -238,6 +238,9 @@ Spec: `docs/dependency-locking-v1.md`
   - `.fz/unsafe-docs.workspace.html`
 - Metadata fields (`reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`) are compiler-generated and policy-driven.
 - Default production flow is non-blocking for missing metadata unless strict unsafe policy is enabled in CI/release.
+- Optional hardened scope controls in `fozzy.toml`:
+  - `[unsafe].deny_unsafe_in = ["tests::*"]`
+  - `[unsafe].allow_unsafe_in = ["runtime::*"]`
 
 ## Fozzy-First Validation Contract
 

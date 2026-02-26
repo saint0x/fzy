@@ -1,11 +1,13 @@
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
 use fir::FirModule;
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct VerifyPolicy {
     pub safe_profile: bool,
     pub production_memory_safety: bool,
     pub strict_unsafe_contracts: bool,
+    pub deny_unsafe_in: Vec<String>,
+    pub allow_unsafe_in: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -126,6 +128,38 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     if !module.unsafe_contract_sites.is_empty() {
+        let module_name = module.name.as_str();
+        if !policy.allow_unsafe_in.is_empty()
+            && !policy
+                .allow_unsafe_in
+                .iter()
+                .any(|scope| unsafe_scope_matches(module_name, scope))
+        {
+            report.diagnostics.push(Diagnostic::new(
+                Severity::Error,
+                format!(
+                    "unsafe usage in module `{module_name}` is not in allowlisted unsafe scope"
+                ),
+                Some(
+                    "add module to `[unsafe].allow_unsafe_in` or remove unsafe sites from this module"
+                        .to_string(),
+                ),
+            ));
+        }
+        if policy
+            .deny_unsafe_in
+            .iter()
+            .any(|scope| unsafe_scope_matches(module_name, scope))
+        {
+            report.diagnostics.push(Diagnostic::new(
+                Severity::Error,
+                format!("unsafe usage is denied in module `{module_name}` by policy"),
+                Some(
+                    "remove unsafe sites from this module or adjust `[unsafe].deny_unsafe_in`"
+                        .to_string(),
+                ),
+            ));
+        }
         let unsafe_sites = module
             .unsafe_contract_sites
             .iter()
@@ -160,10 +194,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             } else {
                 Severity::Warning
             },
-            format!(
-                "detected {} explicit unsafe escape marker(s)",
-                unsafe_sites
-            ),
+            format!("detected {} explicit unsafe escape marker(s)", unsafe_sites),
             Some(if policy.safe_profile {
                 "unsafe escapes are forbidden in safe profile".to_string()
             } else {
@@ -203,7 +234,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                     "{} unsafe callsite violation(s) detected outside unsafe context",
                     unsafe_context_violations
                 ),
-                Some("wrap callsites in `unsafe { ... }` or move logic into an `unsafe fn`".to_string()),
+                Some(
+                    "wrap callsites in `unsafe { ... }` or move logic into an `unsafe fn`"
+                        .to_string(),
+                ),
             ));
         }
         if async_unsafe_sites > 0 {
@@ -408,6 +442,21 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     assign_stable_codes(&mut report.diagnostics, DiagnosticDomain::Verifier);
 
     report
+}
+
+fn unsafe_scope_matches(module_name: &str, pattern: &str) -> bool {
+    let module_name = module_name.trim();
+    let pattern = pattern.trim();
+    if module_name.is_empty() || pattern.is_empty() {
+        return false;
+    }
+    if pattern == "*" {
+        return true;
+    }
+    if let Some(prefix) = pattern.strip_suffix("::*") {
+        return module_name == prefix || module_name.starts_with(&format!("{prefix}::"));
+    }
+    module_name == pattern
 }
 
 #[cfg(test)]
@@ -1419,5 +1468,123 @@ mod tests {
                 && d.message
                     .contains("unsafe escape site(s) missing required contract fields")
         }));
+    }
+
+    #[test]
+    fn deny_unsafe_scope_rejects_module() {
+        let module = fir::FirModule {
+            name: "tests::smoke".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![unsafe_site_complete()],
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                deny_unsafe_in: vec!["tests::*".to_string()],
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("unsafe usage is denied in module")));
+    }
+
+    #[test]
+    fn allowlist_unsafe_scope_rejects_non_allowlisted_module() {
+        let module = fir::FirModule {
+            name: "tests::smoke".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![unsafe_site_complete()],
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                allow_unsafe_in: vec!["runtime::*".to_string()],
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("not in allowlisted unsafe scope")));
     }
 }

@@ -15,7 +15,10 @@ pub fn run() -> Result<()> {
     }
     if args.len() == 1 && args[0] == "--version" {
         let output = driver_run(Command::Version, Format::Text)?;
-        println!("{}", cli_output::normalize_cli_output(Format::Text, &output));
+        println!(
+            "{}",
+            cli_output::normalize_cli_output(Format::Text, &output)
+        );
         return Ok(());
     }
 

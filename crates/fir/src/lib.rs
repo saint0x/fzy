@@ -1,7 +1,7 @@
 use ast::Type;
 use core::CapabilitySet;
-use hir::{FunctionCapabilityRequirement, TypedFunction, TypedModule};
 pub use hir::UnsafeContractSite;
+use hir::{FunctionCapabilityRequirement, TypedFunction, TypedModule};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueType {

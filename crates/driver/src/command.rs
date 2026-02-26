@@ -14,8 +14,8 @@ use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
     compile_file_with_backend, compile_library_with_backend, emit_ir, lower_fir_cached,
-    parse_program,
-    refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact, Output,
+    parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact,
+    Output,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,21 +202,22 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let runtime_config = persist_runtime_threads_config(&path, threads)?;
             let _link_scope = BuildLinkArgsScope::new(&link_libs, &link_search, &frameworks);
             if lib {
-                let artifact =
-                    compile_library_with_backend_with_root_guidance(&path, profile, backend.as_deref())?;
+                let artifact = compile_library_with_backend_with_root_guidance(
+                    &path,
+                    profile,
+                    backend.as_deref(),
+                )?;
                 let headers = generate_c_headers(&path, None)?;
-                let rendered = render_library_artifact(
-                    format,
-                    artifact,
-                    headers,
-                    threads,
-                    runtime_config,
-                );
+                let rendered =
+                    render_library_artifact(format, artifact, headers, threads, runtime_config);
                 let unsafe_docs = maybe_generate_unsafe_docs(&path);
                 Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
             } else {
-                let artifact =
-                    compile_file_with_backend_with_root_guidance(&path, profile, backend.as_deref())?;
+                let artifact = compile_file_with_backend_with_root_guidance(
+                    &path,
+                    profile,
+                    backend.as_deref(),
+                )?;
                 let rendered = render_artifact(format, artifact, threads, runtime_config);
                 let unsafe_docs = maybe_generate_unsafe_docs(&path);
                 Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
@@ -287,7 +288,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     .to_string()),
                 };
             }
-            let unsafe_docs = maybe_generate_unsafe_docs(&path).map(|value| value.display().to_string());
+            let unsafe_docs =
+                maybe_generate_unsafe_docs(&path).map(|value| value.display().to_string());
             if deterministic && !host_backends {
                 let plan = run_non_scenario_test_plan_with_root_guidance(
                     &path,
@@ -461,7 +463,11 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                             "policy",
                             policy_summary_text(
                                 if safe_profile { "verify" } else { "dev" },
-                                Some(if strict_verify { "strict" } else { "profile-driven" }),
+                                Some(if strict_verify {
+                                    "strict"
+                                } else {
+                                    "profile-driven"
+                                }),
                                 Some(routing_mode),
                                 true,
                             ),
@@ -589,7 +595,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "--host-backends is unsupported for native `.fzy` tests; use a `.fozzy.json` scenario for host-backed execution"
                 );
             }
-            let unsafe_docs = maybe_generate_unsafe_docs(&path).map(|value| value.display().to_string());
+            let unsafe_docs =
+                maybe_generate_unsafe_docs(&path).map(|value| value.display().to_string());
 
             let test_plan = run_non_scenario_test_plan_with_root_guidance(
                 &path,
@@ -617,7 +624,11 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "policy",
                     policy_summary_text(
                         if strict_verify { "verify" } else { "dev" },
-                        Some(if strict_verify { "strict" } else { "profile-driven" }),
+                        Some(if strict_verify {
+                            "strict"
+                        } else {
+                            "profile-driven"
+                        }),
                         Some("deterministic-model"),
                         true,
                     ),
@@ -877,7 +888,7 @@ fn init_project(name: &str) -> Result<()> {
     }
 
     let manifest = format!(
-        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"{}\"\npath = \"src/main.fzy\"\n\n[unsafe]\ncontracts = \"compiler\"\nenforce_dev = false\nenforce_verify = true\nenforce_release = true\n",
+        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"{}\"\npath = \"src/main.fzy\"\n\n[unsafe]\ncontracts = \"compiler\"\nenforce_dev = false\nenforce_verify = true\nenforce_release = true\ndeny_unsafe_in = []\nallow_unsafe_in = []\n",
         name, name
     );
 
@@ -1002,7 +1013,11 @@ fn doctor_checks_summary_text(checks: &[DoctorCheck]) -> String {
         .join("\n")
 }
 
-fn append_unsafe_docs_field(rendered: String, format: Format, unsafe_docs: Option<PathBuf>) -> String {
+fn append_unsafe_docs_field(
+    rendered: String,
+    format: Format,
+    unsafe_docs: Option<PathBuf>,
+) -> String {
     match format {
         Format::Text => {
             if let Some(path) = unsafe_docs {
@@ -1364,10 +1379,7 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
         if let Some(fix) = &diagnostic.fix {
             out.push_str(&format!(" fix: {fix}\n"));
         }
-        out.push_str(&format!(
-            " root_cause: {}\n",
-            diagnostic.message
-        ));
+        out.push_str(&format!(" root_cause: {}\n", diagnostic.message));
         let verify_with = diagnostic
             .path
             .as_deref()
@@ -1467,7 +1479,8 @@ fn run_non_scenario_test_plan_with_root_guidance(
     path: &Path,
     request: NonScenarioPlanRequest<'_>,
 ) -> Result<NonScenarioTestPlan> {
-    run_non_scenario_test_plan(path, request).map_err(|error| attach_project_root_guidance(path, error))
+    run_non_scenario_test_plan(path, request)
+        .map_err(|error| attach_project_root_guidance(path, error))
 }
 
 fn attach_project_root_guidance(path: &Path, error: anyhow::Error) -> anyhow::Error {
@@ -1540,7 +1553,9 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
         "parser" => "Fix syntax at the primary span, then rerun `fz check <path>`.",
         "hir" => "Fix name/type mismatch and rerun `fz check <path>`.",
         "verifier" => "Fix policy/type contract violation and rerun `fz verify <path>`.",
-        "native-lowering" => "Adjust unsupported lowering shape or switch backend, then rerun `fz build <path>`.",
+        "native-lowering" => {
+            "Adjust unsupported lowering shape or switch backend, then rerun `fz build <path>`."
+        }
         "driver" => "Fix project/configuration issue and rerun the failing command.",
         _ => "Run `fz check <path>` to regenerate diagnostics with spans and helps.",
     };
@@ -1573,7 +1588,9 @@ struct DoctorCheck {
 
 fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<String> {
     let project_root = if path.is_file() {
-        path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+        path.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf()
     } else {
         path.to_path_buf()
     };
@@ -1645,7 +1662,8 @@ fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<S
                     name: "lockfile".to_string(),
                     status: "error".to_string(),
                     detail: err.to_string(),
-                    fix: "run `fz vendor <project-root>` after fixing dependency graph issues".to_string(),
+                    fix: "run `fz vendor <project-root>` after fixing dependency graph issues"
+                        .to_string(),
                 }
             }
         };
@@ -1664,7 +1682,8 @@ fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<S
                 name: "vendor".to_string(),
                 status: "warn".to_string(),
                 detail: "vendor manifest missing".to_string(),
-                fix: "run `fz vendor <project-root>` for fully reproducible dependency snapshots".to_string(),
+                fix: "run `fz vendor <project-root>` for fully reproducible dependency snapshots"
+                    .to_string(),
             });
         }
     }
@@ -1707,8 +1726,11 @@ fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<S
                 checks.push(DoctorCheck {
                     name: "async-unsafe".to_string(),
                     status: "warn".to_string(),
-                    detail: format!("{async_unsafe_overlap} module(s) combine async and unsafe constructs"),
-                    fix: "audit unsafe invariants in async contexts and keep strict verify enabled".to_string(),
+                    detail: format!(
+                        "{async_unsafe_overlap} module(s) combine async and unsafe constructs"
+                    ),
+                    fix: "audit unsafe invariants in async contexts and keep strict verify enabled"
+                        .to_string(),
                 });
             } else {
                 checks.push(DoctorCheck {
@@ -1750,7 +1772,8 @@ fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<S
                         name: "unsafe-posture".to_string(),
                         status: "warn".to_string(),
                         detail: "unsafe enforcement is relaxed for verify/release".to_string(),
-                        fix: "set [unsafe].enforce_verify=true and enforce_release=true".to_string(),
+                        fix: "set [unsafe].enforce_verify=true and enforce_release=true"
+                            .to_string(),
                     });
                 }
             }
@@ -1772,10 +1795,7 @@ fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<S
                 "policy",
                 policy_summary_text("verify", Some("profile-driven"), Some("compiler"), true),
             ),
-            (
-                "checks",
-                doctor_checks_summary_text(&checks),
-            ),
+            ("checks", doctor_checks_summary_text(&checks)),
         ])),
         Format::Json => Ok(serde_json::json!({
             "status": status,
@@ -1823,10 +1843,7 @@ fn devloop_command(path: &Path, backend: Option<&str>, format: Format) -> Result
             ("compile_diagnostics", compile.diagnostics.to_string()),
             ("scheduler", plan.scheduler),
             ("executed_tasks", plan.executed_tasks.to_string()),
-            (
-                "backend",
-                backend.unwrap_or("cranelift").to_string(),
-            ),
+            ("backend", backend.unwrap_or("cranelift").to_string()),
             (
                 "policy",
                 policy_summary_text("dev", Some("strict-verify"), backend, true),
@@ -2686,7 +2703,7 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
             entry
                 .proof_ref
                 .as_deref()
-                .is_some_and(|value| !value.trim().is_empty() && !proof_ref_machine_linkable(value))
+                .is_some_and(|value| !value.trim().is_empty() && !proof_ref_valid(value))
         })
         .count();
     let unsafe_context_violations = entries
@@ -2881,6 +2898,27 @@ fn proof_ref_machine_linkable(value: &str) -> bool {
         "trace://", "test://", "rfc://", "gate://", "run://", "ci://",
     ];
     schemes.iter().any(|scheme| value.starts_with(scheme))
+}
+
+fn proof_ref_valid(value: &str) -> bool {
+    let value = value.trim();
+    if !proof_ref_machine_linkable(value) {
+        return false;
+    }
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return false;
+    };
+    if scheme == "gate" || scheme == "rfc" {
+        return true;
+    }
+    if scheme != "trace" && scheme != "test" && scheme != "run" && scheme != "ci" {
+        return false;
+    }
+    let path_part = rest.split('#').next().unwrap_or_default().trim();
+    if path_part.is_empty() {
+        return false;
+    }
+    std::path::Path::new(path_part).exists()
 }
 
 fn strict_unsafe_audit_for_projects(project_roots: &[PathBuf]) -> bool {
@@ -4469,13 +4507,33 @@ fn run_non_scenario_test_plan(
     }
 
     let (_typed, fir) = lower_fir_cached(&parsed);
+    let strict_unsafe_contracts = request.strict_verify
+        || resolved.manifest.as_ref().is_some_and(|manifest| {
+            if request.safe_profile {
+                manifest.unsafe_policy.enforce_verify.unwrap_or(true)
+            } else {
+                manifest.unsafe_policy.enforce_dev.unwrap_or(false)
+            }
+        });
+    let (deny_unsafe_in, allow_unsafe_in) = resolved
+        .manifest
+        .as_ref()
+        .map(|manifest| {
+            (
+                manifest.unsafe_policy.deny_unsafe_in.clone(),
+                manifest.unsafe_policy.allow_unsafe_in.clone(),
+            )
+        })
+        .unwrap_or_default();
     let production_memory_safety = true;
     let verify_report = verifier::verify_with_policy(
         &fir,
         verifier::VerifyPolicy {
             safe_profile: request.safe_profile,
             production_memory_safety,
-            strict_unsafe_contracts: request.strict_verify,
+            strict_unsafe_contracts,
+            deny_unsafe_in,
+            allow_unsafe_in,
         },
     );
     let mut verify_diagnostics = verify_report.diagnostics;
@@ -4585,7 +4643,7 @@ fn run_non_scenario_test_plan(
         Vec::new()
     };
     let rpc_validation = validate_rpc_frames(&rpc_frames);
-    if request.strict_verify
+    if strict_unsafe_contracts
         && mode == ExecMode::Det
         && rpc_validation
             .iter()
@@ -4593,15 +4651,16 @@ fn run_non_scenario_test_plan(
     {
         bail!("strict verify rejected RPC sequence with validation errors");
     }
-    let thread_findings = thread_health_findings(
+    let mut thread_findings = thread_health_findings(
         &events,
         &execution_order,
         task_count,
         &workload,
         &call_sequence,
     );
+    thread_findings.extend(unsafe_trace_findings(&fir));
     let artifacts = if mode == ExecMode::Det {
-        let detail = if request.strict_verify || request.rich_artifacts {
+        let detail = if strict_unsafe_contracts || request.rich_artifacts {
             ArtifactDetail::Rich
         } else {
             ArtifactDetail::Minimal
@@ -4711,6 +4770,7 @@ fn write_non_scenario_trace_artifacts(
             .collect::<Vec<TaskEventRecord>>(),
         runtime_events: inputs.runtime_events.to_vec(),
         causal_links: inputs.causal_links.to_vec(),
+        thread_findings: inputs.thread_findings.to_vec(),
     };
     write_json_file(&native_trace_path, &trace_payload).with_context(|| {
         format!(
@@ -5100,6 +5160,8 @@ struct TracePayload<'a> {
     runtime_events: Vec<RuntimeSemanticEvent>,
     #[serde(rename = "causalLinks")]
     causal_links: Vec<CausalLink>,
+    #[serde(rename = "threadFindings")]
+    thread_findings: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -6108,6 +6170,68 @@ fn thread_health_findings(
         }));
     }
     findings
+}
+
+fn unsafe_trace_findings(fir: &fir::FirModule) -> Vec<serde_json::Value> {
+    let sites = fir
+        .unsafe_contract_sites
+        .iter()
+        .filter(|site| site.kind != "unsafe_violation_callsite")
+        .collect::<Vec<_>>();
+    if sites.is_empty() {
+        return Vec::new();
+    }
+    let mut contract_lines = sites
+        .iter()
+        .filter(|site| {
+            site.reason.as_deref().is_some_and(|v| !v.is_empty())
+                && site.invariant.as_deref().is_some_and(|v| !v.is_empty())
+                && site.owner.as_deref().is_some_and(|v| !v.is_empty())
+                && site.scope.as_deref().is_some_and(|v| !v.is_empty())
+                && site.risk_class.as_deref().is_some_and(|v| !v.is_empty())
+                && site.proof_ref.as_deref().is_some_and(|v| !v.is_empty())
+        })
+        .map(|site| {
+            format!(
+                "{}|{}|{}|{}|{}|{}|{}|{}",
+                site.site_id,
+                site.kind,
+                site.reason.as_deref().unwrap_or_default(),
+                site.invariant.as_deref().unwrap_or_default(),
+                site.owner.as_deref().unwrap_or_default(),
+                site.scope.as_deref().unwrap_or_default(),
+                site.risk_class.as_deref().unwrap_or_default(),
+                site.proof_ref.as_deref().unwrap_or_default(),
+            )
+        })
+        .collect::<Vec<_>>();
+    contract_lines.sort();
+    let metadata_sites = contract_lines.len();
+    let contract_hash = if contract_lines.is_empty() {
+        None
+    } else {
+        let mut hasher = Sha256::new();
+        for line in &contract_lines {
+            hasher.update(line.as_bytes());
+            hasher.update(b"\n");
+        }
+        Some(
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+        )
+    };
+    vec![serde_json::json!({
+        "kind": "unsafe_site_accounting",
+        "severity": "info",
+        "message": format!("unsafe enter/exit accounting: enters={} exits={} metadata_sites={}", sites.len(), sites.len(), metadata_sites),
+        "unsafeEnters": sites.len(),
+        "unsafeExits": sites.len(),
+        "metadataSites": metadata_sites,
+        "contractHash": contract_hash,
+    })]
 }
 
 fn rpc_failure_findings(frames: &[RpcFrameEvent]) -> Vec<serde_json::Value> {
@@ -8453,7 +8577,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-audit-reasoned-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "unsafe fn free_ptr(p: *u8) -> i32 {\n    unsafe {\n        free(p)\n    }\n    return 0\n}\nfn main() -> i32 {\n    let p = alloc(8)\n    unsafe {\n        discard free_ptr(p)\n    }\n    return 0\n}\n",
+            "fn lang_id(v: i32) -> i32 {\n    return v\n}\nunsafe fn lang_unsafe_id(v: i32) -> i32 {\n    return v\n}\nfn main() -> i32 {\n    let routed = lang_id(7)\n    discard lang_unsafe_id\n    unsafe {\n        discard lang_id(routed)\n    }\n    return routed\n}\n",
         )
         .expect("source should be written");
 
@@ -9779,6 +9903,65 @@ mod tests {
     }
 
     #[test]
+    fn non_scenario_trace_includes_unsafe_site_accounting() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-test-unsafe-trace-{suffix}.fzy"));
+        let trace =
+            std::env::temp_dir().join(format!("fozzylang-test-unsafe-trace-{suffix}.trace.json"));
+        std::fs::write(
+            &source,
+            "fn lang_id(v: i32) -> i32 {\n    return v\n}\nunsafe fn lang_unsafe_id(v: i32) -> i32 {\n    return v\n}\nfn main() -> i32 {\n    let routed = lang_id(7)\n    discard lang_unsafe_id\n    unsafe {\n        discard lang_id(routed)\n    }\n    return routed\n}\n",
+        )
+        .expect("source should be written");
+
+        run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(9),
+                record: Some(trace.clone()),
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: true,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+
+        let stem = trace
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("trace should have a stem")
+            .to_string();
+        let base = trace
+            .parent()
+            .expect("trace should have parent")
+            .to_path_buf();
+        let report = std::fs::read_to_string(base.join(format!("{stem}.report.json")))
+            .expect("report should be readable");
+        assert!(report.contains("\"kind\": \"unsafe_site_accounting\""));
+        assert!(report.contains("\"contractHash\""));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(trace);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
+        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
+    }
+
+    #[test]
     fn headers_command_rejects_ffi_when_panic_contract_missing() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -10455,5 +10638,29 @@ mod tests {
         assert!(!error.to_string().trim().is_empty());
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn proof_ref_valid_accepts_existing_trace_artifact() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("fozzylang-proof-ref-{suffix}.fozzy"));
+        std::fs::write(&path, "{}").expect("trace file should be written");
+        let proof_ref = format!("trace://{}#site=usite_demo", path.display());
+        assert!(super::proof_ref_valid(&proof_ref));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn proof_ref_valid_rejects_missing_trace_artifact() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("fozzylang-proof-ref-missing-{suffix}.fozzy"));
+        let proof_ref = format!("trace://{}#site=usite_demo", path.display());
+        assert!(!super::proof_ref_valid(&proof_ref));
     }
 }

@@ -140,25 +140,25 @@
 - [✅] missing metadata must not block normal compile/build/check by default.
 - [ ] malformed metadata should produce diagnostics in lint mode; become blocking only in strict unsafe-audit policy modes.
 - [ ] Add policy-driven strictness controls in `fozzy.toml` and CLI:
-- [ ] unsafe policy defaults: compile enforcement of unsafe context on, metadata-required off.
-- [ ] strict mode toggles for CI/release: fail on missing/invalid metadata and fail on unsafe budget drift.
-- [ ] unsafe scope controls (`deny_unsafe_in` / allowlisted modules) for hardened repositories.
+- [✅] unsafe policy defaults: compile enforcement of unsafe context on, metadata-required off.
+- [✅] strict mode toggles for CI/release: fail on missing/invalid metadata and fail on unsafe budget drift.
+- [✅] unsafe scope controls (`deny_unsafe_in` / allowlisted modules) for hardened repositories.
 - [ ] Upgrade compiler/runtime observability with zero release overhead:
-- [ ] dev/verify traces should include unsafe enter/exit site accounting and contract hash when metadata exists.
+- [✅] dev/verify traces should include unsafe enter/exit site accounting and contract hash when metadata exists.
 - [ ] release path must keep unsafe boundary checks compile-time only with no hot-path runtime tax.
 - [ ] Upgrade `fz` DX surfaces to make unsafe behavior obvious and auditable:
-- [ ] `fz check`/`fz build` report exact unsafe-context violations with fix guidance.
+- [✅] `fz check`/`fz build` report exact unsafe-context violations with fix guidance.
 - [✅] `fz audit unsafe` must report real unsafe islands/functions/imports (not metadata expressions), risk classes, coverage, and budgets.
 - [✅] workspace-level aggregate unsafe inventory and drift reports must be first-class outputs.
 - [ ] Add compiler-generated unsafe documentation output (new docs generator requirement):
 - [✅] docs generator must emit unsafe API/usage docs from compiler semantic model (functions, unsafe blocks, unsafe imports, callsites, risk summaries).
-- [ ] if metadata exists, include it in generated docs; if absent, still emit complete structural unsafe docs with “metadata missing” markers.
+- [✅] if metadata exists, include it in generated docs; if absent, still emit complete structural unsafe docs with “metadata missing” markers.
 - [✅] generated unsafe docs should be machine-readable (JSON) + human-readable (Markdown/HTML) artifacts.
 - [ ] Add comprehensive production tests and gates:
-- [ ] parser/AST/HIR/verifier tests for `unsafe fn`, `unsafe {}`, and unsafe-context enforcement.
-- [ ] backend parity tests (LLVM/Cranelift) proving identical unsafe semantics and diagnostics.
+- [✅] parser/AST/HIR/verifier tests for `unsafe fn`, `unsafe {}`, and unsafe-context enforcement.
+- [✅] backend parity tests (LLVM/Cranelift) proving identical unsafe semantics and diagnostics.
 - [✅] deterministic + host-backed Fozzy lifecycle checks for unsafe+FFI scenarios (`doctor`, `test --det --strict`, `run --record`, `trace verify`, `replay`, `ci`).
-- [ ] release gate must fail on unsafe semantic regressions, policy violations, or unsafe inventory drift beyond approved thresholds.
+- [✅] release gate must fail on unsafe semantic regressions, policy violations, or unsafe inventory drift beyond approved thresholds.
 
 ### Unsafe Architecture Closure Additions (Production, No Backwards Compatibility)
 - [ ] Add first-class `unsafe fn` contract syntax and semantics (not only unsafe block metadata), and wire it through parser -> AST -> HIR -> FIR -> verifier.
@@ -167,12 +167,12 @@
 - [ ] Extend owner/provenance resolution beyond local `alloc` roots to inter-procedural ownership sources (params, returns, field projections, and validated FFI handoffs).
 - [ ] Replace parser-only unsafe invariant DSL validation with semantic predicate checking against ownership/provenance facts in verifier passes.
 - [ ] Enforce one symbol canonicalization pipeline across all executable bodies, including `test` blocks and closure/task bodies, so unsafe calls resolve identically to regular calls.
-- [ ] Add explicit native lowering parity tests proving local unsafe function calls in tests/examples lower and execute in LLVM + Cranelift without unresolved-call regressions.
+- [✅] Add explicit native lowering parity tests proving local unsafe function calls in tests/examples lower and execute in LLVM + Cranelift without unresolved-call regressions.
 - [✅] Move strict unsafe enforcement from `audit unsafe`-only env toggles to first-class build policy in `check`/`build`/`test`/`run` (profile-driven, not env-only).
 - [ ] Replace `FZ_UNSAFE_STRICT` as the primary control plane with explicit profile policy (`dev` warn, production/release block) and stable CLI/config controls.
-- [ ] Add a hard production gate requiring zero missing/invalid unsafe contracts in release profile for all first-party modules (including examples and smoke repos).
-- [ ] Add proof-reference artifact validation in core verification (`trace://`, `run://`, `ci://`, `test://`, `rfc://`, `gate://`) so contracts cannot point to non-existent evidence.
-- [ ] Add cross-repo conformance gate requiring both `examples/` and `anthropic_smoke` to exercise executable unsafe paths under the same production unsafe policy.
+- [✅] Add a hard production gate requiring zero missing/invalid unsafe contracts in release profile for all first-party modules (including examples and smoke repos).
+- [✅] Add proof-reference artifact validation in core verification (`trace://`, `run://`, `ci://`, `test://`, `rfc://`, `gate://`) so contracts cannot point to non-existent evidence.
+- [✅] Add cross-repo conformance gate requiring both `examples/` and `anthropic_smoke` to exercise executable unsafe paths under the same production unsafe policy.
 
 ### Async Semantics + Concurrency Unification
 - [✅] Carry `async` as first-class semantics from parser through AST/HIR function models.

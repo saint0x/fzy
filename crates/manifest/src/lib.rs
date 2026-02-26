@@ -95,6 +95,10 @@ pub struct UnsafePolicy {
     pub enforce_dev: Option<bool>,
     pub enforce_verify: Option<bool>,
     pub enforce_release: Option<bool>,
+    #[serde(default)]
+    pub deny_unsafe_in: Vec<String>,
+    #[serde(default)]
+    pub allow_unsafe_in: Vec<String>,
 }
 
 impl Default for UnsafePolicy {
@@ -104,6 +108,8 @@ impl Default for UnsafePolicy {
             enforce_dev: Some(false),
             enforce_verify: Some(true),
             enforce_release: Some(true),
+            deny_unsafe_in: Vec::new(),
+            allow_unsafe_in: Vec::new(),
         }
     }
 }
@@ -169,6 +175,16 @@ impl Manifest {
         if let Some(mode) = self.unsafe_policy.contracts.as_deref() {
             if mode != "compiler" {
                 return Err("unsafe.contracts must be `compiler`".to_string());
+            }
+        }
+        for (index, scope) in self.unsafe_policy.deny_unsafe_in.iter().enumerate() {
+            if scope.trim().is_empty() {
+                return Err(format!("unsafe.deny_unsafe_in[{index}] cannot be empty"));
+            }
+        }
+        for (index, scope) in self.unsafe_policy.allow_unsafe_in.iter().enumerate() {
+            if scope.trim().is_empty() {
+                return Err(format!("unsafe.allow_unsafe_in[{index}] cannot be empty"));
             }
         }
         Ok(())
@@ -299,5 +315,49 @@ mod tests {
             .validate()
             .expect_err("invalid ffi panic boundary should be rejected");
         assert!(err.contains("ffi.panic_boundary"));
+    }
+
+    #[test]
+    fn validates_unsafe_scope_policy_lists() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [unsafe]
+            deny_unsafe_in = ["tests::*"]
+            allow_unsafe_in = ["runtime::*"]
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        manifest
+            .validate()
+            .expect("unsafe scope lists should be accepted");
+        assert_eq!(manifest.unsafe_policy.deny_unsafe_in, vec!["tests::*"]);
+        assert_eq!(manifest.unsafe_policy.allow_unsafe_in, vec!["runtime::*"]);
+    }
+
+    #[test]
+    fn rejects_empty_unsafe_scope_entries() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [unsafe]
+            deny_unsafe_in = [""]
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        let err = manifest
+            .validate()
+            .expect_err("empty unsafe scope should fail validation");
+        assert!(err.contains("unsafe.deny_unsafe_in"));
     }
 }
