@@ -68,28 +68,59 @@ fn normalize_text_output(output: &str) -> String {
     if trimmed.is_empty() {
         return String::new();
     }
-    let lines = trimmed.lines().collect::<Vec<_>>();
-    let parsed = lines
-        .iter()
-        .map(|line| {
-            line.find(':').map(|idx| {
-                let key = line[..idx].trim();
-                let value = line[(idx + 1)..].trim_start();
-                (key, value)
-            })
-        })
-        .collect::<Vec<_>>();
-    let kv_count = parsed.iter().filter(|item| item.is_some()).count();
-    if kv_count < 2 {
-        return trimmed.to_string();
-    }
-    let mut fields = Vec::<(&str, String)>::new();
-    for item in parsed {
-        if let Some((key, value)) = item {
-            fields.push((key, value.to_string()));
+    let mut fields = Vec::<(String, String)>::new();
+    for line in trimmed.lines() {
+        if let Some((key, value)) = parse_field_line(line) {
+            fields.push((key.to_string(), value.to_string()));
+            continue;
+        }
+        if let Some((_, value)) = fields.last_mut() {
+            if !value.is_empty() {
+                value.push('\n');
+            }
+            value.push_str(line.trim_start());
         } else {
             return trimmed.to_string();
         }
     }
-    format_fields_pretty(&fields)
+
+    if fields.len() < 2 {
+        return trimmed.to_string();
+    }
+
+    let pretty_fields = fields
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.clone()))
+        .collect::<Vec<_>>();
+    format_fields_pretty(&pretty_fields)
+}
+
+fn parse_field_line(line: &str) -> Option<(&str, &str)> {
+    let idx = line.find(':')?;
+    let key = line[..idx].trim();
+    if key.is_empty() || !is_simple_key(key) {
+        return None;
+    }
+    let value = line[(idx + 1)..].trim_start();
+    Some((key, value))
+}
+
+fn is_simple_key(key: &str) -> bool {
+    key.chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_text_output_preserves_multiline_values() {
+        let output = "status: ok\nmode: doctor-project\nchecks: - manifest:ok:loaded fozzy.toml\n- lockfile:ok:validated\n";
+        let normalized = normalize_cli_output(Format::Text, output);
+        assert!(normalized.contains("status"));
+        assert!(normalized.contains("checks"));
+        assert!(normalized.contains("- manifest:ok:loaded fozzy.toml"));
+        assert!(normalized.contains("- lockfile:ok:validated"));
+    }
 }
