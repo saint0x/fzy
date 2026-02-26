@@ -5289,12 +5289,6 @@ fn is_native_data_plane_list_map_call(callee: &str) -> bool {
     callee.starts_with("list.") || callee.starts_with("map.")
 }
 
-fn native_data_plane_string_call_is_const_foldable(callee: &str, args: &[ast::Expr]) -> bool {
-    let empty_const_strings = HashMap::<String, String>::new();
-    eval_const_i32_call(callee, args, &empty_const_strings).is_some()
-        || eval_const_string_call(callee, args, &empty_const_strings).is_some()
-}
-
 fn canonicalize_array_index_window(expr: &ast::Expr) -> Option<(String, i32)> {
     match expr {
         ast::Expr::Ident(name) => Some((name.clone(), 0)),
@@ -8758,128 +8752,133 @@ fn stmt_contains_unsupported_partial_native_expression_usage(stmt: &ast::Stmt) -
 }
 
 fn function_body_contains_unsupported_dynamic_string_data_plane_calls(body: &[ast::Stmt]) -> bool {
-    body.iter()
-        .any(stmt_contains_unsupported_dynamic_string_data_plane_calls)
-}
+    fn body_contains(
+        body: &[ast::Stmt],
+        const_strings: &mut HashMap<String, String>,
+    ) -> bool {
+        body.iter()
+            .any(|stmt| stmt_contains(stmt, const_strings))
+    }
 
-fn stmt_contains_unsupported_dynamic_string_data_plane_calls(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::Let { value, .. }
-        | ast::Stmt::LetPattern { value, .. }
-        | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::CompoundAssign { value, .. }
-        | ast::Stmt::Expr(value)
-        | ast::Stmt::Requires(value)
-        | ast::Stmt::Ensures(value)
-        | ast::Stmt::Defer(value) => expr_contains_unsupported_dynamic_string_data_plane_calls(value),
-        ast::Stmt::Return(value) => value
-            .as_ref()
-            .is_some_and(expr_contains_unsupported_dynamic_string_data_plane_calls),
-        ast::Stmt::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(condition)
-                || function_body_contains_unsupported_dynamic_string_data_plane_calls(then_body)
-                || function_body_contains_unsupported_dynamic_string_data_plane_calls(else_body)
-        }
-        ast::Stmt::While { condition, body } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(condition)
-                || function_body_contains_unsupported_dynamic_string_data_plane_calls(body)
-        }
-        ast::Stmt::For {
-            init,
-            condition,
-            step,
-            body,
-        } => {
-            init.as_deref()
-                .is_some_and(stmt_contains_unsupported_dynamic_string_data_plane_calls)
-                || condition
-                    .as_ref()
-                    .is_some_and(expr_contains_unsupported_dynamic_string_data_plane_calls)
-                || step
-                    .as_deref()
-                    .is_some_and(stmt_contains_unsupported_dynamic_string_data_plane_calls)
-                || function_body_contains_unsupported_dynamic_string_data_plane_calls(body)
-        }
-        ast::Stmt::ForIn { iterable, body, .. } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(iterable)
-                || function_body_contains_unsupported_dynamic_string_data_plane_calls(body)
-        }
-        ast::Stmt::Loop { body } => {
-            function_body_contains_unsupported_dynamic_string_data_plane_calls(body)
-        }
-        ast::Stmt::Match { scrutinee, arms } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(scrutinee)
-                || arms.iter().any(|arm| {
-                    arm.guard
+    fn stmt_contains(stmt: &ast::Stmt, const_strings: &mut HashMap<String, String>) -> bool {
+        match stmt {
+            ast::Stmt::Let { name, value, .. } => {
+                let unsupported = expr_contains(value, const_strings);
+                if let Some(const_value) = eval_const_string_expr(value, const_strings) {
+                    const_strings.insert(name.clone(), const_value);
+                } else {
+                    const_strings.remove(name);
+                }
+                unsupported
+            }
+            ast::Stmt::Assign { target, value } => {
+                let unsupported = expr_contains(value, const_strings);
+                if let Some(const_value) = eval_const_string_expr(value, const_strings) {
+                    const_strings.insert(target.clone(), const_value);
+                } else {
+                    const_strings.remove(target);
+                }
+                unsupported
+            }
+            ast::Stmt::CompoundAssign { target, value, .. } => {
+                let unsupported = expr_contains(value, const_strings);
+                const_strings.remove(target);
+                unsupported
+            }
+            ast::Stmt::LetPattern { value, .. }
+            | ast::Stmt::Expr(value)
+            | ast::Stmt::Requires(value)
+            | ast::Stmt::Ensures(value)
+            | ast::Stmt::Defer(value) => expr_contains(value, const_strings),
+            ast::Stmt::Return(value) => value.as_ref().is_some_and(|value| expr_contains(value, const_strings)),
+            ast::Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                expr_contains(condition, const_strings)
+                    || body_contains(then_body, &mut const_strings.clone())
+                    || body_contains(else_body, &mut const_strings.clone())
+            }
+            ast::Stmt::While { condition, body } => {
+                expr_contains(condition, const_strings)
+                    || body_contains(body, &mut const_strings.clone())
+            }
+            ast::Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                init.as_deref()
+                    .is_some_and(|stmt| stmt_contains(stmt, &mut const_strings.clone()))
+                    || condition
                         .as_ref()
-                        .is_some_and(expr_contains_unsupported_dynamic_string_data_plane_calls)
-                        || expr_contains_unsupported_dynamic_string_data_plane_calls(&arm.value)
-                })
+                        .is_some_and(|value| expr_contains(value, const_strings))
+                    || step
+                        .as_deref()
+                        .is_some_and(|stmt| stmt_contains(stmt, &mut const_strings.clone()))
+                    || body_contains(body, &mut const_strings.clone())
+            }
+            ast::Stmt::ForIn { iterable, body, .. } => {
+                expr_contains(iterable, const_strings)
+                    || body_contains(body, &mut const_strings.clone())
+            }
+            ast::Stmt::Loop { body } => body_contains(body, &mut const_strings.clone()),
+            ast::Stmt::Match { scrutinee, arms } => {
+                expr_contains(scrutinee, const_strings)
+                    || arms.iter().any(|arm| {
+                        arm.guard
+                            .as_ref()
+                            .is_some_and(|guard| expr_contains(guard, const_strings))
+                            || expr_contains(&arm.value, const_strings)
+                    })
+            }
+            ast::Stmt::Break | ast::Stmt::Continue => false,
         }
-        ast::Stmt::Break | ast::Stmt::Continue => false,
     }
-}
 
-fn expr_contains_unsupported_dynamic_string_data_plane_calls(expr: &ast::Expr) -> bool {
-    match expr {
-        ast::Expr::Call { callee, args } => {
-            (is_native_data_plane_string_call(callee)
-                && !native_data_plane_string_call_is_const_foldable(callee, args))
-                || args
-                    .iter()
-                    .any(expr_contains_unsupported_dynamic_string_data_plane_calls)
+    fn expr_contains(expr: &ast::Expr, const_strings: &HashMap<String, String>) -> bool {
+        match expr {
+            ast::Expr::Call { callee, args } => {
+                (is_native_data_plane_string_call(callee)
+                    && eval_const_i32_call(callee, args, const_strings).is_none()
+                    && eval_const_string_call(callee, args, const_strings).is_none())
+                    || args.iter().any(|arg| expr_contains(arg, const_strings))
+            }
+            ast::Expr::FieldAccess { base, .. } => expr_contains(base, const_strings),
+            ast::Expr::StructInit { fields, .. } => fields
+                .iter()
+                .any(|(_, value)| expr_contains(value, const_strings)),
+            ast::Expr::EnumInit { payload, .. } | ast::Expr::ArrayLiteral(payload) => payload
+                .iter()
+                .any(|value| expr_contains(value, const_strings)),
+            ast::Expr::Group(inner) | ast::Expr::Await(inner) => expr_contains(inner, const_strings),
+            ast::Expr::Unary { expr, .. } => expr_contains(expr, const_strings),
+            ast::Expr::TryCatch {
+                try_expr,
+                catch_expr,
+            } => expr_contains(try_expr, const_strings) || expr_contains(catch_expr, const_strings),
+            ast::Expr::Binary { left, right, .. } => {
+                expr_contains(left, const_strings) || expr_contains(right, const_strings)
+            }
+            ast::Expr::Range { start, end, .. } => {
+                expr_contains(start, const_strings) || expr_contains(end, const_strings)
+            }
+            ast::Expr::Index { base, index } => {
+                expr_contains(base, const_strings) || expr_contains(index, const_strings)
+            }
+            ast::Expr::Closure { body, .. } => expr_contains(body, const_strings),
+            ast::Expr::Int(_)
+            | ast::Expr::Float { .. }
+            | ast::Expr::Char(_)
+            | ast::Expr::Bool(_)
+            | ast::Expr::Str(_)
+            | ast::Expr::Ident(_) => false,
         }
-        ast::Expr::FieldAccess { base, .. } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(base)
-        }
-        ast::Expr::StructInit { fields, .. } => fields
-            .iter()
-            .any(|(_, value)| expr_contains_unsupported_dynamic_string_data_plane_calls(value)),
-        ast::Expr::EnumInit { payload, .. } => payload
-            .iter()
-            .any(expr_contains_unsupported_dynamic_string_data_plane_calls),
-        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(inner)
-        }
-        ast::Expr::Unary { expr, .. } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(expr)
-        }
-        ast::Expr::TryCatch {
-            try_expr,
-            catch_expr,
-        } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(try_expr)
-                || expr_contains_unsupported_dynamic_string_data_plane_calls(catch_expr)
-        }
-        ast::Expr::Binary { left, right, .. } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(left)
-                || expr_contains_unsupported_dynamic_string_data_plane_calls(right)
-        }
-        ast::Expr::Range { start, end, .. } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(start)
-                || expr_contains_unsupported_dynamic_string_data_plane_calls(end)
-        }
-        ast::Expr::ArrayLiteral(items) => items
-            .iter()
-            .any(expr_contains_unsupported_dynamic_string_data_plane_calls),
-        ast::Expr::Index { base, index } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(base)
-                || expr_contains_unsupported_dynamic_string_data_plane_calls(index)
-        }
-        ast::Expr::Closure { body, .. } => {
-            expr_contains_unsupported_dynamic_string_data_plane_calls(body)
-        }
-        ast::Expr::Int(_)
-        | ast::Expr::Float { .. }
-        | ast::Expr::Char(_)
-        | ast::Expr::Bool(_)
-        | ast::Expr::Str(_)
-        | ast::Expr::Ident(_) => false,
     }
+
+    body_contains(body, &mut HashMap::new())
 }
 
 fn function_body_contains_unsupported_list_map_data_plane_calls(body: &[ast::Stmt]) -> bool {
@@ -16050,12 +16049,37 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "fn main() -> i32 {\n    let s = \"abc\"\n    if str.contains(s, \"a\") == 1 {\n        return 1\n    }\n    return 0\n}\n",
+            "fn main() -> i32 {\n    let s = env.get(\"K\")\n    if str.contains(s, \"a\") == 1 {\n        return 1\n    }\n    return 0\n}\n",
         )
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
         assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("removed dynamic string data-plane runtime calls")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_accepts_foldable_string_data_plane_calls_on_native_backend() {
+        let file_name = format!(
+            "fozzylang-native-foldable-str-data-plane-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    let s = \"  ab  \"\n    let t = str.trim(s)\n    if str.contains(str.replace(t, \"a\", \"x\"), \"x\") == 1 {\n        return str.len(str.replace(t, \"a\", \"x\"))\n    }\n    return 0\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("removed dynamic string data-plane runtime calls")
         }));
