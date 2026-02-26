@@ -1,0 +1,40 @@
+const ITERATIONS: i32 = 8000000
+
+fn delay_for_attempt(attempt: i32, initial: i32, max_delay: i32, factor: i32) -> i32 {
+    let mut delay = initial
+    let mut i = 1
+
+    while i < attempt {
+        delay = delay * factor
+        if delay > max_delay {
+            delay = max_delay
+        }
+        i += 1
+    }
+
+    return delay
+}
+
+fn workload() -> i32 {
+    let max_attempts = 7
+    let mut i: i32 = 0
+    let mut attempt: i32 = 1
+    let mut acc: i32 = 0
+
+    while i < ITERATIONS {
+        let delay = delay_for_attempt(attempt, 3, 89, 2)
+        acc = (acc + (delay % 251)) % 251
+
+        attempt += 1
+        if attempt > max_attempts {
+            attempt = 1
+        }
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

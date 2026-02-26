@@ -1,0 +1,95 @@
+const ITERATIONS: i32 = 8000000
+
+enum ErrorCode {
+    InvalidInput,
+    NotFound,
+    Conflict,
+    Timeout,
+    Io,
+    Internal,
+}
+
+enum ErrorClass {
+    Transport,
+    Parse,
+    Timeout,
+    Policy,
+    Internal,
+}
+
+fn classify(code: ErrorCode) -> ErrorClass {
+    match code {
+        ErrorCode::Io => return ErrorClass::Transport,
+        ErrorCode::InvalidInput => return ErrorClass::Parse,
+        ErrorCode::Timeout => return ErrorClass::Timeout,
+        ErrorCode::Conflict => return ErrorClass::Policy,
+        ErrorCode::NotFound => return ErrorClass::Internal,
+        ErrorCode::Internal => return ErrorClass::Internal,
+        _ => return ErrorClass::Internal,
+    }
+}
+
+fn class_score(class: ErrorClass) -> i32 {
+    match class {
+        ErrorClass::Transport => return 11,
+        ErrorClass::Parse => return 17,
+        ErrorClass::Timeout => return 23,
+        ErrorClass::Policy => return 31,
+        ErrorClass::Internal => return 43,
+        _ => return 43,
+    }
+}
+
+fn workload() -> i32 {
+    let codes = [
+        ErrorCode::InvalidInput,
+        ErrorCode::NotFound,
+        ErrorCode::Conflict,
+        ErrorCode::Timeout,
+        ErrorCode::Io,
+        ErrorCode::Internal,
+        ErrorCode::InvalidInput,
+    ]
+
+    let mut i: i32 = 0
+    let mut idx: i32 = 0
+    let mut acc: i32 = 0
+
+    while i < ITERATIONS {
+        let c0 = codes[idx]
+        idx += 1
+        if idx == 7 {
+            idx = 0
+        }
+        acc = (acc + class_score(classify(c0))) % 251
+
+        let c1 = codes[idx]
+        idx += 1
+        if idx == 7 {
+            idx = 0
+        }
+        acc = (acc + class_score(classify(c1))) % 251
+
+        let c2 = codes[idx]
+        idx += 1
+        if idx == 7 {
+            idx = 0
+        }
+        acc = (acc + class_score(classify(c2))) % 251
+
+        let c3 = codes[idx]
+        idx += 1
+        if idx == 7 {
+            idx = 0
+        }
+        acc = (acc + class_score(classify(c3))) % 251
+
+        i += 4
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

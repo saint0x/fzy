@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "corelibs-bench-matrix-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": ["scripts/verify_corelibs_bench_matrix.py"],
+      "exit_code": 0,
+      "stdout": "corelibs-bench-matrix-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": ["scripts/verify_corelibs_bench_matrix.py"],
+      "expect_exit": 0,
+      "expect_stdout": "corelibs-bench-matrix-ok\n"
+    }
+  ]
+}

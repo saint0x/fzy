@@ -1,0 +1,19 @@
+const ITERATIONS: i32 = 8000000
+
+fn workload() -> i32 {
+    let mut i: i32 = 0
+    let mut acc: i32 = 7
+
+    while i < ITERATIONS {
+        let v = (i * 13 + acc * 7) % 1000003
+        let w = (v ^ 5921370) & 16777215
+        acc = (acc + (w % 251)) % 251
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

@@ -6,6 +6,7 @@ members = [
   "apps/fozzyc",
   "apps/fozzyfmt",
   "apps/fozzydoc",
+  "apps/text_bench_rust",
   "crates/ast",
   "crates/parser",
   "crates/hir",

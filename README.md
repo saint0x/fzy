@@ -12,6 +12,57 @@ fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, 
 - `fozzy`: [ariacomputecompany/fozzy](https://github.com/ariacomputecompany/fozzy)
 - `fzyllm`: [saint0x/fzyllm](https://github.com/saint0x/fzyllm)
 
+## Code Syntax (Quick Exhibit)
+
+```fzy
+enum Mode {
+    Fast,
+    Safe,
+}
+
+struct Config {
+    retries: i32,
+    mode: Mode,
+}
+
+fn weight(mode: Mode) -> i32 {
+    match mode {
+        Mode::Fast => return 3,
+        Mode::Safe => return 1,
+        _ => return 1,
+    }
+}
+
+fn worker(cfg: Config) -> i32 {
+    let mut attempt: i32 = 0
+    let mut total: i32 = 0
+    let parts = ["alpha", "beta", "gamma"]
+
+    while attempt < cfg.retries {
+        let raw = "  alpha,beta,gamma  "
+        let trimmed = str.trim(raw)
+        let text = str.replace(trimmed, ",", "|")
+
+        if str.contains(text, parts[1]) == 1 { total += 2 }
+        total += weight(cfg.mode)
+
+        attempt += 1
+    }
+
+    return total
+}
+
+fn main() -> i32 {
+    let cfg = Config { retries: 4, mode: Mode::Fast }
+    let score = worker(cfg)
+    return score
+}
+```
+
+For the complete syntax and workflow coverage:
+- language and command examples: `CODE.md`
+- production-style projects: `examples/`
+
 ## What This Repo Contains
 
 - compiler CLI (binary: `fz`) (build/run/test/verify/emit-ir/rpc gen/headers)

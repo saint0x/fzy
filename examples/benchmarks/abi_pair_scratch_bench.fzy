@@ -1,0 +1,23 @@
+const ITERATIONS: i32 = 8000000
+
+struct Pair {
+    left: i32,
+    right: i32,
+}
+
+fn workload() -> i32 {
+    let mut i: i32 = 0
+    let mut acc: i32 = 0
+
+    while i < ITERATIONS {
+        let pair = Pair { left: i, right: acc }
+        acc = (acc + ((pair.left * 3 + pair.right * 5) % 251)) % 251
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

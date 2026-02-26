@@ -1,0 +1,8 @@
+[package]
+name = "text_bench_rust"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+core = { path = "../../crates/core" }
+stdlib = { path = "../../crates/stdlib" }

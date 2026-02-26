@@ -1,0 +1,36 @@
+const ITERATIONS: i32 = 8000000
+
+fn parse_capability(name: str) -> i32 {
+    if name == "time" { return 3 }
+    if name == "rng" { return 5 }
+    if name == "fs" { return 7 }
+    if name == "http" { return 11 }
+    if name == "proc" { return 13 }
+    if name == "mem" { return 17 }
+    if name == "thread" { return 19 }
+    return 23
+}
+
+fn workload() -> i32 {
+    let names = ["time", "rng", "fs", "http", "proc", "mem", "thread", "bad"]
+    let mut i: i32 = 0
+    let mut idx: i32 = 0
+    let mut acc: i32 = 0
+
+    while i < ITERATIONS {
+        let name = names[idx]
+        acc = (acc + parse_capability(name)) % 251
+
+        idx += 1
+        if idx == 8 {
+            idx = 0
+        }
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

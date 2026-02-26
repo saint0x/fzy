@@ -1,0 +1,31 @@
+const ITERATIONS: i32 = 8000000
+
+fn workload() -> i32 {
+    let mut i: i32 = 0
+    let mut acc: i32 = 0
+
+    while i < ITERATIONS {
+        let raw = "  alpha,beta,gamma  "
+        let trimmed = str.trim(raw)
+        let replaced = str.replace(trimmed, ",", "|")
+
+        if str.contains(replaced, "beta") == 1 {
+            acc = (acc + 11) % 251
+        }
+        if str.starts_with(replaced, "alpha") == 1 {
+            acc = (acc + 17) % 251
+        }
+        if str.ends_with(replaced, "gamma") == 1 {
+            acc = (acc + 23) % 251
+        }
+
+        acc = (acc + (str.len(trimmed) % 97)) % 251
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}
