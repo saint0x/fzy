@@ -18,7 +18,7 @@ members = [
   "crates/diagnostics",
   "crates/session",
   "crates/manifest",
-  "crates/capabilities",
+  "crates/core",
 ]
 
 [workspace.package]

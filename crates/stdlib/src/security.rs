@@ -1,6 +1,6 @@
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use capabilities::{Capability, CapabilitySet};
+use core::{Capability, CapabilitySet};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256, Sha512};
@@ -84,7 +84,7 @@ pub enum PrivilegedOperation {
 impl PrivilegedOperation {
     pub fn required_capability(&self) -> Capability {
         match self {
-            Self::NetworkBind => Capability::Network,
+            Self::NetworkBind => Capability::Http,
             Self::FileWrite => Capability::FileSystem,
             Self::ProcessSpawn => Capability::Process,
         }
@@ -273,7 +273,7 @@ impl RequestThrottler {
 
 #[cfg(test)]
 mod tests {
-    use capabilities::{Capability, CapabilitySet};
+    use core::{Capability, CapabilitySet};
 
     use super::{
         aes_gcm_decrypt, aes_gcm_encrypt, audit_privileged_operation_with_sink, hmac_sha256,
@@ -314,7 +314,7 @@ mod tests {
         let path = std::env::temp_dir().join("fozzy-audit.log");
         let mut logger = AuditLogger::with_sink(AuditSink::File(path.clone()));
         let mut caps = CapabilitySet::default();
-        caps.insert(Capability::Network);
+        caps.insert(Capability::Http);
         let audit = audit_privileged_operation_with_sink(
             &caps,
             PrivilegedOperation::NetworkBind,

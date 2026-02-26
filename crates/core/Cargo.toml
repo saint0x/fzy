@@ -1,4 +1,4 @@
 [package]
-name = "capabilities"
+name = "core"
 version.workspace = true
 edition.workspace = true

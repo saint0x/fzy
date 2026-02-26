@@ -47,6 +47,17 @@ impl<T> DeterministicVec<T> {
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.inner.iter()
     }
+
+    pub fn filter_clone(&self, mut predicate: impl FnMut(&T) -> bool) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.inner
+            .iter()
+            .filter(|value| predicate(value))
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -110,6 +121,18 @@ where
     pub fn keys(&self) -> impl Iterator<Item = &K> {
         self.inner.keys()
     }
+
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.inner.values()
+    }
+
+    pub fn get_or_insert_with(&mut self, key: K, value: impl FnOnce() -> V) -> &mut V {
+        self.inner.entry(key).or_insert_with(value)
+    }
+
+    pub fn retain(&mut self, mut predicate: impl FnMut(&K, &mut V) -> bool) {
+        self.inner.retain(|key, value| predicate(key, value));
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -161,6 +184,17 @@ where
     pub fn iter(&self) -> impl Iterator<Item = &T> {
         self.inner.iter()
     }
+
+    pub fn filter_clone(&self, mut predicate: impl FnMut(&T) -> bool) -> Vec<T>
+    where
+        T: Clone,
+    {
+        self.inner
+            .iter()
+            .filter(|value| predicate(value))
+            .cloned()
+            .collect()
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +229,31 @@ mod tests {
         set.insert(2);
         let got: Vec<i32> = set.iter().copied().collect();
         assert_eq!(got, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn map_get_or_insert_and_retain_are_stable() {
+        let mut map = DeterministicMap::new();
+        *map.get_or_insert_with("k2", || 2) += 1;
+        map.insert("k1", 1);
+        map.retain(|key, _| *key == "k2");
+        let keys: Vec<&str> = map.keys().copied().collect();
+        assert_eq!(keys, vec!["k2"]);
+        assert_eq!(map.get("k2"), Some(&3));
+    }
+
+    #[test]
+    fn vec_and_set_filter_clone_preserve_order() {
+        let mut values = DeterministicVec::new();
+        values.push(3);
+        values.push(1);
+        values.push(2);
+        assert_eq!(values.filter_clone(|v| *v >= 2), vec![3, 2]);
+
+        let mut set = DeterministicSet::new();
+        set.insert(3);
+        set.insert(1);
+        set.insert(2);
+        assert_eq!(set.filter_clone(|v| *v >= 2), vec![2, 3]);
     }
 }

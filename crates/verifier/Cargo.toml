@@ -6,5 +6,5 @@ edition.workspace = true
 [dependencies]
 fir = { path = "../fir" }
 diagnostics = { path = "../diagnostics" }
-capabilities = { path = "../capabilities" }
+core = { path = "../core" }
 ast = { path = "../ast" }

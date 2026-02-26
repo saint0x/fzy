@@ -2639,7 +2639,7 @@ mod tests {
     #[test]
     fn parses_if_while_and_calls() {
         let source = r#"
-            use core.net;
+            use core.http;
             fn add(x: i32, y: i32) -> i32 { return x + y; }
             fn main() -> i32 {
                 let v: i32 = add(1, 2);
@@ -2651,7 +2651,7 @@ mod tests {
             }
         "#;
         let module = parse(source, "main").expect("parse should succeed");
-        assert_eq!(module.capabilities, vec!["net".to_string()]);
+        assert_eq!(module.capabilities, vec!["http".to_string()]);
         assert!(module
             .items
             .iter()

@@ -8,6 +8,6 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ctrlc = "3"
-capabilities = { path = "../../crates/capabilities" }
+core = { path = "../../crates/core" }
 runtime = { path = "../../crates/runtime" }
 stdlib = { path = "../../crates/stdlib" }

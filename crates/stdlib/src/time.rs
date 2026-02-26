@@ -1,4 +1,4 @@
-use capabilities::{Capability, CapabilityToken};
+use core::{Capability, CapabilityToken};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::core::{require_capability, CapabilityError};

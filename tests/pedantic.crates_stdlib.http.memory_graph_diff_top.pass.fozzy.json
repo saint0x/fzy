@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "pedantic.crates_stdlib.net.fuzz_inputs.pass",
+  "name": "pedantic.crates_stdlib.http.memory_graph_diff_top.pass",
   "steps": [
     {
       "type": "trace_event",

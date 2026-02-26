@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "pedantic.crates_stdlib.net.shrink_exercised.pass",
+  "name": "pedantic.crates_stdlib.http.shrink_exercised.pass",
   "steps": [
     {
       "type": "trace_event",

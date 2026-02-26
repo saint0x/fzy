@@ -1,4 +1,4 @@
-use capabilities::{Capability, CapabilityToken};
+use core::{Capability, CapabilityToken};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityError {
@@ -40,20 +40,20 @@ pub fn delegate_capability(
 
 #[cfg(test)]
 mod tests {
-    use capabilities::{Capability, CapabilityToken};
+    use core::{Capability, CapabilityToken};
 
     use super::{delegate_capability, require_capability, revoke_capability};
 
     #[test]
     fn capability_guards_and_mutations_work() {
-        let mut token = CapabilityToken::new([Capability::Network, Capability::FileSystem]);
-        require_capability(&token, Capability::Network).expect("token should allow network");
-        revoke_capability(&mut token, "network").expect("revoke should work");
-        assert!(require_capability(&token, Capability::Network).is_err());
+        let mut token = CapabilityToken::new([Capability::Http, Capability::FileSystem]);
+        require_capability(&token, Capability::Http).expect("token should allow http");
+        revoke_capability(&mut token, "http").expect("revoke should work");
+        assert!(require_capability(&token, Capability::Http).is_err());
 
         let delegated = delegate_capability(&token, &["fs"]).expect("delegate should work");
         require_capability(&delegated, Capability::FileSystem)
             .expect("delegated token should allow fs");
-        assert!(require_capability(&delegated, Capability::Network).is_err());
+        assert!(require_capability(&delegated, Capability::Http).is_err());
     }
 }

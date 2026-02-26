@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "pedantic.crates_stdlib.net.memory_graph_diff_top.pass",
+  "name": "pedantic.crates_stdlib.http.explore_schedule_faults.pass",
   "steps": [
     {
       "type": "trace_event",

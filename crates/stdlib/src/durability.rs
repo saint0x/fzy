@@ -1,4 +1,4 @@
-use capabilities::{Capability, CapabilityToken};
+use core::{Capability, CapabilityToken};
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;

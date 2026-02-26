@@ -1160,10 +1160,10 @@ fn capability_set_from_type(ty: &Type) -> Option<BTreeSet<String>> {
 fn capability_name_from_type(ty: &Type) -> Option<String> {
     match ty {
         Type::Named { name, args } if args.is_empty() => {
-            capabilities::Capability::parse(name).map(|cap| cap.as_str().to_string())
+            core::Capability::parse(name).map(|cap| cap.as_str().to_string())
         }
         Type::TypeVar(name) => {
-            capabilities::Capability::parse(name).map(|cap| cap.as_str().to_string())
+            core::Capability::parse(name).map(|cap| cap.as_str().to_string())
         }
         _ => None,
     }
@@ -1525,8 +1525,8 @@ fn collect_function_caps_and_calls(
                         "fs" | "file" | "std.io" => {
                             self.caps.insert("fs".to_string());
                         }
-                        "net" | "socket" | "std.net" => {
-                            self.caps.insert("net".to_string());
+                        "http" | "socket" | "std.http" => {
+                            self.caps.insert("http".to_string());
                         }
                         "proc" | "process" | "syscall" | "std.proc" => {
                             self.caps.insert("proc".to_string());
@@ -2510,8 +2510,8 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                             "fs" | "file" | "std.io" => {
                                 self.caps.insert("fs".to_string());
                             }
-                            "net" | "socket" | "std.net" => {
-                                self.caps.insert("net".to_string());
+                            "http" | "socket" | "std.http" => {
+                                self.caps.insert("http".to_string());
                             }
                             "proc" | "process" | "syscall" | "std.proc" => {
                                 self.caps.insert("proc".to_string());
@@ -3612,7 +3612,7 @@ fn infer_expr_type(
                 (resolved_params, resolved_ret, bindings, false)
             } else {
                 if params.len() != args.len() {
-                    let detail = if matches!(base_callee, "net.write" | "net.write_json")
+                    let detail = if matches!(base_callee, "http.write" | "http.write_json")
                         && args.len() == 1
                     {
                         format!(
@@ -4386,22 +4386,22 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "alloc" => (vec![usize_ty], ptr_u8.clone()),
         "free" => (vec![ptr_u8], Type::Void),
         "close" => (vec![i32.clone()], Type::Void),
-        "net.bind" | "net.accept" | "net.connect" | "net.poll_next" => (vec![], i32.clone()),
-        "net.listen" | "net.read" | "net.close" | "net.poll_register" => {
+        "http.bind" | "http.accept" | "http.connect" | "http.poll_next" => (vec![], i32.clone()),
+        "http.listen" | "http.read" | "http.close" | "http.poll_register" => {
             (vec![i32.clone()], i32.clone())
         }
-        "net.method" | "net.path" | "net.body" => (vec![i32.clone()], str_ty.clone()),
-        "net.body_json" => (vec![i32.clone()], i32.clone()),
-        "net.body_bind" => (vec![i32.clone()], i32.clone()),
-        "net.header" | "net.query" | "net.param" => {
+        "http.method" | "http.path" | "http.body" => (vec![i32.clone()], str_ty.clone()),
+        "http.body_json" => (vec![i32.clone()], i32.clone()),
+        "http.body_bind" => (vec![i32.clone()], i32.clone()),
+        "http.header" | "http.query" | "http.param" => {
             (vec![i32.clone(), str_ty.clone()], str_ty.clone())
         }
-        "net.headers" => (vec![i32.clone()], i32.clone()),
-        "net.request_id" | "net.remote_addr" => (vec![i32.clone()], str_ty.clone()),
-        "net.write" | "net.write_json" => {
+        "http.headers" => (vec![i32.clone()], i32.clone()),
+        "http.request_id" | "http.remote_addr" => (vec![i32.clone()], str_ty.clone()),
+        "http.write" | "http.write_json" => {
             (vec![i32.clone(), i32.clone(), str_ty.clone()], i32.clone())
         }
-        "net.write_response" => (
+        "http.write_response" => (
             vec![
                 i32.clone(),
                 i32.clone(),
@@ -4440,7 +4440,6 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             vec![str_ty.clone(), i32.clone(), i32.clone()],
             str_ty.clone(),
         ),
-        "http.header" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "http.post_json" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "http.post_json_capture" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "http.last_status" => (vec![], i32.clone()),
@@ -5774,17 +5773,17 @@ mod tests {
     #[test]
     fn net_path_routing_typechecks_and_keeps_entry_i32() {
         let source = r#"
-            use core.net;
+            use core.http;
             fn main() -> i32 {
-                let l = net.bind();
-                net.listen(l);
-                let c = net.accept();
-                net.read(c);
-                let p = net.path(c);
+                let l = http.bind();
+                http.listen(l);
+                let c = http.accept();
+                http.read(c);
+                let p = http.path(c);
                 if p == "/a" {
-                    net.write(c, 200, "path-a");
+                    http.write(c, 200, "path-a");
                 } else {
-                    net.write(c, 200, "path-other");
+                    http.write(c, 200, "path-other");
                 }
                 return 0;
             }
@@ -5876,7 +5875,7 @@ mod tests {
     #[test]
     fn http_capture_and_json_builders_typecheck() {
         let source = r#"
-            use core.net;
+            use core.http;
             fn main() -> i32 {
                 let user = json.str("hello");
                 let msg = json.object2("role", json.str("user"), "content", user);
@@ -5895,7 +5894,7 @@ mod tests {
     #[test]
     fn extended_runtime_primitives_typecheck() {
         let source = r#"
-            use core.net;
+            use core.http;
             use core.proc;
             fn main() -> i32 {
                 let l = list.new();
@@ -5906,8 +5905,8 @@ mod tests {
                 let _ = fs.exists("/tmp");
                 let _ = time.monotonic_ms();
                 let _ = process.poll(process.spawn("echo hi"));
-                let c = net.accept();
-                let _ = net.header(c, "content-type");
+                let c = http.accept();
+                let _ = http.header(c, "content-type");
                 let _ = route.match(c, "GET", "/sessions/:id/messages");
                 let fields = log.fields2("component", "test", "phase", "boot");
                 let _ = log.info("x", fields);
@@ -5922,11 +5921,11 @@ mod tests {
     #[test]
     fn json_parse_and_body_json_primitives_typecheck() {
         let source = r#"
-            use core.net;
+            use core.http;
             fn main() -> i32 {
-                let c = net.accept();
-                let body = net.body_json(c);
-                let bound = net.body_bind(c);
+                let c = http.accept();
+                let body = http.body_json(c);
+                let bound = http.body_bind(c);
                 let _ = map.get(bound, "message");
                 let _ = json.has(body, "message");
                 let msg = json.get_str(body, "message");
@@ -5934,7 +5933,7 @@ mod tests {
                 let _ = json.get(nested, "raw");
                 let _ = json.parse("{\"ok\":true}");
                 if str.len(msg) > 0 {
-                    net.write(c, 200, msg);
+                    http.write(c, 200, msg);
                 }
                 return 0;
             }

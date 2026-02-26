@@ -5,5 +5,5 @@ edition.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-capabilities = { path = "../../crates/capabilities" }
+core = { path = "../../crates/core" }
 stdlib = { path = "../../crates/stdlib" }

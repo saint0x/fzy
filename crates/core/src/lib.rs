@@ -5,7 +5,7 @@ pub enum Capability {
     Time,
     Random,
     FileSystem,
-    Network,
+    Http,
     Process,
     Memory,
     Thread,
@@ -17,7 +17,7 @@ impl Capability {
             "time" => Some(Self::Time),
             "rng" | "random" => Some(Self::Random),
             "fs" | "filesystem" => Some(Self::FileSystem),
-            "net" | "network" => Some(Self::Network),
+            "http" => Some(Self::Http),
             "proc" | "process" => Some(Self::Process),
             "mem" | "memory" => Some(Self::Memory),
             "thread" | "threads" => Some(Self::Thread),
@@ -30,7 +30,7 @@ impl Capability {
             Self::Time => "time",
             Self::Random => "rng",
             Self::FileSystem => "fs",
-            Self::Network => "net",
+            Self::Http => "http",
             Self::Process => "proc",
             Self::Memory => "mem",
             Self::Thread => "thread",
@@ -130,7 +130,7 @@ mod tests {
     #[test]
     fn parse_aliases_work() {
         assert_eq!(Capability::parse("fs"), Some(Capability::FileSystem));
-        assert_eq!(Capability::parse("network"), Some(Capability::Network));
+        assert_eq!(Capability::parse("http"), Some(Capability::Http));
         assert_eq!(Capability::parse("threads"), Some(Capability::Thread));
         assert_eq!(Capability::parse("unknown"), None);
     }
@@ -145,19 +145,19 @@ mod tests {
 
     #[test]
     fn token_algebra_and_revocation_work() {
-        let t1 = CapabilityToken::new([Capability::Network, Capability::FileSystem]);
-        let t2 = CapabilityToken::new([Capability::Process, Capability::Network]);
+        let t1 = CapabilityToken::new([Capability::Http, Capability::FileSystem]);
+        let t2 = CapabilityToken::new([Capability::Process, Capability::Http]);
         let composed = t1.compose(&t2);
-        assert!(composed.allows(Capability::Network));
+        assert!(composed.allows(Capability::Http));
         assert!(composed.allows(Capability::Process));
 
         let intersection = t1.intersect(&t2);
-        assert!(intersection.allows(Capability::Network));
+        assert!(intersection.allows(Capability::Http));
         assert!(!intersection.allows(Capability::Process));
 
         let mut revocable = composed.clone();
-        revocable.revoke(Capability::Network);
-        assert!(!revocable.allows(Capability::Network));
+        revocable.revoke(Capability::Http);
+        assert!(!revocable.allows(Capability::Http));
 
         let delegated = composed.delegate_subset([Capability::Process, Capability::Memory]);
         assert!(delegated.allows(Capability::Process));

@@ -2,7 +2,7 @@
 
 ## Guarantees
 
-- Unsafe capabilities (`time`, `rng`, `fs`, `net`, `proc`, `mem`, `thread`) are rejected in safe profile verification.
+- Unsafe capabilities (`time`, `rng`, `fs`, `http`, `proc`, `mem`, `thread`) are rejected in safe profile verification.
 - Host syscall usage is rejected in safe profile.
 - Explicit unsafe escape markers are rejected in safe profile.
 - Reference-region sites without proof are rejected in safe profile.

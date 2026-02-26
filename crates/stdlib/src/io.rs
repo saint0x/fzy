@@ -1,4 +1,4 @@
-use capabilities::{Capability, CapabilityToken};
+use core::{Capability, CapabilityToken};
 use std::collections::BTreeMap;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;

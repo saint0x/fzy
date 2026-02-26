@@ -5,7 +5,7 @@ edition.workspace = true
 
 [dependencies]
 ast = { path = "../ast" }
-capabilities = { path = "../capabilities" }
+core = { path = "../core" }
 
 [dev-dependencies]
 parser = { path = "../parser" }

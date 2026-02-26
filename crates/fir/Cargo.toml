@@ -5,5 +5,5 @@ edition.workspace = true
 
 [dependencies]
 hir = { path = "../hir" }
-capabilities = { path = "../capabilities" }
+core = { path = "../core" }
 ast = { path = "../ast" }

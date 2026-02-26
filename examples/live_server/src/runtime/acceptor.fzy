@@ -1,5 +1,5 @@
 use core.thread;
-use core.net;
+use core.http;
 fn run() -> i32 {
-    let listener = net.bind() net.listen(listener) let conn = net.accept() net.read(conn) checkpoint() return 0
+    let listener = http.bind() http.listen(listener) let conn = http.accept() http.read(conn) checkpoint() return 0
 }

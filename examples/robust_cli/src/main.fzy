@@ -1,6 +1,6 @@
 use core.time;
 use core.fs;
-use core.net;
+use core.http;
 use core.proc;
 use core.mem;
 use core.thread;

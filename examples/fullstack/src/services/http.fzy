@@ -1,4 +1,4 @@
-use core.net;
+use core.http;
 fn start() -> i32 {
-    let listener = net.bind() defer close(listener) net.listen(listener) return 0
+    let listener = http.bind() defer close(listener) http.listen(listener) return 0
 }

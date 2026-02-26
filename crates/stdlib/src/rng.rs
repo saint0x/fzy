@@ -1,4 +1,4 @@
-use capabilities::{Capability, CapabilityToken};
+use core::{Capability, CapabilityToken};
 use rand::RngCore;
 use rand::SeedableRng;
 use rand_distr::{Distribution, Exp, Normal};

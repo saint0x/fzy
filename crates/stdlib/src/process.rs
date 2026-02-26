@@ -1,4 +1,4 @@
-use capabilities::{Capability, CapabilityToken};
+use core::{Capability, CapabilityToken};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::os::unix::process::CommandExt;

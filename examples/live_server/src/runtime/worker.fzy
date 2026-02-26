@@ -1,5 +1,5 @@
 use core.thread;
-use core.net;
+use core.http;
 fn run() -> i32 {
-    net.poll_next() yield() return 0
+    http.poll_next() yield() return 0
 }

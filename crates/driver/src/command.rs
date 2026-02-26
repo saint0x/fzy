@@ -792,7 +792,7 @@ fn init_project(name: &str) -> Result<()> {
     std::fs::write(root.join("fozzy.toml"), &manifest).context("failed to write fozzy.toml")?;
     std::fs::write(
         src.join("main.fzy"),
-        "use core.time;\nuse core.fs;\nuse core.net;\nuse core.thread;\n\nmod api;\nmod model;\nmod services;\nmod runtime;\nmod cli;\nmod tests;\n\nfn main() -> i32 {\n    requires true\n\n    model.preflight()\n    cli.boot()\n    services.boot_all()\n    runtime.start()\n    api.touch()\n\n    ensures true\n    return 0\n}\n",
+        "use core.time;\nuse core.fs;\nuse core.http;\nuse core.thread;\n\nmod api;\nmod model;\nmod services;\nmod runtime;\nmod cli;\nmod tests;\n\nfn main() -> i32 {\n    requires true\n\n    model.preflight()\n    cli.boot()\n    services.boot_all()\n    runtime.start()\n    api.touch()\n\n    ensures true\n    return 0\n}\n",
     )
     .context("failed to write src/main.fzy")?;
     std::fs::write(
@@ -837,7 +837,7 @@ fn init_project(name: &str) -> Result<()> {
     .context("failed to write src/services/store.fzy")?;
     std::fs::write(
         src.join("services/http.fzy"),
-        "use core.net;\n\nfn start() -> i32 {\n    let conn = net.connect()\n    defer close(conn)\n    return 0\n}\n",
+        "use core.http;\n\nfn start() -> i32 {\n    let conn = http.connect()\n    defer close(conn)\n    return 0\n}\n",
     )
     .context("failed to write src/services/http.fzy")?;
     std::fs::write(
@@ -7842,7 +7842,7 @@ mod tests {
             std::env::temp_dir().join(format!("fozzylang-test-rpc-record-{suffix}.trace.json"));
         std::fs::write(
             &source,
-            "use core.thread;\nuse core.net;\nrpc Ping(req: i32) -> i32;\nrpc Chat(req: i32) -> i32;\nfn main() -> i32 {\n    Ping(0)\n    Chat(0)\n    timeout(10)\n    cancel()\n    return 0\n}\n",
+            "use core.thread;\nuse core.http;\nrpc Ping(req: i32) -> i32;\nrpc Chat(req: i32) -> i32;\nfn main() -> i32 {\n    Ping(0)\n    Chat(0)\n    timeout(10)\n    cancel()\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -8158,7 +8158,7 @@ mod tests {
         let source = std::env::temp_dir().join(format!("fozzylang-async-workload-{suffix}.fzy"));
         std::fs::write(
             &source,
-            "use core.thread;\nuse core.net;\nrpc Ping(req: i32) -> i32;\nasync fn worker() -> i32 {\n    return 0\n}\ntest \"flow\" {}\nfn main() -> i32 {\n    spawn(worker)\n    Ping(0)\n    return 0\n}\n",
+            "use core.thread;\nuse core.http;\nrpc Ping(req: i32) -> i32;\nasync fn worker() -> i32 {\n    return 0\n}\ntest \"flow\" {}\nfn main() -> i32 {\n    spawn(worker)\n    Ping(0)\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -8444,7 +8444,7 @@ mod tests {
         assert!(match_unreachable.contains("unreachable"));
 
         let capability = run_check_text(
-            "fn main() -> i32 {\n    let listener = net.bind()\n    return listener\n}\n",
+            "fn main() -> i32 {\n    let listener = http.bind()\n    return listener\n}\n",
             "capability-violation",
         );
         assert!(capability.contains("missing required capability"));

@@ -58,7 +58,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
     for function in &module.function_capability_requirements {
         for required in &function.required {
-            if let Some(parsed) = capabilities::Capability::parse(required) {
+            if let Some(parsed) = core::Capability::parse(required) {
                 if !module.effects.contains(parsed) {
                     report.diagnostics.push(Diagnostic::new(
                         Severity::Error,
@@ -80,19 +80,19 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         report.diagnostics.push(Diagnostic::new(
             Severity::Error,
             format!("unknown capability: {effect}"),
-            Some("allowed: time, rng, fs, net, proc, mem, thread".to_string()),
+            Some("allowed: time, rng, fs, http, proc, mem, thread".to_string()),
         ));
     }
 
     if policy.safe_profile {
         for disallowed in [
-            capabilities::Capability::Time,
-            capabilities::Capability::Random,
-            capabilities::Capability::FileSystem,
-            capabilities::Capability::Network,
-            capabilities::Capability::Process,
-            capabilities::Capability::Memory,
-            capabilities::Capability::Thread,
+            core::Capability::Time,
+            core::Capability::Random,
+            core::Capability::FileSystem,
+            core::Capability::Http,
+            core::Capability::Process,
+            core::Capability::Memory,
+            core::Capability::Thread,
         ] {
             if module.effects.contains(disallowed) || module.required_effects.contains(disallowed) {
                 report.diagnostics.push(Diagnostic::new(
@@ -339,7 +339,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
 
 #[cfg(test)]
 mod tests {
-    use capabilities::Capability;
+    use core::Capability;
 
     use super::{verify, verify_with_policy, VerifyPolicy};
 
@@ -347,8 +347,8 @@ mod tests {
     fn warns_when_capabilities_missing() {
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
-            required_effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: Vec::new(),
             nodes: 1,
             entry_return_type: None,
@@ -374,6 +374,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -389,12 +390,12 @@ mod tests {
 
     #[test]
     fn errors_for_unknown_capabilities() {
-        let mut effects = capabilities::CapabilitySet::default();
+        let mut effects = core::CapabilitySet::default();
         effects.insert(Capability::Time);
         let module = fir::FirModule {
             name: "m".to_string(),
             effects,
-            required_effects: capabilities::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec!["weird".to_string()],
             nodes: 1,
             entry_return_type: None,
@@ -420,6 +421,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -438,11 +440,11 @@ mod tests {
 
     #[test]
     fn errors_when_required_capability_missing() {
-        let mut required = capabilities::CapabilitySet::default();
-        required.insert(Capability::Network);
+        let mut required = core::CapabilitySet::default();
+        required.insert(Capability::Http);
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
             required_effects: required,
             unknown_effects: vec![],
             nodes: 1,
@@ -469,6 +471,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -482,15 +485,15 @@ mod tests {
         assert!(report
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("missing required capability: net")));
+            .any(|d| d.message.contains("missing required capability: http")));
     }
 
     #[test]
     fn errors_when_i32_main_has_no_return_expr() {
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
-            required_effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -519,6 +522,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -539,8 +543,8 @@ mod tests {
     fn errors_for_unreleased_linear_resource() {
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
-            required_effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -569,6 +573,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -589,8 +594,8 @@ mod tests {
     fn warns_for_non_exhaustive_match_baseline() {
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
-            required_effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -619,6 +624,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -639,8 +645,8 @@ mod tests {
     fn errors_for_unreachable_and_duplicate_match_catchalls() {
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
-            required_effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -669,6 +675,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -691,13 +698,13 @@ mod tests {
 
     #[test]
     fn safe_profile_rejects_unsafe_capabilities() {
-        let mut effects = capabilities::CapabilitySet::default();
-        effects.insert(Capability::Network);
+        let mut effects = core::CapabilitySet::default();
+        effects.insert(Capability::Http);
         effects.insert(Capability::Thread);
         let module = fir::FirModule {
             name: "m".to_string(),
             effects,
-            required_effects: capabilities::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -726,6 +733,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -745,7 +753,7 @@ mod tests {
         assert!(report
             .diagnostics
             .iter()
-            .any(|d| d.message.contains("safe profile forbids capability: net")));
+            .any(|d| d.message.contains("safe profile forbids capability: http")));
         assert!(report.diagnostics.iter().any(|d| d
             .message
             .contains("safe profile forbids capability: thread")));
@@ -753,12 +761,12 @@ mod tests {
 
     #[test]
     fn safe_profile_rejects_all_runtime_backed_effects() {
-        let mut effects = capabilities::CapabilitySet::default();
+        let mut effects = core::CapabilitySet::default();
         for capability in [
             Capability::Time,
             Capability::Random,
             Capability::FileSystem,
-            Capability::Network,
+            Capability::Http,
             Capability::Process,
             Capability::Memory,
             Capability::Thread,
@@ -768,7 +776,7 @@ mod tests {
         let module = fir::FirModule {
             name: "m".to_string(),
             effects,
-            required_effects: capabilities::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -797,6 +805,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -813,7 +822,7 @@ mod tests {
                 ..VerifyPolicy::default()
             },
         );
-        for expected in ["time", "rng", "fs", "net", "proc", "mem", "thread"] {
+        for expected in ["time", "rng", "fs", "http", "proc", "mem", "thread"] {
             assert!(report.diagnostics.iter().any(|d| d
                 .message
                 .contains(&format!("safe profile forbids capability: {expected}"))));
@@ -824,8 +833,8 @@ mod tests {
     fn contract_false_conditions_error() {
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
-            required_effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -854,6 +863,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -878,8 +888,8 @@ mod tests {
     fn host_syscall_requires_abi_boundary() {
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
-            required_effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -908,6 +918,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -928,8 +939,8 @@ mod tests {
     fn safe_profile_rejects_alloc_free_imbalance() {
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
-            required_effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -958,6 +969,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -984,8 +996,8 @@ mod tests {
     fn production_memory_safety_rejects_alloc_free_imbalance_without_safe_profile() {
         let module = fir::FirModule {
             name: "m".to_string(),
-            effects: capabilities::CapabilitySet::default(),
-            required_effects: capabilities::CapabilitySet::default(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -1014,6 +1026,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1038,12 +1051,12 @@ mod tests {
 
     #[test]
     fn production_memory_safety_does_not_forbid_runtime_capability_set() {
-        let mut effects = capabilities::CapabilitySet::default();
-        effects.insert(Capability::Network);
+        let mut effects = core::CapabilitySet::default();
+        effects.insert(Capability::Http);
         let module = fir::FirModule {
             name: "m".to_string(),
             effects,
-            required_effects: capabilities::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
             unknown_effects: vec![],
             nodes: 1,
             entry_return_type: Some(ast::Type::Int {
@@ -1072,6 +1085,7 @@ mod tests {
             call_graph: Vec::new(),
             functions: Vec::new(),
             typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),

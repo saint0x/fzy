@@ -611,3 +611,55 @@ fz check /tmp/code_synthesis.fzy --json
 fz build /tmp/code_synthesis.fzy --backend llvm --json
 fz build /tmp/code_synthesis.fzy --backend cranelift --json
 ```
+
+## 23) Core HTTP namespace surface (HTTP-only)
+
+```bash
+cat > /tmp/code_http_namespace.fzy <<'FZY'
+use core.http;
+
+fn main() -> i32 {
+    let listener = http.bind()
+    if http.listen(listener) != 0 {
+        return 1
+    }
+    let conn = http.accept()
+    let _ = http.read(conn)
+    let _ = http.write(conn, 200, "ok")
+    return 0
+}
+FZY
+
+fz check /tmp/code_http_namespace.fzy --json
+fz build /tmp/code_http_namespace.fzy --backend llvm --json
+fz build /tmp/code_http_namespace.fzy --backend cranelift --json
+```
+
+## 24) New stdlib ergonomics modules: full crate tests
+
+```bash
+cargo test -p core
+cargo test -p stdlib abi::
+cargo test -p stdlib text::
+cargo test -p stdlib resultx::
+cargo test -p stdlib task::
+cargo test -p stdlib collections::
+```
+
+## 25) Deterministic + trace lifecycle + host-backed HTTP checks
+
+```bash
+fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json
+fozzy test --det --strict tests/example.fozzy.json --seed 4242 --json
+fozzy run tests/example.fozzy.json --det --record artifacts/core-http.trace.fozzy --json
+fozzy trace verify artifacts/core-http.trace.fozzy --strict --json
+fozzy replay artifacts/core-http.trace.fozzy --json
+fozzy ci artifacts/core-http.trace.fozzy --json
+fozzy run tests/example.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
+
+fozzy test --det --strict tests/pedantic.crates_stdlib.http.host_backends_run.pass.fozzy.json --json
+fozzy test --det --strict tests/pedantic.crates_stdlib.http.explore_schedule_faults.pass.fozzy.json --json
+fozzy test --det --strict tests/pedantic.crates_stdlib.http.shrink_exercised.pass.fozzy.json --json
+fozzy test --det --strict tests/pedantic.crates_stdlib.http.fuzz_inputs.pass.fozzy.json --json
+fozzy test --det --strict tests/pedantic.crates_stdlib.http.memory_graph_diff_top.pass.fozzy.json --json
+```

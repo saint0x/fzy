@@ -10,11 +10,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
-use capabilities::{Capability, CapabilitySet};
+use core::{Capability, CapabilitySet};
 use runtime::service::{RuntimeProfile, ServiceRuntime, ShutdownSignal};
 use serde::{Deserialize, Serialize};
 use stdlib::durability::{acquire_file_lock, fsync_file, write_atomic};
-use stdlib::net::{parse_http_request, HttpResponse, HttpServerLimits};
+use stdlib::http::{parse_http_request, HttpResponse, HttpServerLimits};
 use stdlib::observability::{
     LogField, LogLevel, Logger, Metrics, RedactionPolicy, RuntimeStats as ObsRuntimeStats, Tracer,
 };
@@ -242,7 +242,7 @@ fn run_server(cfg: AppConfig) -> Result<()> {
 
     let hardening = ServerHardeningDefaults::default();
     let mut caps = CapabilitySet::default();
-    caps.insert(Capability::Network);
+    caps.insert(Capability::Http);
     caps.insert(Capability::FileSystem);
     caps.insert(Capability::Process);
     for op in [

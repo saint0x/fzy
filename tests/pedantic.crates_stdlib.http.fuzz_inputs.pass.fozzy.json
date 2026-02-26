@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "pedantic.crates_stdlib.net.host_backends_run.pass",
+  "name": "pedantic.crates_stdlib.http.fuzz_inputs.pass",
   "steps": [
     {
       "type": "trace_event",

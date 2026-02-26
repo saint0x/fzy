@@ -55,22 +55,22 @@ struct NativeRuntimeImport {
 
 const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
-        callee: "net.bind",
+        callee: "http.bind",
         symbol: "fz_native_net_bind",
         arity: 0,
     },
     NativeRuntimeImport {
-        callee: "net.listen",
+        callee: "http.listen",
         symbol: "fz_native_net_listen",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "net.accept",
+        callee: "http.accept",
         symbol: "fz_native_net_accept",
         arity: 0,
     },
     NativeRuntimeImport {
-        callee: "net.read",
+        callee: "http.read",
         symbol: "fz_native_net_read",
         arity: 1,
     },
@@ -270,77 +270,77 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
-        callee: "net.method",
+        callee: "http.method",
         symbol: "fz_native_net_method",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "net.path",
+        callee: "http.path",
         symbol: "fz_native_net_path",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "net.body",
+        callee: "http.body",
         symbol: "fz_native_net_body",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "net.body_json",
+        callee: "http.body_json",
         symbol: "fz_native_net_body_json",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "net.body_bind",
+        callee: "http.body_bind",
         symbol: "fz_native_net_body_bind",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "net.header",
+        callee: "http.header",
         symbol: "fz_native_net_header",
         arity: 2,
     },
     NativeRuntimeImport {
-        callee: "net.query",
+        callee: "http.query",
         symbol: "fz_native_net_query",
         arity: 2,
     },
     NativeRuntimeImport {
-        callee: "net.param",
+        callee: "http.param",
         symbol: "fz_native_net_param",
         arity: 2,
     },
     NativeRuntimeImport {
-        callee: "net.headers",
+        callee: "http.headers",
         symbol: "fz_native_net_headers",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "net.request_id",
+        callee: "http.request_id",
         symbol: "fz_native_net_request_id",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "net.remote_addr",
+        callee: "http.remote_addr",
         symbol: "fz_native_net_remote_addr",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "net.write",
+        callee: "http.write",
         symbol: "fz_native_net_write",
         arity: 3,
     },
     NativeRuntimeImport {
-        callee: "net.write_json",
+        callee: "http.write_json",
         symbol: "fz_native_net_write_json",
         arity: 3,
     },
     NativeRuntimeImport {
-        callee: "net.write_response",
+        callee: "http.write_response",
         symbol: "fz_native_net_write_response",
         arity: 5,
     },
     NativeRuntimeImport {
-        callee: "net.close",
+        callee: "http.close",
         symbol: "fz_native_close",
         arity: 1,
     },
@@ -730,7 +730,7 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
-        callee: "net.poll_next",
+        callee: "http.poll_next",
         symbol: "fz_native_net_poll_next",
         arity: 0,
     },
@@ -11484,7 +11484,7 @@ int32_t fz_native_net_bind(void) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) {
     char msg[256];
-    snprintf(msg, sizeof(msg), "net.bind failed: socket() errno=%d (%s)", errno, strerror(errno));
+    snprintf(msg, sizeof(msg), "http.bind failed: socket() errno=%d (%s)", errno, strerror(errno));
     fz_set_last_error(errno, 3, msg);
     return -1;
   }
@@ -11507,7 +11507,7 @@ int32_t fz_native_net_bind(void) {
     snprintf(
         msg,
         sizeof(msg),
-        "net.bind failed on %s:%d errno=%d (%s); set FZ_HOST/FZ_PORT or AGENT_HOST/AGENT_PORT",
+        "http.bind failed on %s:%d errno=%d (%s); set FZ_HOST/FZ_PORT or AGENT_HOST/AGENT_PORT",
         rendered,
         bind_port,
         errno,
@@ -11531,7 +11531,7 @@ int32_t fz_native_net_listen(int32_t fd) {
     pthread_mutex_unlock(&fz_listener_lock);
   }
   if (listener < 0) {
-    fz_set_last_error(EINVAL, 3, "net.listen failed: no listener fd (call net.bind first)");
+    fz_set_last_error(EINVAL, 3, "http.listen failed: no listener fd (call http.bind first)");
     return -1;
   }
   if (listen(listener, 128) != 0) {
@@ -11539,7 +11539,7 @@ int32_t fz_native_net_listen(int32_t fd) {
     snprintf(
         msg,
         sizeof(msg),
-        "net.listen failed fd=%d backlog=128 errno=%d (%s)",
+        "http.listen failed fd=%d backlog=128 errno=%d (%s)",
         listener,
         errno,
         strerror(errno));
@@ -11557,7 +11557,7 @@ int32_t fz_native_net_accept(void) {
   listener = fz_listener_fd;
   pthread_mutex_unlock(&fz_listener_lock);
   if (listener < 0) {
-    fz_set_last_error(EINVAL, 3, "net.accept failed: listener not initialized");
+    fz_set_last_error(EINVAL, 3, "http.accept failed: listener not initialized");
     return -1;
   }
   struct sockaddr_in peer;
@@ -11569,7 +11569,7 @@ int32_t fz_native_net_accept(void) {
       snprintf(
           msg,
           sizeof(msg),
-          "net.accept failed listener=%d errno=%d (%s)",
+          "http.accept failed listener=%d errno=%d (%s)",
           listener,
           errno,
           strerror(errno));
@@ -12107,18 +12107,18 @@ static int32_t fz_json_wrap_invalid_payload(const char* raw) {
   char* escaped = fz_json_escape_string_bytes(raw);
   if (escaped == NULL) {
     const char* fallback =
-        "{\"error\":\"invalid_json_payload\",\"message\":\"net.write_json could not allocate sanitize buffer\"}";
+        "{\"error\":\"invalid_json_payload\",\"message\":\"http.write_json could not allocate sanitize buffer\"}";
     return fz_intern_slice(fallback, strlen(fallback));
   }
   const char* prefix =
-      "{\"error\":\"invalid_json_payload\",\"message\":\"net.write_json sanitized non-JSON body\",\"raw\":\"";
+      "{\"error\":\"invalid_json_payload\",\"message\":\"http.write_json sanitized non-JSON body\",\"raw\":\"";
   const char* suffix = "\"}";
   size_t total = strlen(prefix) + strlen(escaped) + strlen(suffix) + 1;
   char* wrapped = (char*)malloc(total);
   if (wrapped == NULL) {
     free(escaped);
     const char* fallback =
-        "{\"error\":\"invalid_json_payload\",\"message\":\"net.write_json sanitize alloc failed\"}";
+        "{\"error\":\"invalid_json_payload\",\"message\":\"http.write_json sanitize alloc failed\"}";
     return fz_intern_slice(fallback, strlen(fallback));
   }
   snprintf(wrapped, total, "%s%s%s", prefix, escaped, suffix);
@@ -12141,7 +12141,7 @@ int32_t fz_native_net_write_json(int32_t conn_fd, int32_t status_code, int32_t b
     fz_set_last_error(
         EINVAL,
         3,
-        "net.write_json received invalid JSON body; response was sanitized");
+        "http.write_json received invalid JSON body; response was sanitized");
   } else {
     fz_set_last_error(0, 0, "");
   }
@@ -13576,10 +13576,10 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "mod infra;\nfn main() -> i32 {\n    let listener = net.bind()\n    return listener\n}\n",
+            "mod infra;\nfn main() -> i32 {\n    let listener = http.bind()\n    return listener\n}\n",
         )
         .expect("main source should be written");
-        std::fs::write(root.join("src/infra.fzy"), "use core.net;\n")
+        std::fs::write(root.join("src/infra.fzy"), "use core.http;\n")
             .expect("module source should be written");
 
         let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
@@ -13646,7 +13646,7 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "fn main() -> i32 {\n    let c = net.connect()\n    return 0\n}\n",
+            "fn main() -> i32 {\n    let c = http.connect()\n    return 0\n}\n",
         )
         .expect("temp source should be written");
 
@@ -13797,7 +13797,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "use core.net;\nfn main() -> i32 {\n    let listener = net.bind()\n    return listener\n}\n",
+            "use core.http;\nfn main() -> i32 {\n    let listener = http.bind()\n    return listener\n}\n",
         )
         .expect("source should be written");
 
@@ -13820,7 +13820,7 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "use core.net;\nfn main() -> i32 {\n    let c = net.connect()\n    return 0\n}\n",
+            "use core.http;\nfn main() -> i32 {\n    let c = http.connect()\n    return 0\n}\n",
         )
         .expect("temp source should be written");
 
@@ -14001,7 +14001,7 @@ mod tests {
     fn native_runtime_shim_sanitizes_invalid_json_http_bodies() {
         let shim = render_native_runtime_shim(&[], &[]);
         assert!(shim.contains("invalid_json_payload"));
-        assert!(shim.contains("net.write_json sanitized non-JSON body"));
+        assert!(shim.contains("http.write_json sanitized non-JSON body"));
     }
 
     #[test]
@@ -14061,7 +14061,7 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "use core.net;\nfn main() -> i32 {\n    let listener = net.bind()\n    net.listen(listener)\n    return 0\n}\n",
+            "use core.http;\nfn main() -> i32 {\n    let listener = http.bind()\n    http.listen(listener)\n    return 0\n}\n",
         )
         .expect("temp source should be written");
 

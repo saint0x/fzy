@@ -277,7 +277,7 @@ cat artifacts/live_server.stats.trace.explore.json
 Host-backed internet probe scenario:
 
 ```bash
-fozzy run tests/live.server.internet.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
+fozzy run tests/live.server.interhttp.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
 ```
 
 ## Plan Tracking

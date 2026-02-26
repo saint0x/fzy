@@ -1,5 +1,5 @@
 use crate::core::{require_capability, CapabilityError};
-use capabilities::{Capability, CapabilityToken};
+use core::{Capability, CapabilityToken};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
@@ -8,7 +8,7 @@ use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketA
 use std::os::unix::net::UnixDatagram;
 
 pub fn required_capability_for_network() -> Capability {
-    Capability::Network
+    Capability::Http
 }
 
 pub fn connect_with_capability(
@@ -1758,11 +1758,298 @@ impl TlsPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeaderLimits {
+    pub max_entries: usize,
+    pub max_name_bytes: usize,
+    pub max_value_bytes: usize,
+}
+
+impl Default for HeaderLimits {
+    fn default() -> Self {
+        Self {
+            max_entries: 128,
+            max_name_bytes: 256,
+            max_value_bytes: 8 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HeaderMap {
+    inner: BTreeMap<String, String>,
+}
+
+impl HeaderMap {
+    pub fn insert(
+        &mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        limits: HeaderLimits,
+    ) -> Result<(), NetError> {
+        let canonical = canonicalize_header_name(name.into().as_str())?;
+        let value = value.into().trim().to_string();
+        if canonical.len() > limits.max_name_bytes || value.len() > limits.max_value_bytes {
+            return Err(NetError::LimitsExceeded(
+                "header entry exceeds configured limits".to_string(),
+            ));
+        }
+        if !self.inner.contains_key(&canonical) && self.inner.len() >= limits.max_entries {
+            return Err(NetError::LimitsExceeded(
+                "header count exceeds configured limits".to_string(),
+            ));
+        }
+        self.inner.insert(canonical, value);
+        Ok(())
+    }
+
+    pub fn get(&self, name: &str) -> Option<&str> {
+        let canonical = name.trim().to_ascii_lowercase();
+        self.inner.get(&canonical).map(String::as_str)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.inner.iter().map(|(k, v)| (k.as_str(), v.as_str()))
+    }
+}
+
+pub fn canonicalize_header_name(name: &str) -> Result<String, NetError> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(NetError::Parse("header name is empty".to_string()));
+    }
+    if trimmed.contains(':') || trimmed.bytes().any(|byte| byte.is_ascii_control()) {
+        return Err(NetError::Parse("header name contains invalid bytes".to_string()));
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpRequestBuilder {
+    method: String,
+    path: String,
+    version: String,
+    headers: HeaderMap,
+    body: Vec<u8>,
+    keep_alive: bool,
+}
+
+impl Default for HttpRequestBuilder {
+    fn default() -> Self {
+        Self {
+            method: "GET".to_string(),
+            path: "/".to_string(),
+            version: "HTTP/1.1".to_string(),
+            headers: HeaderMap::default(),
+            body: Vec::new(),
+            keep_alive: true,
+        }
+    }
+}
+
+impl HttpRequestBuilder {
+    pub fn method(mut self, method: impl Into<String>) -> Self {
+        self.method = method.into();
+        self
+    }
+
+    pub fn path(mut self, path: impl Into<String>) -> Self {
+        self.path = path.into();
+        self
+    }
+
+    pub fn header(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        limits: HeaderLimits,
+    ) -> Result<Self, NetError> {
+        self.headers.insert(name, value, limits)?;
+        Ok(self)
+    }
+
+    pub fn body(mut self, body: impl Into<Vec<u8>>) -> Self {
+        self.body = body.into();
+        self
+    }
+
+    pub fn keep_alive(mut self, keep_alive: bool) -> Self {
+        self.keep_alive = keep_alive;
+        self
+    }
+
+    pub fn build(self, limits: &HttpServerLimits) -> Result<HttpRequest, NetError> {
+        if self.method.trim().is_empty() {
+            return Err(NetError::Parse("request method is empty".to_string()));
+        }
+        if !self.path.starts_with('/') {
+            return Err(NetError::Parse(
+                "request path must be absolute and start with '/'".to_string(),
+            ));
+        }
+        if self.body.len() > limits.max_body_bytes {
+            return Err(NetError::LimitsExceeded(
+                "request body exceeds configured limit".to_string(),
+            ));
+        }
+        let mut headers = BTreeMap::new();
+        for (k, v) in self.headers.iter() {
+            headers.insert(k.to_string(), v.to_string());
+        }
+        Ok(HttpRequest {
+            method: self.method,
+            path: self.path,
+            version: self.version,
+            headers,
+            body: self.body,
+            keep_alive: self.keep_alive,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HttpResponseBuilder {
+    status: u16,
+    reason: String,
+    headers: HeaderMap,
+    body: Vec<u8>,
+    keep_alive: bool,
+    chunked: bool,
+}
+
+impl Default for HttpResponseBuilder {
+    fn default() -> Self {
+        Self {
+            status: 200,
+            reason: "OK".to_string(),
+            headers: HeaderMap::default(),
+            body: Vec::new(),
+            keep_alive: true,
+            chunked: false,
+        }
+    }
+}
+
+impl HttpResponseBuilder {
+    pub fn status(mut self, status: u16, reason: impl Into<String>) -> Self {
+        self.status = status;
+        self.reason = reason.into();
+        self
+    }
+
+    pub fn header(
+        mut self,
+        name: impl Into<String>,
+        value: impl Into<String>,
+        limits: HeaderLimits,
+    ) -> Result<Self, NetError> {
+        self.headers.insert(name, value, limits)?;
+        Ok(self)
+    }
+
+    pub fn body(mut self, body: impl Into<Vec<u8>>) -> Self {
+        self.body = body.into();
+        self
+    }
+
+    pub fn keep_alive(mut self, keep_alive: bool) -> Self {
+        self.keep_alive = keep_alive;
+        self
+    }
+
+    pub fn chunked(mut self, chunked: bool) -> Self {
+        self.chunked = chunked;
+        self
+    }
+
+    pub fn build(self, limits: &HttpServerLimits) -> Result<HttpResponse, NetError> {
+        if self.body.len() > limits.max_body_bytes {
+            return Err(NetError::LimitsExceeded(
+                "response body exceeds configured limit".to_string(),
+            ));
+        }
+        let mut headers = BTreeMap::new();
+        for (k, v) in self.headers.iter() {
+            headers.insert(k.to_string(), v.to_string());
+        }
+        Ok(HttpResponse {
+            status: self.status,
+            reason: self.reason,
+            headers,
+            body: self.body,
+            keep_alive: self.keep_alive,
+            chunked: self.chunked,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpTimeoutPolicy {
+    pub connect_timeout_ms: u64,
+    pub read_timeout_ms: u64,
+    pub write_timeout_ms: u64,
+}
+
+impl Default for HttpTimeoutPolicy {
+    fn default() -> Self {
+        Self {
+            connect_timeout_ms: 3_000,
+            read_timeout_ms: 5_000,
+            write_timeout_ms: 5_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpRetryPolicy {
+    pub max_attempts: usize,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+    pub factor: u64,
+}
+
+impl Default for HttpRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            initial_backoff_ms: 50,
+            max_backoff_ms: 1_000,
+            factor: 2,
+        }
+    }
+}
+
+impl HttpRetryPolicy {
+    pub fn validate(&self) -> Result<(), NetError> {
+        if self.max_attempts == 0 || self.factor == 0 {
+            return Err(NetError::Parse(
+                "retry policy has invalid zero-valued fields".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn backoff_for_attempt(&self, attempt: usize) -> Option<u64> {
+        if attempt == 0 || attempt > self.max_attempts {
+            return None;
+        }
+        let mut delay = self.initial_backoff_ms.max(1);
+        for _ in 1..attempt {
+            delay = delay
+                .saturating_mul(self.factor)
+                .min(self.max_backoff_ms.max(1));
+        }
+        Some(delay)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_http_request, DeterministicNet, HttpResponse, HttpRouter, HttpServerLimits,
-        NetBackend, NetDecision, NetError, PollInterest, PollerEvent, RequestContext, SocketId,
+        canonicalize_header_name, parse_http_request, DeterministicNet, HeaderLimits, HeaderMap,
+        HttpRequestBuilder, HttpResponse, HttpResponseBuilder, HttpRetryPolicy, HttpRouter,
+        HttpServerLimits, NetBackend, NetDecision, NetError, PollInterest, PollerEvent,
+        RequestContext, SocketId,
     };
 
     struct TestRouter;
@@ -1775,19 +2062,19 @@ mod tests {
 
     #[test]
     fn deterministic_net_records_replay_decisions() {
-        let mut net = DeterministicNet::with_scripted_accepts(1);
-        let listener = net.bind("127.0.0.1:8080").expect("bind should work");
-        net.listen(listener, 128).expect("listen should work");
-        let conn = net
+        let mut backend = DeterministicNet::with_scripted_accepts(1);
+        let listener = backend.bind("127.0.0.1:8080").expect("bind should work");
+        backend.listen(listener, 128).expect("listen should work");
+        let conn = backend
             .accept(listener)
             .expect("accept call should work")
             .expect("one scripted connection should exist");
-        net.push_read_chunk(conn, b"abc".to_vec());
-        assert_eq!(net.read(conn, 16).expect("read should work"), b"abc");
-        assert_eq!(net.write(conn, b"pong").expect("write should work"), 4);
-        net.close(conn).expect("close should work");
+        backend.push_read_chunk(conn, b"abc".to_vec());
+        assert_eq!(backend.read(conn, 16).expect("read should work"), b"abc");
+        assert_eq!(backend.write(conn, b"pong").expect("write should work"), 4);
+        backend.close(conn).expect("close should work");
 
-        let decisions = net.decisions();
+        let decisions = backend.decisions();
         assert!(matches!(decisions[0], NetDecision::Bind { .. }));
         assert!(matches!(
             decisions.last(),
@@ -1797,29 +2084,33 @@ mod tests {
 
     #[test]
     fn poller_queue_is_bounded() {
-        let mut net = DeterministicNet::default();
-        let listener = net.bind("127.0.0.1:9090").expect("bind should work");
-        net.listen(listener, 32).expect("listen should succeed");
-        net.poll_register(listener, PollInterest::Acceptable, 1)
+        let mut backend = DeterministicNet::default();
+        let listener = backend.bind("127.0.0.1:9090").expect("bind should work");
+        backend.listen(listener, 32).expect("listen should succeed");
+        backend
+            .poll_register(listener, PollInterest::Acceptable, 1)
             .expect("first registration should fit in queue");
         assert_eq!(
-            net.poll_register(listener, PollInterest::Readable, 1),
+            backend.poll_register(listener, PollInterest::Readable, 1),
             Err(NetError::QueueFull)
         );
         assert_eq!(
-            net.poll_next(8).expect("poll should work"),
+            backend.poll_next(8).expect("poll should work"),
             vec![PollerEvent::Acceptable(listener)]
         );
     }
 
     #[test]
     fn request_context_deadline_and_cancel_are_enforced() {
-        let mut net = DeterministicNet::default();
-        net.register_context(RequestContext::new(super::ContextId(7), "req-7"));
-        net.set_deadline(super::ContextId(7), 20)
+        let mut backend = DeterministicNet::default();
+        backend.register_context(RequestContext::new(super::ContextId(7), "req-7"));
+        backend
+            .set_deadline(super::ContextId(7), 20)
             .expect("deadline should work");
-        net.cancel(super::ContextId(7)).expect("cancel should work");
-        let ctx = net
+        backend
+            .cancel(super::ContextId(7))
+            .expect("cancel should work");
+        let ctx = backend
             .contexts
             .get(&super::ContextId(7))
             .expect("context exists");
@@ -1840,17 +2131,17 @@ mod tests {
 
     #[test]
     fn http_serve_once_routes_request() {
-        let mut net = DeterministicNet::with_scripted_accepts(1);
-        let listener = net.bind("127.0.0.1:9191").expect("bind should work");
-        net.listen(listener, 64).expect("listen should work");
+        let mut backend = DeterministicNet::with_scripted_accepts(1);
+        let listener = backend.bind("127.0.0.1:9191").expect("bind should work");
+        backend.listen(listener, 64).expect("listen should work");
         let connection = SocketId(1);
-        net.push_read_chunk(
+        backend.push_read_chunk(
             connection,
             b"GET /ping HTTP/1.1\r\nHost: localhost\r\n\r\n".to_vec(),
         );
 
         let bytes = super::serve_http_once(
-            &mut net,
+            &mut backend,
             listener,
             &TestRouter,
             &HttpServerLimits::default(),
@@ -1861,8 +2152,56 @@ mod tests {
 
     #[test]
     fn deterministic_validates_addresses() {
-        let mut net = DeterministicNet::default();
-        assert!(net.bind("not-an-address").is_err());
-        assert!(net.connect("still-bad").is_err());
+        let mut backend = DeterministicNet::default();
+        assert!(backend.bind("not-an-address").is_err());
+        assert!(backend.connect("still-bad").is_err());
+    }
+
+    #[test]
+    fn header_map_canonicalizes_and_bounds_entries() {
+        let mut headers = HeaderMap::default();
+        headers
+            .insert(" Content-Type ", "application/json", HeaderLimits::default())
+            .expect("insert should work");
+        assert_eq!(headers.get("content-type"), Some("application/json"));
+        assert!(canonicalize_header_name("X-Trace").is_ok());
+        assert!(canonicalize_header_name("").is_err());
+    }
+
+    #[test]
+    fn request_and_response_builders_validate_limits() {
+        let limits = HttpServerLimits {
+            max_body_bytes: 4,
+            ..HttpServerLimits::default()
+        };
+        let req = HttpRequestBuilder::default()
+            .method("POST")
+            .path("/v1/items")
+            .body(b"1234".to_vec())
+            .build(&limits)
+            .expect("request should build");
+        assert_eq!(req.path, "/v1/items");
+
+        let err = HttpResponseBuilder::default()
+            .status(200, "OK")
+            .body(b"12345".to_vec())
+            .build(&limits)
+            .expect_err("response should fail size limit");
+        assert!(matches!(err, NetError::LimitsExceeded(_)));
+    }
+
+    #[test]
+    fn retry_policy_backoff_is_deterministic() {
+        let policy = HttpRetryPolicy {
+            max_attempts: 3,
+            initial_backoff_ms: 10,
+            max_backoff_ms: 25,
+            factor: 2,
+        };
+        policy.validate().expect("policy should be valid");
+        assert_eq!(policy.backoff_for_attempt(1), Some(10));
+        assert_eq!(policy.backoff_for_attempt(2), Some(20));
+        assert_eq!(policy.backoff_for_attempt(3), Some(25));
+        assert_eq!(policy.backoff_for_attempt(4), None);
     }
 }

@@ -1,4 +1,4 @@
-use core.net;
+use core.http;
 fn push_state() -> i32 {
-    let conn = net.bind() net.listen(conn) net.write(conn, 200, "ok") net.read(conn) return 0
+    let conn = http.bind() http.listen(conn) http.write(conn, 200, "ok") http.read(conn) return 0
 }

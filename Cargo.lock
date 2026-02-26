@@ -99,10 +99,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "capabilities"
-version = "0.1.0"
-
-[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -123,6 +119,10 @@ dependencies = [
  "crypto-common",
  "inout",
 ]
+
+[[package]]
+name = "core"
+version = "0.1.0"
 
 [[package]]
 name = "cpufeatures"
@@ -372,7 +372,7 @@ name = "fir"
 version = "0.1.0"
 dependencies = [
  "ast",
- "capabilities",
+ "core",
  "hir",
 ]
 
@@ -479,7 +479,7 @@ name = "hir"
 version = "0.1.0"
 dependencies = [
  "ast",
- "capabilities",
+ "core",
  "parser",
 ]
 
@@ -534,7 +534,7 @@ name = "live_server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "capabilities",
+ "core",
  "ctrlc",
  "runtime",
  "serde",
@@ -744,7 +744,7 @@ name = "robust_cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "capabilities",
+ "core",
  "stdlib",
 ]
 
@@ -852,7 +852,7 @@ name = "stdlib"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
- "capabilities",
+ "core",
  "hmac",
  "libc",
  "mio",
@@ -957,7 +957,7 @@ name = "verifier"
 version = "0.1.0"
 dependencies = [
  "ast",
- "capabilities",
+ "core",
  "diagnostics",
  "fir",
 ]

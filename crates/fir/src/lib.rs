@@ -1,5 +1,5 @@
 use ast::Type;
-use capabilities::CapabilitySet;
+use core::CapabilitySet;
 use hir::{FunctionCapabilityRequirement, TypedFunction, TypedModule};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -160,14 +160,14 @@ pub fn build_owned(typed: TypedModule) -> FirModule {
     let mut required_effects = CapabilitySet::default();
     let mut unknown_effects = Vec::new();
     for capability in capabilities {
-        if let Some(parsed) = capabilities::Capability::parse(&capability) {
+        if let Some(parsed) = core::Capability::parse(&capability) {
             effects.insert(parsed);
         } else {
             unknown_effects.push(capability);
         }
     }
     for capability in inferred_capabilities {
-        if let Some(parsed) = capabilities::Capability::parse(&capability) {
+        if let Some(parsed) = core::Capability::parse(&capability) {
             required_effects.insert(parsed);
         } else {
             unknown_effects.push(capability);

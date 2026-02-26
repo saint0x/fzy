@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, Context, Result};
-use capabilities::{Capability, CapabilitySet};
+use core::{Capability, CapabilitySet};
 use stdlib::concurrency::{BoundedChannel, OverflowPolicy};
 use stdlib::durability::{acquire_file_lock, fsync_file, write_atomic};
 use stdlib::observability::{
