@@ -62,6 +62,12 @@ BENCHES = [
         "fzy_src": ROOT / "examples" / "benchmarks" / "abi_pair_scratch_bench.fzy",
         "iterations": 8_000_000,
     },
+    {
+        "name": "c_interop_contract_kernel",
+        "rust_mode": "c_interop_contract",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "c_interop_contract_scratch_bench.fzy",
+        "iterations": 8_000_000,
+    },
 ]
 
 

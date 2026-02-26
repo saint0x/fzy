@@ -1,0 +1,55 @@
+const ITERATIONS: i32 = 8000000
+
+fn owner_score(owner: str) -> i32 {
+    if owner == "owned" { return 11 }
+    if owner == "borrowed" { return 7 }
+    if owner == "out" { return 13 }
+    return 17
+}
+
+fn workload() -> i32 {
+    let ownership = ["owned", "borrowed", "out", "inout"]
+    let nullability = ["non_null", "nullable"]
+    let mutability = ["const", "mut"]
+    let panic_boundary = ["error", "abort"]
+
+    let mut i: i32 = 0
+    let mut oi: i32 = 0
+    let mut ni: i32 = 0
+    let mut mi: i32 = 0
+    let mut pi: i32 = 0
+    let mut acc: i32 = 0
+
+    while i < ITERATIONS {
+        let owner = ownership[oi]
+        let null = nullability[ni]
+        let mutability = mutability[mi]
+        let panic = panic_boundary[pi]
+
+        let mut score = owner_score(owner)
+        if null == "nullable" { score += 5 } else { score += 3 }
+        if mutability == "mut" { score += 19 } else { score += 2 }
+        if panic == "abort" { score += 23 } else { score += 29 }
+        if owner == "owned" && panic == "abort" { score += 31 }
+        if owner == "borrowed" && null == "non_null" { score += 37 }
+        if owner == "inout" && mutability == "mut" { score += 41 }
+
+        acc = (acc + score) % 251
+
+        oi += 1
+        if oi == 4 { oi = 0 }
+        ni += 1
+        if ni == 2 { ni = 0 }
+        mi += 1
+        if mi == 2 { mi = 0 }
+        pi += 1
+        if pi == 2 { pi = 0 }
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

@@ -201,6 +201,67 @@ fn abi_pair_workload() -> i32 {
     acc
 }
 
+fn c_interop_contract_workload() -> i32 {
+    let ownership = ["owned", "borrowed", "out", "inout"];
+    let nullability = ["non_null", "nullable"];
+    let mutability_modes = ["const", "mut"];
+    let panic_boundary = ["error", "abort"];
+
+    let mut i = 0;
+    let mut oi = 0usize;
+    let mut ni = 0usize;
+    let mut mi = 0usize;
+    let mut pi = 0usize;
+    let mut acc = 0i32;
+
+    while i < ITERATIONS {
+        let owner = black_box(ownership[oi]);
+        let null = black_box(nullability[ni]);
+        let mutability = black_box(mutability_modes[mi]);
+        let panic = black_box(panic_boundary[pi]);
+
+        let mut score = match owner {
+            "owned" => 11,
+            "borrowed" => 7,
+            "out" => 13,
+            _ => 17,
+        };
+        score += if null == "nullable" { 5 } else { 3 };
+        score += if mutability == "mut" { 19 } else { 2 };
+        score += if panic == "abort" { 23 } else { 29 };
+        if owner == "owned" && panic == "abort" {
+            score += 31;
+        }
+        if owner == "borrowed" && null == "non_null" {
+            score += 37;
+        }
+        if owner == "inout" && mutability == "mut" {
+            score += 41;
+        }
+        acc = (acc + score) % 251;
+
+        oi += 1;
+        if oi == ownership.len() {
+            oi = 0;
+        }
+        ni += 1;
+        if ni == nullability.len() {
+            ni = 0;
+        }
+        mi += 1;
+        if mi == mutability_modes.len() {
+            mi = 0;
+        }
+        pi += 1;
+        if pi == panic_boundary.len() {
+            pi = 0;
+        }
+        i += 1;
+    }
+
+    acc
+}
+
 fn main() {
     let mode = std::env::args()
         .nth(1)
@@ -214,9 +275,10 @@ fn main() {
         "bytes" => bytes_workload(),
         "duration" => duration_workload(),
         "abi_pair" => abi_pair_workload(),
+        "c_interop_contract" => c_interop_contract_workload(),
         other => {
             eprintln!(
-                "unknown mode `{other}`; expected one of: resultx,text,capability,task_retry,arithmetic,bytes,duration,abi_pair"
+                "unknown mode `{other}`; expected one of: resultx,text,capability,task_retry,arithmetic,bytes,duration,abi_pair,c_interop_contract"
             );
             std::process::exit(2);
         }

@@ -14,6 +14,7 @@ BENCHES = [
     ("bytes_kernel", "bytes", ROOT / "examples" / "benchmarks" / "bytes_scratch_bench.fzy"),
     ("duration_kernel", "duration", ROOT / "examples" / "benchmarks" / "duration_scratch_bench.fzy"),
     ("abi_pair_kernel", "abi_pair", ROOT / "examples" / "benchmarks" / "abi_pair_scratch_bench.fzy"),
+    ("c_interop_contract_kernel", "c_interop_contract", ROOT / "examples" / "benchmarks" / "c_interop_contract_scratch_bench.fzy"),
 ]
 
 
