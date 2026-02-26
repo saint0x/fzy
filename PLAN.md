@@ -321,6 +321,7 @@
 - [✅] stable re-exports (`pub use ...`) parse/preservation support
 - [ ] Expand keyword/construct surface to full production language baseline expected by systems users (not partial/token-only support):
 - [ ] declaration constructs (`const`, `static`, mutability marker semantics, and module-level declaration parity)
+- [✅] declaration slice delivered: `let` immutability-by-default + `let mut` enforcement, plus module-level `const`/`static` declarations with typed/global resolution and native parity
 - [ ] pattern/destructuring completeness in `let` and `match` for production workflows
 - [ ] expression/control construct completeness parity across parser/type/lowering/runtime/native
 - [ ] Ensure every parser-recognized construct is end-to-end executable with native parity or hard-rejected with explicit diagnostics and fix guidance (no silent partial semantics).

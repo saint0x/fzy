@@ -221,6 +221,34 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                         );
                     }
                 }
+                ast::Item::Const(item) => {
+                    declare_symbol(
+                        &mut decls,
+                        &mut scopes,
+                        &mut positions,
+                        0,
+                        DeclInfo {
+                            name: item.name.clone(),
+                            kind: "const".to_string(),
+                            detail: format!("const {}: {}", item.name, item.ty),
+                            signature: None,
+                        },
+                    );
+                }
+                ast::Item::Static(item) => {
+                    declare_symbol(
+                        &mut decls,
+                        &mut scopes,
+                        &mut positions,
+                        0,
+                        DeclInfo {
+                            name: item.name.clone(),
+                            kind: "static".to_string(),
+                            detail: format!("static {}: {}", item.name, item.ty),
+                            signature: None,
+                        },
+                    );
+                }
                 ast::Item::Struct(item) => {
                     declare_symbol(
                         &mut decls,
@@ -1778,6 +1806,16 @@ fn semantic_decl_symbols(module: &ast::Module) -> Vec<(String, String, String)> 
                     function.return_type
                 ),
             )),
+            ast::Item::Const(item) => out.push((
+                "const".to_string(),
+                item.name.clone(),
+                format!("const {}: {}", item.name, item.ty),
+            )),
+            ast::Item::Static(item) => out.push((
+                "static".to_string(),
+                item.name.clone(),
+                format!("static {}: {}", item.name, item.ty),
+            )),
             ast::Item::Struct(item) => out.push((
                 "struct".to_string(),
                 item.name.clone(),
@@ -1827,7 +1865,7 @@ fn index_symbols_from_paths(paths: &[PathBuf]) -> Result<Vec<LspSymbol>> {
         for occ in collect_symbol_occurrences(&source, module_path) {
             if matches!(
                 occ.kind.as_str(),
-                "function" | "struct" | "enum" | "trait" | "test" | "rpc"
+                "function" | "const" | "static" | "struct" | "enum" | "trait" | "test" | "rpc"
             ) {
                 symbols.push(LspSymbol {
                     symbol: occ.name,
@@ -1895,6 +1933,12 @@ fn collect_symbol_occurrences(source: &str, path: &Path) -> Vec<SymbolOccurrence
 fn parse_decl_symbol(raw_line: &str) -> Option<(String, String, usize)> {
     let prefixes = [
         ("pub extern \"C\" fn ", "function"),
+        ("pub const ", "const"),
+        ("const ", "const"),
+        ("pub static mut ", "static"),
+        ("static mut ", "static"),
+        ("pub static ", "static"),
+        ("static ", "static"),
         ("pub fn ", "function"),
         ("fn ", "function"),
         ("struct ", "struct"),

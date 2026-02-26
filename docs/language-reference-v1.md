@@ -6,9 +6,19 @@ This document defines the v1 observable semantics contract used by the toolchain
 
 - Statements evaluate top-to-bottom within a function body.
 - `let` initializers evaluate before binding assignment.
+- `let` bindings are immutable by default.
+- `let mut <name> = ...` is required for reassignment (`=`, `+=`, `-=`, `*=`, `/=`, `%=` and bitwise compound assignments).
 - Function call arguments evaluate left-to-right.
 - `defer` registers cleanup in lexical order and executes in reverse registration order at scope exit.
 - `match` evaluates the scrutinee first, then evaluates only the selected arm expression.
+
+## Declarations
+
+- Module-level `const` declarations are supported:
+  - `const NAME: Type = <compile-time integer/char/bool expr>;`
+- Module-level `static` declarations are supported:
+  - `static NAME: Type = <compile-time integer/char/bool expr>;`
+- `static mut` is intentionally unsupported in v1 safe model.
 
 ## Integer Overflow
 
@@ -132,11 +142,10 @@ Semantics:
 ## Module And Import Ergonomics (v1 Contract)
 
 - `use path::item;` is supported.
-- Unsupported forms are hard diagnostics in v1:
-  - `use path as alias;`
-  - `use path::*;`
-  - `use path::{a, b};`
-  - `pub use ...;` re-exports
+- `use path as alias;` is supported.
+- `use path::*;` is supported.
+- `use path::{a, b};` is supported (including nested groups).
+- `pub use ...;` re-exports are supported at parser/module-import metadata level.
 - Visibility support includes `pub fn`, `pub struct`, `pub enum`, `pub trait`, and `pub impl`.
 
 ## Test Block Semantics

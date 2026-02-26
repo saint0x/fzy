@@ -44,6 +44,7 @@ pub struct TypedModule {
     pub generic_specializations: Vec<String>,
     pub call_graph: Vec<(String, String)>,
     pub typed_functions: Vec<TypedFunction>,
+    pub typed_globals: Vec<TypedGlobal>,
     pub type_errors: usize,
     pub type_error_details: Vec<String>,
     pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
@@ -52,6 +53,16 @@ pub struct TypedModule {
     pub trait_violations: Vec<String>,
     pub reference_lifetime_violations: Vec<String>,
     pub linear_type_violations: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TypedGlobal {
+    pub name: String,
+    pub ty: Type,
+    pub is_static: bool,
+    pub mutable: bool,
+    pub is_pub: bool,
+    pub const_i32: Option<i32>,
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +93,13 @@ enum Value {
 
 #[derive(Default)]
 struct SymbolScopes {
-    stack: Vec<HashMap<String, Type>>,
+    stack: Vec<HashMap<String, SymbolBinding>>,
+}
+
+#[derive(Debug, Clone)]
+struct SymbolBinding {
+    ty: Type,
+    mutable: bool,
 }
 
 impl SymbolScopes {
@@ -100,9 +117,9 @@ impl SymbolScopes {
         let _ = self.stack.pop();
     }
 
-    fn insert(&mut self, name: String, ty: Type) {
+    fn insert(&mut self, name: String, ty: Type, mutable: bool) {
         if let Some(scope) = self.stack.last_mut() {
-            scope.insert(name, ty);
+            scope.insert(name, SymbolBinding { ty, mutable });
         }
     }
 
@@ -110,7 +127,15 @@ impl SymbolScopes {
         self.stack
             .iter()
             .rev()
-            .find_map(|scope| scope.get(name).cloned())
+            .find_map(|scope| scope.get(name).map(|binding| binding.ty.clone()))
+    }
+
+    fn is_mutable(&self, name: &str) -> bool {
+        self.stack
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).map(|binding| binding.mutable))
+            .unwrap_or(false)
     }
 }
 
@@ -121,6 +146,9 @@ pub fn lower(module: &Module) -> TypedModule {
     let mut typed_functions = Vec::new();
     let mut type_errors = 0usize;
     let mut type_error_details = Vec::new();
+    let mut typed_globals = Vec::new();
+    let mut global_scope = SymbolScopes::new();
+    let mut global_const_values = HashMap::<String, i32>::new();
     let struct_defs = module
         .items
         .iter()
@@ -167,6 +195,116 @@ pub fn lower(module: &Module) -> TypedModule {
 
     for item in &module.items {
         match item {
+            ast::Item::Const(item) => {
+                let inferred = infer_expr_type(
+                    &item.value,
+                    &global_scope,
+                    &TypeCheckEnv {
+                        fn_sigs: &fn_sigs,
+                        fn_generics: &fn_generics,
+                        struct_defs: &struct_defs,
+                        enum_defs: &enum_defs,
+                        trait_impls: &trait_impls,
+                        global_types: &HashMap::new(),
+                    },
+                    &mut TypeCheckState {
+                        errors: &mut type_errors,
+                        type_error_details: &mut type_error_details,
+                        generic_specializations: &mut generic_specializations,
+                        trait_violations: &mut trait_violations,
+                    },
+                );
+                if let Some(actual) = inferred {
+                    if !type_compatible(&item.ty, &actual) {
+                        record_type_error(
+                            &mut type_errors,
+                            &mut type_error_details,
+                            format!(
+                                "const `{}` type mismatch: expected `{}`, got `{}`",
+                                item.name, item.ty, actual
+                            ),
+                        );
+                    }
+                }
+                let const_i32 = eval_const_i32(&item.value, &global_const_values);
+                if const_i32.is_none() {
+                    record_type_error(
+                        &mut type_errors,
+                        &mut type_error_details,
+                        format!(
+                            "const `{}` must be initialized with an integer/char/bool compile-time expression",
+                            item.name
+                        ),
+                    );
+                }
+                if let Some(value) = const_i32 {
+                    global_const_values.insert(item.name.clone(), value);
+                }
+                global_scope.insert(item.name.clone(), item.ty.clone(), false);
+                typed_globals.push(TypedGlobal {
+                    name: item.name.clone(),
+                    ty: item.ty.clone(),
+                    is_static: false,
+                    mutable: false,
+                    is_pub: item.is_pub,
+                    const_i32,
+                });
+            }
+            ast::Item::Static(item) => {
+                let inferred = infer_expr_type(
+                    &item.value,
+                    &global_scope,
+                    &TypeCheckEnv {
+                        fn_sigs: &fn_sigs,
+                        fn_generics: &fn_generics,
+                        struct_defs: &struct_defs,
+                        enum_defs: &enum_defs,
+                        trait_impls: &trait_impls,
+                        global_types: &HashMap::new(),
+                    },
+                    &mut TypeCheckState {
+                        errors: &mut type_errors,
+                        type_error_details: &mut type_error_details,
+                        generic_specializations: &mut generic_specializations,
+                        trait_violations: &mut trait_violations,
+                    },
+                );
+                if let Some(actual) = inferred {
+                    if !type_compatible(&item.ty, &actual) {
+                        record_type_error(
+                            &mut type_errors,
+                            &mut type_error_details,
+                            format!(
+                                "static `{}` type mismatch: expected `{}`, got `{}`",
+                                item.name, item.ty, actual
+                            ),
+                        );
+                    }
+                }
+                let const_i32 = eval_const_i32(&item.value, &global_const_values);
+                if const_i32.is_none() {
+                    record_type_error(
+                        &mut type_errors,
+                        &mut type_error_details,
+                        format!(
+                            "static `{}` must be initialized with an integer/char/bool compile-time expression",
+                            item.name
+                        ),
+                    );
+                }
+                if let Some(value) = const_i32 {
+                    global_const_values.insert(item.name.clone(), value);
+                }
+                global_scope.insert(item.name.clone(), item.ty.clone(), item.mutable);
+                typed_globals.push(TypedGlobal {
+                    name: item.name.clone(),
+                    ty: item.ty.clone(),
+                    is_static: true,
+                    mutable: item.mutable,
+                    is_pub: item.is_pub,
+                    const_i32,
+                });
+            }
             ast::Item::Function(function) => {
                 fn_sigs.insert(
                     function.name.clone(),
@@ -211,6 +349,10 @@ pub fn lower(module: &Module) -> TypedModule {
             _ => {}
         }
     }
+    let global_types = typed_globals
+        .iter()
+        .map(|item| (item.name.clone(), item.ty.clone()))
+        .collect::<HashMap<_, _>>();
 
     let function_capability_requirements = compute_function_capabilities(&typed_functions);
     for function in &mut typed_functions {
@@ -233,6 +375,7 @@ pub fn lower(module: &Module) -> TypedModule {
             struct_defs: &struct_defs,
             enum_defs: &enum_defs,
             trait_impls: &trait_impls,
+            global_types: &global_types,
         };
         let mut state = TypeCheckState {
             errors: &mut type_errors,
@@ -241,7 +384,7 @@ pub fn lower(module: &Module) -> TypedModule {
             trait_violations: &mut trait_violations,
         };
         for param in &function.params {
-            scopes.insert(param.name.clone(), param.ty.clone());
+            scopes.insert(param.name.clone(), param.ty.clone(), false);
         }
         for stmt in &function.body {
             type_check_stmt(
@@ -354,6 +497,7 @@ pub fn lower(module: &Module) -> TypedModule {
         generic_specializations: generic_specializations.into_iter().collect(),
         call_graph,
         typed_functions,
+        typed_globals,
         type_errors,
         type_error_details,
         function_capability_requirements,
@@ -2359,6 +2503,12 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
                     }
                 }
             }
+            ast::Item::Const(item) => {
+                collect_type_instantiation(&item.ty, &mut out);
+            }
+            ast::Item::Static(item) => {
+                collect_type_instantiation(&item.ty, &mut out);
+            }
             ast::Item::Struct(item) => {
                 for field in &item.fields {
                     collect_type_instantiation(&field.ty, &mut out);
@@ -2773,6 +2923,7 @@ struct TypeCheckEnv<'a> {
     struct_defs: &'a HashMap<String, ast::Struct>,
     enum_defs: &'a HashMap<String, ast::Enum>,
     trait_impls: &'a HashMap<String, Vec<Type>>,
+    global_types: &'a HashMap<String, Type>,
 }
 
 struct TypeCheckState<'a> {
@@ -2792,7 +2943,12 @@ fn type_check_stmt(
 ) {
     let enum_defs = env.enum_defs;
     match stmt {
-        Stmt::Let { name, ty, value } => {
+        Stmt::Let {
+            name,
+            mutable,
+            ty,
+            value,
+        } => {
             let inferred = infer_expr_type(value, scopes, env, state);
             let final_ty = match (ty, inferred) {
                 (Some(explicit), Some(actual)) => {
@@ -2822,9 +2978,16 @@ fn type_check_stmt(
                     Type::Void
                 }
             };
-            scopes.insert(name.clone(), final_ty);
+            scopes.insert(name.clone(), final_ty, *mutable);
         }
         Stmt::Assign { target, value } => {
+            if !scopes.is_mutable(target) {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!("assignment to immutable binding `{target}`; declare with `let mut`"),
+                );
+            }
             let target_ty = scopes.get(target);
             let value_ty = infer_expr_type(value, scopes, env, state);
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
@@ -2841,6 +3004,15 @@ fn type_check_stmt(
             }
         }
         Stmt::CompoundAssign { target, value, .. } => {
+            if !scopes.is_mutable(target) {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!(
+                        "compound assignment to immutable binding `{target}`; declare with `let mut`"
+                    ),
+                );
+            }
             let target_ty = scopes.get(target);
             let value_ty = infer_expr_type(value, scopes, env, state);
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
@@ -2965,7 +3137,7 @@ fn type_check_stmt(
                 },
             };
             scopes.push();
-            scopes.insert(binding.clone(), binding_ty);
+            scopes.insert(binding.clone(), binding_ty, false);
             for stmt in body {
                 type_check_stmt(stmt, scopes, env, loop_depth + 1, expected_return, state);
             }
@@ -3081,6 +3253,7 @@ fn infer_expr_type(
     let struct_defs = env.struct_defs;
     let enum_defs = env.enum_defs;
     let trait_impls = env.trait_impls;
+    let global_types = env.global_types;
     fn resolve_function_ref_name(
         fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
         candidate: &str,
@@ -3147,6 +3320,9 @@ fn infer_expr_type(
         Expr::Ident(name) => {
             if let Some(found) = scopes.get(name) {
                 return Some(found);
+            }
+            if let Some(found) = global_types.get(name) {
+                return Some(found.clone());
             }
             if let Some(fn_ty) = function_ref_type(fn_sigs, name) {
                 return Some(fn_ty);
@@ -4419,6 +4595,78 @@ fn record_type_error(errors: &mut usize, type_error_details: &mut Vec<String>, d
     type_error_details.push(detail);
 }
 
+fn eval_const_i32(expr: &Expr, known: &HashMap<String, i32>) -> Option<i32> {
+    match expr {
+        Expr::Int(v) => i32::try_from(*v).ok(),
+        Expr::Bool(v) => Some(if *v { 1 } else { 0 }),
+        Expr::Char(v) => Some(*v as i32),
+        Expr::Ident(name) => known.get(name).copied(),
+        Expr::Group(inner) => eval_const_i32(inner, known),
+        Expr::Unary { op, expr } => {
+            let value = eval_const_i32(expr, known)?;
+            Some(match op {
+                ast::UnaryOp::Plus => value,
+                ast::UnaryOp::Neg => -value,
+                ast::UnaryOp::BitNot => !value,
+                ast::UnaryOp::Not => {
+                    if value == 0 {
+                        1
+                    } else {
+                        0
+                    }
+                }
+            })
+        }
+        Expr::Binary { op, left, right } => {
+            let lhs = eval_const_i32(left, known)?;
+            let rhs = eval_const_i32(right, known)?;
+            Some(match op {
+                ast::BinaryOp::Add => lhs.wrapping_add(rhs),
+                ast::BinaryOp::Sub => lhs.wrapping_sub(rhs),
+                ast::BinaryOp::Mul => lhs.wrapping_mul(rhs),
+                ast::BinaryOp::Div => {
+                    if rhs == 0 {
+                        return None;
+                    }
+                    lhs.wrapping_div(rhs)
+                }
+                ast::BinaryOp::Mod => {
+                    if rhs == 0 {
+                        return None;
+                    }
+                    lhs.wrapping_rem(rhs)
+                }
+                ast::BinaryOp::BitAnd => lhs & rhs,
+                ast::BinaryOp::BitOr => lhs | rhs,
+                ast::BinaryOp::BitXor => lhs ^ rhs,
+                ast::BinaryOp::Shl => lhs.wrapping_shl(rhs as u32),
+                ast::BinaryOp::Shr => lhs.wrapping_shr(rhs as u32),
+                ast::BinaryOp::And => {
+                    if lhs != 0 && rhs != 0 {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                ast::BinaryOp::Or => {
+                    if lhs != 0 || rhs != 0 {
+                        1
+                    } else {
+                        0
+                    }
+                }
+                ast::BinaryOp::Lt => (lhs < rhs) as i32,
+                ast::BinaryOp::Lte => (lhs <= rhs) as i32,
+                ast::BinaryOp::Gt => (lhs > rhs) as i32,
+                ast::BinaryOp::Gte => (lhs >= rhs) as i32,
+                ast::BinaryOp::Eq => (lhs == rhs) as i32,
+                ast::BinaryOp::Neq => (lhs != rhs) as i32,
+            })
+        }
+        _ => None,
+    }
+}
+
 fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
     let map = functions
         .iter()
@@ -5412,6 +5660,71 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn assignment_to_immutable_binding_reports_error() {
+        let source = r#"
+            fn main() -> i32 {
+                let v: i32 = 0;
+                v = 1;
+                return v;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("assignment to immutable binding")));
+    }
+
+    #[test]
+    fn assignment_to_mutable_binding_typechecks() {
+        let source = r#"
+            fn main() -> i32 {
+                let mut v: i32 = 0;
+                v = 1;
+                v += 2;
+                return v;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn const_and_static_are_resolved_in_function_scope() {
+        let source = r#"
+            const MAGIC: i32 = 7;
+            static LIMIT: i32 = MAGIC + 3;
+            fn main() -> i32 {
+                let x: i32 = MAGIC;
+                let y: i32 = LIMIT;
+                return x + y;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed.typed_globals.iter().any(|item| item.name == "MAGIC"));
+        assert!(typed.typed_globals.iter().any(|item| item.name == "LIMIT"));
+    }
+
+    #[test]
+    fn const_initializer_requires_compile_time_integer_expression() {
+        let source = r#"
+            fn runtime() -> i32 { return 1; }
+            const BAD: i32 = runtime();
+            fn main() -> i32 { return BAD; }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed.type_error_details.iter().any(|detail| detail
+            .contains("must be initialized with an integer/char/bool compile-time expression")));
     }
 
     #[test]

@@ -16,11 +16,30 @@ pub struct Module {
 #[derive(Debug, Clone)]
 pub enum Item {
     Function(Function),
+    Const(ConstItem),
+    Static(StaticItem),
     Struct(Struct),
     Enum(Enum),
     Trait(Trait),
     Impl(Impl),
     Test(TestBlock),
+}
+
+#[derive(Debug, Clone)]
+pub struct ConstItem {
+    pub name: String,
+    pub ty: Type,
+    pub value: Expr,
+    pub is_pub: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct StaticItem {
+    pub name: String,
+    pub ty: Type,
+    pub value: Expr,
+    pub is_pub: bool,
+    pub mutable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +129,7 @@ pub struct TestBlock {
 pub enum Stmt {
     Let {
         name: String,
+        mutable: bool,
         ty: Option<Type>,
         value: Expr,
     },

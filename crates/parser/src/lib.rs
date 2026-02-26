@@ -17,6 +17,8 @@ enum TokenKind {
     Str(String),
     KwFn,
     KwPub,
+    KwConst,
+    KwStatic,
     KwExtern,
     KwAsync,
     KwAwait,
@@ -266,6 +268,14 @@ impl Parser {
                     self.parse_mod_decl(true);
                     return None;
                 }
+                Some(TokenKind::KwConst) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    return self.parse_const(true);
+                }
+                Some(TokenKind::KwStatic) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    return self.parse_static(true);
+                }
                 Some(TokenKind::KwStruct) => {
                     let _ = self.consume(&TokenKind::KwPub);
                     return self.parse_struct(true);
@@ -307,6 +317,12 @@ impl Parser {
         }
         if self.at(&TokenKind::KwStruct) {
             return self.parse_struct(false);
+        }
+        if self.at(&TokenKind::KwConst) {
+            return self.parse_const(false);
+        }
+        if self.at(&TokenKind::KwStatic) {
+            return self.parse_static(false);
         }
         if self.at(&TokenKind::KwEnum) {
             return self.parse_enum(false);
@@ -582,6 +598,57 @@ impl Parser {
         }))
     }
 
+    fn parse_const(&mut self, is_pub: bool) -> Option<ast::Item> {
+        let _ = self.consume(&TokenKind::KwConst);
+        let name = self.expect_ident("expected const name")?;
+        if !self.consume(&TokenKind::Colon) {
+            self.push_diag_here("expected `:` in const declaration");
+            return None;
+        }
+        let ty = self.parse_type()?;
+        if !self.consume(&TokenKind::Eq) {
+            self.push_diag_here("expected `=` in const declaration");
+            return None;
+        }
+        let value = self.parse_expr(0)?;
+        let _ = self.consume(&TokenKind::Semi);
+        Some(ast::Item::Const(ast::ConstItem {
+            name,
+            ty,
+            value,
+            is_pub,
+        }))
+    }
+
+    fn parse_static(&mut self, is_pub: bool) -> Option<ast::Item> {
+        let _ = self.consume(&TokenKind::KwStatic);
+        let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
+        if mutable {
+            self.push_diag_here(
+                "`static mut` is not supported in v1; use explicit owned runtime state instead",
+            );
+        }
+        let name = self.expect_ident("expected static name")?;
+        if !self.consume(&TokenKind::Colon) {
+            self.push_diag_here("expected `:` in static declaration");
+            return None;
+        }
+        let ty = self.parse_type()?;
+        if !self.consume(&TokenKind::Eq) {
+            self.push_diag_here("expected `=` in static declaration");
+            return None;
+        }
+        let value = self.parse_expr(0)?;
+        let _ = self.consume(&TokenKind::Semi);
+        Some(ast::Item::Static(ast::StaticItem {
+            name,
+            ty,
+            value,
+            is_pub,
+            mutable,
+        }))
+    }
+
     fn parse_enum(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwEnum);
         let name = self.expect_ident("expected enum name")?;
@@ -819,6 +886,7 @@ impl Parser {
 
     fn parse_stmt(&mut self) -> Option<Stmt> {
         if self.consume(&TokenKind::KwLet) {
+            let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
             let name = self.expect_ident("expected let binding name")?;
             let ty = if self.consume(&TokenKind::Colon) {
                 self.parse_type()
@@ -831,7 +899,12 @@ impl Parser {
             }
             let value = self.parse_expr(0)?;
             let _ = self.consume(&TokenKind::Semi);
-            return Some(Stmt::Let { name, ty, value });
+            return Some(Stmt::Let {
+                name,
+                mutable,
+                ty,
+                value,
+            });
         }
 
         if self.consume(&TokenKind::KwIf) {
@@ -1036,6 +1109,7 @@ impl Parser {
 
     fn parse_for_clause_stmt(&mut self, expect_trailing_semi: bool) -> Option<Stmt> {
         let stmt = if self.consume(&TokenKind::KwLet) {
+            let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
             let name = self.expect_ident("expected let binding name")?;
             let ty = if self.consume(&TokenKind::Colon) {
                 self.parse_type()
@@ -1047,7 +1121,12 @@ impl Parser {
                 return None;
             }
             let value = self.parse_expr(0)?;
-            Stmt::Let { name, ty, value }
+            Stmt::Let {
+                name,
+                mutable,
+                ty,
+                value,
+            }
         } else if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_)))
             && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Eq)
         {
@@ -1728,6 +1807,8 @@ impl Parser {
             TokenKind::Ident(value) => Some(value),
             TokenKind::KwFn => Some("fn".to_string()),
             TokenKind::KwPub => Some("pub".to_string()),
+            TokenKind::KwConst => Some("const".to_string()),
+            TokenKind::KwStatic => Some("static".to_string()),
             TokenKind::KwExtern => Some("extern".to_string()),
             TokenKind::KwAsync => Some("async".to_string()),
             TokenKind::KwAwait => Some("await".to_string()),
@@ -1799,6 +1880,8 @@ impl Parser {
             TokenKind::KwMod,
             TokenKind::KwFn,
             TokenKind::KwPub,
+            TokenKind::KwConst,
+            TokenKind::KwStatic,
             TokenKind::KwExtern,
             TokenKind::KwAsync,
             TokenKind::KwRpc,
@@ -2405,6 +2488,8 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
     match ident {
         "fn" => TokenKind::KwFn,
         "pub" => TokenKind::KwPub,
+        "const" => TokenKind::KwConst,
+        "static" => TokenKind::KwStatic,
         "extern" => TokenKind::KwExtern,
         "async" => TokenKind::KwAsync,
         "await" => TokenKind::KwAwait,
@@ -3016,6 +3101,34 @@ mod tests {
     }
 
     #[test]
+    fn parses_mutable_let_bindings() {
+        let source = r#"
+            fn main() -> i32 {
+                let mut counter: i32 = 0;
+                counter = counter + 1;
+                return counter;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                mutable: true,
+                name,
+                ..
+            } if name == "counter"
+        )));
+    }
+
+    #[test]
     fn test_block_body_is_preserved() {
         let source = r#"
             test "smoke" {
@@ -3038,6 +3151,8 @@ mod tests {
     #[test]
     fn parses_function_type_and_expanded_pub_items() {
         let source = r#"
+            pub const MAGIC: i32 = 7;
+            pub static COUNTER: i32 = 0;
             pub struct Exposed { value: i32 }
             pub enum Flag { On, Off }
             pub trait Show { fn show(v: i32) -> i32; }
@@ -3077,6 +3192,23 @@ mod tests {
             .items
             .iter()
             .any(|item| matches!(item, ast::Item::Impl(ast::Impl { is_pub: true, .. }))));
+        assert!(module.items.iter().any(|item| matches!(
+            item,
+            ast::Item::Const(ast::ConstItem {
+                name,
+                is_pub: true,
+                ..
+            }) if name == "MAGIC"
+        )));
+        assert!(module.items.iter().any(|item| matches!(
+            item,
+            ast::Item::Static(ast::StaticItem {
+                name,
+                is_pub: true,
+                mutable: false,
+                ..
+            }) if name == "COUNTER"
+        )));
     }
 
     #[test]
@@ -3103,6 +3235,17 @@ mod tests {
         assert!(module.imports.iter().any(|entry| entry == "app::db::read"));
         assert!(module.imports.iter().any(|entry| entry == "app::db::write"));
         assert!(module.imports.iter().any(|entry| entry == "app::os::*"));
+    }
+
+    #[test]
+    fn rejects_static_mut_in_v1() {
+        let source = r#"
+            static mut COUNTER: i32 = 0;
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("`static mut` is not supported in v1")));
     }
 
     #[test]

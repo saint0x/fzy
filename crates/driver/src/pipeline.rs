@@ -2418,6 +2418,7 @@ impl ControlFlowBuilder {
                             current,
                             ast::Stmt::Let {
                                 name: binding.clone(),
+                                mutable: true,
                                 ty: Some(ast::Type::Int {
                                     signed: true,
                                     bits: 32,
@@ -2580,6 +2581,7 @@ impl ControlFlowBuilder {
                         current,
                         ast::Stmt::Let {
                             name: scrutinee_name.clone(),
+                            mutable: false,
                             ty: None,
                             value: scrutinee.clone(),
                         },
@@ -2897,6 +2899,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
         out.push('\n');
     }
     let string_literal_ids = build_string_literal_ids(&collect_string_literals(fir));
+    let global_const_i32 = build_global_const_i32_map(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let mut task_ref_ids = HashMap::<String, i32>::new();
     for (index, symbol) in spawn_task_symbols.iter().enumerate() {
@@ -2909,6 +2912,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
         let lowered = llvm_emit_function(
             function,
             forced_main_return.filter(|_| function.name == "main"),
+            &global_const_i32,
             &string_literal_ids,
             &task_ref_ids,
         )
@@ -3033,15 +3037,17 @@ struct LlvmFuncCtx {
     next_value: usize,
     next_label: usize,
     slots: HashMap<String, String>,
+    globals: HashMap<String, i32>,
     code: String,
 }
 
 impl LlvmFuncCtx {
-    fn new() -> Self {
+    fn new(globals: HashMap<String, i32>) -> Self {
         Self {
             next_value: 0,
             next_label: 0,
             slots: HashMap::new(),
+            globals,
             code: String::new(),
         }
     }
@@ -3062,6 +3068,7 @@ impl LlvmFuncCtx {
 fn llvm_emit_function(
     function: &hir::TypedFunction,
     forced_return: Option<i32>,
+    globals: &HashMap<String, i32>,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
 ) -> Result<String> {
@@ -3072,7 +3079,7 @@ fn llvm_emit_function(
         .map(|(i, _)| format!("i32 %arg{i}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut ctx = LlvmFuncCtx::new();
+    let mut ctx = LlvmFuncCtx::new(globals.clone());
     let mut out = format!(
         "define i32 @{}({params}) {{\nentry:\n",
         native_mangle_symbol(&function.name)
@@ -3260,6 +3267,8 @@ fn llvm_emit_expr(
                 ctx.code
                     .push_str(&format!("  {val} = load i32, ptr {slot}\n"));
                 val
+            } else if let Some(value) = ctx.globals.get(name).copied() {
+                value.to_string()
             } else if let Some(task_ref) = task_ref_ids.get(name).copied() {
                 task_ref.to_string()
             } else {
@@ -3679,6 +3688,13 @@ fn build_string_literal_ids(literals: &[String]) -> HashMap<String, i32> {
         .iter()
         .enumerate()
         .map(|(index, value)| (value.clone(), index as i32 + 1))
+        .collect()
+}
+
+fn build_global_const_i32_map(fir: &fir::FirModule) -> HashMap<String, i32> {
+    fir.typed_globals
+        .iter()
+        .filter_map(|item| item.const_i32.map(|value| (item.name.clone(), value)))
         .collect()
 }
 
@@ -4362,6 +4378,7 @@ fn emit_native_libraries_cranelift(
 
     let string_literals = collect_string_literals(fir);
     let string_literal_ids = build_string_literal_ids(&string_literals);
+    let global_const_i32 = build_global_const_i32_map(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -4487,6 +4504,7 @@ fn emit_native_libraries_cranelift(
                 function_signatures: &function_signatures,
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
+                globals: &global_const_i32,
             };
             clif_emit_cfg(
                 &mut builder,
@@ -4822,6 +4840,7 @@ fn emit_native_artifact_cranelift(
     let bin_path = build_dir.join(fir.name.as_str());
     let string_literals = collect_string_literals(fir);
     let string_literal_ids = build_string_literal_ids(&string_literals);
+    let global_const_i32 = build_global_const_i32_map(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -4971,6 +4990,7 @@ fn emit_native_artifact_cranelift(
                 function_signatures: &function_signatures,
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
+                globals: &global_const_i32,
             };
             clif_emit_cfg(
                 &mut builder,
@@ -5051,6 +5071,7 @@ struct ClifLoweringCtx<'a> {
     function_signatures: &'a HashMap<String, ClifFunctionSignature>,
     string_literal_ids: &'a HashMap<String, i32>,
     task_ref_ids: &'a HashMap<String, i32>,
+    globals: &'a HashMap<String, i32>,
 }
 
 fn clif_emit_cfg(
@@ -5356,6 +5377,11 @@ fn clif_emit_expr(
                 ClifValue {
                     value: builder.use_var(binding.var),
                     ty: binding.ty,
+                }
+            } else if let Some(value) = ctx.globals.get(name).copied() {
+                ClifValue {
+                    value: builder.ins().iconst(default_int_clif_type(), value as i64),
+                    ty: default_int_clif_type(),
                 }
             } else if let Some(task_ref) = ctx.task_ref_ids.get(name).copied() {
                 ClifValue {
@@ -12032,6 +12058,51 @@ mod tests {
                 .expect("llvm artifact output should exist"),
         );
         assert_eq!(cranelift_exit, llvm_exit);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_const_static_globals_execute_consistently() {
+        let project_name = format!(
+            "fozzylang-const-static-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "const MAGIC: i32 = 7;\nstatic LIMIT: i32 = MAGIC + 3;\nfn main() -> i32 {\n    return MAGIC + LIMIT\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 17);
 
         let _ = std::fs::remove_dir_all(root);
     }
