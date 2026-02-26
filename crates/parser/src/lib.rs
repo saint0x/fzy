@@ -623,11 +623,6 @@ impl Parser {
     fn parse_static(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwStatic);
         let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
-        if mutable {
-            self.push_diag_here(
-                "`static mut` is not supported in v1; use explicit owned runtime state instead",
-            );
-        }
         let name = self.expect_ident("expected static name")?;
         if !self.consume(&TokenKind::Colon) {
             self.push_diag_here("expected `:` in static declaration");
@@ -3301,14 +3296,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_static_mut_in_v1() {
+    fn parses_static_mut_declaration() {
         let source = r#"
             static mut COUNTER: i32 = 0;
         "#;
-        let diagnostics = parse(source, "main").expect_err("parse should fail");
-        assert!(diagnostics
-            .iter()
-            .any(|diag| diag.message.contains("`static mut` is not supported in v1")));
+        let module = parse(source, "main").expect("parse should succeed");
+        let parsed = module.items.iter().find_map(|item| match item {
+            ast::Item::Static(item) if item.name == "COUNTER" => Some(item),
+            _ => None,
+        });
+        assert!(parsed.is_some_and(|item| item.mutable));
     }
 
     #[test]

@@ -13,7 +13,7 @@
 | `let_pattern_destructuring` | partial | Variant-pattern destructuring in `let` lowers natively for literal variant initializers; `match` variant payload bindings lower for literal enum scrutinees without guards and are explicitly diagnosed otherwise; tuple/struct destructuring and full pattern family parity remain open. |
 | `const_declaration_surface` | implemented | Module-level `const NAME: Type = expr;` is parsed/typed and resolved in function scope. |
 | `static_declaration_surface` | implemented | Module-level `static NAME: Type = expr;` is parsed/typed and resolved in function scope. |
-| `static_mut_surface` | missing | `static mut` remains intentionally unsupported in v1 safe model. |
+| `static_mut_surface` | implemented | `static mut NAME: Type = const_expr;` parses/typed-checks and lowers through native backends as mutable global storage. |
 | `expanded_item_visibility_struct_enum_trait_impl` | implemented | `pub` visibility now applies to `struct`/`enum`/`trait`/`impl` items in AST/parser. |
 | `closure_lambda_values` | implemented | Typed lambda expressions with lexical capture are supported in parser/HIR/FIR/evaluator and lower natively for direct `let`-bound closure invocation; unsupported non-`let` closure placements fail with explicit native diagnostics. |
 | `module_import_alias_reexport_wildcard_support` | implemented | Ergonomic alias/re-export/wildcard forms are supported in parser/module import metadata. |

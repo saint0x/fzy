@@ -101,9 +101,10 @@ def main() -> int:
         "static_declaration_surface": "implemented"
         if "fn parse_static(" in parser_src and "ast::Item::Static" in parser_src
         else "missing",
-        "static_mut_surface": "missing"
-        if "`static mut` is not supported in v1" in parser_src
-        else "implemented",
+        "static_mut_surface": "implemented"
+        if "let mutable = self.consume(&TokenKind::Ident(\"mut\".to_string()));" in parser_src
+        and "pub mutable: bool," in ast_src
+        else "missing",
         "closure_lambda_values": "implemented" if has_closure else "missing",
         "expanded_item_visibility_struct_enum_trait_impl": "implemented"
         if "pub is_pub: bool" in ast_src

@@ -322,8 +322,9 @@
 - [✅] grouped imports (`use path::{a, b}`)
 - [✅] stable re-exports (`pub use ...`) parse/preservation support
 - [ ] Expand keyword/construct surface to full production language baseline expected by systems users (not partial/token-only support):
-- [ ] declaration constructs (`const`, `static`, mutability marker semantics, and module-level declaration parity)
+- [✅] declaration constructs (`const`, `static`, mutability marker semantics, and module-level declaration parity)
 - [✅] declaration slice delivered: `let` immutability-by-default + `let mut` enforcement, plus module-level `const`/`static` declarations with typed/global resolution and native parity
+- [✅] `static mut` declaration semantics now parse/type/lower as mutable global storage in native backends (no compatibility shim).
 - [ ] pattern/destructuring completeness in `let` and `match` for production workflows
 - [✅] pattern/destructuring slice delivered: first-class `let` pattern statements (`let Enum::Variant(...) = ...`) with scoped pattern bindings in `let` and `match`, HIR type-checking/evaluator binding semantics, FIR/driver traversal support, and parser/HIR regressions.
 - [✅] native `match` payload-binding slice delivered for literal enum scrutinees without guards, with explicit diagnostics for unsupported binding shapes.

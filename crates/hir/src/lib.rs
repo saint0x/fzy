@@ -215,6 +215,7 @@ pub fn lower(module: &Module) -> TypedModule {
                         enum_defs: &enum_defs,
                         trait_impls: &trait_impls,
                         global_types: &HashMap::new(),
+                        global_mutability: &HashMap::new(),
                     },
                     &mut TypeCheckState {
                         errors: &mut type_errors,
@@ -270,6 +271,7 @@ pub fn lower(module: &Module) -> TypedModule {
                         enum_defs: &enum_defs,
                         trait_impls: &trait_impls,
                         global_types: &HashMap::new(),
+                        global_mutability: &HashMap::new(),
                     },
                     &mut TypeCheckState {
                         errors: &mut type_errors,
@@ -362,6 +364,10 @@ pub fn lower(module: &Module) -> TypedModule {
         .iter()
         .map(|item| (item.name.clone(), item.ty.clone()))
         .collect::<HashMap<_, _>>();
+    let global_mutability = typed_globals
+        .iter()
+        .map(|item| (item.name.clone(), item.mutable))
+        .collect::<HashMap<_, _>>();
 
     let function_capability_requirements = compute_function_capabilities(&typed_functions);
     for function in &mut typed_functions {
@@ -385,6 +391,7 @@ pub fn lower(module: &Module) -> TypedModule {
             enum_defs: &enum_defs,
             trait_impls: &trait_impls,
             global_types: &global_types,
+            global_mutability: &global_mutability,
         };
         let mut state = TypeCheckState {
             errors: &mut type_errors,
@@ -2980,6 +2987,7 @@ struct TypeCheckEnv<'a> {
     enum_defs: &'a HashMap<String, ast::Enum>,
     trait_impls: &'a HashMap<String, Vec<Type>>,
     global_types: &'a HashMap<String, Type>,
+    global_mutability: &'a HashMap<String, bool>,
 }
 
 struct TypeCheckState<'a> {
@@ -3087,14 +3095,16 @@ fn type_check_stmt(
             );
         }
         Stmt::Assign { target, value } => {
-            if !scopes.is_mutable(target) {
+            let target_mutable = scopes.is_mutable(target)
+                || env.global_mutability.get(target).copied().unwrap_or(false);
+            if !target_mutable {
                 record_type_error(
                     state.errors,
                     state.type_error_details,
                     format!("assignment to immutable binding `{target}`; declare with `let mut`"),
                 );
             }
-            let target_ty = scopes.get(target);
+            let target_ty = scopes.get(target).or_else(|| env.global_types.get(target).cloned());
             let value_ty = infer_expr_type(value, scopes, env, state);
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
                 if !type_compatible(&target_ty, &value_ty) {
@@ -3110,7 +3120,9 @@ fn type_check_stmt(
             }
         }
         Stmt::CompoundAssign { target, value, .. } => {
-            if !scopes.is_mutable(target) {
+            let target_mutable = scopes.is_mutable(target)
+                || env.global_mutability.get(target).copied().unwrap_or(false);
+            if !target_mutable {
                 record_type_error(
                     state.errors,
                     state.type_error_details,
@@ -3119,7 +3131,7 @@ fn type_check_stmt(
                     ),
                 );
             }
-            let target_ty = scopes.get(target);
+            let target_ty = scopes.get(target).or_else(|| env.global_types.get(target).cloned());
             let value_ty = infer_expr_type(value, scopes, env, state);
             if let (Some(target_ty), Some(value_ty)) = (target_ty, value_ty) {
                 if !type_compatible(&target_ty, &value_ty) {

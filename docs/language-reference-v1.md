@@ -18,7 +18,7 @@ This document defines the v1 observable semantics contract used by the toolchain
   - `const NAME: Type = <compile-time integer/char/bool expr>;`
 - Module-level `static` declarations are supported:
   - `static NAME: Type = <compile-time integer/char/bool expr>;`
-- `static mut` is intentionally unsupported in v1 safe model.
+- `static mut` is supported for module-level mutable integer globals and lowers in native backends.
 
 ## Integer Overflow
 

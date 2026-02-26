@@ -4,10 +4,10 @@ use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use cranelift_codegen::ir::condcodes::IntCC;
-use cranelift_codegen::ir::{types, AbiParam, InstBuilder, Type as ClifType};
+use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlags, Type as ClifType};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::{default_libcall_names, Linkage, Module};
+use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -3038,6 +3038,18 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
     }
     let string_literal_ids = build_string_literal_ids(&collect_string_literals(fir));
     let global_const_i32 = build_global_const_i32_map(fir);
+    let mutable_static_i32 = build_mutable_static_i32_map(fir);
+    let mut mutable_global_symbols = HashMap::<String, String>::new();
+    let mut mutable_globals_sorted = mutable_static_i32.into_iter().collect::<Vec<_>>();
+    mutable_globals_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, value) in &mutable_globals_sorted {
+        let symbol = llvm_static_symbol_name(name);
+        let _ = writeln!(&mut out, "@{symbol} = global i32 {value}");
+        mutable_global_symbols.insert(name.clone(), symbol);
+    }
+    if !mutable_global_symbols.is_empty() {
+        out.push('\n');
+    }
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let mut task_ref_ids = HashMap::<String, i32>::new();
     for (index, symbol) in spawn_task_symbols.iter().enumerate() {
@@ -3051,6 +3063,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
             function,
             forced_main_return.filter(|_| function.name == "main"),
             &global_const_i32,
+            &mutable_global_symbols,
             &string_literal_ids,
             &task_ref_ids,
         )
@@ -3177,17 +3190,19 @@ struct LlvmFuncCtx {
     slots: HashMap<String, String>,
     closures: HashMap<String, LlvmClosureBinding>,
     globals: HashMap<String, i32>,
+    mutable_globals: HashMap<String, String>,
     code: String,
 }
 
 impl LlvmFuncCtx {
-    fn new(globals: HashMap<String, i32>) -> Self {
+    fn new(globals: HashMap<String, i32>, mutable_globals: HashMap<String, String>) -> Self {
         Self {
             next_value: 0,
             next_label: 0,
             slots: HashMap::new(),
             closures: HashMap::new(),
             globals,
+            mutable_globals,
             code: String::new(),
         }
     }
@@ -3209,6 +3224,7 @@ fn llvm_emit_function(
     function: &hir::TypedFunction,
     forced_return: Option<i32>,
     globals: &HashMap<String, i32>,
+    mutable_globals: &HashMap<String, String>,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
 ) -> Result<String> {
@@ -3219,7 +3235,7 @@ fn llvm_emit_function(
         .map(|(i, _)| format!("i32 %arg{i}"))
         .collect::<Vec<_>>()
         .join(", ");
-    let mut ctx = LlvmFuncCtx::new(globals.clone());
+    let mut ctx = LlvmFuncCtx::new(globals.clone(), mutable_globals.clone());
     let mut out = format!(
         "define i32 @{}({params}) {{\nentry:\n",
         native_mangle_symbol(&function.name)
@@ -3497,6 +3513,11 @@ fn llvm_emit_linear_stmts(
             }
             ast::Stmt::Assign { target, value } => {
                 let value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                if let Some(symbol) = ctx.mutable_globals.get(target).cloned() {
+                    ctx.code
+                        .push_str(&format!("  store i32 {value}, ptr @{symbol}\n"));
+                    continue;
+                }
                 let slot = ctx
                     .slots
                     .entry(target.clone())
@@ -3505,8 +3526,7 @@ fn llvm_emit_linear_stmts(
                 if !ctx.code.contains(&format!("{slot} = alloca i32")) {
                     ctx.code.push_str(&format!("  {slot} = alloca i32\n"));
                 }
-                ctx.code
-                    .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+                ctx.code.push_str(&format!("  store i32 {value}, ptr {slot}\n"));
             }
             ast::Stmt::CompoundAssign { target, op, value } => {
                 let combined_expr = ast::Expr::Binary {
@@ -3515,6 +3535,11 @@ fn llvm_emit_linear_stmts(
                     right: Box::new(value.clone()),
                 };
                 let value = llvm_emit_expr(&combined_expr, ctx, string_literal_ids, task_ref_ids);
+                if let Some(symbol) = ctx.mutable_globals.get(target).cloned() {
+                    ctx.code
+                        .push_str(&format!("  store i32 {value}, ptr @{symbol}\n"));
+                    continue;
+                }
                 let slot = ctx
                     .slots
                     .entry(target.clone())
@@ -3523,8 +3548,7 @@ fn llvm_emit_linear_stmts(
                 if !ctx.code.contains(&format!("{slot} = alloca i32")) {
                     ctx.code.push_str(&format!("  {slot} = alloca i32\n"));
                 }
-                ctx.code
-                    .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+                ctx.code.push_str(&format!("  store i32 {value}, ptr {slot}\n"));
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -3575,6 +3599,11 @@ fn llvm_emit_expr(
                 let val = ctx.value();
                 ctx.code
                     .push_str(&format!("  {val} = load i32, ptr {slot}\n"));
+                val
+            } else if let Some(symbol) = ctx.mutable_globals.get(name).cloned() {
+                let val = ctx.value();
+                ctx.code
+                    .push_str(&format!("  {val} = load i32, ptr @{symbol}\n"));
                 val
             } else if let Some(value) = ctx.globals.get(name).copied() {
                 value.to_string()
@@ -4034,8 +4063,31 @@ fn build_string_literal_ids(literals: &[String]) -> HashMap<String, i32> {
 fn build_global_const_i32_map(fir: &fir::FirModule) -> HashMap<String, i32> {
     fir.typed_globals
         .iter()
-        .filter_map(|item| item.const_i32.map(|value| (item.name.clone(), value)))
+        .filter_map(|item| {
+            if item.is_static && item.mutable {
+                None
+            } else {
+                item.const_i32.map(|value| (item.name.clone(), value))
+            }
+        })
         .collect()
+}
+
+fn build_mutable_static_i32_map(fir: &fir::FirModule) -> HashMap<String, i32> {
+    fir.typed_globals
+        .iter()
+        .filter_map(|item| {
+            if item.is_static && item.mutable {
+                item.const_i32.map(|value| (item.name.clone(), value))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn llvm_static_symbol_name(name: &str) -> String {
+    format!("fz_static_{}", native_mangle_symbol(name))
 }
 
 fn collect_spawn_task_symbols(fir: &fir::FirModule) -> Vec<String> {
@@ -4723,6 +4775,7 @@ fn emit_native_libraries_cranelift(
     let string_literals = collect_string_literals(fir);
     let string_literal_ids = build_string_literal_ids(&string_literals);
     let global_const_i32 = build_global_const_i32_map(fir);
+    let mutable_static_i32 = build_mutable_static_i32_map(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -4752,6 +4805,21 @@ fn emit_native_libraries_cranelift(
 
     let mut function_ids = HashMap::new();
     let mut function_signatures = HashMap::new();
+    let mut mutable_global_data_ids = HashMap::<String, cranelift_module::DataId>::new();
+    let mut mutable_globals_sorted = mutable_static_i32.into_iter().collect::<Vec<_>>();
+    mutable_globals_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, value) in mutable_globals_sorted {
+        let symbol = llvm_static_symbol_name(&name);
+        let data_id = module
+            .declare_data(&symbol, Linkage::Local, true, false)
+            .map_err(|error| anyhow!("failed declaring mutable static `{name}` data: {error}"))?;
+        let mut data = DataDescription::new();
+        data.define((value as i32).to_le_bytes().to_vec().into_boxed_slice());
+        module
+            .define_data(data_id, &data)
+            .map_err(|error| anyhow!("failed defining mutable static `{name}` data: {error}"))?;
+        mutable_global_data_ids.insert(name, data_id);
+    }
     for function in &fir.typed_functions {
         let mut sig = module.make_signature();
         let mut param_tys = Vec::new();
@@ -4849,6 +4917,7 @@ fn emit_native_libraries_cranelift(
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
                 globals: &global_const_i32,
+                mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
             };
             clif_emit_cfg(
@@ -5236,6 +5305,23 @@ fn emit_native_artifact_cranelift(
 
     let mut function_ids = HashMap::new();
     let mut function_signatures = HashMap::new();
+    let mut mutable_global_data_ids = HashMap::<String, cranelift_module::DataId>::new();
+    let mut mutable_globals_sorted = build_mutable_static_i32_map(fir)
+        .into_iter()
+        .collect::<Vec<_>>();
+    mutable_globals_sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, value) in mutable_globals_sorted {
+        let symbol = llvm_static_symbol_name(&name);
+        let data_id = module
+            .declare_data(&symbol, Linkage::Local, true, false)
+            .map_err(|error| anyhow!("failed declaring mutable static `{name}` data: {error}"))?;
+        let mut data = DataDescription::new();
+        data.define((value as i32).to_le_bytes().to_vec().into_boxed_slice());
+        module
+            .define_data(data_id, &data)
+            .map_err(|error| anyhow!("failed defining mutable static `{name}` data: {error}"))?;
+        mutable_global_data_ids.insert(name, data_id);
+    }
     for function in &fir.typed_functions {
         let mut sig = module.make_signature();
         let mut param_tys = Vec::new();
@@ -5336,6 +5422,7 @@ fn emit_native_artifact_cranelift(
                 string_literal_ids: &string_literal_ids,
                 task_ref_ids: &task_ref_ids,
                 globals: &global_const_i32,
+                mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
             };
             clif_emit_cfg(
@@ -5418,6 +5505,7 @@ struct ClifLoweringCtx<'a> {
     string_literal_ids: &'a HashMap<String, i32>,
     task_ref_ids: &'a HashMap<String, i32>,
     globals: &'a HashMap<String, i32>,
+    mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
     closures: HashMap<String, ClifClosureBinding>,
 }
 
@@ -5801,18 +5889,25 @@ fn clif_emit_linear_stmts(
             }
             ast::Stmt::Assign { target, value } => {
                 let val = clif_emit_expr(builder, ctx, value, locals, next_var)?;
-                let binding = if let Some(existing) = locals.get(target).copied() {
-                    existing
+                if let Some(data_id) = ctx.mutable_globals.get(target).copied() {
+                    let val = cast_clif_value(builder, val, types::I32)?;
+                    let gv = ctx.module.declare_data_in_func(data_id, builder.func);
+                    let ptr = builder.ins().global_value(pointer_sized_clif_type(), gv);
+                    builder.ins().store(MemFlags::new(), val.value, ptr, 0);
                 } else {
-                    let var = Variable::from_u32(*next_var as u32);
-                    *next_var += 1;
-                    builder.declare_var(var, val.ty);
-                    let binding = LocalBinding { var, ty: val.ty };
-                    locals.insert(target.clone(), binding);
-                    binding
-                };
-                let val = cast_clif_value(builder, val, binding.ty)?;
-                builder.def_var(binding.var, val.value);
+                    let binding = if let Some(existing) = locals.get(target).copied() {
+                        existing
+                    } else {
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, val.ty);
+                        let binding = LocalBinding { var, ty: val.ty };
+                        locals.insert(target.clone(), binding);
+                        binding
+                    };
+                    let val = cast_clif_value(builder, val, binding.ty)?;
+                    builder.def_var(binding.var, val.value);
+                }
             }
             ast::Stmt::CompoundAssign { target, op, value } => {
                 let combined_expr = ast::Expr::Binary {
@@ -5821,18 +5916,25 @@ fn clif_emit_linear_stmts(
                     right: Box::new(value.clone()),
                 };
                 let val = clif_emit_expr(builder, ctx, &combined_expr, locals, next_var)?;
-                let binding = if let Some(existing) = locals.get(target).copied() {
-                    existing
+                if let Some(data_id) = ctx.mutable_globals.get(target).copied() {
+                    let val = cast_clif_value(builder, val, types::I32)?;
+                    let gv = ctx.module.declare_data_in_func(data_id, builder.func);
+                    let ptr = builder.ins().global_value(pointer_sized_clif_type(), gv);
+                    builder.ins().store(MemFlags::new(), val.value, ptr, 0);
                 } else {
-                    let var = Variable::from_u32(*next_var as u32);
-                    *next_var += 1;
-                    builder.declare_var(var, val.ty);
-                    let binding = LocalBinding { var, ty: val.ty };
-                    locals.insert(target.clone(), binding);
-                    binding
-                };
-                let val = cast_clif_value(builder, val, binding.ty)?;
-                builder.def_var(binding.var, val.value);
+                    let binding = if let Some(existing) = locals.get(target).copied() {
+                        existing
+                    } else {
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, val.ty);
+                        let binding = LocalBinding { var, ty: val.ty };
+                        locals.insert(target.clone(), binding);
+                        binding
+                    };
+                    let val = cast_clif_value(builder, val, binding.ty)?;
+                    builder.def_var(binding.var, val.value);
+                }
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -5914,6 +6016,13 @@ fn clif_emit_expr(
                 ClifValue {
                     value: builder.use_var(binding.var),
                     ty: binding.ty,
+                }
+            } else if let Some(data_id) = ctx.mutable_globals.get(name).copied() {
+                let gv = ctx.module.declare_data_in_func(data_id, builder.func);
+                let ptr = builder.ins().global_value(pointer_sized_clif_type(), gv);
+                ClifValue {
+                    value: builder.ins().load(types::I32, MemFlags::new(), ptr, 0),
+                    ty: types::I32,
                 }
             } else if let Some(value) = ctx.globals.get(name).copied() {
                 ClifValue {
@@ -13178,6 +13287,51 @@ mod tests {
         );
         assert_eq!(cranelift_exit, llvm_exit);
         assert_eq!(cranelift_exit, 17);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_static_mut_globals_execute_consistently() {
+        let project_name = format!(
+            "fozzylang-static-mut-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "static mut COUNTER: i32 = 2;\nfn bump() -> i32 {\n    COUNTER += 3;\n    return COUNTER\n}\nfn main() -> i32 {\n    let first = bump()\n    let second = bump()\n    return first + second\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 13);
 
         let _ = std::fs::remove_dir_all(root);
     }
