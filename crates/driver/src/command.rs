@@ -49,6 +49,8 @@ pub enum Command {
         lib: bool,
         threads: Option<u16>,
         backend: Option<String>,
+        pgo_generate: bool,
+        pgo_use: Option<PathBuf>,
         link_libs: Vec<String>,
         link_search: Vec<String>,
         frameworks: Vec<String>,
@@ -205,6 +207,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             lib,
             threads,
             backend,
+            pgo_generate,
+            pgo_use,
             link_libs,
             link_search,
             frameworks,
@@ -216,6 +220,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             };
             let runtime_config = persist_runtime_threads_config(&path, threads)?;
             let _link_scope = BuildLinkArgsScope::new(&link_libs, &link_search, &frameworks);
+            let _compile_scope =
+                BuildCompileEnvScope::new(threads, pgo_generate, pgo_use.as_deref(), &path)?;
             if lib {
                 let artifact = compile_library_with_backend_with_root_guidance(
                     &path,
@@ -804,6 +810,92 @@ pub fn run(command: Command, format: Format) -> Result<String> {
 struct BuildLinkArgsScope {
     previous: Option<String>,
     active: bool,
+}
+
+struct BuildCompileEnvScope {
+    previous_codegen_jobs: Option<String>,
+    previous_pgo_generate: Option<String>,
+    previous_pgo_use: Option<String>,
+}
+
+impl BuildCompileEnvScope {
+    fn new(
+        threads: Option<u16>,
+        pgo_generate: bool,
+        pgo_use: Option<&Path>,
+        path: &Path,
+    ) -> Result<Self> {
+        let previous_codegen_jobs = std::env::var("FZ_CODEGEN_JOBS").ok();
+        let previous_pgo_generate = std::env::var("FZ_PGO_GENERATE").ok();
+        let previous_pgo_use = std::env::var("FZ_PGO_USE").ok();
+
+        if let Some(threads) = threads {
+            if threads == 0 {
+                bail!("--threads must be greater than zero");
+            }
+            std::env::set_var("FZ_CODEGEN_JOBS", threads.to_string());
+        } else {
+            std::env::remove_var("FZ_CODEGEN_JOBS");
+        }
+
+        if pgo_generate {
+            let resolved = resolve_pgo_dir(path);
+            std::fs::create_dir_all(&resolved).with_context(|| {
+                format!(
+                    "failed creating PGO profile generation directory: {}",
+                    resolved.display()
+                )
+            })?;
+            std::env::set_var("FZ_PGO_GENERATE", resolved.display().to_string());
+            std::env::remove_var("FZ_PGO_USE");
+        } else if let Some(profile) = pgo_use {
+            if !profile.exists() {
+                bail!("PGO profile data not found: {}", profile.display());
+            }
+            std::env::set_var("FZ_PGO_USE", profile.display().to_string());
+            std::env::remove_var("FZ_PGO_GENERATE");
+        } else {
+            std::env::remove_var("FZ_PGO_GENERATE");
+            std::env::remove_var("FZ_PGO_USE");
+        }
+
+        Ok(Self {
+            previous_codegen_jobs,
+            previous_pgo_generate,
+            previous_pgo_use,
+        })
+    }
+}
+
+impl Drop for BuildCompileEnvScope {
+    fn drop(&mut self) {
+        if let Some(previous) = &self.previous_codegen_jobs {
+            std::env::set_var("FZ_CODEGEN_JOBS", previous);
+        } else {
+            std::env::remove_var("FZ_CODEGEN_JOBS");
+        }
+        if let Some(previous) = &self.previous_pgo_generate {
+            std::env::set_var("FZ_PGO_GENERATE", previous);
+        } else {
+            std::env::remove_var("FZ_PGO_GENERATE");
+        }
+        if let Some(previous) = &self.previous_pgo_use {
+            std::env::set_var("FZ_PGO_USE", previous);
+        } else {
+            std::env::remove_var("FZ_PGO_USE");
+        }
+    }
+}
+
+fn resolve_pgo_dir(path: &Path) -> PathBuf {
+    let root = if path.is_dir() {
+        path.to_path_buf()
+    } else {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    root.join(".fz").join("pgo").join("default")
 }
 
 impl BuildLinkArgsScope {
@@ -10208,6 +10300,8 @@ mod tests {
                 lib: false,
                 threads: Some(3),
                 backend: None,
+                pgo_generate: false,
+                pgo_use: None,
                 link_libs: Vec::new(),
                 link_search: Vec::new(),
                 frameworks: Vec::new(),
@@ -10249,6 +10343,8 @@ mod tests {
                 lib: true,
                 threads: None,
                 backend: None,
+                pgo_generate: false,
+                pgo_use: None,
                 link_libs: Vec::new(),
                 link_search: Vec::new(),
                 frameworks: Vec::new(),

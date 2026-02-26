@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use ast::{AstVisitor, BinaryOp, Expr, Module, Stmt, Type};
 
@@ -524,6 +524,12 @@ pub fn lower(module: &Module) -> TypedModule {
     capability_token_violations.extend(analyze_send_sync_contracts(&typed_functions));
     let reference_lifetime_violations = analyze_reference_lifetimes(&typed_functions);
     let linear_type_violations = analyze_linear_types(&typed_functions);
+    monomorphize_typed_functions(
+        &mut typed_functions,
+        &mut generic_specializations,
+        &mut type_errors,
+        &mut type_error_details,
+    );
 
     TypedModule {
         name: module.name.clone(),
@@ -4684,6 +4690,17 @@ fn infer_expr_type(
                 return None;
             };
             let generics = fn_generics.get(base_callee).cloned().unwrap_or_default();
+            if !generics.is_empty() && explicit_types.is_none() {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!(
+                        "generic call `{}` requires explicit specialization in production mode (for example: `{}<...>(...)`)",
+                        base_callee, base_callee
+                    ),
+                );
+                return None;
+            }
             let mut arg_types = Vec::with_capacity(args.len());
             for arg in args {
                 arg_types.push(infer_expr_type(arg, scopes, env, state));
@@ -5288,6 +5305,496 @@ fn parse_simple_type(token: &str) -> Option<Type> {
 }
 
 type CallSignature = (Vec<Type>, Type, Vec<(String, Type)>);
+
+fn monomorphized_symbol(base: &str, args: &[Type]) -> String {
+    let rendered = args
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{base}<{rendered}>")
+}
+
+fn monomorphize_typed_functions(
+    typed_functions: &mut Vec<TypedFunction>,
+    generic_specializations: &mut BTreeSet<String>,
+    type_errors: &mut usize,
+    type_error_details: &mut Vec<String>,
+) {
+    let templates = typed_functions
+        .iter()
+        .filter(|function| !function.generics.is_empty())
+        .map(|function| (function.name.clone(), function.clone()))
+        .collect::<HashMap<_, _>>();
+    if templates.is_empty() {
+        return;
+    }
+
+    let mut rewrite = HashMap::<String, String>::new();
+    let mut queue = VecDeque::<(String, Vec<Type>)>::new();
+    for function in typed_functions.iter_mut() {
+        collect_and_rewrite_explicit_generic_calls(&templates, function, &mut queue, &mut rewrite);
+    }
+
+    let mut generated = Vec::<TypedFunction>::new();
+    let mut seen = BTreeSet::<String>::new();
+    while let Some((base, args)) = queue.pop_front() {
+        let symbol = monomorphized_symbol(&base, &args);
+        if !seen.insert(symbol.clone()) {
+            continue;
+        }
+        let Some(template) = templates.get(&base) else {
+            record_type_error(
+                type_errors,
+                type_error_details,
+                format!("generic specialization references unknown function `{base}`"),
+            );
+            continue;
+        };
+        if template.generics.len() != args.len() {
+            record_type_error(
+                type_errors,
+                type_error_details,
+                format!(
+                    "generic specialization arity mismatch for `{}`: expected {}, got {}",
+                    base,
+                    template.generics.len(),
+                    args.len()
+                ),
+            );
+            continue;
+        }
+        let bindings = template
+            .generics
+            .iter()
+            .zip(args.iter())
+            .map(|(generic, ty)| (generic.name.clone(), ty.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut specialized = template.clone();
+        specialized.name = symbol.clone();
+        specialized.generics.clear();
+        for param in &mut specialized.params {
+            param.ty = substitute_typevars(&param.ty, &bindings);
+        }
+        specialized.return_type = substitute_typevars(&specialized.return_type, &bindings);
+        substitute_typevars_in_stmts(&mut specialized.body, &bindings);
+        collect_and_rewrite_explicit_generic_calls(
+            &templates,
+            &mut specialized,
+            &mut queue,
+            &mut rewrite,
+        );
+        rewrite.insert(symbol.clone(), symbol.clone());
+        generated.push(specialized);
+    }
+
+    for function in typed_functions.iter_mut() {
+        rewrite_generic_calls_in_stmts(&mut function.body, &rewrite);
+    }
+    typed_functions.retain(|function| function.generics.is_empty());
+    typed_functions.extend(generated);
+    generic_specializations.clear();
+    generic_specializations.extend(seen);
+}
+
+fn collect_and_rewrite_explicit_generic_calls(
+    templates: &HashMap<String, TypedFunction>,
+    function: &mut TypedFunction,
+    queue: &mut VecDeque<(String, Vec<Type>)>,
+    rewrite: &mut HashMap<String, String>,
+) {
+    fn rewrite_expr(
+        expr: &mut Expr,
+        templates: &HashMap<String, TypedFunction>,
+        queue: &mut VecDeque<(String, Vec<Type>)>,
+        rewrite: &mut HashMap<String, String>,
+    ) {
+        match expr {
+            Expr::Call { callee, args } => {
+                let current = callee.clone();
+                let (base, explicit) = split_generic_callee(&current);
+                if let Some(explicit) = explicit {
+                    if templates.contains_key(base) {
+                        let base_name = base.to_string();
+                        let symbol = monomorphized_symbol(base, &explicit);
+                        rewrite.insert(current, symbol.clone());
+                        *callee = symbol.clone();
+                        queue.push_back((base_name, explicit));
+                    }
+                }
+                if let Some(mapped) = rewrite.get(callee).cloned() {
+                    *callee = mapped;
+                }
+                for arg in args {
+                    rewrite_expr(arg, templates, queue, rewrite);
+                }
+            }
+            Expr::UnsafeBlock { body, .. } => rewrite_stmts(body, templates, queue, rewrite),
+            Expr::FieldAccess { base, .. } => rewrite_expr(base, templates, queue, rewrite),
+            Expr::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    rewrite_expr(value, templates, queue, rewrite);
+                }
+            }
+            Expr::EnumInit { payload, .. } | Expr::ArrayLiteral(payload) => {
+                for value in payload {
+                    rewrite_expr(value, templates, queue, rewrite);
+                }
+            }
+            Expr::Closure { body, .. } | Expr::Group(body) | Expr::Await(body) => {
+                rewrite_expr(body, templates, queue, rewrite)
+            }
+            Expr::TryCatch {
+                try_expr,
+                catch_expr,
+            } => {
+                rewrite_expr(try_expr, templates, queue, rewrite);
+                rewrite_expr(catch_expr, templates, queue, rewrite);
+            }
+            Expr::Unary { expr, .. } => rewrite_expr(expr, templates, queue, rewrite),
+            Expr::Binary { left, right, .. } => {
+                rewrite_expr(left, templates, queue, rewrite);
+                rewrite_expr(right, templates, queue, rewrite);
+            }
+            Expr::Range { start, end, .. } => {
+                rewrite_expr(start, templates, queue, rewrite);
+                rewrite_expr(end, templates, queue, rewrite);
+            }
+            Expr::Index { base, index } => {
+                rewrite_expr(base, templates, queue, rewrite);
+                rewrite_expr(index, templates, queue, rewrite);
+            }
+            Expr::Int(_)
+            | Expr::Float { .. }
+            | Expr::Char(_)
+            | Expr::Bool(_)
+            | Expr::Str(_)
+            | Expr::Ident(_) => {}
+        }
+    }
+
+    fn rewrite_stmts(
+        stmts: &mut [Stmt],
+        templates: &HashMap<String, TypedFunction>,
+        queue: &mut VecDeque<(String, Vec<Type>)>,
+        rewrite: &mut HashMap<String, String>,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Let { value, .. }
+                | Stmt::LetPattern { value, .. }
+                | Stmt::Assign { value, .. }
+                | Stmt::CompoundAssign { value, .. }
+                | Stmt::Defer(value)
+                | Stmt::Requires(value)
+                | Stmt::Ensures(value)
+                | Stmt::Expr(value) => rewrite_expr(value, templates, queue, rewrite),
+                Stmt::Return(value) => {
+                    if let Some(value) = value {
+                        rewrite_expr(value, templates, queue, rewrite);
+                    }
+                }
+                Stmt::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    rewrite_expr(condition, templates, queue, rewrite);
+                    rewrite_stmts(then_body, templates, queue, rewrite);
+                    rewrite_stmts(else_body, templates, queue, rewrite);
+                }
+                Stmt::While { condition, body } => {
+                    rewrite_expr(condition, templates, queue, rewrite);
+                    rewrite_stmts(body, templates, queue, rewrite);
+                }
+                Stmt::For {
+                    init,
+                    condition,
+                    step,
+                    body,
+                } => {
+                    if let Some(init) = init {
+                        rewrite_stmts(std::slice::from_mut(init.as_mut()), templates, queue, rewrite);
+                    }
+                    if let Some(condition) = condition {
+                        rewrite_expr(condition, templates, queue, rewrite);
+                    }
+                    if let Some(step) = step {
+                        rewrite_stmts(std::slice::from_mut(step.as_mut()), templates, queue, rewrite);
+                    }
+                    rewrite_stmts(body, templates, queue, rewrite);
+                }
+                Stmt::ForIn { iterable, body, .. } => {
+                    rewrite_expr(iterable, templates, queue, rewrite);
+                    rewrite_stmts(body, templates, queue, rewrite);
+                }
+                Stmt::Loop { body } => rewrite_stmts(body, templates, queue, rewrite),
+                Stmt::Match { scrutinee, arms } => {
+                    rewrite_expr(scrutinee, templates, queue, rewrite);
+                    for arm in arms {
+                        if let Some(guard) = &mut arm.guard {
+                            rewrite_expr(guard, templates, queue, rewrite);
+                        }
+                        rewrite_expr(&mut arm.value, templates, queue, rewrite);
+                    }
+                }
+                Stmt::Break | Stmt::Continue => {}
+            }
+        }
+    }
+
+    rewrite_stmts(&mut function.body, templates, queue, rewrite);
+}
+
+fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, String>) {
+    fn rewrite_expr(expr: &mut Expr, rewrite: &HashMap<String, String>) {
+        match expr {
+            Expr::Call { callee, args } => {
+                if let Some(mapped) = rewrite.get(callee).cloned() {
+                    *callee = mapped;
+                }
+                for arg in args {
+                    rewrite_expr(arg, rewrite);
+                }
+            }
+            Expr::UnsafeBlock { body, .. } => rewrite_generic_calls_in_stmts(body, rewrite),
+            Expr::FieldAccess { base, .. } => rewrite_expr(base, rewrite),
+            Expr::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    rewrite_expr(value, rewrite);
+                }
+            }
+            Expr::EnumInit { payload, .. } | Expr::ArrayLiteral(payload) => {
+                for value in payload {
+                    rewrite_expr(value, rewrite);
+                }
+            }
+            Expr::Closure { body, .. } | Expr::Group(body) | Expr::Await(body) => {
+                rewrite_expr(body, rewrite)
+            }
+            Expr::TryCatch {
+                try_expr,
+                catch_expr,
+            } => {
+                rewrite_expr(try_expr, rewrite);
+                rewrite_expr(catch_expr, rewrite);
+            }
+            Expr::Unary { expr, .. } => rewrite_expr(expr, rewrite),
+            Expr::Binary { left, right, .. } => {
+                rewrite_expr(left, rewrite);
+                rewrite_expr(right, rewrite);
+            }
+            Expr::Range { start, end, .. } => {
+                rewrite_expr(start, rewrite);
+                rewrite_expr(end, rewrite);
+            }
+            Expr::Index { base, index } => {
+                rewrite_expr(base, rewrite);
+                rewrite_expr(index, rewrite);
+            }
+            Expr::Int(_)
+            | Expr::Float { .. }
+            | Expr::Char(_)
+            | Expr::Bool(_)
+            | Expr::Str(_)
+            | Expr::Ident(_) => {}
+        }
+    }
+
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::CompoundAssign { value, .. }
+            | Stmt::Defer(value)
+            | Stmt::Requires(value)
+            | Stmt::Ensures(value)
+            | Stmt::Expr(value) => rewrite_expr(value, rewrite),
+            Stmt::Return(value) => {
+                if let Some(value) = value {
+                    rewrite_expr(value, rewrite);
+                }
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                rewrite_expr(condition, rewrite);
+                rewrite_generic_calls_in_stmts(then_body, rewrite);
+                rewrite_generic_calls_in_stmts(else_body, rewrite);
+            }
+            Stmt::While { condition, body } => {
+                rewrite_expr(condition, rewrite);
+                rewrite_generic_calls_in_stmts(body, rewrite);
+            }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    rewrite_generic_calls_in_stmts(std::slice::from_mut(init.as_mut()), rewrite);
+                }
+                if let Some(condition) = condition {
+                    rewrite_expr(condition, rewrite);
+                }
+                if let Some(step) = step {
+                    rewrite_generic_calls_in_stmts(std::slice::from_mut(step.as_mut()), rewrite);
+                }
+                rewrite_generic_calls_in_stmts(body, rewrite);
+            }
+            Stmt::ForIn { iterable, body, .. } => {
+                rewrite_expr(iterable, rewrite);
+                rewrite_generic_calls_in_stmts(body, rewrite);
+            }
+            Stmt::Loop { body } => rewrite_generic_calls_in_stmts(body, rewrite),
+            Stmt::Match { scrutinee, arms } => {
+                rewrite_expr(scrutinee, rewrite);
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        rewrite_expr(guard, rewrite);
+                    }
+                    rewrite_expr(&mut arm.value, rewrite);
+                }
+            }
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
+
+fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, Type>) {
+    fn substitute_expr(expr: &mut Expr, bindings: &BTreeMap<String, Type>) {
+        match expr {
+            Expr::Call { args, .. } => {
+                for arg in args {
+                    substitute_expr(arg, bindings);
+                }
+            }
+            Expr::UnsafeBlock { body, .. } => substitute_typevars_in_stmts(body, bindings),
+            Expr::FieldAccess { base, .. } => substitute_expr(base, bindings),
+            Expr::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    substitute_expr(value, bindings);
+                }
+            }
+            Expr::EnumInit { payload, .. } | Expr::ArrayLiteral(payload) => {
+                for value in payload {
+                    substitute_expr(value, bindings);
+                }
+            }
+            Expr::Closure {
+                params,
+                return_type,
+                body,
+            } => {
+                for param in params {
+                    param.ty = substitute_typevars(&param.ty, bindings);
+                }
+                if let Some(return_type) = return_type {
+                    *return_type = substitute_typevars(return_type, bindings);
+                }
+                substitute_expr(body, bindings);
+            }
+            Expr::Group(inner) | Expr::Await(inner) => substitute_expr(inner, bindings),
+            Expr::TryCatch {
+                try_expr,
+                catch_expr,
+            } => {
+                substitute_expr(try_expr, bindings);
+                substitute_expr(catch_expr, bindings);
+            }
+            Expr::Unary { expr, .. } => substitute_expr(expr, bindings),
+            Expr::Binary { left, right, .. } => {
+                substitute_expr(left, bindings);
+                substitute_expr(right, bindings);
+            }
+            Expr::Range { start, end, .. } => {
+                substitute_expr(start, bindings);
+                substitute_expr(end, bindings);
+            }
+            Expr::Index { base, index } => {
+                substitute_expr(base, bindings);
+                substitute_expr(index, bindings);
+            }
+            Expr::Int(_)
+            | Expr::Float { .. }
+            | Expr::Char(_)
+            | Expr::Bool(_)
+            | Expr::Str(_)
+            | Expr::Ident(_) => {}
+        }
+    }
+
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let { ty, value, .. } | Stmt::LetPattern { ty, value, .. } => {
+                if let Some(ty) = ty {
+                    *ty = substitute_typevars(ty, bindings);
+                }
+                substitute_expr(value, bindings);
+            }
+            Stmt::Assign { value, .. }
+            | Stmt::CompoundAssign { value, .. }
+            | Stmt::Defer(value)
+            | Stmt::Requires(value)
+            | Stmt::Ensures(value)
+            | Stmt::Expr(value) => substitute_expr(value, bindings),
+            Stmt::Return(value) => {
+                if let Some(value) = value {
+                    substitute_expr(value, bindings);
+                }
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                substitute_expr(condition, bindings);
+                substitute_typevars_in_stmts(then_body, bindings);
+                substitute_typevars_in_stmts(else_body, bindings);
+            }
+            Stmt::While { condition, body } => {
+                substitute_expr(condition, bindings);
+                substitute_typevars_in_stmts(body, bindings);
+            }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    substitute_typevars_in_stmts(std::slice::from_mut(init.as_mut()), bindings);
+                }
+                if let Some(condition) = condition {
+                    substitute_expr(condition, bindings);
+                }
+                if let Some(step) = step {
+                    substitute_typevars_in_stmts(std::slice::from_mut(step.as_mut()), bindings);
+                }
+                substitute_typevars_in_stmts(body, bindings);
+            }
+            Stmt::ForIn { iterable, body, .. } => {
+                substitute_expr(iterable, bindings);
+                substitute_typevars_in_stmts(body, bindings);
+            }
+            Stmt::Loop { body } => substitute_typevars_in_stmts(body, bindings),
+            Stmt::Match { scrutinee, arms } => {
+                substitute_expr(scrutinee, bindings);
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        substitute_expr(guard, bindings);
+                    }
+                    substitute_expr(&mut arm.value, bindings);
+                }
+            }
+            Stmt::Break | Stmt::Continue => {}
+        }
+    }
+}
 
 fn resolve_call_signature(
     params: &[Type],

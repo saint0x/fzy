@@ -9,10 +9,11 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
+use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, Once, OnceLock};
 use std::time::UNIX_EPOCH;
 
 #[derive(Clone, Copy)]
@@ -831,6 +832,46 @@ struct LowerCacheEntry {
 static PARSED_PROGRAM_CACHE: OnceLock<Mutex<HashMap<PathBuf, ParsedProgramCacheEntry>>> =
     OnceLock::new();
 static LOWER_CACHE: OnceLock<Mutex<HashMap<String, LowerCacheEntry>>> = OnceLock::new();
+static CODEGEN_POOL_INIT: Once = Once::new();
+
+#[derive(Debug, Clone)]
+struct PgoConfig {
+    generate_dir: Option<PathBuf>,
+    use_profile: Option<PathBuf>,
+}
+
+fn configured_codegen_jobs() -> Option<usize> {
+    std::env::var("FZ_CODEGEN_JOBS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .filter(|value| *value > 0)
+}
+
+fn ensure_codegen_pool_configured() {
+    CODEGEN_POOL_INIT.call_once(|| {
+        let Some(threads) = configured_codegen_jobs() else {
+            return;
+        };
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build_global();
+    });
+}
+
+fn configured_pgo() -> PgoConfig {
+    let generate_dir = std::env::var("FZ_PGO_GENERATE")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty());
+    let use_profile = std::env::var("FZ_PGO_USE")
+        .ok()
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty());
+    PgoConfig {
+        generate_dir,
+        use_profile,
+    }
+}
 
 pub fn compile_file(path: &Path, profile: BuildProfile) -> Result<BuildArtifact> {
     compile_file_with_backend(path, profile, None)
@@ -846,6 +887,13 @@ pub fn compile_file_with_backend(
     let experimental_diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let backend = resolve_native_backend(profile, backend_override)?;
+    let pgo = configured_pgo();
+    if (pgo.generate_dir.is_some() || pgo.use_profile.is_some()) && backend != "llvm" {
+        bail!(
+            "PGO is only supported with backend `llvm`; current backend is `{}`",
+            backend
+        );
+    }
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
     let (_typed, fir) = lower_fir_cached(&parsed);
@@ -925,6 +973,13 @@ pub fn compile_library_with_backend(
     let experimental_diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
     let backend = resolve_native_backend(profile, backend_override)?;
+    let pgo = configured_pgo();
+    if (pgo.generate_dir.is_some() || pgo.use_profile.is_some()) && backend != "llvm" {
+        bail!(
+            "PGO is only supported with backend `llvm`; current backend is `{}`",
+            backend
+        );
+    }
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
     let (_typed, fir) = lower_fir_cached(&parsed);
@@ -1171,7 +1226,14 @@ pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirMo
 
 fn parse_program_uncached(canonical: &Path) -> Result<ParsedProgram> {
     let mut state = ModuleLoadState::default();
-    load_module_recursive(canonical, canonical, &mut state)?;
+    discover_module_graph_recursive(canonical, &mut state)?;
+
+    let loaded_modules = state
+        .load_order
+        .par_iter()
+        .map(|path| parse_and_qualify_module(path, canonical, &state.discovered))
+        .collect::<Result<Vec<_>>>()?;
+    state.loaded = loaded_modules.into_iter().collect();
 
     let mut combined_source = String::new();
     for path in &state.load_order {
@@ -1259,23 +1321,29 @@ struct LoadedModule {
     source: String,
 }
 
+#[derive(Debug, Clone)]
+struct DiscoveredModule {
+    source: String,
+    module_decls: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 struct ModuleLoadState {
+    discovered: HashMap<PathBuf, DiscoveredModule>,
     loaded: HashMap<PathBuf, LoadedModule>,
     load_order: Vec<PathBuf>,
     visiting: Vec<PathBuf>,
     visiting_set: HashSet<PathBuf>,
 }
 
-fn load_module_recursive(
+fn discover_module_graph_recursive(
     path: &Path,
-    root_source: &Path,
     state: &mut ModuleLoadState,
 ) -> Result<()> {
     let canonical = path
         .canonicalize()
         .with_context(|| format!("failed resolving module path: {}", path.display()))?;
-    if state.loaded.contains_key(&canonical) {
+    if state.discovered.contains_key(&canonical) {
         return Ok(());
     }
     if state.visiting_set.contains(&canonical) {
@@ -1292,10 +1360,8 @@ fn load_module_recursive(
         .file_stem()
         .and_then(|value| value.to_str())
         .ok_or_else(|| anyhow!("invalid module filename for {}", canonical.display()))?;
-    let mut ast = parser::parse(&source, module_name)
+    let ast = parser::parse(&source, module_name)
         .map_err(|diagnostics| anyhow!(render_parse_failure(&canonical, &diagnostics)))?;
-    let namespace = module_namespace(root_source, &canonical)?;
-    qualify_module_symbols(&mut ast, &namespace);
 
     let base_dir = canonical
         .parent()
@@ -1308,16 +1374,46 @@ fn load_module_recursive(
                 canonical.display()
             )
         })?;
-        load_module_recursive(&module_path, root_source, state)?;
+        discover_module_graph_recursive(&module_path, state)?;
     }
 
     state.visiting.pop();
     state.visiting_set.remove(&canonical);
     state.load_order.push(canonical.clone());
-    state
-        .loaded
-        .insert(canonical.clone(), LoadedModule { ast, source });
+    state.discovered.insert(
+        canonical,
+        DiscoveredModule {
+            source,
+            module_decls: ast.modules,
+        },
+    );
     Ok(())
+}
+
+fn parse_and_qualify_module(
+    module_path: &Path,
+    root_source: &Path,
+    discovered: &HashMap<PathBuf, DiscoveredModule>,
+) -> Result<(PathBuf, LoadedModule)> {
+    let discovered_module = discovered
+        .get(module_path)
+        .ok_or_else(|| anyhow!("internal discovered module cache miss for {}", module_path.display()))?;
+    let module_name = module_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow!("invalid module filename for {}", module_path.display()))?;
+    let mut ast = parser::parse(&discovered_module.source, module_name)
+        .map_err(|diagnostics| anyhow!(render_parse_failure(module_path, &diagnostics)))?;
+    let namespace = module_namespace(root_source, module_path)?;
+    qualify_module_symbols(&mut ast, &namespace);
+    ast.modules = discovered_module.module_decls.clone();
+    Ok((
+        module_path.to_path_buf(),
+        LoadedModule {
+            ast,
+            source: discovered_module.source.clone(),
+        },
+    ))
 }
 
 fn module_namespace(root_source: &Path, module_path: &Path) -> Result<String> {
@@ -3728,27 +3824,24 @@ fn build_native_cfg_map(
     fir: &fir::FirModule,
     variant_tags: &HashMap<String, i32>,
 ) -> HashMap<String, Result<ControlFlowCfg, String>> {
-    let mut cfg_by_function = HashMap::new();
-    for function in &fir.typed_functions {
-        if is_extern_c_import_decl(function) {
-            continue;
-        }
-        let cfg = build_control_flow_cfg(&function.body, variant_tags).and_then(|cfg| {
-            verify_control_flow_cfg(&cfg)?;
-            Ok(cfg)
-        });
-        cfg_by_function.insert(
-            function.name.clone(),
-            cfg.map_err(|error| error.to_string()),
-        );
-    }
-    cfg_by_function
+    fir.typed_functions
+        .par_iter()
+        .filter(|function| !is_extern_c_import_decl(function))
+        .map(|function| {
+            let cfg = build_control_flow_cfg(&function.body, variant_tags).and_then(|cfg| {
+                verify_control_flow_cfg(&cfg)?;
+                Ok(cfg)
+            });
+            (function.name.clone(), cfg.map_err(|error| error.to_string()))
+        })
+        .collect()
 }
 
 fn build_native_canonical_plan(
     fir: &fir::FirModule,
     enforce_contract_checks: bool,
 ) -> NativeCanonicalPlan {
+    ensure_codegen_pool_configured();
     let variant_tags = build_variant_tag_map(fir);
     let cfg_by_function = build_native_cfg_map(fir, &variant_tags);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
@@ -3766,7 +3859,7 @@ fn build_native_canonical_plan(
         cfg_by_function,
         data_ops_by_function: fir
             .typed_functions
-            .iter()
+            .par_iter()
             .filter(|function| !is_extern_c_import_decl(function))
             .map(|function| {
                 (
@@ -6458,6 +6551,7 @@ fn emit_native_libraries_llvm(
             .arg(&obj_path);
         apply_target_link_flags(&mut obj_cmd);
         apply_profile_optimization_flags(&mut obj_cmd, profile, manifest);
+        apply_pgo_flags(&mut obj_cmd)?;
         match obj_cmd.output() {
             Ok(output) if output.status.success() => {
                 obj_compiled = true;
@@ -6487,6 +6581,7 @@ fn emit_native_libraries_llvm(
             .arg(&shim_obj_path);
         apply_target_link_flags(&mut shim_cmd);
         apply_profile_optimization_flags(&mut shim_cmd, profile, manifest);
+        apply_pgo_flags(&mut shim_cmd)?;
         match shim_cmd.output() {
             Ok(output) if output.status.success() => {
                 shim_compiled = true;
@@ -6771,6 +6866,7 @@ fn compile_runtime_shim_object(
             .arg(out_object);
         apply_target_link_flags(&mut cmd);
         apply_profile_optimization_flags(&mut cmd, profile, manifest);
+        apply_pgo_flags(&mut cmd)?;
         match cmd.output() {
             Ok(output) if output.status.success() => return Ok(()),
             Ok(output) => {
@@ -6849,6 +6945,7 @@ fn link_shared_library(
         apply_target_link_flags(&mut cmd);
         apply_manifest_link_args(&mut cmd, manifest);
         apply_extra_linker_args(&mut cmd);
+        apply_pgo_flags(&mut cmd)?;
         match cmd.output() {
             Ok(output_result) if output_result.status.success() => return Ok(()),
             Ok(output_result) => {
@@ -6895,6 +6992,27 @@ fn apply_profile_optimization_flags(
             cmd.arg("-O1").arg("-g");
         }
     }
+}
+
+fn apply_pgo_flags(cmd: &mut Command) -> Result<()> {
+    let pgo = configured_pgo();
+    if let Some(dir) = pgo.generate_dir {
+        std::fs::create_dir_all(&dir).with_context(|| {
+            format!(
+                "failed creating PGO profile generation directory: {}",
+                dir.display()
+            )
+        })?;
+        cmd.arg(format!("-fprofile-generate={}", dir.display()));
+    }
+    if let Some(profile) = pgo.use_profile {
+        if !profile.exists() {
+            bail!("PGO profile data not found: {}", profile.display());
+        }
+        cmd.arg(format!("-fprofile-use={}", profile.display()));
+        cmd.arg("-fprofile-correction");
+    }
+    Ok(())
 }
 
 fn archiver_candidates() -> Vec<String> {
@@ -7005,6 +7123,7 @@ fn emit_native_artifact_llvm(
             }
         }
         apply_extra_linker_args(&mut cmd);
+        apply_pgo_flags(&mut cmd)?;
 
         match cmd.output() {
             Ok(output) if output.status.success() => return Ok(bin_path),
@@ -7261,6 +7380,7 @@ fn emit_native_artifact_cranelift(
         apply_manifest_link_args(&mut cmd, manifest);
         // Object code is already generated at selected Cranelift optimization level.
         apply_extra_linker_args(&mut cmd);
+        apply_pgo_flags(&mut cmd)?;
 
         match cmd.output() {
             Ok(output) if output.status.success() => return Ok(bin_path),

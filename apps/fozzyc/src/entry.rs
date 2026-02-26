@@ -160,6 +160,11 @@ fn parse_command(args: &[String]) -> Result<Command> {
             let lib = args.iter().any(|a| a == "--lib");
             let threads = parse_u16_flag(args, "--threads")?;
             let backend = parse_backend_flag(args)?;
+            let pgo_generate = has_flag(args, "--pgo-generate");
+            let pgo_use = parse_path_flag(args, "--pgo-use")?;
+            if pgo_generate && pgo_use.is_some() {
+                bail!("--pgo-generate and --pgo-use are mutually exclusive");
+            }
             let link_libs = parse_repeated_value_flags(args, &["-l", "--link-lib"])?;
             let link_search = parse_repeated_value_flags(args, &["-L", "--link-search"])?;
             let frameworks = parse_repeated_value_flags(args, &["-framework", "--framework"])?;
@@ -169,6 +174,8 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 lib,
                 threads,
                 backend,
+                pgo_generate,
+                pgo_use,
                 link_libs,
                 link_search,
                 frameworks,
@@ -439,7 +446,7 @@ fn print_help() {
         "fz <command> [options]\n\
 commands:\n\
   init <name>\n\
-  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name]\n\
+  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
   run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [-- <args>]\n\
   test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
   fmt [path ...] [--check]\n\
@@ -490,6 +497,8 @@ flags:\n\
   -L|--link-search <path> (repeatable)\n\
   -framework|--framework <name> (repeatable)\n\
   --threads <u16>\n\
+  --pgo-generate\n\
+  --pgo-use <file>\n\
   --sched <fifo|random|coverage_guided>\n\
   --filter <substring>\n\
   --rich-artifacts\n\
@@ -753,5 +762,72 @@ mod tests {
         let args = vec!["stability-dashboard".to_string()];
         let command = parse_command(&args).expect("stability dashboard should parse");
         assert!(matches!(command, Command::StabilityDashboard));
+    }
+
+    #[test]
+    fn parse_build_with_pgo_generate() {
+        let args = vec![
+            "build".to_string(),
+            "examples/fullstack".to_string(),
+            "--pgo-generate".to_string(),
+            "--backend".to_string(),
+            "llvm".to_string(),
+        ];
+        let command = parse_command(&args).expect("build pgo-generate should parse");
+        match command {
+            Command::Build {
+                path,
+                pgo_generate,
+                pgo_use,
+                backend,
+                ..
+            } => {
+                assert_eq!(path, PathBuf::from("examples/fullstack"));
+                assert!(pgo_generate);
+                assert!(pgo_use.is_none());
+                assert_eq!(backend.as_deref(), Some("llvm"));
+            }
+            _ => panic!("expected build command"),
+        }
+    }
+
+    #[test]
+    fn parse_build_with_pgo_use() {
+        let args = vec![
+            "build".to_string(),
+            "examples/fullstack".to_string(),
+            "--pgo-use".to_string(),
+            "artifacts/default.profdata".to_string(),
+        ];
+        let command = parse_command(&args).expect("build pgo-use should parse");
+        match command {
+            Command::Build {
+                pgo_generate,
+                pgo_use,
+                ..
+            } => {
+                assert!(!pgo_generate);
+                assert_eq!(
+                    pgo_use,
+                    Some(PathBuf::from("artifacts/default.profdata"))
+                );
+            }
+            _ => panic!("expected build command"),
+        }
+    }
+
+    #[test]
+    fn parse_build_rejects_pgo_generate_and_pgo_use_together() {
+        let args = vec![
+            "build".to_string(),
+            "examples/fullstack".to_string(),
+            "--pgo-generate".to_string(),
+            "--pgo-use".to_string(),
+            "artifacts/default.profdata".to_string(),
+        ];
+        let error = parse_command(&args).expect_err("combined pgo flags should fail");
+        assert!(error
+            .to_string()
+            .contains("--pgo-generate and --pgo-use are mutually exclusive"));
     }
 }
