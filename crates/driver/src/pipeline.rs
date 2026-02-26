@@ -3321,6 +3321,7 @@ struct LlvmFuncCtx {
     next_label: usize,
     slots: HashMap<String, String>,
     array_slots: HashMap<String, Vec<String>>,
+    const_strings: HashMap<String, String>,
     closures: HashMap<String, LlvmClosureBinding>,
     globals: HashMap<String, i32>,
     mutable_globals: HashMap<String, String>,
@@ -3334,6 +3335,7 @@ impl LlvmFuncCtx {
             next_label: 0,
             slots: HashMap::new(),
             array_slots: HashMap::new(),
+            const_strings: HashMap::new(),
             closures: HashMap::new(),
             globals,
             mutable_globals,
@@ -3645,6 +3647,11 @@ fn llvm_emit_linear_stmts(
     for stmt in body {
         match stmt {
             ast::Stmt::Let { name, value, .. } => {
+                if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
+                    ctx.const_strings.insert(name.clone(), const_value);
+                    ctx.array_slots.remove(name);
+                    continue;
+                }
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let mut element_slots = Vec::with_capacity(items.len());
                     for (idx, item) in items.iter().enumerate() {
@@ -3700,11 +3707,17 @@ fn llvm_emit_linear_stmts(
                     }
                 }
                 ctx.array_slots.remove(name);
+                ctx.const_strings.remove(name);
             }
             ast::Stmt::LetPattern { pattern, value, .. } => {
                 llvm_emit_let_pattern(pattern, value, ctx, string_literal_ids, task_ref_ids)?;
             }
             ast::Stmt::Assign { target, value } => {
+                if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
+                    ctx.const_strings.insert(target.clone(), const_value);
+                    ctx.array_slots.remove(target);
+                    continue;
+                }
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let mut element_slots = Vec::with_capacity(items.len());
                     for (idx, item) in items.iter().enumerate() {
@@ -3741,6 +3754,7 @@ fn llvm_emit_linear_stmts(
                 ctx.code
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
                 ctx.array_slots.remove(target);
+                ctx.const_strings.remove(target);
             }
             ast::Stmt::CompoundAssign { target, op, value } => {
                 let combined_expr = ast::Expr::Binary {
@@ -3765,6 +3779,7 @@ fn llvm_emit_linear_stmts(
                 ctx.code
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
                 ctx.array_slots.remove(target);
+                ctx.const_strings.remove(target);
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -3952,6 +3967,14 @@ fn llvm_emit_expr(
             llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
         }
         ast::Expr::Call { callee, args } => {
+            if let Some(value) = eval_const_i32_call(callee, args, &ctx.const_strings) {
+                return value.to_string();
+            }
+            if let Some(value) = eval_const_string_call(callee, args, &ctx.const_strings) {
+                if let Some(id) = string_literal_ids.get(&value).copied() {
+                    return id.to_string();
+                }
+            }
             if let Some(binding) = ctx.closures.get(callee).cloned() {
                 return llvm_emit_inlined_closure_call(
                     binding,
@@ -4362,6 +4385,91 @@ fn expr_task_ref_name(expr: &ast::Expr) -> Option<String> {
         }
         ast::Expr::Group(inner) => expr_task_ref_name(inner),
         ast::Expr::Unary { expr, .. } => expr_task_ref_name(expr),
+        _ => None,
+    }
+}
+
+fn eval_const_string_expr(
+    expr: &ast::Expr,
+    const_strings: &HashMap<String, String>,
+) -> Option<String> {
+    match expr {
+        ast::Expr::Str(value) => Some(value.clone()),
+        ast::Expr::Ident(name) => const_strings.get(name).cloned(),
+        ast::Expr::Group(inner) => eval_const_string_expr(inner, const_strings),
+        ast::Expr::Call { callee, args } => eval_const_string_call(callee, args, const_strings),
+        _ => None,
+    }
+}
+
+fn eval_const_string_call(
+    callee: &str,
+    args: &[ast::Expr],
+    const_strings: &HashMap<String, String>,
+) -> Option<String> {
+    match callee {
+        "str.trim" if args.len() == 1 => {
+            let value = eval_const_string_expr(&args[0], const_strings)?;
+            Some(value.trim().to_string())
+        }
+        "str.replace" if args.len() == 3 => {
+            let value = eval_const_string_expr(&args[0], const_strings)?;
+            let from = eval_const_string_expr(&args[1], const_strings)?;
+            let to = eval_const_string_expr(&args[2], const_strings)?;
+            Some(value.replace(&from, &to))
+        }
+        "str.slice" if args.len() == 3 => {
+            let value = eval_const_string_expr(&args[0], const_strings)?;
+            let start = eval_const_i32_expr(&args[1], const_strings).unwrap_or(0).max(0) as usize;
+            let span = eval_const_i32_expr(&args[2], const_strings).unwrap_or(0).max(0) as usize;
+            let len = value.len();
+            let s = start.min(len);
+            let e = s.saturating_add(span).min(len);
+            if value.is_char_boundary(s) && value.is_char_boundary(e) {
+                Some(value[s..e].to_string())
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn eval_const_i32_expr(expr: &ast::Expr, const_strings: &HashMap<String, String>) -> Option<i32> {
+    match expr {
+        ast::Expr::Int(value) => i32::try_from(*value).ok(),
+        ast::Expr::Bool(value) => Some(if *value { 1 } else { 0 }),
+        ast::Expr::Group(inner) => eval_const_i32_expr(inner, const_strings),
+        ast::Expr::Call { callee, args } => eval_const_i32_call(callee, args, const_strings),
+        _ => None,
+    }
+}
+
+fn eval_const_i32_call(
+    callee: &str,
+    args: &[ast::Expr],
+    const_strings: &HashMap<String, String>,
+) -> Option<i32> {
+    match callee {
+        "str.contains" if args.len() == 2 => {
+            let value = eval_const_string_expr(&args[0], const_strings)?;
+            let needle = eval_const_string_expr(&args[1], const_strings)?;
+            Some(if value.contains(&needle) { 1 } else { 0 })
+        }
+        "str.starts_with" if args.len() == 2 => {
+            let value = eval_const_string_expr(&args[0], const_strings)?;
+            let prefix = eval_const_string_expr(&args[1], const_strings)?;
+            Some(if value.starts_with(&prefix) { 1 } else { 0 })
+        }
+        "str.ends_with" if args.len() == 2 => {
+            let value = eval_const_string_expr(&args[0], const_strings)?;
+            let suffix = eval_const_string_expr(&args[1], const_strings)?;
+            Some(if value.ends_with(&suffix) { 1 } else { 0 })
+        }
+        "str.len" if args.len() == 1 => {
+            let value = eval_const_string_expr(&args[0], const_strings)?;
+            i32::try_from(value.len()).ok()
+        }
         _ => None,
     }
 }
@@ -5158,6 +5266,7 @@ fn emit_native_libraries_cranelift(
                 mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
                 array_bindings: HashMap::new(),
+                const_strings: HashMap::new(),
             };
             clif_emit_cfg(
                 &mut builder,
@@ -5664,6 +5773,7 @@ fn emit_native_artifact_cranelift(
                 mutable_globals: &mutable_global_data_ids,
                 closures: HashMap::new(),
                 array_bindings: HashMap::new(),
+                const_strings: HashMap::new(),
             };
             clif_emit_cfg(
                 &mut builder,
@@ -5748,6 +5858,7 @@ struct ClifLoweringCtx<'a> {
     mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
     closures: HashMap<String, ClifClosureBinding>,
     array_bindings: HashMap<String, Vec<LocalBinding>>,
+    const_strings: HashMap<String, String>,
 }
 
 fn clif_emit_cfg(
@@ -6110,6 +6221,11 @@ fn clif_emit_linear_stmts(
             ast::Stmt::Let {
                 name, value, ty, ..
             } => {
+                if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
+                    ctx.const_strings.insert(name.clone(), const_value);
+                    ctx.array_bindings.remove(name);
+                    continue;
+                }
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let mut bindings = Vec::with_capacity(items.len());
                     for item in items {
@@ -6185,11 +6301,17 @@ fn clif_emit_linear_stmts(
                     }
                 }
                 ctx.array_bindings.remove(name);
+                ctx.const_strings.remove(name);
             }
             ast::Stmt::LetPattern { pattern, value, .. } => {
                 clif_emit_let_pattern(builder, ctx, pattern, value, locals, next_var)?;
             }
             ast::Stmt::Assign { target, value } => {
+                if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
+                    ctx.const_strings.insert(target.clone(), const_value);
+                    ctx.array_bindings.remove(target);
+                    continue;
+                }
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let mut bindings = Vec::with_capacity(items.len());
                     for item in items {
@@ -6234,6 +6356,7 @@ fn clif_emit_linear_stmts(
                     builder.def_var(binding.var, val.value);
                 }
                 ctx.array_bindings.remove(target);
+                ctx.const_strings.remove(target);
             }
             ast::Stmt::CompoundAssign { target, op, value } => {
                 let combined_expr = ast::Expr::Binary {
@@ -6262,6 +6385,7 @@ fn clif_emit_linear_stmts(
                     builder.def_var(binding.var, val.value);
                 }
                 ctx.array_bindings.remove(target);
+                ctx.const_strings.remove(target);
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -6748,6 +6872,20 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::Call { callee, args } => {
+            if let Some(value) = eval_const_i32_call(callee, args, &ctx.const_strings) {
+                return Ok(ClifValue {
+                    value: builder.ins().iconst(default_int_clif_type(), value as i64),
+                    ty: default_int_clif_type(),
+                });
+            }
+            if let Some(value) = eval_const_string_call(callee, args, &ctx.const_strings) {
+                if let Some(id) = ctx.string_literal_ids.get(&value).copied() {
+                    return Ok(ClifValue {
+                        value: builder.ins().iconst(default_int_clif_type(), id as i64),
+                        ty: default_int_clif_type(),
+                    });
+                }
+            }
             if let Some(binding) = ctx.closures.get(callee).cloned() {
                 return clif_emit_inlined_closure_call(
                     builder, ctx, binding, args, locals, next_var,

@@ -483,6 +483,7 @@
 - [ ] Introduce non-interned temporary string representation for non-escaping loop-local values.
 - [ ] Intern only at semantic escape boundaries (persistent/global/ABI/capability boundaries).
 - [ ] Lower `trim`, `replace`, `contains`, `starts_with`, `ends_with`, `len` to direct memory/string-view operations where safe.
+- [✅] Add cross-backend compile-time folding for pure constant `str.*` chains to bypass runtime calls when all inputs are compile-time strings.
 - [ ] Remove global lock + linear-scan intern overhead from hot local string pipelines.
 
 #### LLVM + Cranelift Backend Contract Unification
