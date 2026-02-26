@@ -84,6 +84,7 @@ cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_contract_fi
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_bounds_probe_executes_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_i64_array_layout_executes_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_string_slice_executes_consistently -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_rolling_window_index_executes_consistently -- --exact >/dev/null
 
 echo "[ship] examples conformance on default production backend"
 for example_root in "$ROOT"/examples/*; do

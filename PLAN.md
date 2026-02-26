@@ -465,12 +465,12 @@
 - [✅] Ensure no fallback compatibility shim remains in optimized native path for removed data-plane calls.
 
 #### Direct-to-Memory Arrays/Indexing (Phase 1)
-- [ ] Lower fixed-shape numeric array literals to contiguous memory objects directly (stack or static based on escape/lifetime class).
-- [ ] Lower index operations to direct address arithmetic + load/store with explicit type width and signedness.
-- [ ] Implement one bounds-check policy model:
-- [ ] checked in safety mode,
-- [ ] provably-elided when static analysis proves in-range access.
-- [ ] Add rolling-window/index-pattern canonicalization for kernels like byte decoding loops.
+- [✅] Lower fixed-shape numeric array literals to contiguous memory objects directly (stack or static based on escape/lifetime class).
+- [✅] Lower index operations to direct address arithmetic + load/store with explicit type width and signedness.
+- [✅] Implement one bounds-check policy model:
+- [✅] checked in safety mode,
+- [✅] provably-elided when static analysis proves in-range access.
+- [✅] Add rolling-window/index-pattern canonicalization for kernels like byte decoding loops.
 - [✅] Eliminate per-access mutex/call overhead currently introduced through collection runtime ABI.
 
 #### Direct-to-Memory Match/Enum Control Flow (Phase 2)

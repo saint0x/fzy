@@ -48,7 +48,8 @@ struct ClifClosureBinding {
 
 #[derive(Clone)]
 struct LlvmArrayBinding {
-    slots: Vec<String>,
+    storage: String,
+    len: usize,
     element_bits: u16,
     element_align: u8,
     element_stride: u8,
@@ -56,7 +57,8 @@ struct LlvmArrayBinding {
 
 #[derive(Clone)]
 struct ClifArrayBinding {
-    elements: Vec<LocalBinding>,
+    stack_slot: cranelift_codegen::ir::StackSlot,
+    len: usize,
     element_ty: ClifType,
     element_bits: u16,
     element_align: u8,
@@ -3768,19 +3770,22 @@ fn llvm_emit_linear_stmts(
                     continue;
                 }
                 if let ast::Expr::ArrayLiteral(items) = value {
-                    let mut element_slots = Vec::with_capacity(items.len());
+                    let storage = format!("%slot_{}_arr_{}", name, ctx.next_value);
+                    let len = items.len();
+                    ctx.code
+                        .push_str(&format!("  {storage} = alloca [{len} x i32]\n"));
                     for (idx, item) in items.iter().enumerate() {
                         let item_value = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
-                        let slot = format!("%slot_{}_arr_{}_{}", name, idx, ctx.next_value);
+                        let element_ptr = ctx.value();
                         ctx.code.push_str(&format!(
-                            "  {slot} = alloca i32\n  store i32 {item_value}, ptr {slot}\n"
+                            "  {element_ptr} = getelementptr inbounds [{len} x i32], ptr {storage}, i32 0, i64 {idx}\n  store i32 {item_value}, ptr {element_ptr}\n"
                         ));
-                        element_slots.push(slot);
                     }
                     ctx.array_slots.insert(
                         name.clone(),
                         LlvmArrayBinding {
-                            slots: element_slots,
+                            storage,
+                            len,
                             element_bits: 32,
                             element_align: 4,
                             element_stride: 4,
@@ -3842,19 +3847,22 @@ fn llvm_emit_linear_stmts(
                     continue;
                 }
                 if let ast::Expr::ArrayLiteral(items) = value {
-                    let mut element_slots = Vec::with_capacity(items.len());
+                    let storage = format!("%slot_{}_arr_{}", target, ctx.next_value);
+                    let len = items.len();
+                    ctx.code
+                        .push_str(&format!("  {storage} = alloca [{len} x i32]\n"));
                     for (idx, item) in items.iter().enumerate() {
                         let item_value = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
-                        let slot = format!("%slot_{}_arr_{}_{}", target, idx, ctx.next_value);
+                        let element_ptr = ctx.value();
                         ctx.code.push_str(&format!(
-                            "  {slot} = alloca i32\n  store i32 {item_value}, ptr {slot}\n"
+                            "  {element_ptr} = getelementptr inbounds [{len} x i32], ptr {storage}, i32 0, i64 {idx}\n  store i32 {item_value}, ptr {element_ptr}\n"
                         ));
-                        element_slots.push(slot);
                     }
                     ctx.array_slots.insert(
                         target.clone(),
                         LlvmArrayBinding {
-                            slots: element_slots,
+                            storage,
+                            len,
                             element_bits: 32,
                             element_align: 4,
                             element_stride: 4,
@@ -4074,24 +4082,85 @@ fn llvm_emit_expr(
             "0".to_string()
         }
         ast::Expr::Index { base, index } => {
-            let index_value = llvm_emit_expr(index, ctx, string_literal_ids, task_ref_ids);
+            let index_value = if let Some((base_name, offset)) = canonicalize_array_index_window(index)
+            {
+                if let Some(slot) = ctx.slots.get(&base_name).cloned() {
+                    let base_loaded = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {base_loaded} = load i32, ptr {slot}\n"));
+                    if offset == 0 {
+                        base_loaded
+                    } else {
+                        let adjusted = ctx.value();
+                        let op = if offset >= 0 { "add" } else { "sub" };
+                        let rhs = offset.unsigned_abs();
+                        ctx.code.push_str(&format!(
+                            "  {adjusted} = {op} i32 {base_loaded}, {rhs}\n"
+                        ));
+                        adjusted
+                    }
+                } else {
+                    llvm_emit_expr(index, ctx, string_literal_ids, task_ref_ids)
+                }
+            } else {
+                llvm_emit_expr(index, ctx, string_literal_ids, task_ref_ids)
+            };
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_slots.get(name).cloned() {
-                    if binding.slots.is_empty() {
+                    if binding.len == 0 {
                         return "0".to_string();
                     }
-                    let mut selected = "0".to_string();
-                    for (idx, slot) in binding.slots.iter().enumerate().rev() {
-                        let loaded = ctx.value();
-                        let cmp = ctx.value();
-                        let out = ctx.value();
-                        ctx.code
-                            .push_str(&format!("  {loaded} = load i32, ptr {slot}\n"));
-                        ctx.code.push_str(&format!(
-                            "  {cmp} = icmp eq i32 {index_value}, {idx}\n  {out} = select i1 {cmp}, i32 {loaded}, i32 {selected}\n"
-                        ));
-                        selected = out;
+                    if let Some(const_idx) = eval_const_i32_expr(index, &ctx.const_strings) {
+                        if const_idx >= 0 && (const_idx as usize) < binding.len {
+                            let elem_ptr = ctx.value();
+                            let loaded = ctx.value();
+                            ctx.code.push_str(&format!(
+                                "  {elem_ptr} = getelementptr inbounds [{} x i32], ptr {}, i32 0, i64 {}\n",
+                                binding.len, binding.storage, const_idx
+                            ));
+                            ctx.code
+                                .push_str(&format!("  {loaded} = load i32, ptr {elem_ptr}\n"));
+                            return loaded;
+                        }
                     }
+                    let in_label = ctx.label("idx.in");
+                    let out_label = ctx.label("idx.oob");
+                    let merge_label = ctx.label("idx.merge");
+                    let nonneg = ctx.value();
+                    let ltlen = ctx.value();
+                    let ok = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {nonneg} = icmp sge i32 {index_value}, 0\n"));
+                    ctx.code.push_str(&format!(
+                        "  {ltlen} = icmp slt i32 {index_value}, {}\n",
+                        binding.len
+                    ));
+                    ctx.code
+                        .push_str(&format!("  {ok} = and i1 {nonneg}, {ltlen}\n"));
+                    ctx.code
+                        .push_str(&format!("  br i1 {ok}, label %{in_label}, label %{out_label}\n"));
+                    ctx.code.push_str(&format!("{in_label}:\n"));
+                    let idx64 = ctx.value();
+                    let elem_ptr = ctx.value();
+                    let loaded = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
+                    ctx.code.push_str(&format!(
+                        "  {elem_ptr} = getelementptr inbounds [{} x i32], ptr {}, i32 0, i64 {idx64}\n",
+                        binding.len, binding.storage
+                    ));
+                    ctx.code
+                        .push_str(&format!("  {loaded} = load i32, ptr {elem_ptr}\n"));
+                    ctx.code
+                        .push_str(&format!("  br label %{merge_label}\n"));
+                    ctx.code.push_str(&format!("{out_label}:\n"));
+                    ctx.code
+                        .push_str(&format!("  br label %{merge_label}\n"));
+                    ctx.code.push_str(&format!("{merge_label}:\n"));
+                    let selected = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {selected} = phi i32 [ {loaded}, %{in_label} ], [ 0, %{out_label} ]\n"
+                    ));
                     let _ = (
                         binding.element_bits,
                         binding.element_align,
@@ -4802,6 +4871,33 @@ fn native_data_plane_string_call_is_const_foldable(callee: &str, args: &[ast::Ex
     let empty_const_strings = HashMap::<String, String>::new();
     eval_const_i32_call(callee, args, &empty_const_strings).is_some()
         || eval_const_string_call(callee, args, &empty_const_strings).is_some()
+}
+
+fn canonicalize_array_index_window(expr: &ast::Expr) -> Option<(String, i32)> {
+    match expr {
+        ast::Expr::Ident(name) => Some((name.clone(), 0)),
+        ast::Expr::Group(inner) => canonicalize_array_index_window(inner),
+        ast::Expr::Binary { op, left, right } => match op {
+            ast::BinaryOp::Add => match (left.as_ref(), right.as_ref()) {
+                (ast::Expr::Ident(name), ast::Expr::Int(offset)) => {
+                    i32::try_from(*offset).ok().map(|off| (name.clone(), off))
+                }
+                (ast::Expr::Int(offset), ast::Expr::Ident(name)) => {
+                    i32::try_from(*offset).ok().map(|off| (name.clone(), off))
+                }
+                _ => None,
+            },
+            ast::BinaryOp::Sub => match (left.as_ref(), right.as_ref()) {
+                (ast::Expr::Ident(name), ast::Expr::Int(offset)) => i32::try_from(*offset)
+                    .ok()
+                    .and_then(|off| off.checked_neg())
+                    .map(|off| (name.clone(), off)),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 fn collect_used_runtime_imports_from_stmt(
@@ -6614,22 +6710,31 @@ fn clif_emit_linear_stmts(
                     }
                     let (element_ty, element_bits, element_align, element_stride) =
                         clif_array_layout_from_values(&lowered_items);
-                    let mut bindings = Vec::with_capacity(lowered_items.len());
-                    for mut item_val in lowered_items {
+                    let slot_size = (lowered_items.len() as u32) * u32::from(element_stride);
+                    let align_shift = element_align.trailing_zeros() as u8;
+                    let stack_slot = builder.create_sized_stack_slot(
+                        cranelift_codegen::ir::StackSlotData::new(
+                            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                            slot_size,
+                            align_shift,
+                        ),
+                    );
+                    for (idx, mut item_val) in lowered_items.into_iter().enumerate() {
                         item_val = cast_clif_value(builder, item_val, element_ty)?;
-                        let var = Variable::from_u32(*next_var as u32);
-                        *next_var += 1;
-                        builder.declare_var(var, element_ty);
-                        builder.def_var(var, item_val.value);
-                        bindings.push(LocalBinding {
-                            var,
-                            ty: element_ty,
-                        });
+                        let ptr = builder.ins().stack_addr(
+                            pointer_sized_clif_type(),
+                            stack_slot,
+                            (idx as i32) * i32::from(element_stride),
+                        );
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), item_val.value, ptr, 0);
                     }
                     ctx.array_bindings.insert(
                         name.clone(),
                         ClifArrayBinding {
-                            elements: bindings,
+                            stack_slot,
+                            len: items.len(),
                             element_ty,
                             element_bits,
                             element_align,
@@ -6714,22 +6819,31 @@ fn clif_emit_linear_stmts(
                     }
                     let (element_ty, element_bits, element_align, element_stride) =
                         clif_array_layout_from_values(&lowered_items);
-                    let mut bindings = Vec::with_capacity(lowered_items.len());
-                    for mut item_val in lowered_items {
+                    let slot_size = (lowered_items.len() as u32) * u32::from(element_stride);
+                    let align_shift = element_align.trailing_zeros() as u8;
+                    let stack_slot = builder.create_sized_stack_slot(
+                        cranelift_codegen::ir::StackSlotData::new(
+                            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                            slot_size,
+                            align_shift,
+                        ),
+                    );
+                    for (idx, mut item_val) in lowered_items.into_iter().enumerate() {
                         item_val = cast_clif_value(builder, item_val, element_ty)?;
-                        let var = Variable::from_u32(*next_var as u32);
-                        *next_var += 1;
-                        builder.declare_var(var, element_ty);
-                        builder.def_var(var, item_val.value);
-                        bindings.push(LocalBinding {
-                            var,
-                            ty: element_ty,
-                        });
+                        let ptr = builder.ins().stack_addr(
+                            pointer_sized_clif_type(),
+                            stack_slot,
+                            (idx as i32) * i32::from(element_stride),
+                        );
+                        builder
+                            .ins()
+                            .store(MemFlags::new(), item_val.value, ptr, 0);
                     }
                     ctx.array_bindings.insert(
                         target.clone(),
                         ClifArrayBinding {
-                            elements: bindings,
+                            stack_slot,
+                            len: items.len(),
                             element_ty,
                             element_bits,
                             element_align,
@@ -7047,20 +7161,116 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::Index { base, index } => {
-            let index_value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
-            let index_value = cast_clif_value(builder, index_value, default_int_clif_type())?;
+            let index_value = if let Some((base_name, offset)) = canonicalize_array_index_window(index)
+            {
+                if let Some(binding) = locals.get(&base_name).copied() {
+                    let base_raw = builder.use_var(binding.var);
+                    let base = cast_clif_value(
+                        builder,
+                        ClifValue {
+                            value: base_raw,
+                            ty: binding.ty,
+                        },
+                        default_int_clif_type(),
+                    )?
+                    .value;
+                    let value = if offset == 0 {
+                        base
+                    } else {
+                        builder.ins().iadd_imm(base, i64::from(offset))
+                    };
+                    ClifValue {
+                        value,
+                        ty: default_int_clif_type(),
+                    }
+                } else {
+                    let value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
+                    cast_clif_value(builder, value, default_int_clif_type())?
+                }
+            } else {
+                let value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
+                cast_clif_value(builder, value, default_int_clif_type())?
+            };
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_bindings.get(name) {
-                    let mut selected = builder.ins().iconst(binding.element_ty, 0);
-                    for (idx, element) in binding.elements.iter().enumerate().rev() {
-                        let candidate = builder.use_var(element.var);
-                        let idx_const = builder.ins().iconst(default_int_clif_type(), idx as i64);
-                        let pred =
-                            builder
-                                .ins()
-                                .icmp(IntCC::Equal, index_value.value, idx_const);
-                        selected = builder.ins().select(pred, candidate, selected);
+                    if binding.len == 0 {
+                        return Ok(ClifValue {
+                            value: builder.ins().iconst(binding.element_ty, 0),
+                            ty: binding.element_ty,
+                        });
                     }
+                    if let Some(const_idx) = eval_const_i32_expr(index, &ctx.const_strings) {
+                        if const_idx >= 0 && (const_idx as usize) < binding.len {
+                            let ptr = builder.ins().stack_addr(
+                                pointer_sized_clif_type(),
+                                binding.stack_slot,
+                                const_idx * i32::from(binding.element_stride),
+                            );
+                            let loaded =
+                                builder
+                                    .ins()
+                                    .load(binding.element_ty, MemFlags::new(), ptr, 0);
+                            return Ok(ClifValue {
+                                value: loaded,
+                                ty: binding.element_ty,
+                            });
+                        }
+                    }
+                    let in_block = builder.create_block();
+                    let out_block = builder.create_block();
+                    let merge_block = builder.create_block();
+                    builder.append_block_param(merge_block, binding.element_ty);
+
+                    let zero = builder.ins().iconst(default_int_clif_type(), 0);
+                    let len_const =
+                        builder
+                            .ins()
+                            .iconst(default_int_clif_type(), binding.len as i64);
+                    let nonneg = builder
+                        .ins()
+                        .icmp(IntCC::SignedGreaterThanOrEqual, index_value.value, zero);
+                    let below_len =
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedLessThan, index_value.value, len_const);
+                    let in_range = builder.ins().band(nonneg, below_len);
+                    builder
+                        .ins()
+                        .brif(in_range, in_block, &[], out_block, &[]);
+
+                    builder.switch_to_block(in_block);
+                    let base_ptr = builder.ins().stack_addr(
+                        pointer_sized_clif_type(),
+                        binding.stack_slot,
+                        0,
+                    );
+                    let idx_ptr = if pointer_sized_clif_type() == default_int_clif_type() {
+                        index_value.value
+                    } else {
+                        builder
+                            .ins()
+                            .uextend(pointer_sized_clif_type(), index_value.value)
+                    };
+                    let byte_offset =
+                        builder
+                            .ins()
+                            .imul_imm(idx_ptr, i64::from(binding.element_stride));
+                    let addr = builder.ins().iadd(base_ptr, byte_offset);
+                    let loaded =
+                        builder
+                            .ins()
+                            .load(binding.element_ty, MemFlags::new(), addr, 0);
+                    builder.ins().jump(merge_block, &[loaded]);
+
+                    builder.switch_to_block(out_block);
+                    let zero_default = builder.ins().iconst(binding.element_ty, 0);
+                    builder.ins().jump(merge_block, &[zero_default]);
+
+                    builder.seal_block(in_block);
+                    builder.seal_block(out_block);
+                    builder.switch_to_block(merge_block);
+                    builder.seal_block(merge_block);
+                    let selected = builder.block_params(merge_block)[0];
                     let _ = (binding.element_bits, binding.element_align, binding.element_stride);
                     return Ok(ClifValue {
                         value: selected,
@@ -15962,6 +16172,51 @@ mod tests {
         );
         assert_eq!(cranelift_exit, llvm_exit);
         assert_eq!(cranelift_exit, 19);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_direct_memory_rolling_window_index_executes_consistently() {
+        let project_name = format!(
+            "fozzylang-direct-memory-rolling-window-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let bytes = [10, 20, 30, 40, 50]\n    let i = 1\n    let a = bytes[i]\n    let b = bytes[i + 1]\n    let c = bytes[i + 2]\n    let d = bytes[i - 1]\n    return a + b + c + d\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 100);
 
         let _ = std::fs::remove_dir_all(root);
     }
