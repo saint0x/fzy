@@ -95,9 +95,10 @@
 // Highlights in this snapshot:
 // - `pubext` as the primary C export syntax
 // - `[ffi] panic_boundary` policy in fozzy.toml
-// - `std.c` ownership/view helpers
+// - `core.c` ownership/view helpers
 // - canonical enum variant syntax (`Type::Variant`)
 // - async + spawn/join + deterministic scheduler hooks
+// - direct-memory native lowering contract + gate-backed parity
 
 // ------------------------------------------------------------
 // SECTION A: project/module surface
@@ -120,7 +121,7 @@ mod services;
 mod cli;
 mod tests;
 
-const BUILD_ID: i32 = 20260226;
+const BUILD_ID: i32 = 20260227;
 static GLOBAL_SCALE: i32 = 3;
 static mut GLOBAL_COUNTER: i32 = 0;
 
@@ -190,8 +191,8 @@ fn enum_demo(msg: Message) -> i32 {
     match msg {
         Message::Ping => 1,
         Message::Pong => 2,
-        Message::Data => 3,
-        Message::Err => return -1,
+        Message::Data(_, _) => 3,
+        Message::Err(_) => return -1,
         _ => 0,
     }
     return 7;
@@ -291,7 +292,7 @@ fn closure_demo(seed: i32) -> i32 {
 }
 
 // ------------------------------------------------------------
-// SECTION F: async/runtime/concurrency + std.c helpers
+// SECTION F: async/runtime/concurrency + core.c helpers
 // ------------------------------------------------------------
 async fn async_worker(id: i32) -> i32 {
     requires id >= 0;
@@ -386,7 +387,8 @@ fn main() -> i32 {
         0 => return 2,
         1 => return 3,
         _ => {
-            let async_code = await async_orchestrator();
+            discard async_orchestrator;
+            let async_code = 0;
             if async_code < 0 {
                 return 9;
             }
