@@ -9,11 +9,18 @@ mod bytes;
 mod duration;
 mod abi;
 mod cinterop;
-mod http;
 mod network;
 mod concurrency;
 mod process;
 mod security;
+
+fn http_kernel_sample() -> i32 {
+    let status = http.last_status()
+    if status < 0 {
+        return 0
+    }
+    return status % 251
+}
 
 fn sanity() -> i32 {
     let mut acc = 0
@@ -25,7 +32,7 @@ fn sanity() -> i32 {
     acc = (acc + duration.sample()) % 251
     acc = (acc + abi.sample()) % 251
     acc = (acc + cinterop.sample()) % 251
-    acc = (acc + http.sample()) % 251
+    acc = (acc + http_kernel_sample()) % 251
     acc = (acc + network.sample()) % 251
     acc = (acc + concurrency.sample()) % 251
     acc = (acc + process.sample()) % 251
