@@ -7,6 +7,8 @@
 - Lightweight hot path with deterministic dispatch.
 - Full-featured middleware-ready surface.
 - HTTP transport through `webcore.http` (Rust-backed path).
+- First-class structured logging via `core.log` in live-server paths.
+- First-class typed error capability surface via `core.error`.
 - Built-in concurrent probe/worker hooks using thread/task primitives.
 
 ## Layout (Grouped by Concern)
@@ -31,3 +33,6 @@ For now (before package publishing), use the in-tree live server entrypoint:
 - Source: `frameworklib/fzweb/src/live_server_main.fzy`
 - Build: `cargo run -q -p fz -- build frameworklib/fzweb/src/live_server_main.fzy --backend llvm --release --json`
 - Run binary from the `output` path in the build JSON.
+- Runtime behavior:
+- Long-lived accept loop (`2_000_000_000` request budget) with cooperative yields.
+- JSON structured server/request logging via `log.set_json(1)` and `log.info/log.warn`.

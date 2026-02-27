@@ -1,4 +1,5 @@
 use webcore.http;
+use core.log;
 use webcore.thread;
 
 mod webcore;
@@ -60,10 +61,11 @@ fn maybe_handle_once(mask: i32, strict_json: i32) -> i32 {
     let body = webcore.request_body(conn, support.default_max_body_bytes())
     let auth_header = webcore.request_auth(conn)
     let req_id = webcore.request_id(conn)
+    let remote = webcore.request_remote(conn)
     discard support.context_score(method, path, req_id)
 
     discard middleware.apply_timeout(mask, support.default_timeout_ms())
-    discard middleware.log_event(method, path, req_id)
+    discard middleware.log_event(method, path, req_id, remote)
 
     let bucket = middleware.rate_init(support.default_rate_tokens(), support.default_rate_refill_ms())
 

@@ -29,6 +29,13 @@ struct Limits {
     idle_timeout_ms: i32,
 }
 
+struct ServePolicy {
+    max_accept_retries: i32,
+    read_stall_limit: i32,
+    write_stall_limit: i32,
+    keep_alive_max_requests: i32,
+}
+
 fn parse_method(name: str) -> Method {
     if name == "GET" then return Method::Get
     if name == "POST" then return Method::Post
@@ -69,6 +76,55 @@ fn default_limits() -> Limits {
         request_timeout_ms: 2500,
         idle_timeout_ms: 10000,
     }
+}
+
+fn default_policy() -> ServePolicy {
+    return ServePolicy {
+        max_accept_retries: 32,
+        read_stall_limit: 64,
+        write_stall_limit: 64,
+        keep_alive_max_requests: 16,
+    }
+}
+
+fn sanitize_policy(policy: ServePolicy) -> ServePolicy {
+    let mut retries = policy.max_accept_retries
+    if retries < 1 { retries = 1 }
+    if retries > 1000000 { retries = 1000000 }
+
+    let mut read_stalls = policy.read_stall_limit
+    if read_stalls < 1 { read_stalls = 1 }
+    if read_stalls > 1000000 { read_stalls = 1000000 }
+
+    let mut write_stalls = policy.write_stall_limit
+    if write_stalls < 1 { write_stalls = 1 }
+    if write_stalls > 1000000 { write_stalls = 1000000 }
+
+    let mut keep_alive = policy.keep_alive_max_requests
+    if keep_alive < 1 { keep_alive = 1 }
+    if keep_alive > 1000000 { keep_alive = 1000000 }
+
+    return ServePolicy {
+        max_accept_retries: retries,
+        read_stall_limit: read_stalls,
+        write_stall_limit: write_stalls,
+        keep_alive_max_requests: keep_alive,
+    }
+}
+
+fn next_accept_backoff_ms(fail_streak: i32) -> i32 {
+    if fail_streak < 1 then return 1
+    if fail_streak < 8 then return 2
+    if fail_streak < 64 then return 4
+    if fail_streak < 512 then return 8
+    return 16
+}
+
+fn should_keep_alive(connection_header: str, mode: ConnectionMode, handled: i32, policy: ServePolicy) -> i32 {
+    if mode == ConnectionMode::OneOff then return 0
+    if connection_header == "close" then return 0
+    if handled >= policy.keep_alive_max_requests then return 0
+    return 1
 }
 
 fn clamp_body_size(body_bytes: i32, limits: Limits) -> i32 {
@@ -155,6 +211,7 @@ fn route_fingerprint_fast(
 
 fn sample() -> i32 {
     let limits = default_limits()
+    let policy = sanitize_policy(default_policy())
     let method_score = method_score_from_name("POST")
     let score = route_fingerprint_fast(
         method_score,
@@ -165,7 +222,9 @@ fn sample() -> i32 {
         limits.max_header_bytes,
         limits.max_body_bytes
     )
+    let backoff = next_accept_backoff_ms(33)
+    let keep_alive = should_keep_alive("keep-alive", ConnectionMode::Persistent, 3, policy)
     let oneoff = connection_session_score(ConnectionMode::OneOff, 1)
     let persistent = connection_session_score(ConnectionMode::Persistent, 8)
-    return (score + status_class_score(status_class(201)) + oneoff + persistent) % 251
+    return (score + status_class_score(status_class(201)) + oneoff + persistent + backoff + keep_alive) % 251
 }

@@ -364,7 +364,14 @@ fn c_interop_contract_workload() -> i32 {
 }
 
 #[inline(always)]
-fn route_score_fast(method_score: i32, path_len: i32, query_len: i32, body_bytes: i32, timeout_ms: i32, max_body: i32) -> i32 {
+fn route_score_fast(
+    method_score: i32,
+    path_len: i32,
+    query_len: i32,
+    body_bytes: i32,
+    timeout_ms: i32,
+    max_body: i32,
+) -> i32 {
     let mut safe_body = body_bytes;
     if safe_body < 0 {
         safe_body = 0;
@@ -384,8 +391,21 @@ fn http_transport_score(connection_mode: i32, requests_on_conn: i32) -> i32 {
 }
 
 #[inline(always)]
-fn http_request_score_fast(method_score: i32, path_len: i32, status_score: i32, query_len: i32, body_bytes: i32) -> i32 {
-    let route = route_score_fast(method_score, path_len, query_len, body_bytes, 2500, 1_048_576);
+fn http_request_score_fast(
+    method_score: i32,
+    path_len: i32,
+    status_score: i32,
+    query_len: i32,
+    body_bytes: i32,
+) -> i32 {
+    let route = route_score_fast(
+        method_score,
+        path_len,
+        query_len,
+        body_bytes,
+        2500,
+        1_048_576,
+    );
     let class = status_score;
     (route + class) % 251
 }
@@ -408,7 +428,13 @@ fn http_oneoff_workload() -> i32 {
         let query_len = (i % 23) + 3;
         let body_bytes = (i * 7) % 2_000_000;
 
-        let req = http_request_score_fast(method_score, path_len, status_score_v, query_len, body_bytes);
+        let req = http_request_score_fast(
+            method_score,
+            path_len,
+            status_score_v,
+            query_len,
+            body_bytes,
+        );
         let transport = http_transport_score(1, 1);
         acc = (acc + req + transport) % 251;
 
@@ -455,7 +481,13 @@ fn http_persistent_workload() -> i32 {
         let query_len = (i % 23) + 3;
         let body_bytes = (i * 7) % 2_000_000;
 
-        let req = http_request_score_fast(method_score, path_len, status_score_v, query_len, body_bytes);
+        let req = http_request_score_fast(
+            method_score,
+            path_len,
+            status_score_v,
+            query_len,
+            body_bytes,
+        );
         acc = (acc + req) % 251;
 
         left_on_conn -= 1;
@@ -552,7 +584,12 @@ fn network_workload() -> i32 {
         let closed = i32::from((i + 11) % 29 == 0);
         let cancelled = i32::from((i + 13) % 41 == 0);
 
-        let endpoint_score = (socket_kind_score(kind) + ip_class_score(host) + (port % 97) + (tls * 37) + (ipv6 * 41)) % 251;
+        let endpoint_score = (socket_kind_score(kind)
+            + ip_class_score(host)
+            + (port % 97)
+            + (tls * 37)
+            + (ipv6 * 41))
+            % 251;
         let signal_score = poll_signal_score(i % 2, (i + 1) % 2, (i + 2) % 2, closed);
         let dscore = deadline_score(i % 5000, 2500, cancelled);
         acc = (acc + endpoint_score + signal_score + dscore) % 251;
@@ -649,7 +686,13 @@ fn classify_exit_score(exit_code: i32, timed_out: i32, cancelled: i32, signal: i
 }
 
 #[inline(always)]
-fn budget_score(argv_count: i32, env_count: i32, timeout_ms: i32, max_output_bytes: i32, max_children: i32) -> i32 {
+fn budget_score(
+    argv_count: i32,
+    env_count: i32,
+    timeout_ms: i32,
+    max_output_bytes: i32,
+    max_children: i32,
+) -> i32 {
     let mut score = (argv_count * 7) + (env_count * 5);
     score += max_children % 97;
     score += timeout_ms % 89;
@@ -712,7 +755,13 @@ fn redact_key_score(key: &str) -> i32 {
 }
 
 #[inline(always)]
-fn auth_score(has_token: i32, expired: i32, scope_ok: i32, mfa_required: i32, mfa_present: i32) -> i32 {
+fn auth_score(
+    has_token: i32,
+    expired: i32,
+    scope_ok: i32,
+    mfa_required: i32,
+    mfa_present: i32,
+) -> i32 {
     if has_token == 0 {
         return 17;
     }
@@ -793,6 +842,130 @@ fn security_workload() -> i32 {
     acc
 }
 
+#[inline(always)]
+fn clamp_len(len: i32, max_len: i32) -> i32 {
+    if max_len < 1 {
+        return 0;
+    }
+    if len <= max_len {
+        return len;
+    }
+    max_len
+}
+
+#[inline(always)]
+fn log_level_score(level: i32) -> i32 {
+    if level == 0 {
+        return 11;
+    }
+    if level == 1 {
+        return 17;
+    }
+    23
+}
+
+fn log_workload() -> i32 {
+    let mut i = 0i32;
+    let mut acc = 0i32;
+    let max_field = 256i32;
+    while i < ITERATIONS {
+        let level = i % 3;
+        let message_len = clamp_len(12 + (i % 400), max_field);
+        let request_id_len = clamp_len(8 + (i % 96), max_field);
+        let path_len = clamp_len(7 + (i % 80), max_field);
+        let method_len = clamp_len(3 + (i % 7), 16);
+        let sample_mod = (i % 64) + 1;
+        let should_sample = i % sample_mod == 0;
+        let mut score = log_level_score(level)
+            + message_len
+            + request_id_len
+            + path_len
+            + method_len
+            + (i % 97);
+        if should_sample {
+            score += 19;
+        }
+        acc = (acc + score) % 251;
+        i += 1;
+    }
+    acc
+}
+
+#[inline(always)]
+fn error_kind_code(kind: i32) -> i32 {
+    if kind == 0 {
+        return 400;
+    }
+    if kind == 1 {
+        return 408;
+    }
+    if kind == 2 {
+        return 409;
+    }
+    if kind == 3 {
+        return 404;
+    }
+    if kind == 4 {
+        return 401;
+    }
+    500
+}
+
+#[inline(always)]
+fn error_kind_retryable(kind: i32) -> i32 {
+    if kind == 1 || kind == 5 {
+        return 1;
+    }
+    0
+}
+
+#[inline(always)]
+fn normalize_error_code(code: i32, kind: i32) -> i32 {
+    if code < 100 {
+        return error_kind_code(kind);
+    }
+    code
+}
+
+fn error_workload() -> i32 {
+    let mut i = 0i32;
+    let mut acc = 0i32;
+    while i < ITERATIONS {
+        let status = 400 + (i % 250);
+        let kind = if status == 400 {
+            0
+        } else if status == 401 {
+            4
+        } else if status == 404 {
+            3
+        } else if status == 408 {
+            1
+        } else if status == 409 {
+            2
+        } else {
+            5
+        };
+        let retryable = if status >= 500 || status == 408 {
+            1
+        } else {
+            error_kind_retryable(kind)
+        };
+        let normalized = normalize_error_code(status, kind);
+        let attempt = (i % 5) + 1;
+        let max_attempts = 4;
+        let should_retry = retryable == 1 && attempt < max_attempts;
+        let mut score = (normalized % 251) + error_kind_code(kind) % 31;
+        if should_retry {
+            score += 17;
+        } else {
+            score += 3;
+        }
+        acc = (acc + score) % 251;
+        i += 1;
+    }
+    acc
+}
+
 fn main() {
     let mode = std::env::args()
         .nth(1)
@@ -813,9 +986,11 @@ fn main() {
         "concurrency" => concurrency_workload(),
         "process" => process_workload(),
         "security" => security_workload(),
+        "log" => log_workload(),
+        "error" => error_workload(),
         other => {
             eprintln!(
-                "unknown mode `{other}`; expected one of: resultx,text,capability,task_retry,arithmetic,bytes,duration,abi_pair,c_interop_contract,http,network,concurrency,process,security"
+                "unknown mode `{other}`; expected one of: resultx,text,capability,task_retry,arithmetic,bytes,duration,abi_pair,c_interop_contract,http_oneoff,http_persistent,network,concurrency,process,security,log,error"
             );
             std::process::exit(2);
         }

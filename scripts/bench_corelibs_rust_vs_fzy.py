@@ -69,6 +69,18 @@ BENCHES = [
         "iterations": 8_000_000,
     },
     {
+        "name": "log_kernel",
+        "rust_mode": "log",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "log_scratch_bench.fzy",
+        "iterations": 8_000_000,
+    },
+    {
+        "name": "error_kernel",
+        "rust_mode": "error",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "error_scratch_bench.fzy",
+        "iterations": 8_000_000,
+    },
+    {
         "name": "http_kernel_oneoff",
         "rust_mode": "http_oneoff",
         "fzy_src": ROOT / "examples" / "benchmarks" / "http_oneoff_scratch_bench.fzy",

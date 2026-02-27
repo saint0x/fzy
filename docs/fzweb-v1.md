@@ -7,6 +7,8 @@
 - Concern-grouped modules (not one-file-per-function).
 - Deterministic hot path.
 - Rust-backed `webcore.http` transport usage.
+- First-class `core.log` structured logging in live server path.
+- First-class `core.error` capability usage in framework/corelib surfaces.
 - Concurrency hooks via `spawn/yield` for multithreaded execution support.
 
 ## Module Groups

@@ -238,6 +238,14 @@
 - [✅] Add exhaustive pattern diagnostics and semantic checks tied to match lowering (coverage, unreachable arms, guard behavior).
 - [✅] Replace lexical `unsafe` audit scanning with AST/HIR/FIR-backed semantic unsafe-site analysis.
 - [✅] Replace text/index heuristic rename/definition flow with semantic symbol resolution and scope-aware workspace edits.
+
+### Follow-Up Performance Targets: Fzy Corelib (2026-02-27)
+- [ ] Optimize `task_retry_backoff` in Fzy corelib path to close the current Rust lead.
+- [ ] Optimize `http_kernel_persistent` in Fzy corelib path to close the current Rust lead.
+- [ ] Re-run full suite after both optimizations and update benchmark artifacts/docs.
+- [✅] Current baseline captured from `artifacts/corelibbench_post_opt.json`:
+- [✅] `task_retry_backoff`: Rust `62.081713 ms`, Fzy `82.650297 ms`, ratio `1.331315` (Rust winner by `33.13%`).
+- [✅] `http_kernel_persistent`: Rust `46.212766 ms`, Fzy `72.202474 ms`, ratio `1.562392` (Rust winner by `56.24%`).
 - [✅] Extend dependency model beyond path-only dependencies with versioned/remote sources and lockfile-enforced reproducibility.
 - [✅] Replace RPC/FFI TODO stubs for transport/cancellation/deadline with concrete runtime contracts and host/native parity tests.
 

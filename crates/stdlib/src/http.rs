@@ -1500,6 +1500,27 @@ pub enum HttpConnectionMode {
     Persistent { max_requests: usize },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HttpServeOptions {
+    pub accept_max_attempts: usize,
+    pub accept_poll_max_events: usize,
+    pub io_poll_max_events: usize,
+    pub read_stall_limit: usize,
+    pub write_stall_limit: usize,
+}
+
+impl Default for HttpServeOptions {
+    fn default() -> Self {
+        Self {
+            accept_max_attempts: 32,
+            accept_poll_max_events: 8,
+            io_poll_max_events: 8,
+            read_stall_limit: 64,
+            write_stall_limit: 64,
+        }
+    }
+}
+
 pub fn parse_http_request(raw: &[u8], limits: &HttpServerLimits) -> Result<HttpRequest, NetError> {
     let headers_end = raw
         .windows(4)
@@ -1569,21 +1590,47 @@ pub fn serve_http_once<B: NetBackend, R: HttpRouter>(
     router: &R,
     limits: &HttpServerLimits,
 ) -> Result<usize, NetError> {
-    backend.poll_register(listener, PollInterest::Acceptable, 128)?;
-    let events = backend.poll_next(8)?;
-    if !events
-        .iter()
-        .any(|event| matches!(event, PollerEvent::Acceptable(id) if *id == listener))
-    {
-        return Ok(0);
+    serve_http_once_with_options(
+        backend,
+        listener,
+        router,
+        limits,
+        HttpServeOptions::default(),
+    )
+}
+
+pub fn serve_http_once_with_options<B: NetBackend, R: HttpRouter>(
+    backend: &mut B,
+    listener: SocketId,
+    router: &R,
+    limits: &HttpServerLimits,
+    options: HttpServeOptions,
+) -> Result<usize, NetError> {
+    for _ in 0..options.accept_max_attempts.max(1) {
+        backend.poll_register(listener, PollInterest::Acceptable, 128)?;
+        let events = backend.poll_next(options.accept_poll_max_events.max(1))?;
+        if !events
+            .iter()
+            .any(|event| matches!(event, PollerEvent::Acceptable(id) if *id == listener))
+        {
+            continue;
+        }
+        let Some(connection) = backend.accept(listener)? else {
+            continue;
+        };
+        backend.request_started()?;
+        let wrote = serve_http_connection_with_options(
+            backend,
+            connection,
+            router,
+            limits,
+            HttpConnectionMode::OneOff,
+            options,
+        )?;
+        backend.request_finished();
+        return Ok(wrote);
     }
-    let Some(connection) = backend.accept(listener)? else {
-        return Ok(0);
-    };
-    backend.request_started()?;
-    let wrote = serve_http_connection(backend, connection, router, limits, HttpConnectionMode::OneOff)?;
-    backend.request_finished();
-    Ok(wrote)
+    Ok(0)
 }
 
 pub fn serve_http_persistent_once<B: NetBackend, R: HttpRouter>(
@@ -1593,24 +1640,46 @@ pub fn serve_http_persistent_once<B: NetBackend, R: HttpRouter>(
     limits: &HttpServerLimits,
     max_requests_per_connection: usize,
 ) -> Result<usize, NetError> {
-    backend.poll_register(listener, PollInterest::Acceptable, 128)?;
-    let events = backend.poll_next(8)?;
-    if !events
-        .iter()
-        .any(|event| matches!(event, PollerEvent::Acceptable(id) if *id == listener))
-    {
-        return Ok(0);
-    }
-    let Some(connection) = backend.accept(listener)? else {
-        return Ok(0);
-    };
-    backend.request_started()?;
     let mode = HttpConnectionMode::Persistent {
         max_requests: max_requests_per_connection.max(1),
     };
-    let wrote = serve_http_connection(backend, connection, router, limits, mode)?;
-    backend.request_finished();
-    Ok(wrote)
+    serve_http_persistent_once_with_options(
+        backend,
+        listener,
+        router,
+        limits,
+        mode,
+        HttpServeOptions::default(),
+    )
+}
+
+pub fn serve_http_persistent_once_with_options<B: NetBackend, R: HttpRouter>(
+    backend: &mut B,
+    listener: SocketId,
+    router: &R,
+    limits: &HttpServerLimits,
+    mode: HttpConnectionMode,
+    options: HttpServeOptions,
+) -> Result<usize, NetError> {
+    for _ in 0..options.accept_max_attempts.max(1) {
+        backend.poll_register(listener, PollInterest::Acceptable, 128)?;
+        let events = backend.poll_next(options.accept_poll_max_events.max(1))?;
+        if !events
+            .iter()
+            .any(|event| matches!(event, PollerEvent::Acceptable(id) if *id == listener))
+        {
+            continue;
+        }
+        let Some(connection) = backend.accept(listener)? else {
+            continue;
+        };
+        backend.request_started()?;
+        let wrote =
+            serve_http_connection_with_options(backend, connection, router, limits, mode, options)?;
+        backend.request_finished();
+        return Ok(wrote);
+    }
+    Ok(0)
 }
 
 pub fn serve_http_connection<B: NetBackend, R: HttpRouter>(
@@ -1620,16 +1689,38 @@ pub fn serve_http_connection<B: NetBackend, R: HttpRouter>(
     limits: &HttpServerLimits,
     mode: HttpConnectionMode,
 ) -> Result<usize, NetError> {
+    serve_http_connection_with_options(
+        backend,
+        connection,
+        router,
+        limits,
+        mode,
+        HttpServeOptions::default(),
+    )
+}
+
+pub fn serve_http_connection_with_options<B: NetBackend, R: HttpRouter>(
+    backend: &mut B,
+    connection: SocketId,
+    router: &R,
+    limits: &HttpServerLimits,
+    mode: HttpConnectionMode,
+    options: HttpServeOptions,
+) -> Result<usize, NetError> {
     let max_requests = match mode {
         HttpConnectionMode::OneOff => 1,
         HttpConnectionMode::Persistent { max_requests } => max_requests.max(1),
     };
+    let persistent_mode = matches!(mode, HttpConnectionMode::Persistent { .. });
 
     let mut total_wrote = 0usize;
-    for _ in 0..max_requests {
-        backend.poll_register(connection, PollInterest::Readable, 128)?;
-        let _ = backend.poll_next(8)?;
-        let mut raw = Vec::with_capacity(limits.max_header_bytes.min(4096));
+    let mut raw = Vec::with_capacity(limits.max_header_bytes.min(4096));
+    for request_idx in 0..max_requests {
+        if !(persistent_mode && request_idx > 0) {
+            backend.poll_register(connection, PollInterest::Readable, 128)?;
+            let _ = backend.poll_next(options.io_poll_max_events.max(1))?;
+        }
+        raw.clear();
         let max_total = limits.max_header_bytes + limits.max_body_bytes;
         let mut read_stalls = 0usize;
         let request = loop {
@@ -1643,7 +1734,7 @@ pub fn serve_http_connection<B: NetBackend, R: HttpRouter>(
             let chunk = backend.read(connection, remaining.min(16 * 1024))?;
             if chunk.is_empty() {
                 read_stalls += 1;
-                if read_stalls > 64 {
+                if read_stalls > options.read_stall_limit.max(1) {
                     backend.close(connection)?;
                     return Err(NetError::DeadlineExceeded);
                 }
@@ -1671,15 +1762,17 @@ pub fn serve_http_connection<B: NetBackend, R: HttpRouter>(
         }
 
         let serialized = response.to_bytes();
-        backend.poll_register(connection, PollInterest::Writable, 128)?;
-        let _ = backend.poll_next(8)?;
+        if !(persistent_mode && request_idx > 0) {
+            backend.poll_register(connection, PollInterest::Writable, 128)?;
+            let _ = backend.poll_next(options.io_poll_max_events.max(1))?;
+        }
         let mut wrote = 0usize;
         let mut write_stalls = 0usize;
         while wrote < serialized.len() {
             let n = backend.write(connection, &serialized[wrote..])?;
             if n == 0 {
                 write_stalls += 1;
-                if write_stalls > 64 {
+                if write_stalls > options.write_stall_limit.max(1) {
                     backend.close(connection)?;
                     return Err(NetError::DeadlineExceeded);
                 }

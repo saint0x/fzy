@@ -9,6 +9,8 @@ pub enum Capability {
     Process,
     Memory,
     Thread,
+    Log,
+    Error,
 }
 
 impl Capability {
@@ -21,6 +23,8 @@ impl Capability {
             "proc" | "process" => Some(Self::Process),
             "mem" | "memory" => Some(Self::Memory),
             "thread" | "threads" => Some(Self::Thread),
+            "log" | "logging" => Some(Self::Log),
+            "error" | "err" | "errors" => Some(Self::Error),
             _ => None,
         }
     }
@@ -34,6 +38,8 @@ impl Capability {
             Self::Process => "proc",
             Self::Memory => "mem",
             Self::Thread => "thread",
+            Self::Log => "log",
+            Self::Error => "error",
         }
     }
 }
@@ -132,6 +138,8 @@ mod tests {
         assert_eq!(Capability::parse("fs"), Some(Capability::FileSystem));
         assert_eq!(Capability::parse("http"), Some(Capability::Http));
         assert_eq!(Capability::parse("threads"), Some(Capability::Thread));
+        assert_eq!(Capability::parse("log"), Some(Capability::Log));
+        assert_eq!(Capability::parse("errors"), Some(Capability::Error));
         assert_eq!(Capability::parse("unknown"), None);
     }
 

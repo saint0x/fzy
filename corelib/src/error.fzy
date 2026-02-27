@@ -1,0 +1,95 @@
+enum ErrorKind {
+    InvalidInput,
+    Timeout,
+    Conflict,
+    NotFound,
+    Unauthorized,
+    Internal,
+}
+
+struct CoreError {
+    code: i32,
+    retryable: i32,
+    kind: ErrorKind,
+    message: str,
+}
+
+fn kind_code(kind: ErrorKind) -> i32 {
+    match kind {
+        ErrorKind::InvalidInput => return 400,
+        ErrorKind::Unauthorized => return 401,
+        ErrorKind::NotFound => return 404,
+        ErrorKind::Conflict => return 409,
+        ErrorKind::Timeout => return 408,
+        ErrorKind::Internal => return 500,
+        _ => return 500,
+    }
+}
+
+fn kind_retryable(kind: ErrorKind) -> i32 {
+    if kind == ErrorKind::Timeout then return 1
+    if kind == ErrorKind::Internal then return 1
+    return 0
+}
+
+fn make(kind: ErrorKind, message: str) -> CoreError {
+    return CoreError {
+        code: kind_code(kind),
+        retryable: kind_retryable(kind),
+        kind: kind,
+        message: message,
+    }
+}
+
+fn from_http_status(status: i32, message: str) -> CoreError {
+    let mut kind = ErrorKind::Internal
+    if status == 400 {
+        kind = ErrorKind::InvalidInput
+    } else {
+        if status == 401 {
+            kind = ErrorKind::Unauthorized
+        } else {
+            if status == 404 {
+                kind = ErrorKind::NotFound
+            } else {
+                if status == 409 {
+                    kind = ErrorKind::Conflict
+                } else {
+                    if status == 408 {
+                        kind = ErrorKind::Timeout
+                    }
+                }
+            }
+        }
+    }
+    return make(kind, message)
+}
+
+fn normalize(err: CoreError) -> CoreError {
+    let mut code = err.code
+    if code < 100 {
+        code = kind_code(err.kind)
+    }
+    let retryable = if code >= 500 || code == 408 { 1 } else { err.retryable }
+    return CoreError {
+        code: code,
+        retryable: retryable,
+        kind: err.kind,
+        message: err.message,
+    }
+}
+
+fn should_retry(err: CoreError, attempt: i32, max_attempts: i32) -> i32 {
+    if attempt >= max_attempts then return 0
+    if err.retryable == 1 then return 1
+    return 0
+}
+
+fn sample() -> i32 {
+    let err = from_http_status(503, "upstream unavailable")
+    let normalized = normalize(err)
+    if should_retry(normalized, 1, 3) == 1 {
+        return (normalized.code % 251) + 1
+    }
+    return normalized.code % 251
+}

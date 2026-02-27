@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fozzy Compiler Internals Visual Guide</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+    :root {
+      --bg: #f6f2e9;
+      --panel: #fffdf8;
+      --ink: #12212a;
+      --muted: #4b5e67;
+      --line: #d8d0bf;
+      --speed: #137a6a;
+      --correct: #0f5f9b;
+      --ops: #a34f12;
+      --hot: #e36f1e;
+      --ok: #1f9153;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 0%, #fff3d9 0%, transparent 38%),
+        radial-gradient(circle at 95% 10%, #dff3f6 0%, transparent 32%),
+        linear-gradient(165deg, #f4f0e8 0%, #f7f3eb 40%, #efe7d7 100%);
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      line-height: 1.42;
+    }
+
+    .wrap {
+      width: min(1200px, 94vw);
+      margin: 0 auto;
+      padding: 28px 0 56px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.2fr .8fr;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: 0 8px 22px rgba(24, 38, 45, .06);
+      padding: 16px;
+    }
+
+    h1, h2, h3 { margin: 0; font-family: "Space Grotesk", sans-serif; }
+
+    h1 {
+      font-size: clamp(1.5rem, 3.3vw, 2.25rem);
+      letter-spacing: -.02em;
+      margin-bottom: 10px;
+    }
+
+    .sub {
+      color: var(--muted);
+      font-size: .98rem;
+      max-width: 74ch;
+      margin: 0;
+    }
+
+    .chiprow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+
+    .chip {
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: #fff;
+      padding: 4px 10px;
+      font-size: .78rem;
+      font-family: "IBM Plex Mono", monospace;
+    }
+
+    .kpi {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+      align-content: start;
+    }
+
+    .kpi .panel { padding: 12px; }
+
+    .kpi strong {
+      display: block;
+      font: 700 .78rem/1 "IBM Plex Mono", monospace;
+      color: var(--muted);
+      letter-spacing: .02em;
+      margin-bottom: 4px;
+    }
+
+    .kpi .value { font-family: "Space Grotesk", sans-serif; font-size: 1.3rem; }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 0 0 12px;
+    }
+
+    button.filter {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 7px 10px;
+      font: 500 .78rem/1 "IBM Plex Mono", monospace;
+      cursor: pointer;
+    }
+
+    button.filter.active { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(280px, 1fr));
+      gap: 12px;
+    }
+
+    .visual-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(300px, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      display: grid;
+      grid-template-columns: 1fr 220px;
+      gap: 12px;
+      align-items: center;
+      min-height: 210px;
+    }
+
+    .tag {
+      display: inline-block;
+      margin-bottom: 8px;
+      font: 600 .72rem/1 "IBM Plex Mono", monospace;
+      letter-spacing: .03em;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #f9f5eb;
+      border: 1px solid var(--line);
+      color: var(--muted);
+    }
+
+    .tag.speed { border-color: color-mix(in srgb, var(--speed) 45%, #fff); color: var(--speed); }
+    .tag.correct { border-color: color-mix(in srgb, var(--correct) 45%, #fff); color: var(--correct); }
+    .tag.ops { border-color: color-mix(in srgb, var(--ops) 45%, #fff); color: var(--ops); }
+
+    .title { font-size: 1.01rem; margin-bottom: 6px; }
+
+    .explain { margin: 0 0 8px; color: var(--muted); font-size: .9rem; }
+
+    .why {
+      margin: 0;
+      padding-left: 12px;
+      border-left: 2px solid var(--line);
+      font-size: .84rem;
+    }
+
+    .evidence {
+      margin-top: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .evidence code {
+      font: 500 .69rem/1.2 "IBM Plex Mono", monospace;
+      background: #f6f7f8;
+      border: 1px solid #d8dde1;
+      border-radius: 8px;
+      padding: 4px 6px;
+      color: #244052;
+    }
+
+    .viz {
+      height: 170px;
+      border: 1px dashed #cfcec7;
+      border-radius: 12px;
+      background: linear-gradient(180deg, #fff 0%, #fdf9f1 100%);
+      padding: 8px;
+    }
+
+    .visual-card {
+      min-height: 320px;
+    }
+
+    .visual-card .viz {
+      height: 220px;
+      margin: 8px 0;
+      border-style: solid;
+      border-color: #d9d1c0;
+    }
+
+    svg { width: 100%; height: 100%; }
+
+    .viz.motion svg rect,
+    .viz.motion svg line,
+    .viz.motion svg text {
+      opacity: 0;
+      transform-box: fill-box;
+      transform-origin: center;
+      animation: vizReveal .9s ease forwards;
+    }
+
+    .viz.motion svg rect { animation-delay: .04s; }
+    .viz.motion svg line { animation-delay: .22s; }
+    .viz.motion svg text { animation-delay: .34s; }
+
+    .viz.motion svg {
+      animation: vizFloat 4.8s ease-in-out infinite;
+    }
+
+    @keyframes vizReveal {
+      from { opacity: 0; transform: translateY(8px) scale(.97); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    @keyframes vizFloat {
+      0% { transform: translateY(0); }
+      50% { transform: translateY(-2px); }
+      100% { transform: translateY(0); }
+    }
+    .legend { margin-top: 14px; color: var(--muted); font-size: .78rem; }
+
+    .score {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+    }
+
+    .score .panel { padding: 10px; }
+
+    .bar {
+      margin-top: 6px;
+      height: 8px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #e8e4d9;
+    }
+
+    .bar > span { display: block; height: 100%; border-radius: inherit; }
+
+    footer { margin-top: 14px; color: var(--muted); font-size: .78rem; }
+
+    @media (max-width: 1030px) {
+      .hero { grid-template-columns: 1fr; }
+      .card { grid-template-columns: 1fr; }
+      .visual-grid { grid-template-columns: 1fr; }
+      .viz { height: 140px; }
+      .visual-card .viz { height: 180px; }
+      .score { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 640px) {
+      .grid { grid-template-columns: 1fr; }
+      .kpi { grid-template-columns: 1fr; }
+      .score { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <article class="panel">
+        <h1>Fozzy: Speed + Determinism, Visualized</h1>
+        <p class="sub">Dense study map of your compiler internals. Each tile has: what it does, why it is fast/reliable, and source evidence. Visuals are conceptual (mental models), not benchmark plots.</p>
+        <div class="chiprow">
+          <span class="chip">12 mechanisms</span>
+          <span class="chip">3 lanes: speed / correctness / release discipline</span>
+          <span class="chip">code-anchored evidence</span>
+        </div>
+      </article>
+      <aside class="kpi">
+        <div class="panel"><strong>PERFORMANCE ITEMS</strong><div class="value">7</div></div>
+        <div class="panel"><strong>CORRECTNESS ITEMS</strong><div class="value">5</div></div>
+        <div class="panel"><strong>PIPELINE STYLE</strong><div class="value">Parallel + Verified</div></div>
+        <div class="panel"><strong>RUNTIME STYLE</strong><div class="value">Seeded + Replayable</div></div>
+      </aside>
+    </section>
+
+    <section class="panel">
+      <div class="toolbar">
+        <button class="filter active" data-filter="all">ALL</button>
+        <button class="filter" data-filter="speed">HIGH-PERFORMANCE</button>
+        <button class="filter" data-filter="correct">VERIFIABLE CORRECTNESS</button>
+        <button class="filter" data-filter="ops">PROD GATES + CREDIBILITY</button>
+        <button class="filter" data-filter="visuals">VISUALS</button>
+      </div>
+      <div id="cards" class="grid"></div>
+    </section>
+
+    <section class="score">
+      <article class="panel">
+        <strong>Build Throughput</strong>
+        <div class="bar"><span style="width:89%; background:var(--speed)"></span></div>
+      </article>
+      <article class="panel">
+        <strong>Runtime Predictability</strong>
+        <div class="bar"><span style="width:93%; background:var(--correct)"></span></div>
+      </article>
+      <article class="panel">
+        <strong>Auditability</strong>
+        <div class="bar"><span style="width:95%; background:var(--ops)"></span></div>
+      </article>
+      <article class="panel">
+        <strong>Overclaim Resistance</strong>
+        <div class="bar"><span style="width:97%; background:var(--hot)"></span></div>
+      </article>
+    </section>
+
+    <footer>
+      Study hint: read left-to-right inside each card: <code>mechanism -> effect -> evidence</code>. Start with the 7 speed cards, then 5 trust cards.
+    </footer>
+  </div>
+
+  <script>
+    const items = [
+      {
+        id: "native-plan",
+        lane: "speed",
+        tag: "HIGH-PERFORMANCE",
+        title: "Canonical native plan + parallel lowering + CFG verification",
+        explain: "Build one canonical plan, lower per function in parallel, verify CFG edges, then emit backend code.",
+        why: "Removes repeated planning work and catches malformed control flow before expensive backend stages.",
+        evidence: [
+          "crates/driver/src/pipeline.rs:3972",
+          "crates/driver/src/pipeline.rs:3983",
+          "crates/driver/src/pipeline.rs:4013",
+          "crates/driver/src/pipeline.rs:4099"
+        ],
+        viz: "parallel"
+      },
+      {
+        id: "switch",
+        lane: "speed",
+        tag: "HIGH-PERFORMANCE",
+        title: "`match` lowers to real switch terminators when viable",
+        explain: "Match arms become CFG `Switch` terminators instead of always degrading to if-else ladders.",
+        why: "Gives backends branch-table opportunities and cleaner control flow for optimization.",
+        evidence: [
+          "crates/driver/src/pipeline.rs:4202",
+          "crates/driver/src/pipeline.rs:4383",
+          "crates/driver/src/pipeline.rs:8017",
+          "crates/driver/src/pipeline.rs:8119"
+        ],
+        viz: "switch"
+      },
+      {
+        id: "boundary",
+        lane: "speed",
+        tag: "HIGH-PERFORMANCE",
+        title: "Local data-plane ops are separate from runtime-boundary calls",
+        explain: "Lowering tracks local operations separately and reserves runtime shims for capability/host-effect boundaries.",
+        why: "Keeps hot local paths direct; boundary overhead is paid only when crossing host capability edges.",
+        evidence: [
+          "crates/driver/src/pipeline.rs:3607",
+          "crates/driver/src/pipeline.rs:3675",
+          "crates/driver/src/pipeline.rs:3722",
+          "crates/driver/src/pipeline.rs:9433"
+        ],
+        viz: "boundary"
+      },
+      {
+        id: "bounds",
+        lane: "speed",
+        tag: "HIGH-PERFORMANCE",
+        title: "Per-access bounds policy (`ProvenInRange` vs `Checked`)",
+        explain: "Each array index access carries a bounds policy during lowering.",
+        why: "Proven-safe accesses skip dynamic checks while unknown accesses stay checked for safety.",
+        evidence: [
+          "crates/driver/src/pipeline.rs:3602",
+          "crates/driver/src/pipeline.rs:3752",
+          "crates/driver/src/pipeline.rs:5090",
+          "crates/driver/src/pipeline.rs:9068"
+        ],
+        viz: "bounds"
+      },
+      {
+        id: "string-fold",
+        lane: "speed",
+        tag: "HIGH-PERFORMANCE",
+        title: "Folded temporary string literals join native literal sets",
+        explain: "Foldable temp strings are collected and merged into native literal tables.",
+        why: "Cuts dynamic string allocation/churn across foldable chains.",
+        evidence: [
+          "crates/driver/src/pipeline.rs:5506",
+          "crates/driver/src/pipeline.rs:5681",
+          "crates/driver/src/pipeline.rs:7085",
+          "scripts/direct_memory_architecture_gate.py:45"
+        ],
+        viz: "strings"
+      },
+      {
+        id: "cache",
+        lane: "speed",
+        tag: "HIGH-PERFORMANCE",
+        title: "Parse + HIR/FIR caches keyed by hash and file stamps",
+        explain: "Parsed programs are reused when stamps match; lowered HIR/FIR are cached by content hash.",
+        why: "Avoids re-running expensive parse/lower steps on unchanged inputs.",
+        evidence: [
+          "crates/driver/src/pipeline.rs:1175",
+          "crates/driver/src/pipeline.rs:1184",
+          "crates/driver/src/pipeline.rs:1268",
+          "crates/driver/src/pipeline.rs:16270"
+        ],
+        viz: "cache"
+      },
+      {
+        id: "queue",
+        lane: "speed",
+        tag: "HIGH-PERFORMANCE",
+        title: "Deterministic runtime queue uses random pool + position map",
+        explain: "Random scheduler operations use indexed pool plus id->position map.",
+        why: "Enables low-latency removals/selection without linear scan behavior.",
+        evidence: [
+          "crates/runtime/src/lib.rs:265",
+          "crates/runtime/src/lib.rs:291",
+          "crates/runtime/src/lib.rs:315",
+          "crates/runtime/src/lib.rs:345"
+        ],
+        viz: "queue"
+      },
+      {
+        id: "parity",
+        lane: "correct",
+        tag: "VERIFIABLE CORRECTNESS",
+        title: "Cross-backend parity tests (LLVM vs Cranelift)",
+        explain: "Behavioral consistency tests compare outcomes across both backends, including direct-memory contracts.",
+        why: "Reduces backend-specific semantic drift and improves confidence in correctness claims.",
+        evidence: [
+          "crates/driver/src/pipeline.rs:17642",
+          "crates/driver/src/pipeline.rs:17687",
+          "crates/driver/src/pipeline.rs:17732",
+          "crates/driver/src/pipeline.rs:17913"
+        ],
+        viz: "parity"
+      },
+      {
+        id: "sched",
+        lane: "correct",
+        tag: "VERIFIABLE CORRECTNESS",
+        title: "Seed-driven deterministic scheduling + replay + trace modes",
+        explain: "Runtime config fixes seed/scheduler; replay order and trace mode are explicit knobs.",
+        why: "Makes executions reproducible and debuggable, even for randomized scheduling.",
+        evidence: [
+          "crates/runtime/src/lib.rs:22",
+          "crates/runtime/src/lib.rs:65",
+          "crates/runtime/src/lib.rs:730",
+          "crates/runtime/src/lib.rs:751"
+        ],
+        viz: "sched"
+      },
+      {
+        id: "policy",
+        lane: "correct",
+        tag: "VERIFIABLE CORRECTNESS",
+        title: "Verification is policy-driven with stable diagnostic codes",
+        explain: "Verifier enforces production/safe/unsafe-scope policies; diagnostics receive stable reproducible codes.",
+        why: "Improves audit repeatability and policy clarity across environments.",
+        evidence: [
+          "crates/verifier/src/lib.rs:7",
+          "crates/verifier/src/lib.rs:32",
+          "crates/verifier/src/lib.rs:156",
+          "crates/diagnostics/src/lib.rs:135"
+        ],
+        viz: "policy"
+      },
+      {
+        id: "gate",
+        lane: "ops",
+        tag: "PRODUCTION GATES",
+        title: "Release gate continuously enforces architecture/perf/trace discipline",
+        explain: "Production gate script runs deterministic doctor/tests, parity checks, trace lifecycle checks, perf/arch gates, and host-backed checks.",
+        why: "Turns claims into continuously enforced release criteria instead of one-time statements.",
+        evidence: [
+          "scripts/fozzy_production_gate.sh:24",
+          "scripts/fozzy_production_gate.sh:46",
+          "scripts/fozzy_production_gate.sh:73",
+          "scripts/direct_memory_perf_gate.py:64",
+          "scripts/direct_memory_architecture_gate.py:113"
+        ],
+        viz: "gate"
+      },
+      {
+        id: "claims",
+        lane: "ops",
+        tag: "CREDIBILITY",
+        title: "Safety-claim integrity gate prevents documentation overclaim",
+        explain: "A dedicated gate checks wording and required evidence patterns for safety claims.",
+        why: "Strengthens external trust because docs are held to the same evidence discipline as code.",
+        evidence: [
+          "scripts/safety_claim_integrity_gate.py:49",
+          "scripts/safety_claim_integrity_gate.py:54",
+          "scripts/safety_claim_integrity_gate.py:62"
+        ],
+        viz: "claims"
+      }
+    ];
+
+    const cardHost = document.getElementById("cards");
+
+    function tone(lane) {
+      if (lane === "speed") return "speed";
+      if (lane === "correct") return "correct";
+      return "ops";
+    }
+
+    function viz(kind) {
+      const c = {
+        parallel: `<svg viewBox="0 0 220 160"><rect x="8" y="10" width="70" height="16" rx="4" fill="#dce7ee"/><text x="14" y="22" font-size="8" fill="#224">plan</text><line x1="78" y1="18" x2="104" y2="18" stroke="#336"/><rect x="106" y="6" width="46" height="10" rx="3" fill="#b7e3dc"/><rect x="106" y="20" width="46" height="10" rx="3" fill="#b7e3dc"/><rect x="106" y="34" width="46" height="10" rx="3" fill="#b7e3dc"/><text x="156" y="26" font-size="8" fill="#155">par_iter</text><line x1="152" y1="22" x2="190" y2="22" stroke="#155"/><rect x="190" y="10" width="24" height="25" rx="3" fill="#ffe0bf"/><text x="192" y="24" font-size="7">CFG</text><line x1="202" y1="35" x2="202" y2="56" stroke="#a34f12"/><rect x="181" y="57" width="40" height="12" rx="3" fill="#ffd6a9"/><text x="186" y="65" font-size="7">emit</text><circle cx="82" cy="18" r="2.5" fill="#1f9153"><animate attributeName="cx" values="82;103;82" dur="1.6s" repeatCount="indefinite"/></circle><circle cx="152" cy="22" r="2.5" fill="#e36f1e"><animate attributeName="cx" values="152;190;152" dur="1.3s" repeatCount="indefinite"/></circle></svg>`,
+        switch: `<svg viewBox="0 0 220 160"><rect x="80" y="8" width="60" height="16" rx="4" fill="#d9e8f6"/><text x="87" y="19" font-size="8">scrutinee</text><line x1="110" y1="24" x2="110" y2="40" stroke="#0f5f9b"/><rect x="74" y="40" width="72" height="16" rx="4" fill="#bfe2ff"/><text x="95" y="51" font-size="8">Switch</text><line x1="74" y1="56" x2="38" y2="88" stroke="#0f5f9b"/><line x1="110" y1="56" x2="110" y2="88" stroke="#0f5f9b"/><line x1="146" y1="56" x2="182" y2="88" stroke="#0f5f9b"/><rect x="18" y="88" width="40" height="14" rx="3" fill="#dff4ee"/><rect x="90" y="88" width="40" height="14" rx="3" fill="#dff4ee"/><rect x="162" y="88" width="40" height="14" rx="3" fill="#dff4ee"/><text x="28" y="97" font-size="7">arm1</text><text x="100" y="97" font-size="7">arm2</text><text x="170" y="97" font-size="7">default</text><circle cx="110" cy="56" r="3" fill="#0f5f9b"><animate attributeName="cx" values="74;110;146;74" dur="2.2s" repeatCount="indefinite"/><animate attributeName="cy" values="56;56;56;56" dur="2.2s" repeatCount="indefinite"/></circle></svg>`,
+        boundary: `<svg viewBox="0 0 220 160"><rect x="8" y="12" width="120" height="120" rx="8" fill="#e8f6f2" stroke="#1f9153"/><text x="16" y="25" font-size="8" fill="#155">Local data-plane</text><rect x="18" y="35" width="80" height="10" rx="3" fill="#7dc8b8"/><rect x="18" y="50" width="60" height="10" rx="3" fill="#7dc8b8"/><rect x="18" y="65" width="90" height="10" rx="3" fill="#7dc8b8"/><line x1="128" y1="72" x2="172" y2="72" stroke="#a34f12" stroke-dasharray="3 2"/><rect x="172" y="56" width="40" height="30" rx="4" fill="#ffe3c9" stroke="#a34f12"/><text x="178" y="72" font-size="7">shim</text><text x="152" y="52" font-size="7" fill="#a34f12">boundary only</text><circle cx="24" cy="70" r="2.5" fill="#1f9153"><animate attributeName="cx" values="24;122;24" dur="2.1s" repeatCount="indefinite"/></circle><circle cx="128" cy="72" r="2.5" fill="#a34f12"><animate attributeName="cx" values="128;172;128" dur="2.8s" repeatCount="indefinite"/></circle></svg>`,
+        bounds: `<svg viewBox="0 0 220 160"><rect x="16" y="24" width="84" height="24" rx="4" fill="#d6f0e9"/><text x="22" y="39" font-size="8">ProvenInRange</text><rect x="120" y="24" width="84" height="24" rx="4" fill="#ffe0bf"/><text x="145" y="39" font-size="8">Checked</text><line x1="58" y1="48" x2="58" y2="84" stroke="#1f9153"/><line x1="162" y1="48" x2="162" y2="84" stroke="#a34f12"/><rect x="25" y="84" width="66" height="16" rx="4" fill="#9fdcca"/><text x="40" y="95" font-size="8">fast path</text><rect x="128" y="84" width="68" height="16" rx="4" fill="#f7c79b"/><text x="137" y="95" font-size="8">check + load</text><rect x="49" y="56" width="18" height="6" fill="#1f9153"><animate attributeName="y" values="56;78;56" dur="1.2s" repeatCount="indefinite"/></rect><rect x="153" y="56" width="18" height="6" fill="#a34f12"><animate attributeName="y" values="56;78;56" dur="1.8s" repeatCount="indefinite"/></rect></svg>`,
+        strings: `<svg viewBox="0 0 220 160"><rect x="10" y="15" width="90" height="24" rx="4" fill="#d9e8f6"/><text x="20" y="30" font-size="8">folded temp chain</text><line x1="100" y1="27" x2="132" y2="27" stroke="#0f5f9b"/><rect x="132" y="9" width="78" height="36" rx="6" fill="#e8f6f2" stroke="#1f9153"/><text x="139" y="22" font-size="8">literal set</text><text x="145" y="34" font-size="8">deduped ids</text><rect x="35" y="68" width="150" height="18" rx="4" fill="#fff2df"/><text x="58" y="80" font-size="8">less dynamic string churn</text><circle cx="103" cy="27" r="2.5" fill="#0f5f9b"><animate attributeName="cx" values="103;132;103" dur="1.4s" repeatCount="indefinite"/></circle><rect x="138" y="14" width="10" height="6" fill="#1f9153"><animate attributeName="x" values="138;192;138" dur="2.2s" repeatCount="indefinite"/></rect></svg>`,
+        cache: `<svg viewBox="0 0 220 160"><rect x="14" y="18" width="80" height="16" rx="4" fill="#dce7ee"/><text x="23" y="29" font-size="8">source+imports</text><line x1="94" y1="26" x2="122" y2="26" stroke="#224"/><rect x="122" y="12" width="48" height="28" rx="5" fill="#f7dfbe"/><text x="131" y="29" font-size="8">hash</text><line x1="146" y1="40" x2="146" y2="58" stroke="#224"/><rect x="106" y="58" width="80" height="18" rx="4" fill="#cce9ff"/><text x="116" y="70" font-size="8">cache lookup</text><rect x="20" y="95" width="82" height="16" rx="4" fill="#d6f0e9"/><text x="36" y="106" font-size="8">stamps match</text><rect x="124" y="95" width="82" height="16" rx="4" fill="#ffd8bc"/><text x="140" y="106" font-size="8">re-parse</text><circle cx="146" cy="45" r="3" fill="#0f5f9b"><animate attributeName="cy" values="45;64;45" dur="1.5s" repeatCount="indefinite"/></circle><circle cx="146" cy="102" r="3" fill="#1f9153"><animate attributeName="cx" values="62;166;62" dur="2.8s" repeatCount="indefinite"/></circle></svg>`,
+        queue: `<svg viewBox="0 0 220 160"><rect x="10" y="14" width="88" height="18" rx="4" fill="#d9e8f6"/><text x="20" y="26" font-size="8">random_pool[]</text><rect x="10" y="42" width="88" height="18" rx="4" fill="#d9e8f6"/><text x="27" y="54" font-size="8">random_pos{id}</text><line x1="98" y1="23" x2="130" y2="50" stroke="#0f5f9b"/><line x1="98" y1="50" x2="130" y2="23" stroke="#0f5f9b"/><rect x="130" y="30" width="78" height="20" rx="4" fill="#e8f6f2"/><text x="138" y="43" font-size="8">swap-remove</text><rect x="35" y="86" width="150" height="16" rx="4" fill="#fff1dd"/><text x="63" y="97" font-size="8">low-latency delete/select</text><rect x="18" y="18" width="8" height="8" fill="#0f5f9b"><animate attributeName="x" values="18;80;18" dur="1.3s" repeatCount="indefinite"/></rect><rect x="134" y="36" width="8" height="8" fill="#1f9153"><animate attributeName="x" values="134;196;134" dur="1.9s" repeatCount="indefinite"/></rect></svg>`,
+        parity: `<svg viewBox="0 0 220 160"><rect x="16" y="16" width="72" height="16" rx="4" fill="#d9e8f6"/><text x="34" y="27" font-size="8">LLVM</text><rect x="132" y="16" width="72" height="16" rx="4" fill="#d9e8f6"/><text x="146" y="27" font-size="8">Cranelift</text><line x1="52" y1="32" x2="52" y2="70" stroke="#0f5f9b"/><line x1="168" y1="32" x2="168" y2="70" stroke="#0f5f9b"/><rect x="72" y="72" width="76" height="18" rx="4" fill="#e8f6f2"/><text x="79" y="84" font-size="8">result compare</text><line x1="52" y1="70" x2="72" y2="80" stroke="#1f9153"/><line x1="168" y1="70" x2="148" y2="80" stroke="#1f9153"/><circle cx="52" cy="70" r="2.5" fill="#0f5f9b"><animate attributeName="cx" values="52;72;52" dur="1.5s" repeatCount="indefinite"/></circle><circle cx="168" cy="70" r="2.5" fill="#0f5f9b"><animate attributeName="cx" values="168;148;168" dur="1.5s" repeatCount="indefinite"/></circle></svg>`,
+        sched: `<svg viewBox="0 0 220 160"><rect x="12" y="12" width="80" height="16" rx="4" fill="#f7dfbe"/><text x="18" y="23" font-size="8">seed = 7</text><line x1="52" y1="28" x2="52" y2="52" stroke="#a34f12"/><rect x="16" y="52" width="72" height="14" rx="4" fill="#d9e8f6"/><text x="23" y="61" font-size="7">fifo/random/cov</text><line x1="88" y1="59" x2="124" y2="59" stroke="#0f5f9b"/><rect x="124" y="50" width="80" height="18" rx="4" fill="#e8f6f2"/><text x="137" y="62" font-size="8">trace mode</text><rect x="54" y="90" width="112" height="16" rx="4" fill="#d6f0e9"/><text x="75" y="101" font-size="8">replay_order()</text><circle cx="20" cy="59" r="2.5" fill="#0f5f9b"><animate attributeName="cx" values="20;88;20" dur="1.7s" repeatCount="indefinite"/></circle><circle cx="128" cy="59" r="2.5" fill="#1f9153"><animate attributeName="cx" values="128;202;128" dur="2.1s" repeatCount="indefinite"/></circle></svg>`,
+        policy: `<svg viewBox="0 0 220 160"><rect x="12" y="12" width="92" height="14" rx="4" fill="#d9e8f6"/><text x="20" y="22" font-size="8">policy toggles</text><rect x="12" y="30" width="92" height="12" rx="4" fill="#e8f6f2"/><text x="16" y="39" font-size="7">prod mem safety</text><rect x="12" y="46" width="92" height="12" rx="4" fill="#e8f6f2"/><text x="16" y="55" font-size="7">strict unsafe</text><rect x="12" y="62" width="92" height="12" rx="4" fill="#e8f6f2"/><text x="16" y="71" font-size="7">allow/deny scopes</text><line x1="104" y1="42" x2="138" y2="42" stroke="#0f5f9b"/><rect x="138" y="30" width="72" height="22" rx="4" fill="#fff2df"/><text x="145" y="44" font-size="8">diagnostic</text><rect x="126" y="78" width="84" height="16" rx="4" fill="#ffd9be"/><text x="131" y="89" font-size="8">stable code id</text><rect x="108" y="39" width="8" height="6" fill="#0f5f9b"><animate attributeName="x" values="108;134;108" dur="1.2s" repeatCount="indefinite"/></rect><rect x="132" y="82" width="12" height="6" fill="#a34f12"><animate attributeName="x" values="132;196;132" dur="2s" repeatCount="indefinite"/></rect></svg>`,
+        gate: `<svg viewBox="0 0 220 160"><rect x="10" y="18" width="36" height="12" rx="3" fill="#d9e8f6"/><rect x="52" y="18" width="36" height="12" rx="3" fill="#d9e8f6"/><rect x="94" y="18" width="36" height="12" rx="3" fill="#d9e8f6"/><rect x="136" y="18" width="36" height="12" rx="3" fill="#d9e8f6"/><rect x="178" y="18" width="30" height="12" rx="3" fill="#d9e8f6"/><text x="14" y="27" font-size="6">doctor</text><text x="59" y="27" font-size="6">strict</text><text x="100" y="27" font-size="6">trace</text><text x="142" y="27" font-size="6">perf</text><text x="182" y="27" font-size="6">host</text><line x1="26" y1="30" x2="26" y2="54" stroke="#0f5f9b"/><line x1="68" y1="30" x2="68" y2="54" stroke="#0f5f9b"/><line x1="110" y1="30" x2="110" y2="54" stroke="#0f5f9b"/><line x1="152" y1="30" x2="152" y2="54" stroke="#0f5f9b"/><line x1="193" y1="30" x2="193" y2="54" stroke="#0f5f9b"/><rect x="54" y="58" width="112" height="18" rx="5" fill="#e8f6f2"/><text x="73" y="70" font-size="8">release pass/fail</text><circle cx="26" cy="54" r="2.5" fill="#1f9153"><animate attributeName="cx" values="26;193;26" dur="2.6s" repeatCount="indefinite"/></circle></svg>`,
+        claims: `<svg viewBox="0 0 220 160"><rect x="16" y="16" width="84" height="18" rx="4" fill="#fff2df"/><text x="23" y="28" font-size="8">docs claims</text><line x1="100" y1="25" x2="132" y2="25" stroke="#a34f12"/><rect x="132" y="14" width="72" height="22" rx="4" fill="#ffd8bc"/><text x="142" y="28" font-size="8">integrity gate</text><line x1="168" y1="36" x2="168" y2="58" stroke="#a34f12"/><rect x="120" y="58" width="96" height="16" rx="4" fill="#d6f0e9"/><text x="129" y="69" font-size="8">evidence required</text><rect x="26" y="88" width="170" height="16" rx="4" fill="#d9e8f6"/><text x="44" y="99" font-size="8">external credibility improves</text><rect x="102" y="22" width="10" height="6" fill="#a34f12"><animate attributeName="x" values="102;130;102" dur="1.3s" repeatCount="indefinite"/></rect><circle cx="168" cy="58" r="3" fill="#1f9153"><animate attributeName="cy" values="58;96;58" dur="1.9s" repeatCount="indefinite"/></circle></svg>`
+      };
+      return c[kind] || c.parallel;
+    }
+
+    function cardTemplate(item) {
+      return `
+        <article class="panel card" data-lane="${item.lane}">
+          <div>
+            <span class="tag ${tone(item.lane)}">${item.tag}</span>
+            <h3 class="title">${item.title}</h3>
+            <p class="explain">${item.explain}</p>
+            <p class="why"><strong>Why this matters:</strong> ${item.why}</p>
+            <div class="evidence">
+              ${item.evidence.map(e => `<code>${e}</code>`).join("")}
+            </div>
+          </div>
+          <div class="viz motion">${viz(item.viz)}</div>
+        </article>
+      `;
+    }
+
+    function visualTemplate(item) {
+      return `
+        <article class="panel visual-card" data-lane="${item.lane}">
+          <span class="tag ${tone(item.lane)}">${item.tag}</span>
+          <h3 class="title">${item.title}</h3>
+          <div class="viz motion">${viz(item.viz)}</div>
+          <p class="explain">${item.explain}</p>
+          <p class="why"><strong>Simple read:</strong> ${item.why}</p>
+        </article>
+      `;
+    }
+
+    function render(filter = "all") {
+      if (filter === "visuals") {
+        cardHost.className = "visual-grid";
+        cardHost.innerHTML = items.map(visualTemplate).join("");
+        return;
+      }
+      cardHost.className = "grid";
+      const filtered = filter === "all" ? items : items.filter(i => i.lane === filter);
+      cardHost.innerHTML = filtered.map(cardTemplate).join("");
+    }
+
+    render();
+
+    document.querySelectorAll("button.filter").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll("button.filter").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        render(btn.dataset.filter);
+      });
+    });
+  </script>
+</body>
+</html>

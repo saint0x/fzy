@@ -1,5 +1,7 @@
 use core.http;
+use core.log;
 use core.proc;
+use core.error;
 
 mod resultx;
 mod text;
@@ -13,6 +15,8 @@ mod network;
 mod concurrency;
 mod process;
 mod security;
+mod log;
+mod error;
 
 fn http_kernel_sample() -> i32 {
     let status = http.last_status()
@@ -37,6 +41,8 @@ fn sanity() -> i32 {
     acc = (acc + concurrency.sample()) % 251
     acc = (acc + process.sample()) % 251
     acc = (acc + security.sample()) % 251
+    acc = (acc + log.sample()) % 251
+    acc = (acc + error.sample()) % 251
     return acc
 }
 
