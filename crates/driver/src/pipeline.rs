@@ -4876,6 +4876,24 @@ fn llvm_emit_linear_stmts(
                     }
                 }
                 let rendered_value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                if let ast::Expr::Closure {
+                    params,
+                    return_type,
+                    body,
+                } = value
+                {
+                    let captures = llvm_snapshot_closure_captures(ctx);
+                    ctx.closures.insert(
+                        target.clone(),
+                        LlvmClosureBinding {
+                            params: params.clone(),
+                            return_type: return_type.clone(),
+                            body: (**body).clone(),
+                            captures,
+                        },
+                    );
+                    continue;
+                }
                 if let Some(symbol) = ctx.mutable_globals.get(target).cloned() {
                     ctx.code
                         .push_str(&format!("  store i32 {rendered_value}, ptr @{symbol}\n"));
@@ -4927,6 +4945,7 @@ fn llvm_emit_linear_stmts(
                 }
                 ctx.array_slots.remove(target);
                 ctx.const_strings.remove(target);
+                ctx.closures.remove(target);
             }
             ast::Stmt::CompoundAssign { target, op, value } => {
                 let combined_expr = ast::Expr::Binary {
@@ -4952,6 +4971,7 @@ fn llvm_emit_linear_stmts(
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
                 ctx.array_slots.remove(target);
                 ctx.const_strings.remove(target);
+                ctx.closures.remove(target);
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -8547,6 +8567,23 @@ fn clif_emit_linear_stmts(
                     ctx.array_bindings.remove(target);
                     continue;
                 }
+                if let ast::Expr::Closure {
+                    params,
+                    return_type,
+                    body,
+                } = value
+                {
+                    ctx.closures.insert(
+                        target.clone(),
+                        ClifClosureBinding {
+                            params: params.clone(),
+                            return_type: return_type.clone(),
+                            body: (**body).clone(),
+                            captures: clif_snapshot_closure_captures(builder, locals, next_var),
+                        },
+                    );
+                    continue;
+                }
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let mut lowered_items = Vec::with_capacity(items.len());
                     for item in items {
@@ -8661,6 +8698,7 @@ fn clif_emit_linear_stmts(
                 }
                 ctx.array_bindings.remove(target);
                 ctx.const_strings.remove(target);
+                ctx.closures.remove(target);
             }
             ast::Stmt::CompoundAssign { target, op, value } => {
                 let combined_expr = ast::Expr::Binary {
@@ -8690,6 +8728,7 @@ fn clif_emit_linear_stmts(
                 }
                 ctx.array_bindings.remove(target);
                 ctx.const_strings.remove(target);
+                ctx.closures.remove(target);
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -9410,11 +9449,11 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
             diagnostics.push(diagnostics::Diagnostic::new(
                 diagnostics::Severity::Error,
                 format!(
-                    "native backend only supports closures bound directly in `let` statements in function `{}`",
+                    "native backend only supports closures bound to local names via `let`/assignment in function `{}`",
                     function.name
                 ),
                 Some(
-                    "bind the closure to a local `let` name and invoke it by identifier"
+                    "bind the closure to a local name (`let` or `name = |...|`) and invoke it by identifier"
                         .to_string(),
                 ),
             ));
@@ -9742,8 +9781,14 @@ fn stmt_contains_unsupported_closure_usage(stmt: &ast::Stmt) -> bool {
                 expr_contains_closure(value)
             }
         }
+        ast::Stmt::Assign { value, .. } => {
+            if matches!(value, ast::Expr::Closure { .. }) {
+                false
+            } else {
+                expr_contains_closure(value)
+            }
+        }
         ast::Stmt::LetPattern { value, .. }
-        | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
@@ -10359,8 +10404,13 @@ fn collect_local_callable_bindings(body: &[ast::Stmt], out: &mut HashSet<String>
                 }
                 collect_local_callable_bindings_from_expr(value, out);
             }
+            ast::Stmt::Assign { target, value } => {
+                if matches!(value, ast::Expr::Closure { .. }) {
+                    out.insert(target.clone());
+                }
+                collect_local_callable_bindings_from_expr(value, out);
+            }
             ast::Stmt::LetPattern { value, .. }
-            | ast::Stmt::Assign { value, .. }
             | ast::Stmt::CompoundAssign { value, .. }
             | ast::Stmt::Defer(value)
             | ast::Stmt::Requires(value)
@@ -17239,7 +17289,33 @@ mod tests {
         let output = verify_file(&path).expect("verify should run");
         assert!(output.diagnostic_details.iter().any(|diag| {
             diag.message.contains(
-                "native backend only supports closures bound directly in `let` statements",
+                "native backend only supports closures bound to local names via `let`/assignment",
+            )
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_accepts_native_assigned_closure_usage() {
+        let file_name = format!(
+            "fozzylang-native-closure-assigned-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    let mut cb = |x: i32| x + 1;\n    cb = |x: i32| x + 2;\n    return cb(3)\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message.contains(
+                "native backend only supports closures bound to local names via `let`/assignment",
             )
         }));
 
