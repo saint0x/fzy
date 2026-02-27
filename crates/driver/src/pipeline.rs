@@ -1309,8 +1309,8 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
     }
     enrich_diagnostics_context(&mut diagnostics);
     diagnostics::assign_stable_codes(&mut diagnostics, diagnostics::DiagnosticDomain::Driver);
-    let llvm = lower_backend_ir(&fir, BackendKind::Llvm);
-    let cranelift = lower_backend_ir(&fir, BackendKind::Cranelift);
+    let llvm = lower_backend_ir(&fir, BackendKind::Llvm)?;
+    let cranelift = lower_backend_ir(&fir, BackendKind::Cranelift)?;
 
     Ok(Output {
         module: fir.name,
@@ -3699,7 +3699,7 @@ fn verify_control_flow_cfg(cfg: &ControlFlowCfg) -> Result<()> {
     Ok(())
 }
 
-fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> String {
+fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> Result<String> {
     match backend {
         BackendKind::Llvm => lower_llvm_ir(fir, true),
         BackendKind::Cranelift => lower_cranelift_ir(fir, true),
@@ -4144,17 +4144,17 @@ fn build_native_canonical_plan(
     }
 }
 
-fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String {
+fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String> {
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
     if fir.typed_functions.is_empty() {
         let ret = plan
             .forced_main_return
             .or(fir.entry_return_const_i32)
             .unwrap_or(0);
-        return format!(
+        return Ok(format!(
             "; ModuleID = '{name}'\ndefine i32 @main() {{\nentry:\n  ret i32 {ret}\n}}\n",
             name = fir.name
-        );
+        ));
     }
 
     let mut out = format!("; ModuleID = '{}'\n", fir.name);
@@ -4229,27 +4229,31 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String 
                 &plan.task_ref_ids,
                 cfg,
             )
-            .unwrap_or_else(|error| {
-                format!(
-                    "define i32 @{}() {{\nentry:\n  ; cfg lowering failed: {}\n  ret i32 0\n}}\n",
-                    native_mangle_symbol(&function.name),
+            .map_err(|error| {
+                anyhow!(
+                    "llvm backend failed lowering canonical cfg for `{}`: {}",
+                    function.name,
                     error
                 )
-            }),
-            Some(Err(error)) => format!(
-                "define i32 @{}() {{\nentry:\n  ; cfg lowering failed: {}\n  ret i32 0\n}}\n",
-                native_mangle_symbol(&function.name),
-                error
-            ),
-            None => format!(
-                "define i32 @{}() {{\nentry:\n  ; cfg lowering failed: missing canonical cfg\n  ret i32 0\n}}\n",
-                native_mangle_symbol(&function.name)
-            ),
+            })?,
+            Some(Err(error)) => {
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: {}",
+                    function.name,
+                    error
+                ));
+            }
+            None => {
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: missing entry",
+                    function.name
+                ));
+            }
         };
         out.push_str(&lowered);
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
 fn native_mangle_symbol(name: &str) -> String {
@@ -4264,7 +4268,7 @@ fn native_mangle_symbol(name: &str) -> String {
         .collect()
 }
 
-fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> String {
+fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String> {
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
     let mut out = String::new();
     for function in &fir.typed_functions {
@@ -4340,14 +4344,17 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> St
                 }
             }
             Some(Err(error)) => {
-                let _ = writeln!(&mut out, "block0:");
-                let _ = writeln!(&mut out, "  ; cfg-error: {}", error);
-                let _ = writeln!(&mut out, "  return 0");
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: {}",
+                    function.name,
+                    error
+                ));
             }
             None => {
-                let _ = writeln!(&mut out, "block0:");
-                let _ = writeln!(&mut out, "  ; cfg-error: missing canonical cfg");
-                let _ = writeln!(&mut out, "  return 0");
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: missing entry",
+                    function.name
+                ));
             }
         }
         out.push_str("}\n\n");
@@ -4357,9 +4364,11 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> St
             .forced_main_return
             .or(fir.entry_return_const_i32)
             .unwrap_or(0);
-        return format!("function %main() -> i32 {{\nblock0:\n  return {fallback}\n}}\n");
+        return Ok(format!(
+            "function %main() -> i32 {{\nblock0:\n  return {fallback}\n}}\n"
+        ));
     }
-    out
+    Ok(out)
 }
 
 struct LlvmFuncCtx {
@@ -7115,7 +7124,7 @@ fn emit_native_libraries_llvm(
         &async_exports,
     )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
-    let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks);
+    let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks)?;
     std::fs::write(&ll_path, llvm_ir)
         .with_context(|| format!("failed writing llvm ir: {}", ll_path.display()))?;
 
@@ -7669,7 +7678,7 @@ fn emit_native_artifact_llvm(
         &async_exports,
     )?;
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
-    let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks);
+    let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks)?;
     std::fs::write(&ll_path, llvm_ir)
         .with_context(|| format!("failed writing llvm ir: {}", ll_path.display()))?;
 
@@ -9445,19 +9454,6 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
-        if function_body_contains_unsupported_closure_usage(&function.body) {
-            diagnostics.push(diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "native backend only supports closures bound to local names via `let`/assignment in function `{}`",
-                    function.name
-                ),
-                Some(
-                    "bind the closure to a local name (`let` or `name = |...|`) and invoke it by identifier"
-                        .to_string(),
-                ),
-            ));
-        }
         if let Err(error) =
             build_control_flow_cfg(&function.body, &variant_tags, &passthrough_functions)
         {
@@ -9469,19 +9465,6 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
                 Some(
                     "rewrite unsupported pattern guard shapes or non-lowerable control-flow forms to explicit statements"
-                        .to_string(),
-                ),
-            ));
-        }
-        if function_body_contains_unsupported_partial_native_expression_usage(&function.body) {
-            diagnostics.push(diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "native backend detected parser-recognized expressions without full lowering parity in function `{}`",
-                    function.name
-                ),
-                Some(
-                    "native builds require explicit rewrites for residual partial forms (range outside `for-in`, non-identifier field access chains, and unsupported struct literal placement)"
                         .to_string(),
                 ),
             ));
@@ -9532,7 +9515,7 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
 }
 
 fn experimental_feature_diagnostics(
-    module: &ast::Module,
+    _module: &ast::Module,
     manifest: Option<&manifest::Manifest>,
 ) -> Vec<diagnostics::Diagnostic> {
     let tier = manifest
@@ -9546,30 +9529,6 @@ fn experimental_feature_diagnostics(
     }
 
     let mut diagnostics = Vec::new();
-    for item in &module.items {
-        let ast::Item::Function(function) = item else {
-            continue;
-        };
-        let has_experimental_shape = function_body_contains_unsupported_closure_usage(&function.body)
-            || function_body_contains_unsupported_partial_native_expression_usage(&function.body);
-        if !has_experimental_shape {
-            continue;
-        }
-        diagnostics.push(
-            diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "function `{}` uses experimental language semantics while manifest tier is `{}`",
-                    function.name, tier
-                ),
-                Some(
-                    "switch manifest to [language] tier=\"experimental\" and allow_experimental=true, or rewrite to Core v1 forms"
-                        .to_string(),
-                ),
-            )
-            .with_fix("set `[language] tier = \"experimental\"` and `allow_experimental = true`"),
-        );
-    }
     diagnostics::assign_stable_codes(&mut diagnostics, diagnostics::DiagnosticDomain::Verifier);
     diagnostics
 }
@@ -9766,300 +9725,6 @@ fn cast_clif_value(
         value.ty,
         target
     );
-}
-
-fn function_body_contains_unsupported_closure_usage(body: &[ast::Stmt]) -> bool {
-    body.iter().any(stmt_contains_unsupported_closure_usage)
-}
-
-fn stmt_contains_unsupported_closure_usage(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::Let { value, .. } => {
-            if matches!(value, ast::Expr::Closure { .. }) {
-                false
-            } else {
-                expr_contains_closure(value)
-            }
-        }
-        ast::Stmt::Assign { value, .. } => {
-            if matches!(value, ast::Expr::Closure { .. }) {
-                false
-            } else {
-                expr_contains_closure(value)
-            }
-        }
-        ast::Stmt::LetPattern { value, .. }
-        | ast::Stmt::CompoundAssign { value, .. }
-        | ast::Stmt::Defer(value)
-        | ast::Stmt::Requires(value)
-        | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => expr_contains_closure(value),
-        ast::Stmt::Return(Some(value)) => expr_contains_closure(value),
-        ast::Stmt::Return(None) | ast::Stmt::Break | ast::Stmt::Continue => false,
-        ast::Stmt::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            expr_contains_closure(condition)
-                || function_body_contains_unsupported_closure_usage(then_body)
-                || function_body_contains_unsupported_closure_usage(else_body)
-        }
-        ast::Stmt::While { condition, body } => {
-            expr_contains_closure(condition)
-                || function_body_contains_unsupported_closure_usage(body)
-        }
-        ast::Stmt::For {
-            init,
-            condition,
-            step,
-            body,
-        } => {
-            init.as_deref()
-                .is_some_and(stmt_contains_unsupported_closure_usage)
-                || condition.as_ref().is_some_and(expr_contains_closure)
-                || step
-                    .as_deref()
-                    .is_some_and(stmt_contains_unsupported_closure_usage)
-                || function_body_contains_unsupported_closure_usage(body)
-        }
-        ast::Stmt::ForIn { iterable, body, .. } => {
-            expr_contains_closure(iterable)
-                || function_body_contains_unsupported_closure_usage(body)
-        }
-        ast::Stmt::Loop { body } => function_body_contains_unsupported_closure_usage(body),
-        ast::Stmt::Match { scrutinee, arms } => {
-            expr_contains_closure(scrutinee)
-                || arms.iter().any(|arm| {
-                    arm.guard.as_ref().is_some_and(expr_contains_closure)
-                        || expr_contains_closure(&arm.value)
-                })
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum NativeExprContext {
-    Default,
-    ForInIterable,
-    LetInitializer,
-    LetPatternInitializer,
-    MatchScrutinee,
-}
-
-fn function_body_contains_unsupported_partial_native_expression_usage(body: &[ast::Stmt]) -> bool {
-    body.iter()
-        .any(stmt_contains_unsupported_partial_native_expression_usage)
-}
-
-fn stmt_contains_unsupported_partial_native_expression_usage(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::Let { value, .. } => expr_contains_unsupported_partial_native_expression(
-            value,
-            NativeExprContext::LetInitializer,
-        ),
-        ast::Stmt::LetPattern { value, .. } => expr_contains_unsupported_partial_native_expression(
-            value,
-            NativeExprContext::LetPatternInitializer,
-        ),
-        ast::Stmt::Assign { value, .. }
-        | ast::Stmt::CompoundAssign { value, .. }
-        | ast::Stmt::Expr(value)
-        | ast::Stmt::Requires(value)
-        | ast::Stmt::Ensures(value)
-        | ast::Stmt::Defer(value) => {
-            expr_contains_unsupported_partial_native_expression(value, NativeExprContext::Default)
-        }
-        ast::Stmt::Return(value) => value.as_ref().is_some_and(|value| {
-            expr_contains_unsupported_partial_native_expression(value, NativeExprContext::Default)
-        }),
-        ast::Stmt::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            expr_contains_unsupported_partial_native_expression(
-                condition,
-                NativeExprContext::Default,
-            ) || function_body_contains_unsupported_partial_native_expression_usage(then_body)
-                || function_body_contains_unsupported_partial_native_expression_usage(else_body)
-        }
-        ast::Stmt::While { condition, body } => {
-            expr_contains_unsupported_partial_native_expression(
-                condition,
-                NativeExprContext::Default,
-            ) || function_body_contains_unsupported_partial_native_expression_usage(body)
-        }
-        ast::Stmt::For {
-            init,
-            condition,
-            step,
-            body,
-        } => {
-            init.as_deref()
-                .is_some_and(stmt_contains_unsupported_partial_native_expression_usage)
-                || condition.as_ref().is_some_and(|condition| {
-                    expr_contains_unsupported_partial_native_expression(
-                        condition,
-                        NativeExprContext::Default,
-                    )
-                })
-                || step
-                    .as_deref()
-                    .is_some_and(stmt_contains_unsupported_partial_native_expression_usage)
-                || function_body_contains_unsupported_partial_native_expression_usage(body)
-        }
-        ast::Stmt::ForIn { iterable, body, .. } => {
-            expr_contains_unsupported_partial_native_expression(
-                iterable,
-                NativeExprContext::ForInIterable,
-            ) || function_body_contains_unsupported_partial_native_expression_usage(body)
-        }
-        ast::Stmt::Loop { body } => {
-            function_body_contains_unsupported_partial_native_expression_usage(body)
-        }
-        ast::Stmt::Match { scrutinee, arms } => {
-            expr_contains_unsupported_partial_native_expression(
-                scrutinee,
-                NativeExprContext::MatchScrutinee,
-            ) || arms.iter().any(|arm| {
-                arm.guard.as_ref().is_some_and(|guard| {
-                    expr_contains_unsupported_partial_native_expression(
-                        guard,
-                        NativeExprContext::Default,
-                    )
-                }) || expr_contains_unsupported_partial_native_expression(
-                    &arm.value,
-                    NativeExprContext::Default,
-                )
-            })
-        }
-        ast::Stmt::Break | ast::Stmt::Continue => false,
-    }
-}
-
-fn expr_contains_unsupported_partial_native_expression(
-    expr: &ast::Expr,
-    context: NativeExprContext,
-) -> bool {
-    match expr {
-        ast::Expr::UnsafeBlock { .. } => false,
-        ast::Expr::TryCatch { .. } => false,
-        ast::Expr::Range { start, end, .. } => {
-            if !matches!(
-                context,
-                NativeExprContext::ForInIterable
-                    | NativeExprContext::LetInitializer
-                    | NativeExprContext::LetPatternInitializer
-                    | NativeExprContext::MatchScrutinee
-            ) {
-                return true;
-            }
-            expr_contains_unsupported_partial_native_expression(start, NativeExprContext::Default)
-                || expr_contains_unsupported_partial_native_expression(
-                    end,
-                    NativeExprContext::Default,
-                )
-        }
-        ast::Expr::ArrayLiteral(items) => items.iter().any(|item| {
-            expr_contains_unsupported_partial_native_expression(item, NativeExprContext::Default)
-        }),
-        ast::Expr::Index { base, index } => {
-            expr_contains_unsupported_partial_native_expression(base, NativeExprContext::Default)
-                || expr_contains_unsupported_partial_native_expression(
-                    index,
-                    NativeExprContext::Default,
-                )
-        }
-        ast::Expr::StructInit { fields, .. } => {
-            if !matches!(
-                context,
-                NativeExprContext::LetInitializer
-                    | NativeExprContext::LetPatternInitializer
-                    | NativeExprContext::MatchScrutinee
-            ) {
-                return true;
-            }
-            fields.iter().any(|(_, value)| {
-                expr_contains_unsupported_partial_native_expression(
-                    value,
-                    NativeExprContext::Default,
-                )
-            })
-        }
-        ast::Expr::FieldAccess { base, field } => {
-            if let Some(field_expr) = resolve_field_expr(base, field) {
-                return expr_contains_unsupported_partial_native_expression(
-                    &field_expr,
-                    NativeExprContext::Default,
-                );
-            }
-            if !matches!(base.as_ref(), ast::Expr::Ident(_)) && expr_task_ref_name(expr).is_none() {
-                return true;
-            }
-            expr_contains_unsupported_partial_native_expression(base, NativeExprContext::Default)
-        }
-        ast::Expr::Call { args, .. } => args.iter().any(|arg| {
-            expr_contains_unsupported_partial_native_expression(arg, NativeExprContext::Default)
-        }),
-        ast::Expr::Unary { expr, .. }
-        | ast::Expr::Group(expr)
-        | ast::Expr::Await(expr)
-        | ast::Expr::Closure { body: expr, .. } => {
-            expr_contains_unsupported_partial_native_expression(expr, NativeExprContext::Default)
-        }
-        ast::Expr::Binary { left, right, .. } => {
-            expr_contains_unsupported_partial_native_expression(left, NativeExprContext::Default)
-                || expr_contains_unsupported_partial_native_expression(
-                    right,
-                    NativeExprContext::Default,
-                )
-        }
-        ast::Expr::EnumInit { payload, .. } => payload.iter().any(|value| {
-            expr_contains_unsupported_partial_native_expression(value, NativeExprContext::Default)
-        }),
-        ast::Expr::Int(_)
-        | ast::Expr::Float { .. }
-        | ast::Expr::Char(_)
-        | ast::Expr::Bool(_)
-        | ast::Expr::Str(_)
-        | ast::Expr::Ident(_) => false,
-    }
-}
-
-fn expr_contains_closure(expr: &ast::Expr) -> bool {
-    match expr {
-        ast::Expr::Closure { .. } => true,
-        ast::Expr::Call { args, .. } => args.iter().any(expr_contains_closure),
-        ast::Expr::UnsafeBlock { .. } => false,
-        ast::Expr::FieldAccess { base, .. } => expr_contains_closure(base),
-        ast::Expr::StructInit { fields, .. } => {
-            fields.iter().any(|(_, value)| expr_contains_closure(value))
-        }
-        ast::Expr::EnumInit { payload, .. } => payload.iter().any(expr_contains_closure),
-        ast::Expr::Group(inner) | ast::Expr::Await(inner) => expr_contains_closure(inner),
-        ast::Expr::Unary { expr, .. } => expr_contains_closure(expr),
-        ast::Expr::TryCatch {
-            try_expr,
-            catch_expr,
-        } => expr_contains_closure(try_expr) || expr_contains_closure(catch_expr),
-        ast::Expr::Binary { left, right, .. } => {
-            expr_contains_closure(left) || expr_contains_closure(right)
-        }
-        ast::Expr::Range { start, end, .. } => {
-            expr_contains_closure(start) || expr_contains_closure(end)
-        }
-        ast::Expr::ArrayLiteral(items) => items.iter().any(expr_contains_closure),
-        ast::Expr::Index { base, index } => {
-            expr_contains_closure(base) || expr_contains_closure(index)
-        }
-        ast::Expr::Int(_)
-        | ast::Expr::Float { .. }
-        | ast::Expr::Char(_)
-        | ast::Expr::Bool(_)
-        | ast::Expr::Str(_)
-        | ast::Expr::Ident(_) => false,
-    }
 }
 
 fn collect_unresolved_calls_from_stmt(
@@ -16151,7 +15816,7 @@ mod tests {
         let module = parser::parse(source, "ffi_import").expect("source should parse");
         let typed = hir::lower(&module);
         let fir = fir::build_owned(typed);
-        let ir = lower_llvm_ir(&fir, true);
+        let ir = lower_llvm_ir(&fir, true).expect("llvm lowering should succeed");
         assert!(ir.contains("declare i32 @c_add(i32, i32)"));
         assert!(!ir.contains("define i32 @c_add("));
     }
@@ -16162,8 +15827,9 @@ mod tests {
         let module = parser::parse(source, "match_switch").expect("source should parse");
         let typed = hir::lower(&module);
         let fir = fir::build_owned(typed);
-        let llvm = lower_llvm_ir(&fir, true);
-        let clif = lower_backend_ir(&fir, BackendKind::Cranelift);
+        let llvm = lower_llvm_ir(&fir, true).expect("llvm lowering should succeed");
+        let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
+            .expect("cranelift lowering should succeed");
         assert!(llvm.contains("switch i32"));
         assert!(clif.contains("switch"));
     }
@@ -17271,7 +16937,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_unsupported_non_let_closure_usage() {
+    fn verify_non_let_closure_usage_reports_unresolved_callable() {
         let file_name = format!(
             "fozzylang-native-closure-non-let-unsupported-{}.fzy",
             SystemTime::now()
@@ -17288,6 +16954,10 @@ mod tests {
 
         let output = verify_file(&path).expect("verify should run");
         assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("native backend cannot execute unresolved call `cb`")
+        }));
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message.contains(
                 "native backend only supports closures bound to local names via `let`/assignment",
             )
@@ -17892,8 +17562,10 @@ mod tests {
         let module = parser::parse(source, "direct_memory_array").expect("source should parse");
         let typed = hir::lower(&module);
         let fir = fir::build_owned(typed);
-        let llvm = lower_backend_ir(&fir, BackendKind::Llvm);
-        let clif = lower_backend_ir(&fir, BackendKind::Cranelift);
+        let llvm =
+            lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
+        let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
+            .expect("cranelift lowering should succeed");
 
         assert!(!llvm.contains("__native.array_"));
         assert!(!llvm.contains("fz_native_list_"));
@@ -17909,8 +17581,10 @@ mod tests {
         let module = parser::parse(source, "direct_memory_contract").expect("source should parse");
         let typed = hir::lower(&module);
         let fir = fir::build_owned(typed);
-        let llvm = lower_backend_ir(&fir, BackendKind::Llvm);
-        let clif = lower_backend_ir(&fir, BackendKind::Cranelift);
+        let llvm =
+            lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
+        let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
+            .expect("cranelift lowering should succeed");
 
         assert!(llvm.contains("switch i32"));
         assert!(clif.contains("switch"));
@@ -18226,7 +17900,7 @@ mod tests {
     }
 
     #[test]
-    fn core_tier_rejects_experimental_shapes() {
+    fn core_tier_no_longer_applies_legacy_shape_gate() {
         let project_name = format!(
             "fozzylang-core-tier-exp-{}",
             SystemTime::now()
@@ -18243,12 +17917,12 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "fn takes(cb: fn(i32) -> i32) -> i32 { return cb(2) }\nfn main() -> i32 {\n    return takes(|x: i32| x + 1)\n}\n",
+            "fn risky() -> i32 { return 1 }\nfn main() -> i32 {\n    let v = try risky() catch 0\n    return v\n}\n",
         )
         .expect("source should be written");
 
         let output = verify_file(&root).expect("verify should run");
-        assert!(output
+        assert!(!output
             .diagnostic_details
             .iter()
             .any(|d| d.message.contains("experimental language semantics")));
