@@ -3,8 +3,8 @@ mod webcore;
 const ITERATIONS: i32 = 12000000
 
 fn workload() -> i32 {
-    let methods = ["GET", "POST", "GET", "PUT", "DELETE", "GET"]
-    let paths = ["/health", "/echo", "/json", "/static/app.js", "/openapi.json", "/unknown"]
+    let methods = [1, 2, 1, 3, 4, 1]
+    let paths = [1, 2, 3, 4, 5, 0]
 
     let mut i = 0
     let mut mi = 0
@@ -12,7 +12,7 @@ fn workload() -> i32 {
     let mut acc = 0
 
     while i < ITERATIONS {
-        let h = webcore.route_select(methods[mi], paths[pi])
+        let h = webcore.route_select_id(methods[mi], paths[pi])
         acc = (acc + h + (i % 13)) % 251
         mi += 1
         if mi == 6 { mi = 0 }

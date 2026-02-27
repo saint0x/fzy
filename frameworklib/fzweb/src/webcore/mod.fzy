@@ -75,13 +75,34 @@ fn request_remote(conn: i32) -> str {
     return http.remote_addr(conn)
 }
 
-fn route_select(req_method: str, req_path: str) -> i32 {
-    if req_method == "GET" && req_path == "/health" then return 1
-    if req_method == "POST" && req_path == "/echo" then return 2
-    if req_method == "GET" && req_path == "/json" then return 3
-    if str.starts_with(req_path, "/static/") == 1 then return 4
+fn method_id(req_method: str) -> i32 {
+    if req_method == "GET" then return 1
+    if req_method == "POST" then return 2
+    if req_method == "PUT" then return 3
+    if req_method == "DELETE" then return 4
+    return 0
+}
+
+fn path_id(req_path: str) -> i32 {
+    if req_path == "/health" then return 1
+    if req_path == "/echo" then return 2
+    if req_path == "/json" then return 3
     if req_path == "/openapi.json" then return 5
+    if str.starts_with(req_path, "/static/") == 1 then return 4
+    return 0
+}
+
+fn route_select_id(method: i32, path: i32) -> i32 {
+    if method == 1 && path == 1 then return 1
+    if method == 2 && path == 2 then return 2
+    if method == 1 && path == 3 then return 3
+    if path == 4 then return 4
+    if path == 5 then return 5
     return 404
+}
+
+fn route_select(req_method: str, req_path: str) -> i32 {
+    return route_select_id(method_id(req_method), path_id(req_path))
 }
 
 fn handler_dispatch(handler_id: i32, conn: i32, body: str) -> i32 {

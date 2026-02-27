@@ -6,15 +6,15 @@ const ITERATIONS: i32 = 10000000
 fn workload() -> i32 {
     let mut i = 0
     let mut mask = 0
+    mask = middleware.enable_logger(mask)
+    mask = middleware.enable_validation(mask)
+    mask = middleware.enable_rate_limit(mask)
+
     let mut bucket = middleware.rate_init(120, 1000)
     let mut acc = 0
 
     while i < ITERATIONS {
-        mask = middleware.enable_logger(mask)
-        mask = middleware.enable_validation(mask)
-        mask = middleware.enable_rate_limit(mask)
-
-        let valid = middleware.validate_body(1, "POST", "{\"x\":1}")
+        let valid = middleware.validate_json_body("{\"x\":1}")
         let allow = middleware.rate_allowed(bucket, 1)
         bucket = middleware.rate_take(bucket, 1)
         bucket = middleware.rate_refill(bucket, i)

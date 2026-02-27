@@ -109,10 +109,7 @@ fn auth_bearer(auth_header: str) -> i32 {
     return 0
 }
 
-fn validate_body(strict_json: i32, method: str, body: str) -> i32 {
-    if strict_json == 0 then return 1
-    if method == "GET" then return 1
-    if method == "DELETE" then return 1
+fn validate_json_body(body: str) -> i32 {
     if str.len(body) == 0 then return 1
     if str.starts_with(body, "{") == 1 then return 1
     if str.starts_with(body, "[") == 1 then return 1
@@ -123,6 +120,14 @@ fn validate_body(strict_json: i32, method: str, body: str) -> i32 {
     return 0
 }
 
+fn validate_body(strict_json: i32, method: str, body: str) -> i32 {
+    if strict_json == 0 then return 1
+    if method == "POST" then return validate_json_body(body)
+    if method == "GET" then return 1
+    if method == "DELETE" then return 1
+    return validate_json_body(body)
+}
+
 fn rate_init(max_tokens: i32, _refill_ms: i32) -> i32 {
     let mut safe_max = max_tokens
     if safe_max < 1 { safe_max = 1 }
@@ -131,8 +136,9 @@ fn rate_init(max_tokens: i32, _refill_ms: i32) -> i32 {
 }
 
 fn rate_refill(bucket: i32, now_ms: i32) -> i32 {
+    discard now_ms
     let mut tokens = bucket
-    if (now_ms % 4) == 0 {
+    if tokens < 10000 {
         tokens += 1
     }
     if tokens > 10000 { tokens = 10000 }

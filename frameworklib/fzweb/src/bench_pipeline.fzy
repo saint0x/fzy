@@ -25,14 +25,14 @@ fn workload() -> i32 {
     let mut sig = build_sig()
 
     while i < ITERATIONS {
-        let method = "GET"
-        let path = "/health"
+        let method = 1
+        let path = 1
         let rid = "req"
         let mask = sig % 1024
 
         let v = middleware.validate_body(1, "POST", "{\"ok\":true}")
-        let c = support.context_score(method, path, rid)
-        let h = webcore.route_select(method, path)
+        let c = support.context_score("GET", "/health", rid)
+        let h = webcore.route_select_id(method, path)
         let s = support.openapi_summary(sig)
         acc = (acc + v + c + h + s + (mask % 17)) % 251
 

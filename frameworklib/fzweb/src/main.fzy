@@ -78,8 +78,14 @@ fn maybe_handle_once(mask: i32, strict_json: i32) -> i32 {
         }
     }
     if middleware.validation_enabled(mask) == 1 {
-        if middleware.validate_body(strict_json, method, body) == 0 {
-            return webcore.response_bad_request(conn)
+        if method == "POST" {
+            if middleware.validate_json_body(body) == 0 {
+                return webcore.response_bad_request(conn)
+            }
+        } else {
+            if middleware.validate_body(strict_json, method, body) == 0 {
+                return webcore.response_bad_request(conn)
+            }
         }
     }
     if middleware.rate_limit_enabled(mask) == 1 {
