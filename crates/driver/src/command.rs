@@ -1902,7 +1902,7 @@ fn diagnostic_catalog() -> Vec<DiagnosticCatalogEntry> {
             code_prefix: "E-NAT-".to_string(),
             family: "native-lowering".to_string(),
             summary: "Native backend lowerability contract violation.".to_string(),
-            example: "E-NAT-xxxx: native backend does not support `try/catch` expressions".to_string(),
+            example: "E-NAT-xxxx: native backend cannot lower unresolved call target `missing_fn`".to_string(),
             next_command: "fz build <path> --backend llvm --json".to_string(),
         },
         DiagnosticCatalogEntry {
