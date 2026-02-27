@@ -39,6 +39,16 @@ fn parse_method(name: str) -> Method {
     return Method::Options
 }
 
+fn method_score_from_name(name: str) -> i32 {
+    if name == "GET" then return 11
+    if name == "POST" then return 13
+    if name == "PUT" then return 17
+    if name == "DELETE" then return 19
+    if name == "PATCH" then return 23
+    if name == "HEAD" then return 29
+    return 31
+}
+
 fn method_score(method: Method) -> i32 {
     match method {
         Method::Get => return 11,
@@ -67,6 +77,17 @@ fn clamp_body_size(body_bytes: i32, limits: Limits) -> i32 {
         return limits.max_body_bytes
     }
     return body_bytes
+}
+
+fn clamp_body_size_max(body_bytes: i32, max_body_bytes: i32) -> i32 {
+    let mut safe = body_bytes
+    if safe < 0 {
+        safe = 0
+    }
+    if safe > max_body_bytes {
+        safe = max_body_bytes
+    }
+    return safe
 }
 
 fn status_class(status: i32) -> StatusClass {
@@ -117,10 +138,33 @@ fn route_fingerprint(method: Method, path: str, query_len: i32, body_bytes: i32,
     return (base + (query_len * 7) + (safe_body % 251) + policy) % 251
 }
 
+fn route_fingerprint_fast(
+    method_score: i32,
+    path_len: i32,
+    query_len: i32,
+    body_bytes: i32,
+    timeout_ms: i32,
+    max_header_bytes: i32,
+    max_body_bytes: i32
+) -> i32 {
+    let safe_body = clamp_body_size_max(body_bytes, max_body_bytes)
+    let base = (method_score * 131) + (path_len * 17)
+    let policy = (timeout_ms % 97) + (max_header_bytes % 89)
+    return (base + (query_len * 7) + (safe_body % 251) + policy) % 251
+}
+
 fn sample() -> i32 {
     let limits = default_limits()
-    let method = parse_method("POST")
-    let score = route_fingerprint(method, "/v1/users", 19, 2048, limits)
+    let method_score = method_score_from_name("POST")
+    let score = route_fingerprint_fast(
+        method_score,
+        str.len("/v1/users"),
+        19,
+        2048,
+        limits.request_timeout_ms,
+        limits.max_header_bytes,
+        limits.max_body_bytes
+    )
     let oneoff = connection_session_score(ConnectionMode::OneOff, 1)
     let persistent = connection_session_score(ConnectionMode::Persistent, 8)
     return (score + status_class_score(status_class(201)) + oneoff + persistent) % 251
