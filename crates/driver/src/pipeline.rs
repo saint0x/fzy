@@ -7539,7 +7539,9 @@ fn apply_profile_optimization_flags(
         .and_then(|config| config.optimize);
     match (profile, optimize_override) {
         (_, Some(true)) => {
-            cmd.arg("-O2");
+            cmd.arg("-O3");
+            cmd.arg("-fomit-frame-pointer");
+            cmd.arg("-fno-semantic-interposition");
         }
         (_, Some(false)) => {
             cmd.arg("-O0");
@@ -7548,7 +7550,9 @@ fn apply_profile_optimization_flags(
             cmd.arg("-O0");
         }
         (BuildProfile::Release, None) => {
-            cmd.arg("-O2");
+            cmd.arg("-O3");
+            cmd.arg("-fomit-frame-pointer");
+            cmd.arg("-fno-semantic-interposition");
         }
         (BuildProfile::Verify, None) => {
             cmd.arg("-O1").arg("-g");
@@ -7664,26 +7668,7 @@ fn emit_native_artifact_llvm(
             .arg(&bin_path);
         apply_target_link_flags(&mut cmd);
         apply_manifest_link_args(&mut cmd, manifest);
-        let optimize_override = manifest
-            .and_then(|manifest| profile_config(manifest, profile))
-            .and_then(|config| config.optimize);
-        match (profile, optimize_override) {
-            (_, Some(true)) => {
-                cmd.arg("-O2");
-            }
-            (_, Some(false)) => {
-                cmd.arg("-O0");
-            }
-            (BuildProfile::Dev, None) => {
-                cmd.arg("-O0");
-            }
-            (BuildProfile::Release, None) => {
-                cmd.arg("-O2");
-            }
-            (BuildProfile::Verify, None) => {
-                cmd.arg("-O1").arg("-g");
-            }
-        }
+        apply_profile_optimization_flags(&mut cmd, profile, manifest);
         apply_extra_linker_args(&mut cmd);
         apply_pgo_flags(&mut cmd)?;
 
