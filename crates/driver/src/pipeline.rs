@@ -3834,7 +3834,12 @@ fn collect_native_data_ops_for_function(function: &hir::TypedFunction) -> Vec<Na
         out: &mut Vec<NativeDataOp>,
     ) {
         match stmt {
-            ast::Stmt::Let { name, value, .. } => {
+            ast::Stmt::Let {
+                name,
+                value,
+                mutable: _,
+                ..
+            } => {
                 match value {
                     ast::Expr::ArrayLiteral(items) => {
                         let (bits, align, stride) = infer_array_element_layout(items);
@@ -4255,10 +4260,13 @@ struct LlvmFuncCtx {
     slots: HashMap<String, String>,
     array_slots: HashMap<String, LlvmArrayBinding>,
     const_strings: HashMap<String, String>,
+    direct_values: HashMap<String, String>,
     closures: HashMap<String, LlvmClosureBinding>,
     globals: HashMap<String, i32>,
     variant_tags: HashMap<String, i32>,
     mutable_globals: HashMap<String, String>,
+    alloca_prologue: String,
+    declared_allocas: HashSet<String>,
     code: String,
 }
 
@@ -4274,10 +4282,13 @@ impl LlvmFuncCtx {
             slots: HashMap::new(),
             array_slots: HashMap::new(),
             const_strings: HashMap::new(),
+            direct_values: HashMap::new(),
             closures: HashMap::new(),
             globals,
             variant_tags,
             mutable_globals,
+            alloca_prologue: String::new(),
+            declared_allocas: HashSet::new(),
             code: String::new(),
         }
     }
@@ -4292,6 +4303,13 @@ impl LlvmFuncCtx {
         let id = self.next_label;
         self.next_label += 1;
         format!("{prefix}.{id}")
+    }
+
+    fn declare_alloca(&mut self, slot: &str, ty: &str) {
+        if self.declared_allocas.insert(slot.to_string()) {
+            self.alloca_prologue
+                .push_str(&format!("  {slot} = alloca {ty}\n"));
+        }
     }
 }
 
@@ -4323,8 +4341,9 @@ fn llvm_emit_function(
     );
     for (index, param) in function.params.iter().enumerate() {
         let slot = format!("%slot_{}", param.name);
+        ctx.declare_alloca(&slot, "i32");
         ctx.code.push_str(&format!(
-            "  {slot} = alloca i32\n  store i32 %arg{index}, ptr {slot}\n"
+            "  store i32 %arg{index}, ptr {slot}\n"
         ));
         ctx.slots.insert(param.name.clone(), slot);
     }
@@ -4341,6 +4360,8 @@ fn llvm_emit_function(
         ctx.code.push_str(&format!("  br label %{entry}\n"));
     }
     for (block_id, block) in cfg.blocks.iter().enumerate() {
+        // Direct-value forwarding is only sound within a single basic block.
+        ctx.direct_values.clear();
         let label = labels
             .get(&block_id)
             .ok_or_else(|| anyhow!("missing llvm label for cfg block {}", block_id))?;
@@ -4368,8 +4389,8 @@ fn llvm_emit_function(
                 then_target,
                 else_target,
             } => {
-                let cond = llvm_emit_expr(condition, &mut ctx, string_literal_ids, task_ref_ids);
-                let pred = ctx.value();
+                let pred =
+                    llvm_emit_condition_value(condition, &mut ctx, string_literal_ids, task_ref_ids);
                 let then_label = labels.get(then_target).ok_or_else(|| {
                     anyhow!("missing llvm label for cfg branch target {}", then_target)
                 })?;
@@ -4377,7 +4398,7 @@ fn llvm_emit_function(
                     anyhow!("missing llvm label for cfg branch target {}", else_target)
                 })?;
                 ctx.code.push_str(&format!(
-                    "  {pred} = icmp ne i32 {cond}, 0\n  br i1 {pred}, label %{then_label}, label %{else_label}\n"
+                    "  br i1 {pred}, label %{then_label}, label %{else_label}\n"
                 ));
             }
             ControlFlowTerminator::Switch {
@@ -4408,6 +4429,7 @@ fn llvm_emit_function(
             }
         }
     }
+    out.push_str(&ctx.alloca_prologue);
     out.push_str(&ctx.code);
     out.push_str("}\n");
     Ok(out)
@@ -4506,8 +4528,9 @@ fn llvm_emit_let_pattern(
         ast::Pattern::Wildcard => {}
         ast::Pattern::Ident(name) => {
             let slot = format!("%slot_{}_{}", native_mangle_symbol(name), ctx.next_value);
+            ctx.declare_alloca(&slot, "i32");
             ctx.code.push_str(&format!(
-                "  {slot} = alloca i32\n  store i32 {rendered}, ptr {slot}\n"
+                "  store i32 {rendered}, ptr {slot}\n"
             ));
             ctx.slots.insert(name.clone(), slot);
         }
@@ -4551,8 +4574,9 @@ fn llvm_emit_let_pattern(
                     native_mangle_symbol(binding_name),
                     ctx.next_value
                 );
+                ctx.declare_alloca(&slot, "i32");
                 ctx.code.push_str(&format!(
-                    "  {slot} = alloca i32\n  store i32 {field_value}, ptr {slot}\n"
+                    "  store i32 {field_value}, ptr {slot}\n"
                 ));
                 ctx.slots.insert(binding_name.clone(), slot);
             }
@@ -4585,8 +4609,9 @@ fn llvm_emit_let_pattern(
                             native_mangle_symbol(binding_name),
                             ctx.next_value
                         );
+                        ctx.declare_alloca(&slot, "i32");
                         ctx.code.push_str(&format!(
-                            "  {slot} = alloca i32\n  store i32 {payload_value}, ptr {slot}\n"
+                            "  store i32 {payload_value}, ptr {slot}\n"
                         ));
                         ctx.slots.insert(binding_name.clone(), slot);
                     }
@@ -4626,17 +4651,22 @@ fn llvm_emit_linear_stmts(
 ) -> Result<()> {
     for stmt in body {
         match stmt {
-            ast::Stmt::Let { name, value, .. } => {
+            ast::Stmt::Let {
+                name,
+                value,
+                mutable,
+                ..
+            } => {
                 if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
                     ctx.const_strings.insert(name.clone(), const_value);
                     ctx.array_slots.remove(name);
+                    ctx.direct_values.remove(name);
                     continue;
                 }
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let storage = format!("%slot_{}_arr_{}", name, ctx.next_value);
                     let len = items.len();
-                    ctx.code
-                        .push_str(&format!("  {storage} = alloca [{len} x i32]\n"));
+                    ctx.declare_alloca(&storage, &format!("[{len} x i32]"));
                     for (idx, item) in items.iter().enumerate() {
                         let item_value =
                             llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
@@ -4655,11 +4685,13 @@ fn llvm_emit_linear_stmts(
                             element_stride: 4,
                         },
                     );
+                    ctx.direct_values.remove(name);
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
                     if let Some(source_binding) = ctx.array_slots.get(source).cloned() {
                         ctx.array_slots.insert(name.clone(), source_binding);
+                        ctx.direct_values.remove(name);
                         continue;
                     }
                 }
@@ -4679,21 +4711,29 @@ fn llvm_emit_linear_stmts(
                             captures,
                         },
                     );
+                    ctx.direct_values.remove(name);
                     continue;
                 }
                 let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
                 let slot = format!("%slot_{}_{}", name, ctx.next_value);
+                ctx.declare_alloca(&slot, "i32");
                 ctx.code.push_str(&format!(
-                    "  {slot} = alloca i32\n  store i32 {rendered}, ptr {slot}\n"
+                    "  store i32 {rendered}, ptr {slot}\n"
                 ));
                 ctx.slots.insert(name.clone(), slot);
+                if !*mutable {
+                    ctx.direct_values.insert(name.clone(), rendered.clone());
+                } else {
+                    ctx.direct_values.remove(name);
+                }
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
                         let field_value =
                             llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
                         let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
+                        ctx.declare_alloca(&field_slot, "i32");
                         ctx.code.push_str(&format!(
-                            "  {field_slot} = alloca i32\n  store i32 {field_value}, ptr {field_slot}\n"
+                            "  store i32 {field_value}, ptr {field_slot}\n"
                         ));
                         ctx.slots.insert(format!("{name}.{field}"), field_slot);
                     }
@@ -4713,14 +4753,16 @@ fn llvm_emit_linear_stmts(
                         ("inclusive", inclusive_value.to_string()),
                     ] {
                         let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
+                        ctx.declare_alloca(&field_slot, "i32");
                         ctx.code.push_str(&format!(
-                            "  {field_slot} = alloca i32\n  store i32 {rendered}, ptr {field_slot}\n"
+                            "  store i32 {rendered}, ptr {field_slot}\n"
                         ));
                         ctx.slots.insert(format!("{name}.{field}"), field_slot);
                     }
                 }
                 ctx.array_slots.remove(name);
                 ctx.const_strings.remove(name);
+                ctx.direct_values.remove(name);
             }
             ast::Stmt::LetPattern { pattern, value, .. } => {
                 llvm_emit_let_pattern(pattern, value, ctx, string_literal_ids, task_ref_ids)?;
@@ -4734,8 +4776,7 @@ fn llvm_emit_linear_stmts(
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let storage = format!("%slot_{}_arr_{}", target, ctx.next_value);
                     let len = items.len();
-                    ctx.code
-                        .push_str(&format!("  {storage} = alloca [{len} x i32]\n"));
+                    ctx.declare_alloca(&storage, &format!("[{len} x i32]"));
                     for (idx, item) in items.iter().enumerate() {
                         let item_value =
                             llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
@@ -4784,6 +4825,7 @@ fn llvm_emit_linear_stmts(
                 if let Some(symbol) = ctx.mutable_globals.get(target).cloned() {
                     ctx.code
                         .push_str(&format!("  store i32 {rendered_value}, ptr @{symbol}\n"));
+                    ctx.direct_values.remove(target);
                     continue;
                 }
                 let slot = ctx
@@ -4791,18 +4833,18 @@ fn llvm_emit_linear_stmts(
                     .entry(target.clone())
                     .or_insert_with(|| format!("%slot_{}_{}", target, ctx.next_value))
                     .clone();
-                if !ctx.code.contains(&format!("{slot} = alloca i32")) {
-                    ctx.code.push_str(&format!("  {slot} = alloca i32\n"));
-                }
+                ctx.declare_alloca(&slot, "i32");
                 ctx.code
                     .push_str(&format!("  store i32 {rendered_value}, ptr {slot}\n"));
+                ctx.direct_values.remove(target);
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
                         let field_value =
                             llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
                         let field_slot = format!("%slot_{}_{}_{}", target, field, ctx.next_value);
+                        ctx.declare_alloca(&field_slot, "i32");
                         ctx.code.push_str(&format!(
-                            "  {field_slot} = alloca i32\n  store i32 {field_value}, ptr {field_slot}\n"
+                            "  store i32 {field_value}, ptr {field_slot}\n"
                         ));
                         ctx.slots.insert(format!("{target}.{field}"), field_slot);
                     }
@@ -4824,8 +4866,9 @@ fn llvm_emit_linear_stmts(
                         ("inclusive", inclusive_value.to_string()),
                     ] {
                         let field_slot = format!("%slot_{}_{}_{}", target, field, ctx.next_value);
+                        ctx.declare_alloca(&field_slot, "i32");
                         ctx.code.push_str(&format!(
-                            "  {field_slot} = alloca i32\n  store i32 {rendered}, ptr {field_slot}\n"
+                            "  store i32 {rendered}, ptr {field_slot}\n"
                         ));
                         ctx.slots.insert(format!("{target}.{field}"), field_slot);
                     }
@@ -4844,6 +4887,7 @@ fn llvm_emit_linear_stmts(
                 if let Some(symbol) = ctx.mutable_globals.get(target).cloned() {
                     ctx.code
                         .push_str(&format!("  store i32 {value}, ptr @{symbol}\n"));
+                    ctx.direct_values.remove(target);
                     continue;
                 }
                 let slot = ctx
@@ -4851,11 +4895,10 @@ fn llvm_emit_linear_stmts(
                     .entry(target.clone())
                     .or_insert_with(|| format!("%slot_{}_{}", target, ctx.next_value))
                     .clone();
-                if !ctx.code.contains(&format!("{slot} = alloca i32")) {
-                    ctx.code.push_str(&format!("  {slot} = alloca i32\n"));
-                }
+                ctx.declare_alloca(&slot, "i32");
                 ctx.code
                     .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+                ctx.direct_values.remove(target);
                 ctx.array_slots.remove(target);
                 ctx.const_strings.remove(target);
                 ctx.closures.remove(target);
@@ -4904,6 +4947,9 @@ fn llvm_emit_expr(
             .unwrap_or(0)
             .to_string(),
         ast::Expr::Ident(name) => {
+            if let Some(direct) = ctx.direct_values.get(name) {
+                return direct.clone();
+            }
             if let Some(slot) = ctx.slots.get(name).cloned() {
                 let val = ctx.value();
                 ctx.code
@@ -5021,13 +5067,10 @@ fn llvm_emit_expr(
             then_expr,
             else_expr,
         } => {
-            let cond = llvm_emit_expr(condition, ctx, string_literal_ids, task_ref_ids);
-            let pred = ctx.value();
+            let pred = llvm_emit_condition_value(condition, ctx, string_literal_ids, task_ref_ids);
             let then_label = ctx.label("if.then");
             let else_label = ctx.label("if.else");
             let merge_label = ctx.label("if.merge");
-            ctx.code
-                .push_str(&format!("  {pred} = icmp ne i32 {cond}, 0\n"));
             ctx.code.push_str(&format!(
                 "  br i1 {pred}, label %{then_label}, label %{else_label}\n"
             ));
@@ -5103,17 +5146,12 @@ fn llvm_emit_expr(
                     let in_label = ctx.label("idx.in");
                     let out_label = ctx.label("idx.oob");
                     let merge_label = ctx.label("idx.merge");
-                    let nonneg = ctx.value();
-                    let ltlen = ctx.value();
                     let ok = ctx.value();
-                    ctx.code
-                        .push_str(&format!("  {nonneg} = icmp sge i32 {index_value}, 0\n"));
+                    // Unsigned compare is equivalent to `index >= 0 && index < len` for i32.
                     ctx.code.push_str(&format!(
-                        "  {ltlen} = icmp slt i32 {index_value}, {}\n",
+                        "  {ok} = icmp ult i32 {index_value}, {}\n",
                         binding.len
                     ));
-                    ctx.code
-                        .push_str(&format!("  {ok} = and i1 {nonneg}, {ltlen}\n"));
                     ctx.code.push_str(&format!(
                         "  br i1 {ok}, label %{in_label}, label %{out_label}\n"
                     ));
@@ -5316,6 +5354,49 @@ fn llvm_emit_expr(
             out
         }
         _ => "0".to_string(),
+    }
+}
+
+fn llvm_emit_condition_value(
+    expr: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> String {
+    match expr {
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+            llvm_emit_condition_value(inner, ctx, string_literal_ids, task_ref_ids)
+        }
+        ast::Expr::Binary { op, left, right } => {
+            let lhs = llvm_emit_expr(left, ctx, string_literal_ids, task_ref_ids);
+            let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+            let pred = ctx.value();
+            let cc = match op {
+                ast::BinaryOp::Eq => Some("eq"),
+                ast::BinaryOp::Neq => Some("ne"),
+                ast::BinaryOp::Lt => Some("slt"),
+                ast::BinaryOp::Lte => Some("sle"),
+                ast::BinaryOp::Gt => Some("sgt"),
+                ast::BinaryOp::Gte => Some("sge"),
+                _ => None,
+            };
+            if let Some(cc) = cc {
+                ctx.code
+                    .push_str(&format!("  {pred} = icmp {cc} i32 {lhs}, {rhs}\n"));
+                return pred;
+            }
+            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
+            ctx.code
+                .push_str(&format!("  {pred} = icmp ne i32 {value}, 0\n"));
+            pred
+        }
+        _ => {
+            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
+            let pred = ctx.value();
+            ctx.code
+                .push_str(&format!("  {pred} = icmp ne i32 {value}, 0\n"));
+            pred
+        }
     }
 }
 
