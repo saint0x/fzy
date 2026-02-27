@@ -1,4 +1,4 @@
 use core.proc;
 fn guard() -> i32 {
-    process.exec_timeout(100) return 0
+    proc.exec_timeout(100) return 0
 }

@@ -1,0 +1,43 @@
+enum ErrorCode {
+    InvalidInput,
+    NotFound,
+    Conflict,
+    Timeout,
+    Io,
+    Internal,
+}
+
+enum ErrorClass {
+    Transport,
+    Parse,
+    Timeout,
+    Policy,
+    Internal,
+}
+
+fn classify(code: ErrorCode) -> ErrorClass {
+    match code {
+        ErrorCode::Io => return ErrorClass::Transport,
+        ErrorCode::InvalidInput => return ErrorClass::Parse,
+        ErrorCode::Timeout => return ErrorClass::Timeout,
+        ErrorCode::Conflict => return ErrorClass::Policy,
+        ErrorCode::NotFound => return ErrorClass::Internal,
+        ErrorCode::Internal => return ErrorClass::Internal,
+        _ => return ErrorClass::Internal,
+    }
+}
+
+fn score(class: ErrorClass) -> i32 {
+    match class {
+        ErrorClass::Transport => return 11,
+        ErrorClass::Parse => return 17,
+        ErrorClass::Timeout => return 23,
+        ErrorClass::Policy => return 31,
+        ErrorClass::Internal => return 43,
+        _ => return 43,
+    }
+}
+
+fn sample() -> i32 {
+    return score(classify(ErrorCode::Io))
+}

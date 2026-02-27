@@ -1,0 +1,13 @@
+struct Pair {
+    left: i32,
+    right: i32,
+}
+
+fn combine(left: i32, right: i32) -> i32 {
+    let pair = Pair { left: left, right: right }
+    return ((pair.left * 3) + (pair.right * 5)) % 251
+}
+
+fn sample() -> i32 {
+    return combine(11, 17)
+}

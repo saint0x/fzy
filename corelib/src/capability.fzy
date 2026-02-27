@@ -1,0 +1,14 @@
+fn parse(name: str) -> i32 {
+    if name == "time" then return 3
+    if name == "rng" then return 5
+    if name == "fs" then return 7
+    if name == "http" then return 11
+    if name == "proc" then return 13
+    if name == "mem" then return 17
+    if name == "thread" then return 19
+    return 23
+}
+
+fn sample() -> i32 {
+    return parse("http")
+}

@@ -1,0 +1,7 @@
+[package]
+name = "corelib"
+version = "0.1.0"
+
+[[target.bin]]
+name = "corelib"
+path = "src/main.fzy"

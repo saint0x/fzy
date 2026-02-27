@@ -1,20 +1,20 @@
 use core.proc;
 use core.fs;
 fn cmd_init() -> i32 {
-    log.info("cli.init", log.fields2("component", "cli", "phase", "init")) process.exec_timeout(200) return 0
+    log.info("cli.init", log.fields2("component", "cli", "phase", "init")) proc.exec_timeout(200) return 0
 }
 fn cmd_set() -> i32 {
-    process.exec_timeout(200) fs.flush() return 0
+    proc.exec_timeout(200) fs.flush() return 0
 }
 fn cmd_get() -> i32 {
-    process.exec_timeout(200) return 0
+    proc.exec_timeout(200) return 0
 }
 fn cmd_list() -> i32 {
-    process.exec_timeout(200) return 0
+    proc.exec_timeout(200) return 0
 }
 fn cmd_compact() -> i32 {
     fs.atomic_write() fs.rename_atomic() fs.fsync() return 0
 }
 fn cmd_export() -> i32 {
-    process.exec_timeout(500) process.exit_class() return 0
+    proc.exec_timeout(500) proc.exit_class() return 0
 }

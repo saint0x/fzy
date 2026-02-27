@@ -1,0 +1,21 @@
+fn owner_score(owner: str) -> i32 {
+    if owner == "owned" then return 11
+    if owner == "borrowed" then return 7
+    if owner == "out" then return 13
+    return 17
+}
+
+fn contract_score(owner: str, nullable: i32, mutable_mode: i32, panic_abort: i32) -> i32 {
+    let mut score = owner_score(owner)
+    if nullable == 1 { score += 5 } else { score += 3 }
+    if mutable_mode == 1 { score += 19 } else { score += 2 }
+    if panic_abort == 1 { score += 23 } else { score += 29 }
+    if owner == "owned" && panic_abort == 1 { score += 31 }
+    if owner == "borrowed" && nullable == 0 { score += 37 }
+    if owner == "inout" && mutable_mode == 1 { score += 41 }
+    return score
+}
+
+fn sample() -> i32 {
+    return contract_score("owned", 0, 1, 1)
+}

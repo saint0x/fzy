@@ -6131,23 +6131,6 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "fs.temp_file" => (vec![str_ty.clone()], str_ty.clone()),
         "path.join" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "path.normalize" => (vec![str_ty.clone()], str_ty.clone()),
-        "list.new" => (vec![], i32.clone()),
-        "list.push" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
-        "list.pop" => (vec![i32.clone()], str_ty.clone()),
-        "list.len" => (vec![i32.clone()], i32.clone()),
-        "list.get" => (vec![i32.clone(), i32.clone()], str_ty.clone()),
-        "list.set" => (vec![i32.clone(), i32.clone(), str_ty.clone()], i32.clone()),
-        "list.clear" => (vec![i32.clone()], i32.clone()),
-        "list.join" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
-        "map.new" => (vec![], i32.clone()),
-        "map.set" => (
-            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
-            i32.clone(),
-        ),
-        "map.get" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
-        "map.has" | "map.delete" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
-        "map.keys" => (vec![i32.clone()], i32.clone()),
-        "map.len" => (vec![i32.clone()], i32.clone()),
         "route.match" => (
             vec![i32.clone(), str_ty.clone(), str_ty.clone()],
             i32.clone(),
@@ -6195,10 +6178,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "error.code" | "error.class" => (vec![], i32.clone()),
         "error.message" => (vec![], str_ty.clone()),
         "error.context" => (vec![str_ty.clone()], i32.clone()),
-        "process.run" | "proc.run" | "process.spawn" | "proc.spawn" => {
+        "proc.run" | "proc.spawn" => {
             (vec![str_ty.clone()], i32.clone())
         }
-        "process.runv" | "proc.runv" | "process.spawnv" | "proc.spawnv" => (
+        "proc.runv" | "proc.spawnv" => (
             vec![
                 str_ty.clone(),
                 str_ty.clone(),
@@ -6207,23 +6190,23 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             ],
             i32.clone(),
         ),
-        "process.runl" | "proc.runl" | "process.spawnl" | "proc.spawnl" => (
+        "proc.runl" | "proc.spawnl" => (
             vec![str_ty.clone(), i32.clone(), i32.clone(), str_ty.clone()],
             i32.clone(),
         ),
-        "process.exec_timeout" | "proc.exec_timeout" => (vec![i32.clone()], i32.clone()),
-        "process.wait" | "proc.wait" => (vec![i32.clone(), i32.clone()], i32.clone()),
-        "process.poll" | "proc.poll" | "process.event" | "proc.event" => {
+        "proc.exec_timeout" => (vec![i32.clone()], i32.clone()),
+        "proc.wait" => (vec![i32.clone(), i32.clone()], i32.clone()),
+        "proc.poll" | "proc.event" => {
             (vec![i32.clone()], i32.clone())
         }
-        "process.read_stdout" | "proc.read_stdout" | "process.read_stderr" | "proc.read_stderr" => {
+        "proc.read_stdout" | "proc.read_stderr" => {
             (vec![i32.clone(), i32.clone()], str_ty.clone())
         }
-        "process.stdout" | "proc.stdout" | "process.stderr" | "proc.stderr" => {
+        "proc.stdout" | "proc.stderr" => {
             (vec![i32.clone()], str_ty.clone())
         }
-        "process.exit_code" | "proc.exit_code" => (vec![i32.clone()], i32.clone()),
-        "process.exit_class" | "proc.exit_class" => (vec![], i32.clone()),
+        "proc.exit_code" => (vec![i32.clone()], i32.clone()),
+        "proc.exit_class" => (vec![], i32.clone()),
         "ctx.deadline" => (vec![i32.clone()], i32.clone()),
         "ctx.cancel_if_timeout" | "channel.send" | "channel.recv" => (vec![], i32.clone()),
         _ => return None,
@@ -7548,7 +7531,7 @@ mod tests {
         let source = r#"
             use core.proc;
             fn main() -> i32 {
-                process.spawn("echo hi");
+                proc.spawn("echo hi");
                 return 0;
             }
         "#;
@@ -7562,7 +7545,7 @@ mod tests {
         let source = r#"
             use core.proc;
             fn main() -> i32 {
-                process.spawn(1);
+                proc.spawn(1);
                 return 0;
             }
         "#;
@@ -7572,7 +7555,7 @@ mod tests {
         assert!(typed
             .type_error_details
             .iter()
-            .any(|detail| detail.contains("process.spawn") && detail.contains("expected `str`")));
+            .any(|detail| detail.contains("proc.spawn") && detail.contains("expected `str`")));
     }
 
     #[test]
@@ -7580,7 +7563,7 @@ mod tests {
         let source = r#"
             use core.proc;
             fn main() -> i32 {
-                process.spawnv("echo", "[\"hi\"]", "{\"K\":\"V\"}", "stdin");
+                proc.spawnv("echo", "[\"hi\"]", "{\"K\":\"V\"}", "stdin");
                 return 0;
             }
         "#;
@@ -7594,12 +7577,8 @@ mod tests {
         let source = r#"
             use core.proc;
             fn main() -> i32 {
-                let args = list.new();
-                list.push(args, "hi");
-                let env = map.new();
-                map.set(env, "K", "V");
-                process.spawnl("echo", args, env, "stdin");
-                process.runl("echo", args, env, "");
+                proc.spawnl("echo", 7, 11, "stdin");
+                proc.runl("echo", 7, 11, "");
                 return 0;
             }
         "#;
@@ -7633,14 +7612,10 @@ mod tests {
             use core.http;
             use core.proc;
             fn main() -> i32 {
-                let l = list.new();
-                list.push(l, "a");
-                let m = map.new();
-                map.set(m, "k", "v");
                 discard str.contains("abc", "a");
                 discard fs.exists("/tmp");
                 discard time.monotonic_ms();
-                discard process.poll(process.spawn("echo hi"));
+                discard proc.poll(proc.spawn("echo hi"));
                 let c = http.accept();
                 discard http.header(c, "content-type");
                 discard route.match(c, "GET", "/sessions/:id/messages");
@@ -7662,7 +7637,7 @@ mod tests {
                 let c = http.accept();
                 let body = http.body_json(c);
                 let bound = http.body_bind(c);
-                discard map.get(bound, "message");
+                discard bound;
                 discard json.has(body, "message");
                 let msg = json.get_str(body, "message");
                 let nested = json.path(body, "meta.user.id");

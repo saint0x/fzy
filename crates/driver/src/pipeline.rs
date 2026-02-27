@@ -603,29 +603,9 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
-        callee: "process.run",
-        symbol: "fz_native_proc_run",
-        arity: 1,
-    },
-    NativeRuntimeImport {
         callee: "proc.run",
         symbol: "fz_native_proc_run",
         arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "process.spawn",
-        symbol: "fz_native_proc_spawn",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "process.runv",
-        symbol: "fz_native_proc_runv",
-        arity: 4,
-    },
-    NativeRuntimeImport {
-        callee: "process.runl",
-        symbol: "fz_native_proc_runl",
-        arity: 4,
     },
     NativeRuntimeImport {
         callee: "proc.runv",
@@ -635,16 +615,6 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "proc.runl",
         symbol: "fz_native_proc_runl",
-        arity: 4,
-    },
-    NativeRuntimeImport {
-        callee: "process.spawnv",
-        symbol: "fz_native_proc_spawnv",
-        arity: 4,
-    },
-    NativeRuntimeImport {
-        callee: "process.spawnl",
-        symbol: "fz_native_proc_spawnl",
         arity: 4,
     },
     NativeRuntimeImport {
@@ -663,19 +633,9 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "process.exec_timeout",
-        symbol: "fz_native_proc_exec_timeout",
-        arity: 1,
-    },
-    NativeRuntimeImport {
         callee: "proc.exec_timeout",
         symbol: "fz_native_proc_exec_timeout",
         arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "process.exit_class",
-        symbol: "fz_native_proc_exit_class",
-        arity: 0,
     },
     NativeRuntimeImport {
         callee: "proc.exit_class",
@@ -683,28 +643,13 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
-        callee: "process.wait",
-        symbol: "fz_native_proc_wait",
-        arity: 2,
-    },
-    NativeRuntimeImport {
         callee: "proc.wait",
         symbol: "fz_native_proc_wait",
         arity: 2,
     },
     NativeRuntimeImport {
-        callee: "process.poll",
-        symbol: "fz_native_proc_poll",
-        arity: 1,
-    },
-    NativeRuntimeImport {
         callee: "proc.poll",
         symbol: "fz_native_proc_poll",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "process.event",
-        symbol: "fz_native_proc_event",
         arity: 1,
     },
     NativeRuntimeImport {
@@ -713,18 +658,8 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "process.read_stdout",
-        symbol: "fz_native_proc_read_stdout",
-        arity: 2,
-    },
-    NativeRuntimeImport {
         callee: "proc.read_stdout",
         symbol: "fz_native_proc_read_stdout",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "process.read_stderr",
-        symbol: "fz_native_proc_read_stderr",
         arity: 2,
     },
     NativeRuntimeImport {
@@ -733,28 +668,13 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
-        callee: "process.stdout",
-        symbol: "fz_native_proc_stdout",
-        arity: 1,
-    },
-    NativeRuntimeImport {
         callee: "proc.stdout",
         symbol: "fz_native_proc_stdout",
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "process.stderr",
-        symbol: "fz_native_proc_stderr",
-        arity: 1,
-    },
-    NativeRuntimeImport {
         callee: "proc.stderr",
         symbol: "fz_native_proc_stderr",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "process.exit_code",
-        symbol: "fz_native_proc_exit_code",
         arity: 1,
     },
     NativeRuntimeImport {
@@ -819,81 +739,6 @@ const NATIVE_DATA_PLANE_IMPORTS: &[NativeRuntimeImport] = &[
         callee: "str.slice",
         symbol: "fz_native_str_slice",
         arity: 3,
-    },
-    NativeRuntimeImport {
-        callee: "list.new",
-        symbol: "fz_native_list_new",
-        arity: 0,
-    },
-    NativeRuntimeImport {
-        callee: "list.push",
-        symbol: "fz_native_list_push",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "list.pop",
-        symbol: "fz_native_list_pop",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "list.len",
-        symbol: "fz_native_list_len",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "list.get",
-        symbol: "fz_native_list_get",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "list.set",
-        symbol: "fz_native_list_set",
-        arity: 3,
-    },
-    NativeRuntimeImport {
-        callee: "list.clear",
-        symbol: "fz_native_list_clear",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "list.join",
-        symbol: "fz_native_list_join",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "map.new",
-        symbol: "fz_native_map_new",
-        arity: 0,
-    },
-    NativeRuntimeImport {
-        callee: "map.set",
-        symbol: "fz_native_map_set",
-        arity: 3,
-    },
-    NativeRuntimeImport {
-        callee: "map.get",
-        symbol: "fz_native_map_get",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "map.has",
-        symbol: "fz_native_map_has",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "map.delete",
-        symbol: "fz_native_map_delete",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "map.keys",
-        symbol: "fz_native_map_keys",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "map.len",
-        symbol: "fz_native_map_len",
-        arity: 1,
     },
 ];
 
@@ -16311,10 +16156,6 @@ mod tests {
         ));
         assert!(shim.contains("int32_t fz_native_json_object3("));
         assert!(shim.contains("int32_t fz_native_json_object4("));
-        assert!(shim.contains("int32_t fz_native_list_new(void)"));
-        assert!(shim.contains("int32_t fz_native_list_push(int32_t handle, int32_t value_id)"));
-        assert!(shim.contains("int32_t fz_native_map_new(void)"));
-        assert!(shim.contains("int32_t fz_native_map_set("));
         assert!(shim.contains("posix_spawnp"));
         assert!(shim.contains("int32_t fz_native_proc_spawnv("));
         assert!(shim.contains("int32_t fz_native_proc_runv("));
@@ -17444,7 +17285,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_accepts_list_map_data_plane_calls_on_native_backend() {
+    fn verify_rejects_list_map_data_plane_calls_on_native_backend() {
         let file_name = format!(
             "fozzylang-native-list-map-data-plane-unsupported-{}.fzy",
             SystemTime::now()
@@ -17460,9 +17301,9 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(!output.diagnostic_details.iter().any(|diag| {
+        assert!(output.diagnostic_details.iter().any(|diag| {
             diag.message
-                .contains("removed list/map runtime-handle data-plane calls")
+                .contains("native backend cannot execute unresolved call `list.new`")
         }));
 
         let _ = std::fs::remove_file(path);

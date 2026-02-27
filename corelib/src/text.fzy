@@ -1,0 +1,34 @@
+fn trim(v: str) -> str {
+    return str.trim(v)
+}
+
+fn replace(v: str, needle: str, with: str) -> str {
+    return str.replace(v, needle, with)
+}
+
+fn contains(v: str, needle: str) -> i32 {
+    return str.contains(v, needle)
+}
+
+fn starts_with(v: str, needle: str) -> i32 {
+    return str.starts_with(v, needle)
+}
+
+fn ends_with(v: str, needle: str) -> i32 {
+    return str.ends_with(v, needle)
+}
+
+fn len(v: str) -> i32 {
+    return str.len(v)
+}
+
+fn sample() -> i32 {
+    let a = trim("  alpha,beta,gamma  ")
+    let b = replace(a, ",", "|")
+    let mut acc = 0
+    acc += contains(b, "beta")
+    acc += starts_with(b, "alpha")
+    acc += ends_with(b, "gamma")
+    acc += len(a)
+    return acc
+}

@@ -1,0 +1,7 @@
+fn read_u32_le(b0: i32, b1: i32, b2: i32, b3: i32) -> i32 {
+    return b0 + (b1 << 8) + (b2 << 16) + (b3 << 24)
+}
+
+fn sample() -> i32 {
+    return read_u32_le(1, 2, 3, 4)
+}

@@ -94,6 +94,16 @@ def main() -> int:
             "array/index semantic exception drift: partial-native rejection diagnostic reappeared"
         )
 
+    forbidden_data_plane_aliases = (
+        'callee: "list.',
+        'callee: "map.',
+    )
+    for marker in forbidden_data_plane_aliases:
+        if marker in src:
+            errors.append(
+                f"non-text data-plane import alias remains in native import table: `{marker}`"
+            )
+
     if errors:
         print("direct-memory architecture gate failed:", file=sys.stderr)
         for err in errors:

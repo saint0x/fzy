@@ -124,6 +124,35 @@
 
 ## Checklist: Needs To Be Done
 
+### Corelib Benchmark Reboot + Decoupling Readiness (Production, No Backwards Compatibility)
+- [✅] Replace scratch-oriented benchmark narratives with production corelib benchmark narratives for both Rust and Fzy implementations.
+- [✅] Keep Fzy benchmark implementations pure language/corelib code (no `use core.*` capability modules in benchmark kernels).
+- [✅] Keep Rust benchmark implementations self-contained and representative of production corelib logic (no dependency on deprecated Rust stdlib facade for benchmark kernels).
+- [✅] Rewrite benchmark kernels to model real corelib domains end-to-end:
+- [✅] `resultx` classification and typed error mapping.
+- [✅] text transform/search pipeline (`trim`/`replace`/`contains`/prefix/suffix/length).
+- [✅] capability parse/classification.
+- [✅] retry/backoff policy arithmetic.
+- [✅] bytes decode path (`u32` little-endian read loop).
+- [✅] duration arithmetic kernel.
+- [✅] ABI pair/layout kernel.
+- [✅] C interop contract scoring kernel.
+- [ ] Text-kernel migration policy: keep text kernel Rust-backed as an allowed performance island until Fzy corelib path matches or exceeds Rust on long-run geomean for that kernel.
+- [✅] Remove process-surface compatibility aliases from compiler/runtime call routing (`process.*`); standardize on canonical `proc.*` runtime call surface only.
+- [✅] Remove non-text runtime-handle data-plane fallback routing from native import tables (`list.*`, `map.*`) so native lowering no longer silently routes these calls through compatibility paths.
+- [✅] Keep dual-backend support (LLVM production default, Cranelift debug/dev) while preserving one canonical lowering architecture across both backends.
+- [✅] Ensure Rust/Fzy benchmark kernel pairs are algorithmically equivalent and checksum-equivalent before timing.
+- [✅] Regenerate benchmark artifacts with the rewritten kernels (`artifacts/bench_corelibs_rust_vs_fzy.json` + markdown summary).
+- [✅] Re-run matrix verification gate (`scripts/verify_corelibs_bench_matrix.py`) after rewrite and require pass.
+- [✅] Re-run direct-memory perf gate against refreshed artifact (`scripts/direct_memory_perf_gate.py`) and require pass.
+- [✅] Update benchmark documentation terminology from “scratch” to “corelib production kernels” where applicable.
+- [✅] Record refreshed benchmark facts and CI-safe evidence timestamps in this plan once rerun is complete.
+- [✅] 2026-02-27 benchmark refresh facts (`artifacts/bench_corelibs_rust_vs_fzy.json`):
+- [✅] suite: `corelibs-rust-vs-fzy-production-corelib-robust`
+- [✅] geomean ratio (fzy/rust): `0.870x`
+- [✅] mean ratio (fzy/rust): `0.905x`
+- [✅] classification counts: `fzy_faster=2`, `near_parity=7`, `rust_faster=0`
+
 ### Undone: First-Class Unsafe Islands + Unsafe DX/Docs (Production)
 - [✅] Replace metadata-call-only unsafe semantics with first-class language unsafe constructs:
 - [✅] add `unsafe fn` declarations and `unsafe { ... }` block expressions to parser/AST/HIR.

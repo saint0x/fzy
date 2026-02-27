@@ -2356,7 +2356,7 @@ fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<S
                     if text.contains("async fn") && text.contains("unsafe") {
                         async_unsafe_overlap += 1;
                     }
-                    if text.contains("process.run(") || text.contains("http.poll_next") {
+                    if text.contains("proc.run(") || text.contains("http.poll_next") {
                         backend_risk_ops += 1;
                     }
                 }
@@ -10549,7 +10549,7 @@ mod tests {
         std::fs::write(
             &source,
             format!(
-                "use core.proc;\nuse core.thread;\n\nfn worker() -> i32 {{\n    process.run(\"/bin/sh -lc 'echo spawned > {quoted_out}'\")\n    return 0\n}}\n\nfn main() -> i32 {{\n    spawn(worker)\n    return 0\n}}\n"
+                "use core.proc;\nuse core.thread;\n\nfn worker() -> i32 {{\n    proc.run(\"/bin/sh -lc 'echo spawned > {quoted_out}'\")\n    return 0\n}}\n\nfn main() -> i32 {{\n    spawn(worker)\n    return 0\n}}\n"
             ),
         )
         .expect("source should be written");

@@ -70,6 +70,8 @@ def main() -> int:
     has_native_closure_non_let_diag = (
         "native backend only supports closures bound directly in `let` statements"
         in pipeline_src
+        or "native backend only supports closures bound to local names via `let`/assignment"
+        in pipeline_src
     )
     has_native_let_variant_literal_diag = (
         "supports `let` variant payload binding only when the initializer is the same literal enum variant"

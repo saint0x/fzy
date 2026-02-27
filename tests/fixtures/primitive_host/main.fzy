@@ -11,8 +11,8 @@ fn mix(v: i32) -> i32 {
 }
 
 fn spin(limit: i32) -> i32 {
-    let total: i32 = 0
-    let i: i32 = 0
+    let mut total: i32 = 0
+    let mut i: i32 = 0
     while i < limit {
         i += 1
         if i % 2 == 0 {
@@ -36,7 +36,7 @@ fn id(v: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    process.run("echo primitive-host-probe > /dev/null")
+    proc.run("echo primitive-host-probe > /dev/null")
     let seeded: i32 = spin(10)
     let lifted: i32 = apply_id(id, seeded)
     return mix(lifted)

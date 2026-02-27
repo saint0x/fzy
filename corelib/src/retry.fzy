@@ -1,0 +1,18 @@
+fn delay_for_attempt(attempt: i32, initial: i32, max_delay: i32, factor: i32) -> i32 {
+    let mut delay = initial
+    let mut i = 1
+
+    while i < attempt {
+        delay = delay * factor
+        if delay > max_delay {
+            delay = max_delay
+        }
+        i += 1
+    }
+
+    return delay
+}
+
+fn sample() -> i32 {
+    return delay_for_attempt(5, 3, 89, 2)
+}

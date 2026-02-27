@@ -23,16 +23,16 @@ fn workload() -> i32 {
     while i < ITERATIONS {
         let owner = ownership[oi]
         let null = nullability[ni]
-        let mutability = mutability[mi]
+        let mutable_mode = mutability[mi]
         let panic = panic_boundary[pi]
 
         let mut score = owner_score(owner)
         if null == "nullable" { score += 5 } else { score += 3 }
-        if mutability == "mut" { score += 19 } else { score += 2 }
+        if mutable_mode == "mut" { score += 19 } else { score += 2 }
         if panic == "abort" { score += 23 } else { score += 29 }
         if owner == "owned" && panic == "abort" { score += 31 }
         if owner == "borrowed" && null == "non_null" { score += 37 }
-        if owner == "inout" && mutability == "mut" { score += 41 }
+        if owner == "inout" && mutable_mode == "mut" { score += 41 }
 
         acc = (acc + score) % 251
 

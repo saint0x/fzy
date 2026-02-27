@@ -24,7 +24,10 @@ def run(cmd, check=True):
 
 def run_json(cmd):
     out = run(cmd).stdout.strip()
-    return json.loads(out.splitlines()[-1])
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return json.loads(out.splitlines()[-1])
 
 
 def parse_rust_checksum(stdout: str) -> int:

@@ -10,5 +10,5 @@ fn start() -> i32 {
     spawn(worker.run) spawn(scheduler.tick) return 0
 }
 fn begin_shutdown_drain() -> i32 {
-    process.exec_timeout(2000) checkpoint() return 0
+    proc.exec_timeout(2000) checkpoint() return 0
 }

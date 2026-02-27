@@ -1,0 +1,25 @@
+mod resultx;
+mod text;
+mod capability;
+mod retry;
+mod bytes;
+mod duration;
+mod abi;
+mod cinterop;
+
+fn sanity() -> i32 {
+    let mut acc = 0
+    acc = (acc + resultx.sample()) % 251
+    acc = (acc + text.sample()) % 251
+    acc = (acc + capability.sample()) % 251
+    acc = (acc + retry.sample()) % 251
+    acc = (acc + bytes.sample()) % 251
+    acc = (acc + duration.sample()) % 251
+    acc = (acc + abi.sample()) % 251
+    acc = (acc + cinterop.sample()) % 251
+    return acc
+}
+
+fn main() -> i32 {
+    return sanity()
+}
