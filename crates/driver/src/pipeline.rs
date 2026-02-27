@@ -3442,6 +3442,16 @@ fn resolve_pattern_source_expr(
     resolve_inner(expr, known_values, passthrough_functions, 0)
 }
 
+fn resolve_struct_field_expr<'a>(base: &'a ast::Expr, field: &str) -> Option<&'a ast::Expr> {
+    match base {
+        ast::Expr::StructInit { fields, .. } => fields
+            .iter()
+            .find_map(|(name, value)| if name == field { Some(value) } else { None }),
+        ast::Expr::Group(inner) => resolve_struct_field_expr(inner, field),
+        _ => None,
+    }
+}
+
 fn bindings_for_match_arm_pattern(
     pattern: &ast::Pattern,
     scrutinee: &ast::Expr,
@@ -4985,6 +4995,9 @@ fn llvm_emit_expr(
             }
         }
         ast::Expr::FieldAccess { base, field } => {
+            if let Some(field_expr) = resolve_struct_field_expr(base, field) {
+                return llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
+            }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
                     let val = ctx.value();
@@ -8708,6 +8721,9 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::FieldAccess { base, field } => {
+            if let Some(field_expr) = resolve_struct_field_expr(base, field) {
+                return clif_emit_expr(builder, ctx, field_expr, locals, next_var);
+            }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = locals.get(&format!("{name}.{field}")).copied() {
                     ClifValue {
@@ -9842,7 +9858,13 @@ fn expr_contains_unsupported_partial_native_expression(
                 )
             })
         }
-        ast::Expr::FieldAccess { base, .. } => {
+        ast::Expr::FieldAccess { base, field } => {
+            if let Some(field_expr) = resolve_struct_field_expr(base, field) {
+                return expr_contains_unsupported_partial_native_expression(
+                    field_expr,
+                    NativeExprContext::Default,
+                );
+            }
             if !matches!(base.as_ref(), ast::Expr::Ident(_)) && expr_task_ref_name(expr).is_none() {
                 return true;
             }
@@ -17319,6 +17341,31 @@ mod tests {
 
         let output = verify_file(&path).expect("verify should run");
         assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("detected parser-recognized expressions without full lowering parity")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_accepts_native_field_access_on_struct_literal_expression() {
+        let file_name = format!(
+            "fozzylang-native-struct-literal-field-access-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "struct Pair { left: i32, right: i32 }\nfn main() -> i32 {\n    return Pair { left: 3, right: 9 }.right\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("detected parser-recognized expressions without full lowering parity")
         }));
