@@ -774,6 +774,9 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 expr_has_cap_intrinsic(start) || expr_has_cap_intrinsic(end)
             }
             Expr::ArrayLiteral(items) => items.iter().any(expr_has_cap_intrinsic),
+            Expr::ObjectLiteral(fields) => fields
+                .iter()
+                .any(|(_, value)| expr_has_cap_intrinsic(value)),
             Expr::Index { base, index } => {
                 expr_has_cap_intrinsic(base) || expr_has_cap_intrinsic(index)
             }
@@ -1333,6 +1336,17 @@ fn analyze_expr_call_tokens(
                 );
             }
         }
+        Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(value),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+        }
         Expr::Index { base, index } => {
             analyze_expr_call_tokens(
                 function_name,
@@ -1665,6 +1679,7 @@ fn expr_has_await(expr: &Expr) -> bool {
         Expr::Binary { left, right, .. } => expr_has_await(left) || expr_has_await(right),
         Expr::Range { start, end, .. } => expr_has_await(start) || expr_has_await(end),
         Expr::ArrayLiteral(items) => items.iter().any(expr_has_await),
+        Expr::ObjectLiteral(fields) => fields.iter().any(|(_, value)| expr_has_await(value)),
         Expr::Index { base, index } => expr_has_await(base) || expr_has_await(index),
         Expr::Unary { expr, .. } => expr_has_await(expr),
         Expr::Int(_)
@@ -2400,6 +2415,17 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
                     );
                 }
             }
+            Expr::ObjectLiteral(fields) => {
+                for (_, value) in fields {
+                    analyze_expr(
+                        function_name,
+                        value,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
             Expr::Index { base, index } => {
                 analyze_expr(
                     function_name,
@@ -2962,6 +2988,9 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
             expr_uses_ident(start, target) || expr_uses_ident(end, target)
         }
         Expr::ArrayLiteral(items) => items.iter().any(|item| expr_uses_ident(item, target)),
+        Expr::ObjectLiteral(fields) => fields
+            .iter()
+            .any(|(_, value)| expr_uses_ident(value, target)),
         Expr::Index { base, index } => {
             expr_uses_ident(base, target) || expr_uses_ident(index, target)
         }
@@ -3496,6 +3525,11 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
         Expr::ArrayLiteral(items) => {
             for item in items {
                 collect_expr_idents(item, out);
+            }
+        }
+        Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_expr_idents(value, out);
             }
         }
         Expr::Index { base, index } => {
@@ -4557,6 +4591,19 @@ fn collect_unsafe_contract_sites_from_expr(
                 );
             }
         }
+        Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_unsafe_contract_sites_from_expr(
+                    value,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
         Expr::Index { base, index } => {
             collect_unsafe_contract_sites_from_expr(
                 base,
@@ -4729,6 +4776,9 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
         ast::Expr::Await(inner) => deferred_resource(inner),
         ast::Expr::Discard(inner) => deferred_resource(inner),
         ast::Expr::ArrayLiteral(items) => items.iter().find_map(deferred_resource),
+        ast::Expr::ObjectLiteral(fields) => fields
+            .iter()
+            .find_map(|(_, value)| deferred_resource(value)),
         ast::Expr::Index { base, index } => {
             deferred_resource(base).or_else(|| deferred_resource(index))
         }
@@ -5466,6 +5516,27 @@ fn infer_expr_type(
                             migrated
                         ));
                     }
+                } else if let Some(arity_suffix) = base_callee.strip_prefix("json.object") {
+                    if !arity_suffix.is_empty() && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
+                    {
+                        detail.push_str(
+                            "; autofix: replace with `json.object(#{\"k\": json.str(\"v\")})` and expand fields as needed",
+                        );
+                    }
+                } else if let Some(arity_suffix) = base_callee.strip_prefix("json.array") {
+                    if !arity_suffix.is_empty() && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
+                    {
+                        detail.push_str(
+                            "; autofix: replace with `json.array([item1, item2])` or build via `list.new/push`",
+                        );
+                    }
+                } else if let Some(arity_suffix) = base_callee.strip_prefix("log.fields") {
+                    if !arity_suffix.is_empty() && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
+                    {
+                        detail.push_str(
+                            "; autofix: replace with `log.fields(#{\"k\": json.str(\"v\")})`",
+                        );
+                    }
                 } else if let Some(nearest) = nearest_intrinsic_name(base_callee) {
                     detail.push_str(&format!("; did you mean `{}`?", nearest));
                 }
@@ -6070,6 +6141,39 @@ fn infer_expr_type(
                 len: items.len(),
             })
         }
+        Expr::ObjectLiteral(fields) => {
+            let mut has_error = false;
+            for (key, value) in fields {
+                if key.trim().is_empty() {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        "object literal key must not be empty".to_string(),
+                    );
+                    has_error = true;
+                }
+                let value_ty = infer_expr_type(value, scopes, env, state);
+                if let Some(actual) = value_ty {
+                    if !type_compatible(&Type::Str, &actual) {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!(
+                                "object literal value for key `{key}` must be `str`-compatible JSON fragment, got `{actual}`"
+                            ),
+                        );
+                        has_error = true;
+                    }
+                }
+            }
+            if has_error {
+                None
+            } else {
+                // Object literals lower to runtime map handles (`i32`) and interoperate with
+                // `log.fields(map)` and `json.object(map)`.
+                Some(i32_type())
+            }
+        }
         Expr::Index { base, index } => {
             let base_ty = infer_expr_type(base, scopes, env, state);
             let index_ty = infer_expr_type(index, scopes, env, state);
@@ -6424,6 +6528,11 @@ fn collect_and_rewrite_explicit_generic_calls(
                     rewrite_expr(value, templates, queue, rewrite);
                 }
             }
+            Expr::ObjectLiteral(fields) => {
+                for (_, value) in fields {
+                    rewrite_expr(value, templates, queue, rewrite);
+                }
+            }
             Expr::Closure { body, .. }
             | Expr::Group(body)
             | Expr::Await(body)
@@ -6623,6 +6732,11 @@ fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, 
                     rewrite_expr(value, rewrite);
                 }
             }
+            Expr::ObjectLiteral(fields) => {
+                for (_, value) in fields {
+                    rewrite_expr(value, rewrite);
+                }
+            }
             Expr::Closure { body, .. }
             | Expr::Group(body)
             | Expr::Await(body)
@@ -6787,6 +6901,11 @@ fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, 
             }
             Expr::EnumInit { payload, .. } | Expr::ArrayLiteral(payload) => {
                 for value in payload {
+                    substitute_expr(value, bindings);
+                }
+            }
+            Expr::ObjectLiteral(fields) => {
+                for (_, value) in fields {
                     substitute_expr(value, bindings);
                 }
             }
@@ -8636,6 +8755,16 @@ fn eval_expr<'a>(
             }
             Some(Value::List(out))
         }
+        Expr::ObjectLiteral(fields) => {
+            let mut out = BTreeMap::new();
+            for (key, value) in fields {
+                out.insert(key.clone(), eval_expr(value, env, functions)?);
+            }
+            Some(Value::Struct {
+                _name: "ObjectLiteral".to_string(),
+                fields: out,
+            })
+        }
         Expr::Index { base, index } => {
             let base = eval_expr(base, env, functions)?;
             let index = eval_expr(index, env, functions)?;
@@ -9101,6 +9230,42 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn object_literal_json_and_log_paths_typecheck() {
+        let source = r#"
+            fn main() -> i32 {
+                let fields = #{
+                    "component": json.str("test"),
+                    "phase": json.str("boot")
+                };
+                discard log.info("boot", log.fields(fields));
+                discard http.post_json_capture("https://example.com", json.object(fields));
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn removed_json_object_arity_reports_autofix_hint() {
+        let source = r#"
+            fn main() -> i32 {
+                let payload = json.object3("a", json.str("1"), "b", json.str("2"), "c", json.str("3"));
+                discard payload;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("autofix")));
     }
 
     #[test]

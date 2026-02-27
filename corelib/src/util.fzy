@@ -1,0 +1,49 @@
+fn log_fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let fields = map.new()
+    discard map.set(fields, k1, json.str(v1))
+    discard map.set(fields, k2, json.str(v2))
+    return log.fields(fields)
+}
+
+fn log_fields3(k1: str, v1: str, k2: str, v2: str, k3: str, v3: str) -> str {
+    let fields = map.new()
+    discard map.set(fields, k1, json.str(v1))
+    discard map.set(fields, k2, json.str(v2))
+    discard map.set(fields, k3, json.str(v3))
+    return log.fields(fields)
+}
+
+fn json_object2(k1: str, v1_json: str, k2: str, v2_json: str) -> str {
+    let obj = map.new()
+    discard map.set(obj, k1, v1_json)
+    discard map.set(obj, k2, v2_json)
+    return json.object(obj)
+}
+
+fn json_array2(v1_json: str, v2_json: str) -> str {
+    let list = list.new()
+    discard list.push(list, v1_json)
+    discard list.push(list, v2_json)
+    return json.array(list)
+}
+
+fn http_write_json_map(conn: i32, status: i32, map_handle: i32) -> i32 {
+    return http.write_json(conn, status, json.object(map_handle))
+}
+
+fn http_post_json_capture_map(endpoint: str, map_handle: i32) -> str {
+    return http.post_json_capture(endpoint, json.object(map_handle))
+}
+
+fn task_spawn_join_all(group: i32, worker: fn() -> i32, n: i32) -> i32 {
+    discard task.group_spawn_n(group, worker, n)
+    return task.group_join_all(group)
+}
+
+fn sample() -> i32 {
+    let fields = log_fields2("component", "core.util", "phase", "sample")
+    discard log.info("core.util.sample", fields)
+    let body = json_object2("ok", "true", "msg", json.str("sample"))
+    discard body
+    return 0
+}

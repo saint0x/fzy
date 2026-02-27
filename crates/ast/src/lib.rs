@@ -275,6 +275,7 @@ pub enum Expr {
         inclusive: bool,
     },
     ArrayLiteral(Vec<Expr>),
+    ObjectLiteral(Vec<(String, Expr)>),
     Index {
         base: Box<Expr>,
         index: Box<Expr>,
@@ -697,6 +698,11 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
         Expr::ArrayLiteral(items) => {
             for item in items {
                 visitor.visit_expr(item);
+            }
+        }
+        Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                visitor.visit_expr(value);
             }
         }
         Expr::Index { base, index } => {

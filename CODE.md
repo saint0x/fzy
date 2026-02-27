@@ -85,6 +85,25 @@ FZY
 fz check /tmp/code_primitives.fzy --json
 ```
 
+## 2.1 JSON/Object literal ergonomics
+
+```bash
+cat > /tmp/code_json_literals.fzy <<'FZY'
+fn main() -> i32 {
+    let fields = #{
+        "component": json.str("code.md"),
+        "phase": json.str("literal"),
+    }
+    discard log.info("json.literal.demo", log.fields(fields))
+    let payload = json.object(fields)
+    discard payload
+    return 0
+}
+FZY
+
+fz run /tmp/code_json_literals.fzy --backend llvm --json
+```
+
 ## 3) `let`, `let mut`, reassignment, compound assignment
 
 ```bash

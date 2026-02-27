@@ -556,7 +556,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "routing": {
                             "mode": routing_mode,
                             "reason": if host_backends && deterministic {
-                                "host-backed native runs preserve live process semantics and do not route through deterministic scenario execution"
+                                "deterministic replay and host-backend runs are separate; use `fozzy run <scenario> --proc-backend host --fs-backend host --http-backend host --json` for host-backed validation"
                             } else if host_backends {
                                 "host-backed native run"
                             } else {
@@ -1254,7 +1254,7 @@ fn scenario_run_routing(deterministic_requested: bool, host_backends: bool) -> S
             deterministic_applied: false,
             mode: "host-backed-live-scenario",
             reason:
-                "fozzy deterministic mode does not support host proc backend; routed to host-backed live scenario",
+                "deterministic replay and host backends are separate modes; rerun host-backed as `fozzy run <scenario> --proc-backend host --fs-backend host --http-backend host --json`",
         };
     }
     if deterministic_requested {
@@ -10930,7 +10930,7 @@ mod tests {
         assert_eq!(routing.mode, "host-backed-live-scenario");
         assert!(routing
             .reason
-            .contains("does not support host proc backend"));
+            .contains("deterministic replay and host backends are separate"));
     }
 
     #[test]

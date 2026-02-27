@@ -17,6 +17,7 @@ mod process;
 mod security;
 mod log;
 mod error;
+mod util;
 
 fn http_kernel_sample() -> i32 {
     let status = http.last_status()
@@ -43,6 +44,7 @@ fn sanity() -> i32 {
     acc = (acc + security.sample()) % 251
     acc = (acc + log.sample()) % 251
     acc = (acc + error.sample()) % 251
+    acc = (acc + util.sample()) % 251
     return acc
 }
 

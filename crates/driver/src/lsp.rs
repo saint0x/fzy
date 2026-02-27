@@ -2387,13 +2387,37 @@ fn severity_to_lsp(severity: &diagnostics::Severity) -> u8 {
 }
 
 fn type_diagnostics(typed: &hir::TypedModule) -> Vec<diagnostics::Diagnostic> {
+    fn with_migration_fixes(mut diag: diagnostics::Diagnostic, detail: &str) -> diagnostics::Diagnostic {
+        if detail.contains("unresolved call target `json.object")
+            && detail.contains("autofix")
+        {
+            diag = diag.with_suggested_fix(
+                "replace fixed-arity JSON object helper with object literal: `json.object(#{\"k\": json.str(\"v\")})`",
+            );
+        } else if detail.contains("unresolved call target `json.array")
+            && detail.contains("autofix")
+        {
+            diag = diag.with_suggested_fix(
+                "replace fixed-arity JSON array helper with array literal: `json.array([item1, item2])`",
+            );
+        } else if detail.contains("unresolved call target `log.fields")
+            && detail.contains("autofix")
+        {
+            diag = diag.with_suggested_fix(
+                "replace removed log fields arity helper with object literal: `log.fields(#{\"k\": json.str(\"v\")})`",
+            );
+        }
+        diag
+    }
+
     let mut out = Vec::new();
     for detail in &typed.type_error_details {
-        out.push(diagnostics::Diagnostic::new(
+        let diag = diagnostics::Diagnostic::new(
             diagnostics::Severity::Error,
             detail.clone(),
             Some("fix type mismatch before running".to_string()),
-        ));
+        );
+        out.push(with_migration_fixes(diag, detail));
     }
     for violation in &typed.trait_violations {
         out.push(diagnostics::Diagnostic::new(

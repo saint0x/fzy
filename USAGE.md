@@ -151,8 +151,10 @@ Runtime logging defaults:
 - `use core.text;` is invalid; string intrinsics (`str.*`) do not require capability imports
 - canonical structured logging fields use `log.fields(map_handle)`
 - canonical dynamic JSON builders use `json.array(list_handle)` / `json.object(map_handle)`
+- first-class object literal syntax is available for small map payloads: `#{ "k": json.str("v") }`
 - canonical process builders use `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd` / `proc.run_cmd`
 - canonical persistence helpers use `storage.append`, `storage.atomic_append`, `storage.kv_open/get/put`
+- shared helper surface is available under `core.util` for common JSON/log/http/concurrency patterns
 
 ## 5.3 Quality and verification
 

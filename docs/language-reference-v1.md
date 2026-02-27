@@ -83,6 +83,20 @@ This document defines the v1 observable semantics contract used by the toolchain
 - `task.group_spawn_n(group, worker, n)` spawns `n` tasks into a group.
 - `task.group_join_all(group)` is the canonical full-group join operation.
 - `task.parallel_map(list_handle, worker)` provides high-level fan-out/fan-in over list length.
+- Canonical production pattern:
+
+```fzy
+fn worker() -> i32 {
+    checkpoint()
+    return 0
+}
+
+fn run_group() -> i32 {
+    let group = task.group_begin()
+    discard task.group_spawn_n(group, worker, 8)
+    return task.group_join_all(group)
+}
+```
 
 ### `checkpoint()`
 
@@ -161,6 +175,9 @@ Semantics:
 
 ## JSON And Logging Ergonomics
 
+- First-class object literals are supported and lower to canonical map primitives:
+  - `#{ "component": json.str("api"), "phase": json.str("boot") }`
+- Object literal keys must be quoted strings.
 - Dynamic JSON builders are canonical:
   - `json.array(list_handle)`
   - `json.object(map_handle)`

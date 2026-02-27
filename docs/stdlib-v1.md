@@ -69,6 +69,9 @@ The v1 stdlib provides production baseline primitives for:
 - HTTP/1.1 parsing/serving includes chunked transfer and `Expect: 100-continue` behavior.
 - Request/response size and timeout limits are bounded by default.
 - Error semantics preserve parse vs timeout vs IO separation.
+- Canonical JSON wrapper helpers are provided via `core.util`:
+  - `http_write_json_map(conn, status, map_handle)`
+  - `http_post_json_capture_map(endpoint, map_handle)`
 
 ### `concurrency`
 
@@ -96,6 +99,7 @@ The v1 stdlib provides production baseline primitives for:
 - JSON composition uses dynamic builders:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
+- Object literals (`#{ ... }`) lower to canonical map handles and are intended for small payload ergonomics.
 
 ### `security`
 
@@ -108,6 +112,14 @@ The v1 stdlib provides production baseline primitives for:
 - `log` surface supports structured fields and JSON-mode logging contracts for production services.
 - Canonical structured fields path is `log.fields(map_handle)`.
 - `error` surface standardizes typed error classification, retryability, and status normalization.
+
+### `util`
+
+- Shared ergonomic helpers for common app patterns:
+  - `log_fields2`, `log_fields3`
+  - `json_object2`, `json_array2`
+  - `http_write_json_map`, `http_post_json_capture_map`
+  - `task_spawn_join_all`
 
 ### `storage`
 

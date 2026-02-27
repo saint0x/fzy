@@ -463,26 +463,58 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     if module.type_errors > 0 {
+        fn apply_type_fix_hints(mut diag: Diagnostic, detail: &str) -> Diagnostic {
+            if detail.contains("unresolved call target `json.object") && detail.contains("autofix")
+            {
+                diag = diag.with_suggested_fix(
+                    "replace fixed-arity call with `json.object(#{\"k\": json.str(\"v\")})`",
+                );
+            } else if detail.contains("unresolved call target `json.array")
+                && detail.contains("autofix")
+            {
+                diag = diag.with_suggested_fix(
+                    "replace fixed-arity call with `json.array([item1, item2])`",
+                );
+            } else if detail.contains("unresolved call target `log.fields")
+                && detail.contains("autofix")
+            {
+                diag = diag.with_suggested_fix(
+                    "replace removed arity helper with `log.fields(#{\"k\": json.str(\"v\")})`",
+                );
+            }
+            diag
+        }
+
         let mut grouped = BTreeMap::<String, Vec<usize>>::new();
         for (index, detail) in module.type_error_details.iter().enumerate() {
             grouped.entry(detail.clone()).or_default().push(index);
         }
-        for (detail, indexes) in grouped {
-            let repeats = indexes.len();
-            let mut diag = Diagnostic::new(Severity::Error, detail, Some("type-check detail".to_string()))
-                .with_note(format!("repeated_count={repeats}"));
-            let top = indexes
-                .iter()
-                .take(5)
-                .map(|index| index.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-            diag = diag.with_note(format!("top_detail_indexes={top}"));
-            if repeats > 5 {
-                diag = diag.with_note(format!("suppressed_detail_indexes={}", repeats - 5));
-            }
-            report.diagnostics.push(diag);
+        let unique_count = grouped.len();
+        let primary_detail = module
+            .type_error_details
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "type-check failed".to_string());
+        let mut diag = Diagnostic::new(
+            Severity::Error,
+            format!("type-check failed: {primary_detail}"),
+            Some("primary cause shown; additional cascades were grouped".to_string()),
+        )
+        .with_note(format!("type_error_count={}", module.type_errors))
+        .with_note(format!("unique_root_details={unique_count}"));
+        let top_roots = grouped
+            .keys()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" | ");
+        if !top_roots.is_empty() {
+            diag = diag.with_note(format!("top_root_details={top_roots}"));
         }
+        if unique_count > 5 {
+            diag = diag.with_note(format!("suppressed_root_details={}", unique_count - 5));
+        }
+        report.diagnostics.push(apply_type_fix_hints(diag, &primary_detail));
     }
 
     if let Some(return_type) = &module.entry_return_type {

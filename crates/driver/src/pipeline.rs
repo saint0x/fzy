@@ -5297,6 +5297,30 @@ fn llvm_emit_expr(
             }
             "0".to_string()
         }
+        ast::Expr::ObjectLiteral(fields) => {
+            let map_symbol = native_mangle_symbol(
+                native_runtime_import_for_callee("map.new")
+                    .expect("map.new runtime import must exist")
+                    .symbol,
+            );
+            let set_symbol = native_mangle_symbol(
+                native_runtime_import_for_callee("map.set")
+                    .expect("map.set runtime import must exist")
+                    .symbol,
+            );
+            let map_handle = ctx.value();
+            ctx.code
+                .push_str(&format!("  {map_handle} = call i32 @{map_symbol}()\n"));
+            for (key, value) in fields {
+                let key_id = string_literal_ids.get(key).copied().unwrap_or(0);
+                let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                let status = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {status} = call i32 @{set_symbol}(i32 {map_handle}, i32 {key_id}, i32 {rendered})\n"
+                ));
+            }
+            map_handle
+        }
         ast::Expr::Index { base, index } => {
             let index_value = if let Some((base_name, offset)) =
                 canonicalize_array_index_window(index)
@@ -5980,6 +6004,12 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
                     collect_from_expr(value, const_strings, out);
                 }
             }
+            ast::Expr::ObjectLiteral(fields) => {
+                for (key, value) in fields {
+                    out.insert(key.clone());
+                    collect_from_expr(value, const_strings, out);
+                }
+            }
             ast::Expr::Closure { body, .. }
             | ast::Expr::Group(body)
             | ast::Expr::Await(body)
@@ -6140,6 +6170,12 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
         }
         ast::Expr::EnumInit { payload, .. } => {
             for value in payload {
+                collect_string_literals_from_expr(value, literals);
+            }
+        }
+        ast::Expr::ObjectLiteral(fields) => {
+            for (key, value) in fields {
+                literals.insert(key.clone());
                 collect_string_literals_from_expr(value, literals);
             }
         }
@@ -6753,6 +6789,21 @@ fn collect_used_runtime_imports_from_expr(
         }
         ast::Expr::EnumInit { payload, .. } => {
             for value in payload {
+                collect_used_runtime_imports_from_expr(value, seen, used);
+            }
+        }
+        ast::Expr::ObjectLiteral(fields) => {
+            if let Some(import) = native_runtime_import_for_callee("map.new") {
+                if seen.insert(import.symbol) {
+                    used.push(import);
+                }
+            }
+            if let Some(import) = native_runtime_import_for_callee("map.set") {
+                if seen.insert(import.symbol) {
+                    used.push(import);
+                }
+            }
+            for (_, value) in fields {
                 collect_used_runtime_imports_from_expr(value, seen, used);
             }
         }
@@ -9329,6 +9380,31 @@ fn clif_emit_expr(
             }
             ClifValue {
                 value: builder.ins().iconst(default_int_clif_type(), 0),
+                ty: default_int_clif_type(),
+            }
+        }
+        ast::Expr::ObjectLiteral(fields) => {
+            let map_new = ctx.function_ids.get("map.new").copied().ok_or_else(|| {
+                anyhow!("missing runtime import lowering for `map.new`")
+            })?;
+            let map_set = ctx.function_ids.get("map.set").copied().ok_or_else(|| {
+                anyhow!("missing runtime import lowering for `map.set`")
+            })?;
+            let map_ref = ctx.module.declare_func_in_func(map_new, builder.func);
+            let map_call = builder.ins().call(map_ref, &[]);
+            let map_handle = builder.inst_results(map_call)[0];
+            let set_ref = ctx.module.declare_func_in_func(map_set, builder.func);
+            for (key, value) in fields {
+                let key_id = i64::from(ctx.string_literal_ids.get(key).copied().unwrap_or(0));
+                let key_value = builder.ins().iconst(default_int_clif_type(), key_id);
+                let lowered = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+                let lowered = cast_clif_value(builder, lowered, default_int_clif_type())?;
+                let _ = builder
+                    .ins()
+                    .call(set_ref, &[map_handle, key_value, lowered.value]);
+            }
+            ClifValue {
+                value: map_handle,
                 ty: default_int_clif_type(),
             }
         }

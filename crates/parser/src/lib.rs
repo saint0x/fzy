@@ -1551,6 +1551,48 @@ impl Parser {
                 expr: Box::new(expr),
             });
         }
+        if self.consume(&TokenKind::Hash) {
+            if !self.consume(&TokenKind::LBrace) {
+                self.push_diag_here("expected `{` after `#` for object literal");
+                return None;
+            }
+            let mut fields = Vec::new();
+            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                let Some(key_token) = self.advance() else {
+                    break;
+                };
+                let key = match key_token.kind {
+                    TokenKind::Str(value) => value,
+                    TokenKind::Ident(_value) => {
+                        self.push_diag_at(
+                            key_token.line,
+                            key_token.col,
+                            "object literal keys must be quoted strings",
+                        );
+                        return None;
+                    }
+                    _ => {
+                        self.push_diag_at(
+                            key_token.line,
+                            key_token.col,
+                            "object literal key must be a quoted string",
+                        );
+                        return None;
+                    }
+                };
+                if !self.consume(&TokenKind::Colon) {
+                    self.push_diag_here("expected `:` in object literal");
+                    return None;
+                }
+                let value = self.parse_expr(0)?;
+                fields.push((key, value));
+                if !self.consume(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            let _ = self.consume(&TokenKind::RBrace);
+            return Some(Expr::ObjectLiteral(fields));
+        }
 
         let token = self.advance()?;
         let mut expr = match token.kind {
