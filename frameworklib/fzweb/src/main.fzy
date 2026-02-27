@@ -1,0 +1,106 @@
+use webcore.http;
+use webcore.thread;
+
+mod webcore;
+mod middleware;
+mod support;
+
+fn build_signature() -> i32 {
+    let mut sig = webcore.app_new()
+    sig = webcore.app_enable(sig, middleware.logger_flag())
+    sig = webcore.app_enable(sig, middleware.recover_flag())
+    sig = webcore.app_enable(sig, middleware.timeout_flag())
+    sig = webcore.app_enable(sig, middleware.validation_flag())
+    sig = webcore.app_get(sig, "/health", 1)
+    sig = webcore.app_post(sig, "/echo", 2)
+    sig = webcore.app_get(sig, "/json", 3)
+    sig = webcore.app_all(sig, "/", 10)
+    sig = webcore.app_default_handler(sig, 404)
+    return sig
+}
+
+fn framework_score(sig: i32) -> i32 {
+    let rs = support.openapi_summary(sig)
+    let cs = support.compress_should("application/json", "{\"hello\":\"world\"}")
+    let ss = support.session_valid("abcdefghijklmnop")
+    let st = support.static_match("/static/app.js")
+    let vt = middleware.validate_body(1, "POST", "{\"ok\":true}")
+    return (rs + cs + ss + st + vt) % 251
+}
+
+fn worker_probe_a() -> i32 {
+    yield()
+    return 1
+}
+
+fn worker_probe_b() -> i32 {
+    yield()
+    return 2
+}
+
+fn run_parallel_probes() -> i32 {
+    spawn(worker_probe_a)
+    spawn(worker_probe_b)
+    yield()
+    return 3
+}
+
+fn maybe_handle_once(mask: i32, strict_json: i32) -> i32 {
+    if http.last_status() >= -1 {
+        return 0
+    }
+
+    let conn = webcore.server_accept()
+    if conn < 0 { return conn }
+    defer close(conn)
+
+    discard webcore.request_read(conn)
+    let method = webcore.request_method(conn)
+    let path = webcore.request_path(conn)
+    let body = webcore.request_body(conn, support.default_max_body_bytes())
+    let auth_header = webcore.request_auth(conn)
+    let req_id = webcore.request_id(conn)
+    discard support.context_score(method, path, req_id)
+
+    discard middleware.apply_timeout(mask, support.default_timeout_ms())
+    discard middleware.log_event(method, path, req_id)
+
+    let bucket = middleware.rate_init(support.default_rate_tokens(), support.default_rate_refill_ms())
+
+    if middleware.enabled(mask, middleware.cors_flag()) == 1 {
+        if middleware.cors_short_circuit(method, path) == 1 {
+            return webcore.response_text(conn, 204, "")
+        }
+    }
+    if middleware.enabled(mask, middleware.auth_flag()) == 1 {
+        if middleware.auth_bearer(auth_header) == 0 {
+            return webcore.response_unauthorized(conn)
+        }
+    }
+    if middleware.enabled(mask, middleware.validation_flag()) == 1 {
+        if middleware.validate_body(strict_json, method, body) == 0 {
+            return webcore.response_bad_request(conn)
+        }
+    }
+    if middleware.enabled(mask, middleware.rate_limit_flag()) == 1 {
+        if middleware.rate_allowed(bucket, 1) == 0 {
+            return webcore.response_too_many_requests(conn)
+        }
+    }
+
+    let handler_id = webcore.route_select(method, path)
+    return webcore.handler_dispatch(handler_id, conn, body)
+}
+
+fn main() -> i32 {
+    let sig = build_signature()
+    let mask = sig % 1024
+    let strict_json = 1
+    let score = framework_score(sig)
+    let parallel = run_parallel_probes()
+    let maybe = maybe_handle_once(mask, strict_json)
+    if maybe < 0 {
+        return support.error_map(503)
+    }
+    return (score + parallel + maybe) % 251
+}

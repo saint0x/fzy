@@ -1,0 +1,38 @@
+use core.thread;
+mod middleware;
+
+const ITERATIONS: i32 = 10000000
+
+fn enable_flag(mask: i32, flag: i32) -> i32 {
+    if flag <= 0 then return mask
+    let q = mask / flag
+    if (q % 2) == 1 then return mask
+    return mask + flag
+}
+
+fn workload() -> i32 {
+    let mut i = 0
+    let mut mask = 0
+    let mut bucket = middleware.rate_init(120, 1000)
+    let mut acc = 0
+
+    while i < ITERATIONS {
+        mask = enable_flag(mask, middleware.logger_flag())
+        mask = enable_flag(mask, middleware.validation_flag())
+        mask = enable_flag(mask, middleware.rate_limit_flag())
+
+        let valid = middleware.validate_body(1, "POST", "{\"x\":1}")
+        let allow = middleware.rate_allowed(bucket, 1)
+        bucket = middleware.rate_take(bucket, 1)
+        bucket = middleware.rate_refill(bucket, i)
+
+        acc = (acc + valid + allow + (mask % 31)) % 251
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

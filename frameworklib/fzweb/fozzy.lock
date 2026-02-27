@@ -1,0 +1,12 @@
+{
+  "dependencyGraphHash": "5a72e31c6e55ae3a786469d3a078c027bfffccb90b34244f18ab3995c0d6d2bb",
+  "graph": {
+    "deps": [],
+    "package": {
+      "manifestHash": "d8d114574cdb8974a69373b4dc3eb88715f1c25eed972df9eb5a097142629c40",
+      "name": "fzweb",
+      "version": "0.1.0"
+    }
+  },
+  "schemaVersion": "fozzylang.lock.v0"
+}

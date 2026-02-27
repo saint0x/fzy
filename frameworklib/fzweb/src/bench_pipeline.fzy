@@ -1,0 +1,48 @@
+use core.thread;
+mod webcore;
+mod middleware;
+mod support;
+
+const ITERATIONS: i32 = 8000000
+
+fn build_sig() -> i32 {
+    let mut sig = webcore.app_new()
+    sig = webcore.app_enable(sig, middleware.logger_flag())
+    sig = webcore.app_enable(sig, middleware.recover_flag())
+    sig = webcore.app_enable(sig, middleware.timeout_flag())
+    sig = webcore.app_enable(sig, middleware.validation_flag())
+    sig = webcore.app_get(sig, "/health", 1)
+    sig = webcore.app_post(sig, "/echo", 2)
+    sig = webcore.app_get(sig, "/json", 3)
+    sig = webcore.app_all(sig, "/", 10)
+    sig = webcore.app_default_handler(sig, 404)
+    return sig
+}
+
+fn workload() -> i32 {
+    let mut i = 0
+    let mut acc = 0
+    let mut sig = build_sig()
+
+    while i < ITERATIONS {
+        let method = "GET"
+        let path = "/health"
+        let rid = "req"
+        let mask = sig % 1024
+
+        let v = middleware.validate_body(1, "POST", "{\"ok\":true}")
+        let c = support.context_score(method, path, rid)
+        let h = webcore.route_select(method, path)
+        let s = support.openapi_summary(sig)
+        acc = (acc + v + c + h + s + (mask % 17)) % 251
+
+        sig = (sig + i + acc) % 2147483000
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

@@ -1,0 +1,132 @@
+use core.http;
+use core.time;
+
+fn enable_flag(mask: i32, flag: i32) -> i32 {
+    if flag <= 0 then return mask
+    let q = mask / flag
+    if (q % 2) == 1 then return mask
+    return mask + flag
+}
+
+fn app_new() -> i32 {
+    return 17
+}
+
+fn app_enable(app_sig: i32, flag: i32) -> i32 {
+    let mask = app_sig % 1024
+    let next_mask = enable_flag(mask, flag)
+    return (app_sig - mask) + next_mask
+}
+
+fn app_default_handler(app_sig: i32, handler_id: i32) -> i32 {
+    let base = app_sig % 8192
+    let hid = handler_id % 256
+    return base + (hid * 8192)
+}
+
+fn app_add_route(app_sig: i32, method: str, pattern: str, handler_id: i32) -> i32 {
+    let m = str.len(method) * 13
+    let p = str.len(pattern) * 17
+    let h = handler_id * 19
+    return (app_sig + m + p + h) % 2147483000
+}
+
+fn app_get(app_sig: i32, pattern: str, handler_id: i32) -> i32 {
+    return app_add_route(app_sig, "GET", pattern, handler_id)
+}
+
+fn app_post(app_sig: i32, pattern: str, handler_id: i32) -> i32 {
+    return app_add_route(app_sig, "POST", pattern, handler_id)
+}
+
+fn app_all(app_sig: i32, pattern: str, handler_id: i32) -> i32 {
+    return app_add_route(app_sig, "*", pattern, handler_id)
+}
+
+fn request_read(conn: i32) -> i32 {
+    return http.read(conn)
+}
+
+fn request_method(conn: i32) -> str {
+    return http.method(conn)
+}
+
+fn request_path(conn: i32) -> str {
+    return http.path(conn)
+}
+
+fn request_body(conn: i32, max_bytes: i32) -> str {
+    let raw = http.body(conn)
+    if str.len(raw) <= max_bytes {
+        return raw
+    }
+    return str.slice(raw, 0, max_bytes)
+}
+
+fn request_auth(conn: i32) -> str {
+    return http.header(conn, "authorization")
+}
+
+fn request_id(conn: i32) -> str {
+    return http.request_id(conn)
+}
+
+fn request_remote(conn: i32) -> str {
+    return http.remote_addr(conn)
+}
+
+fn route_select(req_method: str, req_path: str) -> i32 {
+    if req_method == "GET" && req_path == "/health" then return 1
+    if req_method == "POST" && req_path == "/echo" then return 2
+    if req_method == "GET" && req_path == "/json" then return 3
+    if str.starts_with(req_path, "/static/") == 1 then return 4
+    if req_path == "/openapi.json" then return 5
+    return 404
+}
+
+fn handler_dispatch(handler_id: i32, conn: i32, body: str) -> i32 {
+    if handler_id == 1 {
+        return http.write(conn, 200, "ok")
+    }
+    if handler_id == 2 {
+        return http.write(conn, 200, body)
+    }
+    if handler_id == 3 {
+        let now = time.now()
+        if now >= 0 {
+            return http.write_json(conn, 200, "{\"ok\":true}")
+        }
+        return http.write_json(conn, 200, "{\"ok\":true}")
+    }
+    if handler_id == 4 {
+        return http.write(conn, 200, "static")
+    }
+    if handler_id == 5 {
+        return http.write_json(conn, 200, "{\"openapi\":\"3.1.0\"}")
+    }
+    return http.write(conn, 404, "not found")
+}
+
+fn server_accept() -> i32 {
+    return http.accept()
+}
+
+fn response_text(conn: i32, status: i32, body: str) -> i32 {
+    return http.write(conn, status, body)
+}
+
+fn response_json(conn: i32, status: i32, body: str) -> i32 {
+    return http.write_json(conn, status, body)
+}
+
+fn response_bad_request(conn: i32) -> i32 {
+    return response_text(conn, 400, "bad_request")
+}
+
+fn response_unauthorized(conn: i32) -> i32 {
+    return response_text(conn, 401, "unauthorized")
+}
+
+fn response_too_many_requests(conn: i32) -> i32 {
+    return response_text(conn, 429, "rate_limited")
+}

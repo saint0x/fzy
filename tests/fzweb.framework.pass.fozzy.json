@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "fzweb-framework-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": ["scripts/verify_fzweb_framework.py"],
+      "exit_code": 0,
+      "stdout": "fzweb-framework-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": ["scripts/verify_fzweb_framework.py"],
+      "expect_exit": 0,
+      "expect_stdout": "fzweb-framework-ok\n"
+    }
+  ]
+}

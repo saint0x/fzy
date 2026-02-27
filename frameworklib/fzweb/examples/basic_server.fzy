@@ -1,0 +1,28 @@
+use webcore.http;
+mod webcore;
+mod middleware;
+mod support;
+
+fn main() -> i32 {
+    let mut sig = webcore.app_new()
+    sig = webcore.app_enable(sig, middleware.logger_flag())
+    sig = webcore.app_enable(sig, middleware.timeout_flag())
+    sig = webcore.app_get(sig, "/health", 1)
+    sig = webcore.app_post(sig, "/echo", 2)
+
+    if http.last_status() < -1 {
+        return sig % 251
+    }
+
+    let conn = webcore.server_accept()
+    if conn < 0 {
+        return 0
+    }
+    defer close(conn)
+    discard webcore.request_read(conn)
+    let method = webcore.request_method(conn)
+    let path = webcore.request_path(conn)
+    let body = webcore.request_body(conn, support.default_max_body_bytes())
+    let handler = webcore.route_select(method, path)
+    return webcore.handler_dispatch(handler, conn, body)
+}

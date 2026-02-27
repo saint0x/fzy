@@ -1,0 +1,38 @@
+fn compress_should(content_type: str, body: str) -> i32 {
+    if str.len(body) < 512 then return 0
+    if str.starts_with(content_type, "text/") == 1 then return 1
+    if content_type == "application/json" then return 1
+    return 0
+}
+
+fn session_valid(token: str) -> i32 {
+    if str.len(token) < 16 then return 0
+    return 1
+}
+
+fn static_match(path: str) -> i32 {
+    if str.starts_with(path, "/static/") == 1 then return 1
+    return 0
+}
+
+fn openapi_summary(app_sig: i32) -> i32 {
+    return app_sig % 257
+}
+
+fn context_score(method: str, path: str, request_id: str) -> i32 {
+    return ((str.len(method) * 13) + (str.len(path) * 17) + (str.len(request_id) * 19)) % 251
+}
+
+fn default_max_body_bytes() -> i32 { return 1048576 }
+fn default_timeout_ms() -> i32 { return 2500 }
+fn default_rate_tokens() -> i32 { return 120 }
+fn default_rate_refill_ms() -> i32 { return 1000 }
+
+fn error_map(code: i32) -> i32 {
+    if code == 400 then return 400
+    if code == 401 then return 401
+    if code == 404 then return 404
+    if code == 429 then return 429
+    if code == 503 then return 503
+    return 500
+}

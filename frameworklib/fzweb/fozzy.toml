@@ -1,0 +1,7 @@
+[package]
+name = "fzweb"
+version = "0.1.0"
+
+[[target.bin]]
+name = "fzweb"
+path = "src/main.fzy"

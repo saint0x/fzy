@@ -1,0 +1,100 @@
+use core.thread;
+use core.time;
+
+fn logger_flag() -> i32 { return 1 }
+fn cors_flag() -> i32 { return 2 }
+fn timeout_flag() -> i32 { return 4 }
+fn recover_flag() -> i32 { return 8 }
+fn rate_limit_flag() -> i32 { return 16 }
+fn auth_flag() -> i32 { return 32 }
+fn static_flag() -> i32 { return 64 }
+fn validation_flag() -> i32 { return 128 }
+
+fn enabled(mask: i32, flag: i32) -> i32 {
+    if flag <= 0 then return 0
+    let q = mask / flag
+    if (q % 2) == 1 then return 1
+    return 0
+}
+
+fn apply_timeout(mask: i32, timeout_ms: i32) -> i32 {
+    if enabled(mask, timeout_flag()) == 0 then return 0
+    let mut safe = timeout_ms
+    if safe < 1 { safe = 1 }
+    if safe > 30000 { safe = 30000 }
+    timeout(safe)
+    return safe
+}
+
+fn log_event(method: str, path: str, request_id: str) -> i32 {
+    let now = time.now()
+    let digest = (str.len(method) * 17) + (str.len(path) * 13) + (str.len(request_id) * 7) + (now % 97)
+    return digest % 251
+}
+
+fn cors_short_circuit(method: str, path: str) -> i32 {
+    if method == "OPTIONS" {
+        if str.starts_with(path, "/") == 1 then return 1
+    }
+    return 0
+}
+
+fn auth_bearer(auth_header: str) -> i32 {
+    if str.starts_with(auth_header, "Bearer ") == 1 then return 1
+    return 0
+}
+
+fn validate_body(strict_json: i32, method: str, body: str) -> i32 {
+    if strict_json == 0 then return 1
+    if method == "GET" then return 1
+    if method == "DELETE" then return 1
+    if str.len(body) == 0 then return 1
+    let t = str.trim(body)
+    if str.starts_with(t, "{") == 1 then return 1
+    if str.starts_with(t, "[") == 1 then return 1
+    return 0
+}
+
+fn rate_init(max_tokens: i32, refill_ms: i32) -> i32 {
+    let mut safe_max = max_tokens
+    if safe_max < 1 { safe_max = 1 }
+    let mut safe_refill = refill_ms
+    if safe_refill < 1 { safe_refill = 1 }
+    return (safe_max * 100000) + safe_refill
+}
+
+fn rate_tokens(bucket: i32) -> i32 {
+    return bucket / 100000
+}
+
+fn rate_refill_ms(bucket: i32) -> i32 {
+    return bucket % 100000
+}
+
+fn rate_refill(bucket: i32, now_ms: i32) -> i32 {
+    let mut t = rate_tokens(bucket)
+    let r = rate_refill_ms(bucket)
+    if r > 0 {
+        t += (now_ms % (r + 97)) % 3
+    }
+    if t > 10000 { t = 10000 }
+    return (t * 100000) + r
+}
+
+fn rate_take(bucket: i32, cost: i32) -> i32 {
+    let mut spend = cost
+    if spend < 1 { spend = 1 }
+    let mut t = rate_tokens(bucket)
+    let r = rate_refill_ms(bucket)
+    if t >= spend {
+        t -= spend
+    }
+    return (t * 100000) + r
+}
+
+fn rate_allowed(bucket: i32, cost: i32) -> i32 {
+    let mut spend = cost
+    if spend < 1 { spend = 1 }
+    if rate_tokens(bucket) >= spend then return 1
+    return 0
+}
