@@ -4167,8 +4167,10 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<
         let _ = writeln!(&mut out, "declare i32 @{}({})", import.symbol, params);
     }
     let extern_imports = collect_extern_c_imports(fir);
-    let extern_link_symbols = extern_imports
+    let extern_link_symbols = fir
+        .typed_functions
         .iter()
+        .filter(|function| is_extern_c_abi_function(function))
         .map(|function| {
             (
                 function.name.clone(),
@@ -4186,10 +4188,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<
             .map(|_| "i32")
             .collect::<Vec<_>>()
             .join(", ");
-        let symbol = import
-            .link_name
-            .as_deref()
-            .unwrap_or(import.name.as_str());
+        let symbol = import.link_name.as_deref().unwrap_or(import.name.as_str());
         let symbol = native_mangle_symbol(symbol);
         let _ = writeln!(&mut out, "declare i32 @{}({})", symbol, params);
     }
@@ -4263,7 +4262,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<
 fn native_mangle_symbol(name: &str) -> String {
     name.chars()
         .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
                 ch
             } else {
                 '_'
@@ -4468,7 +4467,7 @@ fn llvm_emit_function(
     );
     let mut out = format!(
         "define i32 @{}({params}) {{\nentry:\n",
-        native_mangle_symbol(&function.name)
+        native_link_symbol_for_function(function)
     );
     for (index, param) in function.params.iter().enumerate() {
         let slot = format!("%slot_{}", param.name);
@@ -5773,6 +5772,26 @@ fn collect_extern_c_imports(fir: &fir::FirModule) -> Vec<&hir::TypedFunction> {
         .collect()
 }
 
+fn is_extern_c_abi_function(function: &hir::TypedFunction) -> bool {
+    function.is_extern
+        && function
+            .abi
+            .as_deref()
+            .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+}
+
+fn native_link_symbol_for_function(function: &hir::TypedFunction) -> String {
+    let base = if is_extern_c_abi_function(function) {
+        function
+            .link_name
+            .clone()
+            .unwrap_or_else(|| function.name.clone())
+    } else {
+        function.name.clone()
+    };
+    native_mangle_symbol(&base)
+}
+
 #[derive(Debug, Clone)]
 struct NativeAsyncExport {
     name: String,
@@ -5785,11 +5804,7 @@ fn collect_async_c_exports(fir: &fir::FirModule) -> Vec<NativeAsyncExport> {
         .iter()
         .filter(|function| {
             function.is_async
-                && function.is_extern
-                && function
-                    .abi
-                    .as_deref()
-                    .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+                && is_extern_c_abi_function(function)
                 && !function.body.is_empty()
                 && matches!(
                     function.return_type,
@@ -5800,11 +5815,8 @@ fn collect_async_c_exports(fir: &fir::FirModule) -> Vec<NativeAsyncExport> {
                 )
         })
         .map(|function| NativeAsyncExport {
-            name: function
-                .link_name
-                .clone()
-                .unwrap_or_else(|| function.name.clone()),
-            mangled_symbol: native_mangle_symbol(&function.name),
+            name: native_link_symbol_for_function(function),
+            mangled_symbol: native_link_symbol_for_function(function),
             params: function
                 .params
                 .iter()
@@ -7699,14 +7711,7 @@ fn emit_native_libraries_cranelift(
         } else {
             Linkage::Export
         };
-        let symbol_name = if is_extern_c_import_decl(function) {
-            function
-                .link_name
-                .clone()
-                .unwrap_or_else(|| function.name.clone())
-        } else {
-            native_mangle_symbol(&function.name)
-        };
+        let symbol_name = native_link_symbol_for_function(function);
         let id = module
             .declare_function(symbol_name.as_str(), linkage, &sig)
             .map_err(|error| {
@@ -8217,14 +8222,7 @@ fn emit_native_artifact_cranelift(
         } else {
             Linkage::Export
         };
-        let symbol_name = if is_extern_c_import_decl(function) {
-            function
-                .link_name
-                .clone()
-                .unwrap_or_else(|| function.name.clone())
-        } else {
-            native_mangle_symbol(&function.name)
-        };
+        let symbol_name = native_link_symbol_for_function(function);
         let id = module
             .declare_function(symbol_name.as_str(), linkage, &sig)
             .map_err(|error| {
@@ -9424,12 +9422,16 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::ObjectLiteral(fields) => {
-            let map_new = ctx.function_ids.get("map.new").copied().ok_or_else(|| {
-                anyhow!("missing runtime import lowering for `map.new`")
-            })?;
-            let map_set = ctx.function_ids.get("map.set").copied().ok_or_else(|| {
-                anyhow!("missing runtime import lowering for `map.set`")
-            })?;
+            let map_new = ctx
+                .function_ids
+                .get("map.new")
+                .copied()
+                .ok_or_else(|| anyhow!("missing runtime import lowering for `map.new`"))?;
+            let map_set = ctx
+                .function_ids
+                .get("map.set")
+                .copied()
+                .ok_or_else(|| anyhow!("missing runtime import lowering for `map.set`"))?;
             let map_ref = ctx.module.declare_func_in_func(map_new, builder.func);
             let map_call = builder.ins().call(map_ref, &[]);
             let map_handle = builder.inst_results(map_call)[0];
@@ -16294,7 +16296,8 @@ mod tests {
 
     use super::{
         compile_file, compile_file_with_backend, compile_library_with_backend,
-        derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir,
+        collect_async_c_exports, derive_anchors_from_message, emit_ir, lower_backend_ir,
+        lower_llvm_ir, native_mangle_symbol,
         native_runtime_import_contract_errors, native_runtime_import_for_callee, parse_program,
         refresh_lockfile, render_native_runtime_shim, verify_file, BackendKind, BuildProfile,
         NativeAsyncExport,
@@ -17009,6 +17012,47 @@ mod tests {
         assert!(shim
             .contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out)"));
         assert!(shim.contains("int32_t flush_async_drop(fz_async_handle_t handle)"));
+    }
+
+    #[test]
+    fn native_mangle_symbol_rewrites_dots_for_c_identifiers() {
+        assert_eq!(
+            native_mangle_symbol("api.ffi.fz_bench_async"),
+            "api_ffi_fz_bench_async"
+        );
+    }
+
+    #[test]
+    fn async_c_exports_use_sanitized_link_symbols_not_qualified_module_paths() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-async-export-{suffix}"));
+        std::fs::create_dir_all(root.join("api")).expect("project dir should be created");
+        let main = root.join("main.fzy");
+        std::fs::write(&main, "mod api;\nfn main() -> i32 {\n    return 0\n}\n")
+            .expect("main should be written");
+        std::fs::write(root.join("api/mod.fzy"), "mod ffi;\n").expect("mod should be written");
+        std::fs::write(
+            root.join("api/ffi.fzy"),
+            "pubext async c fn fz_bench_async(seed: i32) -> i32 {\n    return seed\n}\n",
+        )
+        .expect("ffi should be written");
+
+        let parsed = parse_program(&main).expect("project should parse");
+        let typed = hir::lower(&parsed.module);
+        let fir = fir::build_owned(typed);
+        let exports = collect_async_c_exports(&fir);
+        assert_eq!(exports.len(), 1);
+        assert_eq!(exports[0].name, "fz_bench_async");
+        assert_eq!(exports[0].mangled_symbol, "fz_bench_async");
+
+        let shim = render_native_runtime_shim(&[], &[], &exports);
+        assert!(shim.contains("extern int32_t fz_bench_async(int32_t seed);"));
+        assert!(!shim.contains("extern int32_t api.ffi.fz_bench_async"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -18096,7 +18140,8 @@ mod tests {
 
         let output = verify_file(&path).expect("verify should run");
         assert!(!output.diagnostic_details.iter().any(|diag| {
-            diag.message.contains("native backend cannot execute unresolved call")
+            diag.message
+                .contains("native backend cannot execute unresolved call")
         }));
 
         let _ = std::fs::remove_file(path);
@@ -18184,8 +18229,8 @@ mod tests {
 
         let output = emit_ir(&root).expect("emit ir should run");
         let ir = output.backend_ir.expect("backend ir should be available");
-        assert!(ir.contains("@services.web.start_listener"));
-        assert!(!ir.contains("@web.start_listener"));
+        assert!(ir.contains("@services_web_start_listener"));
+        assert!(!ir.contains("@web_start_listener"));
 
         let _ = std::fs::remove_dir_all(root);
     }
