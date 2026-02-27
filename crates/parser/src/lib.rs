@@ -403,8 +403,10 @@ impl Parser {
             Type::Void
         };
         let _ = self.consume(&TokenKind::Semi);
+        let link_name = Some(name.clone());
         self.module.items.push(ast::Item::Function(ast::Function {
             name,
+            link_name,
             generics: Vec::new(),
             params,
             return_type,
@@ -678,6 +680,19 @@ impl Parser {
                 let Some(variant_name) = self.expect_ident("expected variant name") else {
                     break;
                 };
+                if self.at(&TokenKind::Colon)
+                    && self.peek_n(1).is_some_and(|tok| tok.kind == TokenKind::Colon)
+                {
+                    let _ = self.consume(&TokenKind::Colon);
+                    let _ = self.consume(&TokenKind::Colon);
+                    let _ = self.expect_ident("expected enum variant name");
+                    self.push_diag_here(
+                        "qualified enum declaration variant is not supported; declare bare variant names (for example: `Ping`) and use `Enum::Variant` at callsites/patterns",
+                    );
+                    self.consume_until(&[TokenKind::Comma, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Comma);
+                    continue;
+                }
                 let mut payload = Vec::new();
                 if self.consume(&TokenKind::LParen) {
                     while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
@@ -859,6 +874,7 @@ impl Parser {
             return None;
         }
         let name = self.expect_ident("expected function name")?;
+        let link_name = is_extern.then(|| name.clone());
         let generics = self.parse_generic_params();
 
         if !self.consume(&TokenKind::LParen) {
@@ -915,6 +931,7 @@ impl Parser {
 
         Some(ast::Item::Function(ast::Function {
             name,
+            link_name,
             generics,
             params,
             return_type,
@@ -3057,6 +3074,21 @@ mod tests {
         assert!(diagnostics.iter().any(|diag| {
             diag.message
                 .contains("unqualified enum variant pattern is not supported")
+        }));
+    }
+
+    #[test]
+    fn rejects_qualified_enum_declaration_variants_with_fixit_message() {
+        let source = r#"
+            enum Msg {
+                Msg::Ping,
+                Msg::Pong,
+            }
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics.iter().all(|diag| {
+            diag.message
+                .contains("qualified enum declaration variant is not supported")
         }));
     }
 

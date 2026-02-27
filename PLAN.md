@@ -24,7 +24,7 @@
 - [✅] Extend ABI manifest identity with hard build/target identity fields (target triple, data-layout hash, compiler/toolchain identity hash).
 
 ### Enum/Match Semantics Productionization (Type-Safe Idiomatic Core)
-- [✅] Standardize canonical enum variant syntax to `Type::Variant` for construction, comparisons, and pattern matching in production code/documentation.
+- [✅] Standardize canonical enum variant syntax to bare `Variant` in declarations and `Type::Variant` for construction, comparisons, and pattern matching.
 - [✅] Support ergonomic compatibility mode for bare-variant patterns only if it can be unambiguous; otherwise reject with targeted fix-it toward `Type::Variant`.
 - [✅] Make parser and verifier semantics consistent for enum variants in all contexts (expression, pattern, guard, constructor payload forms).
 - [✅] Eliminate pattern fallback ambiguity where unknown variant tokens are interpreted as catch-all/binding arms.

@@ -223,10 +223,10 @@ fz run /tmp/code_loops_full.fzy --backend llvm --json
 ```bash
 cat > /tmp/code_match.fzy <<'FZY'
 enum Msg {
-    Msg::Ping,
-    Msg::Pong,
-    Msg::Data(i32),
-    Msg::Err(i32),
+    Ping,
+    Pong,
+    Data(i32),
+    Err(i32),
 }
 
 fn code(v: i32) -> i32 {
@@ -353,8 +353,8 @@ struct Point {
 }
 
 enum Flag {
-    Flag::On,
-    Flag::Off,
+    On,
+    Off,
 }
 
 impl Render for Point {

@@ -8263,8 +8263,9 @@ fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<HeaderArtifa
             })
         }).collect::<Vec<_>>(),
         "exports": exports.iter().map(|function| {
+            let symbol = ffi_symbol_name(function);
             serde_json::json!({
-                "name": function.name.as_str(),
+                "name": symbol,
                 "async": function.is_async,
                 "symbolVersion": 1u64,
                 "params": function.params.iter().map(|param| {
@@ -8402,6 +8403,7 @@ fn render_c_header(package_name: &str, module: &ast::Module, exports: &[&ast::Fu
         header.push('\n');
     }
     for function in exports {
+        let symbol = ffi_symbol_name(function);
         if function.is_async {
             let params = render_c_params(function);
             let start_params = if params == "void" {
@@ -8411,25 +8413,25 @@ fn render_c_header(package_name: &str, module: &ast::Module, exports: &[&ast::Fu
             };
             header.push_str(&format!(
                 "int32_t {}_async_start({});\n",
-                function.name, start_params
+                symbol, start_params
             ));
             header.push_str(&format!(
                 "int32_t {}_async_poll(fz_async_handle_t handle, int32_t* done_out);\n",
-                function.name
+                symbol
             ));
             header.push_str(&format!(
                 "int32_t {}_async_await(fz_async_handle_t handle, int32_t* result_out);\n",
-                function.name
+                symbol
             ));
             header.push_str(&format!(
                 "int32_t {}_async_drop(fz_async_handle_t handle);\n",
-                function.name
+                symbol
             ));
         } else {
             header.push_str(&format!(
                 "{} {}({});\n",
                 to_c_type(&function.return_type),
-                function.name,
+                symbol,
                 render_c_params(function)
             ));
         }
@@ -8495,17 +8497,18 @@ fn validate_ffi_contract(
     }
     let mut panic_mode: Option<&str> = None;
     for function in exports {
+        let symbol = ffi_symbol_name(function);
         let mode = function.ffi_panic.as_deref().or(project_default).ok_or_else(|| {
             anyhow!(
                 "ffi panic contract missing on export `{}`: set [ffi].panic_boundary in fozzy.toml or add #[ffi_panic(...)] override",
-                function.name
+                symbol
             )
         })?;
         if mode != "abort" && mode != "error" {
             bail!(
                 "invalid ffi panic mode `{}` on export `{}`; expected `abort` or `error`",
                 mode,
-                function.name
+                symbol
             );
         }
         if let Some(expected) = panic_mode {
@@ -8513,7 +8516,7 @@ fn validate_ffi_contract(
                 bail!(
                     "ffi panic contract mismatch across exports: expected `{}` but `{}` uses `{}`",
                     expected,
-                    function.name,
+                    symbol,
                     mode
                 );
             }
@@ -8522,24 +8525,25 @@ fn validate_ffi_contract(
         }
     }
     for function in exports {
+        let symbol = ffi_symbol_name(function);
         if function.is_async {
             if function.body.is_empty() {
                 bail!(
                     "extern async export `{}` must define a body; declaration-only async exports are not allowed",
-                    function.name
+                    symbol
                 );
             }
             if !is_i32_type(&function.return_type) {
                 bail!(
                     "extern async export `{}` must return `i32` for async-handle-v1 ABI",
-                    function.name
+                    symbol
                 );
             }
         }
         if !is_ffi_stable_type(&function.return_type, repr_c_names) {
             bail!(
                 "extern export `{}` uses unstable return type `{}`",
-                function.name,
+                symbol,
                 function.return_type
             );
         }
@@ -8549,7 +8553,7 @@ fn validate_ffi_contract(
             if !is_ffi_stable_type(&param.ty, repr_c_names) {
                 bail!(
                     "extern export `{}` param `{}` uses unstable type `{}`",
-                    function.name,
+                    symbol,
                     param.name,
                     param.ty
                 );
@@ -8562,7 +8566,7 @@ fn validate_ffi_contract(
                 if !tagged {
                     bail!(
                         "extern export `{}` pointer param `{}` must declare ownership transfer tag suffix (`_owned`, `_borrowed`, `_out`, `_inout`)",
-                        function.name,
+                        symbol,
                         param.name
                     );
                 }
@@ -8570,7 +8574,7 @@ fn validate_ffi_contract(
                 if !ctx_param && !has_len_pair(function, &param.name) {
                     bail!(
                         "extern export `{}` pointer param `{}` must declare paired length parameter (`{}_len` or `len`)",
-                        function.name,
+                        symbol,
                         param.name,
                         pointer_base_name(&param.name),
                     );
@@ -8587,7 +8591,7 @@ fn validate_ffi_contract(
         if has_callback_param && !has_callback_context {
             bail!(
                 "extern export `{}` defines callback param but missing lifetime context param (`*_ctx` or `*_context`)",
-                function.name
+                symbol
             );
         }
     }
@@ -8902,14 +8906,19 @@ fn ffi_async_contract(function: &ast::Function) -> serde_json::Value {
     if !function.is_async {
         return serde_json::Value::Null;
     }
+    let symbol = ffi_symbol_name(function);
     serde_json::json!({
         "model": "async-handle-v1",
-        "startSymbol": format!("{}_async_start", function.name),
-        "pollSymbol": format!("{}_async_poll", function.name),
-        "awaitSymbol": format!("{}_async_await", function.name),
-        "dropSymbol": format!("{}_async_drop", function.name),
+        "startSymbol": format!("{}_async_start", symbol),
+        "pollSymbol": format!("{}_async_poll", symbol),
+        "awaitSymbol": format!("{}_async_await", symbol),
+        "dropSymbol": format!("{}_async_drop", symbol),
         "resultType": to_c_type(&function.return_type),
     })
+}
+
+fn ffi_symbol_name(function: &ast::Function) -> &str {
+    function.link_name.as_deref().unwrap_or(function.name.as_str())
 }
 
 fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {

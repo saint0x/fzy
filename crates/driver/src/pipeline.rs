@@ -563,6 +563,11 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
+        callee: "assert.eq_i32",
+        symbol: "fz_native_assert_eq_i32",
+        arity: 2,
+    },
+    NativeRuntimeImport {
         callee: "pulse",
         symbol: "fz_native_pulse",
         arity: 0,
@@ -1595,9 +1600,7 @@ fn qualify_function(
     local_functions: &HashSet<String>,
     module_aliases: &HashMap<String, String>,
 ) {
-    if !function.is_extern {
-        function.name = qualify_name(namespace, &function.name);
-    }
+    function.name = qualify_name(namespace, &function.name);
     for stmt in &mut function.body {
         qualify_stmt(stmt, namespace, local_functions, module_aliases);
     }
@@ -4164,6 +4167,18 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<
         let _ = writeln!(&mut out, "declare i32 @{}({})", import.symbol, params);
     }
     let extern_imports = collect_extern_c_imports(fir);
+    let extern_link_symbols = extern_imports
+        .iter()
+        .map(|function| {
+            (
+                function.name.clone(),
+                function
+                    .link_name
+                    .clone()
+                    .unwrap_or_else(|| function.name.clone()),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     for import in &extern_imports {
         let params = import
             .params
@@ -4171,7 +4186,12 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<
             .map(|_| "i32")
             .collect::<Vec<_>>()
             .join(", ");
-        let _ = writeln!(&mut out, "declare i32 @{}({})", import.name, params);
+        let symbol = import
+            .link_name
+            .as_deref()
+            .unwrap_or(import.name.as_str());
+        let symbol = native_mangle_symbol(symbol);
+        let _ = writeln!(&mut out, "declare i32 @{}({})", symbol, params);
     }
     if !used_imports.is_empty() || !used_data_plane_imports.is_empty() || !extern_imports.is_empty()
     {
@@ -4210,6 +4230,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<
                 &mutable_global_symbols,
                 &plan.string_literal_ids,
                 &plan.task_ref_ids,
+                &extern_link_symbols,
                 cfg,
             )
             .map_err(|error| {
@@ -4362,6 +4383,7 @@ struct LlvmFuncCtx {
     const_strings: HashMap<String, String>,
     direct_values: HashMap<String, String>,
     wrapped_indices: HashMap<String, HashSet<usize>>,
+    extern_link_symbols: HashMap<String, String>,
     closures: HashMap<String, LlvmClosureBinding>,
     globals: HashMap<String, i32>,
     variant_tags: HashMap<String, i32>,
@@ -4377,6 +4399,7 @@ impl LlvmFuncCtx {
         variant_tags: HashMap<String, i32>,
         mutable_globals: HashMap<String, String>,
         wrapped_indices: HashMap<String, HashSet<usize>>,
+        extern_link_symbols: HashMap<String, String>,
     ) -> Self {
         Self {
             next_value: 0,
@@ -4386,6 +4409,7 @@ impl LlvmFuncCtx {
             const_strings: HashMap::new(),
             direct_values: HashMap::new(),
             wrapped_indices,
+            extern_link_symbols,
             closures: HashMap::new(),
             globals,
             variant_tags,
@@ -4424,6 +4448,7 @@ fn llvm_emit_function(
     mutable_globals: &HashMap<String, String>,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
+    extern_link_symbols: &HashMap<String, String>,
     cfg: &ControlFlowCfg,
 ) -> Result<String> {
     let params = function
@@ -4439,6 +4464,7 @@ fn llvm_emit_function(
         variant_tags.clone(),
         mutable_globals.clone(),
         wrapped_indices,
+        extern_link_symbols.clone(),
     );
     let mut out = format!(
         "define i32 @{}({params}) {{\nentry:\n",
@@ -5458,6 +5484,11 @@ fn llvm_emit_expr(
                 .or_else(|| native_data_plane_import_for_callee(callee))
                 .map(|import| import.symbol)
                 .unwrap_or(callee.as_str());
+            let symbol = ctx
+                .extern_link_symbols
+                .get(callee)
+                .map(|value| value.as_str())
+                .unwrap_or(symbol);
             let symbol = native_mangle_symbol(symbol);
             let val = ctx.value();
             ctx.code
@@ -5769,7 +5800,10 @@ fn collect_async_c_exports(fir: &fir::FirModule) -> Vec<NativeAsyncExport> {
                 )
         })
         .map(|function| NativeAsyncExport {
-            name: function.name.clone(),
+            name: function
+                .link_name
+                .clone()
+                .unwrap_or_else(|| function.name.clone()),
             mangled_symbol: native_mangle_symbol(&function.name),
             params: function
                 .params
@@ -7666,7 +7700,10 @@ fn emit_native_libraries_cranelift(
             Linkage::Export
         };
         let symbol_name = if is_extern_c_import_decl(function) {
-            function.name.clone()
+            function
+                .link_name
+                .clone()
+                .unwrap_or_else(|| function.name.clone())
         } else {
             native_mangle_symbol(&function.name)
         };
@@ -8181,7 +8218,10 @@ fn emit_native_artifact_cranelift(
             Linkage::Export
         };
         let symbol_name = if is_extern_c_import_decl(function) {
-            function.name.clone()
+            function
+                .link_name
+                .clone()
+                .unwrap_or_else(|| function.name.clone())
         } else {
             native_mangle_symbol(&function.name)
         };
@@ -16067,6 +16107,14 @@ int32_t fz_native_checkpoint(void) {
   return 0;
 }
 
+int32_t fz_native_assert_eq_i32(int32_t left, int32_t right) {
+  if (left != right) {
+    fprintf(stderr, "assert.eq_i32 failed: left=%d right=%d\n", left, right);
+    return -1;
+  }
+  return 0;
+}
+
 int32_t fz_native_pulse(void) {
   sched_yield();
   return 0;
@@ -16375,6 +16423,53 @@ mod tests {
         let ir = lower_llvm_ir(&fir, true).expect("llvm lowering should succeed");
         assert!(ir.contains("declare i32 @c_add(i32, i32)"));
         assert!(!ir.contains("define i32 @c_add("));
+    }
+
+    #[test]
+    fn module_qualified_extern_c_import_uses_link_symbol() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-ext-qual-{suffix}"));
+        std::fs::create_dir_all(root.join("services")).expect("project dir should be created");
+        let main = root.join("main.fzy");
+        std::fs::write(
+            &main,
+            "mod services;\nfn main() -> i32 {\n    unsafe {\n        return services.kernels.hk_mix32(1, 2)\n    }\n}\n",
+        )
+        .expect("main should be written");
+        std::fs::write(root.join("services/mod.fzy"), "mod kernels;\n")
+            .expect("mod should be written");
+        std::fs::write(
+            root.join("services/kernels.fzy"),
+            "ext unsafe c fn hk_mix32(a: i32, b: i32) -> i32;\n",
+        )
+        .expect("kernels should be written");
+
+        let parsed = parse_program(&main).expect("project should parse");
+        let import = parsed
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function)
+                    if function.name == "services.kernels.hk_mix32" && function.is_extern =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .expect("qualified extern import should exist");
+        assert_eq!(import.link_name.as_deref(), Some("hk_mix32"));
+
+        let typed = hir::lower(&parsed.module);
+        let fir = fir::build_owned(typed);
+        let ir = lower_llvm_ir(&fir, true).expect("llvm lowering should succeed");
+        assert!(ir.contains("declare i32 @hk_mix32(i32, i32)"));
+        assert!(!ir.contains("declare i32 @services.kernels.hk_mix32"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

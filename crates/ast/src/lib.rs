@@ -53,6 +53,7 @@ pub struct StaticItem {
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
+    pub link_name: Option<String>,
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub return_type: Type,

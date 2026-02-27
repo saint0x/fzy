@@ -5,6 +5,7 @@ use ast::{AstVisitor, BinaryOp, Expr, Module, Stmt, Type};
 #[derive(Debug, Clone)]
 pub struct TypedFunction {
     pub name: String,
+    pub link_name: Option<String>,
     pub generics: Vec<ast::GenericParam>,
     pub params: Vec<ast::Param>,
     pub return_type: Type,
@@ -347,6 +348,7 @@ pub fn lower(module: &Module) -> TypedModule {
                 fn_generics.insert(function.name.clone(), function.generics.clone());
                 typed_functions.push(TypedFunction {
                     name: function.name.clone(),
+                    link_name: function.link_name.clone(),
                     generics: function.generics.clone(),
                     params: function.params.clone(),
                     return_type: function.return_type.clone(),
@@ -366,6 +368,7 @@ pub fn lower(module: &Module) -> TypedModule {
                 fn_generics.insert(name.clone(), Vec::new());
                 typed_functions.push(TypedFunction {
                     name,
+                    link_name: None,
                     generics: Vec::new(),
                     params: Vec::new(),
                     return_type: Type::Void,
@@ -7226,6 +7229,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "task_result",
         "yield",
         "checkpoint",
+        "assert.eq_i32",
         "timeout",
         "deadline",
         "cancel",
@@ -7432,6 +7436,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "spawn_ctx" => (vec![task_fn.clone(), i32.clone()], i32.clone()),
         "join" | "detach" | "cancel_task" | "task_result" => (vec![i32.clone()], i32.clone()),
         "yield" | "checkpoint" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
+        "assert.eq_i32" => (vec![i32.clone(), i32.clone()], i32.clone()),
         "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
         "task.context" | "task.group_begin" => (vec![], i32.clone()),
         "task.group_spawn" => (vec![i32.clone(), task_fn], i32.clone()),
