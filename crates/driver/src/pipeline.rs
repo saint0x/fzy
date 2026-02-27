@@ -3081,8 +3081,11 @@ impl ControlFlowBuilder {
                             },
                         )?;
                         for (arm, arm_block) in arms.iter().zip(arm_blocks.iter().copied()) {
-                            let binding_stmts =
-                                bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee)?;
+                            let binding_stmts = bindings_for_match_arm_pattern(
+                                &arm.pattern,
+                                &resolved_scrutinee,
+                                &self.variant_tags,
+                            )?;
                             for stmt in binding_stmts {
                                 self.append_stmt(arm_block, stmt)?;
                             }
@@ -3124,49 +3127,54 @@ impl ControlFlowBuilder {
                             } else {
                                 self.new_block()
                             };
-                            let mut condition =
-                                pattern_to_expr(&scrutinee_name, &arm.pattern, &self.variant_tags);
-                            if let Some(guard) = &arm.guard {
-                                condition = ast::Expr::Binary {
-                                    op: ast::BinaryOp::And,
-                                    left: Box::new(condition),
-                                    right: Box::new(guard.clone()),
-                                };
-                            }
                             self.terminate(
                                 dispatch,
                                 ControlFlowTerminator::Branch {
-                                    condition,
+                                    condition: pattern_to_expr(
+                                        &scrutinee_name,
+                                        &arm.pattern,
+                                        &self.variant_tags,
+                                    ),
                                     then_target: arm_block,
                                     else_target: else_block,
                                 },
                             )?;
-                            let binding_stmts = if arm.guard.is_some() {
-                                if pattern_has_variant_payload_bindings(&arm.pattern)
-                                    || pattern_has_struct_field_bindings(&arm.pattern)
-                                {
-                                    bail!(
-                                        "native backend does not support match guards that depend on payload or struct-field bindings"
-                                    );
-                                }
-                                Vec::new()
-                            } else {
-                                bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee)?
-                            };
+                            let binding_stmts = bindings_for_match_arm_pattern(
+                                &arm.pattern,
+                                &resolved_scrutinee,
+                                &self.variant_tags,
+                            )?;
                             for stmt in binding_stmts {
                                 self.append_stmt(arm_block, stmt)?;
                             }
-                            if arm.returns {
+                            let value_block = if let Some(guard) = &arm.guard {
+                                let guarded_value_block = self.new_block();
                                 self.terminate(
                                     arm_block,
+                                    ControlFlowTerminator::Branch {
+                                        condition: guard.clone(),
+                                        then_target: guarded_value_block,
+                                        else_target: else_block,
+                                    },
+                                )?;
+                                guarded_value_block
+                            } else {
+                                arm_block
+                            };
+                            if arm.returns {
+                                self.terminate(
+                                    value_block,
                                     ControlFlowTerminator::Return(Some(arm.value.clone())),
                                 )?;
                             } else {
                                 let end_block =
                                     end_block.expect("non-returning match must have end block");
-                                self.append_stmt(arm_block, ast::Stmt::Expr(arm.value.clone()))?;
+                                self.append_stmt(
+                                    value_block,
+                                    ast::Stmt::Expr(arm.value.clone()),
+                                )?;
                                 self.terminate(
-                                    arm_block,
+                                    value_block,
                                     ControlFlowTerminator::Jump {
                                         target: end_block,
                                         edge: ControlFlowEdge::Normal,
@@ -3354,6 +3362,49 @@ fn pattern_has_struct_field_bindings(pattern: &ast::Pattern) -> bool {
     }
 }
 
+fn pattern_matches_resolved_scrutinee(
+    pattern: &ast::Pattern,
+    scrutinee: &ast::Expr,
+    variant_tags: &HashMap<String, i32>,
+) -> bool {
+    match pattern {
+        ast::Pattern::Wildcard | ast::Pattern::Ident(_) => true,
+        ast::Pattern::Int(expected) => matches!(scrutinee, ast::Expr::Int(actual) if actual == expected),
+        ast::Pattern::Bool(expected) => {
+            matches!(scrutinee, ast::Expr::Bool(actual) if actual == expected)
+        }
+        ast::Pattern::Variant {
+            enum_name, variant, ..
+        } => {
+            if let ast::Expr::EnumInit {
+                enum_name: value_enum,
+                variant: value_variant,
+                ..
+            } = scrutinee
+            {
+                value_enum == enum_name && value_variant == variant
+            } else if let ast::Expr::Int(value) = scrutinee {
+                i32::try_from(*value).ok().is_some_and(|actual| {
+                    let key = format!("{enum_name}::{variant}");
+                    actual == variant_tag_for_key(&key, variant_tags)
+                })
+            } else {
+                false
+            }
+        }
+        ast::Pattern::Struct { name, .. } => matches!(
+            scrutinee,
+            ast::Expr::StructInit {
+                name: value_name,
+                ..
+            } if value_name == name
+        ),
+        ast::Pattern::Or(patterns) => patterns
+            .iter()
+            .any(|pattern| pattern_matches_resolved_scrutinee(pattern, scrutinee, variant_tags)),
+    }
+}
+
 fn resolve_pattern_source_expr(
     expr: &ast::Expr,
     known_values: &HashMap<String, ast::Expr>,
@@ -3394,6 +3445,7 @@ fn resolve_pattern_source_expr(
 fn bindings_for_match_arm_pattern(
     pattern: &ast::Pattern,
     scrutinee: &ast::Expr,
+    variant_tags: &HashMap<String, i32>,
 ) -> Result<Vec<ast::Stmt>> {
     match pattern {
         ast::Pattern::Variant {
@@ -3472,10 +3524,18 @@ fn bindings_for_match_arm_pattern(
             Ok(stmts)
         }
         ast::Pattern::Or(patterns) => {
+            if let Some(matched) = patterns
+                .iter()
+                .find(|pattern| pattern_matches_resolved_scrutinee(pattern, scrutinee, variant_tags))
+            {
+                return bindings_for_match_arm_pattern(matched, scrutinee, variant_tags);
+            }
             if patterns.iter().any(pattern_has_variant_payload_bindings)
                 || patterns.iter().any(pattern_has_struct_field_bindings)
             {
-                bail!("native backend does not support payload or struct-field bindings within or-pattern match arms");
+                bail!(
+                    "native backend requires resolvable scrutinee for payload or struct-field bindings within or-pattern match arms"
+                );
             }
             Ok(Vec::new())
         }
@@ -4622,8 +4682,26 @@ fn llvm_emit_let_pattern(
                 }
             }
         }
-        ast::Pattern::Or(_) => {
-            bail!("native backend does not support or-pattern destructuring in `let` statements");
+        ast::Pattern::Or(patterns) => {
+            if let Some(matched) = patterns
+                .iter()
+                .find(|pattern| pattern_matches_resolved_scrutinee(pattern, value, &ctx.variant_tags))
+            {
+                return llvm_emit_let_pattern(
+                    matched,
+                    value,
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                );
+            }
+            if patterns.iter().any(pattern_has_variant_payload_bindings)
+                || patterns.iter().any(pattern_has_struct_field_bindings)
+            {
+                bail!(
+                    "native backend requires resolvable initializer for payload or struct-field bindings in `let` or-patterns"
+                );
+            }
         }
     }
     Ok(())
@@ -8208,8 +8286,27 @@ fn clif_emit_let_pattern(
                 }
             }
         }
-        ast::Pattern::Or(_) => {
-            bail!("native backend does not support or-pattern destructuring in `let` statements")
+        ast::Pattern::Or(patterns) => {
+            if let Some(matched) = patterns
+                .iter()
+                .find(|pattern| pattern_matches_resolved_scrutinee(pattern, value, ctx.variant_tags))
+            {
+                return clif_emit_let_pattern(
+                    builder,
+                    ctx,
+                    matched,
+                    value,
+                    locals,
+                    next_var,
+                );
+            }
+            if patterns.iter().any(pattern_has_variant_payload_bindings)
+                || patterns.iter().any(pattern_has_struct_field_bindings)
+            {
+                bail!(
+                    "native backend requires resolvable initializer for payload or struct-field bindings in `let` or-patterns"
+                );
+            }
         }
     }
     Ok(())
@@ -17274,6 +17371,56 @@ mod tests {
         assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("only supports match-arm variant payload bindings for literal enum scrutinees without guards")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_accepts_native_match_guard_with_variant_payload_binding() {
+        let file_name = format!(
+            "fozzylang-native-match-guard-payload-binding-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "enum Maybe { Some(i32), None }\nfn main() -> i32 {\n    let source = Maybe::Some(9)\n    match source {\n        Maybe::Some(v) if v > 7 => return v,\n        _ => return 0,\n    }\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("native backend does not support match guards that depend on payload or struct-field bindings")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_accepts_native_match_or_pattern_with_payload_bindings() {
+        let file_name = format!(
+            "fozzylang-native-match-or-payload-binding-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "enum Maybe { Some(i32), Also(i32), None }\nfn main() -> i32 {\n    let source = Maybe::Also(6)\n    match source {\n        Maybe::Some(v) | Maybe::Also(v) => return v,\n        _ => return 0,\n    }\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("payload or struct-field bindings within or-pattern match arms")
         }));
 
         let _ = std::fs::remove_file(path);
