@@ -17,6 +17,11 @@ enum StatusClass {
     Unknown,
 }
 
+enum ConnectionMode {
+    OneOff,
+    Persistent,
+}
+
 struct Limits {
     max_header_bytes: i32,
     max_body_bytes: i32,
@@ -85,6 +90,26 @@ fn status_class_score(class: StatusClass) -> i32 {
     }
 }
 
+fn connection_mode_score(mode: ConnectionMode) -> i32 {
+    match mode {
+        ConnectionMode::OneOff => return 29,
+        ConnectionMode::Persistent => return 41,
+        _ => return 41,
+    }
+}
+
+fn connection_session_score(mode: ConnectionMode, requests_per_connection: i32) -> i32 {
+    let mut reqs = requests_per_connection
+    if reqs < 1 {
+        reqs = 1
+    }
+    match mode {
+        ConnectionMode::OneOff => return (connection_mode_score(mode) + reqs) % 251,
+        ConnectionMode::Persistent => return (connection_mode_score(mode) + (reqs * 7)) % 251,
+        _ => return (connection_mode_score(mode) + (reqs * 7)) % 251,
+    }
+}
+
 fn route_fingerprint(method: Method, path: str, query_len: i32, body_bytes: i32, limits: Limits) -> i32 {
     let safe_body = clamp_body_size(body_bytes, limits)
     let base = (method_score(method) * 131) + (str.len(path) * 17)
@@ -96,5 +121,7 @@ fn sample() -> i32 {
     let limits = default_limits()
     let method = parse_method("POST")
     let score = route_fingerprint(method, "/v1/users", 19, 2048, limits)
-    return (score + status_class_score(status_class(201))) % 251
+    let oneoff = connection_session_score(ConnectionMode::OneOff, 1)
+    let persistent = connection_session_score(ConnectionMode::Persistent, 8)
+    return (score + status_class_score(status_class(201)) + oneoff + persistent) % 251
 }

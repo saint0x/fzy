@@ -1,0 +1,106 @@
+use core.http;
+use core.thread;
+
+mod webcore;
+mod middleware;
+mod support;
+
+fn build_signature() -> i32 {
+    let mut sig = webcore.app_new()
+    sig = webcore.app_enable(sig, middleware.logger_flag())
+    sig = webcore.app_enable(sig, middleware.timeout_flag())
+    sig = webcore.app_enable(sig, middleware.validation_flag())
+    sig = webcore.app_enable(sig, middleware.rate_limit_flag())
+    sig = webcore.app_get(sig, "/health", 1)
+    sig = webcore.app_post(sig, "/echo", 2)
+    sig = webcore.app_get(sig, "/json", 3)
+    sig = webcore.app_all(sig, "/", 10)
+    sig = webcore.app_default_handler(sig, 404)
+    return sig
+}
+
+fn handle_once(mask: i32, strict_json: i32, bucket: i32) -> i32 {
+    let conn = webcore.server_accept()
+    if conn < 0 {
+        return conn
+    }
+    defer close(conn)
+
+    discard webcore.request_read(conn)
+    let method = webcore.request_method(conn)
+    let path = webcore.request_path(conn)
+    let body = webcore.request_body(conn, support.default_max_body_bytes())
+    let auth_header = webcore.request_auth(conn)
+    let req_id = webcore.request_id(conn)
+
+    discard middleware.apply_timeout(mask, support.default_timeout_ms())
+    discard middleware.log_event(method, path, req_id)
+
+    if middleware.cors_enabled(mask) == 1 {
+        if middleware.cors_short_circuit(method, path) == 1 {
+            return webcore.response_text(conn, 204, "")
+        }
+    }
+
+    if middleware.auth_enabled(mask) == 1 {
+        if middleware.auth_bearer(auth_header) == 0 {
+            return webcore.response_unauthorized(conn)
+        }
+    }
+
+    if middleware.validation_enabled(mask) == 1 {
+        if strict_json == 1 {
+            if method == "POST" {
+                if middleware.validate_json_body(body) == 0 {
+                    return webcore.response_bad_request(conn)
+                }
+            }
+        }
+    }
+
+    if middleware.rate_limit_enabled(mask) == 1 {
+        if middleware.rate_allowed(bucket, 1) == 0 {
+            return webcore.response_too_many_requests(conn)
+        }
+    }
+
+    let method_id = webcore.method_id(method)
+    let path_id = webcore.path_id(path)
+    let handler = webcore.route_select_id(method_id, path_id)
+    return webcore.handler_dispatch(handler, conn, body)
+}
+
+fn run() -> i32 {
+    let listener = http.bind()
+    if listener < 0 {
+        return 2
+    }
+    defer close(listener)
+    http.listen(listener)
+
+    let sig = build_signature()
+    let mask = sig % 1024
+    let strict_json = 1
+    let mut handled = 0
+    let mut bucket = middleware.rate_init(support.default_rate_tokens(), support.default_rate_refill_ms())
+
+    while handled < 2000000000 {
+        bucket = middleware.rate_refill(bucket, handled)
+        let rc = handle_once(mask, strict_json, bucket)
+        if rc < 0 {
+            yield()
+            continue
+        }
+        bucket = middleware.rate_take(bucket, 1)
+        handled += 1
+        if (handled % 1024) == 0 {
+            yield()
+        }
+    }
+
+    return 0
+}
+
+fn main() -> i32 {
+    return run()
+}

@@ -1494,6 +1494,12 @@ pub trait HttpRouter {
     fn route(&self, req: &HttpRequest) -> HttpResponse;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HttpConnectionMode {
+    OneOff,
+    Persistent { max_requests: usize },
+}
+
 pub fn parse_http_request(raw: &[u8], limits: &HttpServerLimits) -> Result<HttpRequest, NetError> {
     let headers_end = raw
         .windows(4)
@@ -1575,73 +1581,123 @@ pub fn serve_http_once<B: NetBackend, R: HttpRouter>(
         return Ok(0);
     };
     backend.request_started()?;
-
-    backend.poll_register(connection, PollInterest::Readable, 128)?;
-    let _ = backend.poll_next(8)?;
-    let mut raw = Vec::with_capacity(limits.max_header_bytes.min(4096));
-    let max_total = limits.max_header_bytes + limits.max_body_bytes;
-    let mut read_stalls = 0usize;
-    let request = loop {
-        let remaining = max_total.saturating_sub(raw.len());
-        if remaining == 0 {
-            backend.request_finished();
-            return Err(NetError::LimitsExceeded(
-                "request exceeds configured size limits".to_string(),
-            ));
-        }
-        let chunk = backend.read(connection, remaining.min(16 * 1024))?;
-        if chunk.is_empty() {
-            read_stalls += 1;
-            if read_stalls > 64 {
-                backend.request_finished();
-                return Err(NetError::DeadlineExceeded);
-            }
-            continue;
-        }
-        read_stalls = 0;
-        raw.extend_from_slice(&chunk);
-        if is_http_request_complete(&raw, limits)? {
-            break parse_http_request(&raw, limits)?;
-        }
-    };
-
-    if request
-        .headers
-        .get("Expect")
-        .is_some_and(|value| value.eq_ignore_ascii_case("100-continue"))
-    {
-        let interim = b"HTTP/1.1 100 Continue\r\n\r\n";
-        let _ = backend.write(connection, interim)?;
-    }
-
-    let mut response = router.route(&request);
-    if !request.keep_alive {
-        response.keep_alive = false;
-    }
-
-    let serialized = response.to_bytes();
-    backend.poll_register(connection, PollInterest::Writable, 128)?;
-    let _ = backend.poll_next(8)?;
-    let mut wrote = 0usize;
-    let mut write_stalls = 0usize;
-    while wrote < serialized.len() {
-        let n = backend.write(connection, &serialized[wrote..])?;
-        if n == 0 {
-            write_stalls += 1;
-            if write_stalls > 64 {
-                backend.request_finished();
-                return Err(NetError::DeadlineExceeded);
-            }
-            continue;
-        }
-        write_stalls = 0;
-        wrote += n;
-    }
-    if !response.keep_alive {
-        backend.close(connection)?;
-    }
+    let wrote = serve_http_connection(backend, connection, router, limits, HttpConnectionMode::OneOff)?;
     backend.request_finished();
     Ok(wrote)
+}
+
+pub fn serve_http_persistent_once<B: NetBackend, R: HttpRouter>(
+    backend: &mut B,
+    listener: SocketId,
+    router: &R,
+    limits: &HttpServerLimits,
+    max_requests_per_connection: usize,
+) -> Result<usize, NetError> {
+    backend.poll_register(listener, PollInterest::Acceptable, 128)?;
+    let events = backend.poll_next(8)?;
+    if !events
+        .iter()
+        .any(|event| matches!(event, PollerEvent::Acceptable(id) if *id == listener))
+    {
+        return Ok(0);
+    }
+    let Some(connection) = backend.accept(listener)? else {
+        return Ok(0);
+    };
+    backend.request_started()?;
+    let mode = HttpConnectionMode::Persistent {
+        max_requests: max_requests_per_connection.max(1),
+    };
+    let wrote = serve_http_connection(backend, connection, router, limits, mode)?;
+    backend.request_finished();
+    Ok(wrote)
+}
+
+pub fn serve_http_connection<B: NetBackend, R: HttpRouter>(
+    backend: &mut B,
+    connection: SocketId,
+    router: &R,
+    limits: &HttpServerLimits,
+    mode: HttpConnectionMode,
+) -> Result<usize, NetError> {
+    let max_requests = match mode {
+        HttpConnectionMode::OneOff => 1,
+        HttpConnectionMode::Persistent { max_requests } => max_requests.max(1),
+    };
+
+    let mut total_wrote = 0usize;
+    for _ in 0..max_requests {
+        backend.poll_register(connection, PollInterest::Readable, 128)?;
+        let _ = backend.poll_next(8)?;
+        let mut raw = Vec::with_capacity(limits.max_header_bytes.min(4096));
+        let max_total = limits.max_header_bytes + limits.max_body_bytes;
+        let mut read_stalls = 0usize;
+        let request = loop {
+            let remaining = max_total.saturating_sub(raw.len());
+            if remaining == 0 {
+                backend.close(connection)?;
+                return Err(NetError::LimitsExceeded(
+                    "request exceeds configured size limits".to_string(),
+                ));
+            }
+            let chunk = backend.read(connection, remaining.min(16 * 1024))?;
+            if chunk.is_empty() {
+                read_stalls += 1;
+                if read_stalls > 64 {
+                    backend.close(connection)?;
+                    return Err(NetError::DeadlineExceeded);
+                }
+                continue;
+            }
+            read_stalls = 0;
+            raw.extend_from_slice(&chunk);
+            if is_http_request_complete(&raw, limits)? {
+                break parse_http_request(&raw, limits)?;
+            }
+        };
+
+        if request
+            .headers
+            .get("Expect")
+            .is_some_and(|value| value.eq_ignore_ascii_case("100-continue"))
+        {
+            let interim = b"HTTP/1.1 100 Continue\r\n\r\n";
+            let _ = backend.write(connection, interim)?;
+        }
+
+        let mut response = router.route(&request);
+        if !request.keep_alive || matches!(mode, HttpConnectionMode::OneOff) {
+            response.keep_alive = false;
+        }
+
+        let serialized = response.to_bytes();
+        backend.poll_register(connection, PollInterest::Writable, 128)?;
+        let _ = backend.poll_next(8)?;
+        let mut wrote = 0usize;
+        let mut write_stalls = 0usize;
+        while wrote < serialized.len() {
+            let n = backend.write(connection, &serialized[wrote..])?;
+            if n == 0 {
+                write_stalls += 1;
+                if write_stalls > 64 {
+                    backend.close(connection)?;
+                    return Err(NetError::DeadlineExceeded);
+                }
+                continue;
+            }
+            write_stalls = 0;
+            wrote += n;
+        }
+        total_wrote += wrote;
+
+        if !response.keep_alive {
+            backend.close(connection)?;
+            return Ok(total_wrote);
+        }
+    }
+
+    backend.close(connection)?;
+    Ok(total_wrote)
 }
 
 fn is_http_request_complete(raw: &[u8], limits: &HttpServerLimits) -> Result<bool, NetError> {
@@ -2150,6 +2206,65 @@ mod tests {
         )
         .expect("serve should work");
         assert!(bytes > 0);
+    }
+
+    #[test]
+    fn http_serve_persistent_once_handles_multiple_requests() {
+        let mut backend = DeterministicNet::with_scripted_accepts(1);
+        let listener = backend.bind("127.0.0.1:9292").expect("bind should work");
+        backend.listen(listener, 64).expect("listen should work");
+        let connection = SocketId(1);
+        backend.push_read_chunk(
+            connection,
+            b"GET /a HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n".to_vec(),
+        );
+        backend.push_read_chunk(
+            connection,
+            b"GET /b HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n".to_vec(),
+        );
+
+        let bytes = super::serve_http_persistent_once(
+            &mut backend,
+            listener,
+            &TestRouter,
+            &HttpServerLimits::default(),
+            8,
+        )
+        .expect("persistent serve should work");
+        assert!(bytes > 0);
+        assert!(backend
+            .decisions()
+            .iter()
+            .any(|d| matches!(d, NetDecision::Close { socket } if *socket == connection)));
+    }
+
+    #[test]
+    fn http_serve_connection_oneoff_closes_even_with_keepalive_request() {
+        let mut backend = DeterministicNet::with_scripted_accepts(1);
+        let listener = backend.bind("127.0.0.1:9393").expect("bind should work");
+        backend.listen(listener, 64).expect("listen should work");
+        let connection = backend
+            .accept(listener)
+            .expect("accept call should work")
+            .expect("scripted connection should exist");
+        backend.push_read_chunk(
+            connection,
+            b"GET /x HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n".to_vec(),
+        );
+
+        let bytes = super::serve_http_connection(
+            &mut backend,
+            connection,
+            &TestRouter,
+            &HttpServerLimits::default(),
+            super::HttpConnectionMode::OneOff,
+        )
+        .expect("connection serve should work");
+        assert!(bytes > 0);
+        assert!(backend
+            .decisions()
+            .iter()
+            .any(|d| matches!(d, NetDecision::Close { socket } if *socket == connection)));
     }
 
     #[test]

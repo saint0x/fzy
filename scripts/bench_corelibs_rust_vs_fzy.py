@@ -69,9 +69,15 @@ BENCHES = [
         "iterations": 8_000_000,
     },
     {
-        "name": "http_kernel",
-        "rust_mode": "http",
-        "fzy_src": ROOT / "examples" / "benchmarks" / "http_scratch_bench.fzy",
+        "name": "http_kernel_oneoff",
+        "rust_mode": "http_oneoff",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "http_oneoff_scratch_bench.fzy",
+        "iterations": 8_000_000,
+    },
+    {
+        "name": "http_kernel_persistent",
+        "rust_mode": "http_persistent",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "http_persistent_scratch_bench.fzy",
         "iterations": 8_000_000,
     },
     {

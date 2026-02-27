@@ -22,3 +22,12 @@
 - `webcore.request_*`, `webcore.response_*`
 - `webcore.route_select`, `webcore.handler_dispatch`
 - `middleware.*` for opt-in behavior flags/policies.
+
+
+## Live Server Entry
+
+For now (before package publishing), use the in-tree live server entrypoint:
+
+- Source: `frameworklib/fzweb/src/live_server_main.fzy`
+- Build: `cargo run -q -p fz -- build frameworklib/fzweb/src/live_server_main.fzy --backend llvm --release --json`
+- Run binary from the `output` path in the build JSON.

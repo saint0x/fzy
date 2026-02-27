@@ -67,6 +67,10 @@ fn request_auth(conn: i32) -> str {
     return http.header(conn, "authorization")
 }
 
+fn request_header(conn: i32, key: str) -> str {
+    return http.header(conn, key)
+}
+
 fn request_id(conn: i32) -> str {
     return http.request_id(conn)
 }

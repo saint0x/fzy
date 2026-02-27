@@ -409,7 +409,21 @@ fn route_score(method: &str, path: &str, query_len: i32, body_bytes: i32, timeou
     (base + query_len * 7 + (safe_body % 251) + (timeout_ms % 97)) % 251
 }
 
-fn http_workload() -> i32 {
+#[inline(always)]
+fn http_transport_score(connection_mode: i32, requests_on_conn: i32) -> i32 {
+    let handshake = if connection_mode == 1 { 37 } else { 19 };
+    let teardown = if connection_mode == 1 { 17 } else { 9 };
+    (handshake + teardown + (requests_on_conn % 13)) % 251
+}
+
+#[inline(always)]
+fn http_request_score(method: &str, path: &str, status: i32, query_len: i32, body_bytes: i32) -> i32 {
+    let route = route_score(method, path, query_len, body_bytes, 2500, 1_048_576);
+    let class = status_score(status);
+    (route + class) % 251
+}
+
+fn http_oneoff_workload() -> i32 {
     let methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
     let paths = ["/", "/v1/users", "/v1/orders", "/healthz"];
     let statuses = [200, 201, 204, 301, 404, 503];
@@ -427,9 +441,60 @@ fn http_workload() -> i32 {
         let query_len = (i % 23) + 3;
         let body_bytes = (i * 7) % 2_000_000;
 
-        let a = route_score(method, path, query_len, body_bytes, 2500, 1_048_576);
-        let b = status_score(status);
-        acc = (acc + a + b) % 251;
+        let req = http_request_score(method, path, status, query_len, body_bytes);
+        let transport = http_transport_score(1, 1);
+        acc = (acc + req + transport) % 251;
+
+        mi += 1;
+        if mi == methods.len() {
+            mi = 0;
+        }
+        pi += 1;
+        if pi == paths.len() {
+            pi = 0;
+        }
+        si += 1;
+        if si == statuses.len() {
+            si = 0;
+        }
+        i += 1;
+    }
+
+    acc
+}
+
+fn http_persistent_workload() -> i32 {
+    let methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
+    let paths = ["/", "/v1/users", "/v1/orders", "/healthz"];
+    let statuses = [200, 201, 204, 301, 404, 503];
+
+    let mut i = 0;
+    let mut mi = 0usize;
+    let mut pi = 0usize;
+    let mut si = 0usize;
+    let mut acc = 0i32;
+    let mut left_on_conn = 0i32;
+
+    while i < ITERATIONS {
+        if left_on_conn == 0 {
+            let conn_quota = (i % 8) + 1;
+            left_on_conn = conn_quota;
+            acc = (acc + http_transport_score(2, conn_quota)) % 251;
+        }
+
+        let method = methods[mi];
+        let path = paths[pi];
+        let status = statuses[si];
+        let query_len = (i % 23) + 3;
+        let body_bytes = (i * 7) % 2_000_000;
+
+        let req = http_request_score(method, path, status, query_len, body_bytes);
+        acc = (acc + req) % 251;
+
+        left_on_conn -= 1;
+        if left_on_conn == 0 {
+            acc = (acc + 5) % 251;
+        }
 
         mi += 1;
         if mi == methods.len() {
@@ -775,7 +840,8 @@ fn main() {
         "duration" => duration_workload(),
         "abi_pair" => abi_pair_workload(),
         "c_interop_contract" => c_interop_contract_workload(),
-        "http" => http_workload(),
+        "http_oneoff" => http_oneoff_workload(),
+        "http_persistent" => http_persistent_workload(),
         "network" => network_workload(),
         "concurrency" => concurrency_workload(),
         "process" => process_workload(),
