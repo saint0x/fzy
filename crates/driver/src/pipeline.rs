@@ -2465,10 +2465,15 @@ struct ControlFlowBuilder {
     next_loop_id: usize,
     next_temp: usize,
     variant_tags: HashMap<String, i32>,
+    passthrough_functions: HashMap<String, usize>,
+    known_pattern_values: HashMap<String, ast::Expr>,
 }
 
 impl ControlFlowBuilder {
-    fn new(variant_tags: HashMap<String, i32>) -> Self {
+    fn new(
+        variant_tags: HashMap<String, i32>,
+        passthrough_functions: HashMap<String, usize>,
+    ) -> Self {
         Self {
             blocks: vec![CfgBuildBlock {
                 stmts: Vec::new(),
@@ -2479,6 +2484,8 @@ impl ControlFlowBuilder {
             next_loop_id: 0,
             next_temp: 0,
             variant_tags,
+            passthrough_functions,
+            known_pattern_values: HashMap::new(),
         }
     }
 
@@ -2528,11 +2535,83 @@ impl ControlFlowBuilder {
     ) -> Result<Option<CfgBlockId>> {
         for stmt in body {
             match stmt {
-                ast::Stmt::Let { .. }
-                | ast::Stmt::LetPattern { .. }
-                | ast::Stmt::Assign { .. }
-                | ast::Stmt::CompoundAssign { .. }
-                | ast::Stmt::Defer(_)
+                ast::Stmt::Let {
+                    name,
+                    mutable,
+                    ty,
+                    value,
+                } => {
+                    if let Some(resolved) = resolve_pattern_source_expr(
+                        value,
+                        &self.known_pattern_values,
+                        &self.passthrough_functions,
+                    ) {
+                        self.known_pattern_values.insert(name.clone(), resolved);
+                    } else {
+                        self.known_pattern_values.remove(name);
+                    }
+                    self.append_stmt(
+                        current,
+                        ast::Stmt::Let {
+                            name: name.clone(),
+                            mutable: *mutable,
+                            ty: ty.clone(),
+                            value: value.clone(),
+                        },
+                    )?;
+                }
+                ast::Stmt::LetPattern {
+                    pattern,
+                    value,
+                    mutable,
+                    ty,
+                } => {
+                    let resolved = resolve_pattern_source_expr(
+                        value,
+                        &self.known_pattern_values,
+                        &self.passthrough_functions,
+                    )
+                    .unwrap_or_else(|| value.clone());
+                    self.append_stmt(
+                        current,
+                        ast::Stmt::LetPattern {
+                            pattern: pattern.clone(),
+                            value: resolved,
+                            mutable: *mutable,
+                            ty: ty.clone(),
+                        },
+                    )?;
+                }
+                ast::Stmt::Assign { target, value } => {
+                    if let Some(resolved) = resolve_pattern_source_expr(
+                        value,
+                        &self.known_pattern_values,
+                        &self.passthrough_functions,
+                    ) {
+                        self.known_pattern_values.insert(target.clone(), resolved);
+                    } else {
+                        self.known_pattern_values.remove(target);
+                    }
+                    self.append_stmt(
+                        current,
+                        ast::Stmt::Assign {
+                            target: target.clone(),
+                            value: value.clone(),
+                        },
+                    )?;
+                }
+                ast::Stmt::CompoundAssign { target, op, value } => {
+                    self.known_pattern_values.remove(target);
+                    self.append_stmt(
+                        current,
+                        ast::Stmt::CompoundAssign {
+                            target: target.clone(),
+                            op: *op,
+                            value: value.clone(),
+                        },
+                    )?;
+                }
+                ast::Stmt::Defer(_)
                 | ast::Stmt::Requires(_)
                 | ast::Stmt::Ensures(_)
                 | ast::Stmt::Expr(_) => {
@@ -2573,6 +2652,7 @@ impl ControlFlowBuilder {
                     then_body,
                     else_body,
                 } => {
+                    self.known_pattern_values.clear();
                     let then_block = self.new_block();
                     let else_block = self.new_block();
                     self.terminate(
@@ -2612,6 +2692,7 @@ impl ControlFlowBuilder {
                     }
                 }
                 ast::Stmt::While { condition, body } => {
+                    self.known_pattern_values.clear();
                     let head = self.new_block();
                     let loop_body = self.new_block();
                     let exit = self.new_block();
@@ -2661,6 +2742,7 @@ impl ControlFlowBuilder {
                     step,
                     body,
                 } => {
+                    self.known_pattern_values.clear();
                     if let Some(init) = init {
                         let Some(next) =
                             self.lower_stmt_seq(current, std::slice::from_ref(init.as_ref()))?
@@ -2749,6 +2831,7 @@ impl ControlFlowBuilder {
                     iterable,
                     body,
                 } => {
+                    self.known_pattern_values.clear();
                     if let ast::Expr::Range {
                         start,
                         end,
@@ -2869,6 +2952,7 @@ impl ControlFlowBuilder {
                     }
                 }
                 ast::Stmt::Loop { body } => {
+                    self.known_pattern_values.clear();
                     let head = self.new_block();
                     let has_loop_break = body_contains_break_at_depth(body, 0);
                     let exit = if has_loop_break {
@@ -2913,6 +2997,12 @@ impl ControlFlowBuilder {
                     }
                 }
                 ast::Stmt::Match { scrutinee, arms } => {
+                    let resolved_scrutinee = resolve_pattern_source_expr(
+                        scrutinee,
+                        &self.known_pattern_values,
+                        &self.passthrough_functions,
+                    )
+                    .unwrap_or_else(|| scrutinee.clone());
                     if arms.is_empty() {
                         self.terminate(current, ControlFlowTerminator::Unreachable)?;
                         return Ok(None);
@@ -2924,7 +3014,7 @@ impl ControlFlowBuilder {
                             name: scrutinee_name.clone(),
                             mutable: false,
                             ty: None,
-                            value: scrutinee.clone(),
+                            value: resolved_scrutinee.clone(),
                         },
                     )?;
                     let all_returning = arms.iter().all(|arm| arm.returns);
@@ -2992,7 +3082,7 @@ impl ControlFlowBuilder {
                         )?;
                         for (arm, arm_block) in arms.iter().zip(arm_blocks.iter().copied()) {
                             let binding_stmts =
-                                bindings_for_match_arm_pattern(&arm.pattern, scrutinee)?;
+                                bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee)?;
                             for stmt in binding_stmts {
                                 self.append_stmt(arm_block, stmt)?;
                             }
@@ -3061,7 +3151,7 @@ impl ControlFlowBuilder {
                                 }
                                 Vec::new()
                             } else {
-                                bindings_for_match_arm_pattern(&arm.pattern, scrutinee)?
+                                bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee)?
                             };
                             for stmt in binding_stmts {
                                 self.append_stmt(arm_block, stmt)?;
@@ -3087,6 +3177,7 @@ impl ControlFlowBuilder {
                         }
                         if let Some(end_block) = end_block {
                             current = end_block;
+                            self.known_pattern_values.clear();
                         } else {
                             return Ok(None);
                         }
@@ -3126,8 +3217,9 @@ impl ControlFlowBuilder {
 fn build_control_flow_cfg(
     body: &[ast::Stmt],
     variant_tags: &HashMap<String, i32>,
+    passthrough_functions: &HashMap<String, usize>,
 ) -> Result<ControlFlowCfg> {
-    ControlFlowBuilder::new(variant_tags.clone()).finish(body)
+    ControlFlowBuilder::new(variant_tags.clone(), passthrough_functions.clone()).finish(body)
 }
 
 fn body_contains_break_at_depth(body: &[ast::Stmt], depth: usize) -> bool {
@@ -3262,79 +3354,41 @@ fn pattern_has_struct_field_bindings(pattern: &ast::Pattern) -> bool {
     }
 }
 
-fn variant_payload_bindings_supported_for_scrutinee(
-    pattern: &ast::Pattern,
-    scrutinee: &ast::Expr,
-) -> bool {
-    match pattern {
-        ast::Pattern::Variant {
-            enum_name,
-            variant,
-            bindings,
-        } => {
-            if bindings.is_empty() {
-                return true;
+fn resolve_pattern_source_expr(
+    expr: &ast::Expr,
+    known_values: &HashMap<String, ast::Expr>,
+    passthrough_functions: &HashMap<String, usize>,
+) -> Option<ast::Expr> {
+    fn resolve_inner(
+        expr: &ast::Expr,
+        known_values: &HashMap<String, ast::Expr>,
+        passthrough_functions: &HashMap<String, usize>,
+        depth: usize,
+    ) -> Option<ast::Expr> {
+        if depth > 32 {
+            return None;
+        }
+        match expr {
+            ast::Expr::EnumInit { .. } | ast::Expr::StructInit { .. } => Some(expr.clone()),
+            ast::Expr::Group(inner) => {
+                resolve_inner(inner, known_values, passthrough_functions, depth + 1)
             }
-            match scrutinee {
-                ast::Expr::EnumInit {
-                    enum_name: value_enum,
-                    variant: value_variant,
-                    payload,
-                } => {
-                    value_enum == enum_name
-                        && value_variant == variant
-                        && payload.len() == bindings.len()
+            ast::Expr::Ident(name) => known_values
+                .get(name)
+                .and_then(|value| resolve_inner(value, known_values, passthrough_functions, depth + 1)),
+            ast::Expr::Call { callee, args } => {
+                if let Some(index) = passthrough_functions.get(callee).copied() {
+                    let arg = args.get(index)?;
+                    resolve_inner(arg, known_values, passthrough_functions, depth + 1)
+                } else {
+                    None
                 }
-                _ => false,
             }
+            _ => None,
         }
-        ast::Pattern::Or(patterns) => patterns
-            .iter()
-            .all(|pattern| variant_payload_bindings_supported_for_scrutinee(pattern, scrutinee)),
-        ast::Pattern::Wildcard
-        | ast::Pattern::Int(_)
-        | ast::Pattern::Bool(_)
-        | ast::Pattern::Struct { .. }
-        | ast::Pattern::Ident(_) => true,
     }
-}
 
-fn struct_field_bindings_supported_for_value(pattern: &ast::Pattern, value: &ast::Expr) -> bool {
-    match pattern {
-        ast::Pattern::Struct { name, fields } => {
-            if fields.iter().all(|(_, binding)| binding == "_") {
-                return true;
-            }
-            let ast::Expr::StructInit {
-                name: value_name,
-                fields: value_fields,
-            } = value
-            else {
-                return false;
-            };
-            if value_name != name {
-                return false;
-            }
-            fields
-                .iter()
-                .all(|(field_name, _)| value_fields.iter().any(|(field, _)| field == field_name))
-        }
-        ast::Pattern::Or(patterns) => patterns
-            .iter()
-            .all(|pattern| struct_field_bindings_supported_for_value(pattern, value)),
-        ast::Pattern::Wildcard
-        | ast::Pattern::Int(_)
-        | ast::Pattern::Bool(_)
-        | ast::Pattern::Ident(_)
-        | ast::Pattern::Variant { .. } => true,
-    }
-}
-
-fn struct_field_bindings_supported_for_scrutinee(
-    pattern: &ast::Pattern,
-    scrutinee: &ast::Expr,
-) -> bool {
-    struct_field_bindings_supported_for_value(pattern, scrutinee)
+    resolve_inner(expr, known_values, passthrough_functions, 0)
 }
 
 fn bindings_for_match_arm_pattern(
@@ -3957,11 +4011,13 @@ fn build_native_cfg_map(
     fir: &fir::FirModule,
     variant_tags: &HashMap<String, i32>,
 ) -> HashMap<String, Result<ControlFlowCfg, String>> {
+    let passthrough_functions = collect_passthrough_function_map_from_typed(&fir.typed_functions);
     fir.typed_functions
         .par_iter()
         .filter(|function| !is_extern_c_import_decl(function))
         .map(|function| {
-            let cfg = build_control_flow_cfg(&function.body, variant_tags).and_then(|cfg| {
+            let cfg = build_control_flow_cfg(&function.body, variant_tags, &passthrough_functions)
+                .and_then(|cfg| {
                 verify_control_flow_cfg(&cfg)?;
                 Ok(cfg)
             });
@@ -5713,6 +5769,53 @@ fn build_variant_tag_map(fir: &fir::FirModule) -> HashMap<String, i32> {
         .enumerate()
         .map(|(idx, key)| (key, idx as i32 + 1))
         .collect()
+}
+
+fn collect_passthrough_function_map_from_typed(
+    functions: &[hir::TypedFunction],
+) -> HashMap<String, usize> {
+    let mut passthrough = HashMap::<String, usize>::new();
+    for function in functions {
+        if function.params.is_empty() || function.body.len() != 1 {
+            continue;
+        }
+        let ast::Stmt::Return(Some(ast::Expr::Ident(name))) = &function.body[0] else {
+            continue;
+        };
+        if let Some((index, _)) = function
+            .params
+            .iter()
+            .enumerate()
+            .find(|(_, param)| &param.name == name)
+        {
+            passthrough.insert(function.name.clone(), index);
+        }
+    }
+    passthrough
+}
+
+fn collect_passthrough_function_map_from_module(module: &ast::Module) -> HashMap<String, usize> {
+    let mut passthrough = HashMap::<String, usize>::new();
+    for item in &module.items {
+        let ast::Item::Function(function) = item else {
+            continue;
+        };
+        if function.params.is_empty() || function.body.len() != 1 {
+            continue;
+        }
+        let ast::Stmt::Return(Some(ast::Expr::Ident(name))) = &function.body[0] else {
+            continue;
+        };
+        if let Some((index, _)) = function
+            .params
+            .iter()
+            .enumerate()
+            .find(|(_, param)| &param.name == name)
+        {
+            passthrough.insert(function.name.clone(), index);
+        }
+    }
+    passthrough
 }
 
 fn collect_variant_keys_from_stmt(stmt: &ast::Stmt, out: &mut BTreeSet<String>) {
@@ -8986,6 +9089,21 @@ fn clif_emit_expr(
 
 fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Diagnostic> {
     let mut diagnostics = Vec::new();
+    let passthrough_functions = collect_passthrough_function_map_from_module(module);
+    let mut variant_keys = BTreeSet::<String>::new();
+    for item in &module.items {
+        let ast::Item::Function(function) = item else {
+            continue;
+        };
+        for stmt in &function.body {
+            collect_variant_keys_from_stmt(stmt, &mut variant_keys);
+        }
+    }
+    let variant_tags = variant_keys
+        .into_iter()
+        .enumerate()
+        .map(|(idx, key)| (key, idx as i32 + 1))
+        .collect::<HashMap<_, _>>();
     diagnostics.extend(native_runtime_import_contract_errors().into_iter().map(|message| {
         diagnostics::Diagnostic::new(
             diagnostics::Severity::Error,
@@ -9041,54 +9159,17 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
                 ),
             ));
         }
-        if function_body_contains_unsupported_let_pattern_variant_binding(&function.body) {
+        if let Err(error) =
+            build_control_flow_cfg(&function.body, &variant_tags, &passthrough_functions)
+        {
             diagnostics.push(diagnostics::Diagnostic::new(
                 diagnostics::Severity::Error,
                 format!(
-                    "native backend supports `let` variant payload binding only when the initializer is the same literal enum variant in function `{}`",
-                    function.name
+                    "native backend cannot lower pattern/control-flow semantics in function `{}`: {}",
+                    function.name, error
                 ),
                 Some(
-                    "materialize the enum variant literal directly in the `let` initializer or avoid payload destructuring on native backends"
-                        .to_string(),
-                ),
-            ));
-        }
-        if function_body_contains_unsupported_let_pattern_struct_binding(&function.body) {
-            diagnostics.push(diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "native backend supports `let` struct-field binding only when the initializer is the same literal struct value in function `{}`",
-                    function.name
-                ),
-                Some(
-                    "materialize the struct literal directly in the `let` initializer or avoid struct-field destructuring on native backends"
-                        .to_string(),
-                ),
-            ));
-        }
-        if function_body_contains_unsupported_match_variant_binding(&function.body) {
-            diagnostics.push(diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "native backend only supports match-arm variant payload bindings for literal enum scrutinees without guards in function `{}`",
-                    function.name
-                ),
-                Some(
-                    "use a literal enum scrutinee and avoid guards on payload-binding arms, or remove payload bindings for native builds"
-                        .to_string(),
-                ),
-            ));
-        }
-        if function_body_contains_unsupported_match_struct_binding(&function.body) {
-            diagnostics.push(diagnostics::Diagnostic::new(
-                diagnostics::Severity::Error,
-                format!(
-                    "native backend only supports match-arm struct-field bindings for literal struct scrutinees without guards in function `{}`",
-                    function.name
-                ),
-                Some(
-                    "use a literal struct scrutinee and avoid guards on struct-binding arms, or remove struct-field bindings for native builds"
+                    "rewrite unsupported pattern guard shapes or non-lowerable control-flow forms to explicit statements"
                         .to_string(),
                 ),
             ));
@@ -9185,10 +9266,6 @@ fn experimental_feature_diagnostics(
         };
         let has_experimental_shape = function_body_contains_unsupported_try_catch_usage(&function.body)
             || function_body_contains_unsupported_closure_usage(&function.body)
-            || function_body_contains_unsupported_let_pattern_variant_binding(&function.body)
-            || function_body_contains_unsupported_let_pattern_struct_binding(&function.body)
-            || function_body_contains_unsupported_match_variant_binding(&function.body)
-            || function_body_contains_unsupported_match_struct_binding(&function.body)
             || function_body_contains_unsupported_partial_native_expression_usage(&function.body);
         if !has_experimental_shape {
             continue;
@@ -9410,16 +9487,6 @@ fn function_body_contains_unsupported_closure_usage(body: &[ast::Stmt]) -> bool 
     body.iter().any(stmt_contains_unsupported_closure_usage)
 }
 
-fn function_body_contains_unsupported_let_pattern_variant_binding(body: &[ast::Stmt]) -> bool {
-    body.iter()
-        .any(stmt_contains_unsupported_let_pattern_variant_binding)
-}
-
-fn function_body_contains_unsupported_match_variant_binding(body: &[ast::Stmt]) -> bool {
-    body.iter()
-        .any(stmt_contains_unsupported_match_variant_binding)
-}
-
 fn stmt_contains_unsupported_closure_usage(stmt: &ast::Stmt) -> bool {
     match stmt {
         ast::Stmt::Let { value, .. } => {
@@ -9477,219 +9544,6 @@ fn stmt_contains_unsupported_closure_usage(stmt: &ast::Stmt) -> bool {
                         || expr_contains_closure(&arm.value)
                 })
         }
-    }
-}
-
-fn stmt_contains_unsupported_let_pattern_variant_binding(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::LetPattern { pattern, value, .. } => {
-            let ast::Pattern::Variant {
-                enum_name,
-                variant,
-                bindings,
-            } = pattern
-            else {
-                return false;
-            };
-            if bindings.is_empty() {
-                return false;
-            }
-            match value {
-                ast::Expr::EnumInit {
-                    enum_name: value_enum,
-                    variant: value_variant,
-                    payload,
-                } => {
-                    value_enum != enum_name
-                        || value_variant != variant
-                        || payload.len() != bindings.len()
-                }
-                _ => true,
-            }
-        }
-        ast::Stmt::If {
-            then_body,
-            else_body,
-            ..
-        } => {
-            function_body_contains_unsupported_let_pattern_variant_binding(then_body)
-                || function_body_contains_unsupported_let_pattern_variant_binding(else_body)
-        }
-        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
-            function_body_contains_unsupported_let_pattern_variant_binding(body)
-        }
-        ast::Stmt::For {
-            init, step, body, ..
-        } => {
-            init.as_deref()
-                .is_some_and(stmt_contains_unsupported_let_pattern_variant_binding)
-                || step
-                    .as_deref()
-                    .is_some_and(stmt_contains_unsupported_let_pattern_variant_binding)
-                || function_body_contains_unsupported_let_pattern_variant_binding(body)
-        }
-        ast::Stmt::ForIn { body, .. } => {
-            function_body_contains_unsupported_let_pattern_variant_binding(body)
-        }
-        ast::Stmt::Match { .. } => false,
-        ast::Stmt::Let { .. }
-        | ast::Stmt::Assign { .. }
-        | ast::Stmt::CompoundAssign { .. }
-        | ast::Stmt::Break
-        | ast::Stmt::Continue
-        | ast::Stmt::Return(_)
-        | ast::Stmt::Defer(_)
-        | ast::Stmt::Requires(_)
-        | ast::Stmt::Ensures(_)
-        | ast::Stmt::Expr(_) => false,
-    }
-}
-
-fn function_body_contains_unsupported_let_pattern_struct_binding(body: &[ast::Stmt]) -> bool {
-    body.iter()
-        .any(stmt_contains_unsupported_let_pattern_struct_binding)
-}
-
-fn stmt_contains_unsupported_let_pattern_struct_binding(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::LetPattern { pattern, value, .. } => {
-            pattern_has_struct_field_bindings(pattern)
-                && !struct_field_bindings_supported_for_value(pattern, value)
-        }
-        ast::Stmt::If {
-            then_body,
-            else_body,
-            ..
-        } => {
-            function_body_contains_unsupported_let_pattern_struct_binding(then_body)
-                || function_body_contains_unsupported_let_pattern_struct_binding(else_body)
-        }
-        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
-            function_body_contains_unsupported_let_pattern_struct_binding(body)
-        }
-        ast::Stmt::For {
-            init, step, body, ..
-        } => {
-            init.as_deref()
-                .is_some_and(stmt_contains_unsupported_let_pattern_struct_binding)
-                || step
-                    .as_deref()
-                    .is_some_and(stmt_contains_unsupported_let_pattern_struct_binding)
-                || function_body_contains_unsupported_let_pattern_struct_binding(body)
-        }
-        ast::Stmt::ForIn { body, .. } => {
-            function_body_contains_unsupported_let_pattern_struct_binding(body)
-        }
-        ast::Stmt::Match { .. } => false,
-        ast::Stmt::Let { .. }
-        | ast::Stmt::Assign { .. }
-        | ast::Stmt::CompoundAssign { .. }
-        | ast::Stmt::Break
-        | ast::Stmt::Continue
-        | ast::Stmt::Return(_)
-        | ast::Stmt::Defer(_)
-        | ast::Stmt::Requires(_)
-        | ast::Stmt::Ensures(_)
-        | ast::Stmt::Expr(_) => false,
-    }
-}
-
-fn stmt_contains_unsupported_match_variant_binding(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::Match { scrutinee, arms } => arms.iter().any(|arm| {
-            if arm.guard.is_some() && pattern_has_variant_payload_bindings(&arm.pattern) {
-                return true;
-            }
-            pattern_has_variant_payload_bindings(&arm.pattern)
-                && !variant_payload_bindings_supported_for_scrutinee(&arm.pattern, scrutinee)
-        }),
-        ast::Stmt::If {
-            then_body,
-            else_body,
-            ..
-        } => {
-            function_body_contains_unsupported_match_variant_binding(then_body)
-                || function_body_contains_unsupported_match_variant_binding(else_body)
-        }
-        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
-            function_body_contains_unsupported_match_variant_binding(body)
-        }
-        ast::Stmt::For {
-            init, step, body, ..
-        } => {
-            init.as_deref()
-                .is_some_and(stmt_contains_unsupported_match_variant_binding)
-                || step
-                    .as_deref()
-                    .is_some_and(stmt_contains_unsupported_match_variant_binding)
-                || function_body_contains_unsupported_match_variant_binding(body)
-        }
-        ast::Stmt::ForIn { body, .. } => {
-            function_body_contains_unsupported_match_variant_binding(body)
-        }
-        ast::Stmt::Let { .. }
-        | ast::Stmt::LetPattern { .. }
-        | ast::Stmt::Assign { .. }
-        | ast::Stmt::CompoundAssign { .. }
-        | ast::Stmt::Break
-        | ast::Stmt::Continue
-        | ast::Stmt::Return(_)
-        | ast::Stmt::Defer(_)
-        | ast::Stmt::Requires(_)
-        | ast::Stmt::Ensures(_)
-        | ast::Stmt::Expr(_) => false,
-    }
-}
-
-fn function_body_contains_unsupported_match_struct_binding(body: &[ast::Stmt]) -> bool {
-    body.iter()
-        .any(stmt_contains_unsupported_match_struct_binding)
-}
-
-fn stmt_contains_unsupported_match_struct_binding(stmt: &ast::Stmt) -> bool {
-    match stmt {
-        ast::Stmt::Match { scrutinee, arms } => arms.iter().any(|arm| {
-            if arm.guard.is_some() && pattern_has_struct_field_bindings(&arm.pattern) {
-                return true;
-            }
-            pattern_has_struct_field_bindings(&arm.pattern)
-                && !struct_field_bindings_supported_for_scrutinee(&arm.pattern, scrutinee)
-        }),
-        ast::Stmt::If {
-            then_body,
-            else_body,
-            ..
-        } => {
-            function_body_contains_unsupported_match_struct_binding(then_body)
-                || function_body_contains_unsupported_match_struct_binding(else_body)
-        }
-        ast::Stmt::While { body, .. } | ast::Stmt::Loop { body } => {
-            function_body_contains_unsupported_match_struct_binding(body)
-        }
-        ast::Stmt::For {
-            init, step, body, ..
-        } => {
-            init.as_deref()
-                .is_some_and(stmt_contains_unsupported_match_struct_binding)
-                || step
-                    .as_deref()
-                    .is_some_and(stmt_contains_unsupported_match_struct_binding)
-                || function_body_contains_unsupported_match_struct_binding(body)
-        }
-        ast::Stmt::ForIn { body, .. } => {
-            function_body_contains_unsupported_match_struct_binding(body)
-        }
-        ast::Stmt::Let { .. }
-        | ast::Stmt::LetPattern { .. }
-        | ast::Stmt::Assign { .. }
-        | ast::Stmt::CompoundAssign { .. }
-        | ast::Stmt::Break
-        | ast::Stmt::Continue
-        | ast::Stmt::Return(_)
-        | ast::Stmt::Defer(_)
-        | ast::Stmt::Requires(_)
-        | ast::Stmt::Ensures(_)
-        | ast::Stmt::Expr(_) => false,
     }
 }
 
@@ -17225,9 +17079,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_unsupported_native_let_pattern_variant_binding_source() {
+    fn verify_accepts_native_let_pattern_variant_binding_source() {
         let file_name = format!(
-            "fozzylang-native-let-pattern-source-unsupported-{}.fzy",
+            "fozzylang-native-let-pattern-source-supported-{}.fzy",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after epoch")
@@ -17241,7 +17095,7 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("supports `let` variant payload binding only when the initializer is the same literal enum variant")
         }));
@@ -17250,9 +17104,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_unsupported_native_match_variant_payload_bindings() {
+    fn verify_accepts_native_match_variant_payload_bindings() {
         let file_name = format!(
-            "fozzylang-native-match-pattern-unsupported-{}.fzy",
+            "fozzylang-native-match-pattern-supported-{}.fzy",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after epoch")
@@ -17266,7 +17120,7 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("only supports match-arm variant payload bindings for literal enum scrutinees without guards")
         }));
@@ -17275,9 +17129,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_unsupported_native_let_pattern_struct_binding_source() {
+    fn verify_accepts_native_let_pattern_struct_binding_source() {
         let file_name = format!(
-            "fozzylang-native-let-struct-pattern-source-unsupported-{}.fzy",
+            "fozzylang-native-let-struct-pattern-source-supported-{}.fzy",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after epoch")
@@ -17291,7 +17145,7 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message.contains(
                 "supports `let` struct-field binding only when the initializer is the same literal struct value",
             )
@@ -17301,9 +17155,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_unsupported_native_match_struct_payload_bindings() {
+    fn verify_accepts_native_match_struct_payload_bindings() {
         let file_name = format!(
-            "fozzylang-native-match-struct-pattern-unsupported-{}.fzy",
+            "fozzylang-native-match-struct-pattern-supported-{}.fzy",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after epoch")
@@ -17317,7 +17171,7 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("only supports match-arm struct-field bindings for literal struct scrutinees without guards")
         }));
