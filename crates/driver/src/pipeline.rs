@@ -3442,12 +3442,22 @@ fn resolve_pattern_source_expr(
     resolve_inner(expr, known_values, passthrough_functions, 0)
 }
 
-fn resolve_struct_field_expr<'a>(base: &'a ast::Expr, field: &str) -> Option<&'a ast::Expr> {
+fn resolve_field_expr(base: &ast::Expr, field: &str) -> Option<ast::Expr> {
     match base {
         ast::Expr::StructInit { fields, .. } => fields
             .iter()
-            .find_map(|(name, value)| if name == field { Some(value) } else { None }),
-        ast::Expr::Group(inner) => resolve_struct_field_expr(inner, field),
+            .find_map(|(name, value)| if name == field { Some(value.clone()) } else { None }),
+        ast::Expr::Range {
+            start,
+            end,
+            inclusive,
+        } => match field {
+            "start" => Some((**start).clone()),
+            "end" => Some((**end).clone()),
+            "inclusive" => Some(ast::Expr::Bool(*inclusive)),
+            _ => None,
+        },
+        ast::Expr::Group(inner) => resolve_field_expr(inner, field),
         _ => None,
     }
 }
@@ -4797,6 +4807,27 @@ fn llvm_emit_linear_stmts(
                         ctx.slots.insert(format!("{name}.{field}"), field_slot);
                     }
                 }
+                if let ast::Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = value
+                {
+                    let start_value = llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids);
+                    let end_value = llvm_emit_expr(end, ctx, string_literal_ids, task_ref_ids);
+                    let inclusive_value = if *inclusive { "1" } else { "0" };
+                    for (field, rendered) in [
+                        ("start", start_value),
+                        ("end", end_value),
+                        ("inclusive", inclusive_value.to_string()),
+                    ] {
+                        let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
+                        ctx.code.push_str(&format!(
+                            "  {field_slot} = alloca i32\n  store i32 {rendered}, ptr {field_slot}\n"
+                        ));
+                        ctx.slots.insert(format!("{name}.{field}"), field_slot);
+                    }
+                }
                 ctx.array_slots.remove(name);
                 ctx.const_strings.remove(name);
             }
@@ -4840,10 +4871,10 @@ fn llvm_emit_linear_stmts(
                         continue;
                     }
                 }
-                let value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                let rendered_value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
                 if let Some(symbol) = ctx.mutable_globals.get(target).cloned() {
                     ctx.code
-                        .push_str(&format!("  store i32 {value}, ptr @{symbol}\n"));
+                        .push_str(&format!("  store i32 {rendered_value}, ptr @{symbol}\n"));
                     continue;
                 }
                 let slot = ctx
@@ -4855,7 +4886,41 @@ fn llvm_emit_linear_stmts(
                     ctx.code.push_str(&format!("  {slot} = alloca i32\n"));
                 }
                 ctx.code
-                    .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+                    .push_str(&format!("  store i32 {rendered_value}, ptr {slot}\n"));
+                if let ast::Expr::StructInit { fields, .. } = value {
+                    for (field, field_expr) in fields {
+                        let field_value =
+                            llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
+                        let field_slot = format!("%slot_{}_{}_{}", target, field, ctx.next_value);
+                        ctx.code.push_str(&format!(
+                            "  {field_slot} = alloca i32\n  store i32 {field_value}, ptr {field_slot}\n"
+                        ));
+                        ctx.slots.insert(format!("{target}.{field}"), field_slot);
+                    }
+                }
+                if let ast::Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = value
+                {
+                    let start_value =
+                        llvm_emit_expr(start.as_ref(), ctx, string_literal_ids, task_ref_ids);
+                    let end_value =
+                        llvm_emit_expr(end.as_ref(), ctx, string_literal_ids, task_ref_ids);
+                    let inclusive_value = if *inclusive { "1" } else { "0" };
+                    for (field, rendered) in [
+                        ("start", start_value),
+                        ("end", end_value),
+                        ("inclusive", inclusive_value.to_string()),
+                    ] {
+                        let field_slot = format!("%slot_{}_{}_{}", target, field, ctx.next_value);
+                        ctx.code.push_str(&format!(
+                            "  {field_slot} = alloca i32\n  store i32 {rendered}, ptr {field_slot}\n"
+                        ));
+                        ctx.slots.insert(format!("{target}.{field}"), field_slot);
+                    }
+                }
                 ctx.array_slots.remove(target);
                 ctx.const_strings.remove(target);
             }
@@ -4995,8 +5060,8 @@ fn llvm_emit_expr(
             }
         }
         ast::Expr::FieldAccess { base, field } => {
-            if let Some(field_expr) = resolve_struct_field_expr(base, field) {
-                return llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
+            if let Some(field_expr) = resolve_field_expr(base, field) {
+                return llvm_emit_expr(&field_expr, ctx, string_literal_ids, task_ref_ids);
             }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
@@ -8436,6 +8501,36 @@ fn clif_emit_linear_stmts(
                         );
                     }
                 }
+                if let ast::Expr::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = value
+                {
+                    let start_val = clif_emit_expr(builder, ctx, start, locals, next_var)?;
+                    let end_val = clif_emit_expr(builder, ctx, end, locals, next_var)?;
+                    let inclusive_val = ClifValue {
+                        value: builder.ins().iconst(default_int_clif_type(), i64::from(*inclusive)),
+                        ty: default_int_clif_type(),
+                    };
+                    for (field, field_val) in [
+                        ("start", start_val),
+                        ("end", end_val),
+                        ("inclusive", inclusive_val),
+                    ] {
+                        let field_var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(field_var, field_val.ty);
+                        builder.def_var(field_var, field_val.value);
+                        locals.insert(
+                            format!("{name}.{field}"),
+                            LocalBinding {
+                                var: field_var,
+                                ty: field_val.ty,
+                            },
+                        );
+                    }
+                }
                 ctx.array_bindings.remove(name);
                 ctx.const_strings.remove(name);
             }
@@ -8510,6 +8605,55 @@ fn clif_emit_linear_stmts(
                     };
                     let val = cast_clif_value(builder, val, binding.ty)?;
                     builder.def_var(binding.var, val.value);
+                    if let ast::Expr::StructInit { fields, .. } = value {
+                        for (field, field_expr) in fields {
+                            let field_val =
+                                clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
+                            let field_var = Variable::from_u32(*next_var as u32);
+                            *next_var += 1;
+                            builder.declare_var(field_var, field_val.ty);
+                            builder.def_var(field_var, field_val.value);
+                            locals.insert(
+                                format!("{target}.{field}"),
+                                LocalBinding {
+                                    var: field_var,
+                                    ty: field_val.ty,
+                                },
+                            );
+                        }
+                    }
+                    if let ast::Expr::Range {
+                        start,
+                        end,
+                        inclusive,
+                    } = value
+                    {
+                        let start_val = clif_emit_expr(builder, ctx, start, locals, next_var)?;
+                        let end_val = clif_emit_expr(builder, ctx, end, locals, next_var)?;
+                        let inclusive_val = ClifValue {
+                            value: builder
+                                .ins()
+                                .iconst(default_int_clif_type(), i64::from(*inclusive)),
+                            ty: default_int_clif_type(),
+                        };
+                        for (field, field_val) in [
+                            ("start", start_val),
+                            ("end", end_val),
+                            ("inclusive", inclusive_val),
+                        ] {
+                            let field_var = Variable::from_u32(*next_var as u32);
+                            *next_var += 1;
+                            builder.declare_var(field_var, field_val.ty);
+                            builder.def_var(field_var, field_val.value);
+                            locals.insert(
+                                format!("{target}.{field}"),
+                                LocalBinding {
+                                    var: field_var,
+                                    ty: field_val.ty,
+                                },
+                            );
+                        }
+                    }
                 }
                 ctx.array_bindings.remove(target);
                 ctx.const_strings.remove(target);
@@ -8721,8 +8865,8 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::FieldAccess { base, field } => {
-            if let Some(field_expr) = resolve_struct_field_expr(base, field) {
-                return clif_emit_expr(builder, ctx, field_expr, locals, next_var);
+            if let Some(field_expr) = resolve_field_expr(base, field) {
+                return clif_emit_expr(builder, ctx, &field_expr, locals, next_var);
             }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = locals.get(&format!("{name}.{field}")).copied() {
@@ -9823,7 +9967,13 @@ fn expr_contains_unsupported_partial_native_expression(
         ast::Expr::UnsafeBlock { .. } => false,
         ast::Expr::TryCatch { .. } => false,
         ast::Expr::Range { start, end, .. } => {
-            if context != NativeExprContext::ForInIterable {
+            if !matches!(
+                context,
+                NativeExprContext::ForInIterable
+                    | NativeExprContext::LetInitializer
+                    | NativeExprContext::LetPatternInitializer
+                    | NativeExprContext::MatchScrutinee
+            ) {
                 return true;
             }
             expr_contains_unsupported_partial_native_expression(start, NativeExprContext::Default)
@@ -9859,9 +10009,9 @@ fn expr_contains_unsupported_partial_native_expression(
             })
         }
         ast::Expr::FieldAccess { base, field } => {
-            if let Some(field_expr) = resolve_struct_field_expr(base, field) {
+            if let Some(field_expr) = resolve_field_expr(base, field) {
                 return expr_contains_unsupported_partial_native_expression(
-                    field_expr,
+                    &field_expr,
                     NativeExprContext::Default,
                 );
             }
@@ -17324,9 +17474,9 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_native_range_expression_outside_for_in() {
+    fn verify_accepts_native_range_expression_outside_for_in() {
         let file_name = format!(
-            "fozzylang-native-range-expr-unsupported-{}.fzy",
+            "fozzylang-native-range-expr-supported-{}.fzy",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .expect("clock should be after epoch")
@@ -17335,12 +17485,37 @@ mod tests {
         let path = std::env::temp_dir().join(file_name);
         std::fs::write(
             &path,
-            "fn main() -> i32 {\n    let r = 1..4;\n    return 0\n}\n",
+            "fn main() -> i32 {\n    let r = 1..4;\n    return r.end - r.start\n}\n",
         )
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("detected parser-recognized expressions without full lowering parity")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_accepts_native_field_access_on_range_literal_expression() {
+        let file_name = format!(
+            "fozzylang-native-range-literal-field-access-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "fn main() -> i32 {\n    return (1..4).end\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
             diag.message
                 .contains("detected parser-recognized expressions without full lowering parity")
         }));
