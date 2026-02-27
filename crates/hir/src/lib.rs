@@ -4432,20 +4432,6 @@ fn type_check_stmt(
             let scrutinee_ty = infer_expr_type(scrutinee, scopes, env, state);
             for arm in arms {
                 scopes.push();
-                if let Some(guard) = &arm.guard {
-                    let guard_ty = infer_expr_type(guard, scopes, env, state);
-                    if !is_bool_or_integer(guard_ty.as_ref()) {
-                        let found = guard_ty
-                            .as_ref()
-                            .map(ToString::to_string)
-                            .unwrap_or_else(|| "unknown".to_string());
-                        record_type_error(
-                            state.errors,
-                            state.type_error_details,
-                            format!("match guard must be bool/integer-compatible, got `{found}`"),
-                        );
-                    }
-                }
                 check_pattern_compatibility(
                     &arm.pattern,
                     scrutinee_ty.as_ref(),
@@ -4465,6 +4451,20 @@ fn type_check_stmt(
                         state.errors,
                         state.type_error_details,
                     );
+                }
+                if let Some(guard) = &arm.guard {
+                    let guard_ty = infer_expr_type(guard, scopes, env, state);
+                    if !is_bool_or_integer(guard_ty.as_ref()) {
+                        let found = guard_ty
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!("match guard must be bool/integer-compatible, got `{found}`"),
+                        );
+                    }
                 }
                 let value_ty = infer_expr_type(&arm.value, scopes, env, state);
                 if arm.returns {
@@ -6478,20 +6478,115 @@ fn bind_pattern_types(
             }
         }
         ast::Pattern::Or(patterns) => {
-            if let Some(first) = patterns.first() {
-                bind_pattern_types(
-                    first,
+            let mut canonical: Option<BTreeMap<String, Type>> = None;
+            for candidate in patterns {
+                let binding_map = pattern_binding_type_map(
+                    candidate,
                     scrutinee_ty,
-                    mutable,
-                    scopes,
                     struct_defs,
                     enum_defs,
-                    errors,
-                    type_error_details,
                 );
+                if let Some(expected) = &canonical {
+                    if expected != &binding_map {
+                        record_type_error(
+                            errors,
+                            type_error_details,
+                            "or-pattern alternatives must bind identical names and types"
+                                .to_string(),
+                        );
+                        return;
+                    }
+                } else {
+                    canonical = Some(binding_map);
+                }
+            }
+            if let Some(bindings) = canonical {
+                for (name, ty) in bindings {
+                    scopes.insert(name, ty, mutable);
+                }
             }
         }
         ast::Pattern::Wildcard | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => {}
+    }
+}
+
+fn pattern_binding_type_map(
+    pattern: &ast::Pattern,
+    scrutinee_ty: &Type,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> BTreeMap<String, Type> {
+    match pattern {
+        ast::Pattern::Ident(name) => {
+            let mut map = BTreeMap::new();
+            map.insert(name.clone(), scrutinee_ty.clone());
+            map
+        }
+        ast::Pattern::Struct { name, fields } => {
+            let Type::Named {
+                name: scrutinee, ..
+            } = scrutinee_ty
+            else {
+                return BTreeMap::new();
+            };
+            if name != scrutinee {
+                return BTreeMap::new();
+            }
+            let Some(struct_def) = struct_defs.get(name) else {
+                return BTreeMap::new();
+            };
+            let mut map = BTreeMap::new();
+            for (field_name, binding_name) in fields {
+                if binding_name == "_" {
+                    continue;
+                }
+                if let Some(field) = struct_def.fields.iter().find(|f| f.name == *field_name) {
+                    map.insert(binding_name.clone(), field.ty.clone());
+                }
+            }
+            map
+        }
+        ast::Pattern::Variant {
+            enum_name,
+            variant,
+            bindings,
+        } => {
+            let Type::Named {
+                name: scrutinee, ..
+            } = scrutinee_ty
+            else {
+                return BTreeMap::new();
+            };
+            if scrutinee != enum_name {
+                return BTreeMap::new();
+            }
+            let Some(enum_def) = enum_defs.get(enum_name) else {
+                return BTreeMap::new();
+            };
+            let Some(found_variant) = enum_def
+                .variants
+                .iter()
+                .find(|candidate| candidate.name == *variant)
+            else {
+                return BTreeMap::new();
+            };
+            if found_variant.payload.len() != bindings.len() {
+                return BTreeMap::new();
+            }
+            let mut map = BTreeMap::new();
+            for (name, ty) in bindings.iter().zip(found_variant.payload.iter()) {
+                map.insert(name.clone(), ty.clone());
+            }
+            map
+        }
+        ast::Pattern::Or(patterns) => {
+            if let Some(first) = patterns.first() {
+                pattern_binding_type_map(first, scrutinee_ty, struct_defs, enum_defs)
+            } else {
+                BTreeMap::new()
+            }
+        }
+        ast::Pattern::Wildcard | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => BTreeMap::new(),
     }
 }
 
@@ -8005,6 +8100,42 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
         assert_eq!(typed.entry_return_const_i32, Some(7));
+    }
+
+    #[test]
+    fn match_guard_can_reference_variant_payload_binding() {
+        let source = r#"
+            enum Maybe { Some(i32), None }
+            fn main() -> i32 {
+                let source = Maybe::Some(9);
+                match source {
+                    Maybe::Some(v) if v > 4 => return v,
+                    _ => return 0,
+                }
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn match_or_pattern_requires_identical_binding_shapes() {
+        let source = r#"
+            enum Maybe { Some(i32), Also(i32), None }
+            fn main() -> i32 {
+                let source = Maybe::Some(9);
+                match source {
+                    Maybe::Some(v) | Maybe::Also(w) => return 1,
+                    _ => return 0,
+                }
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed.type_error_details.iter().any(|detail| detail
+            .contains("or-pattern alternatives must bind identical names and types")));
     }
 
     #[test]

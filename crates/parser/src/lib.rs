@@ -934,10 +934,6 @@ impl Parser {
         if self.consume(&TokenKind::KwLet) {
             let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
             let pattern = self.parse_pattern()?;
-            if matches!(pattern, Pattern::Or(_)) {
-                self.push_diag_here("or-patterns are not supported in `let` bindings");
-                return None;
-            }
             if matches!(pattern, Pattern::Wildcard) {
                 self.push_diag_here("`let _ = ...` is removed; use `discard <expr>`");
                 return None;
@@ -1204,10 +1200,6 @@ impl Parser {
         let stmt = if self.consume(&TokenKind::KwLet) {
             let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
             let pattern = self.parse_pattern()?;
-            if matches!(pattern, Pattern::Or(_)) {
-                self.push_diag_here("or-patterns are not supported in `let` bindings");
-                return None;
-            }
             if matches!(pattern, Pattern::Wildcard) {
                 self.push_diag_here("`let _ = ...` is removed; use `discard <expr>`");
                 return None;
@@ -3779,17 +3771,57 @@ mod tests {
     }
 
     #[test]
-    fn let_pattern_rejects_or_pattern() {
+    fn let_pattern_accepts_or_pattern() {
         let source = r#"
             fn main() -> i32 {
                 let a | b = 1;
                 return 0;
             }
         "#;
-        let diags = parse(source, "main").expect_err("or-patterns in let should be rejected");
-        assert!(diags.iter().any(|diag| diag
-            .message
-            .contains("or-patterns are not supported in `let` bindings")));
+        let module = parse(source, "main").expect("or-patterns in let should parse");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        let ast::Stmt::LetPattern { pattern, .. } = &main_fn.body[0] else {
+            panic!("expected let-pattern statement");
+        };
+        assert!(matches!(pattern, ast::Pattern::Or(_)));
+    }
+
+    #[test]
+    fn for_clause_let_pattern_accepts_or_pattern() {
+        let source = r#"
+            fn main() -> i32 {
+                for let a | b = 1; a < 3; a = a + 1 {
+                    return 0;
+                }
+                return 1;
+            }
+        "#;
+        let module = parse(source, "main").expect("or-patterns in for let should parse");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        let ast::Stmt::For {
+            init: Some(init), ..
+        } = &main_fn.body[0]
+        else {
+            panic!("expected first statement to be for loop with init");
+        };
+        let ast::Stmt::LetPattern { pattern, .. } = init.as_ref() else {
+            panic!("expected for init to be let-pattern statement");
+        };
+        assert!(matches!(pattern, ast::Pattern::Or(_)));
     }
 
     #[test]

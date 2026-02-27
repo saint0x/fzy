@@ -17427,6 +17427,56 @@ mod tests {
     }
 
     #[test]
+    fn verify_accepts_native_let_or_pattern_with_payload_bindings() {
+        let file_name = format!(
+            "fozzylang-native-let-or-payload-binding-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "enum Maybe { Some(i32), Also(i32), None }\nfn main() -> i32 {\n    let Maybe::Some(v) | Maybe::Also(v) = Maybe::Also(8);\n    return v\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("payload or struct-field bindings in `let` or-patterns")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_rejects_native_or_pattern_mismatched_binding_names() {
+        let file_name = format!(
+            "fozzylang-native-match-or-payload-binding-mismatch-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "enum Maybe { Some(i32), Also(i32), None }\nfn main() -> i32 {\n    let source = Maybe::Some(9)\n    match source {\n        Maybe::Some(v) | Maybe::Also(w) => return 1,\n        _ => return 0,\n    }\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("or-pattern alternatives must bind identical names and types")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn verify_accepts_dynamic_string_data_plane_calls_on_native_backend() {
         let file_name = format!(
             "fozzylang-native-dynamic-str-data-plane-unsupported-{}.fzy",
