@@ -1,5 +1,6 @@
 use crate::core::{require_capability, CapabilityError};
 use core::{Capability, CapabilityToken};
+use serde_json::{Map, Value};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{Read, Write};
@@ -1975,6 +1976,130 @@ pub fn canonicalize_header_name(name: &str) -> Result<String, NetError> {
     Ok(trimmed.to_ascii_lowercase())
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct JsonPayload {
+    fields: BTreeMap<String, Value>,
+}
+
+impl JsonPayload {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set_str(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<(), NetError> {
+        let key = validate_json_payload_key(key.into())?;
+        self.fields.insert(key, Value::String(value.into()));
+        Ok(())
+    }
+
+    pub fn set_raw(&mut self, key: impl Into<String>, value_json: &str) -> Result<(), NetError> {
+        let key = validate_json_payload_key(key.into())?;
+        let value = serde_json::from_str::<Value>(value_json).map_err(|err| {
+            NetError::Parse(format!(
+                "payload.{key}: invalid JSON value: {err}"
+            ))
+        })?;
+        self.fields.insert(key, value);
+        Ok(())
+    }
+
+    pub fn set_value(&mut self, key: impl Into<String>, value: Value) -> Result<(), NetError> {
+        let key = validate_json_payload_key(key.into())?;
+        self.fields.insert(key, value);
+        Ok(())
+    }
+
+    pub fn encode(&self) -> Result<String, NetError> {
+        serde_json::to_string(&self.to_json_value())
+            .map_err(|err| NetError::Parse(format!("payload: encode failed: {err}")))
+    }
+
+    pub fn to_json_value(&self) -> Value {
+        let mut object = Map::new();
+        for (key, value) in &self.fields {
+            object.insert(key.clone(), value.clone());
+        }
+        Value::Object(object)
+    }
+}
+
+pub fn json_payload_new() -> JsonPayload {
+    JsonPayload::new()
+}
+
+pub fn json_payload_set_str(
+    payload: &mut JsonPayload,
+    key: impl Into<String>,
+    value: impl Into<String>,
+) -> Result<(), NetError> {
+    payload.set_str(key, value)
+}
+
+pub fn json_payload_set_raw(
+    payload: &mut JsonPayload,
+    key: impl Into<String>,
+    value_json: &str,
+) -> Result<(), NetError> {
+    payload.set_raw(key, value_json)
+}
+
+pub fn json_payload_encode(payload: &JsonPayload) -> Result<String, NetError> {
+    payload.encode()
+}
+
+pub fn write_json_payload(
+    status: u16,
+    reason: impl Into<String>,
+    payload: &JsonPayload,
+    keep_alive: bool,
+    limits: &HttpServerLimits,
+) -> Result<HttpResponse, NetError> {
+    let encoded = json_payload_encode(payload)?;
+    HttpResponseBuilder::default()
+        .status(status, reason)
+        .header(
+            "Content-Type",
+            "application/json",
+            HeaderLimits::default(),
+        )?
+        .body(encoded.into_bytes())
+        .keep_alive(keep_alive)
+        .build(limits)
+}
+
+pub fn post_json_payload(
+    path: impl Into<String>,
+    payload: &JsonPayload,
+    keep_alive: bool,
+    limits: &HttpServerLimits,
+) -> Result<HttpRequest, NetError> {
+    let encoded = json_payload_encode(payload)?;
+    HttpRequestBuilder::default()
+        .method("POST")
+        .path(path)
+        .header(
+            "Content-Type",
+            "application/json",
+            HeaderLimits::default(),
+        )?
+        .body(encoded.into_bytes())
+        .keep_alive(keep_alive)
+        .build(limits)
+}
+
+fn validate_json_payload_key(key: String) -> Result<String, NetError> {
+    if key.trim().is_empty() {
+        return Err(NetError::Parse(
+            "payload key must not be empty".to_string(),
+        ));
+    }
+    Ok(key)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HttpRequestBuilder {
     method: String,
@@ -2197,10 +2322,11 @@ impl HttpRetryPolicy {
 #[cfg(test)]
 mod tests {
     use super::{
-        canonicalize_header_name, parse_http_request, DeterministicNet, HeaderLimits, HeaderMap,
-        HttpRequestBuilder, HttpResponse, HttpResponseBuilder, HttpRetryPolicy, HttpRouter,
-        HttpServerLimits, NetBackend, NetDecision, NetError, PollInterest, PollerEvent,
-        RequestContext, SocketId,
+        canonicalize_header_name, json_payload_encode, json_payload_new, json_payload_set_raw,
+        json_payload_set_str, parse_http_request, post_json_payload, write_json_payload,
+        DeterministicNet, HeaderLimits, HeaderMap, HttpRequestBuilder, HttpResponse,
+        HttpResponseBuilder, HttpRetryPolicy, HttpRouter, HttpServerLimits, NetBackend,
+        NetDecision, NetError, PollInterest, PollerEvent, RequestContext, SocketId,
     };
 
     struct TestRouter;
@@ -2417,5 +2543,59 @@ mod tests {
         assert_eq!(policy.backoff_for_attempt(2), Some(20));
         assert_eq!(policy.backoff_for_attempt(3), Some(25));
         assert_eq!(policy.backoff_for_attempt(4), None);
+    }
+
+    #[test]
+    fn json_payload_helpers_encode_and_validate_raw_values() {
+        let mut payload = json_payload_new();
+        json_payload_set_str(&mut payload, "component", "stdlib.http")
+            .expect("set_str should work");
+        json_payload_set_raw(&mut payload, "ok", "true").expect("set_raw should work");
+        json_payload_set_raw(&mut payload, "count", "3").expect("set_raw should work");
+        let encoded = json_payload_encode(&payload).expect("encode should work");
+        assert_eq!(
+            encoded,
+            r#"{"component":"stdlib.http","count":3,"ok":true}"#
+        );
+
+        let err = json_payload_set_raw(&mut payload, "broken", "{")
+            .expect_err("invalid raw json should fail");
+        assert!(matches!(err, NetError::Parse(message) if message.contains("payload.broken")));
+    }
+
+    #[test]
+    fn write_json_payload_uses_canonical_response_builder_path() {
+        let mut payload = json_payload_new();
+        json_payload_set_str(&mut payload, "status", "ok").expect("set should work");
+        let response = write_json_payload(
+            200,
+            "OK",
+            &payload,
+            true,
+            &HttpServerLimits::default(),
+        )
+        .expect("json response should build");
+        assert_eq!(response.status, 200);
+        assert_eq!(
+            response.headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(response.body, br#"{"status":"ok"}"#);
+    }
+
+    #[test]
+    fn post_json_payload_uses_canonical_request_builder_path() {
+        let mut payload = json_payload_new();
+        json_payload_set_str(&mut payload, "type", "ping").expect("set should work");
+        let request =
+            post_json_payload("/v1/events", &payload, true, &HttpServerLimits::default())
+                .expect("json request should build");
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/events");
+        assert_eq!(
+            request.headers.get("content-type").map(String::as_str),
+            Some("application/json")
+        );
+        assert_eq!(request.body, br#"{"type":"ping"}"#);
     }
 }

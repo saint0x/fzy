@@ -74,6 +74,11 @@ The v1 stdlib provides production baseline primitives for:
   - `json_payload_new/set_str/set_raw/encode`
   - `write_json_payload`
   - `post_json_capture_payload`
+- Rust stdlib parity is available in `stdlib::http` and routes through canonical builders (single execution path):
+  - `JsonPayload`
+  - `json_payload_new/set_str/set_raw/encode`
+  - `write_json_payload(status, reason, payload, keep_alive, limits)`
+  - `post_json_payload(path, payload, keep_alive, limits)`
 - Canonical JSON wrapper helpers are provided via `core.util`:
   - `http_write_json_map(conn, status, map_handle)`
   - `http_post_json_capture_map(endpoint, map_handle)`
