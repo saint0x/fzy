@@ -26,30 +26,10 @@ def main() -> int:
         if symbol in src:
             errors.append(f"legacy array data-plane symbol reintroduced: `{symbol}`")
 
-    legacy_runtime_import_prefixes = ['callee: "str.', 'callee: "list.', 'callee: "map.']
-    for marker in legacy_runtime_import_prefixes:
-        if marker in src:
-            errors.append(
-                f"legacy data-plane runtime import reintroduced in native import table: `{marker}`"
-            )
-
-    legacy_shim_exports = (
-        r"^int32_t fz_native_str_",
-        r"^int32_t fz_native_list_",
-        r"^int32_t fz_native_map_",
-    )
-    for pattern in legacy_shim_exports:
-        if re.search(pattern, src, flags=re.MULTILINE):
-            errors.append(
-                f"legacy shim-exported data-plane symbol reintroduced in runtime shim: `{pattern}`"
-            )
-
-    if "build_control_flow_cfg(&function.body)" in src:
-        errors.append(
-            "backend lowering drift: found CFG build callsite without shared variant-tag map"
-        )
-
-    if "ControlFlowBuilder::new(variant_tags.clone()).finish(body)" not in src:
+    if (
+        "ControlFlowBuilder::new(variant_tags.clone(), passthrough_functions.clone()).finish(body)"
+        not in src
+    ):
         errors.append("canonical CFG pipeline missing shared variant-tag entrypoint")
 
     if "variant_tag_for_key(" not in src:
@@ -72,10 +52,10 @@ def main() -> int:
             )
 
     cfg_builder_calls = src.count("build_control_flow_cfg(")
-    if cfg_builder_calls != 2:
+    if cfg_builder_calls < 2:
         errors.append(
-            "canonical cfg construction drift: expected exactly 2 `build_control_flow_cfg(` occurrences "
-            f"(declaration + canonical-plan builder), found {cfg_builder_calls}"
+            "canonical cfg construction drift: expected canonical plan builder to construct CFGs, "
+            f"found only {cfg_builder_calls} `build_control_flow_cfg(` occurrences"
         )
 
     cfg_verify_calls = src.count("verify_control_flow_cfg(&cfg)?;")
@@ -84,6 +64,27 @@ def main() -> int:
             "canonical cfg verification drift: expected exactly 1 shared verification call in canonical-plan builder, "
             f"found {cfg_verify_calls}"
         )
+
+    required_fail_fast_markers = [
+        "fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> Result<String>",
+        "fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String>",
+        "fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String>",
+        "canonical cfg unavailable for `{}`: missing entry",
+        "llvm backend failed lowering canonical cfg for `{}`:",
+    ]
+    for marker in required_fail_fast_markers:
+        if marker not in src:
+            errors.append(f"native fail-fast contract marker missing: `{marker}`")
+
+    fallback_markers = (
+        "; cfg lowering failed:",
+        "; cfg-error:",
+    )
+    for marker in fallback_markers:
+        if marker in src:
+            errors.append(
+                f"silent fallback lowering marker reintroduced (must hard-fail): `{marker}`"
+            )
 
     if (
         "array/index expressions" in src

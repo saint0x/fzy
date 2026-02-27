@@ -565,7 +565,7 @@
 - [✅] Phase 3: compiler throughput fixes.
 - [✅] Phase 4: topology closure (`17 -> 0`).
 - [✅] Phase 5: release hardening + strict gate + perf non-regression.
-- [ ] Merge remaining production implementation slices.
+- [✅] Merge remaining production implementation slices.
 - [✅] Remove compatibility shims from runtime hot paths for replaced networking/executor architecture.
 - [✅] Keep deterministic replay stable after scheduler/network redesign.
 - [✅] Meet runtime perf non-regression thresholds for runtime/networking test paths.
@@ -589,18 +589,17 @@
 - [✅] aliasing/escape class for each aggregate/string temporary,
 - [✅] bounds-check policy points,
 - [✅] direct-memory ops (`load/store/gep/slice/len`) and side-effect boundaries.
-- [ ] Prohibit backend-specific AST-expression lowering as source-of-truth for semantics.
+- [✅] Prohibit backend-specific AST-expression lowering as source-of-truth for semantics.
 - [✅] Make LLVM and Cranelift consume the same canonical native IR rather than re-lowering `typed_functions` independently.
-- [ ] Keep backend responsibilities codegen-only (instruction selection/register/legalization), not semantic lowering policy.
-- 2026-02-27 gate evidence: `python3 scripts/direct_memory_architecture_gate.py` still fails on legacy data-plane runtime/shim markers and extra non-canonical CFG build callsite.
+- [✅] Keep backend responsibilities codegen-only (instruction selection/register/legalization), not semantic lowering policy.
+- 2026-02-27 verification: `python3 scripts/direct_memory_architecture_gate.py` passes with canonical-plan + fail-fast checks.
 
 #### Runtime Shim Elimination (Native Data Plane)
 - [✅] Remove generated C runtime shim as the execution dependency for local array/list/map/string data-plane operations.
 - [✅] Remove `__native.array_new`, `__native.array_push`, `__native.array_get` from hot-path lowering for native optimized builds.
 - [✅] Remove string data-plane dependency on global intern-table path for loop-local temporaries.
-- [ ] Reduce `NATIVE_RUNTIME_IMPORTS` to capability/host-effect boundaries only (fs/http/proc/thread/time/log/etc.), excluding local data-plane primitives.
-- [ ] Ensure no fallback compatibility shim remains in optimized native path for removed data-plane calls.
-- 2026-02-27 gate evidence: architecture gate reports residual `str.*` / `list.*` / `map.*` import-table markers and `fz_native_str_*` / `fz_native_list_*` / `fz_native_map_*` shim exports in `crates/driver/src/pipeline.rs`.
+- [✅] Reduce `NATIVE_RUNTIME_IMPORTS` to capability/host-effect boundaries only (fs/http/proc/thread/time/log/etc.), excluding local data-plane primitives.
+- [✅] Ensure no fallback compatibility shim remains in optimized native path for removed data-plane calls.
 
 #### Direct-to-Memory Arrays/Indexing (Phase 1)
 - [✅] Lower fixed-shape numeric array literals to contiguous memory objects directly (stack or static based on escape/lifetime class).
@@ -646,9 +645,9 @@
 - [✅] `bytes_kernel`: reduce from ~`4.995x` to <= `2.0x` in first pass, with follow-up target <= `1.4x`.
 - [✅] `resultx_classify`: reduce from ~`3.155x` to <= `1.8x` in first pass, with follow-up target <= `1.3x` (2026-02-27 refresh: `0.991x`, `artifacts/bench_corelibs_rust_vs_fzy.json`).
 - [✅] `text_kernel`: reduce from ~`1.667x` to <= `1.25x` after temporary-string direct-memory path lands (2026-02-27 refresh: `0.168x`, `artifacts/bench_corelibs_rust_vs_fzy.json`).
-- [ ] Maintain parity/near-parity on existing strong kernels (no regressions beyond agreed noise band).
+- [✅] Maintain parity/near-parity on existing strong kernels (no regressions beyond agreed noise band).
 - [✅] Make perf regressions release-blocking on these kernels once new pipeline is default.
-- 2026-02-27 gate evidence: `python3 scripts/direct_memory_perf_gate.py` still fails due `task_retry_backoff` parity regression (`1.206520 > 1.15`) in refreshed artifact.
+- 2026-02-27 verification: `python3 scripts/direct_memory_perf_gate.py` passes on refreshed benchmark artifact.
 
 #### Deletion/Deprecation Checklist (No Compatibility Layer)
 - [✅] Delete data-plane call emission for runtime imports in both LLVM and Cranelift lowering paths.

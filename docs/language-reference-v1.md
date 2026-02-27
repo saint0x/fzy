@@ -111,7 +111,7 @@ Semantics:
 - RPC activity emits frame events: `rpc_send`, `rpc_recv`, `rpc_deadline`, `rpc_cancel`.
 - Deadline behavior is controlled by `timeout(...)` markers.
 - Cancellation behavior is controlled by `cancel()` markers.
-- RPC failure paths are exposed as operation failures in runtime data/diagnostics paths; native builds currently reject `try/catch` expressions with explicit diagnostics.
+- RPC failure paths are exposed as operation failures in runtime data/diagnostics paths; `try/catch` expressions lower natively in both LLVM and Cranelift paths.
 
 ## Memory Model: `alloc` / `free`
 

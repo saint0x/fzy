@@ -198,6 +198,8 @@ Recommended native completeness probe:
 ```bash
 fz parity tests/fixtures/native_completeness/main.fzy --seed 4242 --json
 fz equivalence tests/fixtures/native_completeness/main.fzy --seed 4242 --json
+python3 scripts/direct_memory_architecture_gate.py
+python3 scripts/direct_memory_perf_gate.py
 ```
 
 Import ergonomics surface in shipped examples:
