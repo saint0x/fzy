@@ -60,7 +60,9 @@ Catalog:
 - Includes source location and multi-line code frames when span is available.
 - Includes related labels with related-location frames.
 - Includes help, notes, and suggestions.
-- Repeated unresolved/type-check findings are de-duplicated into one root diagnostic with repeat counters and top detail indexes.
+- Repeated unresolved/type-check findings are de-duplicated into grouped root diagnostics.
+- Type-check cascade mode reports one primary cause and summarizes suppressed secondary roots/counts.
+- Removed-API unresolved calls include migration autofix guidance where possible (for example fixed-arity JSON/log helper removals).
 
 ### CLI JSON (`fz check --json`, `fz verify --json`)
 

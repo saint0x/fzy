@@ -1,8 +1,51 @@
 # PERF.md
 
-- [ ] Date: 2026-02-26
-- [ ] Owner: Compiler + Runtime Core
-- [ ] Status: Investigation complete, implementation pending
+- [x] Date: 2026-02-27
+- [x] Owner: Compiler + Runtime Core
+- [x] Status: Investigation and DX production pass complete (implementation landed)
+
+## Production DX Pass (Completed 2026-02-27)
+
+Scope:
+- [x] Land first-class object literals for JSON/log payload ergonomics with canonical lowering path.
+- [x] Improve migration diagnostics and autofix guidance for removed fixed-arity APIs.
+- [x] Reduce unresolved/type-check cascade volume into grouped primary-cause diagnostics.
+- [x] Add standard `core.util` helper surface for common JSON/log/http/concurrency patterns.
+- [x] Tighten deterministic-vs-host backend command guidance with explicit next-command hints.
+
+Implemented:
+- [x] Parser + AST support for `#{ ... }` object literals (quoted keys only).
+- [x] HIR type-check support for object literals (map-handle-compatible result shape).
+- [x] LLVM + Cranelift lowering for object literals via canonical `map.new` + `map.set`.
+- [x] String-literal/import collection updated so object-literal keys are interned and available at runtime.
+- [x] Verifier now emits grouped type-check diagnostics:
+- [x] single primary message
+- [x] unique root count
+- [x] suppressed cascade summary
+- [x] Autofix notes for removed `json.objectN/json.arrayN/log.fieldsN` call sites.
+- [x] LSP suggested fixes mirror migration autofix guidance.
+
+Docs and developer guidance:
+- [x] `README.md` and `USAGE.md` updated for object literal syntax + `core.util`.
+- [x] `docs/language-reference-v1.md` updated with object-literal and canonical task-group examples.
+- [x] `docs/stdlib-v1.md` updated with `core.util` module contract.
+
+Validation evidence:
+- [x] `cargo check -q`
+- [x] `cargo test -q -p parser`
+- [x] `cargo test -q -p hir`
+- [x] `cargo test -q -p verifier`
+- [x] `cargo test -q -p driver`
+- [x] `fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 42 --json`
+- [x] `fozzy test --det --strict tests/example.fozzy.json --json`
+- [x] `fozzy run tests/example.fozzy.json --det --record artifacts/dx-full-pass.trace.fozzy --json`
+- [x] `fozzy trace verify artifacts/dx-full-pass.trace.fozzy --strict --json`
+- [x] `fozzy replay artifacts/dx-full-pass.trace.fozzy --json`
+- [x] `fozzy ci artifacts/dx-full-pass.trace.fozzy --json`
+- [x] `fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`
+
+Follow-up still in progress (separate from this DX pass):
+- [ ] Direct-to-memory perf phases for `bytes_kernel`, `resultx_classify`, and remaining string/runtime hotspots.
 
 ## Perf Baseline (Rust vs Fzy Scratch)
 
