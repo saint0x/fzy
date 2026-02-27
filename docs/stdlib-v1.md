@@ -69,6 +69,11 @@ The v1 stdlib provides production baseline primitives for:
 - HTTP/1.1 parsing/serving includes chunked transfer and `Expect: 100-continue` behavior.
 - Request/response size and timeout limits are bounded by default.
 - Error semantics preserve parse vs timeout vs IO separation.
+- Typed JSON payload helpers are available in `core.http`:
+  - `JsonPayload`
+  - `json_payload_new/set_str/set_raw/encode`
+  - `write_json_payload`
+  - `post_json_capture_payload`
 - Canonical JSON wrapper helpers are provided via `core.util`:
   - `http_write_json_map(conn, status, map_handle)`
   - `http_post_json_capture_map(endpoint, map_handle)`

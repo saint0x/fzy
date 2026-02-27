@@ -36,6 +36,10 @@ struct ServePolicy {
     keep_alive_max_requests: i32,
 }
 
+struct JsonPayload {
+    map_handle: i32,
+}
+
 fn parse_method(name: str) -> Method {
     if name == "GET" then return Method::Get
     if name == "POST" then return Method::Post
@@ -209,6 +213,32 @@ fn route_fingerprint_fast(
     return (base + (query_len * 7) + (safe_body % 251) + policy) % 251
 }
 
+fn json_payload_new() -> JsonPayload {
+    return JsonPayload {
+        map_handle: map.new(),
+    }
+}
+
+fn json_payload_set_str(payload: JsonPayload, key: str, value: str) -> i32 {
+    return map.set(payload.map_handle, key, json.str(value))
+}
+
+fn json_payload_set_raw(payload: JsonPayload, key: str, value_json: str) -> i32 {
+    return map.set(payload.map_handle, key, value_json)
+}
+
+fn json_payload_encode(payload: JsonPayload) -> str {
+    return json.object(payload.map_handle)
+}
+
+fn write_json_payload(conn: i32, status: i32, payload: JsonPayload) -> i32 {
+    return http.write_json(conn, status, json_payload_encode(payload))
+}
+
+fn post_json_capture_payload(endpoint: str, payload: JsonPayload) -> str {
+    return http.post_json_capture(endpoint, json_payload_encode(payload))
+}
+
 fn sample() -> i32 {
     let limits = default_limits()
     let policy = sanitize_policy(default_policy())
@@ -226,5 +256,9 @@ fn sample() -> i32 {
     let keep_alive = should_keep_alive("keep-alive", ConnectionMode::Persistent, 3, policy)
     let oneoff = connection_session_score(ConnectionMode::OneOff, 1)
     let persistent = connection_session_score(ConnectionMode::Persistent, 8)
+    let payload = json_payload_new()
+    discard json_payload_set_str(payload, "component", "core.http")
+    discard json_payload_set_raw(payload, "ok", "true")
+    let _ = json_payload_encode(payload)
     return (score + status_class_score(status_class(201)) + oneoff + persistent + backoff + keep_alive) % 251
 }

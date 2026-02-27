@@ -181,6 +181,11 @@ Semantics:
 - Dynamic JSON builders are canonical:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
+- `core.http` provides typed JSON payload wrappers for HTTP call sites:
+  - `JsonPayload`
+  - `json_payload_new/set_str/set_raw/encode`
+  - `write_json_payload`
+  - `post_json_capture_payload`
 - List/map value construction is first-class:
   - `list.new/push/pop/len/get/set/clear/join`
   - `map.new/set/get/has/delete/keys/len`
