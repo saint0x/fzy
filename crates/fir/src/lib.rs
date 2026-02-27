@@ -373,7 +373,7 @@ fn lower_stmts_into_block(
                 lower_stmts_into_block(body, &mut loop_block, blocks);
                 blocks.push(loop_block);
             }
-            ast::Stmt::Break => current.instructions.push(Instruction::Break),
+            ast::Stmt::Break(_) => current.instructions.push(Instruction::Break),
             ast::Stmt::Continue => current.instructions.push(Instruction::Continue),
         }
     }
@@ -407,7 +407,7 @@ fn to_value_type(ty: &Type) -> ValueType {
         | Type::Function { .. }
         | Type::Char
         | Type::TypeVar(_) => ValueType::Aggregate,
-        Type::Void => ValueType::Void,
+        Type::Void | Type::Never => ValueType::Void,
     }
 }
 

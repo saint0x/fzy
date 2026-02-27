@@ -182,7 +182,7 @@ pub enum Stmt {
     Loop {
         body: Vec<Stmt>,
     },
-    Break,
+    Break(Option<Expr>),
     Continue,
     Return(Option<Expr>),
     Defer(Expr),
@@ -234,10 +234,41 @@ pub enum Expr {
     },
     Group(Box<Expr>),
     Await(Box<Expr>),
+    Discard(Box<Expr>),
     TryCatch {
         try_expr: Box<Expr>,
         catch_expr: Box<Expr>,
     },
+    If {
+        condition: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
+    Match {
+        scrutinee: Box<Expr>,
+        arms: Vec<MatchArm>,
+    },
+    While {
+        condition: Box<Expr>,
+        body: Vec<Stmt>,
+    },
+    For {
+        init: Option<Box<Stmt>>,
+        condition: Option<Box<Expr>>,
+        step: Option<Box<Stmt>>,
+        body: Vec<Stmt>,
+    },
+    ForIn {
+        binding: String,
+        iterable: Box<Expr>,
+        body: Vec<Stmt>,
+    },
+    Loop {
+        body: Vec<Stmt>,
+    },
+    Break(Option<Box<Expr>>),
+    Continue,
+    Return(Option<Box<Expr>>),
     Range {
         start: Box<Expr>,
         end: Box<Expr>,
@@ -347,6 +378,7 @@ impl Pattern {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
+    Never,
     Void,
     Bool,
     ISize,
@@ -400,6 +432,7 @@ impl Type {
 impl std::fmt::Display for Type {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Type::Never => write!(f, "never"),
             Type::Void => write!(f, "void"),
             Type::Bool => write!(f, "bool"),
             Type::ISize => write!(f, "isize"),
@@ -493,7 +526,7 @@ pub fn walk_stmt<V: AstVisitor + ?Sized>(visitor: &mut V, stmt: &Stmt) {
         Stmt::Assign { value, .. } | Stmt::CompoundAssign { value, .. } => {
             visitor.visit_expr(value)
         }
-        Stmt::Return(value) => {
+        Stmt::Break(value) | Stmt::Return(value) => {
             if let Some(value) = value {
                 visitor.visit_expr(value);
             }
@@ -547,7 +580,7 @@ pub fn walk_stmt<V: AstVisitor + ?Sized>(visitor: &mut V, stmt: &Stmt) {
                 visitor.visit_stmt(nested);
             }
         }
-        Stmt::Break | Stmt::Continue => {}
+        Stmt::Continue => {}
         Stmt::Match { scrutinee, arms } => {
             visitor.visit_expr(scrutinee);
             for arm in arms {
@@ -591,6 +624,68 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
             visitor.visit_expr(try_expr);
             visitor.visit_expr(catch_expr);
         }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            visitor.visit_expr(condition);
+            visitor.visit_expr(then_expr);
+            visitor.visit_expr(else_expr);
+        }
+        Expr::Match { scrutinee, arms } => {
+            visitor.visit_expr(scrutinee);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    visitor.visit_expr(guard);
+                }
+                visitor.visit_expr(&arm.value);
+            }
+        }
+        Expr::While { condition, body } => {
+            visitor.visit_expr(condition);
+            for stmt in body {
+                visitor.visit_stmt(stmt);
+            }
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                visitor.visit_stmt(init);
+            }
+            if let Some(condition) = condition {
+                visitor.visit_expr(condition);
+            }
+            if let Some(step) = step {
+                visitor.visit_stmt(step);
+            }
+            for stmt in body {
+                visitor.visit_stmt(stmt);
+            }
+        }
+        Expr::ForIn {
+            iterable, body, ..
+        } => {
+            visitor.visit_expr(iterable);
+            for stmt in body {
+                visitor.visit_stmt(stmt);
+            }
+        }
+        Expr::Loop { body } => {
+            for stmt in body {
+                visitor.visit_stmt(stmt);
+            }
+        }
+        Expr::Break(value) | Expr::Return(value) => {
+            if let Some(value) = value {
+                visitor.visit_expr(value);
+            }
+        }
+        Expr::Continue => {}
         Expr::Range {
             start,
             end,
@@ -609,6 +704,7 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
             visitor.visit_expr(index);
         }
         Expr::Await(inner) => visitor.visit_expr(inner),
+        Expr::Discard(inner) => visitor.visit_expr(inner),
         Expr::Unary { expr, .. } => visitor.visit_expr(expr),
         Expr::Binary { left, right, .. } => {
             visitor.visit_expr(left);

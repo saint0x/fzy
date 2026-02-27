@@ -497,7 +497,7 @@ fn collect_stmt_semantics(
                 collect_expr_semantics(&arm.value, arm_scope, scopes, decls, refs, positions);
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
     }
 }
 
@@ -613,7 +613,7 @@ fn collect_expr_semantics(
         ast::Expr::Closure { body, .. } => {
             collect_expr_semantics(body, scope_id, scopes, decls, refs, positions);
         }
-        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             collect_expr_semantics(inner, scope_id, scopes, decls, refs, positions)
         }
         ast::Expr::Unary { expr, .. } => {
@@ -625,6 +625,15 @@ fn collect_expr_semantics(
         } => {
             collect_expr_semantics(try_expr, scope_id, scopes, decls, refs, positions);
             collect_expr_semantics(catch_expr, scope_id, scopes, decls, refs, positions);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_semantics(condition, scope_id, scopes, decls, refs, positions);
+            collect_expr_semantics(then_expr, scope_id, scopes, decls, refs, positions);
+            collect_expr_semantics(else_expr, scope_id, scopes, decls, refs, positions);
         }
         ast::Expr::Binary { left, right, .. } => {
             collect_expr_semantics(left, scope_id, scopes, decls, refs, positions);
@@ -648,6 +657,7 @@ fn collect_expr_semantics(
         | ast::Expr::Char(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_) => {}
+        _ => {}
     }
 }
 
@@ -733,7 +743,7 @@ fn collect_stmt_semantic_refs(
                 collect_expr_semantics(&arm.value, scope_id, scopes, decls, refs, positions);
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
     }
 }
 

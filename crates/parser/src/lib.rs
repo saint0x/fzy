@@ -1000,8 +1000,13 @@ impl Parser {
         }
 
         if self.consume(&TokenKind::KwBreak) {
+            let value = if self.expr_starts_here() {
+                Some(self.parse_expr(0)?)
+            } else {
+                None
+            };
             let _ = self.consume(&TokenKind::Semi);
-            return Some(Stmt::Break);
+            return Some(Stmt::Break(value));
         }
 
         if self.consume(&TokenKind::KwContinue) {
@@ -1045,45 +1050,7 @@ impl Parser {
 
         if self.consume(&TokenKind::KwMatch) {
             let scrutinee = self.parse_expr(0)?;
-            if !self.consume(&TokenKind::LBrace) {
-                self.push_diag_here("expected `{` after match scrutinee");
-                return None;
-            }
-            let mut arms = Vec::new();
-            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
-                let pattern = self.parse_pattern()?;
-                if !self.consume(&TokenKind::FatArrow) {
-                    let guard = if self.consume(&TokenKind::KwIf) {
-                        self.parse_expr(0)
-                    } else {
-                        None
-                    };
-                    if !self.consume(&TokenKind::FatArrow) {
-                        self.push_diag_here("expected `=>` in match arm");
-                        return None;
-                    }
-                    let returns = self.consume(&TokenKind::KwReturn);
-                    let value = self.parse_expr(0)?;
-                    arms.push(MatchArm {
-                        pattern,
-                        guard,
-                        returns,
-                        value,
-                    });
-                    let _ = self.consume(&TokenKind::Comma);
-                    continue;
-                }
-                let returns = self.consume(&TokenKind::KwReturn);
-                let value = self.parse_expr(0)?;
-                arms.push(MatchArm {
-                    pattern,
-                    guard: None,
-                    returns,
-                    value,
-                });
-                let _ = self.consume(&TokenKind::Comma);
-            }
-            let _ = self.consume(&TokenKind::RBrace);
+            let arms = self.parse_match_arms()?;
             let _ = self.consume(&TokenKind::Semi);
             return Some(Stmt::Match { scrutinee, arms });
         }
@@ -1134,16 +1101,38 @@ impl Parser {
         self.parse_block()
     }
 
+    fn parse_if_expr_branch(&mut self) -> Option<Expr> {
+        if self.consume(&TokenKind::KwThen) {
+            return self.parse_expr(0);
+        }
+        if self.consume(&TokenKind::LBrace) {
+            let expr = self.parse_expr(0)?;
+            if !self.consume(&TokenKind::RBrace) {
+                self.push_diag_here("expected `}` to close if-expression branch");
+                return None;
+            }
+            return Some(expr);
+        }
+        self.push_diag_here("if expression requires `then <expr>` or `{ <expr> }` branch");
+        None
+    }
+
     fn parse_then_control_stmt(&mut self) -> Option<Stmt> {
         if self.consume(&TokenKind::KwReturn) {
-            let expr = match self.peek_kind() {
-                TokenKind::Semi | TokenKind::KwElse | TokenKind::RBrace | TokenKind::Eof => None,
-                _ => Some(self.parse_expr(0)?),
+            let expr = if self.expr_starts_here() {
+                Some(self.parse_expr(0)?)
+            } else {
+                None
             };
             return Some(Stmt::Return(expr));
         }
         if self.consume(&TokenKind::KwBreak) {
-            return Some(Stmt::Break);
+            let value = if self.expr_starts_here() {
+                Some(self.parse_expr(0)?)
+            } else {
+                None
+            };
+            return Some(Stmt::Break(value));
         }
         if self.consume(&TokenKind::KwContinue) {
             return Some(Stmt::Continue);
@@ -1394,6 +1383,105 @@ impl Parser {
         if self.at(&TokenKind::Pipe) {
             return self.parse_lambda_expr();
         }
+        if self.consume(&TokenKind::KwReturn) {
+            let value = if self.expr_starts_here() {
+                Some(Box::new(self.parse_expr(0)?))
+            } else {
+                None
+            };
+            return Some(Expr::Return(value));
+        }
+        if self.consume(&TokenKind::KwBreak) {
+            let value = if self.expr_starts_here() {
+                Some(Box::new(self.parse_expr(0)?))
+            } else {
+                None
+            };
+            return Some(Expr::Break(value));
+        }
+        if self.consume(&TokenKind::KwContinue) {
+            return Some(Expr::Continue);
+        }
+        if self.consume(&TokenKind::KwLoop) {
+            let body = self.parse_block()?;
+            return Some(Expr::Loop { body });
+        }
+        if self.consume(&TokenKind::KwWhile) {
+            let condition = self.parse_expr(0)?;
+            let body = self.parse_block()?;
+            return Some(Expr::While {
+                condition: Box::new(condition),
+                body,
+            });
+        }
+        if self.consume(&TokenKind::KwFor) {
+            if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_)))
+                && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::KwIn)
+            {
+                let binding = self.expect_ident("expected loop binding name after `for`")?;
+                let _ = self.consume(&TokenKind::KwIn);
+                let iterable = self.parse_expr(0)?;
+                let body = self.parse_block()?;
+                return Some(Expr::ForIn {
+                    binding,
+                    iterable: Box::new(iterable),
+                    body,
+                });
+            }
+            let init = if self.consume(&TokenKind::Semi) {
+                None
+            } else {
+                Some(Box::new(self.parse_for_clause_stmt(true)?))
+            };
+            let condition = if self.consume(&TokenKind::Semi) {
+                None
+            } else {
+                let condition = self.parse_expr(0)?;
+                if !self.consume(&TokenKind::Semi) {
+                    self.push_diag_here("expected `;` after for-loop condition");
+                    return None;
+                }
+                Some(Box::new(condition))
+            };
+            let step = if self.at(&TokenKind::LBrace) {
+                None
+            } else {
+                Some(Box::new(self.parse_for_clause_stmt(false)?))
+            };
+            let body = self.parse_block()?;
+            return Some(Expr::For {
+                init,
+                condition,
+                step,
+                body,
+            });
+        }
+        if self.consume(&TokenKind::KwMatch) {
+            let scrutinee = self.parse_expr(0)?;
+            let arms = self.parse_match_arms()?;
+            return Some(Expr::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            });
+        }
+        if self.consume(&TokenKind::KwIf) {
+            let condition = self.parse_expr(0)?;
+            let then_expr = self.parse_if_expr_branch()?;
+            if !self.consume(&TokenKind::KwElse) {
+                self.push_diag_here("if expression requires `else` branch");
+                return None;
+            }
+            let else_expr = if self.at(&TokenKind::KwIf) {
+                self.parse_prefix_expr()?
+            } else {
+                self.parse_if_expr_branch()?
+            };
+            return Some(Expr::If {
+                condition: Box::new(condition),
+                then_expr: Box::new(then_expr),
+                else_expr: Box::new(else_expr),
+            });
+        }
         if self.consume(&TokenKind::KwTry) {
             let try_expr = self.parse_expr(0)?;
             if !self.consume(&TokenKind::KwCatch) {
@@ -1409,6 +1497,10 @@ impl Parser {
         if self.consume(&TokenKind::KwAwait) {
             let awaited = self.parse_prefix_expr()?;
             return Some(Expr::Await(Box::new(awaited)));
+        }
+        if self.consume(&TokenKind::KwDiscard) {
+            let value = self.parse_expr(0)?;
+            return Some(Expr::Discard(Box::new(value)));
         }
         if self.consume(&TokenKind::KwUnsafe) {
             if self.at(&TokenKind::LParen) {
@@ -1609,6 +1701,61 @@ impl Parser {
         Some(expr)
     }
 
+    fn parse_match_arms(&mut self) -> Option<Vec<MatchArm>> {
+        if !self.consume(&TokenKind::LBrace) {
+            self.push_diag_here("expected `{` after match scrutinee");
+            return None;
+        }
+        let mut arms = Vec::new();
+        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            let pattern = self.parse_pattern()?;
+            if !self.consume(&TokenKind::FatArrow) {
+                let guard = if self.consume(&TokenKind::KwIf) {
+                    self.parse_expr(0)
+                } else {
+                    None
+                };
+                if !self.consume(&TokenKind::FatArrow) {
+                    self.push_diag_here("expected `=>` in match arm");
+                    return None;
+                }
+                let returns = self.consume(&TokenKind::KwReturn);
+                let value = self.parse_expr(0)?;
+                arms.push(MatchArm {
+                    pattern,
+                    guard,
+                    returns,
+                    value,
+                });
+                let _ = self.consume(&TokenKind::Comma);
+                continue;
+            }
+            let returns = self.consume(&TokenKind::KwReturn);
+            let value = self.parse_expr(0)?;
+            arms.push(MatchArm {
+                pattern,
+                guard: None,
+                returns,
+                value,
+            });
+            let _ = self.consume(&TokenKind::Comma);
+        }
+        let _ = self.consume(&TokenKind::RBrace);
+        Some(arms)
+    }
+
+    fn expr_starts_here(&self) -> bool {
+        !matches!(
+            self.peek_kind(),
+            TokenKind::Semi
+                | TokenKind::KwElse
+                | TokenKind::RBrace
+                | TokenKind::RParen
+                | TokenKind::Comma
+                | TokenKind::Eof
+        )
+    }
+
     fn parse_lambda_expr(&mut self) -> Option<Expr> {
         if !self.consume(&TokenKind::Pipe) {
             return None;
@@ -1741,6 +1888,7 @@ impl Parser {
         }
 
         let ty = match (name.as_str(), args.as_slice()) {
+            ("never", []) => Type::Never,
             ("void", []) => Type::Void,
             ("bool", []) => Type::Bool,
             ("char", []) => Type::Char,
@@ -3323,6 +3471,59 @@ mod tests {
             .body
             .iter()
             .any(|stmt| matches!(stmt, ast::Stmt::If { .. })));
+    }
+
+    #[test]
+    fn parses_if_expression_in_let_binding() {
+        let source = r#"
+            fn main() -> i32 {
+                let x = if true { 7 } else { 3 };
+                return x;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::If { .. },
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn parses_discard_expression_in_let_binding() {
+        let source = r#"
+            fn main() -> i32 {
+                let x = discard str.len("abc");
+                discard x;
+                return 0;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Let {
+                value: ast::Expr::Discard(_),
+                ..
+            }
+        )));
     }
 
     #[test]

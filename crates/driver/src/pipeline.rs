@@ -1577,7 +1577,7 @@ fn qualify_stmt(
                 qualify_stmt(nested, namespace, local_functions, module_aliases);
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             qualify_expr(scrutinee, namespace, local_functions, module_aliases);
             for arm in arms {
@@ -1627,7 +1627,7 @@ fn qualify_expr(
         ast::Expr::Group(inner) => {
             qualify_expr(inner, namespace, local_functions, module_aliases);
         }
-        ast::Expr::Await(inner) => {
+        ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             qualify_expr(inner, namespace, local_functions, module_aliases);
         }
         ast::Expr::Unary { expr, .. } => {
@@ -1639,6 +1639,15 @@ fn qualify_expr(
         } => {
             qualify_expr(try_expr, namespace, local_functions, module_aliases);
             qualify_expr(catch_expr, namespace, local_functions, module_aliases);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            qualify_expr(condition, namespace, local_functions, module_aliases);
+            qualify_expr(then_expr, namespace, local_functions, module_aliases);
+            qualify_expr(else_expr, namespace, local_functions, module_aliases);
         }
         ast::Expr::Binary { left, right, .. } => {
             qualify_expr(left, namespace, local_functions, module_aliases);
@@ -1663,6 +1672,7 @@ fn qualify_expr(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -1796,7 +1806,7 @@ fn canonicalize_stmt_calls(
                 canonicalize_stmt_calls(nested, namespace, known_functions);
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             canonicalize_expr_calls(scrutinee, namespace, known_functions);
             for arm in arms {
@@ -1853,7 +1863,7 @@ fn canonicalize_expr_calls(
         ast::Expr::Group(inner) => {
             canonicalize_expr_calls(inner, namespace, known_functions);
         }
-        ast::Expr::Await(inner) => {
+        ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             canonicalize_expr_calls(inner, namespace, known_functions);
         }
         ast::Expr::Unary { expr, .. } => {
@@ -1865,6 +1875,15 @@ fn canonicalize_expr_calls(
         } => {
             canonicalize_expr_calls(try_expr, namespace, known_functions);
             canonicalize_expr_calls(catch_expr, namespace, known_functions);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            canonicalize_expr_calls(condition, namespace, known_functions);
+            canonicalize_expr_calls(then_expr, namespace, known_functions);
+            canonicalize_expr_calls(else_expr, namespace, known_functions);
         }
         ast::Expr::Binary { left, right, .. } => {
             canonicalize_expr_calls(left, namespace, known_functions);
@@ -1889,6 +1908,7 @@ fn canonicalize_expr_calls(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -2466,7 +2486,7 @@ impl ControlFlowBuilder {
                     self.terminate(current, ControlFlowTerminator::Return(expr.clone()))?;
                     return Ok(None);
                 }
-                ast::Stmt::Break => {
+                ast::Stmt::Break(_) => {
                     let active = self.active_loops.last().copied().ok_or_else(|| {
                         anyhow!("control-flow lowering encountered `break` outside loop scope")
                     })?;
@@ -3082,7 +3102,7 @@ fn body_contains_break_at_depth(body: &[ast::Stmt], depth: usize) -> bool {
 
 fn stmt_contains_break_at_depth(stmt: &ast::Stmt, depth: usize) -> bool {
     match stmt {
-        ast::Stmt::Break => depth == 0,
+        ast::Stmt::Break(_) => depth == 0,
         ast::Stmt::If {
             then_body,
             else_body,
@@ -3759,7 +3779,10 @@ fn collect_native_data_ops_from_expr(
                 collect_native_data_ops_from_expr(value, array_lengths, const_strings, out);
             }
         }
-        ast::Expr::Closure { body, .. } | ast::Expr::Group(body) | ast::Expr::Await(body) => {
+        ast::Expr::Closure { body, .. }
+        | ast::Expr::Group(body)
+        | ast::Expr::Await(body)
+        | ast::Expr::Discard(body) => {
             collect_native_data_ops_from_expr(body, array_lengths, const_strings, out)
         }
         ast::Expr::TryCatch {
@@ -3768,6 +3791,15 @@ fn collect_native_data_ops_from_expr(
         } => {
             collect_native_data_ops_from_expr(try_expr, array_lengths, const_strings, out);
             collect_native_data_ops_from_expr(catch_expr, array_lengths, const_strings, out);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_native_data_ops_from_expr(condition, array_lengths, const_strings, out);
+            collect_native_data_ops_from_expr(then_expr, array_lengths, const_strings, out);
+            collect_native_data_ops_from_expr(else_expr, array_lengths, const_strings, out);
         }
         ast::Expr::Unary { expr, .. } => {
             collect_native_data_ops_from_expr(expr, array_lengths, const_strings, out)
@@ -3786,6 +3818,7 @@ fn collect_native_data_ops_from_expr(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -3905,7 +3938,7 @@ fn collect_native_data_ops_for_function(function: &hir::TypedFunction) -> Vec<Na
                     );
                 }
             }
-            ast::Stmt::Break | ast::Stmt::Continue => {}
+            ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         }
     }
 
@@ -4839,8 +4872,7 @@ fn llvm_emit_linear_stmts(
             | ast::Stmt::For { .. }
             | ast::Stmt::ForIn { .. }
             | ast::Stmt::Loop { .. }
-            | ast::Stmt::Break
-            | ast::Stmt::Continue
+            | ast::Stmt::Break(_) | ast::Stmt::Continue
             | ast::Stmt::Match { .. } => {
                 bail!("llvm linear emission received non-linear control-flow statement");
             }
@@ -4892,6 +4924,10 @@ fn llvm_emit_expr(
         }
         ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
         ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
+        ast::Expr::Discard(inner) => {
+            let _ = llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids);
+            "0".to_string()
+        }
         ast::Expr::Closure {
             params,
             return_type,
@@ -4979,6 +5015,37 @@ fn llvm_emit_expr(
         }
         ast::Expr::TryCatch { try_expr, .. } => {
             llvm_emit_expr(try_expr, ctx, string_literal_ids, task_ref_ids)
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cond = llvm_emit_expr(condition, ctx, string_literal_ids, task_ref_ids);
+            let pred = ctx.value();
+            let then_label = ctx.label("if.then");
+            let else_label = ctx.label("if.else");
+            let merge_label = ctx.label("if.merge");
+            ctx.code
+                .push_str(&format!("  {pred} = icmp ne i32 {cond}, 0\n"));
+            ctx.code.push_str(&format!(
+                "  br i1 {pred}, label %{then_label}, label %{else_label}\n"
+            ));
+
+            ctx.code.push_str(&format!("{then_label}:\n"));
+            let then_value = llvm_emit_expr(then_expr, ctx, string_literal_ids, task_ref_ids);
+            ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+
+            ctx.code.push_str(&format!("{else_label}:\n"));
+            let else_value = llvm_emit_expr(else_expr, ctx, string_literal_ids, task_ref_ids);
+            ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+
+            ctx.code.push_str(&format!("{merge_label}:\n"));
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = phi i32 [ {then_value}, %{then_label} ], [ {else_value}, %{else_label} ]\n"
+            ));
+            out
         }
         ast::Expr::Range { start, .. } => {
             llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids)
@@ -5248,6 +5315,7 @@ fn llvm_emit_expr(
             }
             out
         }
+        _ => "0".to_string(),
     }
 }
 
@@ -5526,7 +5594,7 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
                     collect_from_expr(&arm.value, const_strings, out);
                 }
             }
-            ast::Stmt::Break | ast::Stmt::Continue => {}
+            ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         }
     }
 
@@ -5556,7 +5624,10 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
                     collect_from_expr(value, const_strings, out);
                 }
             }
-            ast::Expr::Closure { body, .. } | ast::Expr::Group(body) | ast::Expr::Await(body) => {
+            ast::Expr::Closure { body, .. }
+            | ast::Expr::Group(body)
+            | ast::Expr::Await(body)
+            | ast::Expr::Discard(body) => {
                 collect_from_expr(body, const_strings, out)
             }
             ast::Expr::Unary { expr, .. } => collect_from_expr(expr, const_strings, out),
@@ -5566,6 +5637,15 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
             } => {
                 collect_from_expr(try_expr, const_strings, out);
                 collect_from_expr(catch_expr, const_strings, out);
+            }
+            ast::Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                collect_from_expr(condition, const_strings, out);
+                collect_from_expr(then_expr, const_strings, out);
+                collect_from_expr(else_expr, const_strings, out);
             }
             ast::Expr::Binary { left, right, .. } => {
                 collect_from_expr(left, const_strings, out);
@@ -5585,6 +5665,7 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
             | ast::Expr::Bool(_)
             | ast::Expr::Str(_)
             | ast::Expr::Ident(_) => {}
+        _ => {}
         }
     }
 
@@ -5673,7 +5754,7 @@ fn collect_string_literals_from_stmt(stmt: &ast::Stmt, literals: &mut HashSet<St
                 collect_string_literals_from_stmt(nested, literals);
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_string_literals_from_expr(scrutinee, literals);
             for arm in arms {
@@ -5713,6 +5794,7 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
         }
         ast::Expr::Group(inner) => collect_string_literals_from_expr(inner, literals),
         ast::Expr::Await(inner) => collect_string_literals_from_expr(inner, literals),
+        ast::Expr::Discard(inner) => collect_string_literals_from_expr(inner, literals),
         ast::Expr::Unary { expr, .. } => collect_string_literals_from_expr(expr, literals),
         ast::Expr::TryCatch {
             try_expr,
@@ -5720,6 +5802,15 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
         } => {
             collect_string_literals_from_expr(try_expr, literals);
             collect_string_literals_from_expr(catch_expr, literals);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_string_literals_from_expr(condition, literals);
+            collect_string_literals_from_expr(then_expr, literals);
+            collect_string_literals_from_expr(else_expr, literals);
         }
         ast::Expr::Binary { left, right, .. } => {
             collect_string_literals_from_expr(left, literals);
@@ -5743,6 +5834,7 @@ fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<St
         | ast::Expr::Char(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -5926,7 +6018,7 @@ fn collect_variant_keys_from_stmt(stmt: &ast::Stmt, out: &mut BTreeSet<String>) 
                 collect_variant_keys_from_expr(&arm.value, out);
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
     }
 }
 
@@ -5952,12 +6044,22 @@ fn collect_variant_keys_from_expr(expr: &ast::Expr, out: &mut BTreeSet<String>) 
         ast::Expr::Closure { body, .. } => collect_variant_keys_from_expr(body, out),
         ast::Expr::Group(inner) => collect_variant_keys_from_expr(inner, out),
         ast::Expr::Await(inner) => collect_variant_keys_from_expr(inner, out),
+        ast::Expr::Discard(inner) => collect_variant_keys_from_expr(inner, out),
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
         } => {
             collect_variant_keys_from_expr(try_expr, out);
             collect_variant_keys_from_expr(catch_expr, out);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_variant_keys_from_expr(condition, out);
+            collect_variant_keys_from_expr(then_expr, out);
+            collect_variant_keys_from_expr(else_expr, out);
         }
         ast::Expr::Range { start, end, .. } => {
             collect_variant_keys_from_expr(start, out);
@@ -5983,6 +6085,7 @@ fn collect_variant_keys_from_expr(expr: &ast::Expr, out: &mut BTreeSet<String>) 
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -6251,7 +6354,7 @@ fn collect_used_runtime_imports_from_stmt(
                 collect_used_runtime_imports_from_stmt(nested, seen, used);
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_used_runtime_imports_from_expr(scrutinee, seen, used);
             for arm in arms {
@@ -6305,7 +6408,7 @@ fn collect_used_runtime_imports_from_expr(
         ast::Expr::Group(inner) => {
             collect_used_runtime_imports_from_expr(inner, seen, used);
         }
-        ast::Expr::Await(inner) => {
+        ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             collect_used_runtime_imports_from_expr(inner, seen, used);
         }
         ast::Expr::Unary { expr, .. } => {
@@ -6317,6 +6420,15 @@ fn collect_used_runtime_imports_from_expr(
         } => {
             collect_used_runtime_imports_from_expr(try_expr, seen, used);
             collect_used_runtime_imports_from_expr(catch_expr, seen, used);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_used_runtime_imports_from_expr(condition, seen, used);
+            collect_used_runtime_imports_from_expr(then_expr, seen, used);
+            collect_used_runtime_imports_from_expr(else_expr, seen, used);
         }
         ast::Expr::Binary { left, right, .. } => {
             collect_used_runtime_imports_from_expr(left, seen, used);
@@ -6341,6 +6453,7 @@ fn collect_used_runtime_imports_from_expr(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -6412,7 +6525,7 @@ fn collect_used_data_plane_imports_from_stmt(
                 collect_used_data_plane_imports_from_stmt(nested, seen, used);
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_used_data_plane_imports_from_expr(scrutinee, seen, used);
             for arm in arms {
@@ -6466,7 +6579,7 @@ fn collect_used_data_plane_imports_from_expr(
         ast::Expr::Group(inner) => {
             collect_used_data_plane_imports_from_expr(inner, seen, used);
         }
-        ast::Expr::Await(inner) => {
+        ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             collect_used_data_plane_imports_from_expr(inner, seen, used);
         }
         ast::Expr::Unary { expr, .. } => {
@@ -6478,6 +6591,15 @@ fn collect_used_data_plane_imports_from_expr(
         } => {
             collect_used_data_plane_imports_from_expr(try_expr, seen, used);
             collect_used_data_plane_imports_from_expr(catch_expr, seen, used);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_used_data_plane_imports_from_expr(condition, seen, used);
+            collect_used_data_plane_imports_from_expr(then_expr, seen, used);
+            collect_used_data_plane_imports_from_expr(else_expr, seen, used);
         }
         ast::Expr::Binary { left, right, .. } => {
             collect_used_data_plane_imports_from_expr(left, seen, used);
@@ -6502,6 +6624,7 @@ fn collect_used_data_plane_imports_from_expr(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -8596,8 +8719,7 @@ fn clif_emit_linear_stmts(
             | ast::Stmt::For { .. }
             | ast::Stmt::ForIn { .. }
             | ast::Stmt::Loop { .. }
-            | ast::Stmt::Break
-            | ast::Stmt::Continue
+            | ast::Stmt::Break(_) | ast::Stmt::Continue
             | ast::Stmt::Match { .. } => {
                 bail!("cranelift linear emission received non-linear control-flow statement");
             }
@@ -8700,6 +8822,13 @@ fn clif_emit_expr(
         }
         ast::Expr::Group(inner) => clif_emit_expr(builder, ctx, inner, locals, next_var)?,
         ast::Expr::Await(inner) => clif_emit_expr(builder, ctx, inner, locals, next_var)?,
+        ast::Expr::Discard(inner) => {
+            let _ = clif_emit_expr(builder, ctx, inner, locals, next_var)?;
+            ClifValue {
+                value: builder.ins().iconst(default_int_clif_type(), 0),
+                ty: default_int_clif_type(),
+            }
+        }
         ast::Expr::Closure {
             params,
             return_type,
@@ -8823,6 +8952,41 @@ fn clif_emit_expr(
             try_expr,
             catch_expr: _,
         } => clif_emit_expr(builder, ctx, try_expr, locals, next_var)?,
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cond = clif_emit_expr(builder, ctx, condition, locals, next_var)?;
+            let cond_zero = zero_for_type(builder, cond.ty);
+            let cond_pred = builder.ins().icmp(IntCC::NotEqual, cond.value, cond_zero);
+
+            let then_block = builder.create_block();
+            let else_block = builder.create_block();
+            let merge_block = builder.create_block();
+            builder
+                .ins()
+                .brif(cond_pred, then_block, &[], else_block, &[]);
+
+            builder.switch_to_block(then_block);
+            let then_value = clif_emit_expr(builder, ctx, then_expr, locals, next_var)?;
+            builder.append_block_param(merge_block, then_value.ty);
+            builder.ins().jump(merge_block, &[then_value.value]);
+
+            builder.switch_to_block(else_block);
+            let else_value = clif_emit_expr(builder, ctx, else_expr, locals, next_var)?;
+            let else_value = cast_clif_value(builder, else_value, then_value.ty)?;
+            builder.ins().jump(merge_block, &[else_value.value]);
+
+            builder.seal_block(then_block);
+            builder.seal_block(else_block);
+            builder.switch_to_block(merge_block);
+            builder.seal_block(merge_block);
+            ClifValue {
+                value: builder.block_params(merge_block)[0],
+                ty: then_value.ty,
+            }
+        }
         ast::Expr::Range { start, .. } => clif_emit_expr(builder, ctx, start, locals, next_var)?,
         ast::Expr::ArrayLiteral(items) => {
             // Array literals are materialized by statement lowering into local bindings.
@@ -9237,6 +9401,10 @@ fn clif_emit_expr(
                 ty: default_int_clif_type(),
             }
         }
+        _ => ClifValue {
+            value: builder.ins().iconst(default_int_clif_type(), 0),
+            ty: default_int_clif_type(),
+        },
     })
 }
 
@@ -9433,12 +9601,12 @@ fn backend_capability_diagnostics(
 }
 
 fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {
-    ast_signature_type_to_clif_type(ty).is_some() || matches!(ty, ast::Type::Void)
+    ast_signature_type_to_clif_type(ty).is_some() || matches!(ty, ast::Type::Void | ast::Type::Never)
 }
 
 fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType> {
     match ty {
-        ast::Type::Void => None,
+        ast::Type::Void | ast::Type::Never => None,
         ast::Type::Bool => Some(types::I8),
         ast::Type::ISize | ast::Type::USize => Some(pointer_sized_clif_type()),
         ast::Type::Int { bits, .. } => match bits {
@@ -9711,7 +9879,7 @@ fn collect_unresolved_calls_from_stmt(
                 );
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_unresolved_calls_from_expr(
                 scrutinee,
@@ -9816,7 +9984,7 @@ fn collect_unresolved_calls_from_expr(
                 unresolved,
             );
         }
-        ast::Expr::Await(inner) => {
+        ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             collect_unresolved_calls_from_expr(
                 inner,
                 defined_functions,
@@ -9844,6 +10012,30 @@ fn collect_unresolved_calls_from_expr(
             );
             collect_unresolved_calls_from_expr(
                 catch_expr,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_unresolved_calls_from_expr(
+                condition,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
+            collect_unresolved_calls_from_expr(
+                then_expr,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
+            collect_unresolved_calls_from_expr(
+                else_expr,
                 defined_functions,
                 local_callables,
                 unresolved,
@@ -9902,6 +10094,7 @@ fn collect_unresolved_calls_from_expr(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -9975,7 +10168,7 @@ fn collect_local_callable_bindings(body: &[ast::Stmt], out: &mut HashSet<String>
                     collect_local_callable_bindings_from_expr(&arm.value, out);
                 }
             }
-            ast::Stmt::Break | ast::Stmt::Continue => {}
+            ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         }
     }
 }
@@ -10002,7 +10195,7 @@ fn collect_local_callable_bindings_from_expr(expr: &ast::Expr, out: &mut HashSet
             }
         }
         ast::Expr::Closure { body, .. } => collect_local_callable_bindings_from_expr(body, out),
-        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             collect_local_callable_bindings_from_expr(inner, out)
         }
         ast::Expr::TryCatch {
@@ -10011,6 +10204,15 @@ fn collect_local_callable_bindings_from_expr(expr: &ast::Expr, out: &mut HashSet
         } => {
             collect_local_callable_bindings_from_expr(try_expr, out);
             collect_local_callable_bindings_from_expr(catch_expr, out);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_local_callable_bindings_from_expr(condition, out);
+            collect_local_callable_bindings_from_expr(then_expr, out);
+            collect_local_callable_bindings_from_expr(else_expr, out);
         }
         ast::Expr::Unary { expr, .. } => collect_local_callable_bindings_from_expr(expr, out),
         ast::Expr::Binary { left, right, .. } => {
@@ -10036,6 +10238,7 @@ fn collect_local_callable_bindings_from_expr(expr: &ast::Expr, out: &mut HashSet
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 

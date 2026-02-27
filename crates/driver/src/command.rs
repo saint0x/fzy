@@ -3965,7 +3965,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 );
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_semantic_unsafe_entries_from_expr(
                 scrutinee,
@@ -4151,7 +4151,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 entries,
             );
         }
-        ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             collect_semantic_unsafe_entries_from_expr(
                 inner,
                 module_path,
@@ -4191,6 +4191,42 @@ fn collect_semantic_unsafe_entries_from_expr(
             );
             collect_semantic_unsafe_entries_from_expr(
                 catch_expr,
+                module_path,
+                project_root,
+                function_name,
+                in_unsafe_context,
+                default_owner,
+                unsafe_callees,
+                entries,
+            );
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_semantic_unsafe_entries_from_expr(
+                condition,
+                module_path,
+                project_root,
+                function_name,
+                in_unsafe_context,
+                default_owner,
+                unsafe_callees,
+                entries,
+            );
+            collect_semantic_unsafe_entries_from_expr(
+                then_expr,
+                module_path,
+                project_root,
+                function_name,
+                in_unsafe_context,
+                default_owner,
+                unsafe_callees,
+                entries,
+            );
+            collect_semantic_unsafe_entries_from_expr(
+                else_expr,
                 module_path,
                 project_root,
                 function_name,
@@ -4286,6 +4322,7 @@ fn collect_semantic_unsafe_entries_from_expr(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -6016,7 +6053,7 @@ fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
                 + body.iter().map(count_async_hooks_in_stmt).sum::<usize>()
         }
         ast::Stmt::Loop { body } => body.iter().map(count_async_hooks_in_stmt).sum::<usize>(),
-        ast::Stmt::Break | ast::Stmt::Continue => 0,
+        ast::Stmt::Break(_) | ast::Stmt::Continue => 0,
         ast::Stmt::Match { scrutinee, arms } => {
             let mut total = count_async_hooks_in_expr(scrutinee);
             for arm in arms {
@@ -6033,6 +6070,7 @@ fn count_async_hooks_in_stmt(stmt: &ast::Stmt) -> usize {
 fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
     match expr {
         ast::Expr::Await(inner) => 1 + count_async_hooks_in_expr(inner),
+        ast::Expr::Discard(inner) => count_async_hooks_in_expr(inner),
         ast::Expr::Call { callee, args } => {
             let self_hook = usize::from(matches!(callee.as_str(), "yield" | "checkpoint"));
             self_hook + args.iter().map(count_async_hooks_in_expr).sum::<usize>()
@@ -6051,6 +6089,15 @@ fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
             try_expr,
             catch_expr,
         } => count_async_hooks_in_expr(try_expr) + count_async_hooks_in_expr(catch_expr),
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            count_async_hooks_in_expr(condition)
+                + count_async_hooks_in_expr(then_expr)
+                + count_async_hooks_in_expr(else_expr)
+        }
         ast::Expr::Binary { left, right, .. } => {
             count_async_hooks_in_expr(left) + count_async_hooks_in_expr(right)
         }
@@ -6067,6 +6114,7 @@ fn count_async_hooks_in_expr(expr: &ast::Expr) -> usize {
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => 0,
+        _ => 0,
     }
 }
 
@@ -6179,7 +6227,7 @@ fn analyze_workload_stmt(stmt: &ast::Stmt) -> (usize, usize) {
             }
             totals
         }
-        ast::Stmt::Break | ast::Stmt::Continue => (0, 0),
+        ast::Stmt::Break(_) | ast::Stmt::Continue => (0, 0),
         ast::Stmt::Match { scrutinee, arms } => {
             let mut totals = analyze_workload_expr(scrutinee);
             for arm in arms {
@@ -6216,7 +6264,9 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
             (spawns, yields)
         }
         ast::Expr::UnsafeBlock { .. } => (0, 0),
-        ast::Expr::Await(inner) | ast::Expr::Group(inner) => analyze_workload_expr(inner),
+        ast::Expr::Await(inner)
+        | ast::Expr::Group(inner)
+        | ast::Expr::Discard(inner) => analyze_workload_expr(inner),
         ast::Expr::Unary { expr, .. } => analyze_workload_expr(expr),
         ast::Expr::FieldAccess { base, .. } => analyze_workload_expr(base),
         ast::Expr::StructInit { fields, .. } => {
@@ -6241,6 +6291,16 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
             let (t_spawns, t_yields) = analyze_workload_expr(try_expr);
             let (c_spawns, c_yields) = analyze_workload_expr(catch_expr);
             (t_spawns + c_spawns, t_yields + c_yields)
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let (c_spawns, c_yields) = analyze_workload_expr(condition);
+            let (t_spawns, t_yields) = analyze_workload_expr(then_expr);
+            let (e_spawns, e_yields) = analyze_workload_expr(else_expr);
+            (c_spawns + t_spawns + e_spawns, c_yields + t_yields + e_yields)
         }
         ast::Expr::Binary { left, right, .. } => {
             let (l_spawns, l_yields) = analyze_workload_expr(left);
@@ -6269,6 +6329,7 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => (0, 0),
+        _ => (0, 0),
     }
 }
 
@@ -6592,7 +6653,7 @@ fn collect_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
                 collect_call_names_from_stmt(stmt, out);
             }
         }
-        ast::Stmt::Break | ast::Stmt::Continue => {}
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
             collect_call_names_from_expr(scrutinee, out);
             for arm in arms {
@@ -6633,6 +6694,15 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
             collect_call_names_from_expr(try_expr, out);
             collect_call_names_from_expr(catch_expr, out);
         }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_call_names_from_expr(condition, out);
+            collect_call_names_from_expr(then_expr, out);
+            collect_call_names_from_expr(else_expr, out);
+        }
         ast::Expr::Binary { left, right, .. } => {
             collect_call_names_from_expr(left, out);
             collect_call_names_from_expr(right, out);
@@ -6644,6 +6714,7 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
         ast::Expr::Unary { expr, .. } => collect_call_names_from_expr(expr, out),
         ast::Expr::Group(inner) => collect_call_names_from_expr(inner, out),
         ast::Expr::Await(inner) => collect_call_names_from_expr(inner, out),
+        ast::Expr::Discard(inner) => collect_call_names_from_expr(inner, out),
         ast::Expr::ArrayLiteral(items) => {
             for item in items {
                 collect_call_names_from_expr(item, out);
@@ -6659,6 +6730,7 @@ fn collect_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+        _ => {}
     }
 }
 
@@ -8658,7 +8730,8 @@ fn ffi_async_contract(function: &ast::Function) -> serde_json::Value {
 
 fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
     match ty {
-        ast::Type::Void
+        ast::Type::Never
+        | ast::Type::Void
         | ast::Type::Bool
         | ast::Type::Char
         | ast::Type::Float { .. }

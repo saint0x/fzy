@@ -722,6 +722,46 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 try_expr,
                 catch_expr,
             } => expr_has_cap_intrinsic(try_expr) || expr_has_cap_intrinsic(catch_expr),
+            Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                expr_has_cap_intrinsic(condition)
+                    || expr_has_cap_intrinsic(then_expr)
+                    || expr_has_cap_intrinsic(else_expr)
+            }
+            Expr::Match { scrutinee, arms } => {
+                expr_has_cap_intrinsic(scrutinee)
+                    || arms.iter().any(|arm| {
+                        arm.guard.as_ref().is_some_and(expr_has_cap_intrinsic)
+                            || expr_has_cap_intrinsic(&arm.value)
+                    })
+            }
+            Expr::While { condition, body } => {
+                expr_has_cap_intrinsic(condition)
+                    || body.iter().any(statement_uses_cap_token_intrinsic)
+            }
+            Expr::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                init.as_ref().is_some_and(|stmt| statement_uses_cap_token_intrinsic(stmt))
+                    || condition.as_ref().is_some_and(|expr| expr_has_cap_intrinsic(expr))
+                    || step.as_ref().is_some_and(|stmt| statement_uses_cap_token_intrinsic(stmt))
+                    || body.iter().any(statement_uses_cap_token_intrinsic)
+            }
+            Expr::ForIn { iterable, body, .. } => {
+                expr_has_cap_intrinsic(iterable)
+                    || body.iter().any(statement_uses_cap_token_intrinsic)
+            }
+            Expr::Loop { body } => body.iter().any(statement_uses_cap_token_intrinsic),
+            Expr::Return(value) | Expr::Break(value) => value
+                .as_ref()
+                .is_some_and(|expr| expr_has_cap_intrinsic(expr)),
+            Expr::Continue => false,
             Expr::Binary { left, right, .. } => {
                 expr_has_cap_intrinsic(left) || expr_has_cap_intrinsic(right)
             }
@@ -734,6 +774,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
             }
             Expr::Group(inner) => expr_has_cap_intrinsic(inner),
             Expr::Await(inner) => expr_has_cap_intrinsic(inner),
+            Expr::Discard(inner) => expr_has_cap_intrinsic(inner),
             Expr::Unary { expr, .. } => expr_has_cap_intrinsic(expr),
             Expr::Int(_)
             | Expr::Float { .. }
@@ -785,7 +826,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
             expr_has_cap_intrinsic(iterable) || body.iter().any(statement_uses_cap_token_intrinsic)
         }
         Stmt::Loop { body } => body.iter().any(statement_uses_cap_token_intrinsic),
-        Stmt::Break | Stmt::Continue => false,
+        Stmt::Break(_) | Stmt::Continue => false,
         Stmt::Match { scrutinee, arms } => {
             expr_has_cap_intrinsic(scrutinee)
                 || arms.iter().any(|arm| {
@@ -929,7 +970,7 @@ fn analyze_call_token_propagation(
                     violations,
                 );
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue => {}
             Stmt::Match { scrutinee, arms } => {
                 analyze_expr_call_tokens(
                     function_name,
@@ -977,8 +1018,7 @@ fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
         | Stmt::For { .. }
         | Stmt::ForIn { .. }
         | Stmt::Loop { .. }
-        | Stmt::Break
-        | Stmt::Continue
+        | Stmt::Break(_) | Stmt::Continue
         | Stmt::Match { .. }
         | Stmt::Return(None) => None,
     }
@@ -1098,6 +1138,152 @@ fn analyze_expr_call_tokens(
                 violations,
             );
         }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            analyze_expr_call_tokens(
+                function_name,
+                Some(condition),
+                local_types,
+                requirement_map,
+                violations,
+            );
+            analyze_expr_call_tokens(
+                function_name,
+                Some(then_expr),
+                local_types,
+                requirement_map,
+                violations,
+            );
+            analyze_expr_call_tokens(
+                function_name,
+                Some(else_expr),
+                local_types,
+                requirement_map,
+                violations,
+            );
+        }
+        Expr::Match { scrutinee, arms } => {
+            analyze_expr_call_tokens(
+                function_name,
+                Some(scrutinee),
+                local_types,
+                requirement_map,
+                violations,
+            );
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    analyze_expr_call_tokens(
+                        function_name,
+                        Some(guard),
+                        local_types,
+                        requirement_map,
+                        violations,
+                    );
+                }
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(&arm.value),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+        }
+        Expr::While { condition, body } => {
+            analyze_expr_call_tokens(
+                function_name,
+                Some(condition),
+                local_types,
+                requirement_map,
+                violations,
+            );
+            analyze_call_token_propagation(
+                function_name,
+                body,
+                local_types,
+                requirement_map,
+                violations,
+            );
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                analyze_call_token_propagation(
+                    function_name,
+                    std::slice::from_ref(init.as_ref()),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+            if let Some(condition) = condition {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(condition),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+            if let Some(step) = step {
+                analyze_call_token_propagation(
+                    function_name,
+                    std::slice::from_ref(step.as_ref()),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+            analyze_call_token_propagation(
+                function_name,
+                body,
+                local_types,
+                requirement_map,
+                violations,
+            );
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            analyze_expr_call_tokens(
+                function_name,
+                Some(iterable),
+                local_types,
+                requirement_map,
+                violations,
+            );
+            analyze_call_token_propagation(
+                function_name,
+                body,
+                local_types,
+                requirement_map,
+                violations,
+            );
+        }
+        Expr::Loop { body } => analyze_call_token_propagation(
+            function_name,
+            body,
+            local_types,
+            requirement_map,
+            violations,
+        ),
+        Expr::Return(value) | Expr::Break(value) => {
+            if let Some(value) = value {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(value),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+        }
+        Expr::Continue => {}
         Expr::Binary { left, right, .. } => {
             analyze_expr_call_tokens(
                 function_name,
@@ -1165,6 +1351,13 @@ fn analyze_expr_call_tokens(
             violations,
         ),
         Expr::Await(inner) => analyze_expr_call_tokens(
+            function_name,
+            Some(inner),
+            local_types,
+            requirement_map,
+            violations,
+        ),
+        Expr::Discard(inner) => analyze_expr_call_tokens(
             function_name,
             Some(inner),
             local_types,
@@ -1405,7 +1598,7 @@ fn stmt_has_await(stmt: &Stmt) -> bool {
             expr_has_await(iterable) || body.iter().any(stmt_has_await)
         }
         Stmt::Loop { body } => body.iter().any(stmt_has_await),
-        Stmt::Break | Stmt::Continue => false,
+        Stmt::Break(_) | Stmt::Continue => false,
         Stmt::Match { scrutinee, arms } => {
             expr_has_await(scrutinee)
                 || arms.iter().any(|arm| {
@@ -1418,6 +1611,7 @@ fn stmt_has_await(stmt: &Stmt) -> bool {
 fn expr_has_await(expr: &Expr) -> bool {
     match expr {
         Expr::Await(_) => true,
+        Expr::Discard(inner) => expr_has_await(inner),
         Expr::Call { args, .. } => args.iter().any(expr_has_await),
         Expr::UnsafeBlock { body, .. } => body.iter().any(stmt_has_await),
         Expr::FieldAccess { base, .. } => expr_has_await(base),
@@ -1429,6 +1623,41 @@ fn expr_has_await(expr: &Expr) -> bool {
             try_expr,
             catch_expr,
         } => expr_has_await(try_expr) || expr_has_await(catch_expr),
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_has_await(condition) || expr_has_await(then_expr) || expr_has_await(else_expr)
+        }
+        Expr::Match { scrutinee, arms } => {
+            expr_has_await(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_has_await) || expr_has_await(&arm.value)
+                })
+        }
+        Expr::While { condition, body } => {
+            expr_has_await(condition) || body.iter().any(stmt_has_await)
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_ref().is_some_and(|stmt| stmt_has_await(stmt))
+                || condition.as_ref().is_some_and(|expr| expr_has_await(expr))
+                || step.as_ref().is_some_and(|stmt| stmt_has_await(stmt))
+                || body.iter().any(stmt_has_await)
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            expr_has_await(iterable) || body.iter().any(stmt_has_await)
+        }
+        Expr::Loop { body } => body.iter().any(stmt_has_await),
+        Expr::Return(value) | Expr::Break(value) => {
+            value.as_ref().is_some_and(|expr| expr_has_await(expr))
+        }
+        Expr::Continue => false,
         Expr::Binary { left, right, .. } => expr_has_await(left) || expr_has_await(right),
         Expr::Range { start, end, .. } => expr_has_await(start) || expr_has_await(end),
         Expr::ArrayLiteral(items) => items.iter().any(expr_has_await),
@@ -1872,7 +2101,7 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
                     );
                 }
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue => {}
         }
     }
 
@@ -1944,7 +2173,10 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
                 unsafe_functions,
                 violations,
             ),
-            Expr::Group(inner) | Expr::Await(inner) | Expr::Unary { expr: inner, .. } => {
+            Expr::Group(inner)
+            | Expr::Await(inner)
+            | Expr::Discard(inner)
+            | Expr::Unary { expr: inner, .. } => {
                 analyze_expr(
                     function_name,
                     inner,
@@ -1972,6 +2204,126 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
                     violations,
                 );
             }
+            Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                analyze_expr(
+                    function_name,
+                    condition,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                analyze_expr(
+                    function_name,
+                    then_expr,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                analyze_expr(
+                    function_name,
+                    else_expr,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+            }
+            Expr::Match { scrutinee, arms } => {
+                analyze_expr(
+                    function_name,
+                    scrutinee,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        analyze_expr(
+                            function_name,
+                            guard,
+                            in_unsafe_context,
+                            unsafe_functions,
+                            violations,
+                        );
+                    }
+                    analyze_expr(
+                        function_name,
+                        &arm.value,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Expr::While { condition, body } => {
+                analyze_expr(
+                    function_name,
+                    condition,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                for stmt in body {
+                    analyze_stmt(function_name, stmt, in_unsafe_context, unsafe_functions, violations);
+                }
+            }
+            Expr::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    analyze_stmt(function_name, init, in_unsafe_context, unsafe_functions, violations);
+                }
+                if let Some(condition) = condition {
+                    analyze_expr(
+                        function_name,
+                        condition,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+                if let Some(step) = step {
+                    analyze_stmt(function_name, step, in_unsafe_context, unsafe_functions, violations);
+                }
+                for stmt in body {
+                    analyze_stmt(function_name, stmt, in_unsafe_context, unsafe_functions, violations);
+                }
+            }
+            Expr::ForIn { iterable, body, .. } => {
+                analyze_expr(
+                    function_name,
+                    iterable,
+                    in_unsafe_context,
+                    unsafe_functions,
+                    violations,
+                );
+                for stmt in body {
+                    analyze_stmt(function_name, stmt, in_unsafe_context, unsafe_functions, violations);
+                }
+            }
+            Expr::Loop { body } => {
+                for stmt in body {
+                    analyze_stmt(function_name, stmt, in_unsafe_context, unsafe_functions, violations);
+                }
+            }
+            Expr::Return(value) | Expr::Break(value) => {
+                if let Some(value) = value {
+                    analyze_expr(
+                        function_name,
+                        value,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Expr::Continue => {}
             Expr::Binary { left, right, .. }
             | Expr::Range {
                 start: left,
@@ -2290,7 +2642,7 @@ fn analyze_ownership_block(
                     function_name,
                 );
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue => {}
             Stmt::Match { arms, .. } => {
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
@@ -2470,7 +2822,7 @@ fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
                 || body.iter().any(|nested| stmt_uses_ident(nested, target))
         }
         Stmt::Loop { body } => body.iter().any(|nested| stmt_uses_ident(nested, target)),
-        Stmt::Break | Stmt::Continue => false,
+        Stmt::Break(_) | Stmt::Continue => false,
         Stmt::Match { scrutinee, arms } => {
             expr_uses_ident(scrutinee, target)
                 || arms.iter().any(|arm| {
@@ -2505,11 +2857,57 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
                 expr_uses_ident(body, target)
             }
         }
-        Expr::Group(inner) | Expr::Await(inner) => expr_uses_ident(inner, target),
+        Expr::Group(inner) | Expr::Await(inner) | Expr::Discard(inner) => {
+            expr_uses_ident(inner, target)
+        }
         Expr::TryCatch {
             try_expr,
             catch_expr,
         } => expr_uses_ident(try_expr, target) || expr_uses_ident(catch_expr, target),
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_uses_ident(condition, target)
+                || expr_uses_ident(then_expr, target)
+                || expr_uses_ident(else_expr, target)
+        }
+        Expr::Match { scrutinee, arms } => {
+            expr_uses_ident(scrutinee, target)
+                || arms.iter().any(|arm| {
+                    arm.guard
+                        .as_ref()
+                        .is_some_and(|guard| expr_uses_ident(guard, target))
+                        || expr_uses_ident(&arm.value, target)
+                })
+        }
+        Expr::While { condition, body } => {
+            expr_uses_ident(condition, target)
+                || body.iter().any(|stmt| stmt_uses_ident(stmt, target))
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_ref().is_some_and(|stmt| stmt_uses_ident(stmt, target))
+                || condition
+                    .as_ref()
+                    .is_some_and(|expr| expr_uses_ident(expr, target))
+                || step.as_ref().is_some_and(|stmt| stmt_uses_ident(stmt, target))
+                || body.iter().any(|stmt| stmt_uses_ident(stmt, target))
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            expr_uses_ident(iterable, target)
+                || body.iter().any(|stmt| stmt_uses_ident(stmt, target))
+        }
+        Expr::Loop { body } => body.iter().any(|stmt| stmt_uses_ident(stmt, target)),
+        Expr::Return(value) | Expr::Break(value) => {
+            value.as_ref().is_some_and(|expr| expr_uses_ident(expr, target))
+        }
+        Expr::Continue => false,
         Expr::Binary { left, right, .. } => {
             expr_uses_ident(left, target) || expr_uses_ident(right, target)
         }
@@ -2920,7 +3318,7 @@ fn collect_stmt_idents(stmt: &Stmt) -> Vec<String> {
                 out.extend(collect_stmt_idents(nested));
             }
         }
-        Stmt::Break | Stmt::Continue => {}
+        Stmt::Break(_) | Stmt::Continue => {}
         Stmt::Match { scrutinee, arms } => {
             collect_expr_idents(scrutinee, &mut out);
             for arm in arms {
@@ -2970,7 +3368,9 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
                 }
             }
         }
-        Expr::Group(inner) | Expr::Await(inner) => collect_expr_idents(inner, out),
+        Expr::Group(inner) | Expr::Await(inner) | Expr::Discard(inner) => {
+            collect_expr_idents(inner, out)
+        }
         Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -2978,6 +3378,66 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
             collect_expr_idents(try_expr, out);
             collect_expr_idents(catch_expr, out);
         }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_idents(condition, out);
+            collect_expr_idents(then_expr, out);
+            collect_expr_idents(else_expr, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_expr_idents(scrutinee, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_expr_idents(guard, out);
+                }
+                collect_expr_idents(&arm.value, out);
+            }
+        }
+        Expr::While { condition, body } => {
+            collect_expr_idents(condition, out);
+            for stmt in body {
+                out.extend(collect_stmt_idents(stmt));
+            }
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                out.extend(collect_stmt_idents(init));
+            }
+            if let Some(condition) = condition {
+                collect_expr_idents(condition, out);
+            }
+            if let Some(step) = step {
+                out.extend(collect_stmt_idents(step));
+            }
+            for stmt in body {
+                out.extend(collect_stmt_idents(stmt));
+            }
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            collect_expr_idents(iterable, out);
+            for stmt in body {
+                out.extend(collect_stmt_idents(stmt));
+            }
+        }
+        Expr::Loop { body } => {
+            for stmt in body {
+                out.extend(collect_stmt_idents(stmt));
+            }
+        }
+        Expr::Return(value) | Expr::Break(value) => {
+            if let Some(value) = value {
+                collect_expr_idents(value, out);
+            }
+        }
+        Expr::Continue => {}
         Expr::Binary { left, right, .. } => {
             collect_expr_idents(left, out);
             collect_expr_idents(right, out);
@@ -3188,7 +3648,8 @@ fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
             }
             collect_type_instantiation(ret, out);
         }
-        Type::Void
+        Type::Never
+        | Type::Void
         | Type::Bool
         | Type::ISize
         | Type::USize
@@ -3664,7 +4125,7 @@ fn collect_unsafe_contract_sites_from_stmt(
                 );
             }
         }
-        Stmt::Break | Stmt::Continue => {}
+        Stmt::Break(_) | Stmt::Continue => {}
     }
 }
 
@@ -3767,7 +4228,10 @@ fn collect_unsafe_contract_sites_from_expr(
             unsafe_functions,
             out,
         ),
-        Expr::Group(inner) | Expr::Await(inner) | Expr::Unary { expr: inner, .. } => {
+        Expr::Group(inner)
+        | Expr::Await(inner)
+        | Expr::Discard(inner)
+        | Expr::Unary { expr: inner, .. } => {
             collect_unsafe_contract_sites_from_expr(
                 inner,
                 function_name,
@@ -3801,6 +4265,194 @@ fn collect_unsafe_contract_sites_from_expr(
                 out,
             );
         }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_unsafe_contract_sites_from_expr(
+                condition,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            collect_unsafe_contract_sites_from_expr(
+                then_expr,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            collect_unsafe_contract_sites_from_expr(
+                else_expr,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_unsafe_contract_sites_from_expr(
+                scrutinee,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_unsafe_contract_sites_from_expr(
+                        guard,
+                        function_name,
+                        in_unsafe_context,
+                        in_async_context,
+                        owner,
+                        unsafe_functions,
+                        out,
+                    );
+                }
+                collect_unsafe_contract_sites_from_expr(
+                    &arm.value,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::While { condition, body } => {
+            collect_unsafe_contract_sites_from_expr(
+                condition,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            for stmt in body {
+                collect_unsafe_contract_sites_from_stmt(
+                    stmt,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_unsafe_contract_sites_from_stmt(
+                    init,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+            if let Some(condition) = condition {
+                collect_unsafe_contract_sites_from_expr(
+                    condition,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+            if let Some(step) = step {
+                collect_unsafe_contract_sites_from_stmt(
+                    step,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+            for stmt in body {
+                collect_unsafe_contract_sites_from_stmt(
+                    stmt,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            collect_unsafe_contract_sites_from_expr(
+                iterable,
+                function_name,
+                in_unsafe_context,
+                in_async_context,
+                owner,
+                unsafe_functions,
+                out,
+            );
+            for stmt in body {
+                collect_unsafe_contract_sites_from_stmt(
+                    stmt,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::Loop { body } => {
+            for stmt in body {
+                collect_unsafe_contract_sites_from_stmt(
+                    stmt,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::Return(value) | Expr::Break(value) => {
+            if let Some(value) = value {
+                collect_unsafe_contract_sites_from_expr(
+                    value,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
+        Expr::Continue => {}
         Expr::Binary { left, right, .. } => {
             collect_unsafe_contract_sites_from_expr(
                 left,
@@ -3966,6 +4618,55 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             try_expr,
             catch_expr,
         } => deferred_resource(try_expr).or_else(|| deferred_resource(catch_expr)),
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => deferred_resource(condition)
+            .or_else(|| deferred_resource(then_expr))
+            .or_else(|| deferred_resource(else_expr)),
+        ast::Expr::Match { scrutinee, arms } => deferred_resource(scrutinee).or_else(|| {
+            arms.iter().find_map(|arm| {
+                arm.guard
+                    .as_ref()
+                    .and_then(deferred_resource)
+                    .or_else(|| deferred_resource(&arm.value))
+            })
+        }),
+        ast::Expr::While { condition, body } => deferred_resource(condition).or_else(|| {
+            body.iter().find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
+        }),
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => init
+            .as_ref()
+            .and_then(|stmt| stmt_expr(stmt).and_then(deferred_resource))
+            .or_else(|| {
+                condition
+                    .as_ref()
+                    .and_then(|expr| deferred_resource(expr.as_ref()))
+            })
+            .or_else(|| {
+                step.as_ref()
+                    .and_then(|stmt| stmt_expr(stmt).and_then(deferred_resource))
+            })
+            .or_else(|| {
+                body.iter()
+                    .find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
+            }),
+        ast::Expr::ForIn { iterable, body, .. } => deferred_resource(iterable).or_else(|| {
+            body.iter().find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
+        }),
+        ast::Expr::Loop { body } => body
+            .iter()
+            .find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource)),
+        ast::Expr::Return(value) | ast::Expr::Break(value) => {
+            value.as_ref().and_then(|expr| deferred_resource(expr))
+        }
+        ast::Expr::Continue => None,
         ast::Expr::FieldAccess { base, .. } => deferred_resource(base),
         ast::Expr::StructInit { fields, .. } => fields
             .iter()
@@ -3973,6 +4674,7 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
         ast::Expr::EnumInit { payload, .. } => payload.iter().find_map(deferred_resource),
         ast::Expr::Closure { body, .. } => deferred_resource(body),
         ast::Expr::Await(inner) => deferred_resource(inner),
+        ast::Expr::Discard(inner) => deferred_resource(inner),
         ast::Expr::ArrayLiteral(items) => items.iter().find_map(deferred_resource),
         ast::Expr::Index { base, index } => {
             deferred_resource(base).or_else(|| deferred_resource(index))
@@ -4384,13 +5086,16 @@ fn type_check_stmt(
             }
             scopes.pop();
         }
-        Stmt::Break => {
+        Stmt::Break(value) => {
             if loop_depth == 0 {
                 record_type_error(
                     state.errors,
                     state.type_error_details,
                     "`break` is only valid inside loop bodies".to_string(),
                 );
+            }
+            if let Some(value) = value {
+                let _ = infer_expr_type(value, scopes, env, state);
             }
         }
         Stmt::Continue => {
@@ -4620,6 +5325,23 @@ fn infer_expr_type(
         }
         Expr::Group(inner) => infer_expr_type(inner, scopes, env, state),
         Expr::Await(inner) => infer_expr_type(inner, scopes, env, state),
+        Expr::Discard(inner) => {
+            let _ = infer_expr_type(inner, scopes, env, state);
+            Some(Type::Void)
+        }
+        Expr::Return(value) => {
+            if let Some(value) = value {
+                let _ = infer_expr_type(value, scopes, env, state);
+            }
+            Some(Type::Never)
+        }
+        Expr::Break(value) => {
+            if let Some(value) = value {
+                let _ = infer_expr_type(value, scopes, env, state);
+            }
+            Some(Type::Never)
+        }
+        Expr::Continue => Some(Type::Never),
         Expr::Call { callee, args } => {
             let (base_callee, explicit_types) = split_generic_callee(callee);
             if let Some(Type::Function { params, ret }) = scopes.get(base_callee) {
@@ -4998,6 +5720,201 @@ fn infer_expr_type(
                 (_, None) => None,
             }
         }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cond_ty = infer_expr_type(condition, scopes, env, state);
+            if !is_bool_or_integer(cond_ty.as_ref()) {
+                let found = cond_ty
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "unknown".to_string());
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!("if condition must be bool/integer-compatible, got `{found}`"),
+                );
+            }
+            let then_ty = infer_expr_type(then_expr, scopes, env, state);
+            let else_ty = infer_expr_type(else_expr, scopes, env, state);
+            match (then_ty, else_ty) {
+                (Some(left), Some(right)) if type_compatible(&left, &right) => Some(left),
+                (Some(left), Some(right)) => {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "if-expression branches must resolve to compatible types, got `{left}` and `{right}`"
+                        ),
+                    );
+                    None
+                }
+                (Some(left), None) => Some(left),
+                (None, Some(right)) => Some(right),
+                (None, None) => None,
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            let scrutinee_ty = infer_expr_type(scrutinee, scopes, env, state);
+            let mut arm_ty: Option<Type> = None;
+            for arm in arms {
+                let mut arm_scopes = scopes.clone();
+                arm_scopes.push();
+                check_pattern_compatibility(
+                    &arm.pattern,
+                    scrutinee_ty.as_ref(),
+                    struct_defs,
+                    enum_defs,
+                    state.errors,
+                    state.type_error_details,
+                );
+                if let Some(scrutinee_ty) = scrutinee_ty.as_ref() {
+                    bind_pattern_types(
+                        &arm.pattern,
+                        scrutinee_ty,
+                        false,
+                        &mut arm_scopes,
+                        struct_defs,
+                        enum_defs,
+                        state.errors,
+                        state.type_error_details,
+                    );
+                }
+                if let Some(guard) = &arm.guard {
+                    let guard_ty = infer_expr_type(guard, &arm_scopes, env, state);
+                    if !is_bool_or_integer(guard_ty.as_ref()) {
+                        let found = guard_ty
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| "unknown".to_string());
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!("match guard must be bool/integer-compatible, got `{found}`"),
+                        );
+                    }
+                }
+                let value_ty = if arm.returns {
+                    let _ = infer_expr_type(&arm.value, &arm_scopes, env, state);
+                    Some(Type::Never)
+                } else {
+                    infer_expr_type(&arm.value, &arm_scopes, env, state)
+                };
+                if let Some(value_ty) = value_ty {
+                    if let Some(existing) = &arm_ty {
+                        if !type_compatible(existing, &value_ty) {
+                            record_type_error(
+                                state.errors,
+                                state.type_error_details,
+                                format!(
+                                    "match expression arms must resolve to compatible types, got `{existing}` and `{value_ty}`"
+                                ),
+                            );
+                        }
+                    } else {
+                        arm_ty = Some(value_ty);
+                    }
+                }
+            }
+            arm_ty
+        }
+        Expr::While { condition, body } => {
+            let cond_ty = infer_expr_type(condition, scopes, env, state);
+            if !is_bool_or_integer(cond_ty.as_ref()) {
+                let found = cond_ty
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "unknown".to_string());
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!("while-condition must be bool/integer-compatible, got `{found}`"),
+                );
+            }
+            let mut loop_scopes = scopes.clone();
+            loop_scopes.push();
+            for stmt in body {
+                type_check_stmt(stmt, &mut loop_scopes, env, 1, &Type::Void, state);
+            }
+            Some(Type::Void)
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            let mut loop_scopes = scopes.clone();
+            loop_scopes.push();
+            if let Some(init) = init {
+                type_check_stmt(init, &mut loop_scopes, env, 1, &Type::Void, state);
+            }
+            if let Some(condition) = condition {
+                let cond_ty = infer_expr_type(condition, &loop_scopes, env, state);
+                if !is_bool_or_integer(cond_ty.as_ref()) {
+                    let found = cond_ty
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!("for-condition must be bool/integer-compatible, got `{found}`"),
+                    );
+                }
+            }
+            for stmt in body {
+                type_check_stmt(stmt, &mut loop_scopes, env, 1, &Type::Void, state);
+            }
+            if let Some(step) = step {
+                type_check_stmt(step, &mut loop_scopes, env, 1, &Type::Void, state);
+            }
+            Some(Type::Void)
+        }
+        Expr::ForIn {
+            binding,
+            iterable,
+            body,
+        } => {
+            let iterable_ty = infer_expr_type(iterable, scopes, env, state);
+            let binding_ty = match iterable_ty {
+                Some(Type::Named { name, args }) if name == "Range" && args.len() == 1 => {
+                    args[0].clone()
+                }
+                Some(other) => {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!("for-in iterable must be a range expression, got `{other}`"),
+                    );
+                    Type::Int {
+                        signed: true,
+                        bits: 32,
+                    }
+                }
+                None => Type::Int {
+                    signed: true,
+                    bits: 32,
+                },
+            };
+            let mut loop_scopes = scopes.clone();
+            loop_scopes.push();
+            loop_scopes.insert(binding.clone(), binding_ty, false);
+            for stmt in body {
+                type_check_stmt(stmt, &mut loop_scopes, env, 1, &Type::Void, state);
+            }
+            Some(Type::Void)
+        }
+        Expr::Loop { body } => {
+            let mut loop_scopes = scopes.clone();
+            loop_scopes.push();
+            for stmt in body {
+                type_check_stmt(stmt, &mut loop_scopes, env, 1, &Type::Void, state);
+            }
+            Some(Type::Void)
+        }
         Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -5248,6 +6165,7 @@ fn split_generic_callee(callee: &str) -> (&str, Option<Vec<Type>>) {
 
 fn parse_simple_type(token: &str) -> Option<Type> {
     Some(match token {
+        "never" => Type::Never,
         "bool" => Type::Bool,
         "str" => Type::Str,
         "void" => Type::Void,
@@ -5441,7 +6359,10 @@ fn collect_and_rewrite_explicit_generic_calls(
                     rewrite_expr(value, templates, queue, rewrite);
                 }
             }
-            Expr::Closure { body, .. } | Expr::Group(body) | Expr::Await(body) => {
+            Expr::Closure { body, .. }
+            | Expr::Group(body)
+            | Expr::Await(body)
+            | Expr::Discard(body) => {
                 rewrite_expr(body, templates, queue, rewrite)
             }
             Expr::TryCatch {
@@ -5451,6 +6372,56 @@ fn collect_and_rewrite_explicit_generic_calls(
                 rewrite_expr(try_expr, templates, queue, rewrite);
                 rewrite_expr(catch_expr, templates, queue, rewrite);
             }
+            Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                rewrite_expr(condition, templates, queue, rewrite);
+                rewrite_expr(then_expr, templates, queue, rewrite);
+                rewrite_expr(else_expr, templates, queue, rewrite);
+            }
+            Expr::Match { scrutinee, arms } => {
+                rewrite_expr(scrutinee, templates, queue, rewrite);
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        rewrite_expr(guard, templates, queue, rewrite);
+                    }
+                    rewrite_expr(&mut arm.value, templates, queue, rewrite);
+                }
+            }
+            Expr::While { condition, body } => {
+                rewrite_expr(condition, templates, queue, rewrite);
+                rewrite_stmts(body, templates, queue, rewrite);
+            }
+            Expr::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    rewrite_stmts(std::slice::from_mut(init.as_mut()), templates, queue, rewrite);
+                }
+                if let Some(condition) = condition {
+                    rewrite_expr(condition, templates, queue, rewrite);
+                }
+                if let Some(step) = step {
+                    rewrite_stmts(std::slice::from_mut(step.as_mut()), templates, queue, rewrite);
+                }
+                rewrite_stmts(body, templates, queue, rewrite);
+            }
+            Expr::ForIn { iterable, body, .. } => {
+                rewrite_expr(iterable, templates, queue, rewrite);
+                rewrite_stmts(body, templates, queue, rewrite);
+            }
+            Expr::Loop { body } => rewrite_stmts(body, templates, queue, rewrite),
+            Expr::Return(value) | Expr::Break(value) => {
+                if let Some(value) = value {
+                    rewrite_expr(value, templates, queue, rewrite);
+                }
+            }
+            Expr::Continue => {}
             Expr::Unary { expr, .. } => rewrite_expr(expr, templates, queue, rewrite),
             Expr::Binary { left, right, .. } => {
                 rewrite_expr(left, templates, queue, rewrite);
@@ -5538,7 +6509,7 @@ fn collect_and_rewrite_explicit_generic_calls(
                         rewrite_expr(&mut arm.value, templates, queue, rewrite);
                     }
                 }
-                Stmt::Break | Stmt::Continue => {}
+                Stmt::Break(_) | Stmt::Continue => {}
             }
         }
     }
@@ -5569,7 +6540,10 @@ fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, 
                     rewrite_expr(value, rewrite);
                 }
             }
-            Expr::Closure { body, .. } | Expr::Group(body) | Expr::Await(body) => {
+            Expr::Closure { body, .. }
+            | Expr::Group(body)
+            | Expr::Await(body)
+            | Expr::Discard(body) => {
                 rewrite_expr(body, rewrite)
             }
             Expr::TryCatch {
@@ -5579,6 +6553,56 @@ fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, 
                 rewrite_expr(try_expr, rewrite);
                 rewrite_expr(catch_expr, rewrite);
             }
+            Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                rewrite_expr(condition, rewrite);
+                rewrite_expr(then_expr, rewrite);
+                rewrite_expr(else_expr, rewrite);
+            }
+            Expr::Match { scrutinee, arms } => {
+                rewrite_expr(scrutinee, rewrite);
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        rewrite_expr(guard, rewrite);
+                    }
+                    rewrite_expr(&mut arm.value, rewrite);
+                }
+            }
+            Expr::While { condition, body } => {
+                rewrite_expr(condition, rewrite);
+                rewrite_generic_calls_in_stmts(body, rewrite);
+            }
+            Expr::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    rewrite_generic_calls_in_stmts(std::slice::from_mut(init.as_mut()), rewrite);
+                }
+                if let Some(condition) = condition {
+                    rewrite_expr(condition, rewrite);
+                }
+                if let Some(step) = step {
+                    rewrite_generic_calls_in_stmts(std::slice::from_mut(step.as_mut()), rewrite);
+                }
+                rewrite_generic_calls_in_stmts(body, rewrite);
+            }
+            Expr::ForIn { iterable, body, .. } => {
+                rewrite_expr(iterable, rewrite);
+                rewrite_generic_calls_in_stmts(body, rewrite);
+            }
+            Expr::Loop { body } => rewrite_generic_calls_in_stmts(body, rewrite),
+            Expr::Return(value) | Expr::Break(value) => {
+                if let Some(value) = value {
+                    rewrite_expr(value, rewrite);
+                }
+            }
+            Expr::Continue => {}
             Expr::Unary { expr, .. } => rewrite_expr(expr, rewrite),
             Expr::Binary { left, right, .. } => {
                 rewrite_expr(left, rewrite);
@@ -5660,7 +6684,7 @@ fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, 
                     rewrite_expr(&mut arm.value, rewrite);
                 }
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue => {}
         }
     }
 }
@@ -5698,7 +6722,9 @@ fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, 
                 }
                 substitute_expr(body, bindings);
             }
-            Expr::Group(inner) | Expr::Await(inner) => substitute_expr(inner, bindings),
+            Expr::Group(inner) | Expr::Await(inner) | Expr::Discard(inner) => {
+                substitute_expr(inner, bindings)
+            }
             Expr::TryCatch {
                 try_expr,
                 catch_expr,
@@ -5706,6 +6732,56 @@ fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, 
                 substitute_expr(try_expr, bindings);
                 substitute_expr(catch_expr, bindings);
             }
+            Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                substitute_expr(condition, bindings);
+                substitute_expr(then_expr, bindings);
+                substitute_expr(else_expr, bindings);
+            }
+            Expr::Match { scrutinee, arms } => {
+                substitute_expr(scrutinee, bindings);
+                for arm in arms {
+                    if let Some(guard) = &mut arm.guard {
+                        substitute_expr(guard, bindings);
+                    }
+                    substitute_expr(&mut arm.value, bindings);
+                }
+            }
+            Expr::While { condition, body } => {
+                substitute_expr(condition, bindings);
+                substitute_typevars_in_stmts(body, bindings);
+            }
+            Expr::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    substitute_typevars_in_stmts(std::slice::from_mut(init.as_mut()), bindings);
+                }
+                if let Some(condition) = condition {
+                    substitute_expr(condition, bindings);
+                }
+                if let Some(step) = step {
+                    substitute_typevars_in_stmts(std::slice::from_mut(step.as_mut()), bindings);
+                }
+                substitute_typevars_in_stmts(body, bindings);
+            }
+            Expr::ForIn { iterable, body, .. } => {
+                substitute_expr(iterable, bindings);
+                substitute_typevars_in_stmts(body, bindings);
+            }
+            Expr::Loop { body } => substitute_typevars_in_stmts(body, bindings),
+            Expr::Return(value) | Expr::Break(value) => {
+                if let Some(value) = value {
+                    substitute_expr(value, bindings);
+                }
+            }
+            Expr::Continue => {}
             Expr::Unary { expr, .. } => substitute_expr(expr, bindings),
             Expr::Binary { left, right, .. } => {
                 substitute_expr(left, bindings);
@@ -5791,7 +6867,7 @@ fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, 
                     substitute_expr(&mut arm.value, bindings);
                 }
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break(_) | Stmt::Continue => {}
         }
     }
 }
@@ -6575,6 +7651,7 @@ fn pattern_binding_type_map(
 
 fn type_compatible(expected: &Type, actual: &Type) -> bool {
     match (expected, actual) {
+        (Type::Never, _) | (_, Type::Never) => true,
         (Type::TypeVar(_), _) | (_, Type::TypeVar(_)) => true,
         (
             Type::Function {
@@ -6606,7 +7683,7 @@ fn is_float_type(ty: &Type) -> bool {
 }
 
 fn is_bool_or_integer(ty: Option<&Type>) -> bool {
-    matches!(ty, Some(Type::Bool)) || ty.is_some_and(is_integer_type)
+    matches!(ty, Some(Type::Bool | Type::Never)) || ty.is_some_and(is_integer_type)
 }
 
 fn record_type_error(errors: &mut usize, type_error_details: &mut Vec<String>, detail: String) {
@@ -6621,6 +7698,7 @@ fn eval_const_i32(expr: &Expr, known: &HashMap<String, i32>) -> Option<i32> {
         Expr::Char(v) => Some(*v as i32),
         Expr::Ident(name) => known.get(name).copied(),
         Expr::Group(inner) => eval_const_i32(inner, known),
+        Expr::Discard(inner) => eval_const_i32(inner, known),
         Expr::Unary { op, expr } => {
             let value = eval_const_i32(expr, known)?;
             Some(match op {
@@ -6682,6 +7760,18 @@ fn eval_const_i32(expr: &Expr, known: &HashMap<String, i32>) -> Option<i32> {
                 ast::BinaryOp::Neq => (lhs != rhs) as i32,
             })
         }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cond = eval_const_i32(condition, known)?;
+            if cond != 0 {
+                eval_const_i32(then_expr, known)
+            } else {
+                eval_const_i32(else_expr, known)
+            }
+        }
         _ => None,
     }
 }
@@ -6734,7 +7824,7 @@ fn stmt_has_explicit_return(stmt: &Stmt) -> bool {
                 || body.iter().any(stmt_has_explicit_return)
         }
         Stmt::ForIn { body, .. } | Stmt::Loop { body } => body.iter().any(stmt_has_explicit_return),
-        Stmt::Break | Stmt::Continue => false,
+        Stmt::Break(_) | Stmt::Continue => false,
         Stmt::Match { arms, .. } => arms
             .iter()
             .any(|arm| arm.returns || expr_has_nested_return(&arm.value)),
@@ -6942,7 +8032,12 @@ fn eval_block_control<'a>(
                     }
                 }
             }
-            Stmt::Break => return EvalOutcome::Break,
+            Stmt::Break(value) => {
+                if let Some(value) = value {
+                    let _ = eval_expr(value, env, functions);
+                }
+                return EvalOutcome::Break;
+            }
             Stmt::Continue => return EvalOutcome::ContinueLoop,
             Stmt::Return(Some(expr)) => {
                 let Some(val) = eval_expr(expr, env, functions) else {
@@ -7077,6 +8172,23 @@ fn eval_expr<'a>(
         })),
         Expr::Group(inner) => eval_expr(inner, env, functions),
         Expr::Await(inner) => eval_expr(inner, env, functions),
+        Expr::Discard(inner) => {
+            let _ = eval_expr(inner, env, functions)?;
+            Some(Value::I32(0))
+        }
+        Expr::Return(value) => {
+            if let Some(value) = value {
+                let _ = eval_expr(value, env, functions)?;
+            }
+            None
+        }
+        Expr::Break(value) => {
+            if let Some(value) = value {
+                let _ = eval_expr(value, env, functions)?;
+            }
+            None
+        }
+        Expr::Continue => None,
         Expr::Call { callee, args } => {
             let (callee_name, _) = split_generic_callee(callee);
             let resolved_name = match functions.get(callee_name) {
@@ -7146,6 +8258,144 @@ fn eval_expr<'a>(
                 (ast::UnaryOp::Neg, Value::F64(v)) => Some(Value::F64(-v)),
                 _ => None,
             }
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let cond = eval_expr(condition, env, functions)?;
+            if truthy(&cond) {
+                eval_expr(then_expr, env, functions)
+            } else {
+                eval_expr(else_expr, env, functions)
+            }
+        }
+        Expr::Match { scrutinee, arms } => {
+            let value = eval_expr(scrutinee, env, functions)?;
+            for arm in arms {
+                let mut arm_env = env.clone();
+                let mut bindings = BTreeMap::new();
+                if !bind_pattern_values(&arm.pattern, &value, &mut bindings) {
+                    continue;
+                }
+                for (name, value) in bindings {
+                    arm_env.insert(name, value);
+                }
+                let guard_ok = match &arm.guard {
+                    Some(guard) => {
+                        let guard_val = eval_expr(guard, &arm_env, functions)?;
+                        truthy(&guard_val)
+                    }
+                    None => true,
+                };
+                if guard_ok {
+                    if arm.returns {
+                        let _ = eval_expr(&arm.value, &arm_env, functions)?;
+                        return None;
+                    }
+                    return eval_expr(&arm.value, &arm_env, functions);
+                }
+            }
+            Some(Value::I32(0))
+        }
+        Expr::While { condition, body } => {
+            let mut local = env.clone();
+            let mut guard = 0usize;
+            while truthy(&eval_expr(condition, &local, functions)?) {
+                match eval_block_control(body, &mut local, functions) {
+                    EvalOutcome::Continue | EvalOutcome::ContinueLoop => {}
+                    EvalOutcome::Break => break,
+                    EvalOutcome::Return(_) => return None,
+                }
+                guard += 1;
+                if guard > 1_000_000 {
+                    return None;
+                }
+            }
+            Some(Value::I32(0))
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            let mut local = env.clone();
+            if let Some(init) = init {
+                let _ = eval_block_control(std::slice::from_ref(init.as_ref()), &mut local, functions);
+            }
+            let mut guard = 0usize;
+            loop {
+                if let Some(condition) = condition {
+                    if !truthy(&eval_expr(condition, &local, functions)?) {
+                        break;
+                    }
+                }
+                match eval_block_control(body, &mut local, functions) {
+                    EvalOutcome::Continue | EvalOutcome::ContinueLoop => {}
+                    EvalOutcome::Break => break,
+                    EvalOutcome::Return(_) => return None,
+                }
+                if let Some(step) = step {
+                    let _ =
+                        eval_block_control(std::slice::from_ref(step.as_ref()), &mut local, functions);
+                }
+                guard += 1;
+                if guard > 1_000_000 {
+                    return None;
+                }
+            }
+            Some(Value::I32(0))
+        }
+        Expr::ForIn {
+            binding,
+            iterable,
+            body,
+        } => {
+            let mut local = env.clone();
+            let range = eval_expr(iterable, &local, functions)?;
+            let Value::Struct { fields, .. } = range else {
+                return None;
+            };
+            let Some(Value::I32(mut current)) = fields.get("start").cloned() else {
+                return None;
+            };
+            let Some(Value::I32(end)) = fields.get("end").cloned() else {
+                return None;
+            };
+            let inclusive = matches!(fields.get("inclusive"), Some(Value::Bool(true)));
+            let mut guard = 0usize;
+            while if inclusive { current <= end } else { current < end } {
+                local.insert(binding.clone(), Value::I32(current));
+                match eval_block_control(body, &mut local, functions) {
+                    EvalOutcome::Continue | EvalOutcome::ContinueLoop => {}
+                    EvalOutcome::Break => break,
+                    EvalOutcome::Return(_) => return None,
+                }
+                current += 1;
+                guard += 1;
+                if guard > 1_000_000 {
+                    return None;
+                }
+            }
+            Some(Value::I32(0))
+        }
+        Expr::Loop { body } => {
+            let mut local = env.clone();
+            let mut guard = 0usize;
+            loop {
+                match eval_block_control(body, &mut local, functions) {
+                    EvalOutcome::Continue | EvalOutcome::ContinueLoop => {}
+                    EvalOutcome::Break => break,
+                    EvalOutcome::Return(_) => return None,
+                }
+                guard += 1;
+                if guard > 1_000_000 {
+                    return None;
+                }
+            }
+            Some(Value::I32(0))
         }
         Expr::StructInit { name, fields } => {
             let mut map = BTreeMap::new();
