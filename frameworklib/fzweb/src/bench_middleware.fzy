@@ -3,13 +3,6 @@ mod middleware;
 
 const ITERATIONS: i32 = 10000000
 
-fn enable_flag(mask: i32, flag: i32) -> i32 {
-    if flag <= 0 then return mask
-    let q = mask / flag
-    if (q % 2) == 1 then return mask
-    return mask + flag
-}
-
 fn workload() -> i32 {
     let mut i = 0
     let mut mask = 0
@@ -17,9 +10,9 @@ fn workload() -> i32 {
     let mut acc = 0
 
     while i < ITERATIONS {
-        mask = enable_flag(mask, middleware.logger_flag())
-        mask = enable_flag(mask, middleware.validation_flag())
-        mask = enable_flag(mask, middleware.rate_limit_flag())
+        mask = middleware.enable_logger(mask)
+        mask = middleware.enable_validation(mask)
+        mask = middleware.enable_rate_limit(mask)
 
         let valid = middleware.validate_body(1, "POST", "{\"x\":1}")
         let allow = middleware.rate_allowed(bucket, 1)

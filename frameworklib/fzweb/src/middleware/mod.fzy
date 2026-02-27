@@ -10,15 +10,80 @@ fn auth_flag() -> i32 { return 32 }
 fn static_flag() -> i32 { return 64 }
 fn validation_flag() -> i32 { return 128 }
 
-fn enabled(mask: i32, flag: i32) -> i32 {
-    if flag <= 0 then return 0
-    let q = mask / flag
-    if (q % 2) == 1 then return 1
+fn logger_enabled(mask: i32) -> i32 {
+    if (mask % 2) == 1 then return 1
     return 0
 }
 
+fn cors_enabled(mask: i32) -> i32 {
+    if ((mask / 2) % 2) == 1 then return 1
+    return 0
+}
+
+fn timeout_enabled(mask: i32) -> i32 {
+    if ((mask / 4) % 2) == 1 then return 1
+    return 0
+}
+
+fn recover_enabled(mask: i32) -> i32 {
+    if ((mask / 8) % 2) == 1 then return 1
+    return 0
+}
+
+fn rate_limit_enabled(mask: i32) -> i32 {
+    if ((mask / 16) % 2) == 1 then return 1
+    return 0
+}
+
+fn auth_enabled(mask: i32) -> i32 {
+    if ((mask / 32) % 2) == 1 then return 1
+    return 0
+}
+
+fn static_enabled(mask: i32) -> i32 {
+    if ((mask / 64) % 2) == 1 then return 1
+    return 0
+}
+
+fn validation_enabled(mask: i32) -> i32 {
+    if ((mask / 128) % 2) == 1 then return 1
+    return 0
+}
+
+fn enabled(mask: i32, flag: i32) -> i32 {
+    if flag == 1 then return logger_enabled(mask)
+    if flag == 2 then return cors_enabled(mask)
+    if flag == 4 then return timeout_enabled(mask)
+    if flag == 8 then return recover_enabled(mask)
+    if flag == 16 then return rate_limit_enabled(mask)
+    if flag == 32 then return auth_enabled(mask)
+    if flag == 64 then return static_enabled(mask)
+    if flag == 128 then return validation_enabled(mask)
+    return 0
+}
+
+fn enable_flag(mask: i32, flag: i32) -> i32 {
+    if enabled(mask, flag) == 1 then return mask
+    return mask + flag
+}
+
+fn enable_logger(mask: i32) -> i32 {
+    if logger_enabled(mask) == 1 then return mask
+    return mask + 1
+}
+
+fn enable_validation(mask: i32) -> i32 {
+    if validation_enabled(mask) == 1 then return mask
+    return mask + 128
+}
+
+fn enable_rate_limit(mask: i32) -> i32 {
+    if rate_limit_enabled(mask) == 1 then return mask
+    return mask + 16
+}
+
 fn apply_timeout(mask: i32, timeout_ms: i32) -> i32 {
-    if enabled(mask, timeout_flag()) == 0 then return 0
+    if timeout_enabled(mask) == 0 then return 0
     let mut safe = timeout_ms
     if safe < 1 { safe = 1 }
     if safe > 30000 { safe = 30000 }
@@ -49,52 +114,46 @@ fn validate_body(strict_json: i32, method: str, body: str) -> i32 {
     if method == "GET" then return 1
     if method == "DELETE" then return 1
     if str.len(body) == 0 then return 1
+    if str.starts_with(body, "{") == 1 then return 1
+    if str.starts_with(body, "[") == 1 then return 1
+
     let t = str.trim(body)
     if str.starts_with(t, "{") == 1 then return 1
     if str.starts_with(t, "[") == 1 then return 1
     return 0
 }
 
-fn rate_init(max_tokens: i32, refill_ms: i32) -> i32 {
+fn rate_init(max_tokens: i32, _refill_ms: i32) -> i32 {
     let mut safe_max = max_tokens
     if safe_max < 1 { safe_max = 1 }
-    let mut safe_refill = refill_ms
-    if safe_refill < 1 { safe_refill = 1 }
-    return (safe_max * 100000) + safe_refill
-}
-
-fn rate_tokens(bucket: i32) -> i32 {
-    return bucket / 100000
-}
-
-fn rate_refill_ms(bucket: i32) -> i32 {
-    return bucket % 100000
+    if safe_max > 10000 { safe_max = 10000 }
+    return safe_max
 }
 
 fn rate_refill(bucket: i32, now_ms: i32) -> i32 {
-    let mut t = rate_tokens(bucket)
-    let r = rate_refill_ms(bucket)
-    if r > 0 {
-        t += (now_ms % (r + 97)) % 3
+    let mut tokens = bucket
+    if (now_ms % 4) == 0 {
+        tokens += 1
     }
-    if t > 10000 { t = 10000 }
-    return (t * 100000) + r
+    if tokens > 10000 { tokens = 10000 }
+    if tokens < 0 { tokens = 0 }
+    return tokens
 }
 
 fn rate_take(bucket: i32, cost: i32) -> i32 {
     let mut spend = cost
     if spend < 1 { spend = 1 }
-    let mut t = rate_tokens(bucket)
-    let r = rate_refill_ms(bucket)
-    if t >= spend {
-        t -= spend
+    let mut tokens = bucket
+    if tokens >= spend {
+        tokens -= spend
     }
-    return (t * 100000) + r
+    if tokens < 0 { tokens = 0 }
+    return tokens
 }
 
 fn rate_allowed(bucket: i32, cost: i32) -> i32 {
     let mut spend = cost
     if spend < 1 { spend = 1 }
-    if rate_tokens(bucket) >= spend then return 1
+    if bucket >= spend then return 1
     return 0
 }

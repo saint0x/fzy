@@ -67,22 +67,22 @@ fn maybe_handle_once(mask: i32, strict_json: i32) -> i32 {
 
     let bucket = middleware.rate_init(support.default_rate_tokens(), support.default_rate_refill_ms())
 
-    if middleware.enabled(mask, middleware.cors_flag()) == 1 {
+    if middleware.cors_enabled(mask) == 1 {
         if middleware.cors_short_circuit(method, path) == 1 {
             return webcore.response_text(conn, 204, "")
         }
     }
-    if middleware.enabled(mask, middleware.auth_flag()) == 1 {
+    if middleware.auth_enabled(mask) == 1 {
         if middleware.auth_bearer(auth_header) == 0 {
             return webcore.response_unauthorized(conn)
         }
     }
-    if middleware.enabled(mask, middleware.validation_flag()) == 1 {
+    if middleware.validation_enabled(mask) == 1 {
         if middleware.validate_body(strict_json, method, body) == 0 {
             return webcore.response_bad_request(conn)
         }
     }
-    if middleware.enabled(mask, middleware.rate_limit_flag()) == 1 {
+    if middleware.rate_limit_enabled(mask) == 1 {
         if middleware.rate_allowed(bucket, 1) == 0 {
             return webcore.response_too_many_requests(conn)
         }
