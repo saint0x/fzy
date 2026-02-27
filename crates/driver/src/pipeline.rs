@@ -3457,6 +3457,10 @@ fn resolve_field_expr(base: &ast::Expr, field: &str) -> Option<ast::Expr> {
             "inclusive" => Some(ast::Expr::Bool(*inclusive)),
             _ => None,
         },
+        ast::Expr::FieldAccess { base, field: lhs } => {
+            let resolved_base = resolve_field_expr(base, lhs)?;
+            resolve_field_expr(&resolved_base, field)
+        }
         ast::Expr::Group(inner) => resolve_field_expr(inner, field),
         _ => None,
     }
@@ -17431,6 +17435,56 @@ mod tests {
         std::fs::write(
             &path,
             "struct Pair { left: i32, right: i32 }\nfn main() -> i32 {\n    return Pair { left: 3, right: 9 }.right\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("detected parser-recognized expressions without full lowering parity")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_accepts_native_nested_field_access_on_struct_literal_expression() {
+        let file_name = format!(
+            "fozzylang-native-nested-struct-literal-field-access-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "struct Inner { value: i32 }\nstruct Outer { inner: Inner }\nfn main() -> i32 {\n    return Outer { inner: Inner { value: 11 } }.inner.value\n}\n",
+        )
+        .expect("temp source should be written");
+
+        let output = verify_file(&path).expect("verify should run");
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message
+                .contains("detected parser-recognized expressions without full lowering parity")
+        }));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn verify_accepts_native_nested_field_access_on_range_literal_expression() {
+        let file_name = format!(
+            "fozzylang-native-nested-range-field-access-supported-{}.fzy",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let path = std::env::temp_dir().join(file_name);
+        std::fs::write(
+            &path,
+            "struct Wrap { r: Range }\nfn main() -> i32 {\n    return Wrap { r: 2..8 }.r.end\n}\n",
         )
         .expect("temp source should be written");
 
