@@ -1,0 +1,75 @@
+const ITERATIONS: i32 = 8000000
+
+fn socket_kind_score(name: str) -> i32 {
+    if name == "stream" then return 11
+    if name == "datagram" then return 17
+    return 23
+}
+
+fn ip_class_score(host: str) -> i32 {
+    if str.contains(host, "::") == 1 then return 29
+    if str.contains(host, ".") == 1 then return 19
+    if host == "localhost" then return 13
+    return 31
+}
+
+fn poll_signal_score(readable: i32, writable: i32, acceptable: i32, closed: i32) -> i32 {
+    if closed == 1 then return 23
+    if readable == 1 then return 11
+    if writable == 1 then return 13
+    if acceptable == 1 then return 17
+    return 5
+}
+
+fn deadline_score(now_ms: i32, deadline_ms: i32, cancelled: i32) -> i32 {
+    if cancelled == 1 then return 31
+    if now_ms > deadline_ms then return 29
+    return 7
+}
+
+fn workload() -> i32 {
+    let hosts = ["127.0.0.1", "localhost", "2001:db8::1", "api.service"]
+    let kinds = ["stream", "datagram", "unix"]
+
+    let mut i: i32 = 0
+    let mut hi: i32 = 0
+    let mut ki: i32 = 0
+    let mut acc: i32 = 0
+
+    while i < ITERATIONS {
+        let host = hosts[hi]
+        let kind = kinds[ki]
+        let port = 1024 + (i % 32000)
+        let tls = i % 2
+        let mut ipv6 = 0
+        if str.contains(host, "::") == 1 {
+            ipv6 = 1
+        }
+        let mut closed = 0
+        if (i + 11) % 29 == 0 {
+            closed = 1
+        }
+        let mut cancelled = 0
+        if (i + 13) % 41 == 0 {
+            cancelled = 1
+        }
+
+        let endpoint_score = (socket_kind_score(kind) + ip_class_score(host) + (port % 97) + (tls * 37) + (ipv6 * 41)) % 251
+        let signal_score = poll_signal_score(i % 2, (i + 1) % 2, (i + 2) % 2, closed)
+        let dscore = deadline_score(i % 5000, 2500, cancelled)
+
+        acc = (acc + endpoint_score + signal_score + dscore) % 251
+
+        hi += 1
+        if hi == 4 { hi = 0 }
+        ki += 1
+        if ki == 3 { ki = 0 }
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

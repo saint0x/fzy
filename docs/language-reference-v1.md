@@ -20,6 +20,26 @@ This document defines the v1 observable semantics contract used by the toolchain
 - Inclusive `..=` is removed; use `range.closed(start, end)`.
 - One-line control-flow branches use `if <cond> then return|break|continue`.
 
+## If Expression
+
+- `if` is valid in expression position:
+  - `let x = if cond { a } else { b }`
+  - `let x = if cond then a else b`
+- `else` is required for expression-form `if`.
+- Condition must be bool/integer-compatible.
+- Then/else branches must resolve to compatible types.
+
+## Statement Expression Model
+
+- Control-flow constructs are expression-valid in v1 production mode.
+- Expression forms:
+  - `if ... else ...` returns a value (else required).
+  - `match ... { ... }` returns the selected arm value.
+  - `loop { ... }`, `while ... { ... }`, `for ... { ... }`, `for ... in ... { ... }` are expression-valid and resolve to `void`.
+  - `discard <expr>` resolves to `void`.
+  - `return`, `break`, and `continue` are valid in expression position and are diverging control-flow expressions (`never`).
+- `break <expr>` is accepted; in v1 it is treated as control-flow without a value-level loop result.
+
 ## Declarations
 
 - Module-level `const` declarations are supported:

@@ -68,6 +68,36 @@ BENCHES = [
         "fzy_src": ROOT / "examples" / "benchmarks" / "c_interop_contract_scratch_bench.fzy",
         "iterations": 8_000_000,
     },
+    {
+        "name": "http_kernel",
+        "rust_mode": "http",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "http_scratch_bench.fzy",
+        "iterations": 8_000_000,
+    },
+    {
+        "name": "network_kernel",
+        "rust_mode": "network",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "network_scratch_bench.fzy",
+        "iterations": 8_000_000,
+    },
+    {
+        "name": "concurrency_kernel",
+        "rust_mode": "concurrency",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "concurrency_scratch_bench.fzy",
+        "iterations": 8_000_000,
+    },
+    {
+        "name": "process_kernel",
+        "rust_mode": "process",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "process_scratch_bench.fzy",
+        "iterations": 8_000_000,
+    },
+    {
+        "name": "security_kernel",
+        "rust_mode": "security",
+        "fzy_src": ROOT / "examples" / "benchmarks" / "security_scratch_bench.fzy",
+        "iterations": 8_000_000,
+    },
 ]
 
 
@@ -173,11 +203,9 @@ def parse_args():
 
 
 def classify_ratio(ratio: float) -> str:
-    if ratio < 0.95:
-        return "fzy_faster"
-    if ratio > 1.05:
-        return "rust_faster"
-    return "near_parity"
+    if ratio < 1.0:
+        return "fzy_wins"
+    return "rust_wins"
 
 
 def main():
@@ -264,7 +292,7 @@ def main():
             }
         )
 
-    wins = {"fzy_faster": 0, "rust_faster": 0, "near_parity": 0}
+    wins = {"fzy_wins": 0, "rust_wins": 0}
     for result in suite_results:
         wins[result["classification"]] += 1
 
@@ -318,9 +346,8 @@ def main():
             "",
             "## Suite Summary",
             "",
-            f"- Fzy faster (<0.95x): {wins['fzy_faster']}",
-            f"- Rust faster (>1.05x): {wins['rust_faster']}",
-            f"- Near parity (0.95x-1.05x): {wins['near_parity']}",
+            f"- Fzy wins (ratio < 1.0): {wins['fzy_wins']}",
+            f"- Rust wins (ratio >= 1.0): {wins['rust_wins']}",
             f"- Geometric mean ratio (fzy/rust): {payload['summary']['geomean_ratio_fzy_over_rust']:.3f}x",
             f"- Arithmetic mean ratio (fzy/rust): {payload['summary']['mean_ratio_fzy_over_rust']:.3f}x",
             "",

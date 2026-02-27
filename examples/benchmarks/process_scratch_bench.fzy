@@ -1,0 +1,71 @@
+const ITERATIONS: i32 = 8000000
+
+fn classify_exit_score(exit_code: i32, timed_out: i32, cancelled: i32, signal: i32) -> i32 {
+    if cancelled == 1 then return 29
+    if timed_out == 1 then return 23
+    if signal > 0 then return 31
+    if exit_code == 0 then return 11
+    return 19
+}
+
+fn budget_score(argv_count: i32, env_count: i32, timeout_ms: i32, max_output_bytes: i32, max_children: i32) -> i32 {
+    let mut score = (argv_count * 7) + (env_count * 5)
+    score += max_children % 97
+    score += timeout_ms % 89
+    score += max_output_bytes % 83
+    return score % 251
+}
+
+fn retry_delay_ms(attempt: i32, base_ms: i32, max_ms: i32) -> i32 {
+    let mut delay = base_ms
+    if delay < 1 {
+        delay = 1
+    }
+    let mut i = 1
+    while i < attempt {
+        delay = delay * 2
+        if delay > max_ms {
+            delay = max_ms
+        }
+        i += 1
+    }
+    return delay
+}
+
+fn workload() -> i32 {
+    let mut i: i32 = 0
+    let mut attempt: i32 = 1
+    let mut acc: i32 = 0
+
+    while i < ITERATIONS {
+        let exit_code = i % 5
+        let mut timed_out = 0
+        if i % 17 == 0 {
+            timed_out = 1
+        }
+        let mut cancelled = 0
+        if i % 29 == 0 {
+            cancelled = 1
+        }
+        let mut signal = 0
+        if i % 41 == 0 {
+            signal = 9
+        }
+
+        let a = classify_exit_score(exit_code, timed_out, cancelled, signal)
+        let b = budget_score((i % 9) + 1, (i % 19) + 2, 30000, 1048576, 16)
+        let c = retry_delay_ms(attempt, 4, 128)
+
+        acc = (acc + a + b + c) % 251
+
+        attempt += 1
+        if attempt > 7 { attempt = 1 }
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

@@ -1,0 +1,73 @@
+enum ExitClass {
+    Ok,
+    Failure,
+    Timeout,
+    Cancelled,
+    Signaled,
+}
+
+struct ProcessLimits {
+    timeout_ms: i32,
+    max_output_bytes: i32,
+    max_children: i32,
+}
+
+fn default_limits() -> ProcessLimits {
+    return ProcessLimits {
+        timeout_ms: 30000,
+        max_output_bytes: 1048576,
+        max_children: 16,
+    }
+}
+
+fn classify_exit(exit_code: i32, timed_out: i32, cancelled: i32, signal: i32) -> ExitClass {
+    if cancelled == 1 then return ExitClass::Cancelled
+    if timed_out == 1 then return ExitClass::Timeout
+    if signal > 0 then return ExitClass::Signaled
+    if exit_code == 0 then return ExitClass::Ok
+    return ExitClass::Failure
+}
+
+fn class_score(class: ExitClass) -> i32 {
+    match class {
+        ExitClass::Ok => return 11,
+        ExitClass::Failure => return 19,
+        ExitClass::Timeout => return 23,
+        ExitClass::Cancelled => return 29,
+        ExitClass::Signaled => return 31,
+        _ => return 19,
+    }
+}
+
+fn budget_score(argv_count: i32, env_count: i32, limits: ProcessLimits) -> i32 {
+    let mut score = (argv_count * 7) + (env_count * 5)
+    score += limits.max_children % 97
+    score += limits.timeout_ms % 89
+    score += limits.max_output_bytes % 83
+    return score % 251
+}
+
+fn retry_delay_ms(attempt: i32, base_ms: i32, max_ms: i32) -> i32 {
+    let mut delay = base_ms
+    if delay < 1 {
+        delay = 1
+    }
+    let mut i = 1
+    while i < attempt {
+        delay = delay * 2
+        if delay > max_ms {
+            delay = max_ms
+        }
+        i += 1
+    }
+    return delay
+}
+
+fn sample() -> i32 {
+    let limits = default_limits()
+    let class = classify_exit(0, 0, 0, 0)
+    let a = class_score(class)
+    let b = budget_score(4, 12, limits)
+    let c = retry_delay_ms(5, 4, 128)
+    return (a + b + c) % 251
+}

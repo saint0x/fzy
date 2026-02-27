@@ -1,0 +1,89 @@
+const ITERATIONS: i32 = 8000000
+
+fn redact_key_score(key: str) -> i32 {
+    if key == "secret" then return 31
+    if key == "token" then return 29
+    if key == "password" then return 37
+    if key == "api_key" then return 41
+    if key == "bearer" then return 43
+    if key == "jwt" then return 47
+    if key == "authorization" then return 53
+    return 11
+}
+
+fn auth_score(has_token: i32, expired: i32, scope_ok: i32, mfa_required: i32, mfa_present: i32) -> i32 {
+    if has_token == 0 then return 17
+    if expired == 1 then return 23
+    if scope_ok == 0 then return 23
+    if mfa_required == 1 && mfa_present == 0 then return 17
+    return 11
+}
+
+fn refill_tokens(tokens: i32, elapsed_ms: i32, refill_per_sec: i32, max_tokens: i32) -> i32 {
+    let mut next = tokens
+    if elapsed_ms > 0 {
+        next += (elapsed_ms * refill_per_sec) / 1000
+    }
+    if next > max_tokens {
+        next = max_tokens
+    }
+    return next
+}
+
+fn consume_tokens(tokens: i32, cost: i32) -> i32 {
+    if tokens < cost then return -1
+    return tokens - cost
+}
+
+fn workload() -> i32 {
+    let keys = ["secret", "token", "password", "api_key", "bearer", "jwt", "authorization", "safe"]
+
+    let mut i: i32 = 0
+    let mut ki: i32 = 0
+    let mut tokens: i32 = 8
+    let mut acc: i32 = 0
+
+    while i < ITERATIONS {
+        let key = keys[ki]
+        let mut has_token = 1
+        if i % 7 == 0 {
+            has_token = 0
+        }
+        let mut expired = 0
+        if i % 11 == 0 {
+            expired = 1
+        }
+        let mut scope_ok = 1
+        if i % 13 == 0 {
+            scope_ok = 0
+        }
+        let mut mfa_required = 0
+        if i % 5 == 0 {
+            mfa_required = 1
+        }
+        let mut mfa_present = 0
+        if i % 3 == 0 {
+            mfa_present = 1
+        }
+
+        tokens = refill_tokens(tokens, 250, 4, 16)
+        let rem = consume_tokens(tokens, 1)
+        if rem >= 0 {
+            tokens = rem
+        }
+
+        let a = redact_key_score(key)
+        let b = auth_score(has_token, expired, scope_ok, mfa_required, mfa_present)
+        acc = (acc + a + b + (tokens % 17)) % 251
+
+        ki += 1
+        if ki == 8 { ki = 0 }
+        i += 1
+    }
+
+    return acc
+}
+
+fn main() -> i32 {
+    return workload()
+}

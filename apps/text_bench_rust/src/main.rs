@@ -363,6 +363,404 @@ fn c_interop_contract_workload() -> i32 {
     acc
 }
 
+#[inline(always)]
+fn parse_method_score(name: &str) -> i32 {
+    match name {
+        "GET" => 11,
+        "POST" => 13,
+        "PUT" => 17,
+        "DELETE" => 19,
+        "PATCH" => 23,
+        "HEAD" => 29,
+        _ => 31,
+    }
+}
+
+#[inline(always)]
+fn status_score(status: i32) -> i32 {
+    if (100..200).contains(&status) {
+        return 7;
+    }
+    if (200..300).contains(&status) {
+        return 11;
+    }
+    if (300..400).contains(&status) {
+        return 17;
+    }
+    if (400..500).contains(&status) {
+        return 23;
+    }
+    if (500..600).contains(&status) {
+        return 29;
+    }
+    31
+}
+
+#[inline(always)]
+fn route_score(method: &str, path: &str, query_len: i32, body_bytes: i32, timeout_ms: i32, max_body: i32) -> i32 {
+    let mut safe_body = body_bytes;
+    if safe_body < 0 {
+        safe_body = 0;
+    }
+    if safe_body > max_body {
+        safe_body = max_body;
+    }
+    let base = parse_method_score(method) * 131 + (path.len() as i32 * 17);
+    (base + query_len * 7 + (safe_body % 251) + (timeout_ms % 97)) % 251
+}
+
+fn http_workload() -> i32 {
+    let methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"];
+    let paths = ["/", "/v1/users", "/v1/orders", "/healthz"];
+    let statuses = [200, 201, 204, 301, 404, 503];
+
+    let mut i = 0;
+    let mut mi = 0usize;
+    let mut pi = 0usize;
+    let mut si = 0usize;
+    let mut acc = 0i32;
+
+    while i < ITERATIONS {
+        let method = methods[mi];
+        let path = paths[pi];
+        let status = statuses[si];
+        let query_len = (i % 23) + 3;
+        let body_bytes = (i * 7) % 2_000_000;
+
+        let a = route_score(method, path, query_len, body_bytes, 2500, 1_048_576);
+        let b = status_score(status);
+        acc = (acc + a + b) % 251;
+
+        mi += 1;
+        if mi == methods.len() {
+            mi = 0;
+        }
+        pi += 1;
+        if pi == paths.len() {
+            pi = 0;
+        }
+        si += 1;
+        if si == statuses.len() {
+            si = 0;
+        }
+        i += 1;
+    }
+
+    acc
+}
+
+#[inline(always)]
+fn socket_kind_score(name: &str) -> i32 {
+    if name == "stream" {
+        return 11;
+    }
+    if name == "datagram" {
+        return 17;
+    }
+    23
+}
+
+#[inline(always)]
+fn ip_class_score(host: &str) -> i32 {
+    if host.contains("::") {
+        return 29;
+    }
+    if host.contains('.') {
+        return 19;
+    }
+    if host == "localhost" {
+        return 13;
+    }
+    31
+}
+
+#[inline(always)]
+fn poll_signal_score(readable: i32, writable: i32, acceptable: i32, closed: i32) -> i32 {
+    if closed == 1 {
+        return 23;
+    }
+    if readable == 1 {
+        return 11;
+    }
+    if writable == 1 {
+        return 13;
+    }
+    if acceptable == 1 {
+        return 17;
+    }
+    5
+}
+
+#[inline(always)]
+fn deadline_score(now_ms: i32, deadline_ms: i32, cancelled: i32) -> i32 {
+    if cancelled == 1 {
+        return 31;
+    }
+    if now_ms > deadline_ms {
+        return 29;
+    }
+    7
+}
+
+fn network_workload() -> i32 {
+    let hosts = ["127.0.0.1", "localhost", "2001:db8::1", "api.service"];
+    let kinds = ["stream", "datagram", "unix"];
+
+    let mut i = 0;
+    let mut hi = 0usize;
+    let mut ki = 0usize;
+    let mut acc = 0i32;
+
+    while i < ITERATIONS {
+        let host = hosts[hi];
+        let kind = kinds[ki];
+        let port = 1024 + (i % 32_000);
+        let tls = i % 2;
+        let ipv6 = i32::from(host.contains("::"));
+        let closed = i32::from((i + 11) % 29 == 0);
+        let cancelled = i32::from((i + 13) % 41 == 0);
+
+        let endpoint_score = (socket_kind_score(kind) + ip_class_score(host) + (port % 97) + (tls * 37) + (ipv6 * 41)) % 251;
+        let signal_score = poll_signal_score(i % 2, (i + 1) % 2, (i + 2) % 2, closed);
+        let dscore = deadline_score(i % 5000, 2500, cancelled);
+        acc = (acc + endpoint_score + signal_score + dscore) % 251;
+
+        hi += 1;
+        if hi == hosts.len() {
+            hi = 0;
+        }
+        ki += 1;
+        if ki == kinds.len() {
+            ki = 0;
+        }
+        i += 1;
+    }
+
+    acc
+}
+
+#[inline(always)]
+fn enqueue_depth(depth: i32, capacity: i32, policy: i32) -> i32 {
+    if depth < capacity {
+        return depth + 1;
+    }
+    if policy == 0 {
+        return depth;
+    }
+    if policy == 1 {
+        return capacity;
+    }
+    depth
+}
+
+#[inline(always)]
+fn backpressure_score(depth: i32, capacity: i32) -> i32 {
+    let watermark = (capacity * 3) / 4;
+    if depth >= capacity {
+        return 31;
+    }
+    if depth >= watermark {
+        return 17;
+    }
+    3
+}
+
+#[inline(always)]
+fn consume_depth(depth: i32, tick: i32) -> i32 {
+    if tick % 3 == 0 {
+        if depth <= 0 {
+            return 0;
+        }
+        return depth - 1;
+    }
+    depth
+}
+
+fn concurrency_workload() -> i32 {
+    let capacity = 64;
+    let mut i = 0;
+    let mut depth = 0i32;
+    let mut policy = 0i32;
+    let mut acc = 0i32;
+
+    while i < ITERATIONS {
+        depth = enqueue_depth(depth, capacity, policy);
+        acc = (acc + backpressure_score(depth, capacity)) % 251;
+        depth = consume_depth(depth, i);
+        acc = (acc + depth) % 251;
+
+        policy += 1;
+        if policy == 3 {
+            policy = 0;
+        }
+        i += 1;
+    }
+
+    acc
+}
+
+#[inline(always)]
+fn classify_exit_score(exit_code: i32, timed_out: i32, cancelled: i32, signal: i32) -> i32 {
+    if cancelled == 1 {
+        return 29;
+    }
+    if timed_out == 1 {
+        return 23;
+    }
+    if signal > 0 {
+        return 31;
+    }
+    if exit_code == 0 {
+        return 11;
+    }
+    19
+}
+
+#[inline(always)]
+fn budget_score(argv_count: i32, env_count: i32, timeout_ms: i32, max_output_bytes: i32, max_children: i32) -> i32 {
+    let mut score = (argv_count * 7) + (env_count * 5);
+    score += max_children % 97;
+    score += timeout_ms % 89;
+    score += max_output_bytes % 83;
+    score % 251
+}
+
+#[inline(always)]
+fn retry_delay_ms(attempt: i32, base_ms: i32, max_ms: i32) -> i32 {
+    let mut delay = if base_ms < 1 { 1 } else { base_ms };
+    let mut i = 1;
+    while i < attempt {
+        delay *= 2;
+        if delay > max_ms {
+            delay = max_ms;
+        }
+        i += 1;
+    }
+    delay
+}
+
+fn process_workload() -> i32 {
+    let mut i = 0;
+    let mut attempt = 1i32;
+    let mut acc = 0i32;
+
+    while i < ITERATIONS {
+        let exit_code = i % 5;
+        let timed_out = i32::from(i % 17 == 0);
+        let cancelled = i32::from(i % 29 == 0);
+        let signal = if i % 41 == 0 { 9 } else { 0 };
+
+        let a = classify_exit_score(exit_code, timed_out, cancelled, signal);
+        let b = budget_score((i % 9) + 1, (i % 19) + 2, 30000, 1_048_576, 16);
+        let c = retry_delay_ms(attempt, 4, 128);
+        acc = (acc + a + b + c) % 251;
+
+        attempt += 1;
+        if attempt > 7 {
+            attempt = 1;
+        }
+        i += 1;
+    }
+
+    acc
+}
+
+#[inline(always)]
+fn redact_key_score(key: &str) -> i32 {
+    match key {
+        "secret" => 31,
+        "token" => 29,
+        "password" => 37,
+        "api_key" => 41,
+        "bearer" => 43,
+        "jwt" => 47,
+        "authorization" => 53,
+        _ => 11,
+    }
+}
+
+#[inline(always)]
+fn auth_score(has_token: i32, expired: i32, scope_ok: i32, mfa_required: i32, mfa_present: i32) -> i32 {
+    if has_token == 0 {
+        return 17;
+    }
+    if expired == 1 {
+        return 23;
+    }
+    if scope_ok == 0 {
+        return 23;
+    }
+    if mfa_required == 1 && mfa_present == 0 {
+        return 17;
+    }
+    11
+}
+
+#[inline(always)]
+fn refill_tokens(tokens: i32, elapsed_ms: i32, refill_per_sec: i32, max_tokens: i32) -> i32 {
+    let mut next = tokens;
+    if elapsed_ms > 0 {
+        next += (elapsed_ms * refill_per_sec) / 1000;
+    }
+    if next > max_tokens {
+        next = max_tokens;
+    }
+    next
+}
+
+#[inline(always)]
+fn consume_tokens(tokens: i32, cost: i32) -> i32 {
+    if tokens < cost {
+        return -1;
+    }
+    tokens - cost
+}
+
+fn security_workload() -> i32 {
+    let keys = [
+        "secret",
+        "token",
+        "password",
+        "api_key",
+        "bearer",
+        "jwt",
+        "authorization",
+        "safe",
+    ];
+
+    let mut i = 0;
+    let mut ki = 0usize;
+    let mut tokens = 8i32;
+    let mut acc = 0i32;
+
+    while i < ITERATIONS {
+        let key = keys[ki];
+        let has_token = i32::from(i % 7 != 0);
+        let expired = i32::from(i % 11 == 0);
+        let scope_ok = i32::from(i % 13 != 0);
+        let mfa_required = i32::from(i % 5 == 0);
+        let mfa_present = i32::from(i % 3 == 0);
+
+        tokens = refill_tokens(tokens, 250, 4, 16);
+        let rem = consume_tokens(tokens, 1);
+        if rem >= 0 {
+            tokens = rem;
+        }
+
+        let a = redact_key_score(key);
+        let b = auth_score(has_token, expired, scope_ok, mfa_required, mfa_present);
+        acc = (acc + a + b + (tokens % 17)) % 251;
+
+        ki += 1;
+        if ki == keys.len() {
+            ki = 0;
+        }
+        i += 1;
+    }
+
+    acc
+}
+
 fn main() {
     let mode = std::env::args()
         .nth(1)
@@ -377,9 +775,14 @@ fn main() {
         "duration" => duration_workload(),
         "abi_pair" => abi_pair_workload(),
         "c_interop_contract" => c_interop_contract_workload(),
+        "http" => http_workload(),
+        "network" => network_workload(),
+        "concurrency" => concurrency_workload(),
+        "process" => process_workload(),
+        "security" => security_workload(),
         other => {
             eprintln!(
-                "unknown mode `{other}`; expected one of: resultx,text,capability,task_retry,arithmetic,bytes,duration,abi_pair,c_interop_contract"
+                "unknown mode `{other}`; expected one of: resultx,text,capability,task_retry,arithmetic,bytes,duration,abi_pair,c_interop_contract,http,network,concurrency,process,security"
             );
             std::process::exit(2);
         }

@@ -15,6 +15,11 @@ BENCHES = [
     ("duration_kernel", "duration", ROOT / "examples" / "benchmarks" / "duration_scratch_bench.fzy"),
     ("abi_pair_kernel", "abi_pair", ROOT / "examples" / "benchmarks" / "abi_pair_scratch_bench.fzy"),
     ("c_interop_contract_kernel", "c_interop_contract", ROOT / "examples" / "benchmarks" / "c_interop_contract_scratch_bench.fzy"),
+    ("http_kernel", "http", ROOT / "examples" / "benchmarks" / "http_scratch_bench.fzy"),
+    ("network_kernel", "network", ROOT / "examples" / "benchmarks" / "network_scratch_bench.fzy"),
+    ("concurrency_kernel", "concurrency", ROOT / "examples" / "benchmarks" / "concurrency_scratch_bench.fzy"),
+    ("process_kernel", "process", ROOT / "examples" / "benchmarks" / "process_scratch_bench.fzy"),
+    ("security_kernel", "security", ROOT / "examples" / "benchmarks" / "security_scratch_bench.fzy"),
 ]
 
 

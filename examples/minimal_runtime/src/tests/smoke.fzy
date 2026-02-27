@@ -15,6 +15,14 @@ test "det_language_surface" {
     discard selected;
     let routed: i32 = mask % 5;
     let ok: bool = !(routed == 0);
+    let class: i32 = match routed {
+        0 => 10,
+        1 => 20,
+        _ => 30,
+    };
+    discard loop {
+        break class;
+    };
     if ok {
         pulse();
     } else {

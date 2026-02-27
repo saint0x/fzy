@@ -1,0 +1,79 @@
+enum OverflowPolicy {
+    Reject,
+    DropOldest,
+    DropNewest,
+}
+
+enum Backpressure {
+    None,
+    HighWatermark,
+    Saturated,
+}
+
+struct QueueState {
+    depth: i32,
+    capacity: i32,
+    high_watermark: i32,
+}
+
+fn high_watermark(capacity: i32) -> i32 {
+    let mut capped = capacity
+    if capped < 1 {
+        capped = 1
+    }
+    return (capped * 3) / 4
+}
+
+fn init_state(capacity: i32) -> QueueState {
+    let mut cap = capacity
+    if cap < 1 {
+        cap = 1
+    }
+    return QueueState {
+        depth: 0,
+        capacity: cap,
+        high_watermark: high_watermark(cap),
+    }
+}
+
+fn classify_backpressure(depth: i32, capacity: i32, watermark: i32) -> Backpressure {
+    if depth >= capacity then return Backpressure::Saturated
+    if depth >= watermark then return Backpressure::HighWatermark
+    return Backpressure::None
+}
+
+fn enqueue_depth(depth: i32, capacity: i32, policy: OverflowPolicy) -> i32 {
+    if depth < capacity {
+        return depth + 1
+    }
+
+    match policy {
+        OverflowPolicy::Reject => return depth,
+        OverflowPolicy::DropOldest => return capacity,
+        OverflowPolicy::DropNewest => return depth,
+        _ => return depth,
+    }
+}
+
+fn backpressure_score(signal: Backpressure) -> i32 {
+    match signal {
+        Backpressure::None => return 3,
+        Backpressure::HighWatermark => return 17,
+        Backpressure::Saturated => return 31,
+        _ => return 3,
+    }
+}
+
+fn consume_depth(depth: i32) -> i32 {
+    if depth <= 0 then return 0
+    return depth - 1
+}
+
+fn sample() -> i32 {
+    let state = init_state(64)
+    let d1 = enqueue_depth(state.depth, state.capacity, OverflowPolicy::DropOldest)
+    let d2 = enqueue_depth(d1, state.capacity, OverflowPolicy::DropOldest)
+    let sig = classify_backpressure(d2, state.capacity, state.high_watermark)
+    let d3 = consume_depth(d2)
+    return (d3 + backpressure_score(sig)) % 251
+}

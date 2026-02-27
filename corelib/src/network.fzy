@@ -1,0 +1,85 @@
+enum SocketKind {
+    Stream,
+    Datagram,
+    UnixDatagram,
+}
+
+enum PollSignal {
+    Readable,
+    Writable,
+    Acceptable,
+    Closed,
+    Idle,
+}
+
+struct Endpoint {
+    port: i32,
+    tls: i32,
+    ipv6: i32,
+}
+
+fn parse_socket_kind(name: str) -> SocketKind {
+    if name == "stream" then return SocketKind::Stream
+    if name == "datagram" then return SocketKind::Datagram
+    return SocketKind::UnixDatagram
+}
+
+fn socket_kind_score(kind: SocketKind) -> i32 {
+    match kind {
+        SocketKind::Stream => return 11,
+        SocketKind::Datagram => return 17,
+        SocketKind::UnixDatagram => return 23,
+        _ => return 23,
+    }
+}
+
+fn ip_class_score(host: str) -> i32 {
+    if str.contains(host, "::") == 1 then return 29
+    if str.contains(host, ".") == 1 then return 19
+    if host == "localhost" then return 13
+    return 31
+}
+
+fn endpoint_score(host: str, endpoint: Endpoint, kind: SocketKind) -> i32 {
+    let mut score = socket_kind_score(kind)
+    score += ip_class_score(host)
+    score += endpoint.port % 97
+    if endpoint.tls == 1 { score += 37 }
+    if endpoint.ipv6 == 1 { score += 41 }
+    return score % 251
+}
+
+fn poll_signal(readable: i32, writable: i32, acceptable: i32, closed: i32) -> PollSignal {
+    if closed == 1 then return PollSignal::Closed
+    if readable == 1 then return PollSignal::Readable
+    if writable == 1 then return PollSignal::Writable
+    if acceptable == 1 then return PollSignal::Acceptable
+    return PollSignal::Idle
+}
+
+fn poll_signal_score(signal: PollSignal) -> i32 {
+    match signal {
+        PollSignal::Readable => return 11,
+        PollSignal::Writable => return 13,
+        PollSignal::Acceptable => return 17,
+        PollSignal::Closed => return 23,
+        PollSignal::Idle => return 5,
+        _ => return 5,
+    }
+}
+
+fn deadline_state(now_ms: i32, deadline_ms: i32, cancelled: i32) -> i32 {
+    if cancelled == 1 then return 31
+    if now_ms > deadline_ms then return 29
+    return 7
+}
+
+fn sample() -> i32 {
+    let ep = Endpoint { port: 443, tls: 1, ipv6: 1 }
+    let kind = parse_socket_kind("stream")
+    let signal = poll_signal(1, 0, 0, 0)
+    let a = endpoint_score("2001:db8::1", ep, kind)
+    let b = poll_signal_score(signal)
+    let c = deadline_state(101, 150, 0)
+    return (a + b + c) % 251
+}

@@ -1,0 +1,100 @@
+enum Method {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Head,
+    Options,
+}
+
+enum StatusClass {
+    Informational,
+    Success,
+    Redirect,
+    ClientError,
+    ServerError,
+    Unknown,
+}
+
+struct Limits {
+    max_header_bytes: i32,
+    max_body_bytes: i32,
+    request_timeout_ms: i32,
+    idle_timeout_ms: i32,
+}
+
+fn parse_method(name: str) -> Method {
+    if name == "GET" then return Method::Get
+    if name == "POST" then return Method::Post
+    if name == "PUT" then return Method::Put
+    if name == "DELETE" then return Method::Delete
+    if name == "PATCH" then return Method::Patch
+    if name == "HEAD" then return Method::Head
+    return Method::Options
+}
+
+fn method_score(method: Method) -> i32 {
+    match method {
+        Method::Get => return 11,
+        Method::Post => return 13,
+        Method::Put => return 17,
+        Method::Delete => return 19,
+        Method::Patch => return 23,
+        Method::Head => return 29,
+        Method::Options => return 31,
+        _ => return 31,
+    }
+}
+
+fn default_limits() -> Limits {
+    return Limits {
+        max_header_bytes: 16384,
+        max_body_bytes: 1048576,
+        request_timeout_ms: 2500,
+        idle_timeout_ms: 10000,
+    }
+}
+
+fn clamp_body_size(body_bytes: i32, limits: Limits) -> i32 {
+    if body_bytes < 0 then return 0
+    if body_bytes > limits.max_body_bytes {
+        return limits.max_body_bytes
+    }
+    return body_bytes
+}
+
+fn status_class(status: i32) -> StatusClass {
+    if status >= 100 && status < 200 { return StatusClass::Informational }
+    if status >= 200 && status < 300 { return StatusClass::Success }
+    if status >= 300 && status < 400 { return StatusClass::Redirect }
+    if status >= 400 && status < 500 { return StatusClass::ClientError }
+    if status >= 500 && status < 600 { return StatusClass::ServerError }
+    return StatusClass::Unknown
+}
+
+fn status_class_score(class: StatusClass) -> i32 {
+    match class {
+        StatusClass::Informational => return 7,
+        StatusClass::Success => return 11,
+        StatusClass::Redirect => return 17,
+        StatusClass::ClientError => return 23,
+        StatusClass::ServerError => return 29,
+        StatusClass::Unknown => return 31,
+        _ => return 31,
+    }
+}
+
+fn route_fingerprint(method: Method, path: str, query_len: i32, body_bytes: i32, limits: Limits) -> i32 {
+    let safe_body = clamp_body_size(body_bytes, limits)
+    let base = (method_score(method) * 131) + (str.len(path) * 17)
+    let policy = (limits.request_timeout_ms % 97) + (limits.max_header_bytes % 89)
+    return (base + (query_len * 7) + (safe_body % 251) + policy) % 251
+}
+
+fn sample() -> i32 {
+    let limits = default_limits()
+    let method = parse_method("POST")
+    let score = route_fingerprint(method, "/v1/users", 19, 2048, limits)
+    return (score + status_class_score(status_class(201))) % 251
+}
