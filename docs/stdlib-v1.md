@@ -83,12 +83,38 @@ The v1 stdlib provides production baseline primitives for:
 - `run_child_with_capability(config, token) -> Result<ProcessResult, CapabilityError>`
 - Structured process config supports argv/env/stdin/resource limits/signal behavior.
 - Timeout and cancellation states are explicit in returned process status.
+- Canonical language-facing process builders map to structured handles:
+  - `proc.argv_new/push`
+  - `proc.env_new/set`
+  - `proc.spawn_cmd` / `proc.run_cmd`
+
+### `collections` + JSON
+
+- Dynamic list/map handle APIs are first-class for runtime-safe composition:
+  - `list.new/push/pop/len/get/set/clear/join`
+  - `map.new/set/get/has/delete/keys/len`
+- JSON composition uses dynamic builders:
+  - `json.array(list_handle)`
+  - `json.object(map_handle)`
 
 ### `security`
 
 - Capability audits and operation policy evaluation are structured values.
 - Secret redaction patterns include `secret`, `token`, `password`, `api_key`, `bearer`, `jwt`, `authorization`.
 - Rate limiting primitives return explicit accepted/rejected outcomes.
+
+### `log` and `error`
+
+- `log` surface supports structured fields and JSON-mode logging contracts for production services.
+- Canonical structured fields path is `log.fields(map_handle)`.
+- `error` surface standardizes typed error classification, retryability, and status normalization.
+
+### `storage`
+
+- Storage primitives support low-boilerplate app state persistence:
+  - `storage.append(path, line)`
+  - `storage.atomic_append(path, line)`
+  - `storage.kv_open(path)`, `storage.kv_get(handle, key)`, `storage.kv_put(handle, key, value)`
 
 ### `rng` and crypto
 

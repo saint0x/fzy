@@ -748,9 +748,14 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 step,
                 body,
             } => {
-                init.as_ref().is_some_and(|stmt| statement_uses_cap_token_intrinsic(stmt))
-                    || condition.as_ref().is_some_and(|expr| expr_has_cap_intrinsic(expr))
-                    || step.as_ref().is_some_and(|stmt| statement_uses_cap_token_intrinsic(stmt))
+                init.as_ref()
+                    .is_some_and(|stmt| statement_uses_cap_token_intrinsic(stmt))
+                    || condition
+                        .as_ref()
+                        .is_some_and(|expr| expr_has_cap_intrinsic(expr))
+                    || step
+                        .as_ref()
+                        .is_some_and(|stmt| statement_uses_cap_token_intrinsic(stmt))
                     || body.iter().any(statement_uses_cap_token_intrinsic)
             }
             Expr::ForIn { iterable, body, .. } => {
@@ -1018,7 +1023,8 @@ fn stmt_expr(stmt: &Stmt) -> Option<&Expr> {
         | Stmt::For { .. }
         | Stmt::ForIn { .. }
         | Stmt::Loop { .. }
-        | Stmt::Break(_) | Stmt::Continue
+        | Stmt::Break(_)
+        | Stmt::Continue
         | Stmt::Match { .. }
         | Stmt::Return(None) => None,
     }
@@ -1627,9 +1633,7 @@ fn expr_has_await(expr: &Expr) -> bool {
             condition,
             then_expr,
             else_expr,
-        } => {
-            expr_has_await(condition) || expr_has_await(then_expr) || expr_has_await(else_expr)
-        }
+        } => expr_has_await(condition) || expr_has_await(then_expr) || expr_has_await(else_expr),
         Expr::Match { scrutinee, arms } => {
             expr_has_await(scrutinee)
                 || arms.iter().any(|arm| {
@@ -1807,7 +1811,7 @@ fn collect_function_caps_and_calls(
                         "rng" | "random" | "std.rand" => {
                             self.caps.insert("rng".to_string());
                         }
-                        "fs" | "file" | "std.io" => {
+                        "fs" | "file" | "std.io" | "storage" => {
                             self.caps.insert("fs".to_string());
                         }
                         "http" | "socket" | "std.http" => {
@@ -1821,6 +1825,12 @@ fn collect_function_caps_and_calls(
                         }
                         "thread" | "std.thread" => {
                             self.caps.insert("thread".to_string());
+                        }
+                        "log" | "logger" | "std.log" => {
+                            self.caps.insert("log".to_string());
+                        }
+                        "error" | "err" | "std.error" => {
+                            self.caps.insert("error".to_string());
                         }
                         _ => {}
                     }
@@ -2176,15 +2186,13 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
             Expr::Group(inner)
             | Expr::Await(inner)
             | Expr::Discard(inner)
-            | Expr::Unary { expr: inner, .. } => {
-                analyze_expr(
-                    function_name,
-                    inner,
-                    in_unsafe_context,
-                    unsafe_functions,
-                    violations,
-                )
-            }
+            | Expr::Unary { expr: inner, .. } => analyze_expr(
+                function_name,
+                inner,
+                in_unsafe_context,
+                unsafe_functions,
+                violations,
+            ),
             Expr::TryCatch {
                 try_expr,
                 catch_expr,
@@ -2267,7 +2275,13 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
                     violations,
                 );
                 for stmt in body {
-                    analyze_stmt(function_name, stmt, in_unsafe_context, unsafe_functions, violations);
+                    analyze_stmt(
+                        function_name,
+                        stmt,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
                 }
             }
             Expr::For {
@@ -2277,7 +2291,13 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
                 body,
             } => {
                 if let Some(init) = init {
-                    analyze_stmt(function_name, init, in_unsafe_context, unsafe_functions, violations);
+                    analyze_stmt(
+                        function_name,
+                        init,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
                 }
                 if let Some(condition) = condition {
                     analyze_expr(
@@ -2289,10 +2309,22 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
                     );
                 }
                 if let Some(step) = step {
-                    analyze_stmt(function_name, step, in_unsafe_context, unsafe_functions, violations);
+                    analyze_stmt(
+                        function_name,
+                        step,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
                 }
                 for stmt in body {
-                    analyze_stmt(function_name, stmt, in_unsafe_context, unsafe_functions, violations);
+                    analyze_stmt(
+                        function_name,
+                        stmt,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
                 }
             }
             Expr::ForIn { iterable, body, .. } => {
@@ -2304,12 +2336,24 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
                     violations,
                 );
                 for stmt in body {
-                    analyze_stmt(function_name, stmt, in_unsafe_context, unsafe_functions, violations);
+                    analyze_stmt(
+                        function_name,
+                        stmt,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
                 }
             }
             Expr::Loop { body } => {
                 for stmt in body {
-                    analyze_stmt(function_name, stmt, in_unsafe_context, unsafe_functions, violations);
+                    analyze_stmt(
+                        function_name,
+                        stmt,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
                 }
             }
             Expr::Return(value) | Expr::Break(value) => {
@@ -2892,11 +2936,14 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
             step,
             body,
         } => {
-            init.as_ref().is_some_and(|stmt| stmt_uses_ident(stmt, target))
+            init.as_ref()
+                .is_some_and(|stmt| stmt_uses_ident(stmt, target))
                 || condition
                     .as_ref()
                     .is_some_and(|expr| expr_uses_ident(expr, target))
-                || step.as_ref().is_some_and(|stmt| stmt_uses_ident(stmt, target))
+                || step
+                    .as_ref()
+                    .is_some_and(|stmt| stmt_uses_ident(stmt, target))
                 || body.iter().any(|stmt| stmt_uses_ident(stmt, target))
         }
         Expr::ForIn { iterable, body, .. } => {
@@ -2904,9 +2951,9 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
                 || body.iter().any(|stmt| stmt_uses_ident(stmt, target))
         }
         Expr::Loop { body } => body.iter().any(|stmt| stmt_uses_ident(stmt, target)),
-        Expr::Return(value) | Expr::Break(value) => {
-            value.as_ref().is_some_and(|expr| expr_uses_ident(expr, target))
-        }
+        Expr::Return(value) | Expr::Break(value) => value
+            .as_ref()
+            .is_some_and(|expr| expr_uses_ident(expr, target)),
         Expr::Continue => false,
         Expr::Binary { left, right, .. } => {
             expr_uses_ident(left, target) || expr_uses_ident(right, target)
@@ -3511,7 +3558,7 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                             "rng" | "random" | "std.rand" => {
                                 self.caps.insert("rng".to_string());
                             }
-                            "fs" | "file" | "std.io" => {
+                            "fs" | "file" | "std.io" | "storage" => {
                                 self.caps.insert("fs".to_string());
                             }
                             "http" | "socket" | "std.http" => {
@@ -3525,6 +3572,12 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                             }
                             "thread" | "std.thread" => {
                                 self.caps.insert("thread".to_string());
+                            }
+                            "log" | "logger" | "std.log" => {
+                                self.caps.insert("log".to_string());
+                            }
+                            "error" | "err" | "std.error" => {
+                                self.caps.insert("error".to_string());
                             }
                             _ => {}
                         }
@@ -4231,17 +4284,15 @@ fn collect_unsafe_contract_sites_from_expr(
         Expr::Group(inner)
         | Expr::Await(inner)
         | Expr::Discard(inner)
-        | Expr::Unary { expr: inner, .. } => {
-            collect_unsafe_contract_sites_from_expr(
-                inner,
-                function_name,
-                in_unsafe_context,
-                in_async_context,
-                owner,
-                unsafe_functions,
-                out,
-            )
-        }
+        | Expr::Unary { expr: inner, .. } => collect_unsafe_contract_sites_from_expr(
+            inner,
+            function_name,
+            in_unsafe_context,
+            in_async_context,
+            owner,
+            unsafe_functions,
+            out,
+        ),
         Expr::TryCatch {
             try_expr,
             catch_expr,
@@ -4634,7 +4685,8 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             })
         }),
         ast::Expr::While { condition, body } => deferred_resource(condition).or_else(|| {
-            body.iter().find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
+            body.iter()
+                .find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
         }),
         ast::Expr::For {
             init,
@@ -4658,7 +4710,8 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
                     .find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
             }),
         ast::Expr::ForIn { iterable, body, .. } => deferred_resource(iterable).or_else(|| {
-            body.iter().find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
+            body.iter()
+                .find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
         }),
         ast::Expr::Loop { body } => body
             .iter()
@@ -5404,10 +5457,22 @@ fn infer_expr_type(
             } else if let Some((params, ret)) = runtime_sig {
                 (params, ret)
             } else {
+                let mut detail = format!("unresolved call target `{}`", base_callee);
+                if let Some(stripped) = base_callee.strip_prefix("process.") {
+                    let migrated = format!("proc.{stripped}");
+                    if runtime_call_signature(&migrated).is_some() {
+                        detail.push_str(&format!(
+                            "; `process.*` was removed, migrate to `{}`",
+                            migrated
+                        ));
+                    }
+                } else if let Some(nearest) = nearest_intrinsic_name(base_callee) {
+                    detail.push_str(&format!("; did you mean `{}`?", nearest));
+                }
                 record_type_error(
                     state.errors,
                     state.type_error_details,
-                    format!("unresolved call target `{}`", base_callee),
+                    detail,
                 );
                 return None;
             };
@@ -6362,9 +6427,7 @@ fn collect_and_rewrite_explicit_generic_calls(
             Expr::Closure { body, .. }
             | Expr::Group(body)
             | Expr::Await(body)
-            | Expr::Discard(body) => {
-                rewrite_expr(body, templates, queue, rewrite)
-            }
+            | Expr::Discard(body) => rewrite_expr(body, templates, queue, rewrite),
             Expr::TryCatch {
                 try_expr,
                 catch_expr,
@@ -6401,13 +6464,23 @@ fn collect_and_rewrite_explicit_generic_calls(
                 body,
             } => {
                 if let Some(init) = init {
-                    rewrite_stmts(std::slice::from_mut(init.as_mut()), templates, queue, rewrite);
+                    rewrite_stmts(
+                        std::slice::from_mut(init.as_mut()),
+                        templates,
+                        queue,
+                        rewrite,
+                    );
                 }
                 if let Some(condition) = condition {
                     rewrite_expr(condition, templates, queue, rewrite);
                 }
                 if let Some(step) = step {
-                    rewrite_stmts(std::slice::from_mut(step.as_mut()), templates, queue, rewrite);
+                    rewrite_stmts(
+                        std::slice::from_mut(step.as_mut()),
+                        templates,
+                        queue,
+                        rewrite,
+                    );
                 }
                 rewrite_stmts(body, templates, queue, rewrite);
             }
@@ -6485,13 +6558,23 @@ fn collect_and_rewrite_explicit_generic_calls(
                     body,
                 } => {
                     if let Some(init) = init {
-                        rewrite_stmts(std::slice::from_mut(init.as_mut()), templates, queue, rewrite);
+                        rewrite_stmts(
+                            std::slice::from_mut(init.as_mut()),
+                            templates,
+                            queue,
+                            rewrite,
+                        );
                     }
                     if let Some(condition) = condition {
                         rewrite_expr(condition, templates, queue, rewrite);
                     }
                     if let Some(step) = step {
-                        rewrite_stmts(std::slice::from_mut(step.as_mut()), templates, queue, rewrite);
+                        rewrite_stmts(
+                            std::slice::from_mut(step.as_mut()),
+                            templates,
+                            queue,
+                            rewrite,
+                        );
                     }
                     rewrite_stmts(body, templates, queue, rewrite);
                 }
@@ -6543,9 +6626,7 @@ fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, 
             Expr::Closure { body, .. }
             | Expr::Group(body)
             | Expr::Await(body)
-            | Expr::Discard(body) => {
-                rewrite_expr(body, rewrite)
-            }
+            | Expr::Discard(body) => rewrite_expr(body, rewrite),
             Expr::TryCatch {
                 try_expr,
                 catch_expr,
@@ -7012,31 +7093,196 @@ fn type_satisfies_trait(
 }
 
 pub fn is_runtime_intrinsic(name: &str) -> bool {
-    matches!(
-        name,
-        "spawn"
-            | "thread.spawn"
-            | "spawn_ctx"
-            | "join"
-            | "detach"
-            | "cancel_task"
-            | "task_result"
-            | "yield"
-            | "checkpoint"
-            | "timeout"
-            | "deadline"
-            | "cancel"
-            | "recv"
-            | "pulse"
-            | "task.context"
-            | "task.group_begin"
-            | "task.group_spawn"
-            | "task.group_join"
-            | "task.group_cancel"
-            | "alloc"
-            | "free"
-            | "close"
-    )
+    runtime_intrinsic_names().contains(&name)
+}
+
+pub fn runtime_intrinsic_names() -> &'static [&'static str] {
+    &[
+        "spawn",
+        "thread.spawn",
+        "spawn_ctx",
+        "join",
+        "detach",
+        "cancel_task",
+        "task_result",
+        "yield",
+        "checkpoint",
+        "timeout",
+        "deadline",
+        "cancel",
+        "recv",
+        "pulse",
+        "task.context",
+        "task.group_begin",
+        "task.group_spawn",
+        "task.group_spawn_n",
+        "task.group_join",
+        "task.group_join_all",
+        "task.group_cancel",
+        "task.parallel_map",
+        "alloc",
+        "free",
+        "close",
+        "http.bind",
+        "http.accept",
+        "http.connect",
+        "http.poll_next",
+        "http.listen",
+        "http.read",
+        "http.close",
+        "http.poll_register",
+        "http.method",
+        "http.path",
+        "http.body",
+        "http.body_json",
+        "http.body_bind",
+        "http.header",
+        "http.query",
+        "http.param",
+        "http.headers",
+        "http.request_id",
+        "http.remote_addr",
+        "http.write",
+        "http.write_json",
+        "http.write_response",
+        "http.post_json",
+        "http.post_json_capture",
+        "http.last_status",
+        "http.last_error",
+        "env.get",
+        "str.concat",
+        "str.concat2",
+        "str.concat3",
+        "str.concat4",
+        "str.contains",
+        "str.starts_with",
+        "str.ends_with",
+        "str.replace",
+        "str.trim",
+        "str.split",
+        "str.len",
+        "str.slice",
+        "json.escape",
+        "json.str",
+        "json.raw",
+        "json.from_list",
+        "json.from_map",
+        "json.array",
+        "json.object",
+        "json.to_list",
+        "json.to_map",
+        "json.parse",
+        "json.get",
+        "json.get_str",
+        "json.has",
+        "json.path",
+        "time.now",
+        "time.monotonic_ms",
+        "time.sleep_ms",
+        "time.interval",
+        "time.tick",
+        "time.elapsed_ms",
+        "time.deadline_after",
+        "fs.open",
+        "fs.write",
+        "fs.flush",
+        "fs.atomic_write",
+        "fs.rename_atomic",
+        "fs.fsync",
+        "fs.lock",
+        "fs.read",
+        "fs.read_file",
+        "fs.write_file",
+        "fs.mkdir",
+        "fs.exists",
+        "fs.remove_file",
+        "fs.stat_size",
+        "fs.listdir",
+        "fs.temp_file",
+        "path.join",
+        "path.normalize",
+        "route.match",
+        "route.write_404",
+        "route.write_405",
+        "log.info",
+        "log.warn",
+        "log.error",
+        "log.fields",
+        "log.set_json",
+        "log.correlation_id",
+        "error.code",
+        "error.class",
+        "error.message",
+        "error.context",
+        "proc.run",
+        "proc.spawn",
+        "proc.runl",
+        "proc.spawnl",
+        "proc.argv_new",
+        "proc.argv_push",
+        "proc.env_new",
+        "proc.env_set",
+        "proc.spawn_cmd",
+        "proc.run_cmd",
+        "proc.exec_timeout",
+        "proc.wait",
+        "proc.poll",
+        "proc.event",
+        "proc.read_stdout",
+        "proc.read_stderr",
+        "proc.stdout",
+        "proc.stderr",
+        "proc.exit_code",
+        "proc.exit_class",
+        "ctx.deadline",
+        "ctx.cancel_if_timeout",
+        "channel.send",
+        "channel.recv",
+        "list.new",
+        "list.push",
+        "list.pop",
+        "list.len",
+        "list.get",
+        "list.set",
+        "list.clear",
+        "list.join",
+        "map.new",
+        "map.set",
+        "map.get",
+        "map.has",
+        "map.delete",
+        "map.keys",
+        "map.len",
+        "storage.append",
+        "storage.atomic_append",
+        "storage.kv_open",
+        "storage.kv_get",
+        "storage.kv_put",
+    ]
+}
+
+fn nearest_intrinsic_name(name: &str) -> Option<String> {
+    runtime_intrinsic_names()
+        .iter()
+        .map(|candidate| (*candidate, edit_distance(name, candidate)))
+        .min_by_key(|(_, distance)| *distance)
+        .and_then(|(candidate, distance)| (distance <= 6).then_some(candidate.to_string()))
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let left_chars = left.chars().collect::<Vec<_>>();
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let mut prev = (0..=right_chars.len()).collect::<Vec<_>>();
+    let mut curr = vec![0usize; right_chars.len() + 1];
+    for (i, lch) in left_chars.iter().enumerate() {
+        curr[0] = i + 1;
+        for (j, rch) in right_chars.iter().enumerate() {
+            let cost = if lch == rch { 0 } else { 1 };
+            curr[j + 1] = (curr[j] + 1).min(prev[j + 1] + 1).min(prev[j] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[right_chars.len()]
 }
 
 fn i32_type() -> Type {
@@ -7070,7 +7316,11 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
         "task.context" | "task.group_begin" => (vec![], i32.clone()),
         "task.group_spawn" => (vec![i32.clone(), task_fn], i32.clone()),
-        "task.group_join" | "task.group_cancel" => (vec![i32.clone()], i32.clone()),
+        "task.group_spawn_n" => (vec![i32.clone(), task_fn, i32.clone()], i32.clone()),
+        "task.group_join" | "task.group_join_all" | "task.group_cancel" => {
+            (vec![i32.clone()], i32.clone())
+        }
+        "task.parallel_map" => (vec![i32.clone(), task_fn], i32.clone()),
         "alloc" => (vec![usize_ty], ptr_u8.clone()),
         "free" => (vec![ptr_u8], Type::Void),
         "close" => (vec![i32.clone()], Type::Void),
@@ -7135,23 +7385,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "json.escape" => (vec![str_ty.clone()], str_ty.clone()),
         "json.str" => (vec![str_ty.clone()], str_ty.clone()),
         "json.raw" => (vec![str_ty.clone()], str_ty.clone()),
-        "json.array1" => (vec![str_ty.clone()], str_ty.clone()),
-        "json.array2" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
-        "json.array3" => (
-            vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
-            str_ty.clone(),
-        ),
-        "json.array4" => (
-            vec![
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-            ],
-            str_ty.clone(),
-        ),
         "json.from_list" => (vec![i32.clone()], str_ty.clone()),
         "json.from_map" => (vec![i32.clone()], str_ty.clone()),
+        "json.array" => (vec![i32.clone()], str_ty.clone()),
+        "json.object" => (vec![i32.clone()], str_ty.clone()),
         "json.to_list" => (vec![str_ty.clone()], i32.clone()),
         "json.to_map" => (vec![str_ty.clone()], i32.clone()),
         "json.parse" => (vec![str_ty.clone()], i32.clone()),
@@ -7159,40 +7396,6 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "json.get_str" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
         "json.has" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
         "json.path" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
-        "json.object1" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
-        "json.object2" => (
-            vec![
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-            ],
-            str_ty.clone(),
-        ),
-        "json.object3" => (
-            vec![
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-            ],
-            str_ty.clone(),
-        ),
-        "json.object4" => (
-            vec![
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-            ],
-            str_ty.clone(),
-        ),
         "time.now" | "time.monotonic_ms" => (vec![], i32.clone()),
         "time.sleep_ms" => (vec![i32.clone()], i32.clone()),
         "time.interval" | "time.tick" => (vec![i32.clone()], i32.clone()),
@@ -7215,76 +7418,53 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "log.info" | "log.warn" | "log.error" => {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
         }
-        "log.fields1" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
-        "log.fields2" => (
-            vec![
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-            ],
-            str_ty.clone(),
-        ),
-        "log.fields3" => (
-            vec![
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-            ],
-            str_ty.clone(),
-        ),
-        "log.fields4" => (
-            vec![
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-            ],
-            str_ty.clone(),
-        ),
+        "log.fields" => (vec![i32.clone()], str_ty.clone()),
         "log.set_json" => (vec![i32.clone()], i32.clone()),
         "log.correlation_id" => (vec![i32.clone()], str_ty.clone()),
         "error.code" | "error.class" => (vec![], i32.clone()),
         "error.message" => (vec![], str_ty.clone()),
         "error.context" => (vec![str_ty.clone()], i32.clone()),
-        "proc.run" | "proc.spawn" => {
-            (vec![str_ty.clone()], i32.clone())
-        }
-        "proc.runv" | "proc.spawnv" => (
-            vec![
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-                str_ty.clone(),
-            ],
+        "proc.run" | "proc.spawn" => (vec![str_ty.clone()], i32.clone()),
+        "proc.runl" | "proc.spawnl" => (
+            vec![str_ty.clone(), i32.clone(), i32.clone(), str_ty.clone()],
             i32.clone(),
         ),
-        "proc.runl" | "proc.spawnl" => (
+        "proc.argv_new" | "proc.env_new" => (vec![], i32.clone()),
+        "proc.argv_push" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "proc.env_set" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "proc.spawn_cmd" | "proc.run_cmd" => (
             vec![str_ty.clone(), i32.clone(), i32.clone(), str_ty.clone()],
             i32.clone(),
         ),
         "proc.exec_timeout" => (vec![i32.clone()], i32.clone()),
         "proc.wait" => (vec![i32.clone(), i32.clone()], i32.clone()),
-        "proc.poll" | "proc.event" => {
-            (vec![i32.clone()], i32.clone())
-        }
-        "proc.read_stdout" | "proc.read_stderr" => {
-            (vec![i32.clone(), i32.clone()], str_ty.clone())
-        }
-        "proc.stdout" | "proc.stderr" => {
-            (vec![i32.clone()], str_ty.clone())
-        }
+        "proc.poll" | "proc.event" => (vec![i32.clone()], i32.clone()),
+        "proc.read_stdout" | "proc.read_stderr" => (vec![i32.clone(), i32.clone()], str_ty.clone()),
+        "proc.stdout" | "proc.stderr" => (vec![i32.clone()], str_ty.clone()),
         "proc.exit_code" => (vec![i32.clone()], i32.clone()),
         "proc.exit_class" => (vec![], i32.clone()),
         "ctx.deadline" => (vec![i32.clone()], i32.clone()),
         "ctx.cancel_if_timeout" | "channel.send" | "channel.recv" => (vec![], i32.clone()),
+        "list.new" | "map.new" => (vec![], i32.clone()),
+        "list.push" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "list.pop" => (vec![i32.clone()], str_ty.clone()),
+        "list.len" => (vec![i32.clone()], i32.clone()),
+        "list.get" => (vec![i32.clone(), i32.clone()], str_ty.clone()),
+        "list.set" => (vec![i32.clone(), i32.clone(), str_ty.clone()], i32.clone()),
+        "list.clear" => (vec![i32.clone()], i32.clone()),
+        "list.join" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
+        "map.set" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "map.get" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
+        "map.has" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "map.delete" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "map.keys" => (vec![i32.clone()], i32.clone()),
+        "map.len" => (vec![i32.clone()], i32.clone()),
+        "storage.append" | "storage.atomic_append" => {
+            (vec![str_ty.clone(), str_ty.clone()], i32.clone())
+        }
+        "storage.kv_open" => (vec![str_ty.clone()], i32.clone()),
+        "storage.kv_get" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
+        "storage.kv_put" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
         _ => return None,
     })
 }
@@ -7539,12 +7719,8 @@ fn bind_pattern_types(
         ast::Pattern::Or(patterns) => {
             let mut canonical: Option<BTreeMap<String, Type>> = None;
             for candidate in patterns {
-                let binding_map = pattern_binding_type_map(
-                    candidate,
-                    scrutinee_ty,
-                    struct_defs,
-                    enum_defs,
-                );
+                let binding_map =
+                    pattern_binding_type_map(candidate, scrutinee_ty, struct_defs, enum_defs);
                 if let Some(expected) = &canonical {
                     if expected != &binding_map {
                         record_type_error(
@@ -8323,7 +8499,8 @@ fn eval_expr<'a>(
         } => {
             let mut local = env.clone();
             if let Some(init) = init {
-                let _ = eval_block_control(std::slice::from_ref(init.as_ref()), &mut local, functions);
+                let _ =
+                    eval_block_control(std::slice::from_ref(init.as_ref()), &mut local, functions);
             }
             let mut guard = 0usize;
             loop {
@@ -8338,8 +8515,11 @@ fn eval_expr<'a>(
                     EvalOutcome::Return(_) => return None,
                 }
                 if let Some(step) = step {
-                    let _ =
-                        eval_block_control(std::slice::from_ref(step.as_ref()), &mut local, functions);
+                    let _ = eval_block_control(
+                        std::slice::from_ref(step.as_ref()),
+                        &mut local,
+                        functions,
+                    );
                 }
                 guard += 1;
                 if guard > 1_000_000 {
@@ -8366,7 +8546,11 @@ fn eval_expr<'a>(
             };
             let inclusive = matches!(fields.get("inclusive"), Some(Value::Bool(true)));
             let mut guard = 0usize;
-            while if inclusive { current <= end } else { current < end } {
+            while if inclusive {
+                current <= end
+            } else {
+                current < end
+            } {
                 local.insert(binding.clone(), Value::I32(current));
                 match eval_block_control(body, &mut local, functions) {
                     EvalOutcome::Continue | EvalOutcome::ContinueLoop => {}
@@ -8809,11 +8993,15 @@ mod tests {
     }
 
     #[test]
-    fn process_spawnv_with_json_args_typechecks() {
+    fn process_spawn_cmd_with_typed_builders_typechecks() {
         let source = r#"
             use core.proc;
             fn main() -> i32 {
-                proc.spawnv("echo", "[\"hi\"]", "{\"K\":\"V\"}", "stdin");
+                let argv = proc.argv_new();
+                proc.argv_push(argv, "hi");
+                let env = proc.env_new();
+                proc.env_set(env, "K", "V");
+                proc.spawn_cmd("echo", argv, env, "stdin");
                 return 0;
             }
         "#;
@@ -8843,9 +9031,17 @@ mod tests {
             use core.http;
             fn main() -> i32 {
                 let user = json.str("hello");
-                let msg = json.object2("role", json.str("user"), "content", user);
-                let messages = json.array1(msg);
-                let payload = json.object2("model", json.str("claude"), "messages", messages);
+                let msg_obj = map.new();
+                map.set(msg_obj, "role", json.str("user"));
+                map.set(msg_obj, "content", user);
+                let msg = json.object(msg_obj);
+                let messages_list = list.new();
+                list.push(messages_list, msg);
+                let messages = json.array(messages_list);
+                let payload_obj = map.new();
+                map.set(payload_obj, "model", json.str("claude"));
+                map.set(payload_obj, "messages", messages);
+                let payload = json.object(payload_obj);
                 discard http.post_json_capture("https://example.com", payload);
                 discard http.last_status();
                 return 0;
@@ -8869,7 +9065,10 @@ mod tests {
                 let c = http.accept();
                 discard http.header(c, "content-type");
                 discard route.match(c, "GET", "/sessions/:id/messages");
-                let fields = log.fields2("component", "test", "phase", "boot");
+                let fields_map = map.new();
+                map.set(fields_map, "component", "test");
+                map.set(fields_map, "phase", "boot");
+                let fields = log.fields(fields_map);
                 discard log.info("x", fields);
                 return 0;
             }
@@ -9359,8 +9558,11 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed.type_error_details.iter().any(|detail| detail
-            .contains("or-pattern alternatives must bind identical names and types")));
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail
+                .contains("or-pattern alternatives must bind identical names and types")));
     }
 
     #[test]

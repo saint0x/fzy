@@ -1,8 +1,23 @@
 use core.proc;
 use core.fs;
-fn log_access() -> i32 {
-    proc.exec_timeout(200) let h = fs.open() defer close(h) log.info("audit.access", log.fields2("component", "audit", "phase", "access")) return 0
+
+fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let m = map.new()
+    discard map.set(m, k1, v1)
+    discard map.set(m, k2, v2)
+    return log.fields(m)
 }
+
+fn log_access() -> i32 {
+    proc.exec_timeout(200)
+    let h = fs.open()
+    defer close(h)
+    log.info("audit.access", fields2("component", "audit", "phase", "access"))
+    return 0
+}
+
 fn audit_privileged_op() -> i32 {
-    proc.exit_class() log.warn("audit.privileged", log.fields2("component", "audit", "phase", "privileged")) return 0
+    proc.exit_class()
+    log.warn("audit.privileged", fields2("component", "audit", "phase", "privileged"))
+    return 0
 }

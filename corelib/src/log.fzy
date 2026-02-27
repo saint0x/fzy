@@ -1,0 +1,73 @@
+enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+struct LogConfig {
+    json: i32,
+    include_correlation: i32,
+    max_field_bytes: i32,
+    sample_mod: i32,
+}
+
+fn default_config() -> LogConfig {
+    return LogConfig {
+        json: 1,
+        include_correlation: 1,
+        max_field_bytes: 256,
+        sample_mod: 1,
+    }
+}
+
+fn clamp_field(value: str, max_bytes: i32) -> str {
+    if max_bytes < 1 {
+        return ""
+    }
+    if str.len(value) <= max_bytes {
+        return value
+    }
+    return str.slice(value, 0, max_bytes)
+}
+
+fn should_sample(counter: i32, sample_mod: i32) -> i32 {
+    if sample_mod <= 1 then return 1
+    if counter < 0 then return 0
+    if (counter % sample_mod) == 0 then return 1
+    return 0
+}
+
+fn request_log(config: LogConfig, level: LogLevel, message: str, request_id: str, path: str, method: str) -> i32 {
+    let msg = clamp_field(message, config.max_field_bytes)
+    let rid = clamp_field(request_id, config.max_field_bytes)
+    let p = clamp_field(path, config.max_field_bytes)
+    let m = clamp_field(method, 16)
+    let fields = map.new()
+    discard map.set(fields, "request_id", rid)
+    discard map.set(fields, "path", p)
+    discard map.set(fields, "method", m)
+    if config.json == 1 {
+        discard log.set_json(1)
+    }
+    if level == LogLevel::Warn {
+        discard map.set(fields, "level", "warn")
+        discard log.warn(msg, log.fields(fields))
+        return 2
+    }
+    if level == LogLevel::Error {
+        discard map.set(fields, "level", "error")
+        discard log.error(msg, log.fields(fields))
+        return 3
+    }
+    discard map.set(fields, "level", "info")
+    discard log.info(msg, log.fields(fields))
+    return 1
+}
+
+fn sample() -> i32 {
+    let cfg = default_config()
+    if should_sample(100, cfg.sample_mod) == 1 {
+        return request_log(cfg, LogLevel::Info, "corelib.log.sample", "rid-sample", "/health", "GET")
+    }
+    return 0
+}

@@ -119,7 +119,7 @@ Use for new projects.
 
 ```bash
 fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
-fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck http://host:port/path] [--smoke-http http://host:port/path] [--json]
 fz test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
 ```
 
@@ -129,8 +129,10 @@ Use cases:
 - `build --lib`: emit `.a` + shared library (`.so`/`.dylib`) plus C header + ABI manifest
 - `run`: execute a project or scenario once
   - text mode streams child stdout/stderr live
-  - json mode captures `exitCode/stdout/stderr`
+  - `--max-seconds` enforces bounded runtime (returns timeout exit code on limit)
+  - `--exit-on-healthcheck` and `--smoke-http` probe an HTTP endpoint and exit once healthy/smoke-success is observed
 - `test`: execute discovered tests with optional deterministic scheduler policy
+  - `--host-backends` on native `.fzy` sources now auto-bridges through generated temporary scenario artifacts (single command flow)
 - production memory safety verification is always enabled for `run` and `test`
 
 Native host-backed runtime defaults:
@@ -144,6 +146,13 @@ Runtime logging defaults:
 - human-readable logs by default (`[ts] level message`)
 - structured fields appended as `| fields={...}`
 - JSON logging is opt-in (`log.set_json(1)`)
+- module-level capability declaration required for log APIs: `use core.log;`
+- typed error policy surfaces use `use core.error;` in modules that rely on error contracts
+- `use core.text;` is invalid; string intrinsics (`str.*`) do not require capability imports
+- canonical structured logging fields use `log.fields(map_handle)`
+- canonical dynamic JSON builders use `json.array(list_handle)` / `json.object(map_handle)`
+- canonical process builders use `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd` / `proc.run_cmd`
+- canonical persistence helpers use `storage.append`, `storage.atomic_append`, `storage.kv_open/get/put`
 
 ## 5.3 Quality and verification
 
@@ -301,9 +310,10 @@ Use host backends when you want real OS/process/fs/http behavior in addition to 
 fozzy run <scenario> --proc-backend host --fs-backend host --http-backend host --json
 ```
 
-Note:
+Notes:
 
-- deterministic mode and host process backend may be incompatible in some paths; run host-backed pass separately when needed.
+- host-backed confidence runs are intentionally a separate pass from strict deterministic replay checks.
+- for native `.fzy` tests, `fz test --host-backends` supports a single-command bridge that generates temporary scenarios and runs host-backed execution directly.
 
 ## 6.3 Useful discovery commands
 

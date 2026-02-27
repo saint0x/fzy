@@ -82,6 +82,24 @@ fn enable_rate_limit(mask: i32) -> i32 {
     return mask + 16
 }
 
+fn fields4(
+    k1: str,
+    v1: str,
+    k2: str,
+    v2: str,
+    k3: str,
+    v3: str,
+    k4: str,
+    v4: str,
+) -> str {
+    let m = map.new()
+    discard map.set(m, k1, v1)
+    discard map.set(m, k2, v2)
+    discard map.set(m, k3, v3)
+    discard map.set(m, k4, v4)
+    return log.fields(m)
+}
+
 fn apply_timeout(mask: i32, timeout_ms: i32) -> i32 {
     if timeout_enabled(mask) == 0 then return 0
     let mut safe = timeout_ms
@@ -91,9 +109,26 @@ fn apply_timeout(mask: i32, timeout_ms: i32) -> i32 {
     return safe
 }
 
-fn log_event(method: str, path: str, request_id: str) -> i32 {
+fn log_event(method: str, path: str, request_id: str, remote: str) -> i32 {
+    discard log.info(
+        "fzweb.request",
+        fields4(
+            "request_id",
+            request_id,
+            "method",
+            method,
+            "path",
+            path,
+            "remote",
+            remote,
+        ),
+    )
     let now = time.now()
-    let digest = (str.len(method) * 17) + (str.len(path) * 13) + (str.len(request_id) * 7) + (now % 97)
+    let digest = (str.len(method) * 17)
+        + (str.len(path) * 13)
+        + (str.len(request_id) * 7)
+        + (str.len(remote) * 5)
+        + (now % 97)
     return digest % 251
 }
 

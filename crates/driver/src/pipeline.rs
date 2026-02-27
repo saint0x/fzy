@@ -10,8 +10,8 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variab
 use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use rayon::prelude::*;
-use sha2::{Digest, Sha256};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, Once, OnceLock};
 use std::time::UNIX_EPOCH;
@@ -143,52 +143,22 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "json.array1",
-        symbol: "fz_native_json_array1",
-        arity: 1,
-    },
-    NativeRuntimeImport {
-        callee: "json.array2",
-        symbol: "fz_native_json_array2",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "json.array3",
-        symbol: "fz_native_json_array3",
-        arity: 3,
-    },
-    NativeRuntimeImport {
-        callee: "json.array4",
-        symbol: "fz_native_json_array4",
-        arity: 4,
-    },
-    NativeRuntimeImport {
-        callee: "json.object1",
-        symbol: "fz_native_json_object1",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "json.object2",
-        symbol: "fz_native_json_object2",
-        arity: 4,
-    },
-    NativeRuntimeImport {
-        callee: "json.object3",
-        symbol: "fz_native_json_object3",
-        arity: 6,
-    },
-    NativeRuntimeImport {
-        callee: "json.object4",
-        symbol: "fz_native_json_object4",
-        arity: 8,
-    },
-    NativeRuntimeImport {
         callee: "json.from_list",
         symbol: "fz_native_json_from_list",
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "json.array",
+        symbol: "fz_native_json_from_list",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "json.from_map",
+        symbol: "fz_native_json_from_map",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "json.object",
         symbol: "fz_native_json_from_map",
         arity: 1,
     },
@@ -418,24 +388,9 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
-        callee: "log.fields1",
-        symbol: "fz_native_log_fields1",
-        arity: 2,
-    },
-    NativeRuntimeImport {
-        callee: "log.fields2",
-        symbol: "fz_native_log_fields2",
-        arity: 4,
-    },
-    NativeRuntimeImport {
-        callee: "log.fields3",
-        symbol: "fz_native_log_fields3",
-        arity: 6,
-    },
-    NativeRuntimeImport {
-        callee: "log.fields4",
-        symbol: "fz_native_log_fields4",
-        arity: 8,
+        callee: "log.fields",
+        symbol: "fz_native_log_fields_map",
+        arity: 1,
     },
     NativeRuntimeImport {
         callee: "log.set_json",
@@ -553,14 +508,29 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
+        callee: "task.group_spawn_n",
+        symbol: "fz_native_task_group_spawn_n",
+        arity: 3,
+    },
+    NativeRuntimeImport {
         callee: "task.group_join",
         symbol: "fz_native_task_group_join",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "task.group_join_all",
+        symbol: "fz_native_task_group_join_all",
         arity: 1,
     },
     NativeRuntimeImport {
         callee: "task.group_cancel",
         symbol: "fz_native_task_group_cancel",
         arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "task.parallel_map",
+        symbol: "fz_native_task_parallel_map",
+        arity: 2,
     },
     NativeRuntimeImport {
         callee: "timeout",
@@ -608,18 +578,38 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "proc.runv",
-        symbol: "fz_native_proc_runv",
-        arity: 4,
-    },
-    NativeRuntimeImport {
         callee: "proc.runl",
         symbol: "fz_native_proc_runl",
         arity: 4,
     },
     NativeRuntimeImport {
-        callee: "proc.spawnv",
-        symbol: "fz_native_proc_spawnv",
+        callee: "proc.argv_new",
+        symbol: "fz_native_proc_argv_new",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "proc.argv_push",
+        symbol: "fz_native_proc_argv_push",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "proc.env_new",
+        symbol: "fz_native_proc_env_new",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "proc.env_set",
+        symbol: "fz_native_proc_env_set",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "proc.spawn_cmd",
+        symbol: "fz_native_proc_spawn_cmd",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "proc.run_cmd",
+        symbol: "fz_native_proc_run_cmd",
         arity: 4,
     },
     NativeRuntimeImport {
@@ -682,9 +672,114 @@ const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         symbol: "fz_native_proc_exit_code",
         arity: 1,
     },
+    NativeRuntimeImport {
+        callee: "list.new",
+        symbol: "fz_native_list_new",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "list.push",
+        symbol: "fz_native_list_push",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "list.pop",
+        symbol: "fz_native_list_pop",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.len",
+        symbol: "fz_native_list_len",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.get",
+        symbol: "fz_native_list_get",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "list.set",
+        symbol: "fz_native_list_set",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "list.clear",
+        symbol: "fz_native_list_clear",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "list.join",
+        symbol: "fz_native_list_join",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.new",
+        symbol: "fz_native_map_new",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "map.set",
+        symbol: "fz_native_map_set",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "map.get",
+        symbol: "fz_native_map_get",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.has",
+        symbol: "fz_native_map_has",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.delete",
+        symbol: "fz_native_map_delete",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "map.keys",
+        symbol: "fz_native_map_keys",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "map.len",
+        symbol: "fz_native_map_len",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "storage.append",
+        symbol: "fz_native_storage_append",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "storage.atomic_append",
+        symbol: "fz_native_storage_atomic_append",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "storage.kv_open",
+        symbol: "fz_native_storage_kv_open",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "storage.kv_get",
+        symbol: "fz_native_storage_kv_get",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "storage.kv_put",
+        symbol: "fz_native_storage_kv_put",
+        arity: 3,
+    },
 ];
 
 const NATIVE_DATA_PLANE_IMPORTS: &[NativeRuntimeImport] = &[
+    NativeRuntimeImport {
+        callee: "str.concat",
+        symbol: "fz_native_str_concat2",
+        arity: 2,
+    },
     NativeRuntimeImport {
         callee: "str.concat2",
         symbol: "fz_native_str_concat2",
@@ -1314,10 +1409,7 @@ struct ModuleLoadState {
     visiting_set: HashSet<PathBuf>,
 }
 
-fn discover_module_graph_recursive(
-    path: &Path,
-    state: &mut ModuleLoadState,
-) -> Result<()> {
+fn discover_module_graph_recursive(path: &Path, state: &mut ModuleLoadState) -> Result<()> {
     let canonical = path
         .canonicalize()
         .with_context(|| format!("failed resolving module path: {}", path.display()))?;
@@ -1373,9 +1465,12 @@ fn parse_and_qualify_module(
     root_source: &Path,
     discovered: &HashMap<PathBuf, DiscoveredModule>,
 ) -> Result<(PathBuf, LoadedModule)> {
-    let discovered_module = discovered
-        .get(module_path)
-        .ok_or_else(|| anyhow!("internal discovered module cache miss for {}", module_path.display()))?;
+    let discovered_module = discovered.get(module_path).ok_or_else(|| {
+        anyhow!(
+            "internal discovered module cache miss for {}",
+            module_path.display()
+        )
+    })?;
     let module_name = module_path
         .file_stem()
         .and_then(|value| value.to_str())
@@ -3034,10 +3129,7 @@ impl ControlFlowBuilder {
                             } else {
                                 let end_block =
                                     end_block.expect("non-returning match must have end block");
-                                self.append_stmt(
-                                    value_block,
-                                    ast::Stmt::Expr(arm.value.clone()),
-                                )?;
+                                self.append_stmt(value_block, ast::Stmt::Expr(arm.value.clone()))?;
                                 self.terminate(
                                     value_block,
                                     ControlFlowTerminator::Jump {
@@ -3234,7 +3326,9 @@ fn pattern_matches_resolved_scrutinee(
 ) -> bool {
     match pattern {
         ast::Pattern::Wildcard | ast::Pattern::Ident(_) => true,
-        ast::Pattern::Int(expected) => matches!(scrutinee, ast::Expr::Int(actual) if actual == expected),
+        ast::Pattern::Int(expected) => {
+            matches!(scrutinee, ast::Expr::Int(actual) if actual == expected)
+        }
         ast::Pattern::Bool(expected) => {
             matches!(scrutinee, ast::Expr::Bool(actual) if actual == expected)
         }
@@ -3289,9 +3383,9 @@ fn resolve_pattern_source_expr(
             ast::Expr::Group(inner) => {
                 resolve_inner(inner, known_values, passthrough_functions, depth + 1)
             }
-            ast::Expr::Ident(name) => known_values
-                .get(name)
-                .and_then(|value| resolve_inner(value, known_values, passthrough_functions, depth + 1)),
+            ast::Expr::Ident(name) => known_values.get(name).and_then(|value| {
+                resolve_inner(value, known_values, passthrough_functions, depth + 1)
+            }),
             ast::Expr::Call { callee, args } => {
                 if let Some(index) = passthrough_functions.get(callee).copied() {
                     let arg = args.get(index)?;
@@ -3309,9 +3403,13 @@ fn resolve_pattern_source_expr(
 
 fn resolve_field_expr(base: &ast::Expr, field: &str) -> Option<ast::Expr> {
     match base {
-        ast::Expr::StructInit { fields, .. } => fields
-            .iter()
-            .find_map(|(name, value)| if name == field { Some(value.clone()) } else { None }),
+        ast::Expr::StructInit { fields, .. } => fields.iter().find_map(|(name, value)| {
+            if name == field {
+                Some(value.clone())
+            } else {
+                None
+            }
+        }),
         ast::Expr::Range {
             start,
             end,
@@ -3413,10 +3511,9 @@ fn bindings_for_match_arm_pattern(
             Ok(stmts)
         }
         ast::Pattern::Or(patterns) => {
-            if let Some(matched) = patterns
-                .iter()
-                .find(|pattern| pattern_matches_resolved_scrutinee(pattern, scrutinee, variant_tags))
-            {
+            if let Some(matched) = patterns.iter().find(|pattern| {
+                pattern_matches_resolved_scrutinee(pattern, scrutinee, variant_tags)
+            }) {
                 return bindings_for_match_arm_pattern(matched, scrutinee, variant_tags);
             }
             if patterns.iter().any(pattern_has_variant_payload_bindings)
@@ -3985,10 +4082,13 @@ fn build_native_cfg_map(
         .map(|function| {
             let cfg = build_control_flow_cfg(&function.body, variant_tags, &passthrough_functions)
                 .and_then(|cfg| {
-                verify_control_flow_cfg(&cfg)?;
-                Ok(cfg)
-            });
-            (function.name.clone(), cfg.map_err(|error| error.to_string()))
+                    verify_control_flow_cfg(&cfg)?;
+                    Ok(cfg)
+                });
+            (
+                function.name.clone(),
+                cfg.map_err(|error| error.to_string()),
+            )
         })
         .collect()
 }
@@ -4261,6 +4361,7 @@ struct LlvmFuncCtx {
     array_slots: HashMap<String, LlvmArrayBinding>,
     const_strings: HashMap<String, String>,
     direct_values: HashMap<String, String>,
+    wrapped_indices: HashMap<String, HashSet<usize>>,
     closures: HashMap<String, LlvmClosureBinding>,
     globals: HashMap<String, i32>,
     variant_tags: HashMap<String, i32>,
@@ -4275,6 +4376,7 @@ impl LlvmFuncCtx {
         globals: HashMap<String, i32>,
         variant_tags: HashMap<String, i32>,
         mutable_globals: HashMap<String, String>,
+        wrapped_indices: HashMap<String, HashSet<usize>>,
     ) -> Self {
         Self {
             next_value: 0,
@@ -4283,6 +4385,7 @@ impl LlvmFuncCtx {
             array_slots: HashMap::new(),
             const_strings: HashMap::new(),
             direct_values: HashMap::new(),
+            wrapped_indices,
             closures: HashMap::new(),
             globals,
             variant_tags,
@@ -4330,10 +4433,12 @@ fn llvm_emit_function(
         .map(|(i, _)| format!("i32 %arg{i}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let wrapped_indices = collect_wrapped_index_candidates(&function.body);
     let mut ctx = LlvmFuncCtx::new(
         globals.clone(),
         variant_tags.clone(),
         mutable_globals.clone(),
+        wrapped_indices,
     );
     let mut out = format!(
         "define i32 @{}({params}) {{\nentry:\n",
@@ -4342,9 +4447,8 @@ fn llvm_emit_function(
     for (index, param) in function.params.iter().enumerate() {
         let slot = format!("%slot_{}", param.name);
         ctx.declare_alloca(&slot, "i32");
-        ctx.code.push_str(&format!(
-            "  store i32 %arg{index}, ptr {slot}\n"
-        ));
+        ctx.code
+            .push_str(&format!("  store i32 %arg{index}, ptr {slot}\n"));
         ctx.slots.insert(param.name.clone(), slot);
     }
     let labels = cfg
@@ -4389,8 +4493,12 @@ fn llvm_emit_function(
                 then_target,
                 else_target,
             } => {
-                let pred =
-                    llvm_emit_condition_value(condition, &mut ctx, string_literal_ids, task_ref_ids);
+                let pred = llvm_emit_condition_value(
+                    condition,
+                    &mut ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                );
                 let then_label = labels.get(then_target).ok_or_else(|| {
                     anyhow!("missing llvm label for cfg branch target {}", then_target)
                 })?;
@@ -4433,6 +4541,103 @@ fn llvm_emit_function(
     out.push_str(&ctx.code);
     out.push_str("}\n");
     Ok(out)
+}
+
+fn collect_wrapped_index_candidates(body: &[ast::Stmt]) -> HashMap<String, HashSet<usize>> {
+    let mut out = HashMap::new();
+    collect_wrapped_index_candidates_stmt(body, &mut out);
+    out
+}
+
+fn collect_wrapped_index_candidates_stmt(
+    stmts: &[ast::Stmt],
+    out: &mut HashMap<String, HashSet<usize>>,
+) {
+    for stmt in stmts {
+        match stmt {
+            ast::Stmt::While { body, .. }
+            | ast::Stmt::Loop { body }
+            | ast::Stmt::ForIn { body, .. } => {
+                collect_wrapped_index_candidates_stmt(body, out);
+            }
+            ast::Stmt::For {
+                init,
+                condition: _,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    collect_wrapped_index_candidates_stmt(std::slice::from_ref(init.as_ref()), out);
+                }
+                if let Some(step) = step {
+                    collect_wrapped_index_candidates_stmt(std::slice::from_ref(step.as_ref()), out);
+                }
+                collect_wrapped_index_candidates_stmt(body, out);
+            }
+            ast::Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_wrapped_index_candidates_stmt(then_body, out);
+                collect_wrapped_index_candidates_stmt(else_body, out);
+            }
+            _ => {}
+        }
+    }
+
+    for pair in stmts.windows(2) {
+        let first = &pair[0];
+        let second = &pair[1];
+        let (target, limit) = match first {
+            ast::Stmt::CompoundAssign {
+                target,
+                op: ast::BinaryOp::Add,
+                value: ast::Expr::Int(1),
+            } => match second {
+                ast::Stmt::If {
+                    condition:
+                        ast::Expr::Binary {
+                            op: ast::BinaryOp::Eq,
+                            left,
+                            right,
+                        },
+                    then_body,
+                    else_body,
+                } if else_body.is_empty()
+                    && then_body.len() == 1
+                    && matches!(
+                        then_body.first(),
+                        Some(ast::Stmt::Assign {
+                            target: assign_target,
+                            value: ast::Expr::Int(0),
+                        }) if assign_target == target
+                    ) =>
+                {
+                    let cond_target = match left.as_ref() {
+                        ast::Expr::Ident(name) => Some(name),
+                        _ => None,
+                    };
+                    let cond_limit = match right.as_ref() {
+                        ast::Expr::Int(v) if *v > 0 => Some(*v as usize),
+                        _ => None,
+                    };
+                    if cond_target == Some(target) {
+                        if let Some(limit) = cond_limit {
+                            (target.clone(), limit)
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            },
+            _ => continue,
+        };
+        out.entry(target).or_default().insert(limit);
+    }
 }
 
 fn llvm_snapshot_closure_captures(ctx: &mut LlvmFuncCtx) -> HashMap<String, String> {
@@ -4529,9 +4734,8 @@ fn llvm_emit_let_pattern(
         ast::Pattern::Ident(name) => {
             let slot = format!("%slot_{}_{}", native_mangle_symbol(name), ctx.next_value);
             ctx.declare_alloca(&slot, "i32");
-            ctx.code.push_str(&format!(
-                "  store i32 {rendered}, ptr {slot}\n"
-            ));
+            ctx.code
+                .push_str(&format!("  store i32 {rendered}, ptr {slot}\n"));
             ctx.slots.insert(name.clone(), slot);
         }
         ast::Pattern::Int(expected) => {
@@ -4575,9 +4779,8 @@ fn llvm_emit_let_pattern(
                     ctx.next_value
                 );
                 ctx.declare_alloca(&slot, "i32");
-                ctx.code.push_str(&format!(
-                    "  store i32 {field_value}, ptr {slot}\n"
-                ));
+                ctx.code
+                    .push_str(&format!("  store i32 {field_value}, ptr {slot}\n"));
                 ctx.slots.insert(binding_name.clone(), slot);
             }
         }
@@ -4610,19 +4813,17 @@ fn llvm_emit_let_pattern(
                             ctx.next_value
                         );
                         ctx.declare_alloca(&slot, "i32");
-                        ctx.code.push_str(&format!(
-                            "  store i32 {payload_value}, ptr {slot}\n"
-                        ));
+                        ctx.code
+                            .push_str(&format!("  store i32 {payload_value}, ptr {slot}\n"));
                         ctx.slots.insert(binding_name.clone(), slot);
                     }
                 }
             }
         }
         ast::Pattern::Or(patterns) => {
-            if let Some(matched) = patterns
-                .iter()
-                .find(|pattern| pattern_matches_resolved_scrutinee(pattern, value, &ctx.variant_tags))
-            {
+            if let Some(matched) = patterns.iter().find(|pattern| {
+                pattern_matches_resolved_scrutinee(pattern, value, &ctx.variant_tags)
+            }) {
                 return llvm_emit_let_pattern(
                     matched,
                     value,
@@ -4717,9 +4918,8 @@ fn llvm_emit_linear_stmts(
                 let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
                 let slot = format!("%slot_{}_{}", name, ctx.next_value);
                 ctx.declare_alloca(&slot, "i32");
-                ctx.code.push_str(&format!(
-                    "  store i32 {rendered}, ptr {slot}\n"
-                ));
+                ctx.code
+                    .push_str(&format!("  store i32 {rendered}, ptr {slot}\n"));
                 ctx.slots.insert(name.clone(), slot);
                 if !*mutable {
                     ctx.direct_values.insert(name.clone(), rendered.clone());
@@ -4732,9 +4932,8 @@ fn llvm_emit_linear_stmts(
                             llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
                         let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
                         ctx.declare_alloca(&field_slot, "i32");
-                        ctx.code.push_str(&format!(
-                            "  store i32 {field_value}, ptr {field_slot}\n"
-                        ));
+                        ctx.code
+                            .push_str(&format!("  store i32 {field_value}, ptr {field_slot}\n"));
                         ctx.slots.insert(format!("{name}.{field}"), field_slot);
                     }
                 }
@@ -4754,15 +4953,13 @@ fn llvm_emit_linear_stmts(
                     ] {
                         let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
                         ctx.declare_alloca(&field_slot, "i32");
-                        ctx.code.push_str(&format!(
-                            "  store i32 {rendered}, ptr {field_slot}\n"
-                        ));
+                        ctx.code
+                            .push_str(&format!("  store i32 {rendered}, ptr {field_slot}\n"));
                         ctx.slots.insert(format!("{name}.{field}"), field_slot);
                     }
                 }
                 ctx.array_slots.remove(name);
                 ctx.const_strings.remove(name);
-                ctx.direct_values.remove(name);
             }
             ast::Stmt::LetPattern { pattern, value, .. } => {
                 llvm_emit_let_pattern(pattern, value, ctx, string_literal_ids, task_ref_ids)?;
@@ -4843,9 +5040,8 @@ fn llvm_emit_linear_stmts(
                             llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
                         let field_slot = format!("%slot_{}_{}_{}", target, field, ctx.next_value);
                         ctx.declare_alloca(&field_slot, "i32");
-                        ctx.code.push_str(&format!(
-                            "  store i32 {field_value}, ptr {field_slot}\n"
-                        ));
+                        ctx.code
+                            .push_str(&format!("  store i32 {field_value}, ptr {field_slot}\n"));
                         ctx.slots.insert(format!("{target}.{field}"), field_slot);
                     }
                 }
@@ -4867,9 +5063,8 @@ fn llvm_emit_linear_stmts(
                     ] {
                         let field_slot = format!("%slot_{}_{}_{}", target, field, ctx.next_value);
                         ctx.declare_alloca(&field_slot, "i32");
-                        ctx.code.push_str(&format!(
-                            "  store i32 {rendered}, ptr {field_slot}\n"
-                        ));
+                        ctx.code
+                            .push_str(&format!("  store i32 {rendered}, ptr {field_slot}\n"));
                         ctx.slots.insert(format!("{target}.{field}"), field_slot);
                     }
                 }
@@ -4915,7 +5110,8 @@ fn llvm_emit_linear_stmts(
             | ast::Stmt::For { .. }
             | ast::Stmt::ForIn { .. }
             | ast::Stmt::Loop { .. }
-            | ast::Stmt::Break(_) | ast::Stmt::Continue
+            | ast::Stmt::Break(_)
+            | ast::Stmt::Continue
             | ast::Stmt::Match { .. } => {
                 bail!("llvm linear emission received non-linear control-flow statement");
             }
@@ -5129,6 +5325,27 @@ fn llvm_emit_expr(
                 if let Some(binding) = ctx.array_slots.get(name).cloned() {
                     if binding.len == 0 {
                         return "0".to_string();
+                    }
+                    if let ast::Expr::Ident(index_name) = index.as_ref() {
+                        if ctx
+                            .wrapped_indices
+                            .get(index_name)
+                            .map(|limits| limits.contains(&binding.len))
+                            .unwrap_or(false)
+                        {
+                            let idx64 = ctx.value();
+                            let elem_ptr = ctx.value();
+                            let loaded = ctx.value();
+                            ctx.code
+                                .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
+                            ctx.code.push_str(&format!(
+                                "  {elem_ptr} = getelementptr inbounds [{} x i32], ptr {}, i32 0, i64 {idx64}\n",
+                                binding.len, binding.storage
+                            ));
+                            ctx.code
+                                .push_str(&format!("  {loaded} = load i32, ptr {elem_ptr}\n"));
+                            return loaded;
+                        }
                     }
                     if let Some(const_idx) = eval_const_i32_expr(index, &ctx.const_strings) {
                         if const_idx >= 0 && (const_idx as usize) < binding.len {
@@ -5422,7 +5639,65 @@ fn native_runtime_import_contract_errors() -> Vec<String> {
                 import.callee
             ));
         }
+    }
+    for import in NATIVE_DATA_PLANE_IMPORTS {
+        if !seen.insert(import.callee) {
+            errors.push(format!(
+                "duplicate native runtime import callee `{}` in data-plane import table",
+                import.callee
+            ));
+        }
+    }
 
+    let declared_runtime = hir::runtime_intrinsic_names()
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let imported_runtime = NATIVE_RUNTIME_IMPORTS
+        .iter()
+        .chain(NATIVE_DATA_PLANE_IMPORTS.iter())
+        .map(|import| import.callee)
+        .collect::<HashSet<_>>();
+
+    let critical = [
+        "str.concat",
+        "str.concat2",
+        "str.concat3",
+        "str.concat4",
+        "proc.run",
+        "proc.spawn",
+        "proc.run_cmd",
+        "proc.spawn_cmd",
+        "proc.exec_timeout",
+    ];
+    for callee in critical
+        .iter()
+        .copied()
+        .filter(|callee| !declared_runtime.contains(callee))
+    {
+        errors.push(format!(
+            "intrinsic `{}` is required by parity gate but missing from HIR declarations",
+            callee
+        ));
+    }
+    for callee in critical
+        .iter()
+        .copied()
+        .filter(|callee| !imported_runtime.contains(callee))
+    {
+        errors.push(format!(
+            "intrinsic `{}` is declared in HIR but missing native import binding",
+            callee
+        ));
+    }
+    for callee in imported_runtime
+        .iter()
+        .filter(|callee| !declared_runtime.contains(**callee))
+    {
+        errors.push(format!(
+            "native import `{}` is not declared as a runtime intrinsic in HIR",
+            callee
+        ));
     }
     errors
 }
@@ -5708,9 +5983,7 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
             ast::Expr::Closure { body, .. }
             | ast::Expr::Group(body)
             | ast::Expr::Await(body)
-            | ast::Expr::Discard(body) => {
-                collect_from_expr(body, const_strings, out)
-            }
+            | ast::Expr::Discard(body) => collect_from_expr(body, const_strings, out),
             ast::Expr::Unary { expr, .. } => collect_from_expr(expr, const_strings, out),
             ast::Expr::TryCatch {
                 try_expr,
@@ -5746,7 +6019,7 @@ fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
             | ast::Expr::Bool(_)
             | ast::Expr::Str(_)
             | ast::Expr::Ident(_) => {}
-        _ => {}
+            _ => {}
         }
     }
 
@@ -6628,9 +6901,9 @@ fn collect_used_data_plane_imports_from_expr(
         ast::Expr::Call { callee, args } => {
             if let Some(import) = native_data_plane_import_for_callee(callee) {
                 let empty_const_strings = HashMap::<String, String>::new();
-                let folded_const =
-                    eval_const_string_call(callee, args, &empty_const_strings).is_some()
-                        || eval_const_i32_call(callee, args, &empty_const_strings).is_some();
+                let folded_const = eval_const_string_call(callee, args, &empty_const_strings)
+                    .is_some()
+                    || eval_const_i32_call(callee, args, &empty_const_strings).is_some();
                 let can_skip = folded_const && callee.starts_with("str.");
                 if !can_skip && seen.insert(import.symbol) {
                     used.push(import);
@@ -8432,18 +8705,10 @@ fn clif_emit_let_pattern(
             }
         }
         ast::Pattern::Or(patterns) => {
-            if let Some(matched) = patterns
-                .iter()
-                .find(|pattern| pattern_matches_resolved_scrutinee(pattern, value, ctx.variant_tags))
-            {
-                return clif_emit_let_pattern(
-                    builder,
-                    ctx,
-                    matched,
-                    value,
-                    locals,
-                    next_var,
-                );
+            if let Some(matched) = patterns.iter().find(|pattern| {
+                pattern_matches_resolved_scrutinee(pattern, value, ctx.variant_tags)
+            }) {
+                return clif_emit_let_pattern(builder, ctx, matched, value, locals, next_var);
             }
             if patterns.iter().any(pattern_has_variant_payload_bindings)
                 || patterns.iter().any(pattern_has_struct_field_bindings)
@@ -8577,7 +8842,9 @@ fn clif_emit_linear_stmts(
                     let start_val = clif_emit_expr(builder, ctx, start, locals, next_var)?;
                     let end_val = clif_emit_expr(builder, ctx, end, locals, next_var)?;
                     let inclusive_val = ClifValue {
-                        value: builder.ins().iconst(default_int_clif_type(), i64::from(*inclusive)),
+                        value: builder
+                            .ins()
+                            .iconst(default_int_clif_type(), i64::from(*inclusive)),
                         ty: default_int_clif_type(),
                     };
                     for (field, field_val) in [
@@ -8785,7 +9052,8 @@ fn clif_emit_linear_stmts(
             | ast::Stmt::For { .. }
             | ast::Stmt::ForIn { .. }
             | ast::Stmt::Loop { .. }
-            | ast::Stmt::Break(_) | ast::Stmt::Continue
+            | ast::Stmt::Break(_)
+            | ast::Stmt::Continue
             | ast::Stmt::Match { .. } => {
                 bail!("cranelift linear emission received non-linear control-flow statement");
             }
@@ -9576,13 +9844,31 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
     let mut unresolved = unresolved.into_iter().collect::<Vec<_>>();
     unresolved.sort();
     diagnostics.extend(unresolved.into_iter().map(|callee| {
+        let nearest = hir::runtime_intrinsic_names()
+            .iter()
+            .map(|candidate| {
+                (
+                    *candidate,
+                    candidate
+                        .chars()
+                        .zip(callee.chars())
+                        .filter(|(left, right)| left != right)
+                        .count()
+                        + candidate.len().abs_diff(callee.len()),
+                )
+            })
+            .min_by_key(|(_, distance)| *distance)
+            .and_then(|(candidate, distance)| (distance <= 6).then_some(candidate));
+        let mut help =
+            "run via Fozzy scenario/host backends or provide a real native implementation for this symbol"
+                .to_string();
+        if let Some(suggested) = nearest {
+            help.push_str(&format!("; did you mean `{suggested}`?"));
+        }
         diagnostics::Diagnostic::new(
             diagnostics::Severity::Error,
             format!("native backend cannot execute unresolved call `{callee}`"),
-            Some(
-                "run via Fozzy scenario/host backends or provide a real native implementation for this symbol"
-                    .to_string(),
-            ),
+            Some(help),
         )
     }));
 
@@ -9667,7 +9953,8 @@ fn backend_capability_diagnostics(
 }
 
 fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {
-    ast_signature_type_to_clif_type(ty).is_some() || matches!(ty, ast::Type::Void | ast::Type::Never)
+    ast_signature_type_to_clif_type(ty).is_some()
+        || matches!(ty, ast::Type::Void | ast::Type::Never)
 }
 
 fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType> {
@@ -10627,6 +10914,7 @@ extern char** environ;
 #define FZ_MAX_MAP_ENTRIES 4096
 #define FZ_MAX_INTERVALS 512
 #define FZ_MAX_JSON_VALUES 16384
+#define FZ_MAX_STORAGE_KV 1024
 
 static char* fz_dynamic_strings[FZ_MAX_DYNAMIC_STRINGS];
 static int fz_dynamic_string_count = 0;
@@ -10710,6 +10998,12 @@ typedef struct {
   int32_t value_id;
 } fz_json_value_state;
 
+typedef struct {
+  int in_use;
+  int32_t path_id;
+  int32_t map_handle;
+} fz_storage_kv_state;
+
 static fz_proc_state fz_proc_states[FZ_MAX_PROC_STATES];
 static pthread_mutex_t fz_proc_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_proc_default_timeout_ms = 30000;
@@ -10720,6 +11014,7 @@ static fz_array_state fz_arrays[FZ_MAX_LISTS];
 static fz_map_state fz_maps[FZ_MAX_MAPS];
 static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
 static fz_json_value_state fz_json_values[FZ_MAX_JSON_VALUES];
+static fz_storage_kv_state fz_storage_kv[FZ_MAX_STORAGE_KV];
 static pthread_mutex_t fz_collections_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_time_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t fz_json_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -10960,6 +11255,25 @@ static int fz_map_find_index(fz_map_state* map, const char* key) {
     }
   }
   return -1;
+}
+
+static int32_t fz_storage_kv_alloc(void) {
+  for (int i = 0; i < FZ_MAX_STORAGE_KV; i++) {
+    if (!fz_storage_kv[i].in_use) {
+      memset(&fz_storage_kv[i], 0, sizeof(fz_storage_kv[i]));
+      fz_storage_kv[i].in_use = 1;
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+static fz_storage_kv_state* fz_storage_kv_get(int32_t handle) {
+  if (handle <= 0 || handle > FZ_MAX_STORAGE_KV) {
+    return NULL;
+  }
+  fz_storage_kv_state* kv = &fz_storage_kv[handle - 1];
+  return kv->in_use ? kv : NULL;
 }
 
 static char* fz_trim_ascii(char* text) {
@@ -12284,60 +12598,6 @@ static int32_t fz_native_json_object_from_pairs(const int32_t* ids, int pair_cou
   return fz_intern_owned(body);
 }
 
-int32_t fz_native_json_array1(int32_t v1_id) {
-  int32_t ids[] = {v1_id};
-  return fz_native_json_array_from_values(ids, 1);
-}
-
-int32_t fz_native_json_array2(int32_t v1_id, int32_t v2_id) {
-  int32_t ids[] = {v1_id, v2_id};
-  return fz_native_json_array_from_values(ids, 2);
-}
-
-int32_t fz_native_json_array3(int32_t v1_id, int32_t v2_id, int32_t v3_id) {
-  int32_t ids[] = {v1_id, v2_id, v3_id};
-  return fz_native_json_array_from_values(ids, 3);
-}
-
-int32_t fz_native_json_array4(int32_t v1_id, int32_t v2_id, int32_t v3_id, int32_t v4_id) {
-  int32_t ids[] = {v1_id, v2_id, v3_id, v4_id};
-  return fz_native_json_array_from_values(ids, 4);
-}
-
-int32_t fz_native_json_object1(int32_t k1_id, int32_t v1_id) {
-  int32_t ids[] = {k1_id, v1_id};
-  return fz_native_json_object_from_pairs(ids, 1);
-}
-
-int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id) {
-  int32_t ids[] = {k1_id, v1_id, k2_id, v2_id};
-  return fz_native_json_object_from_pairs(ids, 2);
-}
-
-int32_t fz_native_json_object3(
-    int32_t k1_id,
-    int32_t v1_id,
-    int32_t k2_id,
-    int32_t v2_id,
-    int32_t k3_id,
-    int32_t v3_id) {
-  int32_t ids[] = {k1_id, v1_id, k2_id, v2_id, k3_id, v3_id};
-  return fz_native_json_object_from_pairs(ids, 3);
-}
-
-int32_t fz_native_json_object4(
-    int32_t k1_id,
-    int32_t v1_id,
-    int32_t k2_id,
-    int32_t v2_id,
-    int32_t k3_id,
-    int32_t v3_id,
-    int32_t k4_id,
-    int32_t v4_id) {
-  int32_t ids[] = {k1_id, v1_id, k2_id, v2_id, k3_id, v3_id, k4_id, v4_id};
-  return fz_native_json_object_from_pairs(ids, 4);
-}
-
 static int32_t fz_runtime_list_new(void) {
   pthread_mutex_lock(&fz_collections_lock);
   int32_t handle = fz_list_alloc();
@@ -13495,44 +13755,8 @@ int32_t fz_native_log_error(int32_t message_id, int32_t fields_id) {
   return fz_log_emit("error", fz_lookup_string(message_id), fz_lookup_string(fields_id));
 }
 
-int32_t fz_native_log_fields1(int32_t k1_id, int32_t v1_id) {
-  int32_t value = fz_native_json_str(v1_id);
-  return fz_native_json_object1(k1_id, value);
-}
-
-int32_t fz_native_log_fields2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id) {
-  int32_t value1 = fz_native_json_str(v1_id);
-  int32_t value2 = fz_native_json_str(v2_id);
-  return fz_native_json_object2(k1_id, value1, k2_id, value2);
-}
-
-int32_t fz_native_log_fields3(
-    int32_t k1_id,
-    int32_t v1_id,
-    int32_t k2_id,
-    int32_t v2_id,
-    int32_t k3_id,
-    int32_t v3_id) {
-  int32_t value1 = fz_native_json_str(v1_id);
-  int32_t value2 = fz_native_json_str(v2_id);
-  int32_t value3 = fz_native_json_str(v3_id);
-  return fz_native_json_object3(k1_id, value1, k2_id, value2, k3_id, value3);
-}
-
-int32_t fz_native_log_fields4(
-    int32_t k1_id,
-    int32_t v1_id,
-    int32_t k2_id,
-    int32_t v2_id,
-    int32_t k3_id,
-    int32_t v3_id,
-    int32_t k4_id,
-    int32_t v4_id) {
-  int32_t value1 = fz_native_json_str(v1_id);
-  int32_t value2 = fz_native_json_str(v2_id);
-  int32_t value3 = fz_native_json_str(v3_id);
-  int32_t value4 = fz_native_json_str(v4_id);
-  return fz_native_json_object4(k1_id, value1, k2_id, value2, k3_id, value3, k4_id, value4);
+int32_t fz_native_log_fields_map(int32_t map_handle) {
+  return fz_native_json_from_map(map_handle);
 }
 
 int32_t fz_native_log_set_json(int32_t enabled) {
@@ -13739,6 +13963,169 @@ int32_t fz_native_fs_write_file(int32_t path_id, int32_t content_id) {
   }
   close(fd);
   return 0;
+}
+
+static int fz_storage_write_atomic_path(const char* path, const char* content) {
+  if (path == NULL || path[0] == '\0') {
+    return -1;
+  }
+  if (content == NULL) {
+    content = "";
+  }
+  char tmp_path[2048];
+  int written = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+  if (written <= 0 || (size_t)written >= sizeof(tmp_path)) {
+    return -1;
+  }
+  int fd = open(tmp_path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
+  if (fd < 0) {
+    return -1;
+  }
+  size_t left = strlen(content);
+  const char* p = content;
+  while (left > 0) {
+    ssize_t n = write(fd, p, left);
+    if (n < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      close(fd);
+      return -1;
+    }
+    if (n == 0) {
+      break;
+    }
+    p += n;
+    left -= (size_t)n;
+  }
+  if (fsync(fd) != 0) {
+    close(fd);
+    return -1;
+  }
+  close(fd);
+  return rename(tmp_path, path) == 0 ? 0 : -1;
+}
+
+int32_t fz_native_storage_append(int32_t path_id, int32_t line_id) {
+  const char* path = fz_lookup_string(path_id);
+  const char* line = fz_lookup_string(line_id);
+  if (path == NULL || path[0] == '\0') {
+    return -1;
+  }
+  if (line == NULL) {
+    line = "";
+  }
+  int fd = open(path, O_CREAT | O_APPEND | O_WRONLY, 0644);
+  if (fd < 0) {
+    return -1;
+  }
+  size_t len = strlen(line);
+  if (len > 0 && write(fd, line, len) < 0) {
+    close(fd);
+    return -1;
+  }
+  if (write(fd, "\n", 1) < 0) {
+    close(fd);
+    return -1;
+  }
+  close(fd);
+  return 0;
+}
+
+int32_t fz_native_storage_atomic_append(int32_t path_id, int32_t line_id) {
+  const char* path = fz_lookup_string(path_id);
+  const char* line = fz_lookup_string(line_id);
+  if (path == NULL || path[0] == '\0') {
+    return -1;
+  }
+  if (line == NULL) {
+    line = "";
+  }
+  int32_t existing_id = fz_native_fs_read_file(path_id);
+  const char* existing = fz_lookup_string(existing_id);
+  if (existing == NULL) {
+    existing = "";
+  }
+  size_t existing_len = strlen(existing);
+  size_t line_len = strlen(line);
+  char* payload = (char*)malloc(existing_len + line_len + 3);
+  if (payload == NULL) {
+    return -1;
+  }
+  size_t used = 0;
+  if (existing_len > 0) {
+    memcpy(payload + used, existing, existing_len);
+    used += existing_len;
+    if (payload[used - 1] != '\n') {
+      payload[used++] = '\n';
+    }
+  }
+  if (line_len > 0) {
+    memcpy(payload + used, line, line_len);
+    used += line_len;
+  }
+  payload[used++] = '\n';
+  payload[used] = '\0';
+  int rc = fz_storage_write_atomic_path(path, payload);
+  free(payload);
+  return rc == 0 ? 0 : -1;
+}
+
+int32_t fz_native_storage_kv_open(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  if (path == NULL || path[0] == '\0') {
+    return -1;
+  }
+  int32_t map_handle = fz_runtime_map_new();
+  int32_t file_json_id = fz_native_fs_read_file(path_id);
+  const char* raw = fz_lookup_string(file_json_id);
+  if (raw != NULL && raw[0] != '\0') {
+    int32_t parsed_handle = fz_native_json_to_map(file_json_id);
+    if (parsed_handle > 0) {
+      map_handle = parsed_handle;
+    }
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t kv_handle = fz_storage_kv_alloc();
+  fz_storage_kv_state* kv = fz_storage_kv_get(kv_handle);
+  if (kv != NULL) {
+    kv->path_id = path_id;
+    kv->map_handle = map_handle;
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  return kv == NULL ? -1 : kv_handle;
+}
+
+int32_t fz_native_storage_kv_get(int32_t kv_handle, int32_t key_id) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_storage_kv_state* kv = fz_storage_kv_get(kv_handle);
+  if (kv == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return fz_intern_slice("", 0);
+  }
+  int32_t map_handle = kv->map_handle;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return fz_runtime_map_get(map_handle, key_id);
+}
+
+int32_t fz_native_storage_kv_put(int32_t kv_handle, int32_t key_id, int32_t value_id) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_storage_kv_state* kv = fz_storage_kv_get(kv_handle);
+  if (kv == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  int32_t path_id = kv->path_id;
+  int32_t map_handle = kv->map_handle;
+  pthread_mutex_unlock(&fz_collections_lock);
+  int rc = fz_runtime_map_set(map_handle, key_id, value_id);
+  if (rc != 0) {
+    return -1;
+  }
+  int32_t json_id = fz_native_json_from_map(map_handle);
+  const char* path = fz_lookup_string(path_id);
+  const char* content = fz_lookup_string(json_id);
+  return fz_storage_write_atomic_path(path, content) == 0 ? 0 : -1;
 }
 
 int32_t fz_native_fs_mkdir(int32_t path_id) {
@@ -15141,66 +15528,6 @@ int32_t fz_native_proc_spawnl(
   return handle;
 }
 
-int32_t fz_native_proc_spawnv(
-    int32_t command_id,
-    int32_t args_json_id,
-    int32_t env_json_id,
-    int32_t stdin_id) {
-  const char* command = fz_lookup_string(command_id);
-  const char* args_json = fz_lookup_string(args_json_id);
-  const char* env_json = fz_lookup_string(env_json_id);
-  const char* stdin_payload = fz_lookup_string(stdin_id);
-  if (command == NULL || command[0] == '\0') {
-    fz_last_exit_class = 3;
-    fz_proc_set_last_error("proc_spawnv: empty command");
-    return -1;
-  }
-
-  char** arg_items = NULL;
-  int arg_count = 0;
-  if (fz_parse_json_string_array(args_json, &arg_items, &arg_count) != 0) {
-    fz_last_exit_class = 3;
-    fz_proc_set_last_error("proc_spawnv: args_json must be a JSON string array");
-    return -1;
-  }
-  char** env_items = NULL;
-  int env_count = 0;
-  if (fz_parse_json_env_object(env_json, &env_items, &env_count) != 0) {
-    fz_free_string_list(arg_items, arg_count);
-    fz_last_exit_class = 3;
-    fz_proc_set_last_error("proc_spawnv: env_json must be a JSON object<string,string>");
-    return -1;
-  }
-
-  int argv_count = arg_count + 2;
-  char** argv = (char**)calloc((size_t)argv_count, sizeof(char*));
-  if (argv == NULL) {
-    fz_free_string_list(arg_items, arg_count);
-    fz_free_string_list(env_items, env_count);
-    fz_last_exit_class = 3;
-    fz_proc_set_last_error("proc_spawnv: argv alloc failed");
-    return -1;
-  }
-  argv[0] = (char*)command;
-  for (int i = 0; i < arg_count; i++) {
-    argv[i + 1] = arg_items[i];
-  }
-  argv[argv_count - 1] = NULL;
-
-  char** envp = fz_clone_env_with_overrides(env_items, env_count);
-  int32_t handle = fz_native_proc_spawn_argv(
-      command,
-      argv,
-      envp == NULL ? environ : envp,
-      (stdin_payload == NULL || stdin_payload[0] == '\0') ? NULL : stdin_payload);
-
-  fz_free_env(envp);
-  free(argv);
-  fz_free_string_list(arg_items, arg_count);
-  fz_free_string_list(env_items, env_count);
-  return handle;
-}
-
 int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms) {
   pthread_mutex_lock(&fz_proc_lock);
   fz_proc_state* state = fz_proc_state_get(handle);
@@ -15278,22 +15605,6 @@ int32_t fz_native_proc_run(int32_t command_id) {
   return handle;
 }
 
-int32_t fz_native_proc_runv(
-    int32_t command_id,
-    int32_t args_json_id,
-    int32_t env_json_id,
-    int32_t stdin_id) {
-  int32_t handle = fz_native_proc_spawnv(command_id, args_json_id, env_json_id, stdin_id);
-  if (handle < 0) {
-    return -1;
-  }
-  int32_t waited = fz_native_proc_wait(handle, fz_proc_default_timeout_ms);
-  if (waited < 0) {
-    return -1;
-  }
-  return handle;
-}
-
 int32_t fz_native_proc_runl(
     int32_t command_id,
     int32_t args_list_id,
@@ -15308,6 +15619,29 @@ int32_t fz_native_proc_runl(
     return -1;
   }
   return handle;
+}
+
+int32_t fz_native_proc_argv_new(void) { return fz_runtime_list_new(); }
+int32_t fz_native_proc_argv_push(int32_t argv_list_id, int32_t value_id) {
+  return fz_runtime_list_push(argv_list_id, value_id);
+}
+int32_t fz_native_proc_env_new(void) { return fz_runtime_map_new(); }
+int32_t fz_native_proc_env_set(int32_t env_map_id, int32_t key_id, int32_t value_id) {
+  return fz_runtime_map_set(env_map_id, key_id, value_id);
+}
+int32_t fz_native_proc_spawn_cmd(
+    int32_t command_id,
+    int32_t argv_list_id,
+    int32_t env_map_id,
+    int32_t stdin_id) {
+  return fz_native_proc_spawnl(command_id, argv_list_id, env_map_id, stdin_id);
+}
+int32_t fz_native_proc_run_cmd(
+    int32_t command_id,
+    int32_t argv_list_id,
+    int32_t env_map_id,
+    int32_t stdin_id) {
+  return fz_native_proc_runl(command_id, argv_list_id, env_map_id, stdin_id);
 }
 
 int32_t fz_native_proc_poll(int32_t handle) {
@@ -15539,6 +15873,18 @@ int32_t fz_native_task_group_spawn(int32_t group_id, int32_t task_ref) {
   return fz_native_spawn_impl(task_ref, 0, group_id);
 }
 
+int32_t fz_native_task_group_spawn_n(int32_t group_id, int32_t task_ref, int32_t n) {
+  if (n <= 0) {
+    return 0;
+  }
+  for (int32_t i = 0; i < n; i++) {
+    if (fz_native_task_group_spawn(group_id, task_ref) < 0) {
+      return -1;
+    }
+  }
+  return 0;
+}
+
 int32_t fz_native_task_group_join(int32_t group_id) {
   for (;;) {
     int32_t next_handle = 0;
@@ -15585,6 +15931,26 @@ int32_t fz_native_task_group_cancel(int32_t group_id) {
   group->active_count = 0;
   pthread_mutex_unlock(&fz_spawn_lock);
   return 0;
+}
+
+int32_t fz_native_task_group_join_all(int32_t group_id) {
+  return fz_native_task_group_join(group_id);
+}
+
+int32_t fz_native_task_parallel_map(int32_t list_handle, int32_t task_ref) {
+  int32_t count = fz_runtime_list_len(list_handle);
+  if (count < 0) {
+    return -1;
+  }
+  int32_t group_id = fz_native_task_group_begin();
+  if (group_id < 0) {
+    return -1;
+  }
+  if (fz_native_task_group_spawn_n(group_id, task_ref, count) < 0) {
+    (void)fz_native_task_group_cancel(group_id);
+    return -1;
+  }
+  return fz_native_task_group_join_all(group_id);
 }
 
 int32_t fz_native_timeout(int32_t timeout_ms) {
@@ -16406,7 +16772,6 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_json_escape(int32_t input_id)"));
         assert!(shim.contains("int32_t fz_native_json_str(int32_t input_id)"));
         assert!(shim.contains("int32_t fz_native_json_raw(int32_t input_id)"));
-        assert!(shim.contains("int32_t fz_native_json_array4("));
         assert!(shim.contains("int32_t fz_native_json_from_map(int32_t map_handle)"));
         assert!(shim.contains("int32_t fz_native_json_parse(int32_t json_id)"));
         assert!(
@@ -16419,15 +16784,7 @@ mod tests {
         );
         assert!(shim
             .contains("int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id)"));
-        assert!(shim.contains("int32_t fz_native_json_object1(int32_t k1_id, int32_t v1_id)"));
-        assert!(shim.contains(
-            "int32_t fz_native_json_object2(int32_t k1_id, int32_t v1_id, int32_t k2_id, int32_t v2_id)"
-        ));
-        assert!(shim.contains("int32_t fz_native_json_object3("));
-        assert!(shim.contains("int32_t fz_native_json_object4("));
         assert!(shim.contains("posix_spawnp"));
-        assert!(shim.contains("int32_t fz_native_proc_spawnv("));
-        assert!(shim.contains("int32_t fz_native_proc_runv("));
         assert!(shim.contains("int32_t fz_native_proc_spawnl("));
         assert!(shim.contains("int32_t fz_native_proc_runl("));
         assert!(shim.contains("int32_t fz_native_proc_poll(int32_t handle)"));
@@ -16442,7 +16799,7 @@ mod tests {
         assert!(shim.contains("int32_t fz_native_time_tick(int32_t handle)"));
         assert!(shim.contains("int32_t fz_native_error_code(void)"));
         assert!(shim.contains("int32_t fz_native_log_info(int32_t message_id, int32_t fields_id)"));
-        assert!(shim.contains("int32_t fz_native_log_fields2("));
+        assert!(shim.contains("int32_t fz_native_log_fields_map(int32_t map_handle)"));
         assert!(shim.contains("FD_CLOEXEC"));
         assert!(shim.contains("int32_t fz_native_proc_exit_class(void)"));
         assert!(shim.contains("int32_t fz_native_time_now(void)"));
@@ -17263,11 +17620,8 @@ mod tests {
                 .as_nanos()
         );
         let path = std::env::temp_dir().join(file_name);
-        std::fs::write(
-            &path,
-            "fn main() -> i32 {\n    return (1..4).end\n}\n",
-        )
-        .expect("temp source should be written");
+        std::fs::write(&path, "fn main() -> i32 {\n    return (1..4).end\n}\n")
+            .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
         assert!(!output.diagnostic_details.iter().any(|diag| {
@@ -17554,7 +17908,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_rejects_list_map_data_plane_calls_on_native_backend() {
+    fn verify_accepts_list_map_data_plane_calls_on_native_backend() {
         let file_name = format!(
             "fozzylang-native-list-map-data-plane-unsupported-{}.fzy",
             SystemTime::now()
@@ -17570,9 +17924,8 @@ mod tests {
         .expect("temp source should be written");
 
         let output = verify_file(&path).expect("verify should run");
-        assert!(output.diagnostic_details.iter().any(|diag| {
-            diag.message
-                .contains("native backend cannot execute unresolved call `list.new`")
+        assert!(!output.diagnostic_details.iter().any(|diag| {
+            diag.message.contains("native backend cannot execute unresolved call")
         }));
 
         let _ = std::fs::remove_file(path);
@@ -17672,8 +18025,7 @@ mod tests {
         let module = parser::parse(source, "direct_memory_array").expect("source should parse");
         let typed = hir::lower(&module);
         let fir = fir::build_owned(typed);
-        let llvm =
-            lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
+        let llvm = lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
         let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
             .expect("cranelift lowering should succeed");
 
@@ -17691,8 +18043,7 @@ mod tests {
         let module = parser::parse(source, "direct_memory_contract").expect("source should parse");
         let typed = hir::lower(&module);
         let fir = fir::build_owned(typed);
-        let llvm =
-            lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
+        let llvm = lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
         let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
             .expect("cranelift lowering should succeed");
 

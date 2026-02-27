@@ -1,20 +1,44 @@
 use core.proc;
 use core.fs;
+
+fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let m = map.new()
+    discard map.set(m, k1, v1)
+    discard map.set(m, k2, v2)
+    return log.fields(m)
+}
+
 fn cmd_init() -> i32 {
-    log.info("cli.init", log.fields2("component", "cli", "phase", "init")) proc.exec_timeout(200) return 0
+    log.info("cli.init", fields2("component", "cli", "phase", "init"))
+    proc.exec_timeout(200)
+    return 0
 }
+
 fn cmd_set() -> i32 {
-    proc.exec_timeout(200) fs.flush() return 0
+    proc.exec_timeout(200)
+    fs.flush()
+    return 0
 }
+
 fn cmd_get() -> i32 {
-    proc.exec_timeout(200) return 0
+    proc.exec_timeout(200)
+    return 0
 }
+
 fn cmd_list() -> i32 {
-    proc.exec_timeout(200) return 0
+    proc.exec_timeout(200)
+    return 0
 }
+
 fn cmd_compact() -> i32 {
-    fs.atomic_write() fs.rename_atomic() fs.fsync() return 0
+    fs.atomic_write()
+    fs.rename_atomic()
+    fs.fsync()
+    return 0
 }
+
 fn cmd_export() -> i32 {
-    proc.exec_timeout(500) proc.exit_class() return 0
+    proc.exec_timeout(500)
+    proc.exit_class()
+    return 0
 }

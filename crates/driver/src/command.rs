@@ -1,8 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Context, Result};
 use formatter::{format_source, is_fzy_source_path};
@@ -65,6 +69,9 @@ pub enum Command {
         record: Option<PathBuf>,
         host_backends: bool,
         backend: Option<String>,
+        max_seconds: Option<u64>,
+        exit_on_healthcheck: Option<String>,
+        smoke_http: Option<String>,
     },
     Test {
         path: PathBuf,
@@ -258,6 +265,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             record,
             host_backends,
             backend,
+            max_seconds,
+            exit_on_healthcheck,
+            smoke_http,
         } => {
             if is_fozzy_scenario(&path) {
                 let mut fozzy_args = vec!["run".to_string(), path.display().to_string()];
@@ -369,6 +379,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "productionMemorySafety": true,
                         "seed": seed,
                         "hostBackends": host_backends,
+                        "maxSeconds": max_seconds,
+                        "exitOnHealthcheck": exit_on_healthcheck,
+                        "smokeHttp": smoke_http,
                         "policy": {
                             "profile": "verify",
                             "unsafeEnforcement": if strict_verify { "strict" } else { "profile-driven" },
@@ -443,23 +456,16 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             };
             let rendered = match format {
                 Format::Text => {
-                    let mut child = ProcessCommand::new(binary);
-                    child.args(&args);
-                    child.stdout(Stdio::inherit());
-                    child.stderr(Stdio::inherit());
-                    let status = child
-                        .spawn()
-                        .with_context(|| {
-                            format!("failed to execute native artifact: {}", binary.display())
-                        })?
-                        .wait()
-                        .with_context(|| {
-                            format!(
-                                "failed while waiting for native artifact: {}",
-                                binary.display()
-                            )
-                        })?;
-                    let exit_code = status.code().unwrap_or(1);
+                    let exit_code = run_native_binary_with_bounds(
+                        binary,
+                        &args,
+                        RunBounds {
+                            max_seconds,
+                            exit_on_healthcheck: exit_on_healthcheck.as_deref(),
+                            smoke_http: smoke_http.as_deref(),
+                        },
+                        true,
+                    )?;
                     let message = render_text_fields(&[
                         (
                             "status",
@@ -512,15 +518,16 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     message
                 }
                 Format::Json => {
-                    let output = ProcessCommand::new(binary)
-                        .args(&args)
-                        .output()
-                        .with_context(|| {
-                            format!("failed to execute native artifact: {}", binary.display())
-                        })?;
-                    let exit_code = output.status.code().unwrap_or(1);
-                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                    let exit_code = run_native_binary_with_bounds(
+                        binary,
+                        &args,
+                        RunBounds {
+                            max_seconds,
+                            exit_on_healthcheck: exit_on_healthcheck.as_deref(),
+                            smoke_http: smoke_http.as_deref(),
+                        },
+                        false,
+                    )?;
                     let payload = serde_json::json!({
                         "module": artifact.module,
                         "status": artifact.status,
@@ -534,6 +541,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "productionMemorySafety": true,
                         "seed": seed,
                         "hostBackends": host_backends,
+                        "maxSeconds": max_seconds,
+                        "exitOnHealthcheck": exit_on_healthcheck,
+                        "smokeHttp": smoke_http,
                         "deterministicApplied": deterministic && !host_backends,
                         "policy": {
                             "profile": if safe_profile { "verify" } else { "dev" },
@@ -554,8 +564,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                             }
                         },
                         "exitCode": exit_code,
-                        "stdout": stdout,
-                        "stderr": stderr,
+                        "stdout": "<captured in text mode only for bounded execution>",
+                        "stderr": "<captured in text mode only for bounded execution>",
                     });
                     if exit_code != 0 {
                         return Err(CommandFailure {
@@ -616,9 +626,94 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 return fozzy_invoke(&fozzy_args);
             }
             if host_backends {
-                bail!(
-                    "--host-backends is unsupported for native `.fzy` tests; use a `.fozzy.json` scenario for host-backed execution"
+                let bridge_root = std::env::temp_dir().join("fz-host-bridge");
+                std::fs::create_dir_all(&bridge_root).with_context(|| {
+                    format!(
+                        "failed creating host-backends bridge directory: {}",
+                        bridge_root.display()
+                    )
+                })?;
+                let stamp = format!(
+                    "{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
                 );
+                let trace_path = bridge_root.join(format!("native-test-{stamp}.trace.fozzy"));
+                let bridge_plan = run_non_scenario_test_plan_with_root_guidance(
+                    &path,
+                    NonScenarioPlanRequest {
+                        deterministic: true,
+                        strict_verify,
+                        safe_profile,
+                        scheduler: scheduler.clone(),
+                        seed,
+                        record: Some(&trace_path),
+                        rich_artifacts: true,
+                        filter: filter.as_deref(),
+                    },
+                )?;
+                let artifacts = bridge_plan.artifacts.ok_or_else(|| {
+                    anyhow!(
+                        "host-backends bridge failed to produce artifacts for {}",
+                        path.display()
+                    )
+                })?;
+                let scenario = artifacts.primary_scenario_path.ok_or_else(|| {
+                    anyhow!(
+                        "host-backends bridge failed to generate a primary scenario for {}",
+                        path.display()
+                    )
+                })?;
+                let mut fozzy_args = vec!["test".to_string(), scenario.display().to_string()];
+                if deterministic {
+                    fozzy_args.push("--det".to_string());
+                }
+                if strict_verify {
+                    fozzy_args.push("--strict".to_string());
+                }
+                if let Some(seed) = seed {
+                    fozzy_args.push("--seed".to_string());
+                    fozzy_args.push(seed.to_string());
+                }
+                if let Some(record) = record {
+                    fozzy_args.push("--record".to_string());
+                    fozzy_args.push(record.display().to_string());
+                }
+                fozzy_args.push("--proc-backend".to_string());
+                fozzy_args.push("host".to_string());
+                fozzy_args.push("--fs-backend".to_string());
+                fozzy_args.push("host".to_string());
+                fozzy_args.push("--http-backend".to_string());
+                fozzy_args.push("host".to_string());
+                if let Some(scheduler) = &scheduler {
+                    fozzy_args.push("--schedule".to_string());
+                    fozzy_args.push(scheduler.clone());
+                }
+                if matches!(format, Format::Json) {
+                    fozzy_args.push("--json".to_string());
+                }
+                let bridged = fozzy_invoke(&fozzy_args)?;
+                return match format {
+                    Format::Text => Ok(render_text_fields(&[
+                        ("status", "ok".to_string()),
+                        ("mode", "test-host-backends-bridge".to_string()),
+                        ("source", path.display().to_string()),
+                        ("scenario", scenario.display().to_string()),
+                        ("bridge_trace", trace_path.display().to_string()),
+                        ("fozzy", bridged),
+                    ])),
+                    Format::Json => Ok(serde_json::json!({
+                        "status": "ok",
+                        "mode": "test-host-backends-bridge",
+                        "source": path.display().to_string(),
+                        "scenario": scenario.display().to_string(),
+                        "bridgeTrace": trace_path.display().to_string(),
+                        "fozzy": bridged,
+                    }).to_string()),
+                };
             }
             let unsafe_docs =
                 maybe_generate_unsafe_docs(&path).map(|value| value.display().to_string());
@@ -1062,6 +1157,95 @@ struct ScenarioRunRouting {
     deterministic_applied: bool,
     mode: &'static str,
     reason: &'static str,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RunBounds<'a> {
+    max_seconds: Option<u64>,
+    exit_on_healthcheck: Option<&'a str>,
+    smoke_http: Option<&'a str>,
+}
+
+fn run_native_binary_with_bounds(
+    binary: &Path,
+    args: &[String],
+    bounds: RunBounds<'_>,
+    stream_stdio: bool,
+) -> Result<i32> {
+    let mut child = ProcessCommand::new(binary);
+    child.args(args);
+    if stream_stdio {
+        child.stdout(Stdio::inherit());
+        child.stderr(Stdio::inherit());
+    }
+    let mut child = child
+        .spawn()
+        .with_context(|| format!("failed to execute native artifact: {}", binary.display()))?;
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .with_context(|| format!("failed waiting for native artifact: {}", binary.display()))?
+        {
+            return Ok(status.code().unwrap_or(1));
+        }
+        if let Some(max) = bounds.max_seconds {
+            if started.elapsed() >= Duration::from_secs(max) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(124);
+            }
+        }
+        if let Some(url) = bounds.exit_on_healthcheck {
+            if probe_http_ok(url)? {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(0);
+            }
+        }
+        if let Some(url) = bounds.smoke_http {
+            if probe_http_ok(url)? {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(0);
+            }
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn probe_http_ok(url: &str) -> Result<bool> {
+    let Some(without_scheme) = url.strip_prefix("http://") else {
+        bail!("unsupported URL for smoke/health probe: {url} (only http:// is supported)");
+    };
+    let (host_port, path) = if let Some((host_port, path)) = without_scheme.split_once('/') {
+        (host_port, format!("/{}", path))
+    } else {
+        (without_scheme, "/".to_string())
+    };
+    let (host, port) = if let Some((host, port_str)) = host_port.split_once(':') {
+        let parsed = port_str
+            .parse::<u16>()
+            .with_context(|| format!("invalid probe port in URL: {url}"))?;
+        (host, parsed)
+    } else {
+        (host_port, 80u16)
+    };
+    let mut stream = match TcpStream::connect((host, port)) {
+        Ok(stream) => stream,
+        Err(_) => return Ok(false),
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .ok();
+    stream
+        .set_write_timeout(Some(Duration::from_millis(500)))
+        .ok();
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n");
+    stream.write_all(request.as_bytes())?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    Ok(response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"))
 }
 
 fn scenario_run_routing(deterministic_requested: bool, host_backends: bool) -> ScenarioRunRouting {
@@ -10596,6 +10780,9 @@ mod tests {
                 record: None,
                 host_backends: false,
                 backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
             },
             Format::Json,
         )
@@ -10639,6 +10826,9 @@ mod tests {
                 record: None,
                 host_backends: false,
                 backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
             },
             Format::Json,
         )
@@ -10687,6 +10877,9 @@ mod tests {
                 record: None,
                 host_backends: false,
                 backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
             },
             Format::Json,
         )
@@ -10717,6 +10910,9 @@ mod tests {
                 record: None,
                 host_backends: true,
                 backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
             },
             Format::Json,
         )
@@ -10779,6 +10975,9 @@ mod tests {
                 record: None,
                 host_backends: false,
                 backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
             },
             Format::Json,
         )
@@ -10814,6 +11013,9 @@ mod tests {
                 record: None,
                 host_backends: false,
                 backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
             },
             Format::Json,
         )

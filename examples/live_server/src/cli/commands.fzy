@@ -1,3 +1,14 @@
+fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let m = map.new()
+    discard map.set(m, k1, v1)
+    discard map.set(m, k2, v2)
+    return log.fields(m)
+}
+
 fn boot() -> i32 {
-    env.get("FZ_HOST") env.get("FZ_PORT") env.get("SERVICE_ENV") log.info("cli.boot", log.fields2("component", "cli", "phase", "boot")) return 0
+    env.get("FZ_HOST")
+    env.get("FZ_PORT")
+    env.get("SERVICE_ENV")
+    log.info("cli.boot", fields2("component", "cli", "phase", "boot"))
+    return 0
 }

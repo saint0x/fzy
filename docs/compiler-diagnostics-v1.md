@@ -60,6 +60,7 @@ Catalog:
 - Includes source location and multi-line code frames when span is available.
 - Includes related labels with related-location frames.
 - Includes help, notes, and suggestions.
+- Repeated unresolved/type-check findings are de-duplicated into one root diagnostic with repeat counters and top detail indexes.
 
 ### CLI JSON (`fz check --json`, `fz verify --json`)
 
@@ -98,6 +99,7 @@ Recommended minimal gate for diagnostics changes:
 At minimum keep regressions for:
 
 - unresolved call targets
+- unresolved call target nearest-symbol suggestions (`did you mean ...`)
 - generic bound failures
 - struct field resolution
 - enum variant resolution

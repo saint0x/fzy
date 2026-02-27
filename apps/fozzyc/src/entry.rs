@@ -203,6 +203,9 @@ fn parse_command(args: &[String]) -> Result<Command> {
             let record = parse_path_flag(args, "--record")?;
             let host_backends = has_flag(args, "--host-backends");
             let backend = parse_backend_flag(args)?;
+            let max_seconds = parse_u64_flag(args, "--max-seconds")?;
+            let exit_on_healthcheck = parse_string_flag(args, "--exit-on-healthcheck")?;
+            let smoke_http = parse_string_flag(args, "--smoke-http")?;
             Ok(Command::Run {
                 path,
                 args: passthrough,
@@ -213,6 +216,9 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 record,
                 host_backends,
                 backend,
+                max_seconds,
+                exit_on_healthcheck,
+                smoke_http,
             })
         }
         Some("test") => {
@@ -457,7 +463,7 @@ fn print_help() {
 commands:\n\
   init <name>\n\
   build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
-  run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [-- <args>]\n\
+  run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>]\n\
   test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
   fmt [path ...] [--check]\n\
   check [path]\n\
@@ -502,6 +508,9 @@ flags:\n\
   --seed <u64>\n\
   --record <path>\n\
   --host-backends\n\
+  --max-seconds <u64>\n\
+  --exit-on-healthcheck <http://host:port/path>\n\
+  --smoke-http <http://host:port/path>\n\
   --backend <llvm|cranelift>\n\
   --lib\n\
   -l|--link-lib <name> (repeatable)\n\

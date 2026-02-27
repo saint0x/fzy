@@ -108,6 +108,7 @@ use core.fs;
 use core.http;
 use core.proc;
 use core.thread;
+use core.log;
 use core.encoding;
 use core.error;
 use core.path;
@@ -330,6 +331,11 @@ fn c_view_demo() -> i32 {
 fn host_and_io_showcase() -> i32 {
     let root = path.join("tmp", "showcase");
     let _ = fs.mkdir(root);
+    log.set_json(1);
+    let fields_start = map.new();
+    map.set(fields_start, "component", "showcase");
+    map.set(fields_start, "phase", "host_io");
+    log.info("showcase.start", log.fields(fields_start));
 
     let payload = encoding.json_encode("{\"ok\":true}");
     let file = path.join(root, "data.json");
@@ -339,6 +345,13 @@ fn host_and_io_showcase() -> i32 {
     let listener = http.bind();
     if listener >= 0 {
         http.listen(listener);
+        let fields_listen = map.new();
+        map.set(fields_listen, "transport", "http");
+        log.info("showcase.listen", log.fields(fields_listen));
+    } else {
+        let fields_bind = map.new();
+        map.set(fields_bind, "component", "showcase");
+        log.warn("showcase.bind_failed", log.fields(fields_bind));
     }
 
     let proc_id = proc.spawn("echo", ["fzl", "showcase"]);
@@ -350,8 +363,16 @@ fn host_and_io_showcase() -> i32 {
     }
 
     if str.contains(raw, "ok") == 1 {
+        let fields_done_ok = map.new();
+        map.set(fields_done_ok, "result", "ok");
+        map.set(fields_done_ok, "error_policy", "core.error.enabled");
+        log.info("showcase.done", log.fields(fields_done_ok));
         return 0;
     }
+    let fields_done_err = map.new();
+    map.set(fields_done_err, "result", "missing_ok");
+    map.set(fields_done_err, "error_policy", "core.error.enabled");
+    log.error("showcase.done", log.fields(fields_done_err));
     return 1;
 }
 

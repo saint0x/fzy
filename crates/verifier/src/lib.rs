@@ -1,5 +1,6 @@
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
 use fir::FirModule;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default)]
 pub struct VerifyPolicy {
@@ -80,10 +81,20 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     for effect in &module.unknown_effects {
+        if effect == "text" {
+            report.diagnostics.push(Diagnostic::new(
+                Severity::Error,
+                "`use core.text;` is invalid: string/text intrinsics require no capability import",
+                Some(
+                    "remove `use core.text;` and call `str.*` intrinsics directly".to_string(),
+                ),
+            ));
+            continue;
+        }
         report.diagnostics.push(Diagnostic::new(
             Severity::Error,
             format!("unknown capability: {effect}"),
-            Some("allowed: time, rng, fs, http, proc, mem, thread".to_string()),
+            Some("allowed: time, rng, fs, http, proc, mem, thread, log, error".to_string()),
         ));
     }
 
@@ -96,6 +107,8 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             core::Capability::Process,
             core::Capability::Memory,
             core::Capability::Thread,
+            core::Capability::Log,
+            core::Capability::Error,
         ] {
             if module.effects.contains(disallowed) || module.required_effects.contains(disallowed) {
                 report.diagnostics.push(Diagnostic::new(
@@ -450,15 +463,25 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     if module.type_errors > 0 {
+        let mut grouped = BTreeMap::<String, Vec<usize>>::new();
         for (index, detail) in module.type_error_details.iter().enumerate() {
-            report.diagnostics.push(
-                Diagnostic::new(
-                    Severity::Error,
-                    detail.clone(),
-                    Some("type-check detail".to_string()),
-                )
-                .with_note(format!("detail_index={index}")),
-            );
+            grouped.entry(detail.clone()).or_default().push(index);
+        }
+        for (detail, indexes) in grouped {
+            let repeats = indexes.len();
+            let mut diag = Diagnostic::new(Severity::Error, detail, Some("type-check detail".to_string()))
+                .with_note(format!("repeated_count={repeats}"));
+            let top = indexes
+                .iter()
+                .take(5)
+                .map(|index| index.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            diag = diag.with_note(format!("top_detail_indexes={top}"));
+            if repeats > 5 {
+                diag = diag.with_note(format!("suppressed_detail_indexes={}", repeats - 5));
+            }
+            report.diagnostics.push(diag);
         }
     }
 

@@ -1,0 +1,46 @@
+use webcore.http;
+use core.log;
+use core.error;
+mod webcore;
+mod middleware;
+mod support;
+
+fn fields1(k1: str, v1: str) -> str {
+    let m = map.new()
+    discard map.set(m, k1, v1)
+    return log.fields(m)
+}
+
+fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let m = map.new()
+    discard map.set(m, k1, v1)
+    discard map.set(m, k2, v2)
+    return log.fields(m)
+}
+
+fn main() -> i32 {
+    discard log.set_json(1)
+    let mut sig = webcore.app_new()
+    sig = webcore.app_enable(sig, middleware.logger_flag())
+    sig = webcore.app_enable(sig, middleware.timeout_flag())
+    sig = webcore.app_get(sig, "/health", 1)
+    sig = webcore.app_post(sig, "/echo", 2)
+
+    if http.last_status() < -1 {
+        return sig % 251
+    }
+
+    let conn = webcore.server_accept()
+    if conn < 0 {
+        discard log.warn("fzweb.basic.accept_fail", fields1("component", "fzweb.basic"))
+        return support.error_map(503)
+    }
+    defer close(conn)
+    discard webcore.request_read(conn)
+    let method = webcore.request_method(conn)
+    let path = webcore.request_path(conn)
+    let body = webcore.request_body(conn, support.default_max_body_bytes())
+    discard log.info("fzweb.basic.request", fields2("method", method, "path", path))
+    let handler = webcore.route_select(method, path)
+    return webcore.handler_dispatch(handler, conn, body)
+}

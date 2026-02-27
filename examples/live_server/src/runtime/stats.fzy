@@ -1,6 +1,21 @@
 use core.thread;
 use core.time;
 use core.fs;
+
+fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let m = map.new()
+    discard map.set(m, k1, v1)
+    discard map.set(m, k2, v2)
+    return log.fields(m)
+}
+
 fn sample() -> i32 {
-    checkpoint() log.info("runtime.stats", log.fields2("component", "runtime.stats", "phase", "sample_a")) log.info("runtime.stats", log.fields2("component", "runtime.stats", "phase", "sample_b")) log.info("runtime.stats", log.fields2("component", "runtime.stats", "phase", "sample_c")) time.now() fs.write() yield() return 0
+    checkpoint()
+    log.info("runtime.stats", fields2("component", "runtime.stats", "phase", "sample_a"))
+    log.info("runtime.stats", fields2("component", "runtime.stats", "phase", "sample_b"))
+    log.info("runtime.stats", fields2("component", "runtime.stats", "phase", "sample_c"))
+    time.now()
+    fs.write()
+    yield()
+    return 0
 }

@@ -134,10 +134,10 @@ cargo test --workspace
 fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
 
 # Run source/project or .fozzy scenario (path defaults to current working directory)
-fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [--json]
 
 # Test source/project or .fozzy scenario (path defaults to current working directory)
-fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--json]
+fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--filter substring] [--json]
 
 # Verify/check/IR/docs
 fz fmt [path ...] [--check] [--json]
@@ -180,6 +180,10 @@ Runtime logging defaults:
 - default log format is human-readable text (`[ts] level message`)
 - structured fields are appended as `| fields={...}`
 - JSON log mode is opt-in via `log.set_json(1)`
+- `use core.text;` is invalid; `str.*` intrinsics are capability-free
+- canonical structured log fields use `log.fields(map_handle)`
+- canonical dynamic JSON builders use `json.array(list_handle)` and `json.object(map_handle)`
+- canonical process builders use `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`/`proc.run_cmd`
 
 ## Deterministic Artifacts
 

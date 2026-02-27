@@ -50,6 +50,14 @@ Run host-backed confidence pass:
 fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
 ```
 
+For native source tests, use a single command path:
+
+```bash
+fz test <module>.fzy --host-backends --json
+```
+
+This automatically generates temporary scenario artifacts and runs host-backed execution without a separate manual scenario conversion step.
+
 ## 4. Gate
 
 Run the single ship gate entrypoint:

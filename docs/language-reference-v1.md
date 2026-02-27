@@ -78,6 +78,12 @@ This document defines the v1 observable semantics contract used by the toolchain
 - Task scheduling is deterministic in `det` mode and recorded as replay-critical data.
 - `spawn(...)` implies thread/executor capability requirements.
 
+### Task Group Helpers
+
+- `task.group_spawn_n(group, worker, n)` spawns `n` tasks into a group.
+- `task.group_join_all(group)` is the canonical full-group join operation.
+- `task.parallel_map(list_handle, worker)` provides high-level fan-out/fan-in over list length.
+
 ### `checkpoint()`
 
 - Explicit scheduler yieldpoint for deterministic interleaving exploration.
@@ -143,8 +149,32 @@ Semantics:
 ## Capability Semantics
 
 - Capabilities are declared by `use core.<name>;` at module scope.
-- Core capabilities include: `time`, `rng`, `fs`, `http`, `proc`, `mem`, `thread`.
+- Core capabilities include: `time`, `rng`, `fs`, `http`, `proc`, `mem`, `thread`, `log`, `error`.
+- `use core.text;` is invalid; text/string intrinsics are capability-free.
 - Verifier emits diagnostics for unknown or missing required capabilities.
+
+## Process Intrinsic Namespace
+
+- Canonical process intrinsic namespace is `proc.*`.
+- `process.*` is removed in production v1; unresolved-call diagnostics provide migration guidance to the nearest `proc.*` intrinsic.
+- Structured process builders are first-class: `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`, `proc.run_cmd`.
+
+## JSON And Logging Ergonomics
+
+- Dynamic JSON builders are canonical:
+  - `json.array(list_handle)`
+  - `json.object(map_handle)`
+- List/map value construction is first-class:
+  - `list.new/push/pop/len/get/set/clear/join`
+  - `map.new/set/get/has/delete/keys/len`
+- Structured logging fields use `log.fields(map_handle)` as the primary path.
+
+## Storage Primitives
+
+- Common persistence helpers are first-class:
+  - `storage.append(path, line)`
+  - `storage.atomic_append(path, line)`
+  - `storage.kv_open(path)`, `storage.kv_get(handle, key)`, `storage.kv_put(handle, key, value)`
 
 ### Capability Inference Rules
 
