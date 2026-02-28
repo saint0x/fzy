@@ -973,7 +973,7 @@ pub fn compile_file_with_backend(
         );
     }
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
-    let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
+    let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
     let (_typed, fir) = lower_fir_cached(&parsed);
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
@@ -1050,7 +1050,17 @@ pub fn compile_library_with_backend(
     let parsed = parse_program(&resolved.source_path)?;
     let experimental_diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
-    let backend = resolve_native_backend(profile, backend_override)?;
+    let requested_backend = resolve_native_backend(profile, backend_override)?;
+    let backend = if requested_backend == "llvm" {
+        if backend_override.is_some_and(|value| value.trim().eq_ignore_ascii_case("llvm")) {
+            bail!(
+                "backend `llvm` is not supported for `fz build --lib`; use `--backend cranelift`"
+            );
+        }
+        "cranelift".to_string()
+    } else {
+        requested_backend
+    };
     let pgo = configured_pgo();
     if (pgo.generate_dir.is_some() || pgo.use_profile.is_some()) && backend != "llvm" {
         bail!(
@@ -1059,7 +1069,7 @@ pub fn compile_library_with_backend(
         );
     }
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
-    let backend_risks = backend_capability_diagnostics(&parsed.module, &backend);
+    let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
     let (_typed, fir) = lower_fir_cached(&parsed);
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
@@ -7797,6 +7807,7 @@ fn emit_native_libraries_cranelift(
                 globals: &plan.global_const_i32,
                 variant_tags: &plan.variant_tags,
                 mutable_globals: &mutable_global_data_ids,
+                current_return_ty: signature.ret,
                 closures: HashMap::new(),
                 array_bindings: HashMap::new(),
                 const_strings: HashMap::new(),
@@ -8316,6 +8327,7 @@ fn emit_native_artifact_cranelift(
                 globals: &plan.global_const_i32,
                 variant_tags: &plan.variant_tags,
                 mutable_globals: &mutable_global_data_ids,
+                current_return_ty: signature.ret,
                 closures: HashMap::new(),
                 array_bindings: HashMap::new(),
                 const_strings: HashMap::new(),
@@ -8403,6 +8415,7 @@ struct ClifLoweringCtx<'a> {
     globals: &'a HashMap<String, i32>,
     variant_tags: &'a HashMap<String, i32>,
     mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
+    current_return_ty: Option<ClifType>,
     closures: HashMap<String, ClifClosureBinding>,
     array_bindings: HashMap<String, ClifArrayBinding>,
     const_strings: HashMap<String, String>,
@@ -8470,7 +8483,12 @@ fn clif_emit_cfg(
         }
         emitted[block_id] = true;
         builder.switch_to_block(clif_blocks[block_id]);
-        clif_emit_linear_stmts(builder, ctx, &cfg.blocks[block_id].stmts, locals, next_var)?;
+        let linear_terminated =
+            clif_emit_linear_stmts(builder, ctx, &cfg.blocks[block_id].stmts, locals, next_var)?;
+        if linear_terminated {
+            emitted[block_id] = true;
+            continue;
+        }
         match &cfg.blocks[block_id].terminator {
             ControlFlowTerminator::Return(Some(expr)) => {
                 if let Some(return_ty) = return_ty {
@@ -8817,7 +8835,7 @@ fn clif_emit_linear_stmts(
     body: &[ast::Stmt],
     locals: &mut HashMap<String, LocalBinding>,
     next_var: &mut usize,
-) -> Result<()> {
+) -> Result<bool> {
     for stmt in body {
         match stmt {
             ast::Stmt::Let {
@@ -9135,8 +9153,28 @@ fn clif_emit_linear_stmts(
             | ast::Stmt::Defer(expr) => {
                 let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
             }
-            ast::Stmt::Return(_)
-            | ast::Stmt::If { .. }
+            ast::Stmt::Return(value) => {
+                match (value, ctx.current_return_ty) {
+                    (Some(expr), Some(ret_ty)) => {
+                        let lowered = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
+                        let lowered = cast_clif_value(builder, lowered, ret_ty)?;
+                        builder.ins().return_(&[lowered.value]);
+                    }
+                    (Some(expr), None) => {
+                        let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
+                        builder.ins().return_(&[]);
+                    }
+                    (None, Some(ret_ty)) => {
+                        let fallback = zero_for_type(builder, ret_ty);
+                        builder.ins().return_(&[fallback]);
+                    }
+                    (None, None) => {
+                        builder.ins().return_(&[]);
+                    }
+                }
+                return Ok(true);
+            }
+            ast::Stmt::If { .. }
             | ast::Stmt::While { .. }
             | ast::Stmt::For { .. }
             | ast::Stmt::ForIn { .. }
@@ -9148,7 +9186,7 @@ fn clif_emit_linear_stmts(
             }
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 fn variant_tag(variant: &str) -> i32 {
@@ -9847,7 +9885,12 @@ fn clif_emit_expr(
             }
         }
         ast::Expr::UnsafeBlock { body, .. } => {
-            clif_emit_linear_stmts(builder, ctx, body, locals, next_var)?;
+            let linear_terminated = clif_emit_linear_stmts(builder, ctx, body, locals, next_var)?;
+            if linear_terminated {
+                let continuation = builder.create_block();
+                builder.switch_to_block(continuation);
+                builder.seal_block(continuation);
+            }
             ClifValue {
                 value: builder.ins().iconst(default_int_clif_type(), 0),
                 ty: default_int_clif_type(),
@@ -10019,6 +10062,7 @@ fn experimental_feature_diagnostics(
 fn backend_capability_diagnostics(
     module: &ast::Module,
     backend: &str,
+    for_library: bool,
 ) -> Vec<diagnostics::Diagnostic> {
     let mut diagnostics = Vec::new();
     let backend = backend.trim().to_ascii_lowercase();
@@ -10027,7 +10071,8 @@ fn backend_capability_diagnostics(
             let ast::Item::Function(function) = item else {
                 continue;
             };
-            if function.is_pubext
+            if !for_library
+                && function.is_pubext
                 && function.is_async
                 && function
                     .abi
@@ -16295,12 +16340,11 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        compile_file, compile_file_with_backend, compile_library_with_backend,
-        collect_async_c_exports, derive_anchors_from_message, emit_ir, lower_backend_ir,
-        lower_llvm_ir, native_mangle_symbol,
-        native_runtime_import_contract_errors, native_runtime_import_for_callee, parse_program,
-        refresh_lockfile, render_native_runtime_shim, verify_file, BackendKind, BuildProfile,
-        NativeAsyncExport,
+        collect_async_c_exports, compile_file, compile_file_with_backend,
+        compile_library_with_backend, derive_anchors_from_message, emit_ir, lower_backend_ir,
+        lower_llvm_ir, native_mangle_symbol, native_runtime_import_contract_errors,
+        native_runtime_import_for_callee, parse_program, refresh_lockfile,
+        render_native_runtime_shim, verify_file, BackendKind, BuildProfile, NativeAsyncExport,
     };
 
     fn run_native_exit(exe: &Path) -> i32 {
@@ -16405,6 +16449,74 @@ mod tests {
         let artifact = compile_library_with_backend(&root, BuildProfile::Dev, None)
             .expect("library project should compile");
         assert_eq!(artifact.module, "lib");
+        assert!(artifact
+            .static_lib
+            .as_ref()
+            .is_some_and(|path| path.exists()));
+        assert!(artifact
+            .shared_lib
+            .as_ref()
+            .is_some_and(|path| path.exists()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compile_library_rejects_explicit_llvm_backend_override() {
+        let project_name = format!(
+            "fozzylang-project-lib-llvm-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo_lib\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"demo_lib\"\npath=\"src/lib.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n",
+        )
+        .expect("source should be written");
+
+        let error = compile_library_with_backend(&root, BuildProfile::Release, Some("llvm"))
+            .expect_err("llvm backend override should be rejected for --lib");
+        assert!(error
+            .to_string()
+            .contains("not supported for `fz build --lib`"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compile_library_allows_async_c_exports_with_default_release_backend() {
+        let project_name = format!(
+            "fozzylang-project-lib-async-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo_lib\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"demo_lib\"\npath=\"src/lib.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "use core.thread;\n#[ffi_panic(abort)]\npubext async c fn flush(code: i32) -> i32 {\n    checkpoint();\n    return code\n}\n",
+        )
+        .expect("source should be written");
+
+        let artifact = compile_library_with_backend(&root, BuildProfile::Release, None)
+            .expect("library project should compile");
+        assert_eq!(artifact.status, "ok");
         assert!(artifact
             .static_lib
             .as_ref()
