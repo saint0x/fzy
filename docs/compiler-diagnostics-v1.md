@@ -103,6 +103,10 @@ At minimum keep regressions for:
 - unresolved call targets
 - unresolved call target nearest-symbol suggestions (`did you mean ...`)
 - generic bound failures
+- trait missing-impl diagnostics
+- trait impl overlap/ambiguity diagnostics
+- invalid generic specialization shape/arity diagnostics
+- unsupported trait associated-item diagnostics
 - struct field resolution
 - enum variant resolution
 - match exhaustiveness/unreachable arms

@@ -29,6 +29,9 @@ cargo test --workspace >/dev/null
 echo "[ship] language primitive drift gate"
 python3 ./scripts/language_primitive_drift_gate.py >/dev/null
 
+echo "[ship] traits/generics contract gate"
+python3 ./scripts/traits_generics_gate.py >/dev/null
+
 echo "[ship] direct-memory architecture gate"
 python3 ./scripts/direct_memory_architecture_gate.py >/dev/null
 
@@ -52,6 +55,10 @@ PROBE_C="$ROOT/tests/fixtures/primitive_parity/main.fzy"
 PROBE_D="$ROOT/tests/fixtures/native_completeness/main.fzy"
 PROBE_E="$ROOT/tests/fixtures/direct_memory_contract/main.fzy"
 PROBE_F="$ROOT/tests/fixtures/direct_memory_safety/main.fzy"
+PROBE_G="$ROOT/tests/fixtures/trait_generic/main.fzy"
+PROBE_H="$ROOT/tests/fixtures/trait_generic_async/main.fzy"
+PROBE_I="$ROOT/tests/fixtures/generic_data_structure/main.fzy"
+PROBE_J="$ROOT/tests/fixtures/trait_service/main.fzy"
 cat > "$PROBE_A" <<'FZY'
 fn main() -> i32 {
     return 0
@@ -82,6 +89,14 @@ FZY
 "${FZ_CMD[@]}" equivalence "$PROBE_E" --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity "$PROBE_F" --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" equivalence "$PROBE_F" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity "$PROBE_G" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence "$PROBE_G" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity "$PROBE_H" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence "$PROBE_H" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity "$PROBE_I" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence "$PROBE_I" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity "$PROBE_J" --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence "$PROBE_J" --seed "$SEED" --json >/dev/null
 
 echo "[ship] native backend execute-and-compare control-flow parity"
 cargo test -q -p driver pipeline::tests::cross_backend_primitive_control_flow_and_operator_fixture_execute_consistently -- --exact >/dev/null
@@ -95,6 +110,7 @@ cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_bounds_prob
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_i64_array_layout_executes_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_string_slice_executes_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_rolling_window_index_executes_consistently -- --exact >/dev/null
+cargo test -q -p hir tests::flags_overlapping_trait_impls_as_ambiguous -- --exact >/dev/null
 
 echo "[ship] examples conformance on default production backend"
 for example_root in "$ROOT"/examples/*; do

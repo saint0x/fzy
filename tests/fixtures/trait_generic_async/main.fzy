@@ -1,0 +1,39 @@
+use core.thread;
+
+trait Score {
+    fn score(v: i32) -> i32;
+}
+
+struct Item {
+    value: i32,
+}
+
+impl Score for Item {
+    fn score(v: i32) -> i32 {
+        return v + 2
+    }
+}
+
+fn keep<T: Score>(v: T) -> T {
+    return v
+}
+
+async fn produce<T: Score>(v: T) -> T {
+    checkpoint();
+    return v
+}
+
+async fn pipeline<T: Score>(left: T, right: T, take_left: bool) -> T {
+    if take_left {
+        return await produce<T>(left)
+    }
+    return await produce<T>(right)
+}
+
+async fn main() -> i32 {
+    let first = Item { value: 3 }
+    let second = Item { value: 4 }
+    let kept = keep<Item>(first)
+    let out = await pipeline<Item>(kept, second, false)
+    return Item.score(out.value)
+}

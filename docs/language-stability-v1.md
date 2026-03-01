@@ -29,3 +29,11 @@ Rules:
 - Manifest-level tier/opt-in contract violations fail with actionable diagnostics.
 - Construct-level validity is enforced by parser/HIR/verifier/native lowerability diagnostics (no legacy shape-scanner gate path).
 - There is no compatibility fallback for tier violations.
+
+## Core v1 Trait/Generic and Macro Surface
+
+- Traits and generics in `core_v1` are governed by `docs/traits-generics-contract-v1.md`.
+- Supported generic surface in `core_v1`: function generics with explicit specialization.
+- Supported trait surface in `core_v1`: concrete impl targets, strict conformance/coherence checks, canonical method dispatch contract.
+- Unsupported trait/generic declarations in `core_v1` are hard-rejected with diagnostics.
+- Macro model in `core_v1` is constrained to supported attributes (`#[repr(...)]`, `#[ffi_panic(...)]`); broader macro expansion remains out of scope.

@@ -669,9 +669,7 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
                 visitor.visit_stmt(stmt);
             }
         }
-        Expr::ForIn {
-            iterable, body, ..
-        } => {
+        Expr::ForIn { iterable, body, .. } => {
             visitor.visit_expr(iterable);
             for stmt in body {
                 visitor.visit_stmt(stmt);

@@ -1998,11 +1998,8 @@ impl JsonPayload {
 
     pub fn set_raw(&mut self, key: impl Into<String>, value_json: &str) -> Result<(), NetError> {
         let key = validate_json_payload_key(key.into())?;
-        let value = serde_json::from_str::<Value>(value_json).map_err(|err| {
-            NetError::Parse(format!(
-                "payload.{key}: invalid JSON value: {err}"
-            ))
-        })?;
+        let value = serde_json::from_str::<Value>(value_json)
+            .map_err(|err| NetError::Parse(format!("payload.{key}: invalid JSON value: {err}")))?;
         self.fields.insert(key, value);
         Ok(())
     }
@@ -2061,11 +2058,7 @@ pub fn write_json_payload(
     let encoded = json_payload_encode(payload)?;
     HttpResponseBuilder::default()
         .status(status, reason)
-        .header(
-            "Content-Type",
-            "application/json",
-            HeaderLimits::default(),
-        )?
+        .header("Content-Type", "application/json", HeaderLimits::default())?
         .body(encoded.into_bytes())
         .keep_alive(keep_alive)
         .build(limits)
@@ -2081,11 +2074,7 @@ pub fn post_json_payload(
     HttpRequestBuilder::default()
         .method("POST")
         .path(path)
-        .header(
-            "Content-Type",
-            "application/json",
-            HeaderLimits::default(),
-        )?
+        .header("Content-Type", "application/json", HeaderLimits::default())?
         .body(encoded.into_bytes())
         .keep_alive(keep_alive)
         .build(limits)
@@ -2093,9 +2082,7 @@ pub fn post_json_payload(
 
 fn validate_json_payload_key(key: String) -> Result<String, NetError> {
     if key.trim().is_empty() {
-        return Err(NetError::Parse(
-            "payload key must not be empty".to_string(),
-        ));
+        return Err(NetError::Parse("payload key must not be empty".to_string()));
     }
     Ok(key)
 }
@@ -2567,14 +2554,8 @@ mod tests {
     fn write_json_payload_uses_canonical_response_builder_path() {
         let mut payload = json_payload_new();
         json_payload_set_str(&mut payload, "status", "ok").expect("set should work");
-        let response = write_json_payload(
-            200,
-            "OK",
-            &payload,
-            true,
-            &HttpServerLimits::default(),
-        )
-        .expect("json response should build");
+        let response = write_json_payload(200, "OK", &payload, true, &HttpServerLimits::default())
+            .expect("json response should build");
         assert_eq!(response.status, 200);
         assert_eq!(
             response.headers.get("content-type").map(String::as_str),
@@ -2587,9 +2568,8 @@ mod tests {
     fn post_json_payload_uses_canonical_request_builder_path() {
         let mut payload = json_payload_new();
         json_payload_set_str(&mut payload, "type", "ping").expect("set should work");
-        let request =
-            post_json_payload("/v1/events", &payload, true, &HttpServerLimits::default())
-                .expect("json request should build");
+        let request = post_json_payload("/v1/events", &payload, true, &HttpServerLimits::default())
+            .expect("json request should build");
         assert_eq!(request.method, "POST");
         assert_eq!(request.path, "/v1/events");
         assert_eq!(

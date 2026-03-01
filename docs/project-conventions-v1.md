@@ -46,3 +46,8 @@
 
 - Run `fz dx-check [project] --strict` (defaults to current working directory when omitted).
 - `dx-check` fails when conventions are violated.
+
+## Language Contract References
+
+- Trait/generic coding patterns and limits: `docs/traits-generics-style-guide-v1.md`.
+- Production trait/generic semantics contract: `docs/traits-generics-contract-v1.md`.

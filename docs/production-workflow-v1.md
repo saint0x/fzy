@@ -58,6 +58,18 @@ fz test <module>.fzy --host-backends --json
 
 This automatically generates temporary scenario artifacts and runs host-backed execution without a separate manual scenario conversion step.
 
+For trait/generic language slices, include the dedicated scenario lifecycle:
+
+```bash
+fozzy doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed 4242 --json
+fozzy test --det --strict tests/trait_generic.pass.fozzy.json --json
+fozzy run tests/trait_generic.pass.fozzy.json --det --record artifacts/trait-generic.trace.fozzy --json
+fozzy trace verify artifacts/trait-generic.trace.fozzy --strict --json
+fozzy replay artifacts/trait-generic.trace.fozzy --json
+fozzy ci artifacts/trait-generic.trace.fozzy --json
+fozzy run tests/trait_generic.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
+```
+
 ## 4. Gate
 
 Run the single ship gate entrypoint:
@@ -105,3 +117,5 @@ For failures, use:
 
 - `docs/production-failure-triage-v1.md`
 - `docs/exit-criteria-v1.md`
+- `docs/traits-generics-contract-v1.md`
+- `docs/traits-generics-style-guide-v1.md`

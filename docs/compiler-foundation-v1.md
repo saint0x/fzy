@@ -20,7 +20,8 @@ Implemented:
 
 Current known limits:
 - Optimization depth is intentionally conservative (no aggressive SSA-level optimization pipeline in v1).
-- Generic specialization and trait/interface-bounded polymorphism remain baseline-only.
+- Traits/generics are production-supported for the v1 contract surface (function generics with explicit specialization, concrete trait impl targets, strict coherence diagnostics).
+- Advanced trait/generic forms remain intentionally out of scope and are hard-rejected in v1 (generic struct/enum/trait/impl headers, associated items, trait method defaults, generic trait methods).
 - Native lowering is production-hardened for supported signatures; unsupported native signatures are verifier-rejected by policy.
 
 ## Architecture

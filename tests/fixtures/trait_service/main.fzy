@@ -1,0 +1,34 @@
+trait StatusCode {
+    fn code(v: i32) -> i32;
+}
+
+trait BodySize {
+    fn size(v: i32) -> i32;
+}
+
+struct OkResponse {
+    code: i32,
+    size: i32,
+}
+
+impl StatusCode for OkResponse {
+    fn code(v: i32) -> i32 {
+        return v
+    }
+}
+
+impl BodySize for OkResponse {
+    fn size(v: i32) -> i32 {
+        return v
+    }
+}
+
+fn serve<T: StatusCode + BodySize>(resp: T, code: i32, size: i32) -> i32 {
+    discard resp;
+    return OkResponse.code(code) + OkResponse.size(size)
+}
+
+fn main() -> i32 {
+    let resp = OkResponse { code: 200, size: 4 }
+    return serve<OkResponse>(resp, 200, 4)
+}

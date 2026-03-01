@@ -26,6 +26,9 @@ fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed "$SEED" 
 echo "[gate] language primitive drift gate"
 python3 ./scripts/language_primitive_drift_gate.py >/dev/null
 
+echo "[gate] traits/generics contract gate"
+python3 ./scripts/traits_generics_gate.py >/dev/null
+
 echo "[gate] direct-memory architecture gate"
 python3 ./scripts/direct_memory_architecture_gate.py >/dev/null
 
@@ -54,6 +57,14 @@ echo "[gate] primitive parity/equivalence probes"
 "${FZ_CMD[@]}" equivalence tests/fixtures/direct_memory_contract/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" parity tests/fixtures/direct_memory_safety/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" equivalence tests/fixtures/direct_memory_safety/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity tests/fixtures/trait_generic/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence tests/fixtures/trait_generic/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity tests/fixtures/trait_generic_async/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence tests/fixtures/trait_generic_async/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity tests/fixtures/generic_data_structure/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence tests/fixtures/generic_data_structure/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" parity tests/fixtures/trait_service/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence tests/fixtures/trait_service/main.fzy --seed "$SEED" --json >/dev/null
 
 echo "[gate] native completeness execute-and-compare"
 cargo test -q -p driver pipeline::tests::cross_backend_native_completeness_fixture_execute_consistently -- --exact >/dev/null
@@ -64,10 +75,15 @@ cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_bounds_prob
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_i64_array_layout_executes_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_string_slice_executes_consistently -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_rolling_window_index_executes_consistently -- --exact >/dev/null
+cargo test -q -p hir tests::flags_overlapping_trait_impls_as_ambiguous -- --exact >/dev/null
 
 echo "[gate] deterministic memory doctor/tests"
 fozzy doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
 fozzy test --det --strict tests/memory_graph_diff_top.pass.fozzy.json --seed "$SEED" --json >/dev/null
+
+echo "[gate] deterministic trait/generic doctor/tests"
+fozzy doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
+fozzy test --det --strict tests/trait_generic.pass.fozzy.json --seed "$SEED" --json >/dev/null
 
 echo "[gate] record deterministic trace"
 fozzy run tests/example.fozzy.json --det --seed "$SEED" --record "$TRACE_PATH" --record-collision overwrite --json >/dev/null
@@ -83,11 +99,18 @@ fozzy trace verify "$MEM_TRACE_PATH" --strict --json >/dev/null
 fozzy replay "$MEM_TRACE_PATH" --json >/dev/null
 fozzy ci "$MEM_TRACE_PATH" --json >/dev/null
 
+echo "[gate] trait/generic trace record/verify/replay/ci"
+fozzy run tests/trait_generic.pass.fozzy.json --det --seed "$SEED" --record "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --record-collision overwrite --json >/dev/null
+fozzy trace verify "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --strict --json >/dev/null
+fozzy replay "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
+fozzy ci "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
+
 echo "[gate] host-backed run"
 fozzy run tests/runtime.bind_json_env.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/memory_graph_diff_top.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/primitive.host_operators.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/host_backends_run.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
+fozzy run tests/trait_generic.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 
 echo "[gate] host-backed C interop matrix"
 fozzy run tests/c_ffi_matrix.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null

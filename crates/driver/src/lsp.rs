@@ -2387,10 +2387,11 @@ fn severity_to_lsp(severity: &diagnostics::Severity) -> u8 {
 }
 
 fn type_diagnostics(typed: &hir::TypedModule) -> Vec<diagnostics::Diagnostic> {
-    fn with_migration_fixes(mut diag: diagnostics::Diagnostic, detail: &str) -> diagnostics::Diagnostic {
-        if detail.contains("unresolved call target `json.object")
-            && detail.contains("autofix")
-        {
+    fn with_migration_fixes(
+        mut diag: diagnostics::Diagnostic,
+        detail: &str,
+    ) -> diagnostics::Diagnostic {
+        if detail.contains("unresolved call target `json.object") && detail.contains("autofix") {
             diag = diag.with_suggested_fix(
                 "replace fixed-arity JSON object helper with object literal: `json.object(#{\"k\": json.str(\"v\")})`",
             );

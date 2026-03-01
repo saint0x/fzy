@@ -712,7 +712,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "scenario": scenario.display().to_string(),
                         "bridgeTrace": trace_path.display().to_string(),
                         "fozzy": bridged,
-                    }).to_string()),
+                    })
+                    .to_string()),
                 };
             }
             let unsafe_docs =
@@ -895,12 +896,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             out,
             reference,
         } => {
-            let generated = generate_doc_artifacts(
-                &path,
-                &doc_format,
-                out.as_deref(),
-                reference.as_deref(),
-            )?;
+            let generated =
+                generate_doc_artifacts(&path, &doc_format, out.as_deref(), reference.as_deref())?;
             Ok(render_doc_artifacts(format, generated))
         }
         Command::Version => Ok(render(format, env!("CARGO_PKG_VERSION"))),
@@ -1006,7 +1003,10 @@ fn collect_pgo_profile_inputs(path: &Path) -> Result<Vec<PathBuf>> {
         bail!("PGO input path not found: {}", path.display());
     }
     if !path.is_dir() {
-        bail!("PGO input path is neither a file nor directory: {}", path.display());
+        bail!(
+            "PGO input path is neither a file nor directory: {}",
+            path.display()
+        );
     }
 
     let mut inputs = Vec::new();
@@ -1016,7 +1016,10 @@ fn collect_pgo_profile_inputs(path: &Path) -> Result<Vec<PathBuf>> {
             .with_context(|| format!("failed reading PGO input directory: {}", dir.display()))?
         {
             let entry = entry.with_context(|| {
-                format!("failed reading directory entry while scanning {}", dir.display())
+                format!(
+                    "failed reading directory entry while scanning {}",
+                    dir.display()
+                )
             })?;
             let entry_path = entry.path();
             if entry_path.is_dir() {
@@ -1055,7 +1058,11 @@ fn pgo_merge_command(path: &Path, output: Option<&Path>, format: Format) -> Resu
     }
 
     let mut command = ProcessCommand::new("llvm-profdata");
-    command.arg("merge").arg("-sparse").arg("-o").arg(&output_path);
+    command
+        .arg("merge")
+        .arg("-sparse")
+        .arg("-o")
+        .arg(&output_path);
     for input in &inputs {
         command.arg(input);
     }
@@ -1807,9 +1814,7 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
 fn diagnostic_repro_token(diagnostic: &diagnostics::Diagnostic) -> String {
     let code = diagnostic.code.as_deref().unwrap_or("NO-CODE");
     let path = diagnostic.path.as_deref().unwrap_or("<path>");
-    format!(
-        "schema=v1;code={code};profile=verify;backend=compiler;seed=1;path={path}"
-    )
+    format!("schema=v1;code={code};profile=verify;backend=compiler;seed=1;path={path}")
 }
 
 fn diagnostic_repro_command(diagnostic: &diagnostics::Diagnostic) -> String {
@@ -1979,7 +1984,11 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
                 .map(|entry| {
                     format!(
                         "code_prefix: {}\nfamily: {}\nsummary: {}\nexample: {}\nnext_command: {}",
-                        entry.code_prefix, entry.family, entry.summary, entry.example, entry.next_command
+                        entry.code_prefix,
+                        entry.family,
+                        entry.summary,
+                        entry.example,
+                        entry.next_command
                     )
                 })
                 .collect::<Vec<_>>()
@@ -2086,7 +2095,8 @@ fn diagnostic_catalog() -> Vec<DiagnosticCatalogEntry> {
             code_prefix: "E-NAT-".to_string(),
             family: "native-lowering".to_string(),
             summary: "Native backend lowerability contract violation.".to_string(),
-            example: "E-NAT-xxxx: native backend cannot lower unresolved call target `missing_fn`".to_string(),
+            example: "E-NAT-xxxx: native backend cannot lower unresolved call target `missing_fn`"
+                .to_string(),
             next_command: "fz build <path> --backend llvm --json".to_string(),
         },
         DiagnosticCatalogEntry {
@@ -2182,7 +2192,10 @@ fn collect_lint_sources(path: &Path) -> Result<Vec<(PathBuf, String)>> {
         return Ok(out);
     }
     if !path.is_dir() {
-        bail!("lint target must be a file or project directory: {}", path.display());
+        bail!(
+            "lint target must be a file or project directory: {}",
+            path.display()
+        );
     }
     let roots = discover_project_roots(path)?;
     if roots.is_empty() {
@@ -2230,7 +2243,10 @@ fn pedantic_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
                 diagnostics::Diagnostic::new(
                     diagnostics::Severity::Warning,
                     "pedantic lint: module uses `discard` without explicit contract clauses",
-                    Some("prefer adding requires/ensures to make side-effect expectations explicit".to_string()),
+                    Some(
+                        "prefer adding requires/ensures to make side-effect expectations explicit"
+                            .to_string(),
+                    ),
                 )
                 .with_path(file.display().to_string()),
             );
@@ -2298,7 +2314,9 @@ fn production_lint_findings(path: &Path) -> Result<Vec<diagnostics::Diagnostic>>
                     diagnostics::Diagnostic::new(
                         diagnostics::Severity::Warning,
                         "production lint: unsafe enforcement is relaxed",
-                        Some("set [unsafe].enforce_verify=true and enforce_release=true".to_string()),
+                        Some(
+                            "set [unsafe].enforce_verify=true and enforce_release=true".to_string(),
+                        ),
                     )
                     .with_path(manifest_path.display().to_string()),
                 );
@@ -2373,8 +2391,8 @@ fn stability_dashboard_command(format: Format) -> Result<String> {
     if !exit_status.status.success() {
         bail!("exit criteria status failed");
     }
-    let exit_payload: serde_json::Value = serde_json::from_slice(&exit_status.stdout)
-        .context("invalid exit criteria payload")?;
+    let exit_payload: serde_json::Value =
+        serde_json::from_slice(&exit_status.stdout).context("invalid exit criteria payload")?;
     let dashboard = serde_json::json!({
         "schemaVersion": "fozzylang.stability_dashboard.v1",
         "generatedAt": chrono_like_now_utc(),
@@ -6448,9 +6466,9 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
             (spawns, yields)
         }
         ast::Expr::UnsafeBlock { .. } => (0, 0),
-        ast::Expr::Await(inner)
-        | ast::Expr::Group(inner)
-        | ast::Expr::Discard(inner) => analyze_workload_expr(inner),
+        ast::Expr::Await(inner) | ast::Expr::Group(inner) | ast::Expr::Discard(inner) => {
+            analyze_workload_expr(inner)
+        }
         ast::Expr::Unary { expr, .. } => analyze_workload_expr(expr),
         ast::Expr::FieldAccess { base, .. } => analyze_workload_expr(base),
         ast::Expr::StructInit { fields, .. } => {
@@ -6484,7 +6502,10 @@ fn analyze_workload_expr(expr: &ast::Expr) -> (usize, usize) {
             let (c_spawns, c_yields) = analyze_workload_expr(condition);
             let (t_spawns, t_yields) = analyze_workload_expr(then_expr);
             let (e_spawns, e_yields) = analyze_workload_expr(else_expr);
-            (c_spawns + t_spawns + e_spawns, c_yields + t_yields + e_yields)
+            (
+                c_spawns + t_spawns + e_spawns,
+                c_yields + t_yields + e_yields,
+            )
         }
         ast::Expr::Binary { left, right, .. } => {
             let (l_spawns, l_yields) = analyze_workload_expr(left);
@@ -8918,7 +8939,10 @@ fn ffi_async_contract(function: &ast::Function) -> serde_json::Value {
 }
 
 fn ffi_symbol_name(function: &ast::Function) -> &str {
-    function.link_name.as_deref().unwrap_or(function.name.as_str())
+    function
+        .link_name
+        .as_deref()
+        .unwrap_or(function.name.as_str())
 }
 
 fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
@@ -9468,7 +9492,10 @@ fn discover_doc_sources(path: &Path) -> Result<Vec<PathBuf>> {
         return Ok(vec![path.to_path_buf()]);
     }
     if !path.is_dir() {
-        bail!("input path is neither a file nor directory: {}", path.display());
+        bail!(
+            "input path is neither a file nor directory: {}",
+            path.display()
+        );
     }
     let mut files = Vec::<PathBuf>::new();
     collect_fzy_files(path, &mut files)?;
@@ -9688,7 +9715,10 @@ fn integrate_doc_reference(reference_path: &Path, items: &[DocItem]) -> Result<(
         .find(DOC_REF_END)
         .ok_or_else(|| anyhow!("reference marker missing: {}", DOC_REF_END))?;
     if end <= start {
-        bail!("invalid reference markers ordering in {}", reference_path.display());
+        bail!(
+            "invalid reference markers ordering in {}",
+            reference_path.display()
+        );
     }
     let replacement = format!(
         "{DOC_REF_START}\n\n{}\n{DOC_REF_END}",
@@ -9741,7 +9771,10 @@ fn format_source_target(path: &Path, check: bool) -> Result<Vec<PathBuf>> {
                 && is_fzy_source_path(&entry_path)
                 && (if check {
                     let original = std::fs::read_to_string(&entry_path).with_context(|| {
-                        format!("failed reading file for formatting: {}", entry_path.display())
+                        format!(
+                            "failed reading file for formatting: {}",
+                            entry_path.display()
+                        )
                     })?;
                     format_source(&original) != original
                 } else {

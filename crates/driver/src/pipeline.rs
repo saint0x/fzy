@@ -1824,14 +1824,7 @@ fn qualify_name(namespace: &str, name: &str) -> String {
 }
 
 fn canonicalize_call_targets(module: &mut ast::Module) {
-    let known_functions = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            ast::Item::Function(function) => Some(function.name.clone()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
+    let known_functions = collect_defined_function_names(module);
     for item in &mut module.items {
         if let ast::Item::Function(function) = item {
             let namespace = function
@@ -1844,6 +1837,25 @@ fn canonicalize_call_targets(module: &mut ast::Module) {
             }
         }
     }
+}
+
+fn collect_defined_function_names(module: &ast::Module) -> HashSet<String> {
+    let mut out = HashSet::<String>::new();
+    for item in &module.items {
+        match item {
+            ast::Item::Function(function) => {
+                out.insert(function.name.clone());
+            }
+            ast::Item::Impl(item) => {
+                let receiver = item.for_type.to_string();
+                for method in &item.methods {
+                    out.insert(format!("{receiver}.{}", method.name));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 fn canonicalize_stmt_calls(
@@ -9979,14 +9991,7 @@ fn native_lowerability_diagnostics(module: &ast::Module) -> Vec<diagnostics::Dia
         }
     }
 
-    let defined_functions = module
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            ast::Item::Function(function) => Some(function.name.clone()),
-            _ => None,
-        })
-        .collect::<HashSet<_>>();
+    let defined_functions = collect_defined_function_names(module);
     let mut unresolved = HashSet::<String>::new();
     for item in &module.items {
         if let ast::Item::Function(function) = item {
@@ -10431,9 +10436,13 @@ fn collect_unresolved_calls_from_expr(
 ) {
     match expr {
         ast::Expr::Call { callee, args } => {
+            let (base_callee, _) = split_generic_suffix(callee);
             if !defined_functions.contains(callee)
+                && !defined_functions.contains(base_callee)
                 && !local_callables.contains(callee)
+                && !local_callables.contains(base_callee)
                 && !native_backend_supports_call(callee)
+                && !native_backend_supports_call(base_callee)
             {
                 unresolved.insert(callee.clone());
             }

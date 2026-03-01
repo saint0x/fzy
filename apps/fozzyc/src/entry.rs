@@ -421,8 +421,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("doc") => match args.get(1).map(String::as_str) {
             Some("gen") => Ok(Command::DocGen {
                 path: arg_path_or_cwd(args, 2)?,
-                format: parse_string_flag(args, "--format")?
-                    .unwrap_or_else(|| "json".to_string()),
+                format: parse_string_flag(args, "--format")?.unwrap_or_else(|| "json".to_string()),
                 out: parse_path_flag(args, "--out")?,
                 reference: parse_path_flag(args, "--reference")?,
             }),
@@ -827,10 +826,7 @@ mod tests {
                 ..
             } => {
                 assert!(!pgo_generate);
-                assert_eq!(
-                    pgo_use,
-                    Some(PathBuf::from("artifacts/default.profdata"))
-                );
+                assert_eq!(pgo_use, Some(PathBuf::from("artifacts/default.profdata")));
             }
             _ => panic!("expected build command"),
         }

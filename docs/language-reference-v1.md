@@ -221,6 +221,54 @@ Semantics:
 - Calling non-callable values is a hard type error.
 - Generic specialization syntax is not valid on function-value call targets.
 
+## Traits And Generics (v1 Contract)
+
+- Trait declarations support signature-only methods:
+  - `trait Name { fn method(...) -> ...; }`
+- Trait impl declarations support concrete impl targets:
+  - `impl Trait for Type { fn method(...) -> ... { ... } }`
+- Impl methods are lowered as callable symbols using canonical `<Type>.<method>` naming.
+- Method dispatch supports canonical type-qualified calls (`Type.method(...)`) and receiver-name resolution when receiver type is statically known.
+
+### Trait Conformance
+
+- Impl must reference an existing trait.
+- Impl must provide all required trait methods.
+- Impl must not define extra methods not declared by the trait.
+- Method parameter count and parameter types must match trait declaration.
+- Method return type must match trait declaration.
+- In v1, impl methods for trait requirements must not be generic, async, or unsafe.
+
+### Trait Coherence (v1)
+
+- Trait impl targets must be concrete (non-type-variable) types.
+- Overlapping impl targets for the same trait are rejected.
+- Generic bound resolution is rejected when multiple impls match (ambiguous bound).
+
+### Generic Bound Rules
+
+- Function generic bounds must reference existing traits.
+- Generic calls require explicit specialization in production mode.
+- Generic type-argument inference is disabled in production mode.
+- Invalid specialization syntax and specialization arity mismatches are hard errors.
+- Bound failures and ambiguous bound matches are hard errors.
+
+### Monomorphization Controls (v1)
+
+- Specialized symbols are canonicalized and deduplicated.
+- Monomorphization enforces recursion-depth and specialization-count limits with explicit diagnostics.
+
+### Hard-Rejected In v1
+
+- Generic struct declarations.
+- Generic enum declarations.
+- Generic trait declarations.
+- Generic impl headers (`impl<T> ...`).
+- Trait associated constants.
+- Trait associated types.
+- Trait default method bodies.
+- Generic trait methods.
+
 ## Arrays And Indexing
 
 - Array literals (`[a, b, c]`) and index expressions (`arr[i]`) are first-class language expressions.

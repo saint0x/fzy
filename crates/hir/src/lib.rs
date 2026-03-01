@@ -337,6 +337,12 @@ pub fn lower(module: &Module) -> TypedModule {
                 });
             }
             ast::Item::Function(function) => {
+                for detail in
+                    validate_generic_bounds_exist(&function.name, &function.generics, &trait_defs)
+                {
+                    record_type_error(&mut type_errors, &mut type_error_details, detail.clone());
+                    trait_violations.push(detail);
+                }
                 fn_sigs.insert(
                     function.name.clone(),
                     (
@@ -380,6 +386,53 @@ pub fn lower(module: &Module) -> TypedModule {
                     ffi_panic: None,
                     required_capabilities: Vec::new(),
                 });
+            }
+            ast::Item::Impl(item) => {
+                let receiver = item.for_type.to_string();
+                for method in &item.methods {
+                    let method_symbol = format!("{receiver}.{}", method.name);
+                    for detail in
+                        validate_generic_bounds_exist(&method_symbol, &method.generics, &trait_defs)
+                    {
+                        record_type_error(
+                            &mut type_errors,
+                            &mut type_error_details,
+                            detail.clone(),
+                        );
+                        trait_violations.push(detail);
+                    }
+                    if fn_sigs.contains_key(&method_symbol) {
+                        record_type_error(
+                            &mut type_errors,
+                            &mut type_error_details,
+                            format!("duplicate impl method symbol `{method_symbol}`"),
+                        );
+                        continue;
+                    }
+                    fn_sigs.insert(
+                        method_symbol.clone(),
+                        (
+                            method.params.iter().map(|p| p.ty.clone()).collect(),
+                            method.return_type.clone(),
+                        ),
+                    );
+                    fn_async.insert(method_symbol.clone(), method.is_async);
+                    fn_generics.insert(method_symbol.clone(), method.generics.clone());
+                    typed_functions.push(TypedFunction {
+                        name: method_symbol,
+                        link_name: method.link_name.clone(),
+                        generics: method.generics.clone(),
+                        params: method.params.clone(),
+                        return_type: method.return_type.clone(),
+                        body: method.body.clone(),
+                        is_unsafe: method.is_unsafe,
+                        is_async: method.is_async,
+                        is_extern: method.is_extern,
+                        abi: method.abi.clone(),
+                        ffi_panic: method.ffi_panic.clone(),
+                        required_capabilities: Vec::new(),
+                    });
+                }
             }
             _ => {}
         }
@@ -591,8 +644,32 @@ fn sanitize_test_name(name: &str) -> String {
     }
 }
 
+fn type_contains_typevar(ty: &Type) -> bool {
+    match ty {
+        Type::TypeVar(_) => true,
+        Type::Ptr { to, .. } | Type::Ref { to, .. } => type_contains_typevar(to),
+        Type::Slice(inner) | Type::Option(inner) | Type::Vec(inner) => type_contains_typevar(inner),
+        Type::Array { elem, .. } => type_contains_typevar(elem),
+        Type::Result { ok, err } => type_contains_typevar(ok) || type_contains_typevar(err),
+        Type::Function { params, ret } => {
+            params.iter().any(type_contains_typevar) || type_contains_typevar(ret)
+        }
+        Type::Named { args, .. } => args.iter().any(type_contains_typevar),
+        Type::Never
+        | Type::Void
+        | Type::Bool
+        | Type::ISize
+        | Type::USize
+        | Type::Int { .. }
+        | Type::Float { .. }
+        | Type::Char
+        | Type::Str => false,
+    }
+}
+
 fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait>) -> Vec<String> {
     let mut violations = Vec::new();
+    let mut trait_impl_targets = HashMap::<String, Vec<Type>>::new();
     for item in &module.items {
         let ast::Item::Impl(item) = item else {
             continue;
@@ -600,10 +677,39 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
         let Some(trait_name) = &item.trait_name else {
             continue;
         };
+        if type_contains_typevar(&item.for_type) {
+            violations.push(format!(
+                "impl for trait `{}` must target a concrete type in v1, got `{}`",
+                trait_name, item.for_type
+            ));
+        }
+        let recorded = trait_impl_targets.entry(trait_name.clone()).or_default();
+        for existing in recorded.iter() {
+            if type_compatible(existing, &item.for_type) || type_compatible(&item.for_type, existing)
+            {
+                violations.push(format!(
+                    "overlapping impls for trait `{}`: `{}` conflicts with `{}`",
+                    trait_name, item.for_type, existing
+                ));
+            }
+        }
+        recorded.push(item.for_type.clone());
         let Some(trait_def) = trait_defs.get(trait_name) else {
             violations.push(format!("impl references unknown trait `{trait_name}`"));
             continue;
         };
+        for impl_method in &item.methods {
+            if trait_def
+                .methods
+                .iter()
+                .all(|candidate| candidate.name != impl_method.name)
+            {
+                violations.push(format!(
+                    "impl for `{}` defines extra method `{}` not declared by trait `{}`",
+                    item.for_type, impl_method.name, trait_name
+                ));
+            }
+        }
         for method in &trait_def.methods {
             let Some(found) = item
                 .methods
@@ -622,10 +728,57 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
                     method.name, trait_name
                 ));
             }
+            for (index, (found_param, trait_param)) in
+                found.params.iter().zip(method.params.iter()).enumerate()
+            {
+                if !type_compatible(&found_param.ty, &trait_param.ty) {
+                    violations.push(format!(
+                        "impl method `{}` parameter {} type mismatch for trait `{}`: expected `{}`, got `{}`",
+                        method.name, index, trait_name, trait_param.ty, found_param.ty
+                    ));
+                }
+            }
             if !type_compatible(&found.return_type, &method.return_type) {
                 violations.push(format!(
                     "impl method `{}` return type mismatch for trait `{}`",
                     method.name, trait_name
+                ));
+            }
+            if !found.generics.is_empty() {
+                violations.push(format!(
+                    "impl method `{}` in trait `{}` must not declare generic parameters in v1",
+                    method.name, trait_name
+                ));
+            }
+            if found.is_async {
+                violations.push(format!(
+                    "impl method `{}` in trait `{}` must not be async in v1",
+                    method.name, trait_name
+                ));
+            }
+            if found.is_unsafe {
+                violations.push(format!(
+                    "impl method `{}` in trait `{}` must not be unsafe in v1",
+                    method.name, trait_name
+                ));
+            }
+        }
+    }
+    violations
+}
+
+fn validate_generic_bounds_exist(
+    owner: &str,
+    generics: &[ast::GenericParam],
+    trait_defs: &HashMap<String, ast::Trait>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for generic in generics {
+        for bound in &generic.bounds {
+            if !trait_defs.contains_key(bound) {
+                violations.push(format!(
+                    "{owner} declares generic bound `{}` on `{}` but trait `{}` is not defined",
+                    bound, generic.name, bound
                 ));
             }
         }
@@ -5346,6 +5499,23 @@ fn infer_expr_type(
         })
     }
 
+    fn resolve_method_call_target(
+        fn_sigs: &HashMap<String, (Vec<Type>, Type)>,
+        scopes: &SymbolScopes,
+        global_types: &HashMap<String, Type>,
+        candidate: &str,
+    ) -> Option<String> {
+        if fn_sigs.contains_key(candidate) {
+            return Some(candidate.to_string());
+        }
+        let (receiver_name, method_name) = candidate.rsplit_once('.')?;
+        let receiver_ty = scopes
+            .get(receiver_name)
+            .or_else(|| global_types.get(receiver_name).cloned())?;
+        let target = format!("{receiver_ty}.{method_name}");
+        fn_sigs.contains_key(&target).then_some(target)
+    }
+
     fn expr_function_ref_name(expr: &Expr) -> Option<String> {
         match expr {
             Expr::Ident(name) => Some(name.clone()),
@@ -5449,7 +5619,23 @@ fn infer_expr_type(
         }
         Expr::Continue => Some(Type::Never),
         Expr::Call { callee, args } => {
-            let (base_callee, explicit_types) = split_generic_callee(callee);
+            let has_specialization_syntax = callee.contains('<') || callee.contains('>');
+            let (raw_callee, explicit_types) = split_generic_callee(callee);
+            if has_specialization_syntax && explicit_types.is_none() {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!(
+                        "invalid generic specialization syntax for call `{}`; expected `name<Type, ...>(...)` with balanced type arguments",
+                        callee
+                    ),
+                );
+                return None;
+            }
+            let resolved_callee =
+                resolve_method_call_target(fn_sigs, scopes, global_types, raw_callee)
+                    .unwrap_or_else(|| raw_callee.to_string());
+            let base_callee = resolved_callee.as_str();
             if let Some(Type::Function { params, ret }) = scopes.get(base_callee) {
                 if explicit_types.is_some() {
                     record_type_error(
@@ -5520,21 +5706,24 @@ fn infer_expr_type(
                         ));
                     }
                 } else if let Some(arity_suffix) = base_callee.strip_prefix("json.object") {
-                    if !arity_suffix.is_empty() && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
+                    if !arity_suffix.is_empty()
+                        && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
                     {
                         detail.push_str(
                             "; autofix: replace with `json.object(#{\"k\": json.str(\"v\")})` and expand fields as needed",
                         );
                     }
                 } else if let Some(arity_suffix) = base_callee.strip_prefix("json.array") {
-                    if !arity_suffix.is_empty() && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
+                    if !arity_suffix.is_empty()
+                        && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
                     {
                         detail.push_str(
                             "; autofix: replace with `json.array([item1, item2])` or build via `list.new/push`",
                         );
                     }
                 } else if let Some(arity_suffix) = base_callee.strip_prefix("log.fields") {
-                    if !arity_suffix.is_empty() && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
+                    if !arity_suffix.is_empty()
+                        && arity_suffix.chars().all(|ch| ch.is_ascii_digit())
                     {
                         detail.push_str(
                             "; autofix: replace with `log.fields(#{\"k\": json.str(\"v\")})`",
@@ -5543,11 +5732,7 @@ fn infer_expr_type(
                 } else if let Some(nearest) = nearest_intrinsic_name(base_callee) {
                     detail.push_str(&format!("; did you mean `{}`?", nearest));
                 }
-                record_type_error(
-                    state.errors,
-                    state.type_error_details,
-                    detail,
-                );
+                record_type_error(state.errors, state.type_error_details, detail);
                 return None;
             };
             let generics = fn_generics.get(base_callee).cloned().unwrap_or_default();
@@ -5644,10 +5829,18 @@ fn infer_expr_type(
                         bindings.iter().find(|(name, _)| *name == generic.name)
                     {
                         for bound in &generic.bounds {
-                            if !type_satisfies_trait(concrete, bound, trait_impls) {
+                            let match_count = trait_impl_match_count(concrete, bound, trait_impls);
+                            if match_count == 0 {
                                 let detail = format!(
                                     "generic specialization `{}` violates bound `{}` on `{}`",
                                     base_callee, bound, generic.name
+                                );
+                                state.trait_violations.push(detail.clone());
+                                record_type_error(state.errors, state.type_error_details, detail);
+                            } else if match_count > 1 {
+                                let detail = format!(
+                                    "generic specialization `{}` has ambiguous bound `{}` on `{}`: {} matching impls",
+                                    base_callee, bound, generic.name, match_count
                                 );
                                 state.trait_violations.push(detail.clone());
                                 record_type_error(state.errors, state.type_error_details, detail);
@@ -5688,6 +5881,13 @@ fn infer_expr_type(
         }
         Expr::FieldAccess { base, field } => {
             if let Some(function_ref) = expr_function_ref_name(expr) {
+                if let Some(resolved_method_ref) =
+                    resolve_method_call_target(fn_sigs, scopes, global_types, &function_ref)
+                {
+                    if let Some(fn_ty) = function_ref_type(fn_sigs, &resolved_method_ref) {
+                        return Some(fn_ty);
+                    }
+                }
                 if let Some(fn_ty) = function_ref_type(fn_sigs, &function_ref) {
                     return Some(fn_ty);
                 }
@@ -6323,19 +6523,93 @@ fn split_generic_callee(callee: &str) -> (&str, Option<Vec<Type>>) {
     let Some(start) = callee.find('<') else {
         return (callee, None);
     };
-    let Some(end) = callee.rfind('>') else {
+    let mut depth = 0usize;
+    let mut end = None;
+    for (idx, ch) in callee.char_indices().skip(start) {
+        match ch {
+            '<' => depth += 1,
+            '>' => {
+                if depth == 0 {
+                    return (&callee[..start], None);
+                }
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(idx);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(end) = end else {
         return (&callee[..start], None);
     };
+    if !callee[end + 1..].trim().is_empty() {
+        return (&callee[..start], None);
+    }
     let base = &callee[..start];
     let inside = &callee[start + 1..end];
-    let parsed = inside
-        .split(',')
-        .map(|token| parse_simple_type(token.trim()))
+    let Some(parts) = split_top_level_type_args(inside) else {
+        return (base, None);
+    };
+    let parsed = parts
+        .into_iter()
+        .map(parse_simple_type)
         .collect::<Option<Vec<_>>>();
     (base, parsed)
 }
 
+fn split_top_level_type_args(input: &str) -> Option<Vec<&str>> {
+    let mut out = Vec::new();
+    let mut depth_angle = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_paren = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => {
+                if depth_angle == 0 {
+                    return None;
+                }
+                depth_angle -= 1;
+            }
+            '[' => depth_bracket += 1,
+            ']' => {
+                if depth_bracket == 0 {
+                    return None;
+                }
+                depth_bracket -= 1;
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                if depth_paren == 0 {
+                    return None;
+                }
+                depth_paren -= 1;
+            }
+            ',' if depth_angle == 0 && depth_bracket == 0 && depth_paren == 0 => {
+                out.push(input[start..idx].trim());
+                start = idx + ch.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if depth_angle != 0 || depth_bracket != 0 || depth_paren != 0 {
+        return None;
+    }
+    let tail = input[start..].trim();
+    if !tail.is_empty() {
+        out.push(tail);
+    }
+    Some(out)
+}
+
 fn parse_simple_type(token: &str) -> Option<Type> {
+    let token = token.trim();
+    if token.is_empty() {
+        return None;
+    }
     Some(match token {
         "never" => Type::Never,
         "bool" => Type::Bool,
@@ -6386,6 +6660,77 @@ fn parse_simple_type(token: &str) -> Option<Type> {
         "f32" => Type::Float { bits: 32 },
         "f64" => Type::Float { bits: 64 },
         other if other.starts_with("fn(") => return None,
+        other if other.starts_with("*mut ") => Type::Ptr {
+            mutable: true,
+            to: Box::new(parse_simple_type(other.trim_start_matches("*mut "))?),
+        },
+        other if other.starts_with('*') => Type::Ptr {
+            mutable: false,
+            to: Box::new(parse_simple_type(other.trim_start_matches('*'))?),
+        },
+        other if other.starts_with("&mut ") => Type::Ref {
+            mutable: true,
+            lifetime: None,
+            to: Box::new(parse_simple_type(other.trim_start_matches("&mut "))?),
+        },
+        other if other.starts_with('&') => Type::Ref {
+            mutable: false,
+            lifetime: None,
+            to: Box::new(parse_simple_type(other.trim_start_matches('&'))?),
+        },
+        other if other.starts_with("[]") => {
+            Type::Slice(Box::new(parse_simple_type(other.trim_start_matches("[]"))?))
+        }
+        other if other.starts_with('[') && other.ends_with(']') && other.contains(';') => {
+            let inside = &other[1..other.len() - 1];
+            let (elem, len) = inside.split_once(';')?;
+            let len = len.trim().parse::<usize>().ok()?;
+            Type::Array {
+                elem: Box::new(parse_simple_type(elem)?),
+                len,
+            }
+        }
+        other if other.ends_with('>') && other.contains('<') => {
+            let start = other.find('<')?;
+            let name = other[..start].trim();
+            if name.is_empty() {
+                return None;
+            }
+            let mut depth = 0usize;
+            let mut end = None;
+            for (idx, ch) in other.char_indices().skip(start) {
+                match ch {
+                    '<' => depth += 1,
+                    '>' => {
+                        if depth == 0 {
+                            return None;
+                        }
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(idx);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let end = end?;
+            if !other[end + 1..].trim().is_empty() {
+                return None;
+            }
+            let inside = &other[start + 1..end];
+            let args = split_top_level_type_args(inside)?
+                .into_iter()
+                .map(parse_simple_type)
+                .collect::<Option<Vec<_>>>()?;
+            Type::Named {
+                name: name.to_string(),
+                args,
+            }
+        }
+        other if other.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_') => {
+            Type::TypeVar(other.to_string())
+        }
         other if !other.is_empty() => Type::Named {
             name: other.to_string(),
             args: Vec::new(),
@@ -6395,6 +6740,8 @@ fn parse_simple_type(token: &str) -> Option<Type> {
 }
 
 type CallSignature = (Vec<Type>, Type, Vec<(String, Type)>);
+const MAX_MONOMORPHIZATION_DEPTH: usize = 32;
+const MAX_MONOMORPHIZED_SPECIALIZATIONS: usize = 2048;
 
 fn monomorphized_symbol(base: &str, args: &[Type]) -> String {
     let rendered = args
@@ -6421,17 +6768,45 @@ fn monomorphize_typed_functions(
     }
 
     let mut rewrite = HashMap::<String, String>::new();
-    let mut queue = VecDeque::<(String, Vec<Type>)>::new();
+    let mut queue = VecDeque::<(String, Vec<Type>, usize)>::new();
     for function in typed_functions.iter_mut() {
-        collect_and_rewrite_explicit_generic_calls(&templates, function, &mut queue, &mut rewrite);
+        collect_and_rewrite_explicit_generic_calls(
+            &templates,
+            function,
+            1,
+            &mut queue,
+            &mut rewrite,
+        );
     }
 
     let mut generated = Vec::<TypedFunction>::new();
     let mut seen = BTreeSet::<String>::new();
-    while let Some((base, args)) = queue.pop_front() {
+    while let Some((base, args, depth)) = queue.pop_front() {
+        if depth > MAX_MONOMORPHIZATION_DEPTH {
+            record_type_error(
+                type_errors,
+                type_error_details,
+                format!(
+                    "monomorphization depth limit exceeded for `{}` at depth {} (max {})",
+                    base, depth, MAX_MONOMORPHIZATION_DEPTH
+                ),
+            );
+            continue;
+        }
         let symbol = monomorphized_symbol(&base, &args);
         if !seen.insert(symbol.clone()) {
             continue;
+        }
+        if seen.len() > MAX_MONOMORPHIZED_SPECIALIZATIONS {
+            record_type_error(
+                type_errors,
+                type_error_details,
+                format!(
+                    "monomorphization specialization limit exceeded (max {} symbols)",
+                    MAX_MONOMORPHIZED_SPECIALIZATIONS
+                ),
+            );
+            break;
         }
         let Some(template) = templates.get(&base) else {
             record_type_error(
@@ -6471,6 +6846,7 @@ fn monomorphize_typed_functions(
         collect_and_rewrite_explicit_generic_calls(
             &templates,
             &mut specialized,
+            depth.saturating_add(1),
             &mut queue,
             &mut rewrite,
         );
@@ -6490,13 +6866,15 @@ fn monomorphize_typed_functions(
 fn collect_and_rewrite_explicit_generic_calls(
     templates: &HashMap<String, TypedFunction>,
     function: &mut TypedFunction,
-    queue: &mut VecDeque<(String, Vec<Type>)>,
+    depth: usize,
+    queue: &mut VecDeque<(String, Vec<Type>, usize)>,
     rewrite: &mut HashMap<String, String>,
 ) {
     fn rewrite_expr(
         expr: &mut Expr,
         templates: &HashMap<String, TypedFunction>,
-        queue: &mut VecDeque<(String, Vec<Type>)>,
+        depth: usize,
+        queue: &mut VecDeque<(String, Vec<Type>, usize)>,
         rewrite: &mut HashMap<String, String>,
     ) {
         match expr {
@@ -6509,65 +6887,65 @@ fn collect_and_rewrite_explicit_generic_calls(
                         let symbol = monomorphized_symbol(base, &explicit);
                         rewrite.insert(current, symbol.clone());
                         *callee = symbol.clone();
-                        queue.push_back((base_name, explicit));
+                        queue.push_back((base_name, explicit, depth));
                     }
                 }
                 if let Some(mapped) = rewrite.get(callee).cloned() {
                     *callee = mapped;
                 }
                 for arg in args {
-                    rewrite_expr(arg, templates, queue, rewrite);
+                    rewrite_expr(arg, templates, depth, queue, rewrite);
                 }
             }
-            Expr::UnsafeBlock { body, .. } => rewrite_stmts(body, templates, queue, rewrite),
-            Expr::FieldAccess { base, .. } => rewrite_expr(base, templates, queue, rewrite),
+            Expr::UnsafeBlock { body, .. } => rewrite_stmts(body, templates, depth, queue, rewrite),
+            Expr::FieldAccess { base, .. } => rewrite_expr(base, templates, depth, queue, rewrite),
             Expr::StructInit { fields, .. } => {
                 for (_, value) in fields {
-                    rewrite_expr(value, templates, queue, rewrite);
+                    rewrite_expr(value, templates, depth, queue, rewrite);
                 }
             }
             Expr::EnumInit { payload, .. } | Expr::ArrayLiteral(payload) => {
                 for value in payload {
-                    rewrite_expr(value, templates, queue, rewrite);
+                    rewrite_expr(value, templates, depth, queue, rewrite);
                 }
             }
             Expr::ObjectLiteral(fields) => {
                 for (_, value) in fields {
-                    rewrite_expr(value, templates, queue, rewrite);
+                    rewrite_expr(value, templates, depth, queue, rewrite);
                 }
             }
             Expr::Closure { body, .. }
             | Expr::Group(body)
             | Expr::Await(body)
-            | Expr::Discard(body) => rewrite_expr(body, templates, queue, rewrite),
+            | Expr::Discard(body) => rewrite_expr(body, templates, depth, queue, rewrite),
             Expr::TryCatch {
                 try_expr,
                 catch_expr,
             } => {
-                rewrite_expr(try_expr, templates, queue, rewrite);
-                rewrite_expr(catch_expr, templates, queue, rewrite);
+                rewrite_expr(try_expr, templates, depth, queue, rewrite);
+                rewrite_expr(catch_expr, templates, depth, queue, rewrite);
             }
             Expr::If {
                 condition,
                 then_expr,
                 else_expr,
             } => {
-                rewrite_expr(condition, templates, queue, rewrite);
-                rewrite_expr(then_expr, templates, queue, rewrite);
-                rewrite_expr(else_expr, templates, queue, rewrite);
+                rewrite_expr(condition, templates, depth, queue, rewrite);
+                rewrite_expr(then_expr, templates, depth, queue, rewrite);
+                rewrite_expr(else_expr, templates, depth, queue, rewrite);
             }
             Expr::Match { scrutinee, arms } => {
-                rewrite_expr(scrutinee, templates, queue, rewrite);
+                rewrite_expr(scrutinee, templates, depth, queue, rewrite);
                 for arm in arms {
                     if let Some(guard) = &mut arm.guard {
-                        rewrite_expr(guard, templates, queue, rewrite);
+                        rewrite_expr(guard, templates, depth, queue, rewrite);
                     }
-                    rewrite_expr(&mut arm.value, templates, queue, rewrite);
+                    rewrite_expr(&mut arm.value, templates, depth, queue, rewrite);
                 }
             }
             Expr::While { condition, body } => {
-                rewrite_expr(condition, templates, queue, rewrite);
-                rewrite_stmts(body, templates, queue, rewrite);
+                rewrite_expr(condition, templates, depth, queue, rewrite);
+                rewrite_stmts(body, templates, depth, queue, rewrite);
             }
             Expr::For {
                 init,
@@ -6575,50 +6953,52 @@ fn collect_and_rewrite_explicit_generic_calls(
                 step,
                 body,
             } => {
-                if let Some(init) = init {
-                    rewrite_stmts(
-                        std::slice::from_mut(init.as_mut()),
-                        templates,
-                        queue,
-                        rewrite,
-                    );
-                }
-                if let Some(condition) = condition {
-                    rewrite_expr(condition, templates, queue, rewrite);
-                }
-                if let Some(step) = step {
-                    rewrite_stmts(
-                        std::slice::from_mut(step.as_mut()),
-                        templates,
-                        queue,
-                        rewrite,
-                    );
-                }
-                rewrite_stmts(body, templates, queue, rewrite);
+                    if let Some(init) = init {
+                        rewrite_stmts(
+                            std::slice::from_mut(init.as_mut()),
+                            templates,
+                            depth,
+                            queue,
+                            rewrite,
+                        );
+                    }
+                    if let Some(condition) = condition {
+                        rewrite_expr(condition, templates, depth, queue, rewrite);
+                    }
+                    if let Some(step) = step {
+                        rewrite_stmts(
+                            std::slice::from_mut(step.as_mut()),
+                            templates,
+                            depth,
+                            queue,
+                            rewrite,
+                        );
+                    }
+                    rewrite_stmts(body, templates, depth, queue, rewrite);
             }
             Expr::ForIn { iterable, body, .. } => {
-                rewrite_expr(iterable, templates, queue, rewrite);
-                rewrite_stmts(body, templates, queue, rewrite);
+                rewrite_expr(iterable, templates, depth, queue, rewrite);
+                rewrite_stmts(body, templates, depth, queue, rewrite);
             }
-            Expr::Loop { body } => rewrite_stmts(body, templates, queue, rewrite),
+            Expr::Loop { body } => rewrite_stmts(body, templates, depth, queue, rewrite),
             Expr::Return(value) | Expr::Break(value) => {
                 if let Some(value) = value {
-                    rewrite_expr(value, templates, queue, rewrite);
+                    rewrite_expr(value, templates, depth, queue, rewrite);
                 }
             }
             Expr::Continue => {}
-            Expr::Unary { expr, .. } => rewrite_expr(expr, templates, queue, rewrite),
+            Expr::Unary { expr, .. } => rewrite_expr(expr, templates, depth, queue, rewrite),
             Expr::Binary { left, right, .. } => {
-                rewrite_expr(left, templates, queue, rewrite);
-                rewrite_expr(right, templates, queue, rewrite);
+                rewrite_expr(left, templates, depth, queue, rewrite);
+                rewrite_expr(right, templates, depth, queue, rewrite);
             }
             Expr::Range { start, end, .. } => {
-                rewrite_expr(start, templates, queue, rewrite);
-                rewrite_expr(end, templates, queue, rewrite);
+                rewrite_expr(start, templates, depth, queue, rewrite);
+                rewrite_expr(end, templates, depth, queue, rewrite);
             }
             Expr::Index { base, index } => {
-                rewrite_expr(base, templates, queue, rewrite);
-                rewrite_expr(index, templates, queue, rewrite);
+                rewrite_expr(base, templates, depth, queue, rewrite);
+                rewrite_expr(index, templates, depth, queue, rewrite);
             }
             Expr::Int(_)
             | Expr::Float { .. }
@@ -6632,7 +7012,8 @@ fn collect_and_rewrite_explicit_generic_calls(
     fn rewrite_stmts(
         stmts: &mut [Stmt],
         templates: &HashMap<String, TypedFunction>,
-        queue: &mut VecDeque<(String, Vec<Type>)>,
+        depth: usize,
+        queue: &mut VecDeque<(String, Vec<Type>, usize)>,
         rewrite: &mut HashMap<String, String>,
     ) {
         for stmt in stmts {
@@ -6644,10 +7025,10 @@ fn collect_and_rewrite_explicit_generic_calls(
                 | Stmt::Defer(value)
                 | Stmt::Requires(value)
                 | Stmt::Ensures(value)
-                | Stmt::Expr(value) => rewrite_expr(value, templates, queue, rewrite),
+                | Stmt::Expr(value) => rewrite_expr(value, templates, depth, queue, rewrite),
                 Stmt::Return(value) => {
                     if let Some(value) = value {
-                        rewrite_expr(value, templates, queue, rewrite);
+                        rewrite_expr(value, templates, depth, queue, rewrite);
                     }
                 }
                 Stmt::If {
@@ -6655,13 +7036,13 @@ fn collect_and_rewrite_explicit_generic_calls(
                     then_body,
                     else_body,
                 } => {
-                    rewrite_expr(condition, templates, queue, rewrite);
-                    rewrite_stmts(then_body, templates, queue, rewrite);
-                    rewrite_stmts(else_body, templates, queue, rewrite);
+                    rewrite_expr(condition, templates, depth, queue, rewrite);
+                    rewrite_stmts(then_body, templates, depth, queue, rewrite);
+                    rewrite_stmts(else_body, templates, depth, queue, rewrite);
                 }
                 Stmt::While { condition, body } => {
-                    rewrite_expr(condition, templates, queue, rewrite);
-                    rewrite_stmts(body, templates, queue, rewrite);
+                    rewrite_expr(condition, templates, depth, queue, rewrite);
+                    rewrite_stmts(body, templates, depth, queue, rewrite);
                 }
                 Stmt::For {
                     init,
@@ -6673,35 +7054,37 @@ fn collect_and_rewrite_explicit_generic_calls(
                         rewrite_stmts(
                             std::slice::from_mut(init.as_mut()),
                             templates,
+                            depth,
                             queue,
                             rewrite,
                         );
                     }
                     if let Some(condition) = condition {
-                        rewrite_expr(condition, templates, queue, rewrite);
+                        rewrite_expr(condition, templates, depth, queue, rewrite);
                     }
                     if let Some(step) = step {
                         rewrite_stmts(
                             std::slice::from_mut(step.as_mut()),
                             templates,
+                            depth,
                             queue,
                             rewrite,
                         );
                     }
-                    rewrite_stmts(body, templates, queue, rewrite);
+                    rewrite_stmts(body, templates, depth, queue, rewrite);
                 }
                 Stmt::ForIn { iterable, body, .. } => {
-                    rewrite_expr(iterable, templates, queue, rewrite);
-                    rewrite_stmts(body, templates, queue, rewrite);
+                    rewrite_expr(iterable, templates, depth, queue, rewrite);
+                    rewrite_stmts(body, templates, depth, queue, rewrite);
                 }
-                Stmt::Loop { body } => rewrite_stmts(body, templates, queue, rewrite),
+                Stmt::Loop { body } => rewrite_stmts(body, templates, depth, queue, rewrite),
                 Stmt::Match { scrutinee, arms } => {
-                    rewrite_expr(scrutinee, templates, queue, rewrite);
+                    rewrite_expr(scrutinee, templates, depth, queue, rewrite);
                     for arm in arms {
                         if let Some(guard) = &mut arm.guard {
-                            rewrite_expr(guard, templates, queue, rewrite);
+                            rewrite_expr(guard, templates, depth, queue, rewrite);
                         }
-                        rewrite_expr(&mut arm.value, templates, queue, rewrite);
+                        rewrite_expr(&mut arm.value, templates, depth, queue, rewrite);
                     }
                 }
                 Stmt::Break(_) | Stmt::Continue => {}
@@ -6709,7 +7092,7 @@ fn collect_and_rewrite_explicit_generic_calls(
         }
     }
 
-    rewrite_stmts(&mut function.body, templates, queue, rewrite);
+    rewrite_stmts(&mut function.body, templates, depth, queue, rewrite);
 }
 
 fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, String>) {
@@ -6890,7 +7273,16 @@ fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, 
 fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, Type>) {
     fn substitute_expr(expr: &mut Expr, bindings: &BTreeMap<String, Type>) {
         match expr {
-            Expr::Call { args, .. } => {
+            Expr::Call { callee, args } => {
+                let current = callee.clone();
+                let (base, explicit) = split_generic_callee(&current);
+                if let Some(explicit) = explicit {
+                    let rewritten = explicit
+                        .iter()
+                        .map(|ty| substitute_typevars(ty, bindings))
+                        .collect::<Vec<_>>();
+                    *callee = monomorphized_symbol(base, &rewritten);
+                }
                 for arg in args {
                     substitute_expr(arg, bindings);
                 }
@@ -7204,14 +7596,20 @@ fn substitute_typevars(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
     }
 }
 
-fn type_satisfies_trait(
+fn trait_impl_match_count(
     ty: &Type,
     trait_name: &str,
     trait_impls: &HashMap<String, Vec<Type>>,
-) -> bool {
+) -> usize {
     trait_impls
         .get(trait_name)
-        .is_some_and(|impls| impls.iter().any(|candidate| type_compatible(candidate, ty)))
+        .map(|impls| {
+            impls
+                .iter()
+                .filter(|candidate| type_compatible(candidate, ty))
+                .count()
+        })
+        .unwrap_or(0)
 }
 
 pub fn is_runtime_intrinsic(name: &str) -> bool {
@@ -7555,7 +7953,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         ),
         "proc.argv_new" | "proc.env_new" => (vec![], i32.clone()),
         "proc.argv_push" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
-        "proc.env_set" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "proc.env_set" => (
+            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "proc.spawn_cmd" | "proc.run_cmd" => (
             vec![str_ty.clone(), i32.clone(), i32.clone(), str_ty.clone()],
             i32.clone(),
@@ -7577,7 +7978,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "list.set" => (vec![i32.clone(), i32.clone(), str_ty.clone()], i32.clone()),
         "list.clear" => (vec![i32.clone()], i32.clone()),
         "list.join" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
-        "map.set" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "map.set" => (
+            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "map.get" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
         "map.has" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
         "map.delete" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
@@ -7588,7 +7992,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         }
         "storage.kv_open" => (vec![str_ty.clone()], i32.clone()),
         "storage.kv_get" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
-        "storage.kv_put" => (vec![i32.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "storage.kv_put" => (
+            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         _ => return None,
     })
 }
@@ -9003,7 +9410,7 @@ fn eval_bool_expr(
 mod tests {
     use std::path::Path;
 
-    use super::lower;
+    use super::{lower, split_generic_callee};
 
     #[test]
     fn lowers_trait_bounds_and_generic_specializations() {
@@ -9018,7 +9425,7 @@ mod tests {
                 return b2.value;
             }
         "#;
-        let module = parser::parse(source, "main").expect("parse");
+        let module = parser::parse(&source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
         assert!(typed.trait_violations.is_empty());
@@ -9039,10 +9446,129 @@ mod tests {
                 return 0;
             }
         "#;
-        let module = parser::parse(source, "main").expect("parse");
+        let module = parser::parse(&source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
         assert!(!typed.trait_violations.is_empty());
+    }
+
+    #[test]
+    fn parses_nested_generic_specializations() {
+        let (base, explicit) = split_generic_callee("id<Option<Result<i32, i32>>>");
+        assert_eq!(base, "id");
+        let explicit = explicit.expect("explicit generic args");
+        assert_eq!(explicit.len(), 1);
+        assert_eq!(explicit[0].to_string(), "Option<Result<i32, i32>>");
+    }
+
+    #[test]
+    fn lowers_impl_methods_as_callable_symbols() {
+        let source = r#"
+            trait Render { fn render(v: i32) -> i32; }
+            struct Point { x: i32 }
+            impl Render for Point {
+                fn render(v: i32) -> i32 { return v + 1; }
+            }
+            fn main() -> i32 {
+                return Point.render(4);
+            }
+        "#;
+        let module = parser::parse(&source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed
+            .typed_functions
+            .iter()
+            .any(|function| function.name == "Point.render"));
+    }
+
+    #[test]
+    fn flags_trait_impl_parameter_type_mismatch() {
+        let source = r#"
+            trait Render { fn render(v: i32) -> i32; }
+            struct Point { x: i32 }
+            impl Render for Point {
+                fn render(v: i64) -> i32 { return 1; }
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .trait_violations
+            .iter()
+            .any(|detail| detail.contains("parameter 0 type mismatch")));
+    }
+
+    #[test]
+    fn rejects_non_concrete_trait_impl_targets_in_v1() {
+        let source = r#"
+            trait Show { fn show(v: i32) -> i32; }
+            impl Show for T {
+                fn show(v: i32) -> i32 { return v; }
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .trait_violations
+            .iter()
+            .any(|detail| detail.contains("must target a concrete type in v1")));
+    }
+
+    #[test]
+    fn flags_overlapping_trait_impls_as_ambiguous() {
+        let source = r#"
+            trait Show { fn show(v: i32) -> i32; }
+            struct Point { x: i32 }
+            impl Show for Point { fn show(v: i32) -> i32 { return v; } }
+            impl Show for Point { fn show(v: i32) -> i32 { return v + 1; } }
+            fn id<T: Show>(v: T) -> T { return v; }
+            fn main() -> i32 {
+                let p = Point { x: 1 };
+                discard id<Point>(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .trait_violations
+            .iter()
+            .any(|detail| detail.contains("overlapping impls for trait `Show`")));
+        assert!(typed
+            .trait_violations
+            .iter()
+            .any(|detail| detail.contains("ambiguous bound `Show`")));
+    }
+
+    #[test]
+    fn flags_unknown_trait_bound_at_declaration_time() {
+        let source = r#"
+            fn id<T: Missing>(v: T) -> T { return v; }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .trait_violations
+            .iter()
+            .any(|detail| detail.contains("trait `Missing` is not defined")));
+    }
+
+    #[test]
+    fn flags_invalid_specialization_shape() {
+        let source = r#"
+            fn id<T>(v: T) -> T { return v; }
+            fn main() -> i32 {
+                let v: i32 = 1;
+                discard id<fn(i32) -> i32>(v);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_error_details.iter().any(|detail| {
+            detail.contains("invalid generic specialization syntax for call `id<fn(i32) -> i32>`")
+        }));
     }
 
     #[test]

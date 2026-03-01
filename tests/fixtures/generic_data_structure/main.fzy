@@ -1,0 +1,29 @@
+trait Keyed {
+    fn key(v: i32) -> i32;
+}
+
+struct Node {
+    key: i32,
+    value: i32,
+}
+
+impl Keyed for Node {
+    fn key(v: i32) -> i32 {
+        return v
+    }
+}
+
+fn select<T: Keyed>(primary: T, fallback: T, pick_primary: bool) -> T {
+    if pick_primary {
+        return primary
+    }
+    return fallback
+}
+
+fn main() -> i32 {
+    let a = Node { key: 7, value: 10 }
+    let b = Node { key: 9, value: 11 }
+    let chosen = select<Node>(a, b, true)
+    discard chosen
+    return Node.key(7) + 10
+}

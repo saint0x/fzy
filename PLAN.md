@@ -518,6 +518,67 @@
 - [✅] Add execute-and-compare parity fixtures covering full construct families (including arrays/index + advanced expression forms) under both native backends.
 - [✅] Add release gate hard-fail when any construct marked `implemented` in language docs is missing in native lowering.
 
+### Traits + Generics Full-Fidelity Program (Production, No Backwards Compatibility)
+- [✅] Publish and freeze a dedicated traits/generics language-contract doc covering parser surface, type-system rules, HIR/FIR semantics, native lowering expectations, and deterministic/runtime parity requirements.
+- [✅] Make trait support first-class in semantic resolution (not parser-surface only): register impl methods as callable symbols with stable names and deterministic lookup rules.
+- [✅] Add receiver/dispatch model contract for methods (`Type.method(...)`, instance-style calls if supported, and trait-bound call forms), and fail hard on unsupported forms with actionable diagnostics.
+- [✅] Upgrade trait impl conformance checks from shallow shape checks to full signature compatibility:
+- [✅] parameter types and ordering
+- [✅] return type compatibility
+- [✅] generic parameter and where/bound compatibility
+- [✅] method-level capability/async/unsafe contract compatibility
+- [✅] Add trait coherence policy for production:
+- [✅] explicit orphan/overlap rules (or explicit single-module policy if preferred for v1)
+- [✅] deterministic conflict diagnostics when multiple impls match
+- [✅] release-blocking gate for ambiguous trait resolution
+- [✅] Extend trait-bound enforcement beyond explicit generic specialization sites to all bound-bearing call paths and type-check contexts.
+- [✅] Add explicit associated-item policy for traits in this phase:
+- [ ] either implement associated types/constants/method defaults end-to-end
+- [✅] or hard-reject with explicit diagnostics and docs-level `missing` status
+- [✅] Complete generic type parsing and semantic handling for nested and composite type arguments (remove shallow string-split parsing assumptions from specialization paths).
+- [✅] Lock v1 generic declaration scope explicitly and enforce with hard-reject diagnostics:
+- [✅] generic structs/enums/impl blocks and generic methods are out of v1 execution surface and rejected
+- [✅] bound-aware type checking across declarations and use sites
+- [✅] consistent substitution model through AST/HIR/FIR/native lowering for supported function-generic surface
+- [✅] Define and implement generic inference policy:
+- [✅] where inference is allowed
+- [✅] where explicit specialization remains required
+- [✅] deterministic diagnostics for inference failure and ambiguity
+- [✅] Harden monomorphization pipeline for production:
+- [✅] canonical specialized symbol naming stability
+- [✅] deduplication and caching strategy
+- [✅] recursion/instantiation depth controls with explicit diagnostics
+- [✅] code-size growth controls and reporting
+- [✅] Ensure trait+generic semantics are backend-identical:
+- [✅] LLVM and Cranelift must consume the same semantic lowering contract
+- [✅] execute-and-compare parity fixtures for trait/generic-heavy programs
+- [✅] no backend-specific semantic exceptions
+- [✅] Add diagnostics completeness for trait/generic workflows:
+- [✅] missing impl
+- [✅] unsatisfied bound
+- [✅] ambiguous impl
+- [✅] overlapping/coherence violation
+- [✅] invalid specialization arity/type-arg shape
+- [✅] unresolved associated item / unsupported associated item form
+- [✅] Add Fozzy-first mandatory validation gates for each implementation slice:
+- [✅] `fozzy doctor --deep --scenario <trait_generic_scenario> --runs 5 --seed <seed> --json`
+- [✅] `fozzy test --det --strict <trait_generic_scenarios...> --json`
+- [✅] `fozzy run <trait_generic_scenario> --det --record artifacts/trait-generic.trace.fozzy --json`
+- [✅] `fozzy trace verify artifacts/trait-generic.trace.fozzy --strict --json`
+- [✅] `fozzy replay artifacts/trait-generic.trace.fozzy --json`
+- [✅] `fozzy ci artifacts/trait-generic.trace.fozzy --json`
+- [✅] Add host-backed checks where trait/generic code touches runtime boundaries:
+- [✅] `fozzy run <scenario> --proc-backend host --fs-backend host --http-backend host --json`
+- [✅] Add adoption-focused examples and fixtures:
+- [✅] trait-heavy service patterns
+- [✅] generic data structure and algorithm patterns
+- [✅] async + trait-bound + ownership interaction probes
+- [✅] publish minimal idiomatic style guide for production users
+- [✅] Add release-gate rule: fail ship when trait/generic constructs documented as `implemented` are not executable with parity in deterministic model + LLVM + Cranelift.
+- [✅] Add release-gate rule: fail ship on any docs drift between traits/generics claims and parser/HIR/FIR/native implementation reality.
+- [✅] Macro status confirmed today (in-language): attribute support exists for `#[repr(...)]` and `#[ffi_panic(abort|error)]`; unsupported attributes are rejected explicitly.
+- [✅] Macro roadmap note: keep current constrained attribute model as production baseline now, and evaluate broader macro expansion later under deterministic/auditable compile-time rules.
+
 ### Core Namespace Parity + Stdlib Ergonomics Expansion (Production Program)
 - [✅] Rename stdlib `net` module boundary to first-class `http` naming for app-facing semantics:
 - [✅] Add `core.http` as canonical module surface for request/response/client/server/limits APIs.

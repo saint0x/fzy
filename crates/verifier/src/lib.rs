@@ -85,9 +85,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             report.diagnostics.push(Diagnostic::new(
                 Severity::Error,
                 "`use core.text;` is invalid: string/text intrinsics require no capability import",
-                Some(
-                    "remove `use core.text;` and call `str.*` intrinsics directly".to_string(),
-                ),
+                Some("remove `use core.text;` and call `str.*` intrinsics directly".to_string()),
             ));
             continue;
         }
@@ -514,7 +512,9 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         if unique_count > 5 {
             diag = diag.with_note(format!("suppressed_root_details={}", unique_count - 5));
         }
-        report.diagnostics.push(apply_type_fix_hints(diag, &primary_detail));
+        report
+            .diagnostics
+            .push(apply_type_fix_hints(diag, &primary_detail));
     }
 
     if let Some(return_type) = &module.entry_return_type {

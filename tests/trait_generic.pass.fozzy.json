@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "name": "trait-generic-pass",
+  "steps": [
+    { "type": "trace_event", "name": "trait_generic_setup" },
+    { "type": "assert_eq_int", "a": 1, "b": 1 }
+  ]
+}

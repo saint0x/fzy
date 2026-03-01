@@ -588,6 +588,12 @@ impl Parser {
     fn parse_struct(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwStruct);
         let name = self.expect_ident("expected struct name")?;
+        if self.at(&TokenKind::Lt) {
+            let _ = self.parse_generic_params();
+            self.push_diag_here(
+                "generic struct declarations are not supported in v1; use concrete struct declarations",
+            );
+        }
         let mut fields = Vec::new();
         if self.consume(&TokenKind::LBrace) {
             while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
@@ -674,6 +680,12 @@ impl Parser {
     fn parse_enum(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwEnum);
         let name = self.expect_ident("expected enum name")?;
+        if self.at(&TokenKind::Lt) {
+            let _ = self.parse_generic_params();
+            self.push_diag_here(
+                "generic enum declarations are not supported in v1; use concrete enum declarations",
+            );
+        }
         let mut variants = Vec::new();
         if self.consume(&TokenKind::LBrace) {
             while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
@@ -681,7 +693,9 @@ impl Parser {
                     break;
                 };
                 if self.at(&TokenKind::Colon)
-                    && self.peek_n(1).is_some_and(|tok| tok.kind == TokenKind::Colon)
+                    && self
+                        .peek_n(1)
+                        .is_some_and(|tok| tok.kind == TokenKind::Colon)
                 {
                     let _ = self.consume(&TokenKind::Colon);
                     let _ = self.consume(&TokenKind::Colon);
@@ -724,18 +738,51 @@ impl Parser {
     fn parse_trait(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwTrait);
         let name = self.expect_ident("expected trait name")?;
+        if self.at(&TokenKind::Lt) {
+            let _ = self.parse_generic_params();
+            self.push_diag_here(
+                "generic trait declarations are not supported in v1; use non-generic trait declarations",
+            );
+        }
         if !self.consume(&TokenKind::LBrace) {
             self.push_diag_here("expected `{` after trait name");
             return None;
         }
         let mut methods = Vec::new();
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+            if self.at(&TokenKind::KwConst) {
+                let _ = self.consume(&TokenKind::KwConst);
+                self.push_diag_here(
+                    "trait associated constants are not supported in v1; define standalone constants instead",
+                );
+                self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                let _ = self.consume(&TokenKind::Semi);
+                continue;
+            }
+            if self
+                .peek()
+                .is_some_and(|token| token.kind == TokenKind::Ident("type".to_string()))
+            {
+                let _ = self.advance();
+                self.push_diag_here(
+                    "trait associated types are not supported in v1; use explicit concrete types instead",
+                );
+                self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                let _ = self.consume(&TokenKind::Semi);
+                continue;
+            }
             if !self.consume(&TokenKind::KwFn) {
                 self.push_diag_here("expected `fn` in trait body");
                 self.recover_item();
                 continue;
             }
             let method_name = self.expect_ident("expected trait method name")?;
+            if self.at(&TokenKind::Lt) {
+                let _ = self.parse_generic_params();
+                self.push_diag_here(
+                    "generic trait methods are not supported in v1; use non-generic method signatures",
+                );
+            }
             if !self.consume(&TokenKind::LParen) {
                 self.push_diag_here("expected `(` after trait method name");
                 return None;
@@ -771,7 +818,14 @@ impl Parser {
             } else {
                 Type::Void
             };
-            let _ = self.consume(&TokenKind::Semi);
+            if self.at(&TokenKind::LBrace) {
+                self.push_diag_here(
+                    "trait default method bodies are not supported in v1; declare signatures only",
+                );
+                let _ = self.parse_block();
+            } else {
+                let _ = self.consume(&TokenKind::Semi);
+            }
             methods.push(ast::TraitMethod {
                 name: method_name,
                 params,
@@ -788,6 +842,12 @@ impl Parser {
 
     fn parse_impl(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwImpl);
+        if self.at(&TokenKind::Lt) {
+            let _ = self.parse_generic_params();
+            self.push_diag_here(
+                "generic impl headers are not supported in v1; use concrete impl targets",
+            );
+        }
         let first = self.parse_type()?;
         let (trait_name, for_type) = if self.consume(&TokenKind::KwFor) {
             let Some(ty) = self.parse_type() else {
@@ -3360,6 +3420,71 @@ mod tests {
         assert!(diagnostics.iter().any(|diagnostic| diagnostic
             .message
             .contains("inline unsafe metadata is removed")));
+    }
+
+    #[test]
+    fn rejects_trait_associated_items_and_defaults_in_v1() {
+        let source = r#"
+            trait Show {
+                const TAG: i32;
+                type Output;
+                fn show<T>(v: i32) -> i32 { return v; }
+            }
+        "#;
+        let diagnostics = parse(source, "trait_v1").expect_err("trait v1 forms should fail");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("trait associated constants are not supported in v1")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("trait associated types are not supported in v1")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("generic trait methods are not supported in v1")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("trait default method bodies are not supported in v1")
+        }));
+    }
+
+    #[test]
+    fn rejects_generic_item_headers_in_v1() {
+        let source = r#"
+            struct Box<T> { value: T }
+            enum Maybe<T> { Some(T), None }
+            trait Show<T> { fn show(v: i32) -> i32; }
+            impl<T> Show for Box {
+                fn show(v: i32) -> i32 { return v; }
+            }
+        "#;
+        let diagnostics = parse(source, "generic_headers").expect_err("generic headers should fail");
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("generic struct declarations are not supported in v1")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("generic enum declarations are not supported in v1")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("generic trait declarations are not supported in v1")
+        }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("generic impl headers are not supported in v1")
+        }));
     }
 
     #[test]
