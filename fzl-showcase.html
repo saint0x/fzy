@@ -81,8 +81,8 @@
 <body>
   <div class="wrap">
     <div class="head">
-      <div class="title">FZL Full Language Showcase (Production v1)</div>
-      <div class="sub">Syntax-highlighted exhibition aligned to current traits/generics/macro contract</div>
+      <div class="title">FZL Full Language Showcase</div>
+      <div class="sub">Large syntax-highlighted exhibition covering language surface + runtime patterns</div>
     </div>
     <div class="code-wrap">
       <pre><code id="fzl-code"></code></pre>
@@ -97,9 +97,6 @@
 // - `[ffi] panic_boundary` policy in fozzy.toml
 // - `core.c` ownership/view helpers
 // - canonical enum variant syntax (`Type::Variant`)
-// - traits + function generics with explicit specialization
-// - concrete trait impl targets + deterministic coherence diagnostics
-// - constrained attribute macro surface (`#[repr(...)]`, `#[ffi_panic(...)]`)
 // - async + spawn/join + deterministic scheduler hooks
 // - direct-memory native lowering contract + gate-backed parity
 
@@ -203,7 +200,7 @@ fn enum_demo(msg: Message) -> i32 {
 }
 
 // ------------------------------------------------------------
-// SECTION D: trait + impl + generics + operators
+// SECTION D: trait + impl + operators
 // ------------------------------------------------------------
 trait Codec {
     fn encode(v: i32) -> i32;
@@ -221,10 +218,22 @@ impl Codec for XorCodec {
     }
 }
 
-// Generic calls in production v1 require explicit specialization.
-// This demo uses a trait-bound function generic over a concrete impl target.
-fn keep_codec<T: Codec>(codec: T) -> T {
-    return codec;
+// ------------------------------------------------------------
+// SECTION D2: production trait/generic + macro contract addendum
+// ------------------------------------------------------------
+// Production v1 additions:
+// - function generics are supported with explicit specialization at call sites
+// - trait impl targets must be concrete types
+// - canonical trait method dispatch form is `Type.method(...)`
+// - macro/attribute surface remains constrained to `#[repr(...)]` and `#[ffi_panic(...)]`
+fn keep_codec<T: Codec>(v: T) -> T {
+    return v;
+}
+
+fn trait_generic_addendum(seed: i32) -> i32 {
+    let codec = keep_codec<XorCodec>(XorCodec { key: 7 });
+    discard codec;
+    return XorCodec.decode(XorCodec.encode(seed));
 }
 
 fn signed_ops(a: i32, b: i32) -> i32 {
@@ -389,9 +398,7 @@ fn host_and_io_showcase() -> i32 {
 // SECTION H: composed pipeline
 // ------------------------------------------------------------
 fn full_pipeline(seed: i32) -> i32 {
-    let codec = keep_codec<XorCodec>(XorCodec { key: 7 });
-    discard codec;
-    let roundtrip = XorCodec.decode(XorCodec.encode(seed));
+    let tg = trait_generic_addendum(seed);
     let ops = signed_ops(seed, 11);
     let mixed = loops_demo(14);
     let em = enum_demo(Message::Ping);
@@ -400,7 +407,7 @@ fn full_pipeline(seed: i32) -> i32 {
     let lam = closure_demo(seed);
     let io = host_and_io_showcase();
     let cv = c_view_demo();
-    let out = ops + mixed + em + idx + ho + lam + io + cv + roundtrip;
+    let out = ops + mixed + em + idx + ho + lam + io + cv + tg;
     if out > 0 {
         return out;
     }
