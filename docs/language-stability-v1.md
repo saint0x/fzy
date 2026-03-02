@@ -33,7 +33,7 @@ Rules:
 ## Core v1 Trait/Generic and Macro Surface
 
 - Traits and generics in `core_v1` are governed by `docs/traits-generics-contract-v1.md`.
-- Supported generic surface in `core_v1`: function generics with explicit specialization.
-- Supported trait surface in `core_v1`: concrete impl targets, strict conformance/coherence checks, canonical method dispatch contract.
-- Unsupported trait/generic declarations in `core_v1` are hard-rejected with diagnostics.
+- Supported generic surface in `core_v1`: generic declarations/usages across structs/enums/functions/methods/trait headers/impl headers, with common call-site inference and explicit specialization support.
+- Supported trait surface in `core_v1`: concrete impl targets, associated types/constants, strict conformance/coherence checks, canonical method dispatch contract.
+- Unsupported trait/generic shapes in `core_v1` are hard-rejected with diagnostics (for example trait default method bodies and generic trait methods).
 - Macro model in `core_v1` is constrained to supported attributes (`#[repr(...)]`, `#[ffi_panic(...)]`); broader macro expansion remains out of scope.

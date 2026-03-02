@@ -8,6 +8,9 @@ This document defines production-enforced trait and generic behavior for v1.
 
 - `trait Name { fn method(...) -> ...; }` is supported.
 - `impl Trait for Type { fn method(...) -> ... { ... } }` is supported.
+- Trait associated item surface is supported:
+  - `type Assoc;` in trait declarations and `type Assoc = ...;` in impls
+  - `const NAME: Type;` in trait declarations and `const NAME: Type = ...;` in impls
 - Impl methods are lowered as callable symbols using canonical name `<Type>.<method>`.
 - Method call resolution supports canonical type-qualified dispatch (`Type.method(...)`) and receiver-name dispatch when receiver type is known.
 - Unsupported method-call forms fail with explicit diagnostics.
@@ -30,14 +33,16 @@ This document defines production-enforced trait and generic behavior for v1.
 ## Generics
 
 - Function generic parameters are supported (`fn f<T: Bound>(...) -> ...`).
-- Generic calls require explicit specialization in production mode (`f<Type>(...)`).
+- Generic declarations/usages are supported across structs/enums/functions/methods and trait/impl headers.
+- Generic calls support common call-site type-argument inference.
+- Explicit specialization remains supported (`f<Type>(...)`).
 - Nested/composite specialization arguments are parsed as top-level-separated type argument lists.
 - Monomorphization uses canonical specialized symbols (`f<T1, T2>` rendering).
 
 ## Inference and Specialization Policy (v1)
 
-- Type-argument inference for generic function calls is disabled in production mode.
-- Generic calls must use explicit specialization.
+- Type-argument inference for generic function calls is enabled for common production callsites.
+- Explicit specialization remains available when inference needs help.
 - Invalid specialization syntax and specialization arity mismatches are deterministic hard errors.
 
 ### Generic Bound Rules
@@ -55,12 +60,6 @@ This document defines production-enforced trait and generic behavior for v1.
 
 ## Unsupported in v1 (Hard Rejected)
 
-- Generic struct declarations.
-- Generic enum declarations.
-- Generic trait declarations.
-- Generic impl headers (`impl<T> ...`).
-- Trait associated constants.
-- Trait associated types.
 - Trait default method bodies.
 - Generic trait methods.
 

@@ -106,7 +106,7 @@ At minimum keep regressions for:
 - trait missing-impl diagnostics
 - trait impl overlap/ambiguity diagnostics
 - invalid generic specialization shape/arity diagnostics
-- unsupported trait associated-item diagnostics
+- trait associated-item conformance diagnostics (missing/extra associated types/consts and type mismatches)
 - struct field resolution
 - enum variant resolution
 - match exhaustiveness/unreachable arms

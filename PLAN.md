@@ -533,11 +533,12 @@
 - [✅] release-blocking gate for ambiguous trait resolution
 - [✅] Extend trait-bound enforcement beyond explicit generic specialization sites to all bound-bearing call paths and type-check contexts.
 - [✅] Add explicit associated-item policy for traits in this phase:
-- [ ] either implement associated types/constants/method defaults end-to-end
-- [✅] or hard-reject with explicit diagnostics and docs-level `missing` status
+- [✅] implement associated types/constants end-to-end
+- [✅] keep default trait method bodies as hard-rejected with explicit diagnostics and docs-level `missing` status
 - [✅] Complete generic type parsing and semantic handling for nested and composite type arguments (remove shallow string-split parsing assumptions from specialization paths).
 - [✅] Lock v1 generic declaration scope explicitly and enforce with hard-reject diagnostics:
-- [✅] generic structs/enums/impl blocks and generic methods are out of v1 execution surface and rejected
+- [✅] generic structs/enums/impl headers are in v1 execution surface and validated end-to-end
+- [✅] generic trait methods remain out of v1 execution surface and rejected
 - [✅] bound-aware type checking across declarations and use sites
 - [✅] consistent substitution model through AST/HIR/FIR/native lowering for supported function-generic surface
 - [✅] Define and implement generic inference policy:

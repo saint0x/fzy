@@ -25,15 +25,16 @@ fn id<T: Show>(v: T) -> T {
 
 fn main() -> i32 {
     let it = Item { value: 5 }
-    let out = id<Item>(it)
+    let out = id(it)
     return Item.show(out.value)
 }
 ```
 
 Rules:
-- Generic calls must use explicit specialization (`id<Item>(...)`).
+- Generic calls support common call-site inference; explicit specialization remains available when needed (`id<Item>(...)`).
 - Impl targets must be concrete types.
-- Trait associated types/constants/default method bodies are not supported in v1.
+- Trait associated types/constants are supported in v1.
+- Trait default method bodies remain unsupported in v1.
 
 ## Macro/Attribute Status
 

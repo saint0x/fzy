@@ -4,8 +4,8 @@ This document defines the production editor contract for `.fzy` sources.
 
 ## Language Token Classes (Frozen)
 
-- Keywords: `fn`, `async`, `test`, `nondet`, `let`, `discard`, `if`, `then`, `else`, `while`, `match`, `return`, `defer`, `requires`, `ensures`, `mod`, `use`, `rpc`, `trait`, `impl`, `for`, `struct`, `enum`, `pub`, `pubext`, `ext`
-- Types: `void`, `bool`, `str`, `char`, integer widths (`i8..i128`, `u8..u128`), float widths (`f32`, `f64`)
+- Keywords: `fn`, `async`, `test`, `nondet`, `let`, `discard`, `if`, `then`, `else`, `while`, `match`, `return`, `defer`, `requires`, `ensures`, `mod`, `use`, `rpc`, `trait`, `impl`, `for`, `struct`, `enum`, `type`, `newtype`, `dyn`, `pub`, `pubext`, `ext`
+- Types: `void`, `bool`, `str`, `char`, `bytes`, integer widths (`i8..i128`, `u8..u128`), float widths (`f32`, `f64`), and production domain/generic surfaces (for example `Future<T>`, `Map<K,V>`, `Set<T>`, `Deque<T>`, `Ring<T>`, `Path`, `Url`, `Duration`, `DateTimeTz`, `Decimal`, `Uuid`)
 - Functions: declaration names in `fn` and `rpc` headers
 - Struct/Enum symbols: declaration names in `struct`/`enum`
 - Variables: `let` bindings
@@ -19,7 +19,7 @@ This document defines the production editor contract for `.fzy` sources.
 
 - Lifecycle: `initialize`, `shutdown`, `exit`
 - Sync: `textDocument/didOpen`, `textDocument/didChange` (incremental), `textDocument/didClose`
-- Features: diagnostics, hover, definition, completion, references, rename, semantic tokens
+- Features: diagnostics, hover, definition, completion, signatureHelp, references, rename, inlayHint, semantic tokens, documentSymbol, workspaceSymbol, codeAction
 - Diagnostics include parser/type/verifier classes and stable severity/range/source payloads.
 
 ## VS Code Packaging

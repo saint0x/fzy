@@ -66,11 +66,11 @@ This document defines the v1 observable semantics contract used by the toolchain
 
 ## Async And Scheduling Constructs
 
-### `await <call>`
+### `await <expr>`
 
-- Awaits an async call and yields control at an explicit async yieldpoint.
+- Awaits a `Future<T>`-typed expression and yields control at an explicit async yieldpoint.
 - `await` is valid only inside `async fn` bodies.
-- Awaiting non-call expressions or known non-async calls is invalid.
+- Awaiting expressions that do not type-check as `Future<T>` is invalid.
 
 ### `spawn(task)`
 
@@ -225,8 +225,12 @@ Semantics:
 
 - Trait declarations support signature-only methods:
   - `trait Name { fn method(...) -> ...; }`
+- Trait declarations support associated types/constants:
+  - `trait Name { type Item; const LIMIT: i32; ... }`
 - Trait impl declarations support concrete impl targets:
   - `impl Trait for Type { fn method(...) -> ... { ... } }`
+- Trait impls support associated item definitions:
+  - `impl Trait for Type { type Item = ...; const LIMIT: i32 = ...; ... }`
 - Impl methods are lowered as callable symbols using canonical `<Type>.<method>` naming.
 - Method dispatch supports canonical type-qualified calls (`Type.method(...)`) and receiver-name resolution when receiver type is statically known.
 
@@ -248,8 +252,9 @@ Semantics:
 ### Generic Bound Rules
 
 - Function generic bounds must reference existing traits.
-- Generic calls require explicit specialization in production mode.
-- Generic type-argument inference is disabled in production mode.
+- Generic declarations/usages are supported across structs/enums/functions/methods and trait/impl headers.
+- Generic calls support common call-site type-argument inference in production mode.
+- Explicit specialization remains supported in production mode.
 - Invalid specialization syntax and specialization arity mismatches are hard errors.
 - Bound failures and ambiguous bound matches are hard errors.
 
@@ -260,12 +265,6 @@ Semantics:
 
 ### Hard-Rejected In v1
 
-- Generic struct declarations.
-- Generic enum declarations.
-- Generic trait declarations.
-- Generic impl headers (`impl<T> ...`).
-- Trait associated constants.
-- Trait associated types.
 - Trait default method bodies.
 - Generic trait methods.
 

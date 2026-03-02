@@ -222,7 +222,8 @@ impl Codec for XorCodec {
 // SECTION D2: production trait/generic + macro contract addendum
 // ------------------------------------------------------------
 // Production v1 additions:
-// - function generics are supported with explicit specialization at call sites
+// - function generics are supported with common call-site inference
+// - explicit specialization remains available when inference needs help
 // - trait impl targets must be concrete types
 // - canonical trait method dispatch form is `Type.method(...)`
 // - macro/attribute surface remains constrained to `#[repr(...)]` and `#[ffi_panic(...)]`
@@ -231,9 +232,58 @@ fn keep_codec<T: Codec>(v: T) -> T {
 }
 
 fn trait_generic_addendum(seed: i32) -> i32 {
-    let codec = keep_codec<XorCodec>(XorCodec { key: 7 });
+    let codec = keep_codec(XorCodec { key: 7 });
     discard codec;
     return XorCodec.decode(XorCodec.encode(seed));
+}
+
+// ------------------------------------------------------------
+// SECTION D3: production type-system expansion
+// ------------------------------------------------------------
+trait Transport {
+    type Endpoint;
+    const DEFAULT_TIMEOUT_MS: i32;
+    fn connect(target: Url) -> i32;
+}
+
+struct HttpTransport {}
+
+impl Transport for HttpTransport {
+    type Endpoint = Url;
+    const DEFAULT_TIMEOUT_MS: i32 = 5000;
+    fn connect(target: Url) -> i32 {
+        discard target;
+        return 0;
+    }
+}
+
+type UserId = Uuid;
+newtype TenantId(Uuid);
+#[repr(transparent)]
+newtype JobId(i64);
+
+fn type_surface_demo(endpoint: Url) -> i32 {
+    let _bytes: bytes = "ok";
+    let _pair: (i32, bool) = (1, true);
+    let _future: Future<i32> = async_worker(1);
+    let _map: Map<Uuid, Decimal128> = map.new();
+    let _set: Set<str> = set.new();
+    let _deque: Deque<i32> = deque.new();
+    let _ring: Ring<i32> = ring.new();
+    let _decimal: Decimal = decimal.parse("12.50");
+    let _date: DateTimeTz = datetime.now_tz("UTC");
+    let _dyn_like: dyn Codec = XorCodec { key: 9 };
+    discard _bytes;
+    discard _pair;
+    discard _future;
+    discard _map;
+    discard _set;
+    discard _deque;
+    discard _ring;
+    discard _decimal;
+    discard _date;
+    discard _dyn_like;
+    return HttpTransport.connect(endpoint);
 }
 
 fn signed_ops(a: i32, b: i32) -> i32 {
@@ -399,6 +449,7 @@ fn host_and_io_showcase() -> i32 {
 // ------------------------------------------------------------
 fn full_pipeline(seed: i32) -> i32 {
     let tg = trait_generic_addendum(seed);
+    let ts = type_surface_demo(url.parse("https://example.test"));
     let ops = signed_ops(seed, 11);
     let mixed = loops_demo(14);
     let em = enum_demo(Message::Ping);
@@ -407,7 +458,7 @@ fn full_pipeline(seed: i32) -> i32 {
     let lam = closure_demo(seed);
     let io = host_and_io_showcase();
     let cv = c_view_demo();
-    let out = ops + mixed + em + idx + ho + lam + io + cv + tg;
+    let out = ops + mixed + em + idx + ho + lam + io + cv + tg + ts;
     if out > 0 {
         return out;
     }
@@ -458,11 +509,13 @@ test "syntax-showcase-match" {
     const KEYWORDS = new Set([
       "use","mod","fn","return","if","else","match","while","for","in","loop",
       "break","continue","let","const","static","trait","impl","struct","enum","pub","pubext","ext","async",
-      "await","requires","ensures","defer","test","unsafe"
+      "await","requires","ensures","defer","test","unsafe","type","newtype","dyn"
     ]);
     const TYPES = new Set([
       "i8","i16","i32","i64","i128","isize","u8","u16","u32","u64","u128","usize",
-      "f32","f64","bool","char","str","void"
+      "f32","f64","bool","char","str","void","bytes",
+      "BigInt","BigUint","Decimal128","Uuid","Path","PathBuf","Url","SocketAddr",
+      "Duration","Instant","Decimal","DateTimeTz","ExitStatus","Future","Map","Set","Deque","Ring"
     ]);
     const CONSTANTS = new Set(["true","false"]);
 

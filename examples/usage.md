@@ -34,6 +34,8 @@ fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --htt
 fz check tests/fixtures/trait_generic/main.fzy --json
 fz parity tests/fixtures/trait_generic/main.fzy --seed 4242 --json
 fz equivalence tests/fixtures/trait_generic/main.fzy --seed 4242 --json
+fozzy doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed 4242 --json
+fozzy test --det --strict tests/trait_generic.pass.fozzy.json --json
 ```
 
 See the language contract at `docs/traits-generics-contract-v1.md`.

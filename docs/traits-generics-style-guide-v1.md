@@ -4,14 +4,14 @@
 
 - Use concrete trait impl targets.
 - Keep trait methods signature-only in trait declarations.
-- Use explicit specialization in call sites for generic functions (`fn_name<Type>(...)`).
+- Prefer generic call inference at call sites; use explicit specialization only when needed (`fn_name<Type>(...)`).
 - Prefer type-qualified trait impl method calls in v1 (`Type.method(...)`).
+- Use associated types/constants to keep trait APIs cohesive when they are part of the trait contract.
 
 ## Avoid
 
-- Associated types/constants in trait declarations.
 - Default trait method bodies.
-- Generic trait declarations and generic impl headers.
+- Generic trait methods.
 - Ambiguous trait impl coverage for the same trait/type family.
 
 ## Example
@@ -37,7 +37,7 @@ fn id<T: Show>(v: T) -> T {
 
 fn main() -> i32 {
     let item = Item { value: 5 }
-    let out = id<Item>(item)
+    let out = id(item)
     return Item.render(out.value)
 }
 ```
