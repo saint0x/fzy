@@ -819,3 +819,42 @@
 - [✅] Native backend runtime imports/shims include `timeout`/`deadline`/`cancel`/`recv`.
 - [✅] Async equivalence gate includes explicit yieldpoint and normalization definitions and passes on async probe.
 - [✅] Fozzy strict deterministic doctor/test and trace verify/replay/ci lifecycle are passing on baseline scenarios.
+
+### Type System Production Sitrep (2026-03-01)
+
+- [✅] v1 baseline in place: core scalars, arrays, `Vec<T>`, refs/slices, structs, enums (unit+tuple variants), `Option<T>`, `Result<T, E>`, function types, closures, async/await.
+- [✅] FFI baseline in place: `repr(C)` checks, stable ABI policy, panic-boundary enforcement.
+- [✅] Deterministic type-slice evidence lifecycle passed (`doctor`, `test --det --strict`, `run --record`, `trace verify`, `replay`, `ci`) plus host-backed run.
+- [✅] Close pedantic topology gap for this checkpoint (`uncoveredHotspotCount=0`).
+
+#### To Do (Priority 0)
+- [✅] Add first-class `bytes` type.
+- [✅] Add tuple type support.
+- [✅] Add enum struct-variant payload form.
+- [✅] Add standard error trait/interface surface for `Result<T, E>`.
+- [✅] Add generic structs/enums.
+- [✅] Add generic traits/impl headers (or ship explicit non-v1 contract and remove production-ready claim).
+- [✅] Enable production generic call inference for common callsites.
+- [✅] Replace `i32` handle-centric runtime intrinsic signatures with typed domain abstractions (channels, tasks, process handles, list/map handles, JSON handles).
+- [✅] Add typed collection surface (`Map<K,V>`, `Set<T>`, deque/ring) with deterministic ordered variants where required.
+- [✅] Add first-class systems/domain types (`Path`, `PathBuf`, `Url`, socket addresses, typed `Duration`/`Instant`, process handle/exit status).
+- [✅] Add decimal and timezone-aware datetime primitives.
+- [✅] Add explicit `Future<T>`-equivalent type surface for async function values.
+- [✅] Upgrade match exhaustiveness from wildcard policy to full enum-state completeness checks.
+
+#### To Do (Priority 1)
+- [✅] Add BigInt/BigUint primitives.
+- [✅] Add UUID type.
+- [✅] Add fixed-point/decimal128-like numeric type.
+- [✅] Add type alias + newtype + transparent-wrapper features.
+- [✅] Add trait object (`dyn`-like) support.
+- [✅] Add associated types/consts for traits.
+- [✅] Improve LSP inferred-type UX beyond declaration-only detail in key contexts.
+
+#### Production Exit Checklist
+- [✅] No parser rejection for required production type forms.
+- [✅] Generic declarations/usages compile for structs/enums/functions/methods.
+- [✅] Core stdlib/runtime APIs type-check with natural domain types (not placeholder handles).
+- [✅] Option/Result/collections/function types are ergonomic and stable across modules.
+- [✅] FFI-safe and async/concurrency typed abstractions compile and lint clean.
+- [✅] LSP/compiler diagnostics report correct expected/actual types for full production surface.

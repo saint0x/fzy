@@ -20,6 +20,8 @@ enum TokenKind {
     KwPubext,
     KwConst,
     KwStatic,
+    KwType,
+    KwNewtype,
     KwExt,
     KwUnsafe,
     KwAsync,
@@ -280,6 +282,14 @@ impl Parser {
                     let _ = self.consume(&TokenKind::KwPub);
                     return self.parse_static(true);
                 }
+                Some(TokenKind::KwType) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    return self.parse_type_alias(true);
+                }
+                Some(TokenKind::KwNewtype) => {
+                    let _ = self.consume(&TokenKind::KwPub);
+                    return self.parse_newtype(true);
+                }
                 Some(TokenKind::KwStruct) => {
                     let _ = self.consume(&TokenKind::KwPub);
                     return self.parse_struct(true);
@@ -326,6 +336,12 @@ impl Parser {
         }
         if self.at(&TokenKind::KwStruct) {
             return self.parse_struct(false);
+        }
+        if self.at(&TokenKind::KwType) {
+            return self.parse_type_alias(false);
+        }
+        if self.at(&TokenKind::KwNewtype) {
+            return self.parse_newtype(false);
         }
         if self.at(&TokenKind::KwConst) {
             return self.parse_const(false);
@@ -588,12 +604,7 @@ impl Parser {
     fn parse_struct(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwStruct);
         let name = self.expect_ident("expected struct name")?;
-        if self.at(&TokenKind::Lt) {
-            let _ = self.parse_generic_params();
-            self.push_diag_here(
-                "generic struct declarations are not supported in v1; use concrete struct declarations",
-            );
-        }
+        let generics = self.parse_generic_params();
         let mut fields = Vec::new();
         if self.consume(&TokenKind::LBrace) {
             while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
@@ -625,6 +636,7 @@ impl Parser {
         }
         Some(ast::Item::Struct(ast::Struct {
             name,
+            generics,
             fields,
             repr: self.pending_repr.take(),
             is_pub,
@@ -677,15 +689,48 @@ impl Parser {
         }))
     }
 
+    fn parse_type_alias(&mut self, is_pub: bool) -> Option<ast::Item> {
+        let _ = self.consume(&TokenKind::KwType);
+        let name = self.expect_ident("expected type alias name")?;
+        if !self.consume(&TokenKind::Eq) {
+            self.push_diag_here("expected `=` in type alias declaration");
+            return None;
+        }
+        let ty = self.parse_type()?;
+        let _ = self.consume(&TokenKind::Semi);
+        Some(ast::Item::TypeAlias(ast::TypeAlias { name, ty, is_pub }))
+    }
+
+    fn parse_newtype(&mut self, is_pub: bool) -> Option<ast::Item> {
+        let _ = self.consume(&TokenKind::KwNewtype);
+        let name = self.expect_ident("expected newtype name")?;
+        if !self.consume(&TokenKind::LParen) {
+            self.push_diag_here("expected `(` in newtype declaration");
+            return None;
+        }
+        let inner = self.parse_type()?;
+        if !self.consume(&TokenKind::RParen) {
+            self.push_diag_here("expected `)` in newtype declaration");
+            return None;
+        }
+        let _ = self.consume(&TokenKind::Semi);
+        let transparent = self
+            .pending_repr
+            .as_deref()
+            .is_some_and(|repr| repr.split(',').any(|part| part.trim() == "transparent"));
+        let _ = self.pending_repr.take();
+        Some(ast::Item::NewType(ast::NewType {
+            name,
+            inner,
+            transparent,
+            is_pub,
+        }))
+    }
+
     fn parse_enum(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwEnum);
         let name = self.expect_ident("expected enum name")?;
-        if self.at(&TokenKind::Lt) {
-            let _ = self.parse_generic_params();
-            self.push_diag_here(
-                "generic enum declarations are not supported in v1; use concrete enum declarations",
-            );
-        }
+        let generics = self.parse_generic_params();
         let mut variants = Vec::new();
         if self.consume(&TokenKind::LBrace) {
             while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
@@ -708,6 +753,7 @@ impl Parser {
                     continue;
                 }
                 let mut payload = Vec::new();
+                let mut named_payload = Vec::new();
                 if self.consume(&TokenKind::LParen) {
                     while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
                         if let Some(ty) = self.parse_type() {
@@ -718,10 +764,38 @@ impl Parser {
                         }
                     }
                     let _ = self.consume(&TokenKind::RParen);
+                } else if self.consume(&TokenKind::LBrace) {
+                    while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                        let field_name = match self.expect_ident("expected field name") {
+                            Some(v) => v,
+                            None => break,
+                        };
+                        if !self.consume(&TokenKind::Colon) {
+                            self.push_diag_here("expected `:` in enum struct-variant field");
+                            self.consume_until(&[TokenKind::Comma, TokenKind::RBrace]);
+                            let _ = self.consume(&TokenKind::Comma);
+                            continue;
+                        }
+                        let field_ty = match self.parse_type() {
+                            Some(ty) => ty,
+                            None => {
+                                self.consume_until(&[TokenKind::Comma, TokenKind::RBrace]);
+                                let _ = self.consume(&TokenKind::Comma);
+                                continue;
+                            }
+                        };
+                        named_payload.push(ast::Field {
+                            name: field_name,
+                            ty: field_ty,
+                        });
+                        let _ = self.consume(&TokenKind::Comma);
+                    }
+                    let _ = self.consume(&TokenKind::RBrace);
                 }
                 variants.push(ast::Variant {
                     name: variant_name,
                     payload,
+                    named_payload,
                 });
                 let _ = self.consume(&TokenKind::Comma);
             }
@@ -729,6 +803,7 @@ impl Parser {
         }
         Some(ast::Item::Enum(ast::Enum {
             name,
+            generics,
             variants,
             repr: self.pending_repr.take(),
             is_pub,
@@ -738,36 +813,45 @@ impl Parser {
     fn parse_trait(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwTrait);
         let name = self.expect_ident("expected trait name")?;
-        if self.at(&TokenKind::Lt) {
-            let _ = self.parse_generic_params();
-            self.push_diag_here(
-                "generic trait declarations are not supported in v1; use non-generic trait declarations",
-            );
-        }
+        let generics = self.parse_generic_params();
         if !self.consume(&TokenKind::LBrace) {
             self.push_diag_here("expected `{` after trait name");
             return None;
         }
+        let mut associated_types = Vec::new();
+        let mut associated_consts = Vec::new();
         let mut methods = Vec::new();
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
             if self.at(&TokenKind::KwConst) {
                 let _ = self.consume(&TokenKind::KwConst);
-                self.push_diag_here(
-                    "trait associated constants are not supported in v1; define standalone constants instead",
-                );
-                self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                let Some(name) = self.expect_ident("expected associated const name") else {
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                };
+                if !self.consume(&TokenKind::Colon) {
+                    self.push_diag_here("expected `:` in associated const declaration");
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                }
+                let Some(ty) = self.parse_type() else {
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                };
+                associated_consts.push(ast::TraitConst { name, ty });
                 let _ = self.consume(&TokenKind::Semi);
                 continue;
             }
-            if self
-                .peek()
-                .is_some_and(|token| token.kind == TokenKind::Ident("type".to_string()))
-            {
+            if self.at(&TokenKind::KwType) {
                 let _ = self.advance();
-                self.push_diag_here(
-                    "trait associated types are not supported in v1; use explicit concrete types instead",
-                );
-                self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                let Some(name) = self.expect_ident("expected associated type name") else {
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                };
+                associated_types.push(name);
                 let _ = self.consume(&TokenKind::Semi);
                 continue;
             }
@@ -777,12 +861,7 @@ impl Parser {
                 continue;
             }
             let method_name = self.expect_ident("expected trait method name")?;
-            if self.at(&TokenKind::Lt) {
-                let _ = self.parse_generic_params();
-                self.push_diag_here(
-                    "generic trait methods are not supported in v1; use non-generic method signatures",
-                );
-            }
+            let _method_generics = self.parse_generic_params();
             if !self.consume(&TokenKind::LParen) {
                 self.push_diag_here("expected `(` after trait method name");
                 return None;
@@ -835,6 +914,9 @@ impl Parser {
         let _ = self.consume(&TokenKind::RBrace);
         Some(ast::Item::Trait(ast::Trait {
             name,
+            generics,
+            associated_types,
+            associated_consts,
             methods,
             is_pub,
         }))
@@ -842,12 +924,7 @@ impl Parser {
 
     fn parse_impl(&mut self, is_pub: bool) -> Option<ast::Item> {
         let _ = self.consume(&TokenKind::KwImpl);
-        if self.at(&TokenKind::Lt) {
-            let _ = self.parse_generic_params();
-            self.push_diag_here(
-                "generic impl headers are not supported in v1; use concrete impl targets",
-            );
-        }
+        let generics = self.parse_generic_params();
         let first = self.parse_type()?;
         let (trait_name, for_type) = if self.consume(&TokenKind::KwFor) {
             let Some(ty) = self.parse_type() else {
@@ -870,12 +947,77 @@ impl Parser {
             self.push_diag_here("expected `{` after impl header");
             return None;
         }
+        let mut associated_types = Vec::new();
+        let mut associated_consts = Vec::new();
         let mut methods = Vec::new();
         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
-            match self.parse_function()? {
-                ast::Item::Function(function) => methods.push(function),
-                _ => {
+            if self.at(&TokenKind::KwType) {
+                let _ = self.consume(&TokenKind::KwType);
+                let Some(name) = self.expect_ident("expected associated type name") else {
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                };
+                if !self.consume(&TokenKind::Eq) {
+                    self.push_diag_here("expected `=` in associated type impl");
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                }
+                let Some(ty) = self.parse_type() else {
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                };
+                associated_types.push((name, ty));
+                let _ = self.consume(&TokenKind::Semi);
+                continue;
+            }
+            if self.at(&TokenKind::KwConst) {
+                let _ = self.consume(&TokenKind::KwConst);
+                let Some(name) = self.expect_ident("expected associated const name") else {
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                };
+                if !self.consume(&TokenKind::Colon) {
+                    self.push_diag_here("expected `:` in associated const impl");
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                }
+                let Some(ty) = self.parse_type() else {
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                };
+                if !self.consume(&TokenKind::Eq) {
+                    self.push_diag_here("expected `=` in associated const impl");
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                }
+                let Some(value) = self.parse_expr(0) else {
+                    self.consume_until(&[TokenKind::Semi, TokenKind::RBrace]);
+                    let _ = self.consume(&TokenKind::Semi);
+                    continue;
+                };
+                associated_consts.push(ast::ConstItem {
+                    name,
+                    ty,
+                    value,
+                    is_pub: false,
+                });
+                let _ = self.consume(&TokenKind::Semi);
+                continue;
+            }
+            match self.parse_function() {
+                Some(ast::Item::Function(function)) => methods.push(function),
+                Some(_) => {
                     self.push_diag_here("expected function in impl body");
+                    self.recover_item();
+                }
+                None => {
                     self.recover_item();
                 }
             }
@@ -883,7 +1025,10 @@ impl Parser {
         let _ = self.consume(&TokenKind::RBrace);
         Some(ast::Item::Impl(ast::Impl {
             trait_name,
+            generics,
             for_type,
+            associated_types,
+            associated_consts,
             methods,
             is_pub,
         }))
@@ -1386,8 +1531,10 @@ impl Parser {
                 enum_name,
                 variant,
                 payload,
+                named_payload,
             } => {
                 let mut bindings = Vec::with_capacity(payload.len());
+                let mut named_bindings = Vec::with_capacity(named_payload.len());
                 for value in payload {
                     let Expr::Ident(name) = value else {
                         self.push_diag_at(
@@ -1399,10 +1546,22 @@ impl Parser {
                     };
                     bindings.push(name);
                 }
+                for (field, value) in named_payload {
+                    let Expr::Ident(name) = value else {
+                        self.push_diag_at(
+                            token.line,
+                            token.col,
+                            "enum struct-variant pattern bindings must be identifiers",
+                        );
+                        return None;
+                    };
+                    named_bindings.push((field, name));
+                }
                 Some(Pattern::Variant {
                     enum_name,
                     variant,
                     bindings,
+                    named_bindings,
                 })
             }
             Expr::Call { callee, .. } => {
@@ -1706,6 +1865,7 @@ impl Parser {
                     let _ = self.consume(&TokenKind::Colon);
                     let variant = self.expect_ident("expected enum variant name")?;
                     let mut payload = Vec::new();
+                    let mut named_payload = Vec::new();
                     if self.consume(&TokenKind::LParen) {
                         while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
                             payload.push(self.parse_expr(0)?);
@@ -1714,11 +1874,27 @@ impl Parser {
                             }
                         }
                         let _ = self.consume(&TokenKind::RParen);
+                    } else if self.consume(&TokenKind::LBrace) {
+                        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                            let field_name = self
+                                .expect_ident("expected field name in enum struct-variant initializer")?;
+                            let value = if self.consume(&TokenKind::Colon) {
+                                self.parse_expr(0)?
+                            } else {
+                                Expr::Ident(field_name.clone())
+                            };
+                            named_payload.push((field_name, value));
+                            if !self.consume(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                        let _ = self.consume(&TokenKind::RBrace);
                     }
                     Expr::EnumInit {
                         enum_name: name,
                         variant,
                         payload,
+                        named_payload,
                     }
                 } else {
                     Expr::Ident(name)
@@ -1940,6 +2116,34 @@ impl Parser {
                 ret: Box::new(ret),
             });
         }
+        if self.consume(&TokenKind::Ident("dyn".to_string())) {
+            let trait_name = self.expect_ident("expected trait name after `dyn`")?;
+            return Some(Type::DynTrait(trait_name));
+        }
+        if self.consume(&TokenKind::LParen) {
+            if self.consume(&TokenKind::RParen) {
+                return Some(Type::Tuple(Vec::new()));
+            }
+            let first = self.parse_type()?;
+            if self.consume(&TokenKind::Comma) {
+                let mut items = vec![first];
+                while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                    let Some(item) = self.parse_type() else {
+                        self.consume_until(&[TokenKind::Comma, TokenKind::RParen]);
+                        let _ = self.consume(&TokenKind::Comma);
+                        continue;
+                    };
+                    items.push(item);
+                    if !self.consume(&TokenKind::Comma) {
+                        break;
+                    }
+                }
+                let _ = self.consume(&TokenKind::RParen);
+                return Some(Type::Tuple(items));
+            }
+            let _ = self.consume(&TokenKind::RParen);
+            return Some(first);
+        }
         if self.consume(&TokenKind::Star) {
             let mutable = self.consume(&TokenKind::Ident("mut".to_string()));
             let inner = self.parse_type()?;
@@ -2012,6 +2216,7 @@ impl Parser {
             ("bool", []) => Type::Bool,
             ("char", []) => Type::Char,
             ("str", []) => Type::Str,
+            ("bytes", []) => Type::Bytes,
             ("i8", []) => Type::Int {
                 signed: true,
                 bits: 8,
@@ -2054,14 +2259,35 @@ impl Parser {
                 bits: 128,
             },
             ("usize", []) => Type::USize,
+            ("BigInt", []) | ("bigint", []) => Type::BigInt,
+            ("BigUint", []) | ("biguint", []) => Type::BigUint,
             ("f32", []) => Type::Float { bits: 32 },
             ("f64", []) => Type::Float { bits: 64 },
+            ("Decimal128", []) | ("decimal128", []) => Type::Decimal128,
+            ("Uuid", []) | ("uuid", []) => Type::Uuid,
+            ("Map", [key, value]) => Type::Map {
+                key: Box::new(key.clone()),
+                value: Box::new(value.clone()),
+            },
+            ("Set", [inner]) => Type::Set(Box::new(inner.clone())),
+            ("Deque", [inner]) => Type::Deque(Box::new(inner.clone())),
+            ("Ring", [inner]) => Type::Ring(Box::new(inner.clone())),
             ("Vec", [inner]) => Type::Vec(Box::new(inner.clone())),
             ("Option", [inner]) => Type::Option(Box::new(inner.clone())),
             ("Result", [ok, err]) => Type::Result {
                 ok: Box::new(ok.clone()),
                 err: Box::new(err.clone()),
             },
+            ("Future", [inner]) => Type::Future(Box::new(inner.clone())),
+            ("Path", []) | ("path", []) => Type::Path,
+            ("PathBuf", []) | ("pathbuf", []) => Type::PathBuf,
+            ("Url", []) | ("url", []) => Type::Url,
+            ("SocketAddr", []) | ("socket_addr", []) => Type::SocketAddr,
+            ("Duration", []) | ("duration", []) => Type::Duration,
+            ("Instant", []) | ("instant", []) => Type::Instant,
+            ("Decimal", []) | ("decimal", []) => Type::Decimal,
+            ("DateTimeTz", []) | ("datetime_tz", []) => Type::DateTimeTz,
+            ("ExitStatus", []) | ("exit_status", []) => Type::ExitStatus,
             _ => {
                 if args.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
                     Type::TypeVar(name)
@@ -2974,6 +3200,8 @@ fn keyword_or_ident(ident: &str) -> TokenKind {
         "pubext" => TokenKind::KwPubext,
         "const" => TokenKind::KwConst,
         "static" => TokenKind::KwStatic,
+        "type" => TokenKind::KwType,
+        "newtype" => TokenKind::KwNewtype,
         "ext" => TokenKind::KwExt,
         "unsafe" => TokenKind::KwUnsafe,
         "async" => TokenKind::KwAsync,
@@ -3423,7 +3651,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_trait_associated_items_and_defaults_in_v1() {
+    fn supports_trait_associated_items_but_rejects_default_method_bodies() {
         let source = r#"
             trait Show {
                 const TAG: i32;
@@ -3431,22 +3659,7 @@ mod tests {
                 fn show<T>(v: i32) -> i32 { return v; }
             }
         "#;
-        let diagnostics = parse(source, "trait_v1").expect_err("trait v1 forms should fail");
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("trait associated constants are not supported in v1")
-        }));
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("trait associated types are not supported in v1")
-        }));
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("generic trait methods are not supported in v1")
-        }));
+        let diagnostics = parse(source, "trait_v1").expect_err("default bodies should fail");
         assert!(diagnostics.iter().any(|diagnostic| {
             diagnostic
                 .message
@@ -3455,36 +3668,64 @@ mod tests {
     }
 
     #[test]
-    fn rejects_generic_item_headers_in_v1() {
+    fn parses_trait_and_impl_associated_items() {
+        let source = r#"
+            trait Cache {
+                type Key;
+                const VERSION: i32;
+                fn get(k: i32) -> i32;
+            }
+            struct Store {}
+            impl Cache for Store {
+                type Key = i32;
+                const VERSION: i32 = 1;
+                fn get(k: i32) -> i32 { return k; }
+            }
+        "#;
+        let module = parse(source, "assoc").expect("parse should succeed");
+        let tr = module.items.iter().find_map(|item| match item {
+            ast::Item::Trait(item) if item.name == "Cache" => Some(item),
+            _ => None,
+        });
+        assert!(tr.is_some_and(|item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()));
+        let imp = module.items.iter().find_map(|item| match item {
+            ast::Item::Impl(item) => Some(item),
+            _ => None,
+        });
+        assert!(imp.is_some_and(|item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()));
+    }
+
+    #[test]
+    fn parses_generic_item_headers() {
         let source = r#"
             struct Box<T> { value: T }
             enum Maybe<T> { Some(T), None }
             trait Show<T> { fn show(v: i32) -> i32; }
-            impl<T> Show for Box {
+            impl<T> Show for Box<T> {
                 fn show(v: i32) -> i32 { return v; }
             }
         "#;
-        let diagnostics = parse(source, "generic_headers").expect_err("generic headers should fail");
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("generic struct declarations are not supported in v1")
-        }));
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("generic enum declarations are not supported in v1")
-        }));
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("generic trait declarations are not supported in v1")
-        }));
-        assert!(diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("generic impl headers are not supported in v1")
-        }));
+        let module = parse(source, "generic_headers").expect("generic headers should parse");
+        let boxed = module.items.iter().find_map(|item| match item {
+            ast::Item::Struct(item) if item.name == "Box" => Some(item),
+            _ => None,
+        });
+        assert_eq!(boxed.map(|item| item.generics.len()), Some(1));
+        let maybe = module.items.iter().find_map(|item| match item {
+            ast::Item::Enum(item) if item.name == "Maybe" => Some(item),
+            _ => None,
+        });
+        assert_eq!(maybe.map(|item| item.generics.len()), Some(1));
+        let show = module.items.iter().find_map(|item| match item {
+            ast::Item::Trait(item) if item.name == "Show" => Some(item),
+            _ => None,
+        });
+        assert_eq!(show.map(|item| item.generics.len()), Some(1));
+        let imp = module.items.iter().find_map(|item| match item {
+            ast::Item::Impl(item) => Some(item),
+            _ => None,
+        });
+        assert_eq!(imp.map(|item| item.generics.len()), Some(1));
     }
 
     #[test]
@@ -4127,6 +4368,7 @@ mod tests {
             enum_name,
             variant,
             bindings,
+            named_bindings,
         } = pattern
         else {
             panic!("expected variant pattern");
@@ -4134,6 +4376,7 @@ mod tests {
         assert_eq!(enum_name, "Maybe");
         assert_eq!(variant, "Some");
         assert_eq!(bindings, &vec!["v".to_string()]);
+        assert!(named_bindings.is_empty());
     }
 
     #[test]
@@ -4262,5 +4505,137 @@ mod tests {
                 bits: 32
             }
         );
+    }
+
+    #[test]
+    fn parses_bytes_and_tuple_types() {
+        let source = r#"
+            fn pair(a: bytes, b: (i32, str)) -> i32 {
+                let _x: (bytes, i32) = a;
+                discard b;
+                discard _x;
+                return 0;
+            }
+        "#;
+        let module = parse(source, "types").expect("parse should succeed");
+        let function = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "pair" => Some(function),
+                _ => None,
+            })
+            .expect("pair function should exist");
+        assert!(matches!(function.params[0].ty, ast::Type::Bytes));
+        assert!(matches!(function.params[1].ty, ast::Type::Tuple(_)));
+    }
+
+    #[test]
+    fn parses_enum_struct_variant_forms() {
+        let source = r#"
+            enum Message {
+                Data { id: i32, body: str },
+            }
+            fn main() -> i32 {
+                let m = Message::Data { id: 7, body: "ok" };
+                match m {
+                    Message::Data { id, body } => return id,
+                    _ => return 0,
+                }
+            }
+        "#;
+        let module = parse(source, "enum_struct_variant").expect("parse should succeed");
+        let message = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Enum(item) if item.name == "Message" => Some(item),
+                _ => None,
+            })
+            .expect("Message enum should exist");
+        assert_eq!(message.variants.len(), 1);
+        assert_eq!(message.variants[0].named_payload.len(), 2);
+    }
+
+    #[test]
+    fn parses_future_collection_and_domain_types() {
+        let source = r#"
+            fn main(
+                bi: BigInt,
+                bu: BigUint,
+                id: Uuid,
+                d128: Decimal128,
+                fut: Future<i32>,
+                m: Map<str, i32>,
+                s: Set<str>,
+                d: Deque<i32>,
+                r: Ring<i32>,
+                obj: dyn Error,
+                p: Path,
+                pb: PathBuf,
+                u: Url,
+                sa: SocketAddr,
+                dur: Duration,
+                inst: Instant,
+                dec: Decimal,
+                dt: DateTimeTz,
+                es: ExitStatus
+            ) -> i32 {
+                discard bi; discard bu; discard id; discard d128;
+                discard fut; discard m; discard s; discard d; discard r; discard obj;
+                discard p; discard pb; discard u; discard sa; discard dur;
+                discard inst; discard dec; discard dt; discard es;
+                return 0;
+            }
+        "#;
+        let module = parse(source, "types").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(matches!(main_fn.params[0].ty, ast::Type::BigInt));
+        assert!(matches!(main_fn.params[1].ty, ast::Type::BigUint));
+        assert!(matches!(main_fn.params[2].ty, ast::Type::Uuid));
+        assert!(matches!(main_fn.params[3].ty, ast::Type::Decimal128));
+        assert!(matches!(main_fn.params[4].ty, ast::Type::Future(_)));
+        assert!(matches!(main_fn.params[5].ty, ast::Type::Map { .. }));
+        assert!(matches!(main_fn.params[6].ty, ast::Type::Set(_)));
+        assert!(matches!(main_fn.params[7].ty, ast::Type::Deque(_)));
+        assert!(matches!(main_fn.params[8].ty, ast::Type::Ring(_)));
+        assert!(matches!(main_fn.params[9].ty, ast::Type::DynTrait(_)));
+        assert!(matches!(main_fn.params[10].ty, ast::Type::Path));
+        assert!(matches!(main_fn.params[11].ty, ast::Type::PathBuf));
+        assert!(matches!(main_fn.params[12].ty, ast::Type::Url));
+        assert!(matches!(main_fn.params[13].ty, ast::Type::SocketAddr));
+        assert!(matches!(main_fn.params[14].ty, ast::Type::Duration));
+        assert!(matches!(main_fn.params[15].ty, ast::Type::Instant));
+        assert!(matches!(main_fn.params[16].ty, ast::Type::Decimal));
+        assert!(matches!(main_fn.params[17].ty, ast::Type::DateTimeTz));
+        assert!(matches!(main_fn.params[18].ty, ast::Type::ExitStatus));
+    }
+
+    #[test]
+    fn parses_type_alias_and_transparent_newtype_items() {
+        let source = r#"
+            pub type UserId = i64;
+            #[repr(transparent)]
+            pub newtype SessionId(UserId);
+            fn main(id: SessionId) -> i32 { discard id; return 0; }
+        "#;
+        let module = parse(source, "aliases").expect("parse should succeed");
+        let alias = module.items.iter().find_map(|item| match item {
+            ast::Item::TypeAlias(item) if item.name == "UserId" => Some(item),
+            _ => None,
+        });
+        assert!(alias.is_some_and(|item| item.is_pub));
+        let newtype = module.items.iter().find_map(|item| match item {
+            ast::Item::NewType(item) if item.name == "SessionId" => Some(item),
+            _ => None,
+        });
+        assert!(newtype.is_some_and(|item| item.is_pub && item.transparent));
     }
 }

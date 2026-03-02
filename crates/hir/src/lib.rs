@@ -168,6 +168,66 @@ impl SymbolScopes {
     }
 }
 
+fn resolve_alias_type(ty: &Type, aliases: &HashMap<String, Type>, depth: usize) -> Type {
+    if depth > 32 {
+        return ty.clone();
+    }
+    match ty {
+        Type::Named { name, args } if args.is_empty() => {
+            if let Some(target) = aliases.get(name) {
+                return resolve_alias_type(target, aliases, depth + 1);
+            }
+            ty.clone()
+        }
+        Type::Ptr { mutable, to } => Type::Ptr {
+            mutable: *mutable,
+            to: Box::new(resolve_alias_type(to, aliases, depth)),
+        },
+        Type::Ref {
+            mutable,
+            lifetime,
+            to,
+        } => Type::Ref {
+            mutable: *mutable,
+            lifetime: lifetime.clone(),
+            to: Box::new(resolve_alias_type(to, aliases, depth)),
+        },
+        Type::Slice(inner) => Type::Slice(Box::new(resolve_alias_type(inner, aliases, depth))),
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(resolve_alias_type(elem, aliases, depth)),
+            len: *len,
+        },
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(resolve_alias_type(ok, aliases, depth)),
+            err: Box::new(resolve_alias_type(err, aliases, depth)),
+        },
+        Type::Map { key, value } => Type::Map {
+            key: Box::new(resolve_alias_type(key, aliases, depth)),
+            value: Box::new(resolve_alias_type(value, aliases, depth)),
+        },
+        Type::Set(inner) => Type::Set(Box::new(resolve_alias_type(inner, aliases, depth))),
+        Type::Deque(inner) => Type::Deque(Box::new(resolve_alias_type(inner, aliases, depth))),
+        Type::Ring(inner) => Type::Ring(Box::new(resolve_alias_type(inner, aliases, depth))),
+        Type::Option(inner) => Type::Option(Box::new(resolve_alias_type(inner, aliases, depth))),
+        Type::Vec(inner) => Type::Vec(Box::new(resolve_alias_type(inner, aliases, depth))),
+        Type::Future(inner) => Type::Future(Box::new(resolve_alias_type(inner, aliases, depth))),
+        Type::Function { params, ret } => Type::Function {
+            params: params
+                .iter()
+                .map(|param| resolve_alias_type(param, aliases, depth))
+                .collect(),
+            ret: Box::new(resolve_alias_type(ret, aliases, depth)),
+        },
+        Type::Tuple(items) => Type::Tuple(
+            items
+                .iter()
+                .map(|item| resolve_alias_type(item, aliases, depth))
+                .collect(),
+        ),
+        _ => ty.clone(),
+    }
+}
+
 pub fn lower(module: &Module) -> TypedModule {
     let mut fn_sigs = HashMap::<String, (Vec<Type>, Type)>::new();
     let mut fn_async = HashMap::<String, bool>::new();
@@ -202,6 +262,24 @@ pub fn lower(module: &Module) -> TypedModule {
             _ => None,
         })
         .collect::<HashMap<_, _>>();
+    let mut trait_defs = trait_defs;
+    trait_defs
+        .entry("Error".to_string())
+        .or_insert_with(|| ast::Trait {
+            name: "Error".to_string(),
+            generics: Vec::new(),
+            associated_types: Vec::new(),
+            associated_consts: Vec::new(),
+            methods: vec![ast::TraitMethod {
+                name: "message".to_string(),
+                params: vec![ast::Param {
+                    name: "self".to_string(),
+                    ty: Type::TypeVar("Self".to_string()),
+                }],
+                return_type: Type::Str,
+            }],
+            is_pub: true,
+        });
     let trait_impls = module
         .items
         .iter()
@@ -219,17 +297,28 @@ pub fn lower(module: &Module) -> TypedModule {
                 acc
             },
         );
+    let type_aliases = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::TypeAlias(item) => Some((item.name.clone(), item.ty.clone())),
+            ast::Item::NewType(item) => Some((item.name.clone(), item.inner.clone())),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
     let mut generic_specializations = BTreeSet::new();
     let mut trait_violations = validate_trait_impls(module, &trait_defs);
 
     for item in &module.items {
         match item {
             ast::Item::Const(item) => {
+                let declared_ty = resolve_alias_type(&item.ty, &type_aliases, 0);
                 let inferred = infer_expr_type(
                     &item.value,
                     &global_scope,
                     &TypeCheckEnv {
                         fn_sigs: &fn_sigs,
+                        fn_async: &fn_async,
                         fn_generics: &fn_generics,
                         struct_defs: &struct_defs,
                         enum_defs: &enum_defs,
@@ -245,13 +334,13 @@ pub fn lower(module: &Module) -> TypedModule {
                     },
                 );
                 if let Some(actual) = inferred {
-                    if !type_compatible(&item.ty, &actual) {
+                    if !type_compatible(&declared_ty, &actual) {
                         record_type_error(
                             &mut type_errors,
                             &mut type_error_details,
                             format!(
                                 "const `{}` type mismatch: expected `{}`, got `{}`",
-                                item.name, item.ty, actual
+                                item.name, declared_ty, actual
                             ),
                         );
                     }
@@ -270,10 +359,10 @@ pub fn lower(module: &Module) -> TypedModule {
                 if let Some(value) = const_i32 {
                     global_const_values.insert(item.name.clone(), value);
                 }
-                global_scope.insert(item.name.clone(), item.ty.clone(), false);
+                global_scope.insert(item.name.clone(), declared_ty.clone(), false);
                 typed_globals.push(TypedGlobal {
                     name: item.name.clone(),
-                    ty: item.ty.clone(),
+                    ty: declared_ty,
                     is_static: false,
                     mutable: false,
                     is_pub: item.is_pub,
@@ -281,11 +370,13 @@ pub fn lower(module: &Module) -> TypedModule {
                 });
             }
             ast::Item::Static(item) => {
+                let declared_ty = resolve_alias_type(&item.ty, &type_aliases, 0);
                 let inferred = infer_expr_type(
                     &item.value,
                     &global_scope,
                     &TypeCheckEnv {
                         fn_sigs: &fn_sigs,
+                        fn_async: &fn_async,
                         fn_generics: &fn_generics,
                         struct_defs: &struct_defs,
                         enum_defs: &enum_defs,
@@ -301,13 +392,13 @@ pub fn lower(module: &Module) -> TypedModule {
                     },
                 );
                 if let Some(actual) = inferred {
-                    if !type_compatible(&item.ty, &actual) {
+                    if !type_compatible(&declared_ty, &actual) {
                         record_type_error(
                             &mut type_errors,
                             &mut type_error_details,
                             format!(
                                 "static `{}` type mismatch: expected `{}`, got `{}`",
-                                item.name, item.ty, actual
+                                item.name, declared_ty, actual
                             ),
                         );
                     }
@@ -326,10 +417,10 @@ pub fn lower(module: &Module) -> TypedModule {
                 if let Some(value) = const_i32 {
                     global_const_values.insert(item.name.clone(), value);
                 }
-                global_scope.insert(item.name.clone(), item.ty.clone(), item.mutable);
+                global_scope.insert(item.name.clone(), declared_ty.clone(), item.mutable);
                 typed_globals.push(TypedGlobal {
                     name: item.name.clone(),
-                    ty: item.ty.clone(),
+                    ty: declared_ty,
                     is_static: true,
                     mutable: item.mutable,
                     is_pub: item.is_pub,
@@ -337,6 +428,15 @@ pub fn lower(module: &Module) -> TypedModule {
                 });
             }
             ast::Item::Function(function) => {
+                let params = function
+                    .params
+                    .iter()
+                    .map(|param| ast::Param {
+                        name: param.name.clone(),
+                        ty: resolve_alias_type(&param.ty, &type_aliases, 0),
+                    })
+                    .collect::<Vec<_>>();
+                let return_type = resolve_alias_type(&function.return_type, &type_aliases, 0);
                 for detail in
                     validate_generic_bounds_exist(&function.name, &function.generics, &trait_defs)
                 {
@@ -346,8 +446,8 @@ pub fn lower(module: &Module) -> TypedModule {
                 fn_sigs.insert(
                     function.name.clone(),
                     (
-                        function.params.iter().map(|p| p.ty.clone()).collect(),
-                        function.return_type.clone(),
+                        params.iter().map(|p| p.ty.clone()).collect(),
+                        return_type.clone(),
                     ),
                 );
                 fn_async.insert(function.name.clone(), function.is_async);
@@ -356,8 +456,8 @@ pub fn lower(module: &Module) -> TypedModule {
                     name: function.name.clone(),
                     link_name: function.link_name.clone(),
                     generics: function.generics.clone(),
-                    params: function.params.clone(),
-                    return_type: function.return_type.clone(),
+                    params,
+                    return_type,
                     body: function.body.clone(),
                     is_unsafe: function.is_unsafe,
                     is_async: function.is_async,
@@ -388,8 +488,18 @@ pub fn lower(module: &Module) -> TypedModule {
                 });
             }
             ast::Item::Impl(item) => {
-                let receiver = item.for_type.to_string();
+                let for_type = resolve_alias_type(&item.for_type, &type_aliases, 0);
+                let receiver = for_type.to_string();
                 for method in &item.methods {
+                    let params = method
+                        .params
+                        .iter()
+                        .map(|param| ast::Param {
+                            name: param.name.clone(),
+                            ty: resolve_alias_type(&param.ty, &type_aliases, 0),
+                        })
+                        .collect::<Vec<_>>();
+                    let return_type = resolve_alias_type(&method.return_type, &type_aliases, 0);
                     let method_symbol = format!("{receiver}.{}", method.name);
                     for detail in
                         validate_generic_bounds_exist(&method_symbol, &method.generics, &trait_defs)
@@ -412,8 +522,8 @@ pub fn lower(module: &Module) -> TypedModule {
                     fn_sigs.insert(
                         method_symbol.clone(),
                         (
-                            method.params.iter().map(|p| p.ty.clone()).collect(),
-                            method.return_type.clone(),
+                            params.iter().map(|p| p.ty.clone()).collect(),
+                            return_type.clone(),
                         ),
                     );
                     fn_async.insert(method_symbol.clone(), method.is_async);
@@ -422,8 +532,8 @@ pub fn lower(module: &Module) -> TypedModule {
                         name: method_symbol,
                         link_name: method.link_name.clone(),
                         generics: method.generics.clone(),
-                        params: method.params.clone(),
-                        return_type: method.return_type.clone(),
+                        params,
+                        return_type,
                         body: method.body.clone(),
                         is_unsafe: method.is_unsafe,
                         is_async: method.is_async,
@@ -463,6 +573,7 @@ pub fn lower(module: &Module) -> TypedModule {
         let mut scopes = SymbolScopes::new();
         let env = TypeCheckEnv {
             fn_sigs: &fn_sigs,
+            fn_async: &fn_async,
             fn_generics: &fn_generics,
             struct_defs: &struct_defs,
             enum_defs: &enum_defs,
@@ -644,29 +755,6 @@ fn sanitize_test_name(name: &str) -> String {
     }
 }
 
-fn type_contains_typevar(ty: &Type) -> bool {
-    match ty {
-        Type::TypeVar(_) => true,
-        Type::Ptr { to, .. } | Type::Ref { to, .. } => type_contains_typevar(to),
-        Type::Slice(inner) | Type::Option(inner) | Type::Vec(inner) => type_contains_typevar(inner),
-        Type::Array { elem, .. } => type_contains_typevar(elem),
-        Type::Result { ok, err } => type_contains_typevar(ok) || type_contains_typevar(err),
-        Type::Function { params, ret } => {
-            params.iter().any(type_contains_typevar) || type_contains_typevar(ret)
-        }
-        Type::Named { args, .. } => args.iter().any(type_contains_typevar),
-        Type::Never
-        | Type::Void
-        | Type::Bool
-        | Type::ISize
-        | Type::USize
-        | Type::Int { .. }
-        | Type::Float { .. }
-        | Type::Char
-        | Type::Str => false,
-    }
-}
-
 fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait>) -> Vec<String> {
     let mut violations = Vec::new();
     let mut trait_impl_targets = HashMap::<String, Vec<Type>>::new();
@@ -677,12 +765,6 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
         let Some(trait_name) = &item.trait_name else {
             continue;
         };
-        if type_contains_typevar(&item.for_type) {
-            violations.push(format!(
-                "impl for trait `{}` must target a concrete type in v1, got `{}`",
-                trait_name, item.for_type
-            ));
-        }
         let recorded = trait_impl_targets.entry(trait_name.clone()).or_default();
         for existing in recorded.iter() {
             if type_compatible(existing, &item.for_type) || type_compatible(&item.for_type, existing)
@@ -698,6 +780,61 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
             violations.push(format!("impl references unknown trait `{trait_name}`"));
             continue;
         };
+        for (name, _) in &item.associated_types {
+            if !trait_def
+                .associated_types
+                .iter()
+                .any(|candidate| candidate == name)
+            {
+                violations.push(format!(
+                    "impl for `{}` defines extra associated type `{}` not declared by trait `{}`",
+                    item.for_type, name, trait_name
+                ));
+            }
+        }
+        for item_const in &item.associated_consts {
+            if trait_def
+                .associated_consts
+                .iter()
+                .all(|candidate| candidate.name != item_const.name)
+            {
+                violations.push(format!(
+                    "impl for `{}` defines extra associated const `{}` not declared by trait `{}`",
+                    item.for_type, item_const.name, trait_name
+                ));
+            }
+        }
+        for assoc_type in &trait_def.associated_types {
+            if item
+                .associated_types
+                .iter()
+                .all(|(name, _)| name != assoc_type)
+            {
+                violations.push(format!(
+                    "impl for `{}` missing associated type `{}` required by trait `{}`",
+                    item.for_type, assoc_type, trait_name
+                ));
+            }
+        }
+        for assoc_const in &trait_def.associated_consts {
+            let Some(found) = item
+                .associated_consts
+                .iter()
+                .find(|candidate| candidate.name == assoc_const.name)
+            else {
+                violations.push(format!(
+                    "impl for `{}` missing associated const `{}` required by trait `{}`",
+                    item.for_type, assoc_const.name, trait_name
+                ));
+                continue;
+            };
+            if !type_compatible(&found.ty, &assoc_const.ty) {
+                violations.push(format!(
+                    "impl associated const `{}` type mismatch for trait `{}`: expected `{}`, got `{}`",
+                    assoc_const.name, trait_name, assoc_const.ty, found.ty
+                ));
+            }
+        }
         for impl_method in &item.methods {
             if trait_def
                 .methods
@@ -3816,6 +3953,12 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
             ast::Item::Static(item) => {
                 collect_type_instantiation(&item.ty, &mut out);
             }
+            ast::Item::TypeAlias(item) => {
+                collect_type_instantiation(&item.ty, &mut out);
+            }
+            ast::Item::NewType(item) => {
+                collect_type_instantiation(&item.inner, &mut out);
+            }
             ast::Item::Struct(item) => {
                 for field in &item.fields {
                     collect_type_instantiation(&field.ty, &mut out);
@@ -3830,6 +3973,9 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
             }
             ast::Item::Test(_) => {}
             ast::Item::Trait(item) => {
+                for assoc in &item.associated_consts {
+                    collect_type_instantiation(&assoc.ty, &mut out);
+                }
                 for method in &item.methods {
                     collect_type_instantiation(&method.return_type, &mut out);
                     for param in &method.params {
@@ -3839,6 +3985,12 @@ fn collect_generic_instantiations(module: &Module) -> Vec<String> {
             }
             ast::Item::Impl(item) => {
                 collect_type_instantiation(&item.for_type, &mut out);
+                for (_, ty) in &item.associated_types {
+                    collect_type_instantiation(ty, &mut out);
+                }
+                for assoc in &item.associated_consts {
+                    collect_type_instantiation(&assoc.ty, &mut out);
+                }
                 for method in &item.methods {
                     collect_type_instantiation(&method.return_type, &mut out);
                     for param in &method.params {
@@ -3867,6 +4019,41 @@ fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
             out.push(format!("Result<{ok}, {err}>"));
             collect_type_instantiation(ok, out);
             collect_type_instantiation(err, out);
+        }
+        Type::Map { key, value } => {
+            out.push(format!("Map<{key}, {value}>"));
+            collect_type_instantiation(key, out);
+            collect_type_instantiation(value, out);
+        }
+        Type::Set(inner) => {
+            out.push(format!("Set<{inner}>"));
+            collect_type_instantiation(inner, out);
+        }
+        Type::Deque(inner) => {
+            out.push(format!("Deque<{inner}>"));
+            collect_type_instantiation(inner, out);
+        }
+        Type::Ring(inner) => {
+            out.push(format!("Ring<{inner}>"));
+            collect_type_instantiation(inner, out);
+        }
+        Type::Future(inner) => {
+            out.push(format!("Future<{inner}>"));
+            collect_type_instantiation(inner, out);
+        }
+        Type::DynTrait(name) => out.push(format!("dyn {name}")),
+        Type::Tuple(items) => {
+            out.push(format!(
+                "({})",
+                items
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            for item in items {
+                collect_type_instantiation(item, out);
+            }
         }
         Type::Named { name, args } if !args.is_empty() => {
             out.push(format!(
@@ -3897,11 +4084,25 @@ fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
         | Type::ISize
         | Type::USize
         | Type::Int { .. }
+        | Type::BigInt
+        | Type::BigUint
         | Type::Float { .. }
+        | Type::Decimal128
         | Type::Char
         | Type::Str
+        | Type::Bytes
+        | Type::Uuid
         | Type::Named { .. }
         | Type::TypeVar(_) => {}
+        Type::Path
+        | Type::PathBuf
+        | Type::Url
+        | Type::SocketAddr
+        | Type::Duration
+        | Type::Instant
+        | Type::Decimal
+        | Type::DateTimeTz
+        | Type::ExitStatus => {}
     }
 }
 
@@ -5052,6 +5253,7 @@ fn validate_async_semantics(
 
 struct TypeCheckEnv<'a> {
     fn_sigs: &'a HashMap<String, (Vec<Type>, Type)>,
+    fn_async: &'a HashMap<String, bool>,
     fn_generics: &'a HashMap<String, Vec<ast::GenericParam>>,
     struct_defs: &'a HashMap<String, ast::Struct>,
     enum_defs: &'a HashMap<String, ast::Enum>,
@@ -5394,6 +5596,13 @@ fn type_check_stmt(
         }
         Stmt::Match { scrutinee, arms } => {
             let scrutinee_ty = infer_expr_type(scrutinee, scopes, env, state);
+            check_match_exhaustiveness(
+                scrutinee_ty.as_ref(),
+                arms,
+                enum_defs,
+                state.errors,
+                state.type_error_details,
+            );
             for arm in arms {
                 scopes.push();
                 check_pattern_compatibility(
@@ -5455,6 +5664,67 @@ fn type_check_stmt(
     }
 }
 
+fn pattern_covers_variant(
+    pattern: &ast::Pattern,
+    enum_name: &str,
+    covered: &mut BTreeSet<String>,
+) -> bool {
+    match pattern {
+        ast::Pattern::Wildcard | ast::Pattern::Ident(_) => true,
+        ast::Pattern::Variant {
+            enum_name: arm_enum,
+            variant,
+            ..
+        } => {
+            if arm_enum == enum_name {
+                covered.insert(variant.clone());
+            }
+            false
+        }
+        ast::Pattern::Or(patterns) => patterns
+            .iter()
+            .any(|pattern| pattern_covers_variant(pattern, enum_name, covered)),
+        ast::Pattern::Int(_) | ast::Pattern::Bool(_) | ast::Pattern::Struct { .. } => false,
+    }
+}
+
+fn check_match_exhaustiveness(
+    scrutinee_ty: Option<&Type>,
+    arms: &[ast::MatchArm],
+    enum_defs: &HashMap<String, ast::Enum>,
+    errors: &mut usize,
+    type_error_details: &mut Vec<String>,
+) {
+    let Some(Type::Named { name, .. }) = scrutinee_ty else {
+        return;
+    };
+    let Some(enum_def) = enum_defs.get(name) else {
+        return;
+    };
+    let mut covered = BTreeSet::new();
+    for arm in arms {
+        if arm.guard.is_none() && pattern_covers_variant(&arm.pattern, name, &mut covered) {
+            return;
+        }
+    }
+    let missing = enum_def
+        .variants
+        .iter()
+        .map(|variant| variant.name.clone())
+        .filter(|variant| !covered.contains(variant))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        record_type_error(
+            errors,
+            type_error_details,
+            format!(
+                "non-exhaustive match for enum `{name}`: missing variant(s): {}",
+                missing.join(", ")
+            ),
+        );
+    }
+}
+
 fn infer_expr_type(
     expr: &Expr,
     scopes: &SymbolScopes,
@@ -5462,6 +5732,7 @@ fn infer_expr_type(
     state: &mut TypeCheckState<'_>,
 ) -> Option<Type> {
     let fn_sigs = env.fn_sigs;
+    let fn_async = env.fn_async;
     let fn_generics = env.fn_generics;
     let struct_defs = env.struct_defs;
     let enum_defs = env.enum_defs;
@@ -5600,7 +5871,18 @@ fn infer_expr_type(
             })
         }
         Expr::Group(inner) => infer_expr_type(inner, scopes, env, state),
-        Expr::Await(inner) => infer_expr_type(inner, scopes, env, state),
+        Expr::Await(inner) => match infer_expr_type(inner, scopes, env, state) {
+            Some(Type::Future(value)) => Some(*value),
+            Some(other) => {
+                record_type_error(
+                    state.errors,
+                    state.type_error_details,
+                    format!("await expects `Future<T>`, got `{other}`"),
+                );
+                None
+            }
+            None => None,
+        },
         Expr::Discard(inner) => {
             let _ = infer_expr_type(inner, scopes, env, state);
             Some(Type::Void)
@@ -5691,8 +5973,15 @@ fn infer_expr_type(
                 return None;
             }
             let runtime_sig = runtime_call_signature(base_callee);
+            let mut is_function_async = false;
             let (params, ret) = if let Some((params, ret)) = fn_sigs.get(base_callee) {
-                (params.clone(), ret.clone())
+                is_function_async = fn_async.get(base_callee).copied().unwrap_or(false);
+                let ret = if is_function_async && !matches!(ret, Type::Future(_)) {
+                    Type::Future(Box::new(ret.clone()))
+                } else {
+                    ret.clone()
+                };
+                (params.clone(), ret)
             } else if let Some((params, ret)) = runtime_sig {
                 (params, ret)
             } else {
@@ -5776,6 +6065,12 @@ fn infer_expr_type(
                         ),
                     );
                     return None;
+                };
+                let resolved_ret = if is_function_async && !matches!(resolved_ret, Type::Future(_))
+                {
+                    Type::Future(Box::new(resolved_ret))
+                } else {
+                    resolved_ret
                 };
                 (resolved_params, resolved_ret, bindings, false)
             } else {
@@ -5935,6 +6230,11 @@ fn infer_expr_type(
                 );
                 return None;
             };
+            let mut generic_bindings = struct_def
+                .generics
+                .iter()
+                .map(|param| (param.name.clone(), Type::TypeVar(param.name.clone())))
+                .collect::<BTreeMap<_, _>>();
             for (field_name, value) in fields {
                 let Some(found) = struct_def
                     .fields
@@ -5950,7 +6250,9 @@ fn infer_expr_type(
                 };
                 let value_ty = infer_expr_type(value, scopes, env, state);
                 if let Some(value_ty) = value_ty {
-                    if !type_compatible(&found.ty, &value_ty) {
+                    if !bind_typevars(&found.ty, &value_ty, &mut generic_bindings)
+                        && !type_compatible(&found.ty, &value_ty)
+                    {
                         record_type_error(
                             state.errors,
                             state.type_error_details,
@@ -5962,15 +6264,26 @@ fn infer_expr_type(
                     }
                 }
             }
+            let resolved_args = struct_def
+                .generics
+                .iter()
+                .map(|param| {
+                    generic_bindings
+                        .get(&param.name)
+                        .cloned()
+                        .unwrap_or_else(|| Type::TypeVar(param.name.clone()))
+                })
+                .collect::<Vec<_>>();
             Some(Type::Named {
                 name: name.clone(),
-                args: Vec::new(),
+                args: resolved_args,
             })
         }
         Expr::EnumInit {
             enum_name,
             variant,
             payload,
+            named_payload,
         } => {
             let Some(enum_def) = enum_defs.get(enum_name) else {
                 record_type_error(
@@ -5992,35 +6305,116 @@ fn infer_expr_type(
                 );
                 return None;
             };
-            if found_variant.payload.len() != payload.len() {
-                record_type_error(
-                    state.errors,
-                    state.type_error_details,
-                    format!(
-                        "enum variant `{enum_name}.{variant}` payload arity mismatch: expected {}, got {}",
-                        found_variant.payload.len(),
-                        payload.len()
-                    ),
-                );
-            }
-            for (index, value) in payload.iter().enumerate() {
-                let value_ty = infer_expr_type(value, scopes, env, state);
-                if let (Some(expected), Some(actual)) = (found_variant.payload.get(index), value_ty)
-                {
-                    if !type_compatible(expected, &actual) {
+            let mut generic_bindings = enum_def
+                .generics
+                .iter()
+                .map(|param| (param.name.clone(), Type::TypeVar(param.name.clone())))
+                .collect::<BTreeMap<_, _>>();
+            if !found_variant.named_payload.is_empty() {
+                if !payload.is_empty() {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "enum struct-variant `{enum_name}.{variant}` requires named payload fields"
+                        ),
+                    );
+                }
+                if found_variant.named_payload.len() != named_payload.len() {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "enum struct-variant `{enum_name}.{variant}` field arity mismatch: expected {}, got {}",
+                            found_variant.named_payload.len(),
+                            named_payload.len()
+                        ),
+                    );
+                }
+                for (field_name, value) in named_payload {
+                    let expected = found_variant
+                        .named_payload
+                        .iter()
+                        .find(|field| field.name == *field_name);
+                    let Some(expected) = expected else {
                         record_type_error(
                             state.errors,
                             state.type_error_details,
                             format!(
-                                "enum variant `{enum_name}.{variant}` payload {index} type mismatch: expected `{expected}`, got `{actual}`"
+                                "enum struct-variant `{enum_name}.{variant}` has no field `{field_name}`"
                             ),
                         );
+                        let _ = infer_expr_type(value, scopes, env, state);
+                        continue;
+                    };
+                    if let Some(actual) = infer_expr_type(value, scopes, env, state) {
+                        if !bind_typevars(&expected.ty, &actual, &mut generic_bindings)
+                            && !type_compatible(&expected.ty, &actual)
+                        {
+                            record_type_error(
+                                state.errors,
+                                state.type_error_details,
+                                format!(
+                                    "enum struct-variant `{enum_name}.{variant}.{field_name}` type mismatch: expected `{}`, got `{}`",
+                                    expected.ty, actual
+                                ),
+                            );
+                        }
+                    }
+                }
+            } else {
+                if !named_payload.is_empty() {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "enum tuple/unit variant `{enum_name}.{variant}` does not accept named payload fields"
+                        ),
+                    );
+                }
+                if found_variant.payload.len() != payload.len() {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "enum variant `{enum_name}.{variant}` payload arity mismatch: expected {}, got {}",
+                            found_variant.payload.len(),
+                            payload.len()
+                        ),
+                    );
+                }
+                for (index, value) in payload.iter().enumerate() {
+                    let value_ty = infer_expr_type(value, scopes, env, state);
+                    if let (Some(expected), Some(actual)) =
+                        (found_variant.payload.get(index), value_ty)
+                    {
+                        if !bind_typevars(expected, &actual, &mut generic_bindings)
+                            && !type_compatible(expected, &actual)
+                        {
+                            record_type_error(
+                                state.errors,
+                                state.type_error_details,
+                                format!(
+                                    "enum variant `{enum_name}.{variant}` payload {index} type mismatch: expected `{expected}`, got `{actual}`"
+                                ),
+                            );
+                        }
                     }
                 }
             }
+            let resolved_args = enum_def
+                .generics
+                .iter()
+                .map(|param| {
+                    generic_bindings
+                        .get(&param.name)
+                        .cloned()
+                        .unwrap_or_else(|| Type::TypeVar(param.name.clone()))
+                })
+                .collect::<Vec<_>>();
             Some(Type::Named {
                 name: enum_name.clone(),
-                args: Vec::new(),
+                args: resolved_args,
             })
         }
         Expr::Unary { op, expr } => {
@@ -6097,6 +6491,13 @@ fn infer_expr_type(
         }
         Expr::Match { scrutinee, arms } => {
             let scrutinee_ty = infer_expr_type(scrutinee, scopes, env, state);
+            check_match_exhaustiveness(
+                scrutinee_ty.as_ref(),
+                arms,
+                enum_defs,
+                state.errors,
+                state.type_error_details,
+            );
             let mut arm_ty: Option<Type> = None;
             for arm in arms {
                 let mut arm_scopes = scopes.clone();
@@ -6614,9 +7015,21 @@ fn parse_simple_type(token: &str) -> Option<Type> {
         "never" => Type::Never,
         "bool" => Type::Bool,
         "str" => Type::Str,
+        "bytes" => Type::Bytes,
         "void" => Type::Void,
+        "Path" | "path" => Type::Path,
+        "PathBuf" | "pathbuf" => Type::PathBuf,
+        "Url" | "url" => Type::Url,
+        "SocketAddr" | "socket_addr" => Type::SocketAddr,
+        "Duration" | "duration" => Type::Duration,
+        "Instant" | "instant" => Type::Instant,
+        "Decimal" | "decimal" => Type::Decimal,
+        "DateTimeTz" | "datetime_tz" => Type::DateTimeTz,
+        "ExitStatus" | "exit_status" => Type::ExitStatus,
         "isize" => Type::ISize,
         "usize" => Type::USize,
+        "BigInt" | "bigint" => Type::BigInt,
+        "BigUint" | "biguint" => Type::BigUint,
         "i8" => Type::Int {
             signed: true,
             bits: 8,
@@ -6659,7 +7072,24 @@ fn parse_simple_type(token: &str) -> Option<Type> {
         },
         "f32" => Type::Float { bits: 32 },
         "f64" => Type::Float { bits: 64 },
+        "Decimal128" | "decimal128" => Type::Decimal128,
+        "Uuid" | "uuid" => Type::Uuid,
+        other if other.starts_with("dyn ") => Type::DynTrait(
+            other
+                .trim_start_matches("dyn ")
+                .trim()
+                .to_string(),
+        ),
         other if other.starts_with("fn(") => return None,
+        other if other.starts_with('(') && other.ends_with(')') => {
+            let inside = &other[1..other.len() - 1];
+            let parts = split_top_level_type_args(inside)?;
+            let items = parts
+                .into_iter()
+                .map(parse_simple_type)
+                .collect::<Option<Vec<_>>>()?;
+            Type::Tuple(items)
+        }
         other if other.starts_with("*mut ") => Type::Ptr {
             mutable: true,
             to: Box::new(parse_simple_type(other.trim_start_matches("*mut "))?),
@@ -6723,9 +7153,25 @@ fn parse_simple_type(token: &str) -> Option<Type> {
                 .into_iter()
                 .map(parse_simple_type)
                 .collect::<Option<Vec<_>>>()?;
-            Type::Named {
-                name: name.to_string(),
-                args,
+            match (name, args.as_slice()) {
+                ("Map", [key, value]) => Type::Map {
+                    key: Box::new(key.clone()),
+                    value: Box::new(value.clone()),
+                },
+                ("Set", [inner]) => Type::Set(Box::new(inner.clone())),
+                ("Deque", [inner]) => Type::Deque(Box::new(inner.clone())),
+                ("Ring", [inner]) => Type::Ring(Box::new(inner.clone())),
+                ("Vec", [inner]) => Type::Vec(Box::new(inner.clone())),
+                ("Option", [inner]) => Type::Option(Box::new(inner.clone())),
+                ("Future", [inner]) => Type::Future(Box::new(inner.clone())),
+                ("Result", [ok, err]) => Type::Result {
+                    ok: Box::new(ok.clone()),
+                    err: Box::new(err.clone()),
+                },
+                _ => Type::Named {
+                    name: name.to_string(),
+                    args,
+                },
             }
         }
         other if other.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_') => {
@@ -7545,12 +7991,33 @@ fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<Strin
         Type::Result { ok, err } => {
             matches!(concrete, Type::Result { ok: other_ok, err: other_err } if bind_typevars(ok, other_ok, bindings) && bind_typevars(err, other_err, bindings))
         }
+        Type::Map { key, value } => {
+            matches!(concrete, Type::Map { key: other_key, value: other_value }
+                if bind_typevars(key, other_key, bindings) && bind_typevars(value, other_value, bindings))
+        }
+        Type::Set(inner) => {
+            matches!(concrete, Type::Set(other) if bind_typevars(inner, other, bindings))
+        }
+        Type::Deque(inner) => {
+            matches!(concrete, Type::Deque(other) if bind_typevars(inner, other, bindings))
+        }
+        Type::Ring(inner) => {
+            matches!(concrete, Type::Ring(other) if bind_typevars(inner, other, bindings))
+        }
         Type::Option(inner) => {
             matches!(concrete, Type::Option(other) if bind_typevars(inner, other, bindings))
         }
         Type::Vec(inner) => {
             matches!(concrete, Type::Vec(other) if bind_typevars(inner, other, bindings))
         }
+        Type::Future(inner) => {
+            matches!(concrete, Type::Future(other) if bind_typevars(inner, other, bindings))
+        }
+        Type::Tuple(items) => {
+            matches!(concrete, Type::Tuple(other_items) if items.len() == other_items.len()
+                && items.iter().zip(other_items.iter()).all(|(left, right)| bind_typevars(left, right, bindings)))
+        }
+        Type::DynTrait(name) => matches!(concrete, Type::DynTrait(other) if name == other),
         _ => type_compatible(template, concrete),
     }
 }
@@ -7583,8 +8050,23 @@ fn substitute_typevars(ty: &Type, bindings: &BTreeMap<String, Type>) -> Type {
             ok: Box::new(substitute_typevars(ok, bindings)),
             err: Box::new(substitute_typevars(err, bindings)),
         },
+        Type::Map { key, value } => Type::Map {
+            key: Box::new(substitute_typevars(key, bindings)),
+            value: Box::new(substitute_typevars(value, bindings)),
+        },
+        Type::Set(inner) => Type::Set(Box::new(substitute_typevars(inner, bindings))),
+        Type::Deque(inner) => Type::Deque(Box::new(substitute_typevars(inner, bindings))),
+        Type::Ring(inner) => Type::Ring(Box::new(substitute_typevars(inner, bindings))),
         Type::Option(inner) => Type::Option(Box::new(substitute_typevars(inner, bindings))),
         Type::Vec(inner) => Type::Vec(Box::new(substitute_typevars(inner, bindings))),
+        Type::Future(inner) => Type::Future(Box::new(substitute_typevars(inner, bindings))),
+        Type::DynTrait(name) => Type::DynTrait(name.clone()),
+        Type::Tuple(items) => Type::Tuple(
+            items
+                .iter()
+                .map(|item| substitute_typevars(item, bindings))
+                .collect(),
+        ),
         Type::Named { name, args } => Type::Named {
             name: name.clone(),
             args: args
@@ -7601,6 +8083,23 @@ fn trait_impl_match_count(
     trait_name: &str,
     trait_impls: &HashMap<String, Vec<Type>>,
 ) -> usize {
+    if trait_name == "Error" {
+        match ty {
+            Type::Str
+            | Type::Int { .. }
+            | Type::ISize
+            | Type::USize
+            | Type::Path
+            | Type::PathBuf
+            | Type::Url
+            | Type::SocketAddr
+            | Type::Decimal
+            | Type::DateTimeTz
+            | Type::ExitStatus
+            | Type::Named { .. } => return 1,
+            _ => {}
+        }
+    }
     trait_impls
         .get(trait_name)
         .map(|impls| {
@@ -7815,6 +8314,50 @@ fn i32_type() -> Type {
 
 fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let i32 = i32_type();
+    let task_handle = Type::Named {
+        name: "TaskHandle".to_string(),
+        args: Vec::new(),
+    };
+    let task_group_handle = Type::Named {
+        name: "TaskGroupHandle".to_string(),
+        args: Vec::new(),
+    };
+    let http_handle = Type::Named {
+        name: "HttpHandle".to_string(),
+        args: Vec::new(),
+    };
+    let json_handle = Type::Named {
+        name: "JsonHandle".to_string(),
+        args: Vec::new(),
+    };
+    let list_handle = Type::Named {
+        name: "ListHandle".to_string(),
+        args: Vec::new(),
+    };
+    let map_handle = Type::Named {
+        name: "MapHandle".to_string(),
+        args: Vec::new(),
+    };
+    let proc_handle = Type::Named {
+        name: "ProcessHandle".to_string(),
+        args: Vec::new(),
+    };
+    let proc_argv = Type::Named {
+        name: "ProcessArgv".to_string(),
+        args: Vec::new(),
+    };
+    let proc_env = Type::Named {
+        name: "ProcessEnv".to_string(),
+        args: Vec::new(),
+    };
+    let kv_handle = Type::Named {
+        name: "KvStoreHandle".to_string(),
+        args: Vec::new(),
+    };
+    let channel_handle = Type::Named {
+        name: "ChannelHandle".to_string(),
+        args: Vec::new(),
+    };
     let task_fn = Type::Function {
         params: Vec::new(),
         ret: Box::new(i32.clone()),
@@ -7830,40 +8373,47 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     };
     let str_ty = Type::Str;
     Some(match name {
-        "spawn" | "thread.spawn" => (vec![task_fn.clone()], i32.clone()),
-        "spawn_ctx" => (vec![task_fn.clone(), i32.clone()], i32.clone()),
-        "join" | "detach" | "cancel_task" | "task_result" => (vec![i32.clone()], i32.clone()),
+        "spawn" | "thread.spawn" => (vec![task_fn.clone()], task_handle.clone()),
+        "spawn_ctx" => (vec![task_fn.clone(), i32.clone()], task_handle.clone()),
+        "join" | "task_result" => (vec![task_handle.clone()], i32.clone()),
+        "detach" | "cancel_task" => (vec![task_handle.clone()], i32.clone()),
         "yield" | "checkpoint" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
         "assert.eq_i32" => (vec![i32.clone(), i32.clone()], i32.clone()),
         "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
-        "task.context" | "task.group_begin" => (vec![], i32.clone()),
-        "task.group_spawn" => (vec![i32.clone(), task_fn], i32.clone()),
-        "task.group_spawn_n" => (vec![i32.clone(), task_fn, i32.clone()], i32.clone()),
+        "task.context" => (vec![], task_handle.clone()),
+        "task.group_begin" => (vec![], task_group_handle.clone()),
+        "task.group_spawn" => (vec![task_group_handle.clone(), task_fn], task_handle.clone()),
+        "task.group_spawn_n" => (
+            vec![task_group_handle.clone(), task_fn, i32.clone()],
+            i32.clone(),
+        ),
         "task.group_join" | "task.group_join_all" | "task.group_cancel" => {
-            (vec![i32.clone()], i32.clone())
+            (vec![task_group_handle.clone()], i32.clone())
         }
-        "task.parallel_map" => (vec![i32.clone(), task_fn], i32.clone()),
+        "task.parallel_map" => (vec![task_group_handle.clone(), task_fn], i32.clone()),
         "alloc" => (vec![usize_ty], ptr_u8.clone()),
         "free" => (vec![ptr_u8], Type::Void),
-        "close" => (vec![i32.clone()], Type::Void),
-        "http.bind" | "http.accept" | "http.connect" | "http.poll_next" => (vec![], i32.clone()),
+        "close" => (vec![http_handle.clone()], Type::Void),
+        "http.bind" | "http.accept" | "http.connect" | "http.poll_next" => {
+            (vec![], http_handle.clone())
+        }
         "http.listen" | "http.read" | "http.close" | "http.poll_register" => {
-            (vec![i32.clone()], i32.clone())
+            (vec![http_handle.clone()], i32.clone())
         }
-        "http.method" | "http.path" | "http.body" => (vec![i32.clone()], str_ty.clone()),
-        "http.body_json" => (vec![i32.clone()], i32.clone()),
-        "http.body_bind" => (vec![i32.clone()], i32.clone()),
+        "http.method" | "http.path" | "http.body" => (vec![http_handle.clone()], str_ty.clone()),
+        "http.body_json" => (vec![http_handle.clone()], json_handle.clone()),
+        "http.body_bind" => (vec![http_handle.clone()], json_handle.clone()),
         "http.header" | "http.query" | "http.param" => {
-            (vec![i32.clone(), str_ty.clone()], str_ty.clone())
+            (vec![http_handle.clone(), str_ty.clone()], str_ty.clone())
         }
-        "http.headers" => (vec![i32.clone()], i32.clone()),
-        "http.request_id" | "http.remote_addr" => (vec![i32.clone()], str_ty.clone()),
+        "http.headers" => (vec![http_handle.clone()], map_handle.clone()),
+        "http.request_id" | "http.remote_addr" => (vec![http_handle.clone()], str_ty.clone()),
         "http.write" | "http.write_json" => {
-            (vec![i32.clone(), i32.clone(), str_ty.clone()], i32.clone())
+            (vec![http_handle.clone(), i32.clone(), str_ty.clone()], i32.clone())
         }
         "http.write_response" => (
             vec![
-                i32.clone(),
+                http_handle.clone(),
                 i32.clone(),
                 str_ty.clone(),
                 str_ty.clone(),
@@ -7907,17 +8457,17 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "json.escape" => (vec![str_ty.clone()], str_ty.clone()),
         "json.str" => (vec![str_ty.clone()], str_ty.clone()),
         "json.raw" => (vec![str_ty.clone()], str_ty.clone()),
-        "json.from_list" => (vec![i32.clone()], str_ty.clone()),
-        "json.from_map" => (vec![i32.clone()], str_ty.clone()),
-        "json.array" => (vec![i32.clone()], str_ty.clone()),
-        "json.object" => (vec![i32.clone()], str_ty.clone()),
-        "json.to_list" => (vec![str_ty.clone()], i32.clone()),
-        "json.to_map" => (vec![str_ty.clone()], i32.clone()),
-        "json.parse" => (vec![str_ty.clone()], i32.clone()),
-        "json.get" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
-        "json.get_str" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
-        "json.has" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
-        "json.path" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "json.from_list" => (vec![list_handle.clone()], str_ty.clone()),
+        "json.from_map" => (vec![map_handle.clone()], str_ty.clone()),
+        "json.array" => (vec![list_handle.clone()], str_ty.clone()),
+        "json.object" => (vec![map_handle.clone()], str_ty.clone()),
+        "json.to_list" => (vec![str_ty.clone()], list_handle.clone()),
+        "json.to_map" => (vec![str_ty.clone()], map_handle.clone()),
+        "json.parse" => (vec![str_ty.clone()], json_handle.clone()),
+        "json.get" => (vec![json_handle.clone(), str_ty.clone()], json_handle.clone()),
+        "json.get_str" => (vec![json_handle.clone(), str_ty.clone()], str_ty.clone()),
+        "json.has" => (vec![json_handle.clone(), str_ty.clone()], i32.clone()),
+        "json.path" => (vec![json_handle.clone(), str_ty.clone()], json_handle.clone()),
         "time.now" | "time.monotonic_ms" => (vec![], i32.clone()),
         "time.sleep_ms" => (vec![i32.clone()], i32.clone()),
         "time.interval" | "time.tick" => (vec![i32.clone()], i32.clone()),
@@ -7932,68 +8482,80 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "fs.temp_file" => (vec![str_ty.clone()], str_ty.clone()),
         "path.join" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "path.normalize" => (vec![str_ty.clone()], str_ty.clone()),
-        "route.match" => (
-            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
-            i32.clone(),
-        ),
-        "route.write_404" | "route.write_405" => (vec![i32.clone()], i32.clone()),
+        "route.match" => (vec![http_handle.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "route.write_404" | "route.write_405" => (vec![http_handle.clone()], i32.clone()),
         "log.info" | "log.warn" | "log.error" => {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
         }
-        "log.fields" => (vec![i32.clone()], str_ty.clone()),
-        "log.set_json" => (vec![i32.clone()], i32.clone()),
-        "log.correlation_id" => (vec![i32.clone()], str_ty.clone()),
+        "log.fields" => (vec![map_handle.clone()], str_ty.clone()),
+        "log.set_json" => (vec![map_handle.clone()], i32.clone()),
+        "log.correlation_id" => (vec![map_handle.clone()], str_ty.clone()),
         "error.code" | "error.class" => (vec![], i32.clone()),
         "error.message" => (vec![], str_ty.clone()),
         "error.context" => (vec![str_ty.clone()], i32.clone()),
-        "proc.run" | "proc.spawn" => (vec![str_ty.clone()], i32.clone()),
+        "proc.run" => (vec![str_ty.clone()], i32.clone()),
+        "proc.spawn" => (vec![str_ty.clone()], proc_handle.clone()),
         "proc.runl" | "proc.spawnl" => (
-            vec![str_ty.clone(), i32.clone(), i32.clone(), str_ty.clone()],
-            i32.clone(),
+            vec![
+                str_ty.clone(),
+                proc_argv.clone(),
+                proc_env.clone(),
+                str_ty.clone(),
+            ],
+            proc_handle.clone(),
         ),
-        "proc.argv_new" | "proc.env_new" => (vec![], i32.clone()),
-        "proc.argv_push" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
+        "proc.argv_new" => (vec![], proc_argv.clone()),
+        "proc.env_new" => (vec![], proc_env.clone()),
+        "proc.argv_push" => (vec![proc_argv.clone(), str_ty.clone()], i32.clone()),
         "proc.env_set" => (
-            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
+            vec![proc_env.clone(), str_ty.clone(), str_ty.clone()],
             i32.clone(),
         ),
         "proc.spawn_cmd" | "proc.run_cmd" => (
-            vec![str_ty.clone(), i32.clone(), i32.clone(), str_ty.clone()],
-            i32.clone(),
+            vec![str_ty.clone(), proc_argv.clone(), proc_env.clone(), str_ty.clone()],
+            proc_handle.clone(),
         ),
-        "proc.exec_timeout" => (vec![i32.clone()], i32.clone()),
-        "proc.wait" => (vec![i32.clone(), i32.clone()], i32.clone()),
-        "proc.poll" | "proc.event" => (vec![i32.clone()], i32.clone()),
-        "proc.read_stdout" | "proc.read_stderr" => (vec![i32.clone(), i32.clone()], str_ty.clone()),
-        "proc.stdout" | "proc.stderr" => (vec![i32.clone()], str_ty.clone()),
-        "proc.exit_code" => (vec![i32.clone()], i32.clone()),
+        "proc.exec_timeout" => (vec![proc_handle.clone()], i32.clone()),
+        "proc.wait" => (vec![proc_handle.clone(), i32.clone()], i32.clone()),
+        "proc.poll" | "proc.event" => (vec![proc_handle.clone()], i32.clone()),
+        "proc.read_stdout" | "proc.read_stderr" => {
+            (vec![proc_handle.clone(), i32.clone()], str_ty.clone())
+        }
+        "proc.stdout" | "proc.stderr" => (vec![proc_handle.clone()], str_ty.clone()),
+        "proc.exit_code" => (vec![proc_handle.clone()], i32.clone()),
         "proc.exit_class" => (vec![], i32.clone()),
-        "ctx.deadline" => (vec![i32.clone()], i32.clone()),
-        "ctx.cancel_if_timeout" | "channel.send" | "channel.recv" => (vec![], i32.clone()),
-        "list.new" | "map.new" => (vec![], i32.clone()),
-        "list.push" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
-        "list.pop" => (vec![i32.clone()], str_ty.clone()),
-        "list.len" => (vec![i32.clone()], i32.clone()),
-        "list.get" => (vec![i32.clone(), i32.clone()], str_ty.clone()),
-        "list.set" => (vec![i32.clone(), i32.clone(), str_ty.clone()], i32.clone()),
-        "list.clear" => (vec![i32.clone()], i32.clone()),
-        "list.join" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
-        "map.set" => (
-            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
+        "ctx.deadline" => (vec![task_handle.clone()], i32.clone()),
+        "ctx.cancel_if_timeout" => (vec![], i32.clone()),
+        "channel.send" => (vec![channel_handle.clone(), str_ty.clone()], i32.clone()),
+        "channel.recv" => (vec![channel_handle.clone()], str_ty.clone()),
+        "list.new" => (vec![], list_handle.clone()),
+        "map.new" => (vec![], map_handle.clone()),
+        "list.push" => (vec![list_handle.clone(), str_ty.clone()], i32.clone()),
+        "list.pop" => (vec![list_handle.clone()], str_ty.clone()),
+        "list.len" => (vec![list_handle.clone()], i32.clone()),
+        "list.get" => (vec![list_handle.clone(), i32.clone()], str_ty.clone()),
+        "list.set" => (
+            vec![list_handle.clone(), i32.clone(), str_ty.clone()],
             i32.clone(),
         ),
-        "map.get" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
-        "map.has" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
-        "map.delete" => (vec![i32.clone(), str_ty.clone()], i32.clone()),
-        "map.keys" => (vec![i32.clone()], i32.clone()),
-        "map.len" => (vec![i32.clone()], i32.clone()),
+        "list.clear" => (vec![list_handle.clone()], i32.clone()),
+        "list.join" => (vec![list_handle.clone(), str_ty.clone()], str_ty.clone()),
+        "map.set" => (
+            vec![map_handle.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
+        "map.get" => (vec![map_handle.clone(), str_ty.clone()], str_ty.clone()),
+        "map.has" => (vec![map_handle.clone(), str_ty.clone()], i32.clone()),
+        "map.delete" => (vec![map_handle.clone(), str_ty.clone()], i32.clone()),
+        "map.keys" => (vec![map_handle.clone()], list_handle.clone()),
+        "map.len" => (vec![map_handle.clone()], i32.clone()),
         "storage.append" | "storage.atomic_append" => {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
         }
-        "storage.kv_open" => (vec![str_ty.clone()], i32.clone()),
-        "storage.kv_get" => (vec![i32.clone(), str_ty.clone()], str_ty.clone()),
+        "storage.kv_open" => (vec![str_ty.clone()], kv_handle.clone()),
+        "storage.kv_get" => (vec![kv_handle.clone(), str_ty.clone()], str_ty.clone()),
         "storage.kv_put" => (
-            vec![i32.clone(), str_ty.clone(), str_ty.clone()],
+            vec![kv_handle.clone(), str_ty.clone(), str_ty.clone()],
             i32.clone(),
         ),
         _ => return None,
@@ -8001,12 +8563,51 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
 }
 
 fn runtime_default_value(ty: &Type) -> Option<Value> {
+    fn is_runtime_handle(name: &str) -> bool {
+        matches!(
+            name,
+            "TaskHandle"
+                | "TaskGroupHandle"
+                | "HttpHandle"
+                | "JsonHandle"
+                | "ListHandle"
+                | "MapHandle"
+                | "ProcessHandle"
+                | "ProcessArgv"
+                | "ProcessEnv"
+                | "KvStoreHandle"
+                | "ChannelHandle"
+        )
+    }
     match ty {
         Type::Bool => Some(Value::Bool(false)),
         Type::ISize | Type::USize | Type::Int { .. } => Some(Value::I32(0)),
+        Type::BigInt | Type::BigUint | Type::Decimal128 => Some(Value::I32(0)),
         Type::Float { .. } => Some(Value::F64(0.0)),
         Type::Char => Some(Value::Char('\0')),
         Type::Str => Some(Value::Str(String::new())),
+        Type::Bytes => Some(Value::List(Vec::new())),
+        Type::Uuid => Some(Value::Str(String::new())),
+        Type::Map { .. } => Some(Value::I32(0)),
+        Type::Set(_) | Type::Deque(_) | Type::Ring(_) => Some(Value::I32(0)),
+        Type::Path | Type::PathBuf | Type::Url | Type::SocketAddr => {
+            Some(Value::Str(String::new()))
+        }
+        Type::Duration | Type::Instant | Type::Decimal | Type::DateTimeTz | Type::ExitStatus => {
+            Some(Value::I32(0))
+        }
+        Type::Tuple(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(runtime_default_value(item)?);
+            }
+            Some(Value::List(values))
+        }
+        Type::Named { name, args } if args.is_empty() && is_runtime_handle(name) => {
+            Some(Value::I32(0))
+        }
+        Type::Future(inner) => runtime_default_value(inner),
+        Type::DynTrait(_) => Some(Value::I32(0)),
         Type::Void => Some(Value::I32(0)),
         _ => None,
     }
@@ -8064,6 +8665,7 @@ fn check_pattern_compatibility(
                 enum_name,
                 variant,
                 bindings,
+                named_bindings,
             },
             Some(Type::Named { name, .. }),
         ) => {
@@ -8097,14 +8699,27 @@ fn check_pattern_compatibility(
                 );
                 return;
             };
-            if found_variant.payload.len() != bindings.len() {
+            if found_variant.named_payload.is_empty() {
+                if found_variant.payload.len() != bindings.len() || !named_bindings.is_empty() {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "pattern `{enum_name}::{variant}` binding arity mismatch: expected {} positional binding(s), got {}",
+                            found_variant.payload.len(),
+                            bindings.len()
+                        ),
+                    );
+                }
+            } else if !bindings.is_empty() || found_variant.named_payload.len() != named_bindings.len()
+            {
                 record_type_error(
                     errors,
                     type_error_details,
                     format!(
-                        "pattern `{enum_name}::{variant}` binding arity mismatch: expected {}, got {}",
-                        found_variant.payload.len(),
-                        bindings.len()
+                        "pattern `{enum_name}::{variant}` named binding arity mismatch: expected {}, got {}",
+                        found_variant.named_payload.len(),
+                        named_bindings.len()
                     ),
                 );
             }
@@ -8181,7 +8796,8 @@ fn bind_pattern_types(
         }
         ast::Pattern::Struct { name, fields } => {
             let Type::Named {
-                name: scrutinee, ..
+                name: scrutinee,
+                args: scrutinee_args,
             } = scrutinee_ty
             else {
                 return;
@@ -8192,6 +8808,12 @@ fn bind_pattern_types(
             let Some(struct_def) = struct_defs.get(name) else {
                 return;
             };
+            let generic_bindings = struct_def
+                .generics
+                .iter()
+                .zip(scrutinee_args.iter())
+                .map(|(param, arg)| (param.name.clone(), arg.clone()))
+                .collect::<BTreeMap<_, _>>();
             for (field_name, binding_name) in fields {
                 let Some(field) = struct_def
                     .fields
@@ -8206,7 +8828,11 @@ fn bind_pattern_types(
                     continue;
                 };
                 if binding_name != "_" {
-                    scopes.insert(binding_name.clone(), field.ty.clone(), mutable);
+                    scopes.insert(
+                        binding_name.clone(),
+                        substitute_typevars(&field.ty, &generic_bindings),
+                        mutable,
+                    );
                 }
             }
         }
@@ -8214,8 +8840,13 @@ fn bind_pattern_types(
             enum_name,
             variant,
             bindings,
+            named_bindings,
         } => {
-            let Type::Named { name, .. } = scrutinee_ty else {
+            let Type::Named {
+                name,
+                args: scrutinee_args,
+            } = scrutinee_ty
+            else {
                 return;
             };
             if name != enum_name {
@@ -8224,6 +8855,12 @@ fn bind_pattern_types(
             let Some(enum_def) = enum_defs.get(enum_name) else {
                 return;
             };
+            let generic_bindings = enum_def
+                .generics
+                .iter()
+                .zip(scrutinee_args.iter())
+                .map(|(param, arg)| (param.name.clone(), arg.clone()))
+                .collect::<BTreeMap<_, _>>();
             let Some(found_variant) = enum_def
                 .variants
                 .iter()
@@ -8231,20 +8868,63 @@ fn bind_pattern_types(
             else {
                 return;
             };
-            if found_variant.payload.len() != bindings.len() {
-                record_type_error(
-                    errors,
-                    type_error_details,
-                    format!(
-                        "pattern `{enum_name}::{variant}` binding arity mismatch: expected {}, got {}",
-                        found_variant.payload.len(),
-                        bindings.len()
-                    ),
-                );
-                return;
-            }
-            for (name, ty) in bindings.iter().zip(found_variant.payload.iter()) {
-                scopes.insert(name.clone(), ty.clone(), mutable);
+            if found_variant.named_payload.is_empty() {
+                if found_variant.payload.len() != bindings.len() || !named_bindings.is_empty() {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "pattern `{enum_name}::{variant}` binding arity mismatch: expected {} positional binding(s), got {}",
+                            found_variant.payload.len(),
+                            bindings.len()
+                        ),
+                    );
+                    return;
+                }
+                for (name, ty) in bindings.iter().zip(found_variant.payload.iter()) {
+                    scopes.insert(
+                        name.clone(),
+                        substitute_typevars(ty, &generic_bindings),
+                        mutable,
+                    );
+                }
+            } else {
+                if !bindings.is_empty() || found_variant.named_payload.len() != named_bindings.len()
+                {
+                    record_type_error(
+                        errors,
+                        type_error_details,
+                        format!(
+                            "pattern `{enum_name}::{variant}` named binding arity mismatch: expected {}, got {}",
+                            found_variant.named_payload.len(),
+                            named_bindings.len()
+                        ),
+                    );
+                    return;
+                }
+                for (field_name, binding_name) in named_bindings {
+                    let Some(field) = found_variant
+                        .named_payload
+                        .iter()
+                        .find(|candidate| candidate.name == *field_name)
+                    else {
+                        record_type_error(
+                            errors,
+                            type_error_details,
+                            format!(
+                                "enum struct-variant `{enum_name}::{variant}` has no field `{field_name}`"
+                            ),
+                        );
+                        continue;
+                    };
+                    if binding_name != "_" {
+                        scopes.insert(
+                            binding_name.clone(),
+                            substitute_typevars(&field.ty, &generic_bindings),
+                            mutable,
+                        );
+                    }
+                }
             }
         }
         ast::Pattern::Or(patterns) => {
@@ -8301,13 +8981,29 @@ fn pattern_binding_type_map(
             let Some(struct_def) = struct_defs.get(name) else {
                 return BTreeMap::new();
             };
+            let Type::Named {
+                args: scrutinee_args,
+                ..
+            } = scrutinee_ty
+            else {
+                return BTreeMap::new();
+            };
+            let generic_bindings = struct_def
+                .generics
+                .iter()
+                .zip(scrutinee_args.iter())
+                .map(|(param, arg)| (param.name.clone(), arg.clone()))
+                .collect::<BTreeMap<_, _>>();
             let mut map = BTreeMap::new();
             for (field_name, binding_name) in fields {
                 if binding_name == "_" {
                     continue;
                 }
                 if let Some(field) = struct_def.fields.iter().find(|f| f.name == *field_name) {
-                    map.insert(binding_name.clone(), field.ty.clone());
+                    map.insert(
+                        binding_name.clone(),
+                        substitute_typevars(&field.ty, &generic_bindings),
+                    );
                 }
             }
             map
@@ -8316,9 +9012,11 @@ fn pattern_binding_type_map(
             enum_name,
             variant,
             bindings,
+            named_bindings,
         } => {
             let Type::Named {
-                name: scrutinee, ..
+                name: scrutinee,
+                args: scrutinee_args,
             } = scrutinee_ty
             else {
                 return BTreeMap::new();
@@ -8329,6 +9027,12 @@ fn pattern_binding_type_map(
             let Some(enum_def) = enum_defs.get(enum_name) else {
                 return BTreeMap::new();
             };
+            let generic_bindings = enum_def
+                .generics
+                .iter()
+                .zip(scrutinee_args.iter())
+                .map(|(param, arg)| (param.name.clone(), arg.clone()))
+                .collect::<BTreeMap<_, _>>();
             let Some(found_variant) = enum_def
                 .variants
                 .iter()
@@ -8336,12 +9040,35 @@ fn pattern_binding_type_map(
             else {
                 return BTreeMap::new();
             };
-            if found_variant.payload.len() != bindings.len() {
-                return BTreeMap::new();
-            }
             let mut map = BTreeMap::new();
-            for (name, ty) in bindings.iter().zip(found_variant.payload.iter()) {
-                map.insert(name.clone(), ty.clone());
+            if found_variant.named_payload.is_empty() {
+                if found_variant.payload.len() != bindings.len() || !named_bindings.is_empty() {
+                    return BTreeMap::new();
+                }
+                for (name, ty) in bindings.iter().zip(found_variant.payload.iter()) {
+                    map.insert(name.clone(), substitute_typevars(ty, &generic_bindings));
+                }
+            } else {
+                if !bindings.is_empty() || found_variant.named_payload.len() != named_bindings.len()
+                {
+                    return BTreeMap::new();
+                }
+                for (field_name, binding_name) in named_bindings {
+                    if binding_name == "_" {
+                        continue;
+                    }
+                    let Some(field) = found_variant
+                        .named_payload
+                        .iter()
+                        .find(|candidate| candidate.name == *field_name)
+                    else {
+                        continue;
+                    };
+                    map.insert(
+                        binding_name.clone(),
+                        substitute_typevars(&field.ty, &generic_bindings),
+                    );
+                }
             }
             map
         }
@@ -9126,10 +9853,21 @@ fn eval_expr<'a>(
             enum_name,
             variant,
             payload,
+            named_payload,
         } => {
-            let mut values = Vec::with_capacity(payload.len());
+            let mut values = Vec::with_capacity(payload.len() + usize::from(!named_payload.is_empty()));
             for value in payload {
                 values.push(eval_expr(value, env, functions)?);
+            }
+            if !named_payload.is_empty() {
+                let mut fields = BTreeMap::new();
+                for (field, value) in named_payload {
+                    fields.insert(field.clone(), eval_expr(value, env, functions)?);
+                }
+                values.push(Value::Struct {
+                    _name: format!("{enum_name}::{variant}"),
+                    fields,
+                });
             }
             Some(Value::Enum {
                 enum_name: enum_name.clone(),
@@ -9313,6 +10051,7 @@ fn bind_pattern_values(
                 enum_name,
                 variant,
                 bindings: pattern_bindings,
+                named_bindings: pattern_named_bindings,
             },
             Value::Enum {
                 enum_name: value_enum_name,
@@ -9320,14 +10059,31 @@ fn bind_pattern_values(
                 payload,
             },
         ) => {
-            if enum_name != value_enum_name
-                || variant != value_variant
-                || pattern_bindings.len() != payload.len()
-            {
+            if enum_name != value_enum_name || variant != value_variant {
                 return false;
             }
-            for (name, value) in pattern_bindings.iter().zip(payload.iter()) {
-                bindings.insert(name.clone(), value.clone());
+            if pattern_named_bindings.is_empty() {
+                if pattern_bindings.len() != payload.len() {
+                    return false;
+                }
+                for (name, value) in pattern_bindings.iter().zip(payload.iter()) {
+                    bindings.insert(name.clone(), value.clone());
+                }
+                return true;
+            }
+            if !pattern_bindings.is_empty() || payload.len() != 1 {
+                return false;
+            }
+            let Value::Struct { fields, .. } = &payload[0] else {
+                return false;
+            };
+            for (field_name, binding_name) in pattern_named_bindings {
+                let Some(field_value) = fields.get(field_name) else {
+                    return false;
+                };
+                if binding_name != "_" {
+                    bindings.insert(binding_name.clone(), field_value.clone());
+                }
             }
             true
         }
@@ -9368,9 +10124,18 @@ fn collect_pattern_bindings(pattern: &ast::Pattern, out: &mut BTreeSet<String>) 
                 out.insert(binding.clone());
             }
         }
-        ast::Pattern::Variant { bindings, .. } => {
+        ast::Pattern::Variant {
+            bindings,
+            named_bindings,
+            ..
+        } => {
             for binding in bindings {
                 out.insert(binding.clone());
+            }
+            for (_, binding) in named_bindings {
+                if binding != "_" {
+                    out.insert(binding.clone());
+                }
             }
         }
         ast::Pattern::Or(patterns) => {
@@ -9500,11 +10265,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_concrete_trait_impl_targets_in_v1() {
+    fn validates_trait_associated_items_in_impls() {
         let source = r#"
-            trait Show { fn show(v: i32) -> i32; }
-            impl Show for T {
-                fn show(v: i32) -> i32 { return v; }
+            trait Cache {
+                type Key;
+                const VERSION: i32;
+                fn get(k: i32) -> i32;
+            }
+            struct Store {}
+            impl Cache for Store {
+                type Key = i32;
+                const VERSION: i32 = 1;
+                fn get(k: i32) -> i32 { return k; }
+            }
+            impl Cache for i32 {
+                fn get(k: i32) -> i32 { return k; }
             }
         "#;
         let module = parser::parse(source, "main").expect("parse");
@@ -9512,7 +10287,29 @@ mod tests {
         assert!(typed
             .trait_violations
             .iter()
-            .any(|detail| detail.contains("must target a concrete type in v1")));
+            .any(|detail| detail.contains("missing associated type `Key`")));
+        assert!(typed
+            .trait_violations
+            .iter()
+            .any(|detail| detail.contains("missing associated const `VERSION`")));
+    }
+
+    #[test]
+    fn allows_generic_trait_impl_targets() {
+        let source = r#"
+            trait Show { fn show(v: i32) -> i32; }
+            impl Show for T {
+                fn show(v: i32) -> i32 { return v; }
+            }
+            fn id<U: Show>(v: U) -> U { return v; }
+            fn main() -> i32 {
+                discard id<i32>(1);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.trait_violations.is_empty());
     }
 
     #[test]
@@ -9552,6 +10349,22 @@ mod tests {
             .trait_violations
             .iter()
             .any(|detail| detail.contains("trait `Missing` is not defined")));
+    }
+
+    #[test]
+    fn builtin_error_trait_bound_is_available() {
+        let source = r#"
+            fn wrap<T: Error>(value: T) -> Result<i32, T> {
+                discard value;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "error_trait").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed
+            .trait_violations
+            .iter()
+            .any(|detail| detail.contains("trait `Error` is not defined")));
     }
 
     #[test]
@@ -9675,8 +10488,10 @@ mod tests {
         let source = r#"
             use core.proc;
             fn main() -> i32 {
-                proc.spawnl("echo", 7, 11, "stdin");
-                proc.runl("echo", 7, 11, "");
+                let argv = proc.argv_new();
+                let env = proc.env_new();
+                proc.spawnl("echo", argv, env, "stdin");
+                proc.runl("echo", argv, env, "");
                 return 0;
             }
         "#;
@@ -9767,10 +10582,9 @@ mod tests {
     fn object_literal_json_and_log_paths_typecheck() {
         let source = r#"
             fn main() -> i32 {
-                let fields = #{
-                    "component": json.str("test"),
-                    "phase": json.str("boot")
-                };
+                let fields = map.new();
+                map.set(fields, "component", json.str("test"));
+                map.set(fields, "phase", json.str("boot"));
                 discard log.info("boot", log.fields(fields));
                 discard http.post_json_capture("https://example.com", json.object(fields));
                 return 0;
@@ -10339,5 +11153,134 @@ mod tests {
             .unsafe_context_violations
             .iter()
             .any(|detail| detail.contains("outside `unsafe` context")));
+    }
+
+    #[test]
+    fn flags_non_exhaustive_enum_match_without_catchall() {
+        let source = r#"
+            enum State { Init, Ready, Done }
+            fn main() -> i32 {
+                let s = State::Init;
+                match s {
+                    State::Init => return 1,
+                    State::Ready => return 2,
+                }
+            }
+        "#;
+        let module = parser::parse(source, "exhaustive").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("non-exhaustive match for enum `State`")));
+    }
+
+    #[test]
+    fn generic_struct_initialization_inferrs_type_arguments() {
+        let source = r#"
+            struct Box<T> { value: T }
+            fn main() -> i32 {
+                let b = Box { value: 7 };
+                return b.value;
+            }
+        "#;
+        let module = parser::parse(source, "generic_struct").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert_eq!(typed.entry_return_const_i32, Some(7));
+    }
+
+    #[test]
+    fn await_requires_future_type_surface() {
+        let source = r#"
+            fn consume(x: Future<i32>) -> i32 {
+                return await x;
+            }
+            fn bad(x: i32) -> i32 {
+                return await x;
+            }
+        "#;
+        let module = parser::parse(source, "await_future").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("await expects `Future<T>`")));
+    }
+
+    #[test]
+    fn map_set_deque_ring_and_domain_types_typecheck() {
+        let source = r#"
+            fn main(
+                bi: BigInt,
+                bu: BigUint,
+                id: Uuid,
+                d128: Decimal128,
+                m: Map<str, i32>,
+                s: Set<str>,
+                d: Deque<i32>,
+                r: Ring<i32>,
+                obj: dyn Error,
+                p: Path,
+                pb: PathBuf,
+                u: Url,
+                sa: SocketAddr,
+                dur: Duration,
+                inst: Instant,
+                dec: Decimal,
+                dt: DateTimeTz,
+                es: ExitStatus
+            ) -> i32 {
+                discard bi; discard bu; discard id; discard d128;
+                discard m; discard s; discard d; discard r; discard obj;
+                discard p; discard pb; discard u; discard sa; discard dur;
+                discard inst; discard dec; discard dt; discard es;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "domain_types").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn type_alias_and_newtype_resolve_in_function_signatures() {
+        let source = r#"
+            type UserId = i32;
+            newtype SessionId(UserId);
+            fn echo(v: UserId) -> UserId {
+                return v;
+            }
+            fn main(v: SessionId) -> i32 {
+                discard v;
+                discard echo(7);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "aliases").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn enum_struct_variant_payload_typechecks_and_binds() {
+        let source = r#"
+            enum Message {
+                Data { id: i32, body: str },
+                Empty,
+            }
+            fn main() -> i32 {
+                let msg = Message::Data { id: 41, body: "ok" };
+                match msg {
+                    Message::Data { id, body } => return id + str.len(body),
+                    Message::Empty => return 0,
+                }
+            }
+        "#;
+        let module = parser::parse(source, "enum_struct_variant").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
     }
 }

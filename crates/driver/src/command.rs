@@ -8951,6 +8951,9 @@ fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
         | ast::Type::Void
         | ast::Type::Bool
         | ast::Type::Char
+        | ast::Type::BigInt
+        | ast::Type::BigUint
+        | ast::Type::Decimal128
         | ast::Type::Float { .. }
         | ast::Type::ISize
         | ast::Type::USize
@@ -8958,10 +8961,28 @@ fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
         ast::Type::Ptr { to, .. } => is_ffi_stable_type(to, repr_c_names),
         ast::Type::Named { name, args } => args.is_empty() && repr_c_names.contains(name),
         ast::Type::Str
+        | ast::Type::Bytes
+        | ast::Type::Uuid
+        | ast::Type::DynTrait(_)
+        | ast::Type::Map { .. }
+        | ast::Type::Set(_)
+        | ast::Type::Deque(_)
+        | ast::Type::Ring(_)
         | ast::Type::Slice(_)
         | ast::Type::Result { .. }
         | ast::Type::Option(_)
         | ast::Type::Vec(_)
+        | ast::Type::Future(_)
+        | ast::Type::Path
+        | ast::Type::PathBuf
+        | ast::Type::Url
+        | ast::Type::SocketAddr
+        | ast::Type::Duration
+        | ast::Type::Instant
+        | ast::Type::Decimal
+        | ast::Type::DateTimeTz
+        | ast::Type::ExitStatus
+        | ast::Type::Tuple(_)
         | ast::Type::Ref { .. }
         | ast::Type::Array { .. }
         | ast::Type::Function { .. }

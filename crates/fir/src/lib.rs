@@ -394,16 +394,35 @@ fn to_value_type(ty: &Type) -> ValueType {
             signed: *signed,
             bits: *bits,
         },
+        Type::BigInt | Type::BigUint | Type::Decimal128 => ValueType::Aggregate,
         Type::Float { bits } => ValueType::Float { bits: *bits },
         Type::Ptr { .. } => ValueType::Ptr,
         Type::Ref { .. } => ValueType::Ref,
         Type::Slice(_) => ValueType::Slice,
         Type::Array { .. } => ValueType::Array,
         Type::Str => ValueType::Str,
+        Type::Bytes => ValueType::Array,
         Type::Named { .. }
+        | Type::Uuid
+        | Type::DynTrait(_)
+        | Type::Map { .. }
+        | Type::Set(_)
+        | Type::Deque(_)
+        | Type::Ring(_)
         | Type::Option(_)
         | Type::Result { .. }
         | Type::Vec(_)
+        | Type::Future(_)
+        | Type::Path
+        | Type::PathBuf
+        | Type::Url
+        | Type::SocketAddr
+        | Type::Duration
+        | Type::Instant
+        | Type::Decimal
+        | Type::DateTimeTz
+        | Type::ExitStatus
+        | Type::Tuple(_)
         | Type::Function { .. }
         | Type::Char
         | Type::TypeVar(_) => ValueType::Aggregate,

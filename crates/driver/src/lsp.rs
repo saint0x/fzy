@@ -82,6 +82,7 @@ struct SemanticDecl {
     name: String,
     kind: String,
     detail: String,
+    ty: Option<String>,
     line: usize,
     col: usize,
     len: usize,
@@ -93,6 +94,7 @@ struct DeclInfo {
     name: String,
     kind: String,
     detail: String,
+    ty: Option<ast::Type>,
     signature: Option<FunctionSignature>,
 }
 
@@ -149,6 +151,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
         declared: Vec::new(),
     }];
     let mut decls = Vec::<SemanticDecl>::new();
+    let mut decl_types = Vec::<Option<ast::Type>>::new();
     let mut refs = Vec::<SemanticRef>::new();
 
     let module_name = path
@@ -174,6 +177,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                     };
                     declare_symbol(
                         &mut decls,
+                        &mut decl_types,
                         &mut scopes,
                         &mut positions,
                         0,
@@ -191,6 +195,10 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                                     .join(", "),
                                 function.return_type
                             ),
+                            ty: Some(ast::Type::Function {
+                                params: function.params.iter().map(|param| param.ty.clone()).collect(),
+                                ret: Box::new(function.return_type.clone()),
+                            }),
                             signature: Some(signature.clone()),
                         },
                     );
@@ -199,6 +207,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                     for param in &function.params {
                         declare_symbol(
                             &mut decls,
+                            &mut decl_types,
                             &mut scopes,
                             &mut positions,
                             fn_scope,
@@ -206,6 +215,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                                 name: param.name.clone(),
                                 kind: "parameter".to_string(),
                                 detail: format!("{}: {}", param.name, param.ty),
+                                ty: Some(param.ty.clone()),
                                 signature: None,
                             },
                         );
@@ -216,6 +226,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                             fn_scope,
                             &mut scopes,
                             &mut decls,
+                            &mut decl_types,
                             &mut refs,
                             &mut positions,
                         );
@@ -224,6 +235,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                 ast::Item::Const(item) => {
                     declare_symbol(
                         &mut decls,
+                        &mut decl_types,
                         &mut scopes,
                         &mut positions,
                         0,
@@ -231,6 +243,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                             name: item.name.clone(),
                             kind: "const".to_string(),
                             detail: format!("const {}: {}", item.name, item.ty),
+                            ty: Some(item.ty.clone()),
                             signature: None,
                         },
                     );
@@ -238,6 +251,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                 ast::Item::Static(item) => {
                     declare_symbol(
                         &mut decls,
+                        &mut decl_types,
                         &mut scopes,
                         &mut positions,
                         0,
@@ -245,6 +259,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                             name: item.name.clone(),
                             kind: "static".to_string(),
                             detail: format!("static {}: {}", item.name, item.ty),
+                            ty: Some(item.ty.clone()),
                             signature: None,
                         },
                     );
@@ -252,6 +267,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                 ast::Item::Struct(item) => {
                     declare_symbol(
                         &mut decls,
+                        &mut decl_types,
                         &mut scopes,
                         &mut positions,
                         0,
@@ -259,6 +275,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                             name: item.name.clone(),
                             kind: "struct".to_string(),
                             detail: format!("struct {}", item.name),
+                            ty: None,
                             signature: None,
                         },
                     );
@@ -266,6 +283,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                 ast::Item::Enum(item) => {
                     declare_symbol(
                         &mut decls,
+                        &mut decl_types,
                         &mut scopes,
                         &mut positions,
                         0,
@@ -273,6 +291,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                             name: item.name.clone(),
                             kind: "enum".to_string(),
                             detail: format!("enum {}", item.name),
+                            ty: None,
                             signature: None,
                         },
                     );
@@ -280,6 +299,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                 ast::Item::Trait(item) => {
                     declare_symbol(
                         &mut decls,
+                        &mut decl_types,
                         &mut scopes,
                         &mut positions,
                         0,
@@ -287,6 +307,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                             name: item.name.clone(),
                             kind: "trait".to_string(),
                             detail: format!("trait {}", item.name),
+                            ty: None,
                             signature: None,
                         },
                     );
@@ -294,6 +315,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                 ast::Item::Test(test) => {
                     declare_symbol(
                         &mut decls,
+                        &mut decl_types,
                         &mut scopes,
                         &mut positions,
                         0,
@@ -301,11 +323,48 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                             name: test.name.clone(),
                             kind: "test".to_string(),
                             detail: format!("test \"{}\"", test.name),
+                            ty: None,
                             signature: None,
                         },
                     );
                 }
                 ast::Item::Impl(_) => {}
+                ast::Item::TypeAlias(item) => {
+                    declare_symbol(
+                        &mut decls,
+                        &mut decl_types,
+                        &mut scopes,
+                        &mut positions,
+                        0,
+                        DeclInfo {
+                            name: item.name.clone(),
+                            kind: "type".to_string(),
+                            detail: format!("type {} = {}", item.name, item.ty),
+                            ty: Some(item.ty.clone()),
+                            signature: None,
+                        },
+                    );
+                }
+                ast::Item::NewType(item) => {
+                    declare_symbol(
+                        &mut decls,
+                        &mut decl_types,
+                        &mut scopes,
+                        &mut positions,
+                        0,
+                        DeclInfo {
+                            name: item.name.clone(),
+                            kind: "newtype".to_string(),
+                            detail: if item.transparent {
+                                format!("newtype {}({}) #[repr(transparent)]", item.name, item.inner)
+                            } else {
+                                format!("newtype {}({})", item.name, item.inner)
+                            },
+                            ty: Some(item.inner.clone()),
+                            signature: None,
+                        },
+                    );
+                }
             }
         }
     }
@@ -336,6 +395,7 @@ fn push_scope(
 
 fn declare_symbol(
     decls: &mut Vec<SemanticDecl>,
+    decl_types: &mut Vec<Option<ast::Type>>,
     scopes: &mut [Scope],
     positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
     scope_id: usize,
@@ -344,16 +404,19 @@ fn declare_symbol(
     let (line, col, len) =
         pop_symbol_position(positions, &info.name).unwrap_or((0, 0, info.name.len()));
     let id = decls.len();
+    let ty = info.ty.clone();
     decls.push(SemanticDecl {
         name: info.name,
         kind: info.kind,
         detail: info.detail,
+        ty: ty.as_ref().map(std::string::ToString::to_string),
         line,
         col,
         len,
         scope_id,
         signature: info.signature,
     });
+    decl_types.push(ty);
     if let Some(scope) = scopes.get_mut(scope_id) {
         scope.declared.push(id);
     }
@@ -373,14 +436,21 @@ fn collect_stmt_semantics(
     scope_id: usize,
     scopes: &mut Vec<Scope>,
     decls: &mut Vec<SemanticDecl>,
+    decl_types: &mut Vec<Option<ast::Type>>,
     refs: &mut Vec<SemanticRef>,
     positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
 ) {
     match stmt {
-        ast::Stmt::Let { name, value, .. } => {
+        ast::Stmt::Let {
+            name, ty, value, ..
+        } => {
             collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
+            let inferred = ty
+                .clone()
+                .or_else(|| infer_expr_type(value, scope_id, scopes, decls, decl_types));
             let _ = declare_symbol(
                 decls,
+                decl_types,
                 scopes,
                 positions,
                 scope_id,
@@ -388,13 +458,29 @@ fn collect_stmt_semantics(
                     name: name.clone(),
                     kind: "variable".to_string(),
                     detail: format!("let {name}"),
+                    ty: inferred,
                     signature: None,
                 },
             );
         }
-        ast::Stmt::LetPattern { pattern, value, .. } => {
+        ast::Stmt::LetPattern {
+            pattern,
+            ty,
+            value,
+            ..
+        } => {
             collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
-            collect_pattern_bindings(pattern, scope_id, scopes, decls, positions);
+            let inferred_binding_ty = infer_expr_type(value, scope_id, scopes, decls, decl_types);
+            let binding_ty = ty.as_ref().or(inferred_binding_ty.as_ref());
+            collect_pattern_bindings(
+                pattern,
+                scope_id,
+                scopes,
+                decls,
+                decl_types,
+                positions,
+                binding_ty,
+            );
         }
         ast::Stmt::Assign { target, value } => {
             collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
@@ -412,18 +498,42 @@ fn collect_stmt_semantics(
             collect_expr_semantics(condition, scope_id, scopes, decls, refs, positions);
             let then_scope = push_scope(scopes, scope_id, 0, 0);
             for nested in then_body {
-                collect_stmt_semantics(nested, then_scope, scopes, decls, refs, positions);
+                collect_stmt_semantics(
+                    nested,
+                    then_scope,
+                    scopes,
+                    decls,
+                    decl_types,
+                    refs,
+                    positions,
+                );
             }
             let else_scope = push_scope(scopes, scope_id, 0, 0);
             for nested in else_body {
-                collect_stmt_semantics(nested, else_scope, scopes, decls, refs, positions);
+                collect_stmt_semantics(
+                    nested,
+                    else_scope,
+                    scopes,
+                    decls,
+                    decl_types,
+                    refs,
+                    positions,
+                );
             }
         }
         ast::Stmt::While { condition, body } => {
             collect_expr_semantics(condition, scope_id, scopes, decls, refs, positions);
             let loop_scope = push_scope(scopes, scope_id, 0, 0);
             for nested in body {
-                collect_stmt_semantics(nested, loop_scope, scopes, decls, refs, positions);
+                collect_stmt_semantics(
+                    nested,
+                    loop_scope,
+                    scopes,
+                    decls,
+                    decl_types,
+                    refs,
+                    positions,
+                );
             }
         }
         ast::Stmt::For {
@@ -434,16 +544,40 @@ fn collect_stmt_semantics(
         } => {
             let for_scope = push_scope(scopes, scope_id, 0, 0);
             if let Some(init) = init {
-                collect_stmt_semantics(init, for_scope, scopes, decls, refs, positions);
+                collect_stmt_semantics(
+                    init,
+                    for_scope,
+                    scopes,
+                    decls,
+                    decl_types,
+                    refs,
+                    positions,
+                );
             }
             if let Some(condition) = condition {
                 collect_expr_semantics(condition, for_scope, scopes, decls, refs, positions);
             }
             if let Some(step) = step {
-                collect_stmt_semantics(step, for_scope, scopes, decls, refs, positions);
+                collect_stmt_semantics(
+                    step,
+                    for_scope,
+                    scopes,
+                    decls,
+                    decl_types,
+                    refs,
+                    positions,
+                );
             }
             for nested in body {
-                collect_stmt_semantics(nested, for_scope, scopes, decls, refs, positions);
+                collect_stmt_semantics(
+                    nested,
+                    for_scope,
+                    scopes,
+                    decls,
+                    decl_types,
+                    refs,
+                    positions,
+                );
             }
         }
         ast::Stmt::ForIn {
@@ -453,8 +587,13 @@ fn collect_stmt_semantics(
         } => {
             collect_expr_semantics(iterable, scope_id, scopes, decls, refs, positions);
             let loop_scope = push_scope(scopes, scope_id, 0, 0);
+            let inferred_binding_ty =
+                infer_expr_type(iterable, scope_id, scopes, decls, decl_types)
+                    .as_ref()
+                    .and_then(iterable_item_type);
             let _ = declare_symbol(
                 decls,
+                decl_types,
                 scopes,
                 positions,
                 loop_scope,
@@ -462,17 +601,34 @@ fn collect_stmt_semantics(
                     name: binding.clone(),
                     kind: "variable".to_string(),
                     detail: format!("for {binding} in ..."),
+                    ty: inferred_binding_ty,
                     signature: None,
                 },
             );
             for nested in body {
-                collect_stmt_semantics(nested, loop_scope, scopes, decls, refs, positions);
+                collect_stmt_semantics(
+                    nested,
+                    loop_scope,
+                    scopes,
+                    decls,
+                    decl_types,
+                    refs,
+                    positions,
+                );
             }
         }
         ast::Stmt::Loop { body } => {
             let loop_scope = push_scope(scopes, scope_id, 0, 0);
             for nested in body {
-                collect_stmt_semantics(nested, loop_scope, scopes, decls, refs, positions);
+                collect_stmt_semantics(
+                    nested,
+                    loop_scope,
+                    scopes,
+                    decls,
+                    decl_types,
+                    refs,
+                    positions,
+                );
             }
         }
         ast::Stmt::Defer(expr)
@@ -488,9 +644,18 @@ fn collect_stmt_semantics(
         }
         ast::Stmt::Match { scrutinee, arms } => {
             collect_expr_semantics(scrutinee, scope_id, scopes, decls, refs, positions);
+            let scrutinee_ty = infer_expr_type(scrutinee, scope_id, scopes, decls, decl_types);
             for arm in arms {
                 let arm_scope = push_scope(scopes, scope_id, 0, 0);
-                collect_pattern_bindings(&arm.pattern, arm_scope, scopes, decls, positions);
+                collect_pattern_bindings(
+                    &arm.pattern,
+                    arm_scope,
+                    scopes,
+                    decls,
+                    decl_types,
+                    positions,
+                    scrutinee_ty.as_ref(),
+                );
                 if let Some(guard) = &arm.guard {
                     collect_expr_semantics(guard, arm_scope, scopes, decls, refs, positions);
                 }
@@ -506,12 +671,15 @@ fn collect_pattern_bindings(
     scope_id: usize,
     scopes: &mut [Scope],
     decls: &mut Vec<SemanticDecl>,
+    decl_types: &mut Vec<Option<ast::Type>>,
     positions: &mut BTreeMap<String, VecDeque<IdentifierToken>>,
+    binding_ty: Option<&ast::Type>,
 ) {
     match pattern {
         ast::Pattern::Ident(name) => {
             let _ = declare_symbol(
                 decls,
+                decl_types,
                 scopes,
                 positions,
                 scope_id,
@@ -519,6 +687,7 @@ fn collect_pattern_bindings(
                     name: name.clone(),
                     kind: "variable".to_string(),
                     detail: format!("match {name}"),
+                    ty: binding_ty.cloned(),
                     signature: None,
                 },
             );
@@ -527,6 +696,7 @@ fn collect_pattern_bindings(
             for binding in bindings {
                 let _ = declare_symbol(
                     decls,
+                    decl_types,
                     scopes,
                     positions,
                     scope_id,
@@ -534,6 +704,7 @@ fn collect_pattern_bindings(
                         name: binding.clone(),
                         kind: "variable".to_string(),
                         detail: format!("match {binding}"),
+                        ty: binding_ty.cloned(),
                         signature: None,
                     },
                 );
@@ -546,6 +717,7 @@ fn collect_pattern_bindings(
                 }
                 let _ = declare_symbol(
                     decls,
+                    decl_types,
                     scopes,
                     positions,
                     scope_id,
@@ -553,6 +725,7 @@ fn collect_pattern_bindings(
                         name: binding.clone(),
                         kind: "variable".to_string(),
                         detail: format!("match {binding}"),
+                        ty: binding_ty.cloned(),
                         signature: None,
                     },
                 );
@@ -560,7 +733,15 @@ fn collect_pattern_bindings(
         }
         ast::Pattern::Or(items) => {
             for item in items {
-                collect_pattern_bindings(item, scope_id, scopes, decls, positions);
+                collect_pattern_bindings(
+                    item,
+                    scope_id,
+                    scopes,
+                    decls,
+                    decl_types,
+                    positions,
+                    binding_ty,
+                );
             }
         }
         ast::Pattern::Wildcard | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => {}
@@ -788,6 +969,181 @@ fn resolve_decl_id(
         scope = scopes[id].parent;
     }
     None
+}
+
+fn infer_expr_type(
+    expr: &ast::Expr,
+    scope_id: usize,
+    scopes: &[Scope],
+    decls: &[SemanticDecl],
+    decl_types: &[Option<ast::Type>],
+) -> Option<ast::Type> {
+    match expr {
+        ast::Expr::Int(_) => Some(ast::Type::Int {
+            signed: true,
+            bits: 32,
+        }),
+        ast::Expr::Float { bits, .. } => Some(ast::Type::Float {
+            bits: bits.unwrap_or(64),
+        }),
+        ast::Expr::Char(_) => Some(ast::Type::Char),
+        ast::Expr::Bool(_) => Some(ast::Type::Bool),
+        ast::Expr::Str(_) => Some(ast::Type::Str),
+        ast::Expr::Ident(name) => resolve_decl_id(name, scope_id, scopes, decls)
+            .and_then(|decl_id| decl_types.get(decl_id).cloned())
+            .flatten(),
+        ast::Expr::Call { callee, .. } => {
+            if callee.contains('.') {
+                return None;
+            }
+            let fn_ty = resolve_decl_id(callee, scope_id, scopes, decls)
+                .and_then(|decl_id| decl_types.get(decl_id).cloned())
+                .flatten();
+            match fn_ty {
+                Some(ast::Type::Function { ret, .. }) => Some(*ret),
+                _ => None,
+            }
+        }
+        ast::Expr::StructInit { name, .. } => Some(ast::Type::Named {
+            name: name.clone(),
+            args: Vec::new(),
+        }),
+        ast::Expr::EnumInit { enum_name, .. } => Some(ast::Type::Named {
+            name: enum_name.clone(),
+            args: Vec::new(),
+        }),
+        ast::Expr::Closure {
+            params,
+            return_type,
+            ..
+        } => {
+            let ret = return_type.clone().unwrap_or(ast::Type::Void);
+            Some(ast::Type::Function {
+                params: params.iter().map(|param| param.ty.clone()).collect(),
+                ret: Box::new(ret),
+            })
+        }
+        ast::Expr::Group(inner) | ast::Expr::Discard(inner) => {
+            infer_expr_type(inner, scope_id, scopes, decls, decl_types)
+        }
+        ast::Expr::Await(inner) => match infer_expr_type(inner, scope_id, scopes, decls, decl_types)
+        {
+            Some(ast::Type::Future(inner)) => Some(*inner),
+            _ => None,
+        },
+        ast::Expr::Unary { op, expr } => {
+            let inner = infer_expr_type(expr, scope_id, scopes, decls, decl_types);
+            match op {
+                ast::UnaryOp::Not => Some(ast::Type::Bool),
+                ast::UnaryOp::Plus | ast::UnaryOp::Neg => inner,
+                ast::UnaryOp::BitNot => inner.filter(is_integral_type),
+            }
+        }
+        ast::Expr::Binary { op, left, right } => {
+            let left_ty = infer_expr_type(left, scope_id, scopes, decls, decl_types);
+            let right_ty = infer_expr_type(right, scope_id, scopes, decls, decl_types);
+            match op {
+                ast::BinaryOp::And
+                | ast::BinaryOp::Or
+                | ast::BinaryOp::Eq
+                | ast::BinaryOp::Neq
+                | ast::BinaryOp::Lt
+                | ast::BinaryOp::Lte
+                | ast::BinaryOp::Gt
+                | ast::BinaryOp::Gte => Some(ast::Type::Bool),
+                ast::BinaryOp::Add
+                | ast::BinaryOp::Sub
+                | ast::BinaryOp::Mul
+                | ast::BinaryOp::Div
+                | ast::BinaryOp::Mod
+                | ast::BinaryOp::BitAnd
+                | ast::BinaryOp::BitOr
+                | ast::BinaryOp::BitXor
+                | ast::BinaryOp::Shl
+                | ast::BinaryOp::Shr => left_ty.or(right_ty),
+            }
+        }
+        ast::Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_ty = infer_expr_type(then_expr, scope_id, scopes, decls, decl_types);
+            let else_ty = infer_expr_type(else_expr, scope_id, scopes, decls, decl_types);
+            if then_ty == else_ty { then_ty } else { None }
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            let try_ty = infer_expr_type(try_expr, scope_id, scopes, decls, decl_types);
+            let catch_ty = infer_expr_type(catch_expr, scope_id, scopes, decls, decl_types);
+            if try_ty == catch_ty { try_ty } else { None }
+        }
+        ast::Expr::Range { .. } => Some(ast::Type::Named {
+            name: "Range".to_string(),
+            args: Vec::new(),
+        }),
+        ast::Expr::ArrayLiteral(items) => {
+            let item_ty = items
+                .iter()
+                .find_map(|item| infer_expr_type(item, scope_id, scopes, decls, decl_types));
+            item_ty.map(|ty| ast::Type::Vec(Box::new(ty)))
+        }
+        ast::Expr::Index { base, .. } => {
+            match infer_expr_type(base, scope_id, scopes, decls, decl_types) {
+                Some(ast::Type::Array { elem, .. })
+                | Some(ast::Type::Vec(elem))
+                | Some(ast::Type::Slice(elem))
+                | Some(ast::Type::Deque(elem))
+                | Some(ast::Type::Ring(elem))
+                | Some(ast::Type::Set(elem)) => Some(*elem),
+                Some(ast::Type::Map { value, .. }) => Some(*value),
+                Some(ast::Type::Str) => Some(ast::Type::Char),
+                Some(ast::Type::Bytes) => Some(ast::Type::Int {
+                    signed: false,
+                    bits: 8,
+                }),
+                _ => None,
+            }
+        }
+        ast::Expr::FieldAccess { .. }
+        | ast::Expr::UnsafeBlock { .. }
+        | ast::Expr::Match { .. }
+        | ast::Expr::While { .. }
+        | ast::Expr::For { .. }
+        | ast::Expr::ForIn { .. }
+        | ast::Expr::Loop { .. }
+        | ast::Expr::Break(_)
+        | ast::Expr::Continue
+        | ast::Expr::Return(_)
+        | ast::Expr::ObjectLiteral(_) => None,
+    }
+}
+
+fn is_integral_type(ty: &ast::Type) -> bool {
+    matches!(
+        ty,
+        ast::Type::Int { .. } | ast::Type::ISize | ast::Type::USize | ast::Type::BigInt | ast::Type::BigUint
+    )
+}
+
+fn iterable_item_type(ty: &ast::Type) -> Option<ast::Type> {
+    match ty {
+        ast::Type::Array { elem, .. }
+        | ast::Type::Vec(elem)
+        | ast::Type::Slice(elem)
+        | ast::Type::Set(elem)
+        | ast::Type::Deque(elem)
+        | ast::Type::Ring(elem) => Some((**elem).clone()),
+        ast::Type::Map { key, value } => Some(ast::Type::Tuple(vec![(**key).clone(), (**value).clone()])),
+        ast::Type::Str => Some(ast::Type::Char),
+        ast::Type::Bytes => Some(ast::Type::Int {
+            signed: false,
+            bits: 8,
+        }),
+        _ => None,
+    }
 }
 
 fn scan_identifier_tokens(source: &str) -> Vec<IdentifierToken> {
@@ -1291,10 +1647,19 @@ fn lsp_hover_at_position(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         return Ok(Value::Null);
     };
     let decl = &semantics.files[id.file_idx].decls[id.decl_idx];
+    let detail = if let Some(ty) = &decl.ty {
+        if decl.detail.contains(':') || decl.detail.starts_with("fn ") {
+            decl.detail.clone()
+        } else {
+            format!("{}: {ty}", decl.detail)
+        }
+    } else {
+        decl.detail.clone()
+    };
     Ok(json!({
         "contents": {
             "kind": "markdown",
-            "value": format!("```fzy\n{}\n```", decl.detail)
+            "value": format!("```fzy\n{}\n```", detail)
         },
         "range": symbol_range(range.0, range.1, range.2)
     }))
@@ -1553,6 +1918,7 @@ fn lsp_inlay_hints(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         .ok_or_else(|| anyhow!("inlayHint missing uri"))?;
     let doc = workspace_doc(ws, uri)?;
     let semantics = build_workspace_semantics(ws)?;
+    let file_idx = file_index_for_uri(&semantics, uri);
     let mut function_params = BTreeMap::<String, Vec<String>>::new();
     for file in &semantics.files {
         for decl in &file.decls {
@@ -1584,6 +1950,24 @@ fn lsp_inlay_hints(ws: &WorkspaceState, params: &Value) -> Result<Value> {
             "label": format!("{name}:"),
             "kind": 2
         }));
+    }
+    if let Some(file_idx) = file_idx {
+        for decl in &semantics.files[file_idx].decls {
+            if decl.kind != "variable" {
+                continue;
+            }
+            if !decl.detail.starts_with("let ") {
+                continue;
+            }
+            let Some(ty) = &decl.ty else {
+                continue;
+            };
+            hints.push(json!({
+                "position": {"line": decl.line, "character": decl.col + decl.len},
+                "label": format!(": {ty}"),
+                "kind": 1
+            }));
+        }
     }
     Ok(json!(hints))
 }
@@ -1967,6 +2351,20 @@ fn semantic_decl_symbols(module: &ast::Module) -> Vec<(String, String, String)> 
                 format!("test \"{}\"", item.name),
             )),
             ast::Item::Impl(_) => {}
+            ast::Item::TypeAlias(item) => out.push((
+                "type".to_string(),
+                item.name.clone(),
+                format!("type {} = {}", item.name, item.ty),
+            )),
+            ast::Item::NewType(item) => out.push((
+                "newtype".to_string(),
+                item.name.clone(),
+                if item.transparent {
+                    format!("newtype {}({}) #[repr(transparent)]", item.name, item.inner)
+                } else {
+                    format!("newtype {}({})", item.name, item.inner)
+                },
+            )),
         }
     }
     out
@@ -2871,6 +3269,54 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(labels.iter().any(|label| label.contains("left:")));
         assert!(labels.iter().any(|label| label.contains("right:")));
+    }
+
+    #[test]
+    fn hover_and_inlay_include_inferred_variable_types() {
+        let uri = "file:///tmp/inferred-types.fzy";
+        let text = "fn main() -> i32 {\n    let value = 1\n    return value\n}\n";
+        let mut ws = WorkspaceState::default();
+        ws.docs.insert(
+            uri.to_string(),
+            Document {
+                path: PathBuf::from("/tmp/inferred-types.fzy"),
+                version: 1,
+                text: text.to_string(),
+            },
+        );
+
+        let hover = lsp_hover_at_position(
+            &ws,
+            &json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 2, "character": 12}
+            }),
+        )
+        .expect("hover should succeed");
+        let hover_value = hover
+            .get("contents")
+            .and_then(|v| v.get("value"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(hover_value.contains("let value: i32"));
+
+        let hints = lsp_inlay_hints(
+            &ws,
+            &json!({
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 10, "character": 0}
+                }
+            }),
+        )
+        .expect("inlay hints should succeed");
+        let hint_items = hints.as_array().cloned().unwrap_or_default();
+        let labels = hint_items
+            .iter()
+            .filter_map(|hint| hint.get("label").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == &": i32"));
     }
 
     #[test]

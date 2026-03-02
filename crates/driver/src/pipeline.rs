@@ -3464,6 +3464,7 @@ fn bindings_for_match_arm_pattern(
             enum_name,
             variant,
             bindings,
+            ..
         } => {
             if bindings.is_empty() {
                 return Ok(Vec::new());
@@ -3472,6 +3473,7 @@ fn bindings_for_match_arm_pattern(
                 enum_name: value_enum,
                 variant: value_variant,
                 payload,
+                ..
             } = scrutinee
             else {
                 bail!(
@@ -4835,6 +4837,7 @@ fn llvm_emit_let_pattern(
             enum_name,
             variant,
             bindings,
+            ..
         } => {
             let key = format!("{enum_name}::{variant}");
             let tag = variant_tag_for_key(&key, &ctx.variant_tags);
@@ -4845,6 +4848,7 @@ fn llvm_emit_let_pattern(
                 enum_name: value_enum,
                 variant: value_variant,
                 payload,
+                ..
             } = value
             {
                 if value_enum == enum_name
@@ -5295,8 +5299,12 @@ fn llvm_emit_expr(
             enum_name,
             variant,
             payload,
+            named_payload,
         } => {
             for value in payload {
+                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+            }
+            for (_, value) in named_payload {
                 let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
             }
             let key = format!("{enum_name}::{variant}");
@@ -8786,6 +8794,7 @@ fn clif_emit_let_pattern(
             enum_name,
             variant,
             bindings,
+            ..
         } => {
             let key = format!("{enum_name}::{variant}");
             let expected_tag = builder.ins().iconst(
@@ -8799,6 +8808,7 @@ fn clif_emit_let_pattern(
                 enum_name: value_enum,
                 variant: value_variant,
                 payload,
+                ..
             } = value
             {
                 if value_enum == enum_name
@@ -9408,8 +9418,12 @@ fn clif_emit_expr(
             enum_name,
             variant,
             payload,
+            named_payload,
         } => {
             for value in payload {
+                let _ = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+            }
+            for (_, value) in named_payload {
                 let _ = clif_emit_expr(builder, ctx, value, locals, next_var)?;
             }
             let key = format!("{enum_name}::{variant}");
@@ -10138,6 +10152,9 @@ fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType> {
             128 => Some(types::I128),
             _ => None,
         },
+        ast::Type::BigInt | ast::Type::BigUint | ast::Type::Decimal128 => {
+            Some(pointer_sized_clif_type())
+        }
         ast::Type::Float { bits } => match bits {
             32 => Some(types::F32),
             64 => Some(types::F64),
@@ -10145,6 +10162,13 @@ fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType> {
         },
         ast::Type::Char
         | ast::Type::Str
+        | ast::Type::Bytes
+        | ast::Type::Uuid
+        | ast::Type::DynTrait(_)
+        | ast::Type::Map { .. }
+        | ast::Type::Set(_)
+        | ast::Type::Deque(_)
+        | ast::Type::Ring(_)
         | ast::Type::Ptr { .. }
         | ast::Type::Ref { .. }
         | ast::Type::Slice(_)
@@ -10152,6 +10176,17 @@ fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType> {
         | ast::Type::Result { .. }
         | ast::Type::Option(_)
         | ast::Type::Vec(_)
+        | ast::Type::Future(_)
+        | ast::Type::Path
+        | ast::Type::PathBuf
+        | ast::Type::Url
+        | ast::Type::SocketAddr
+        | ast::Type::Duration
+        | ast::Type::Instant
+        | ast::Type::Decimal
+        | ast::Type::DateTimeTz
+        | ast::Type::ExitStatus
+        | ast::Type::Tuple(_)
         | ast::Type::Function { .. }
         | ast::Type::Named { .. }
         | ast::Type::TypeVar(_) => Some(pointer_sized_clif_type()),
@@ -16627,7 +16662,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "mod infra;\nfn main() -> i32 {\n    let listener = http.bind()\n    return listener\n}\n",
+            "mod infra;\nfn main() -> i32 {\n    let listener = http.bind()\n    http.listen(listener)\n    return 0\n}\n",
         )
         .expect("main source should be written");
         std::fs::write(root.join("src/infra.fzy"), "use core.http;\n")

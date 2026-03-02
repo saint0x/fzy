@@ -26,11 +26,28 @@ pub enum Item {
     Function(Function),
     Const(ConstItem),
     Static(StaticItem),
+    TypeAlias(TypeAlias),
+    NewType(NewType),
     Struct(Struct),
     Enum(Enum),
     Trait(Trait),
     Impl(Impl),
     Test(TestBlock),
+}
+
+#[derive(Debug, Clone)]
+pub struct TypeAlias {
+    pub name: String,
+    pub ty: Type,
+    pub is_pub: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewType {
+    pub name: String,
+    pub inner: Type,
+    pub transparent: bool,
+    pub is_pub: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +100,7 @@ pub struct GenericParam {
 #[derive(Debug, Clone)]
 pub struct Struct {
     pub name: String,
+    pub generics: Vec<GenericParam>,
     pub fields: Vec<Field>,
     pub repr: Option<String>,
     pub is_pub: bool,
@@ -91,6 +109,7 @@ pub struct Struct {
 #[derive(Debug, Clone)]
 pub struct Enum {
     pub name: String,
+    pub generics: Vec<GenericParam>,
     pub variants: Vec<Variant>,
     pub repr: Option<String>,
     pub is_pub: bool,
@@ -106,13 +125,23 @@ pub struct Field {
 pub struct Variant {
     pub name: String,
     pub payload: Vec<Type>,
+    pub named_payload: Vec<Field>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Trait {
     pub name: String,
+    pub generics: Vec<GenericParam>,
+    pub associated_types: Vec<String>,
+    pub associated_consts: Vec<TraitConst>,
     pub methods: Vec<TraitMethod>,
     pub is_pub: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct TraitConst {
+    pub name: String,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +154,10 @@ pub struct TraitMethod {
 #[derive(Debug, Clone)]
 pub struct Impl {
     pub trait_name: Option<String>,
+    pub generics: Vec<GenericParam>,
     pub for_type: Type,
+    pub associated_types: Vec<(String, Type)>,
+    pub associated_consts: Vec<ConstItem>,
     pub methods: Vec<Function>,
     pub is_pub: bool,
 }
@@ -227,6 +259,7 @@ pub enum Expr {
         enum_name: String,
         variant: String,
         payload: Vec<Expr>,
+        named_payload: Vec<(String, Expr)>,
     },
     Closure {
         params: Vec<Param>,
@@ -354,6 +387,7 @@ pub enum Pattern {
         enum_name: String,
         variant: String,
         bindings: Vec<String>,
+        named_bindings: Vec<(String, String)>,
     },
     Or(Vec<Pattern>),
 }
@@ -367,7 +401,18 @@ impl Pattern {
                     .iter()
                     .filter_map(|(_, binding)| (binding != "_").then_some(binding.clone())),
             ),
-            Pattern::Variant { bindings, .. } => out.extend(bindings.iter().cloned()),
+            Pattern::Variant {
+                bindings,
+                named_bindings,
+                ..
+            } => {
+                out.extend(bindings.iter().cloned());
+                out.extend(
+                    named_bindings
+                        .iter()
+                        .filter_map(|(_, binding)| (binding != "_").then_some(binding.clone())),
+                );
+            }
             Pattern::Or(patterns) => {
                 for pattern in patterns {
                     pattern.bound_names(out);
@@ -389,11 +434,16 @@ pub enum Type {
         signed: bool,
         bits: u16,
     },
+    BigInt,
+    BigUint,
     Float {
         bits: u16,
     },
+    Decimal128,
     Char,
     Str,
+    Bytes,
+    Uuid,
     Ptr {
         mutable: bool,
         to: Box<Type>,
@@ -412,12 +462,31 @@ pub enum Type {
         ok: Box<Type>,
         err: Box<Type>,
     },
+    Map {
+        key: Box<Type>,
+        value: Box<Type>,
+    },
+    Set(Box<Type>),
+    Deque(Box<Type>),
+    Ring(Box<Type>),
     Option(Box<Type>),
     Vec(Box<Type>),
+    Future(Box<Type>),
+    Path,
+    PathBuf,
+    Url,
+    SocketAddr,
+    Duration,
+    Instant,
+    Decimal,
+    DateTimeTz,
+    ExitStatus,
     Function {
         params: Vec<Type>,
         ret: Box<Type>,
     },
+    DynTrait(String),
+    Tuple(Vec<Type>),
     Named {
         name: String,
         args: Vec<Type>,
@@ -444,9 +513,14 @@ impl std::fmt::Display for Type {
                 signed: false,
                 bits,
             } => write!(f, "u{bits}"),
+            Type::BigInt => write!(f, "BigInt"),
+            Type::BigUint => write!(f, "BigUint"),
             Type::Float { bits } => write!(f, "f{bits}"),
+            Type::Decimal128 => write!(f, "Decimal128"),
             Type::Char => write!(f, "char"),
             Type::Str => write!(f, "str"),
+            Type::Bytes => write!(f, "bytes"),
+            Type::Uuid => write!(f, "Uuid"),
             Type::Ptr { mutable, to } => {
                 if *mutable {
                     write!(f, "*mut {to}")
@@ -474,8 +548,22 @@ impl std::fmt::Display for Type {
             Type::Slice(elem) => write!(f, "[]{elem}"),
             Type::Array { elem, len } => write!(f, "[{elem}; {len}]"),
             Type::Result { ok, err } => write!(f, "Result<{ok}, {err}>"),
+            Type::Map { key, value } => write!(f, "Map<{key}, {value}>"),
+            Type::Set(inner) => write!(f, "Set<{inner}>"),
+            Type::Deque(inner) => write!(f, "Deque<{inner}>"),
+            Type::Ring(inner) => write!(f, "Ring<{inner}>"),
             Type::Option(inner) => write!(f, "Option<{inner}>"),
             Type::Vec(inner) => write!(f, "Vec<{inner}>"),
+            Type::Future(inner) => write!(f, "Future<{inner}>"),
+            Type::Path => write!(f, "Path"),
+            Type::PathBuf => write!(f, "PathBuf"),
+            Type::Url => write!(f, "Url"),
+            Type::SocketAddr => write!(f, "SocketAddr"),
+            Type::Duration => write!(f, "Duration"),
+            Type::Instant => write!(f, "Instant"),
+            Type::Decimal => write!(f, "Decimal"),
+            Type::DateTimeTz => write!(f, "DateTimeTz"),
+            Type::ExitStatus => write!(f, "ExitStatus"),
             Type::Function { params, ret } => {
                 write!(
                     f,
@@ -487,6 +575,22 @@ impl std::fmt::Display for Type {
                         .join(", "),
                     ret
                 )
+            }
+            Type::DynTrait(name) => write!(f, "dyn {name}"),
+            Type::Tuple(items) => {
+                if items.len() == 1 {
+                    write!(f, "({},)", items[0])
+                } else {
+                    write!(
+                        f,
+                        "({})",
+                        items
+                            .iter()
+                            .map(|t| t.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
             }
             Type::Named { name, args } => {
                 if args.is_empty() {
@@ -613,8 +717,15 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
                 visitor.visit_expr(value);
             }
         }
-        Expr::EnumInit { payload, .. } => {
+        Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
             for value in payload {
+                visitor.visit_expr(value);
+            }
+            for (_, value) in named_payload {
                 visitor.visit_expr(value);
             }
         }
