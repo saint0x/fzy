@@ -21,6 +21,10 @@ A quick way to think about fzy is zig but safer, rust but more sane.
 ## Code Syntax (Quick Exhibit)
 
 ```fzy
+use core.time;
+use core.path;
+use core.log;
+
 enum Mode {
     Fast,
     Safe,
@@ -143,6 +147,9 @@ fn worker(cfg: Config<Url>) -> i32 {
 fn main() -> i32 {
     let cfg = Config { retries: 4, endpoint: url.parse("https://example.test"), mode: Mode::Fast }
     let score = worker(cfg)
+    let now = time.now()
+    let out_path = path.join("tmp", "score.log")
+    log.info("snippet.run", out_path)
     let tag = banner(Mode::Fast)
     let ready = is_ready(Config { retries: 1, endpoint: url.parse("https://example.test"), mode: Mode::Safe })
     let ch = marker()
@@ -156,7 +163,7 @@ fn main() -> i32 {
     discard b
     discard p
     discard run_once
-    if score > 0 then return score
+    if score + now > 0 then return score
     return score
 }
 ```
