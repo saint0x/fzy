@@ -87,6 +87,17 @@ fn worker(cfg: Config<Url>) -> i32 {
     let mut attempt: i32 = 0
     let mut total: i32 = 0
     let parts = ["alpha", "beta", "gamma"]
+    let label: str = "fozzy"
+    let ready: bool = true
+    let marker: char = 'F'
+    let ratio: f64 = 1.25
+    let raw_bytes: bytes = "wire"
+    let sample: (str, i32) = (label, 1)
+    discard ready
+    discard marker
+    discard ratio
+    discard raw_bytes
+    discard sample
 
     while attempt < cfg.retries {
         let raw = "  alpha,beta,gamma  "
