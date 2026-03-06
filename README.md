@@ -62,6 +62,31 @@ fn weight(mode: Mode) -> i32 {
     }
 }
 
+fn banner(mode: Mode) -> str {
+    if mode == Mode::Fast then return "fast"
+    return "safe"
+}
+
+fn is_ready(cfg: Config<Url>) -> bool {
+    return cfg.retries > 0
+}
+
+fn marker() -> char {
+    return 'F'
+}
+
+fn ratio(v: i32) -> f64 {
+    return v / 2.0
+}
+
+fn wire_payload() -> bytes {
+    return "wire"
+}
+
+fn score_parts(v: i32) -> (i32, str) {
+    return (v, "ok")
+}
+
 async fn boost(v: i32) -> i32 {
     checkpoint()
     return v + 1
@@ -118,6 +143,18 @@ fn worker(cfg: Config<Url>) -> i32 {
 fn main() -> i32 {
     let cfg = Config { retries: 4, endpoint: url.parse("https://example.test"), mode: Mode::Fast }
     let score = worker(cfg)
+    let tag = banner(Mode::Fast)
+    let ready = is_ready(Config { retries: 1, endpoint: url.parse("https://example.test"), mode: Mode::Safe })
+    let ch = marker()
+    let r = ratio(score)
+    let b = wire_payload()
+    let p = score_parts(score)
+    discard tag
+    discard ready
+    discard ch
+    discard r
+    discard b
+    discard p
     discard run_once
     if score > 0 then return score
     return score
