@@ -26,8 +26,31 @@ enum Mode {
     Safe,
 }
 
-struct Config {
+trait Scorer {
+    type Endpoint;
+    const BASE: i32;
+    fn score(endpoint: Url) -> i32;
+}
+
+struct HttpScorer {}
+
+impl Scorer for HttpScorer {
+    type Endpoint = Url;
+    const BASE: i32 = 2;
+    fn score(endpoint: Url) -> i32 {
+        discard endpoint;
+        return 7;
+    }
+}
+
+type UserId = Uuid;
+newtype TenantId(Uuid);
+#[repr(transparent)]
+newtype JobId(i64);
+
+struct Config<TEndpoint> {
     retries: i32,
+    endpoint: TEndpoint,
     mode: Mode,
 }
 
@@ -44,12 +67,23 @@ async fn boost(v: i32) -> i32 {
     return v + 1
 }
 
-async fn run_once(cfg: Config) -> i32 {
-    let score = worker(cfg)
-    return await boost(score)
+fn normalize<T: Scorer>(cfg: Config<Url>) -> i32 {
+    let identity: (UserId, TenantId, JobId) = (uuid.v4(), TenantId(uuid.v4()), JobId(7))
+    let tags: Set<str> = set.new()
+    let lookup: Map<Uuid, Decimal128> = map.new()
+    discard identity
+    discard tags
+    discard lookup
+    return weight(cfg.mode) + T.score(cfg.endpoint)
 }
 
-fn worker(cfg: Config) -> i32 {
+async fn run_once(cfg: Config<Url>) -> i32 {
+    let base = normalize<HttpScorer>(cfg)
+    let task: Future<i32> = boost(base)
+    return await task
+}
+
+fn worker(cfg: Config<Url>) -> i32 {
     let mut attempt: i32 = 0
     let mut total: i32 = 0
     let parts = ["alpha", "beta", "gamma"]
@@ -71,7 +105,7 @@ fn worker(cfg: Config) -> i32 {
 }
 
 fn main() -> i32 {
-    let cfg = Config { retries: 4, mode: Mode::Fast }
+    let cfg = Config { retries: 4, endpoint: url.parse("https://example.test"), mode: Mode::Fast }
     let score = worker(cfg)
     discard run_once
     if score > 0 then return score
