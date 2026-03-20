@@ -1,3 +1,4 @@
+use super::*;
 use anyhow::{bail, Result};
 use std::collections::HashMap;
 
@@ -18,6 +19,356 @@ pub(super) fn variant_tag_for_key(key: &str, variant_tags: &HashMap<String, i32>
         .get(key)
         .copied()
         .unwrap_or_else(|| variant_tag(key))
+}
+
+pub(super) struct ClifLoweringCtx<'a> {
+    pub(super) module: &'a mut ObjectModule,
+    pub(super) function_ids: &'a HashMap<String, cranelift_module::FuncId>,
+    pub(super) function_signatures: &'a HashMap<String, ClifFunctionSignature>,
+    pub(super) string_literal_ids: &'a HashMap<String, i32>,
+    pub(super) task_ref_ids: &'a HashMap<String, i32>,
+    pub(super) globals: &'a HashMap<String, i32>,
+    pub(super) variant_tags: &'a HashMap<String, i32>,
+    pub(super) mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
+    pub(super) current_return_ty: Option<ClifType>,
+    pub(super) closures: HashMap<String, ClifClosureBinding>,
+    pub(super) array_bindings: HashMap<String, ClifArrayBinding>,
+    pub(super) const_strings: HashMap<String, String>,
+}
+
+pub(super) fn lower_cranelift_ir(
+    fir: &fir::FirModule,
+    enforce_contract_checks: bool,
+) -> Result<String> {
+    let plan = build_native_canonical_plan(fir, enforce_contract_checks);
+    let mut out = String::new();
+    for function in &fir.typed_functions {
+        if is_extern_c_import_decl(function) {
+            continue;
+        }
+        if let Some(data_ops) = plan.data_ops_by_function.get(&function.name) {
+            for op in data_ops {
+                let _ = writeln!(&mut out, "; canonical.dataop {}", render_native_data_op(op));
+            }
+        }
+        let _ = writeln!(
+            &mut out,
+            "function %{}() -> i32 {{",
+            native_mangle_symbol(&function.name)
+        );
+        match plan.cfg_by_function.get(&function.name) {
+            Some(Ok(cfg)) => {
+                for (block_id, block) in cfg.blocks.iter().enumerate() {
+                    let _ = writeln!(&mut out, "block{block_id}:");
+                    for stmt in &block.stmts {
+                        let _ = writeln!(&mut out, "  ; {:?}", stmt);
+                    }
+                    match &block.terminator {
+                        ControlFlowTerminator::Return(Some(expr)) => {
+                            let _ = writeln!(&mut out, "  return {:?}", expr);
+                        }
+                        ControlFlowTerminator::Return(None) => {
+                            if function.name == "main" {
+                                let fallback = plan
+                                    .forced_main_return
+                                    .or(fir.entry_return_const_i32)
+                                    .unwrap_or(0);
+                                let _ = writeln!(&mut out, "  return {}", fallback);
+                            } else {
+                                let _ = writeln!(&mut out, "  return 0");
+                            }
+                        }
+                        ControlFlowTerminator::Jump { target, edge } => {
+                            let _ = writeln!(&mut out, "  jump block{} ; {:?}", target, edge);
+                        }
+                        ControlFlowTerminator::Branch {
+                            condition,
+                            then_target,
+                            else_target,
+                        } => {
+                            let _ = writeln!(
+                                &mut out,
+                                "  br {:?}, block{}, block{}",
+                                condition, then_target, else_target
+                            );
+                        }
+                        ControlFlowTerminator::Switch {
+                            scrutinee,
+                            cases,
+                            default_target,
+                        } => {
+                            let rendered_cases = cases
+                                .iter()
+                                .map(|(value, target)| format!("{value}->block{target}"))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let _ = writeln!(
+                                &mut out,
+                                "  switch {:?}, [{}], default=block{}",
+                                scrutinee, rendered_cases, default_target
+                            );
+                        }
+                        ControlFlowTerminator::Unreachable => {
+                            let _ = writeln!(&mut out, "  trap");
+                        }
+                    }
+                }
+            }
+            Some(Err(error)) => {
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: {}",
+                    function.name,
+                    error
+                ));
+            }
+            None => {
+                return Err(anyhow!(
+                    "canonical cfg unavailable for `{}`: missing entry",
+                    function.name
+                ));
+            }
+        }
+        out.push_str("}\n\n");
+    }
+    if out.is_empty() {
+        let fallback = plan
+            .forced_main_return
+            .or(fir.entry_return_const_i32)
+            .unwrap_or(0);
+        return Ok(format!(
+            "function %main() -> i32 {{\nblock0:\n  return {fallback}\n}}\n"
+        ));
+    }
+    Ok(out)
+}
+
+pub(super) fn clif_emit_function_cfg(
+    builder: &mut FunctionBuilder,
+    module: &mut ObjectModule,
+    function_ids: &HashMap<String, cranelift_module::FuncId>,
+    function_signatures: &HashMap<String, ClifFunctionSignature>,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+    globals: &HashMap<String, i32>,
+    variant_tags: &HashMap<String, i32>,
+    mutable_globals: &HashMap<String, cranelift_module::DataId>,
+    current_return_ty: Option<ClifType>,
+    cfg: &ControlFlowCfg,
+    entry_block: cranelift_codegen::ir::Block,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+    forced_return_i32: Option<i32>,
+) -> Result<()> {
+    let mut ctx = ClifLoweringCtx {
+        module,
+        function_ids,
+        function_signatures,
+        string_literal_ids,
+        task_ref_ids,
+        globals,
+        variant_tags,
+        mutable_globals,
+        current_return_ty,
+        closures: HashMap::new(),
+        array_bindings: HashMap::new(),
+        const_strings: HashMap::new(),
+    };
+    clif_emit_cfg(
+        builder,
+        &mut ctx,
+        cfg,
+        entry_block,
+        locals,
+        current_return_ty,
+        next_var,
+        forced_return_i32,
+    )
+}
+
+fn clif_emit_cfg(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    cfg: &ControlFlowCfg,
+    entry_block: cranelift_codegen::ir::Block,
+    locals: &mut HashMap<String, LocalBinding>,
+    return_ty: Option<ClifType>,
+    next_var: &mut usize,
+    forced_return_i32: Option<i32>,
+) -> Result<()> {
+    let mut clif_blocks = Vec::with_capacity(cfg.blocks.len());
+    for block_id in 0..cfg.blocks.len() {
+        if block_id == cfg.entry {
+            clif_blocks.push(entry_block);
+        } else {
+            clif_blocks.push(builder.create_block());
+        }
+    }
+
+    let mut predecessor_count = vec![0usize; cfg.blocks.len()];
+    for block in &cfg.blocks {
+        match &block.terminator {
+            ControlFlowTerminator::Return(_) | ControlFlowTerminator::Unreachable => {}
+            ControlFlowTerminator::Jump { target, .. } => {
+                predecessor_count[*target] += 1;
+            }
+            ControlFlowTerminator::Branch {
+                then_target,
+                else_target,
+                ..
+            } => {
+                predecessor_count[*then_target] += 1;
+                predecessor_count[*else_target] += 1;
+            }
+            ControlFlowTerminator::Switch {
+                cases,
+                default_target,
+                ..
+            } => {
+                predecessor_count[*default_target] += 1;
+                for (_, target) in cases {
+                    predecessor_count[*target] += 1;
+                }
+            }
+        }
+    }
+
+    let mut observed_predecessors = vec![0usize; cfg.blocks.len()];
+    let mut sealed = vec![false; cfg.blocks.len()];
+    if predecessor_count[cfg.entry] == 0 {
+        builder.seal_block(clif_blocks[cfg.entry]);
+        sealed[cfg.entry] = true;
+    }
+
+    let mut emitted = vec![false; cfg.blocks.len()];
+    let mut queue = vec![cfg.entry];
+    while let Some(block_id) = queue.pop() {
+        if emitted[block_id] {
+            continue;
+        }
+        emitted[block_id] = true;
+        builder.switch_to_block(clif_blocks[block_id]);
+        let linear_terminated =
+            clif_emit_linear_stmts(builder, ctx, &cfg.blocks[block_id].stmts, locals, next_var)?;
+        if linear_terminated {
+            emitted[block_id] = true;
+            continue;
+        }
+        match &cfg.blocks[block_id].terminator {
+            ControlFlowTerminator::Return(Some(expr)) => {
+                if let Some(return_ty) = return_ty {
+                    let value = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
+                    let value = cast_clif_value(builder, value, return_ty)?;
+                    builder.ins().return_(&[value.value]);
+                } else {
+                    builder.ins().return_(&[]);
+                }
+            }
+            ControlFlowTerminator::Return(None) => {
+                if let Some(return_ty) = return_ty {
+                    let ret = if return_ty == types::I32 {
+                        builder
+                            .ins()
+                            .iconst(types::I32, forced_return_i32.unwrap_or(0) as i64)
+                    } else {
+                        zero_for_type(builder, return_ty)
+                    };
+                    builder.ins().return_(&[ret]);
+                } else {
+                    builder.ins().return_(&[]);
+                }
+            }
+            ControlFlowTerminator::Jump { target, .. } => {
+                builder.ins().jump(clif_blocks[*target], &[]);
+                observed_predecessors[*target] += 1;
+                if !sealed[*target] && observed_predecessors[*target] >= predecessor_count[*target]
+                {
+                    builder.seal_block(clif_blocks[*target]);
+                    sealed[*target] = true;
+                }
+                queue.push(*target);
+            }
+            ControlFlowTerminator::Branch {
+                condition,
+                then_target,
+                else_target,
+            } => {
+                let cond_val = clif_emit_expr(builder, ctx, condition, locals, next_var)?;
+                let cond = clif_truthy_pred(builder, cond_val);
+                builder.ins().brif(
+                    cond,
+                    clif_blocks[*then_target],
+                    &[],
+                    clif_blocks[*else_target],
+                    &[],
+                );
+                observed_predecessors[*then_target] += 1;
+                observed_predecessors[*else_target] += 1;
+                if !sealed[*then_target]
+                    && observed_predecessors[*then_target] >= predecessor_count[*then_target]
+                {
+                    builder.seal_block(clif_blocks[*then_target]);
+                    sealed[*then_target] = true;
+                }
+                if !sealed[*else_target]
+                    && observed_predecessors[*else_target] >= predecessor_count[*else_target]
+                {
+                    builder.seal_block(clif_blocks[*else_target]);
+                    sealed[*else_target] = true;
+                }
+                queue.push(*else_target);
+                queue.push(*then_target);
+            }
+            ControlFlowTerminator::Switch {
+                scrutinee,
+                cases,
+                default_target,
+            } => {
+                let cond_val = clif_emit_expr(builder, ctx, scrutinee, locals, next_var)?;
+                let cond_val = cast_clif_value(builder, cond_val, default_int_clif_type())?;
+                let mut switch = Switch::new();
+                for (value, target) in cases {
+                    switch.set_entry(*value as u128, clif_blocks[*target]);
+                }
+                switch.emit(builder, cond_val.value, clif_blocks[*default_target]);
+                for (_, target) in cases {
+                    observed_predecessors[*target] += 1;
+                    if !sealed[*target]
+                        && observed_predecessors[*target] >= predecessor_count[*target]
+                    {
+                        builder.seal_block(clif_blocks[*target]);
+                        sealed[*target] = true;
+                    }
+                    queue.push(*target);
+                }
+                observed_predecessors[*default_target] += 1;
+                if !sealed[*default_target]
+                    && observed_predecessors[*default_target] >= predecessor_count[*default_target]
+                {
+                    builder.seal_block(clif_blocks[*default_target]);
+                    sealed[*default_target] = true;
+                }
+                queue.push(*default_target);
+            }
+            ControlFlowTerminator::Unreachable => {
+                if let Some(return_ty) = return_ty {
+                    let ret = zero_for_type(builder, return_ty);
+                    builder.ins().return_(&[ret]);
+                } else {
+                    builder.ins().return_(&[]);
+                }
+            }
+        }
+    }
+
+    if emitted.iter().any(|done| !*done) {
+        bail!("cranelift cfg emission left one or more reachable blocks un-emitted");
+    }
+    for (index, block) in clif_blocks.iter().enumerate() {
+        if !sealed[index] {
+            builder.seal_block(*block);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType> {
