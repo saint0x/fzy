@@ -36,6 +36,222 @@ pub(super) struct LlvmFunctionSig {
     pub(super) ret: Option<String>,
 }
 
+pub(super) struct LlvmFuncCtx {
+    pub(super) next_value: usize,
+    pub(super) next_label: usize,
+    pub(super) slots: HashMap<String, String>,
+    pub(super) slot_tys: HashMap<String, String>,
+    pub(super) array_slots: HashMap<String, LlvmArrayBinding>,
+    pub(super) const_strings: HashMap<String, String>,
+    pub(super) direct_values: HashMap<String, LlvmValue>,
+    pub(super) wrapped_indices: HashMap<String, HashSet<usize>>,
+    pub(super) extern_link_symbols: HashMap<String, String>,
+    pub(super) closures: HashMap<String, LlvmClosureBinding>,
+    pub(super) function_sigs: HashMap<String, LlvmFunctionSig>,
+    pub(super) globals: HashMap<String, i32>,
+    pub(super) variant_tags: HashMap<String, i32>,
+    pub(super) mutable_globals: HashMap<String, String>,
+    pub(super) alloca_prologue: String,
+    pub(super) declared_allocas: HashSet<String>,
+    pub(super) code: String,
+}
+
+impl LlvmFuncCtx {
+    pub(super) fn new(
+        globals: HashMap<String, i32>,
+        variant_tags: HashMap<String, i32>,
+        mutable_globals: HashMap<String, String>,
+        wrapped_indices: HashMap<String, HashSet<usize>>,
+        extern_link_symbols: HashMap<String, String>,
+        function_sigs: HashMap<String, LlvmFunctionSig>,
+    ) -> Self {
+        Self {
+            next_value: 0,
+            next_label: 0,
+            slots: HashMap::new(),
+            slot_tys: HashMap::new(),
+            array_slots: HashMap::new(),
+            const_strings: HashMap::new(),
+            direct_values: HashMap::new(),
+            wrapped_indices,
+            extern_link_symbols,
+            closures: HashMap::new(),
+            function_sigs,
+            globals,
+            variant_tags,
+            mutable_globals,
+            alloca_prologue: String::new(),
+            declared_allocas: HashSet::new(),
+            code: String::new(),
+        }
+    }
+
+    pub(super) fn value(&mut self) -> String {
+        let id = self.next_value;
+        self.next_value += 1;
+        format!("%v{id}")
+    }
+
+    pub(super) fn label(&mut self, prefix: &str) -> String {
+        let id = self.next_label;
+        self.next_label += 1;
+        format!("{prefix}.{id}")
+    }
+
+    pub(super) fn declare_alloca(&mut self, slot: &str, ty: &str) {
+        if self.declared_allocas.insert(slot.to_string()) {
+            self.alloca_prologue
+                .push_str(&format!("  {slot} = alloca {ty}\n"));
+        }
+    }
+}
+
+pub(super) fn collect_wrapped_index_candidates(
+    body: &[ast::Stmt],
+) -> HashMap<String, HashSet<usize>> {
+    let mut out = HashMap::new();
+    collect_wrapped_index_candidates_stmt(body, &mut out);
+    out
+}
+
+fn collect_wrapped_index_candidates_stmt(
+    stmts: &[ast::Stmt],
+    out: &mut HashMap<String, HashSet<usize>>,
+) {
+    for stmt in stmts {
+        match stmt {
+            ast::Stmt::While { body, .. }
+            | ast::Stmt::Loop { body }
+            | ast::Stmt::ForIn { body, .. } => {
+                collect_wrapped_index_candidates_stmt(body, out);
+            }
+            ast::Stmt::For {
+                init,
+                condition: _,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    collect_wrapped_index_candidates_stmt(std::slice::from_ref(init.as_ref()), out);
+                }
+                if let Some(step) = step {
+                    collect_wrapped_index_candidates_stmt(std::slice::from_ref(step.as_ref()), out);
+                }
+                collect_wrapped_index_candidates_stmt(body, out);
+            }
+            ast::Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_wrapped_index_candidates_stmt(then_body, out);
+                collect_wrapped_index_candidates_stmt(else_body, out);
+            }
+            _ => {}
+        }
+    }
+
+    for pair in stmts.windows(2) {
+        let first = &pair[0];
+        let second = &pair[1];
+        let (target, limit) = match first {
+            ast::Stmt::CompoundAssign {
+                target,
+                op: ast::BinaryOp::Add,
+                value: ast::Expr::Int(1),
+            } => match second {
+                ast::Stmt::If {
+                    condition:
+                        ast::Expr::Binary {
+                            op: ast::BinaryOp::Eq,
+                            left,
+                            right,
+                        },
+                    then_body,
+                    else_body,
+                } if else_body.is_empty()
+                    && then_body.len() == 1
+                    && matches!(
+                        then_body.first(),
+                        Some(ast::Stmt::Assign {
+                            target: assign_target,
+                            value: ast::Expr::Int(0),
+                        }) if assign_target == target
+                    ) =>
+                {
+                    let cond_target = match left.as_ref() {
+                        ast::Expr::Ident(name) => Some(name),
+                        _ => None,
+                    };
+                    let cond_limit = match right.as_ref() {
+                        ast::Expr::Int(v) if *v > 0 => Some(*v as usize),
+                        _ => None,
+                    };
+                    if cond_target == Some(target) {
+                        if let Some(limit) = cond_limit {
+                            (target.clone(), limit)
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                _ => continue,
+            },
+            _ => continue,
+        };
+        out.entry(target).or_default().insert(limit);
+    }
+}
+
+pub(super) fn llvm_snapshot_closure_captures(
+    ctx: &mut LlvmFuncCtx,
+) -> HashMap<String, LlvmCaptureBinding> {
+    let visible = ctx.slots.clone();
+    let mut captures = HashMap::new();
+    for (name, slot) in visible {
+        let ty = ctx
+            .slot_tys
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| "i32".to_string());
+        let loaded = ctx.value();
+        ctx.code
+            .push_str(&format!("  {loaded} = load {ty}, ptr {slot}\n"));
+        let capture_slot = format!(
+            "%slot_cap_{}_{}",
+            native_mangle_symbol(&name),
+            ctx.next_value
+        );
+        ctx.code.push_str(&format!(
+            "  {capture_slot} = alloca {ty}\n  store {ty} {loaded}, ptr {capture_slot}\n"
+        ));
+        captures.insert(
+            name,
+            LlvmCaptureBinding {
+                slot: capture_slot,
+                ty,
+            },
+        );
+    }
+    captures
+}
+
+pub(super) fn llvm_restore_shadowed_slots(
+    ctx: &mut LlvmFuncCtx,
+    saved: HashMap<String, Option<String>>,
+    inserted_names: HashSet<String>,
+) {
+    for (name, prior) in saved {
+        if let Some(slot) = prior {
+            ctx.slots.insert(name, slot);
+        } else if inserted_names.contains(&name) {
+            ctx.slots.remove(&name);
+        }
+    }
+}
+
 pub(super) fn llvm_ir_type_for_ast_type(ty: &ast::Type) -> String {
     match ty {
         ast::Type::Void | ast::Type::Never => "void".to_string(),

@@ -36,8 +36,10 @@ use self::native_backend_support::{
 use self::llvm_support::{
     llvm_assert_finite, llvm_bool_from_pred, llvm_cast_value, llvm_emit_expr_as,
     llvm_emit_truthy_pred, llvm_float_literal, llvm_ir_type_for_ast_type, llvm_is_float_ty,
-    llvm_zero_literal,
-    LlvmArrayBinding, LlvmCaptureBinding, LlvmClosureBinding, LlvmFunctionSig, LlvmValue,
+    llvm_restore_shadowed_slots, llvm_snapshot_closure_captures, llvm_zero_literal,
+    collect_wrapped_index_candidates,
+    LlvmFuncCtx,
+    LlvmArrayBinding, LlvmClosureBinding, LlvmFunctionSig, LlvmValue,
 };
 use self::native_metadata::{
     build_global_const_i32_map, build_mutable_static_i32_map, build_string_literal_ids,
@@ -3666,76 +3668,6 @@ fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Re
     Ok(out)
 }
 
-struct LlvmFuncCtx {
-    next_value: usize,
-    next_label: usize,
-    slots: HashMap<String, String>,
-    slot_tys: HashMap<String, String>,
-    array_slots: HashMap<String, LlvmArrayBinding>,
-    const_strings: HashMap<String, String>,
-    direct_values: HashMap<String, LlvmValue>,
-    wrapped_indices: HashMap<String, HashSet<usize>>,
-    extern_link_symbols: HashMap<String, String>,
-    closures: HashMap<String, LlvmClosureBinding>,
-    function_sigs: HashMap<String, LlvmFunctionSig>,
-    globals: HashMap<String, i32>,
-    variant_tags: HashMap<String, i32>,
-    mutable_globals: HashMap<String, String>,
-    alloca_prologue: String,
-    declared_allocas: HashSet<String>,
-    code: String,
-}
-
-impl LlvmFuncCtx {
-    fn new(
-        globals: HashMap<String, i32>,
-        variant_tags: HashMap<String, i32>,
-        mutable_globals: HashMap<String, String>,
-        wrapped_indices: HashMap<String, HashSet<usize>>,
-        extern_link_symbols: HashMap<String, String>,
-        function_sigs: HashMap<String, LlvmFunctionSig>,
-    ) -> Self {
-        Self {
-            next_value: 0,
-            next_label: 0,
-            slots: HashMap::new(),
-            slot_tys: HashMap::new(),
-            array_slots: HashMap::new(),
-            const_strings: HashMap::new(),
-            direct_values: HashMap::new(),
-            wrapped_indices,
-            extern_link_symbols,
-            closures: HashMap::new(),
-            function_sigs,
-            globals,
-            variant_tags,
-            mutable_globals,
-            alloca_prologue: String::new(),
-            declared_allocas: HashSet::new(),
-            code: String::new(),
-        }
-    }
-
-    fn value(&mut self) -> String {
-        let id = self.next_value;
-        self.next_value += 1;
-        format!("%v{id}")
-    }
-
-    fn label(&mut self, prefix: &str) -> String {
-        let id = self.next_label;
-        self.next_label += 1;
-        format!("{prefix}.{id}")
-    }
-
-    fn declare_alloca(&mut self, slot: &str, ty: &str) {
-        if self.declared_allocas.insert(slot.to_string()) {
-            self.alloca_prologue
-                .push_str(&format!("  {slot} = alloca {ty}\n"));
-        }
-    }
-}
-
 fn llvm_emit_function(
     function: &hir::TypedFunction,
     forced_return: Option<i32>,
@@ -3880,148 +3812,6 @@ fn llvm_emit_function(
     out.push_str(&ctx.code);
     out.push_str("}\n");
     Ok(out)
-}
-
-fn collect_wrapped_index_candidates(body: &[ast::Stmt]) -> HashMap<String, HashSet<usize>> {
-    let mut out = HashMap::new();
-    collect_wrapped_index_candidates_stmt(body, &mut out);
-    out
-}
-
-fn collect_wrapped_index_candidates_stmt(
-    stmts: &[ast::Stmt],
-    out: &mut HashMap<String, HashSet<usize>>,
-) {
-    for stmt in stmts {
-        match stmt {
-            ast::Stmt::While { body, .. }
-            | ast::Stmt::Loop { body }
-            | ast::Stmt::ForIn { body, .. } => {
-                collect_wrapped_index_candidates_stmt(body, out);
-            }
-            ast::Stmt::For {
-                init,
-                condition: _,
-                step,
-                body,
-            } => {
-                if let Some(init) = init {
-                    collect_wrapped_index_candidates_stmt(std::slice::from_ref(init.as_ref()), out);
-                }
-                if let Some(step) = step {
-                    collect_wrapped_index_candidates_stmt(std::slice::from_ref(step.as_ref()), out);
-                }
-                collect_wrapped_index_candidates_stmt(body, out);
-            }
-            ast::Stmt::If {
-                then_body,
-                else_body,
-                ..
-            } => {
-                collect_wrapped_index_candidates_stmt(then_body, out);
-                collect_wrapped_index_candidates_stmt(else_body, out);
-            }
-            _ => {}
-        }
-    }
-
-    for pair in stmts.windows(2) {
-        let first = &pair[0];
-        let second = &pair[1];
-        let (target, limit) = match first {
-            ast::Stmt::CompoundAssign {
-                target,
-                op: ast::BinaryOp::Add,
-                value: ast::Expr::Int(1),
-            } => match second {
-                ast::Stmt::If {
-                    condition:
-                        ast::Expr::Binary {
-                            op: ast::BinaryOp::Eq,
-                            left,
-                            right,
-                        },
-                    then_body,
-                    else_body,
-                } if else_body.is_empty()
-                    && then_body.len() == 1
-                    && matches!(
-                        then_body.first(),
-                        Some(ast::Stmt::Assign {
-                            target: assign_target,
-                            value: ast::Expr::Int(0),
-                        }) if assign_target == target
-                    ) =>
-                {
-                    let cond_target = match left.as_ref() {
-                        ast::Expr::Ident(name) => Some(name),
-                        _ => None,
-                    };
-                    let cond_limit = match right.as_ref() {
-                        ast::Expr::Int(v) if *v > 0 => Some(*v as usize),
-                        _ => None,
-                    };
-                    if cond_target == Some(target) {
-                        if let Some(limit) = cond_limit {
-                            (target.clone(), limit)
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        continue;
-                    }
-                }
-                _ => continue,
-            },
-            _ => continue,
-        };
-        out.entry(target).or_default().insert(limit);
-    }
-}
-
-fn llvm_snapshot_closure_captures(ctx: &mut LlvmFuncCtx) -> HashMap<String, LlvmCaptureBinding> {
-    let visible = ctx.slots.clone();
-    let mut captures = HashMap::new();
-    for (name, slot) in visible {
-        let ty = ctx
-            .slot_tys
-            .get(&name)
-            .cloned()
-            .unwrap_or_else(|| "i32".to_string());
-        let loaded = ctx.value();
-        ctx.code
-            .push_str(&format!("  {loaded} = load {ty}, ptr {slot}\n"));
-        let capture_slot = format!(
-            "%slot_cap_{}_{}",
-            native_mangle_symbol(&name),
-            ctx.next_value
-        );
-        ctx.code.push_str(&format!(
-            "  {capture_slot} = alloca {ty}\n  store {ty} {loaded}, ptr {capture_slot}\n"
-        ));
-        captures.insert(
-            name,
-            LlvmCaptureBinding {
-                slot: capture_slot,
-                ty,
-            },
-        );
-    }
-    captures
-}
-
-fn llvm_restore_shadowed_slots(
-    ctx: &mut LlvmFuncCtx,
-    saved: HashMap<String, Option<String>>,
-    inserted_names: HashSet<String>,
-) {
-    for (name, prior) in saved {
-        if let Some(slot) = prior {
-            ctx.slots.insert(name, slot);
-        } else if inserted_names.contains(&name) {
-            ctx.slots.remove(&name);
-        }
-    }
 }
 
 fn llvm_emit_inlined_closure_call(
