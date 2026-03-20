@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlags, Type as ClifType};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
@@ -39,7 +39,19 @@ struct LlvmClosureBinding {
     params: Vec<ast::Param>,
     return_type: Option<ast::Type>,
     body: ast::Expr,
-    captures: HashMap<String, String>,
+    captures: HashMap<String, LlvmCaptureBinding>,
+}
+
+#[derive(Clone)]
+struct LlvmCaptureBinding {
+    slot: String,
+    ty: String,
+}
+
+#[derive(Clone)]
+struct LlvmValue {
+    value: String,
+    ty: String,
 }
 
 #[derive(Clone)]
@@ -54,9 +66,16 @@ struct ClifClosureBinding {
 struct LlvmArrayBinding {
     storage: String,
     len: usize,
+    element_ty: String,
     element_bits: u16,
     element_align: u8,
     element_stride: u8,
+}
+
+#[derive(Clone)]
+struct LlvmFunctionSig {
+    params: Vec<String>,
+    ret: Option<String>,
 }
 
 #[derive(Clone)]
@@ -4205,16 +4224,32 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<
             )
         })
         .collect::<HashMap<_, _>>();
+    let mut function_sigs = HashMap::<String, LlvmFunctionSig>::new();
+    for function in &fir.typed_functions {
+        function_sigs.insert(
+            function.name.clone(),
+            LlvmFunctionSig {
+                params: function
+                    .params
+                    .iter()
+                    .map(|param| llvm_ir_type_for_ast_type(&param.ty))
+                    .collect(),
+                ret: (!matches!(function.return_type, ast::Type::Void | ast::Type::Never))
+                    .then(|| llvm_ir_type_for_ast_type(&function.return_type)),
+            },
+        );
+    }
     for import in &extern_imports {
         let params = import
             .params
             .iter()
-            .map(|_| "i32")
+            .map(|param| llvm_ir_type_for_ast_type(&param.ty))
             .collect::<Vec<_>>()
             .join(", ");
         let symbol = import.link_name.as_deref().unwrap_or(import.name.as_str());
         let symbol = native_mangle_symbol(symbol);
-        let _ = writeln!(&mut out, "declare i32 @{}({})", symbol, params);
+        let ret = llvm_ir_type_for_ast_type(&import.return_type);
+        let _ = writeln!(&mut out, "declare {ret} @{}({})", symbol, params);
     }
     if !used_imports.is_empty() || !used_data_plane_imports.is_empty() || !extern_imports.is_empty()
     {
@@ -4254,6 +4289,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<
                 &plan.string_literal_ids,
                 &plan.task_ref_ids,
                 &extern_link_symbols,
+                &function_sigs,
                 cfg,
             )
             .map_err(|error| {
@@ -4402,12 +4438,14 @@ struct LlvmFuncCtx {
     next_value: usize,
     next_label: usize,
     slots: HashMap<String, String>,
+    slot_tys: HashMap<String, String>,
     array_slots: HashMap<String, LlvmArrayBinding>,
     const_strings: HashMap<String, String>,
-    direct_values: HashMap<String, String>,
+    direct_values: HashMap<String, LlvmValue>,
     wrapped_indices: HashMap<String, HashSet<usize>>,
     extern_link_symbols: HashMap<String, String>,
     closures: HashMap<String, LlvmClosureBinding>,
+    function_sigs: HashMap<String, LlvmFunctionSig>,
     globals: HashMap<String, i32>,
     variant_tags: HashMap<String, i32>,
     mutable_globals: HashMap<String, String>,
@@ -4423,17 +4461,20 @@ impl LlvmFuncCtx {
         mutable_globals: HashMap<String, String>,
         wrapped_indices: HashMap<String, HashSet<usize>>,
         extern_link_symbols: HashMap<String, String>,
+        function_sigs: HashMap<String, LlvmFunctionSig>,
     ) -> Self {
         Self {
             next_value: 0,
             next_label: 0,
             slots: HashMap::new(),
+            slot_tys: HashMap::new(),
             array_slots: HashMap::new(),
             const_strings: HashMap::new(),
             direct_values: HashMap::new(),
             wrapped_indices,
             extern_link_symbols,
             closures: HashMap::new(),
+            function_sigs,
             globals,
             variant_tags,
             mutable_globals,
@@ -4463,6 +4504,143 @@ impl LlvmFuncCtx {
     }
 }
 
+fn llvm_ir_type_for_ast_type(ty: &ast::Type) -> String {
+    match ty {
+        ast::Type::Void | ast::Type::Never => "void".to_string(),
+        ast::Type::Bool => "i8".to_string(),
+        ast::Type::ISize | ast::Type::USize => {
+            if std::mem::size_of::<usize>() == 8 {
+                "i64".to_string()
+            } else {
+                "i32".to_string()
+            }
+        }
+        ast::Type::Int { bits, .. } => format!("i{bits}"),
+        ast::Type::Float { bits: 32 } => "float".to_string(),
+        ast::Type::Float { bits: 64 } => "double".to_string(),
+        ast::Type::Char => "i32".to_string(),
+        _ => "i32".to_string(),
+    }
+}
+
+fn llvm_is_float_ty(ty: &str) -> bool {
+    ty == "float" || ty == "double"
+}
+
+fn llvm_float_literal(value: f64) -> String {
+    let mut rendered = value.to_string();
+    if !rendered.contains('.') && !rendered.contains('e') && !rendered.contains('E') {
+        rendered.push_str(".0");
+    }
+    rendered
+}
+
+fn llvm_zero_literal(ty: &str, int_fallback: i32) -> String {
+    if llvm_is_float_ty(ty) {
+        "0.0".to_string()
+    } else {
+        int_fallback.to_string()
+    }
+}
+
+fn llvm_emit_truthy_pred(ctx: &mut LlvmFuncCtx, value: &LlvmValue) -> String {
+    let pred = ctx.value();
+    if llvm_is_float_ty(&value.ty) {
+        ctx.code.push_str(&format!(
+            "  {pred} = fcmp une {} {}, 0.0\n",
+            value.ty, value.value
+        ));
+    } else {
+        ctx.code.push_str(&format!(
+            "  {pred} = icmp ne {} {}, 0\n",
+            value.ty, value.value
+        ));
+    }
+    pred
+}
+
+fn llvm_bool_from_pred(ctx: &mut LlvmFuncCtx, pred: &str) -> LlvmValue {
+    let out = ctx.value();
+    ctx.code
+        .push_str(&format!("  {out} = zext i1 {pred} to i8\n"));
+    LlvmValue {
+        value: out,
+        ty: "i8".to_string(),
+    }
+}
+
+fn llvm_cast_value(ctx: &mut LlvmFuncCtx, value: LlvmValue, target_ty: &str) -> Result<LlvmValue> {
+    if value.ty == target_ty {
+        return Ok(value);
+    }
+    let out = ctx.value();
+    match (value.ty.as_str(), target_ty) {
+        ("i8", "i32") | ("i8", "i64") | ("i32", "i64") => {
+            ctx.code.push_str(&format!(
+                "  {out} = sext {} {} to {target_ty}\n",
+                value.ty, value.value
+            ));
+        }
+        ("i64", "i32") | ("i32", "i8") | ("i64", "i8") => {
+            ctx.code.push_str(&format!(
+                "  {out} = trunc {} {} to {target_ty}\n",
+                value.ty, value.value
+            ));
+        }
+        ("i8", "float") | ("i32", "float") | ("i64", "float") => {
+            ctx.code.push_str(&format!(
+                "  {out} = sitofp {} {} to float\n",
+                value.ty, value.value
+            ));
+        }
+        ("i8", "double") | ("i32", "double") | ("i64", "double") => {
+            ctx.code.push_str(&format!(
+                "  {out} = sitofp {} {} to double\n",
+                value.ty, value.value
+            ));
+        }
+        ("float", "i32") | ("float", "i64") | ("double", "i32") | ("double", "i64") => {
+            ctx.code.push_str(&format!(
+                "  {out} = fptosi {} {} to {target_ty}\n",
+                value.ty, value.value
+            ));
+        }
+        ("float", "double") => {
+            ctx.code.push_str(&format!(
+                "  {out} = fpext float {} to double\n",
+                value.value
+            ));
+        }
+        ("double", "float") => {
+            ctx.code.push_str(&format!(
+                "  {out} = fptrunc double {} to float\n",
+                value.value
+            ));
+        }
+        _ => {
+            return Err(anyhow!(
+                "unsupported llvm cast from `{}` to `{target_ty}`",
+                value.ty
+            ));
+        }
+    }
+    Ok(LlvmValue {
+        value: out,
+        ty: target_ty.to_string(),
+    })
+}
+
+fn llvm_emit_expr_as(
+    expr: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+    target_ty: &str,
+) -> Result<LlvmValue> {
+    let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
+    llvm_cast_value(ctx, value, target_ty)
+}
+
 fn llvm_emit_function(
     function: &hir::TypedFunction,
     forced_return: Option<i32>,
@@ -4472,13 +4650,14 @@ fn llvm_emit_function(
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
     extern_link_symbols: &HashMap<String, String>,
+    function_sigs: &HashMap<String, LlvmFunctionSig>,
     cfg: &ControlFlowCfg,
 ) -> Result<String> {
     let params = function
         .params
         .iter()
         .enumerate()
-        .map(|(i, _)| format!("i32 %arg{i}"))
+        .map(|(i, param)| format!("{} %arg{i}", llvm_ir_type_for_ast_type(&param.ty)))
         .collect::<Vec<_>>()
         .join(", ");
     let wrapped_indices = collect_wrapped_index_candidates(&function.body);
@@ -4488,17 +4667,21 @@ fn llvm_emit_function(
         mutable_globals.clone(),
         wrapped_indices,
         extern_link_symbols.clone(),
+        function_sigs.clone(),
     );
+    let return_ty = llvm_ir_type_for_ast_type(&function.return_type);
     let mut out = format!(
-        "define i32 @{}({params}) {{\nentry:\n",
-        native_link_symbol_for_function(function)
+        "define {return_ty} @{}({params}) {{\nentry:\n",
+        native_link_symbol_for_function(function),
     );
     for (index, param) in function.params.iter().enumerate() {
         let slot = format!("%slot_{}", param.name);
-        ctx.declare_alloca(&slot, "i32");
+        let param_ty = llvm_ir_type_for_ast_type(&param.ty);
+        ctx.declare_alloca(&slot, &param_ty);
         ctx.code
-            .push_str(&format!("  store i32 %arg{index}, ptr {slot}\n"));
+            .push_str(&format!("  store {param_ty} %arg{index}, ptr {slot}\n"));
         ctx.slots.insert(param.name.clone(), slot);
+        ctx.slot_tys.insert(param.name.clone(), param_ty);
     }
     let labels = cfg
         .blocks
@@ -4524,12 +4707,20 @@ fn llvm_emit_function(
         llvm_emit_linear_stmts(&block.stmts, &mut ctx, string_literal_ids, task_ref_ids)?;
         match &block.terminator {
             ControlFlowTerminator::Return(Some(expr)) => {
-                let value = llvm_emit_expr(expr, &mut ctx, string_literal_ids, task_ref_ids);
-                ctx.code.push_str(&format!("  ret i32 {value}\n"));
+                let value = llvm_emit_expr(expr, &mut ctx, string_literal_ids, task_ref_ids)?;
+                let value = llvm_cast_value(&mut ctx, value, &return_ty)?;
+                ctx.code
+                    .push_str(&format!("  ret {} {}\n", value.ty, value.value));
             }
             ControlFlowTerminator::Return(None) => {
                 let fallback = forced_return.unwrap_or(0);
-                ctx.code.push_str(&format!("  ret i32 {fallback}\n"));
+                if return_ty == "void" {
+                    ctx.code.push_str("  ret void\n");
+                } else {
+                    let fallback = llvm_zero_literal(&return_ty, fallback);
+                    ctx.code
+                        .push_str(&format!("  ret {return_ty} {fallback}\n"));
+                }
             }
             ControlFlowTerminator::Jump { target, .. } => {
                 let target_label = labels
@@ -4547,7 +4738,7 @@ fn llvm_emit_function(
                     &mut ctx,
                     string_literal_ids,
                     task_ref_ids,
-                );
+                )?;
                 let then_label = labels.get(then_target).ok_or_else(|| {
                     anyhow!("missing llvm label for cfg branch target {}", then_target)
                 })?;
@@ -4563,21 +4754,25 @@ fn llvm_emit_function(
                 cases,
                 default_target,
             } => {
-                let value = llvm_emit_expr(scrutinee, &mut ctx, string_literal_ids, task_ref_ids);
+                let value = llvm_emit_expr(scrutinee, &mut ctx, string_literal_ids, task_ref_ids)?;
                 let default_label = labels.get(default_target).ok_or_else(|| {
                     anyhow!(
                         "missing llvm label for cfg switch default target {}",
                         default_target
                     )
                 })?;
-                ctx.code
-                    .push_str(&format!("  switch i32 {value}, label %{default_label} [\n"));
+                ctx.code.push_str(&format!(
+                    "  switch {} {}, label %{default_label} [\n",
+                    value.ty, value.value
+                ));
                 for (case_value, target) in cases {
                     let target_label = labels.get(target).ok_or_else(|| {
                         anyhow!("missing llvm label for cfg switch target {}", target)
                     })?;
-                    ctx.code
-                        .push_str(&format!("    i32 {case_value}, label %{target_label}\n"));
+                    ctx.code.push_str(&format!(
+                        "    {} {case_value}, label %{target_label}\n",
+                        value.ty
+                    ));
                 }
                 ctx.code.push_str("  ]\n");
             }
@@ -4689,22 +4884,33 @@ fn collect_wrapped_index_candidates_stmt(
     }
 }
 
-fn llvm_snapshot_closure_captures(ctx: &mut LlvmFuncCtx) -> HashMap<String, String> {
+fn llvm_snapshot_closure_captures(ctx: &mut LlvmFuncCtx) -> HashMap<String, LlvmCaptureBinding> {
     let visible = ctx.slots.clone();
     let mut captures = HashMap::new();
     for (name, slot) in visible {
+        let ty = ctx
+            .slot_tys
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| "i32".to_string());
         let loaded = ctx.value();
         ctx.code
-            .push_str(&format!("  {loaded} = load i32, ptr {slot}\n"));
+            .push_str(&format!("  {loaded} = load {ty}, ptr {slot}\n"));
         let capture_slot = format!(
             "%slot_cap_{}_{}",
             native_mangle_symbol(&name),
             ctx.next_value
         );
         ctx.code.push_str(&format!(
-            "  {capture_slot} = alloca i32\n  store i32 {loaded}, ptr {capture_slot}\n"
+            "  {capture_slot} = alloca {ty}\n  store {ty} {loaded}, ptr {capture_slot}\n"
         ));
-        captures.insert(name, capture_slot);
+        captures.insert(
+            name,
+            LlvmCaptureBinding {
+                slot: capture_slot,
+                ty,
+            },
+        );
     }
     captures
 }
@@ -4729,45 +4935,53 @@ fn llvm_emit_inlined_closure_call(
     ctx: &mut LlvmFuncCtx,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
-) -> String {
+) -> Result<LlvmValue> {
     let mut saved = HashMap::<String, Option<String>>::new();
     let mut inserted = HashSet::<String>::new();
-    for (name, capture_slot) in &binding.captures {
+    for (name, capture) in &binding.captures {
         if !saved.contains_key(name) {
             saved.insert(name.clone(), ctx.slots.get(name).cloned());
         }
-        ctx.slots.insert(name.clone(), capture_slot.clone());
+        ctx.slots.insert(name.clone(), capture.slot.clone());
+        ctx.slot_tys.insert(name.clone(), capture.ty.clone());
         inserted.insert(name.clone());
     }
 
     for (index, param) in binding.params.iter().enumerate() {
         let arg = args.get(index).cloned().unwrap_or(ast::Expr::Int(0));
-        let rendered = llvm_emit_expr(&arg, ctx, string_literal_ids, task_ref_ids);
+        let rendered = llvm_emit_expr(&arg, ctx, string_literal_ids, task_ref_ids)?;
+        let param_ty = llvm_ir_type_for_ast_type(&param.ty);
+        let rendered = llvm_cast_value(ctx, rendered, &param_ty)?;
         let param_slot = format!(
             "%slot_closure_param_{}_{}",
             native_mangle_symbol(&param.name),
             ctx.next_value
         );
         ctx.code.push_str(&format!(
-            "  {param_slot} = alloca i32\n  store i32 {rendered}, ptr {param_slot}\n"
+            "  {param_slot} = alloca {param_ty}\n  store {param_ty} {}, ptr {param_slot}\n",
+            rendered.value
         ));
         if !saved.contains_key(&param.name) {
             saved.insert(param.name.clone(), ctx.slots.get(&param.name).cloned());
         }
         ctx.slots.insert(param.name.clone(), param_slot);
+        ctx.slot_tys.insert(param.name.clone(), param_ty);
         inserted.insert(param.name.clone());
     }
 
-    let mut value = llvm_emit_expr(&binding.body, ctx, string_literal_ids, task_ref_ids);
+    let mut value = llvm_emit_expr(&binding.body, ctx, string_literal_ids, task_ref_ids)?;
     if binding
         .return_type
         .as_ref()
         .is_some_and(|ty| *ty == ast::Type::Void)
     {
-        value = "0".to_string();
+        value = LlvmValue {
+            value: "0".to_string(),
+            ty: "i32".to_string(),
+        };
     }
     llvm_restore_shadowed_slots(ctx, saved, inserted);
-    value
+    Ok(value)
 }
 
 fn llvm_emit_let_pattern(
@@ -4777,26 +4991,32 @@ fn llvm_emit_let_pattern(
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
 ) -> Result<()> {
-    let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+    let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
     match pattern {
         ast::Pattern::Wildcard => {}
         ast::Pattern::Ident(name) => {
             let slot = format!("%slot_{}_{}", native_mangle_symbol(name), ctx.next_value);
-            ctx.declare_alloca(&slot, "i32");
-            ctx.code
-                .push_str(&format!("  store i32 {rendered}, ptr {slot}\n"));
+            ctx.declare_alloca(&slot, &rendered.ty);
+            ctx.code.push_str(&format!(
+                "  store {} {}, ptr {slot}\n",
+                rendered.ty, rendered.value
+            ));
             ctx.slots.insert(name.clone(), slot);
+            ctx.slot_tys.insert(name.clone(), rendered.ty.clone());
         }
         ast::Pattern::Int(expected) => {
             let cmp = ctx.value();
-            ctx.code
-                .push_str(&format!("  {cmp} = icmp eq i32 {rendered}, {expected}\n"));
+            ctx.code.push_str(&format!(
+                "  {cmp} = icmp eq {} {}, {expected}\n",
+                rendered.ty, rendered.value
+            ));
         }
         ast::Pattern::Bool(expected) => {
             let cmp = ctx.value();
             let expected_i32 = if *expected { 1 } else { 0 };
             ctx.code.push_str(&format!(
-                "  {cmp} = icmp eq i32 {rendered}, {expected_i32}\n"
+                "  {cmp} = icmp eq {} {}, {expected_i32}\n",
+                rendered.ty, rendered.value
             ));
         }
         ast::Pattern::Struct { name, fields } => {
@@ -4821,16 +5041,21 @@ fn llvm_emit_let_pattern(
                 else {
                     bail!("native backend requires struct literal fields to cover every bound pattern field");
                 };
-                let field_value = llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
+                let field_value =
+                    llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
                 let slot = format!(
                     "%slot_{}_{}",
                     native_mangle_symbol(binding_name),
                     ctx.next_value
                 );
-                ctx.declare_alloca(&slot, "i32");
-                ctx.code
-                    .push_str(&format!("  store i32 {field_value}, ptr {slot}\n"));
+                ctx.declare_alloca(&slot, &field_value.ty);
+                ctx.code.push_str(&format!(
+                    "  store {} {}, ptr {slot}\n",
+                    field_value.ty, field_value.value
+                ));
                 ctx.slots.insert(binding_name.clone(), slot);
+                ctx.slot_tys
+                    .insert(binding_name.clone(), field_value.ty.clone());
             }
         }
         ast::Pattern::Variant {
@@ -4842,8 +5067,10 @@ fn llvm_emit_let_pattern(
             let key = format!("{enum_name}::{variant}");
             let tag = variant_tag_for_key(&key, &ctx.variant_tags);
             let cmp = ctx.value();
-            ctx.code
-                .push_str(&format!("  {cmp} = icmp eq i32 {rendered}, {tag}\n"));
+            ctx.code.push_str(&format!(
+                "  {cmp} = icmp eq {} {}, {tag}\n",
+                rendered.ty, rendered.value
+            ));
             if let ast::Expr::EnumInit {
                 enum_name: value_enum,
                 variant: value_variant,
@@ -4857,16 +5084,20 @@ fn llvm_emit_let_pattern(
                 {
                     for (binding_name, payload_expr) in bindings.iter().zip(payload.iter()) {
                         let payload_value =
-                            llvm_emit_expr(payload_expr, ctx, string_literal_ids, task_ref_ids);
+                            llvm_emit_expr(payload_expr, ctx, string_literal_ids, task_ref_ids)?;
                         let slot = format!(
                             "%slot_{}_{}",
                             native_mangle_symbol(binding_name),
                             ctx.next_value
                         );
-                        ctx.declare_alloca(&slot, "i32");
-                        ctx.code
-                            .push_str(&format!("  store i32 {payload_value}, ptr {slot}\n"));
+                        ctx.declare_alloca(&slot, &payload_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {slot}\n",
+                            payload_value.ty, payload_value.value
+                        ));
                         ctx.slots.insert(binding_name.clone(), slot);
+                        ctx.slot_tys
+                            .insert(binding_name.clone(), payload_value.ty.clone());
                     }
                 }
             }
@@ -4918,13 +5149,27 @@ fn llvm_emit_linear_stmts(
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let storage = format!("%slot_{}_arr_{}", name, ctx.next_value);
                     let len = items.len();
-                    ctx.declare_alloca(&storage, &format!("[{len} x i32]"));
+                    let lowered_items = items
+                        .iter()
+                        .map(|item| llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids))
+                        .collect::<Result<Vec<_>>>()?;
+                    let element_ty = lowered_items
+                        .first()
+                        .map(|value| value.ty.clone())
+                        .unwrap_or_else(|| "i32".to_string());
+                    ctx.declare_alloca(&storage, &format!("[{len} x {element_ty}]"));
                     for (idx, item) in items.iter().enumerate() {
-                        let item_value =
-                            llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
+                        let item_value = llvm_emit_expr_as(
+                            item,
+                            ctx,
+                            string_literal_ids,
+                            task_ref_ids,
+                            &element_ty,
+                        )?;
                         let element_ptr = ctx.value();
                         ctx.code.push_str(&format!(
-                            "  {element_ptr} = getelementptr inbounds [{len} x i32], ptr {storage}, i32 0, i64 {idx}\n  store i32 {item_value}, ptr {element_ptr}\n"
+                            "  {element_ptr} = getelementptr inbounds [{len} x {element_ty}], ptr {storage}, i32 0, i64 {idx}\n  store {element_ty} {}, ptr {element_ptr}\n",
+                            item_value.value
                         ));
                     }
                     ctx.array_slots.insert(
@@ -4932,6 +5177,7 @@ fn llvm_emit_linear_stmts(
                         LlvmArrayBinding {
                             storage,
                             len,
+                            element_ty: element_ty.clone(),
                             element_bits: 32,
                             element_align: 4,
                             element_stride: 4,
@@ -4966,12 +5212,15 @@ fn llvm_emit_linear_stmts(
                     ctx.direct_values.remove(name);
                     continue;
                 }
-                let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
                 let slot = format!("%slot_{}_{}", name, ctx.next_value);
-                ctx.declare_alloca(&slot, "i32");
-                ctx.code
-                    .push_str(&format!("  store i32 {rendered}, ptr {slot}\n"));
+                ctx.declare_alloca(&slot, &rendered.ty);
+                ctx.code.push_str(&format!(
+                    "  store {} {}, ptr {slot}\n",
+                    rendered.ty, rendered.value
+                ));
                 ctx.slots.insert(name.clone(), slot);
+                ctx.slot_tys.insert(name.clone(), rendered.ty.clone());
                 if !*mutable {
                     ctx.direct_values.insert(name.clone(), rendered.clone());
                 } else {
@@ -4980,12 +5229,16 @@ fn llvm_emit_linear_stmts(
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
                         let field_value =
-                            llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
+                            llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
                         let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
-                        ctx.declare_alloca(&field_slot, "i32");
-                        ctx.code
-                            .push_str(&format!("  store i32 {field_value}, ptr {field_slot}\n"));
+                        ctx.declare_alloca(&field_slot, &field_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {field_slot}\n",
+                            field_value.ty, field_value.value
+                        ));
                         ctx.slots.insert(format!("{name}.{field}"), field_slot);
+                        ctx.slot_tys
+                            .insert(format!("{name}.{field}"), field_value.ty.clone());
                     }
                 }
                 if let ast::Expr::Range {
@@ -4994,19 +5247,30 @@ fn llvm_emit_linear_stmts(
                     inclusive,
                 } = value
                 {
-                    let start_value = llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids);
-                    let end_value = llvm_emit_expr(end, ctx, string_literal_ids, task_ref_ids);
-                    let inclusive_value = if *inclusive { "1" } else { "0" };
+                    let start_value = llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids)?;
+                    let end_value = llvm_emit_expr(end, ctx, string_literal_ids, task_ref_ids)?;
+                    let inclusive_value = LlvmValue {
+                        value: if *inclusive {
+                            "1".to_string()
+                        } else {
+                            "0".to_string()
+                        },
+                        ty: "i8".to_string(),
+                    };
                     for (field, rendered) in [
                         ("start", start_value),
                         ("end", end_value),
-                        ("inclusive", inclusive_value.to_string()),
+                        ("inclusive", inclusive_value),
                     ] {
                         let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
-                        ctx.declare_alloca(&field_slot, "i32");
-                        ctx.code
-                            .push_str(&format!("  store i32 {rendered}, ptr {field_slot}\n"));
+                        ctx.declare_alloca(&field_slot, &rendered.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {field_slot}\n",
+                            rendered.ty, rendered.value
+                        ));
                         ctx.slots.insert(format!("{name}.{field}"), field_slot);
+                        ctx.slot_tys
+                            .insert(format!("{name}.{field}"), rendered.ty.clone());
                     }
                 }
                 ctx.array_slots.remove(name);
@@ -5024,13 +5288,27 @@ fn llvm_emit_linear_stmts(
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let storage = format!("%slot_{}_arr_{}", target, ctx.next_value);
                     let len = items.len();
-                    ctx.declare_alloca(&storage, &format!("[{len} x i32]"));
+                    let lowered_items = items
+                        .iter()
+                        .map(|item| llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids))
+                        .collect::<Result<Vec<_>>>()?;
+                    let element_ty = lowered_items
+                        .first()
+                        .map(|value| value.ty.clone())
+                        .unwrap_or_else(|| "i32".to_string());
+                    ctx.declare_alloca(&storage, &format!("[{len} x {element_ty}]"));
                     for (idx, item) in items.iter().enumerate() {
-                        let item_value =
-                            llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
+                        let item_value = llvm_emit_expr_as(
+                            item,
+                            ctx,
+                            string_literal_ids,
+                            task_ref_ids,
+                            &element_ty,
+                        )?;
                         let element_ptr = ctx.value();
                         ctx.code.push_str(&format!(
-                            "  {element_ptr} = getelementptr inbounds [{len} x i32], ptr {storage}, i32 0, i64 {idx}\n  store i32 {item_value}, ptr {element_ptr}\n"
+                            "  {element_ptr} = getelementptr inbounds [{len} x {element_ty}], ptr {storage}, i32 0, i64 {idx}\n  store {element_ty} {}, ptr {element_ptr}\n",
+                            item_value.value
                         ));
                     }
                     ctx.array_slots.insert(
@@ -5038,6 +5316,7 @@ fn llvm_emit_linear_stmts(
                         LlvmArrayBinding {
                             storage,
                             len,
+                            element_ty: element_ty.clone(),
                             element_bits: 32,
                             element_align: 4,
                             element_stride: 4,
@@ -5051,7 +5330,7 @@ fn llvm_emit_linear_stmts(
                         continue;
                     }
                 }
-                let rendered_value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                let rendered_value = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
                 if let ast::Expr::Closure {
                     params,
                     return_type,
@@ -5071,8 +5350,9 @@ fn llvm_emit_linear_stmts(
                     continue;
                 }
                 if let Some(symbol) = ctx.mutable_globals.get(target).cloned() {
+                    let stored = llvm_cast_value(ctx, rendered_value.clone(), "i32")?;
                     ctx.code
-                        .push_str(&format!("  store i32 {rendered_value}, ptr @{symbol}\n"));
+                        .push_str(&format!("  store i32 {}, ptr @{symbol}\n", stored.value));
                     ctx.direct_values.remove(target);
                     continue;
                 }
@@ -5081,19 +5361,27 @@ fn llvm_emit_linear_stmts(
                     .entry(target.clone())
                     .or_insert_with(|| format!("%slot_{}_{}", target, ctx.next_value))
                     .clone();
-                ctx.declare_alloca(&slot, "i32");
-                ctx.code
-                    .push_str(&format!("  store i32 {rendered_value}, ptr {slot}\n"));
+                ctx.declare_alloca(&slot, &rendered_value.ty);
+                ctx.code.push_str(&format!(
+                    "  store {} {}, ptr {slot}\n",
+                    rendered_value.ty, rendered_value.value
+                ));
+                ctx.slot_tys
+                    .insert(target.clone(), rendered_value.ty.clone());
                 ctx.direct_values.remove(target);
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
                         let field_value =
-                            llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids);
+                            llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
                         let field_slot = format!("%slot_{}_{}_{}", target, field, ctx.next_value);
-                        ctx.declare_alloca(&field_slot, "i32");
-                        ctx.code
-                            .push_str(&format!("  store i32 {field_value}, ptr {field_slot}\n"));
+                        ctx.declare_alloca(&field_slot, &field_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {field_slot}\n",
+                            field_value.ty, field_value.value
+                        ));
                         ctx.slots.insert(format!("{target}.{field}"), field_slot);
+                        ctx.slot_tys
+                            .insert(format!("{target}.{field}"), field_value.ty.clone());
                     }
                 }
                 if let ast::Expr::Range {
@@ -5103,20 +5391,31 @@ fn llvm_emit_linear_stmts(
                 } = value
                 {
                     let start_value =
-                        llvm_emit_expr(start.as_ref(), ctx, string_literal_ids, task_ref_ids);
+                        llvm_emit_expr(start.as_ref(), ctx, string_literal_ids, task_ref_ids)?;
                     let end_value =
-                        llvm_emit_expr(end.as_ref(), ctx, string_literal_ids, task_ref_ids);
-                    let inclusive_value = if *inclusive { "1" } else { "0" };
+                        llvm_emit_expr(end.as_ref(), ctx, string_literal_ids, task_ref_ids)?;
+                    let inclusive_value = LlvmValue {
+                        value: if *inclusive {
+                            "1".to_string()
+                        } else {
+                            "0".to_string()
+                        },
+                        ty: "i8".to_string(),
+                    };
                     for (field, rendered) in [
                         ("start", start_value),
                         ("end", end_value),
-                        ("inclusive", inclusive_value.to_string()),
+                        ("inclusive", inclusive_value),
                     ] {
                         let field_slot = format!("%slot_{}_{}_{}", target, field, ctx.next_value);
-                        ctx.declare_alloca(&field_slot, "i32");
-                        ctx.code
-                            .push_str(&format!("  store i32 {rendered}, ptr {field_slot}\n"));
+                        ctx.declare_alloca(&field_slot, &rendered.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {field_slot}\n",
+                            rendered.ty, rendered.value
+                        ));
                         ctx.slots.insert(format!("{target}.{field}"), field_slot);
+                        ctx.slot_tys
+                            .insert(format!("{target}.{field}"), rendered.ty.clone());
                     }
                 }
                 ctx.array_slots.remove(target);
@@ -5129,10 +5428,11 @@ fn llvm_emit_linear_stmts(
                     left: Box::new(ast::Expr::Ident(target.clone())),
                     right: Box::new(value.clone()),
                 };
-                let value = llvm_emit_expr(&combined_expr, ctx, string_literal_ids, task_ref_ids);
+                let value = llvm_emit_expr(&combined_expr, ctx, string_literal_ids, task_ref_ids)?;
                 if let Some(symbol) = ctx.mutable_globals.get(target).cloned() {
+                    let stored = llvm_cast_value(ctx, value.clone(), "i32")?;
                     ctx.code
-                        .push_str(&format!("  store i32 {value}, ptr @{symbol}\n"));
+                        .push_str(&format!("  store i32 {}, ptr @{symbol}\n", stored.value));
                     ctx.direct_values.remove(target);
                     continue;
                 }
@@ -5141,9 +5441,12 @@ fn llvm_emit_linear_stmts(
                     .entry(target.clone())
                     .or_insert_with(|| format!("%slot_{}_{}", target, ctx.next_value))
                     .clone();
-                ctx.declare_alloca(&slot, "i32");
-                ctx.code
-                    .push_str(&format!("  store i32 {value}, ptr {slot}\n"));
+                ctx.declare_alloca(&slot, &value.ty);
+                ctx.code.push_str(&format!(
+                    "  store {} {}, ptr {slot}\n",
+                    value.ty, value.value
+                ));
+                ctx.slot_tys.insert(target.clone(), value.ty.clone());
                 ctx.direct_values.remove(target);
                 ctx.array_slots.remove(target);
                 ctx.const_strings.remove(target);
@@ -5176,50 +5479,90 @@ fn llvm_emit_expr(
     ctx: &mut LlvmFuncCtx,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
-) -> String {
-    match expr {
-        ast::Expr::Int(v) => v.to_string(),
-        ast::Expr::Float { value, .. } => (*value as i32).to_string(),
-        ast::Expr::Char(value) => (*value as i32).to_string(),
-        ast::Expr::Bool(v) => {
-            if *v {
-                "1".to_string()
+) -> Result<LlvmValue> {
+    Ok(match expr {
+        ast::Expr::Int(v) => {
+            let ty = if i32::try_from(*v).is_ok() {
+                "i32"
             } else {
-                "0".to_string()
+                "i64"
+            };
+            LlvmValue {
+                value: v.to_string(),
+                ty: ty.to_string(),
             }
         }
-        ast::Expr::Str(value) => string_literal_ids
-            .get(value)
-            .copied()
-            .unwrap_or(0)
-            .to_string(),
+        ast::Expr::Float { value, bits } => LlvmValue {
+            value: llvm_float_literal(*value),
+            ty: if bits.unwrap_or(64) == 32 {
+                "float".to_string()
+            } else {
+                "double".to_string()
+            },
+        },
+        ast::Expr::Char(value) => LlvmValue {
+            value: (*value as i32).to_string(),
+            ty: "i32".to_string(),
+        },
+        ast::Expr::Bool(v) => LlvmValue {
+            value: if *v { "1".to_string() } else { "0".to_string() },
+            ty: "i8".to_string(),
+        },
+        ast::Expr::Str(value) => LlvmValue {
+            value: string_literal_ids
+                .get(value)
+                .copied()
+                .unwrap_or(0)
+                .to_string(),
+            ty: "i32".to_string(),
+        },
         ast::Expr::Ident(name) => {
             if let Some(direct) = ctx.direct_values.get(name) {
-                return direct.clone();
+                return Ok(direct.clone());
             }
             if let Some(slot) = ctx.slots.get(name).cloned() {
+                let ty = ctx
+                    .slot_tys
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| "i32".to_string());
                 let val = ctx.value();
                 ctx.code
-                    .push_str(&format!("  {val} = load i32, ptr {slot}\n"));
-                val
+                    .push_str(&format!("  {val} = load {ty}, ptr {slot}\n"));
+                LlvmValue { value: val, ty }
             } else if let Some(symbol) = ctx.mutable_globals.get(name).cloned() {
                 let val = ctx.value();
                 ctx.code
                     .push_str(&format!("  {val} = load i32, ptr @{symbol}\n"));
-                val
+                LlvmValue {
+                    value: val,
+                    ty: "i32".to_string(),
+                }
             } else if let Some(value) = ctx.globals.get(name).copied() {
-                value.to_string()
+                LlvmValue {
+                    value: value.to_string(),
+                    ty: "i32".to_string(),
+                }
             } else if let Some(task_ref) = task_ref_ids.get(name).copied() {
-                task_ref.to_string()
+                LlvmValue {
+                    value: task_ref.to_string(),
+                    ty: "i32".to_string(),
+                }
             } else {
-                "0".to_string()
+                LlvmValue {
+                    value: "0".to_string(),
+                    ty: "i32".to_string(),
+                }
             }
         }
-        ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
-        ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids),
+        ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids)?,
+        ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids)?,
         ast::Expr::Discard(inner) => {
-            let _ = llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids);
-            "0".to_string()
+            let _ = llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids)?;
+            LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            }
         }
         ast::Expr::Closure {
             params,
@@ -5237,32 +5580,46 @@ fn llvm_emit_expr(
                     captures,
                 },
             );
-            "0".to_string()
+            LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            }
         }
         ast::Expr::Unary { op, expr } => {
-            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
+            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
             match op {
                 ast::UnaryOp::Plus => value,
                 ast::UnaryOp::Neg => {
                     let out = ctx.value();
-                    ctx.code
-                        .push_str(&format!("  {out} = sub i32 0, {value}\n"));
-                    out
+                    if llvm_is_float_ty(&value.ty) {
+                        ctx.code.push_str(&format!(
+                            "  {out} = fsub {} 0.0, {}\n",
+                            value.ty, value.value
+                        ));
+                    } else {
+                        ctx.code
+                            .push_str(&format!("  {out} = sub {} 0, {}\n", value.ty, value.value));
+                    }
+                    LlvmValue {
+                        value: out,
+                        ty: value.ty,
+                    }
                 }
                 ast::UnaryOp::BitNot => {
                     let out = ctx.value();
                     ctx.code
-                        .push_str(&format!("  {out} = xor i32 {value}, -1\n"));
-                    out
+                        .push_str(&format!("  {out} = xor {} {}, -1\n", value.ty, value.value));
+                    LlvmValue {
+                        value: out,
+                        ty: value.ty,
+                    }
                 }
                 ast::UnaryOp::Not => {
-                    let pred = ctx.value();
+                    let pred = llvm_emit_truthy_pred(ctx, &value);
                     let out = ctx.value();
                     ctx.code
-                        .push_str(&format!("  {pred} = icmp eq i32 {value}, 0\n"));
-                    ctx.code
-                        .push_str(&format!("  {out} = zext i1 {pred} to i32\n"));
-                    out
+                        .push_str(&format!("  {out} = xor i1 {pred}, true\n"));
+                    llvm_bool_from_pred(ctx, &out)
                 }
             }
         }
@@ -5272,28 +5629,39 @@ fn llvm_emit_expr(
             }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
+                    let ty = ctx
+                        .slot_tys
+                        .get(&format!("{name}.{field}"))
+                        .cloned()
+                        .unwrap_or_else(|| "i32".to_string());
                     let val = ctx.value();
                     ctx.code
-                        .push_str(&format!("  {val} = load i32, ptr {slot}\n"));
-                    return val;
+                        .push_str(&format!("  {val} = load {ty}, ptr {slot}\n"));
+                    return Ok(LlvmValue { value: val, ty });
                 }
             }
             if let Some(task_ref_name) = expr_task_ref_name(expr) {
                 if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
-                    return task_ref.to_string();
+                    return Ok(LlvmValue {
+                        value: task_ref.to_string(),
+                        ty: "i32".to_string(),
+                    });
                 }
             }
-            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
+            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?
         }
         ast::Expr::StructInit { fields, .. } => {
             let mut first = None;
             for (_, value) in fields {
-                let current = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                let current = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
                 if first.is_none() {
                     first = Some(current);
                 }
             }
-            first.unwrap_or_else(|| "0".to_string())
+            first.unwrap_or_else(|| LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            })
         }
         ast::Expr::EnumInit {
             enum_name,
@@ -5302,23 +5670,26 @@ fn llvm_emit_expr(
             named_payload,
         } => {
             for value in payload {
-                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
             }
             for (_, value) in named_payload {
-                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
             }
             let key = format!("{enum_name}::{variant}");
-            variant_tag_for_key(&key, &ctx.variant_tags).to_string()
+            LlvmValue {
+                value: variant_tag_for_key(&key, &ctx.variant_tags).to_string(),
+                ty: "i32".to_string(),
+            }
         }
         ast::Expr::TryCatch { try_expr, .. } => {
-            llvm_emit_expr(try_expr, ctx, string_literal_ids, task_ref_ids)
+            llvm_emit_expr(try_expr, ctx, string_literal_ids, task_ref_ids)?
         }
         ast::Expr::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            let pred = llvm_emit_condition_value(condition, ctx, string_literal_ids, task_ref_ids);
+            let pred = llvm_emit_condition_value(condition, ctx, string_literal_ids, task_ref_ids)?;
             let then_label = ctx.label("if.then");
             let else_label = ctx.label("if.else");
             let merge_label = ctx.label("if.merge");
@@ -5327,30 +5698,38 @@ fn llvm_emit_expr(
             ));
 
             ctx.code.push_str(&format!("{then_label}:\n"));
-            let then_value = llvm_emit_expr(then_expr, ctx, string_literal_ids, task_ref_ids);
+            let then_value = llvm_emit_expr(then_expr, ctx, string_literal_ids, task_ref_ids)?;
             ctx.code.push_str(&format!("  br label %{merge_label}\n"));
 
             ctx.code.push_str(&format!("{else_label}:\n"));
-            let else_value = llvm_emit_expr(else_expr, ctx, string_literal_ids, task_ref_ids);
+            let else_value = llvm_emit_expr(else_expr, ctx, string_literal_ids, task_ref_ids)?;
+            let else_value = llvm_cast_value(ctx, else_value, &then_value.ty)?;
             ctx.code.push_str(&format!("  br label %{merge_label}\n"));
 
             ctx.code.push_str(&format!("{merge_label}:\n"));
             let out = ctx.value();
             ctx.code.push_str(&format!(
-                "  {out} = phi i32 [ {then_value}, %{then_label} ], [ {else_value}, %{else_label} ]\n"
+                "  {out} = phi {} [ {}, %{then_label} ], [ {}, %{else_label} ]\n",
+                then_value.ty, then_value.value, else_value.value
             ));
-            out
+            LlvmValue {
+                value: out,
+                ty: then_value.ty,
+            }
         }
         ast::Expr::Range { start, .. } => {
-            llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids)
+            llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids)?
         }
         ast::Expr::ArrayLiteral(items) => {
             // Array literals are materialized by statement lowering into element slots.
             // Expression-position array literals are unsupported in direct-memory mode.
             for item in items {
-                let _ = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids);
+                let _ = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids)?;
             }
-            "0".to_string()
+            LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            }
         }
         ast::Expr::ObjectLiteral(fields) => {
             let map_symbol = native_mangle_symbol(
@@ -5368,13 +5747,18 @@ fn llvm_emit_expr(
                 .push_str(&format!("  {map_handle} = call i32 @{map_symbol}()\n"));
             for (key, value) in fields {
                 let key_id = string_literal_ids.get(key).copied().unwrap_or(0);
-                let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids);
+                let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                let rendered = llvm_cast_value(ctx, rendered, "i32")?;
                 let status = ctx.value();
                 ctx.code.push_str(&format!(
-                    "  {status} = call i32 @{set_symbol}(i32 {map_handle}, i32 {key_id}, i32 {rendered})\n"
+                    "  {status} = call i32 @{set_symbol}(i32 {map_handle}, i32 {key_id}, i32 {})\n",
+                    rendered.value
                 ));
             }
-            map_handle
+            LlvmValue {
+                value: map_handle,
+                ty: "i32".to_string(),
+            }
         }
         ast::Expr::Index { base, index } => {
             let index_value = if let Some((base_name, offset)) =
@@ -5395,15 +5779,18 @@ fn llvm_emit_expr(
                         adjusted
                     }
                 } else {
-                    llvm_emit_expr(index, ctx, string_literal_ids, task_ref_ids)
+                    llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?.value
                 }
             } else {
-                llvm_emit_expr(index, ctx, string_literal_ids, task_ref_ids)
+                llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?.value
             };
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_slots.get(name).cloned() {
                     if binding.len == 0 {
-                        return "0".to_string();
+                        return Ok(LlvmValue {
+                            value: llvm_zero_literal(&binding.element_ty, 0),
+                            ty: binding.element_ty,
+                        });
                     }
                     if let ast::Expr::Ident(index_name) = index.as_ref() {
                         if ctx
@@ -5418,12 +5805,17 @@ fn llvm_emit_expr(
                             ctx.code
                                 .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
                             ctx.code.push_str(&format!(
-                                "  {elem_ptr} = getelementptr inbounds [{} x i32], ptr {}, i32 0, i64 {idx64}\n",
-                                binding.len, binding.storage
+                                "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
+                                binding.len, binding.element_ty, binding.storage
                             ));
-                            ctx.code
-                                .push_str(&format!("  {loaded} = load i32, ptr {elem_ptr}\n"));
-                            return loaded;
+                            ctx.code.push_str(&format!(
+                                "  {loaded} = load {}, ptr {elem_ptr}\n",
+                                binding.element_ty
+                            ));
+                            return Ok(LlvmValue {
+                                value: loaded,
+                                ty: binding.element_ty,
+                            });
                         }
                     }
                     if let Some(const_idx) = eval_const_i32_expr(index, &ctx.const_strings) {
@@ -5431,12 +5823,17 @@ fn llvm_emit_expr(
                             let elem_ptr = ctx.value();
                             let loaded = ctx.value();
                             ctx.code.push_str(&format!(
-                                "  {elem_ptr} = getelementptr inbounds [{} x i32], ptr {}, i32 0, i64 {}\n",
-                                binding.len, binding.storage, const_idx
+                                "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {}\n",
+                                binding.len, binding.element_ty, binding.storage, const_idx
                             ));
-                            ctx.code
-                                .push_str(&format!("  {loaded} = load i32, ptr {elem_ptr}\n"));
-                            return loaded;
+                            ctx.code.push_str(&format!(
+                                "  {loaded} = load {}, ptr {elem_ptr}\n",
+                                binding.element_ty
+                            ));
+                            return Ok(LlvmValue {
+                                value: loaded,
+                                ty: binding.element_ty,
+                            });
                         }
                     }
                     let in_label = ctx.label("idx.in");
@@ -5458,36 +5855,49 @@ fn llvm_emit_expr(
                     ctx.code
                         .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
                     ctx.code.push_str(&format!(
-                        "  {elem_ptr} = getelementptr inbounds [{} x i32], ptr {}, i32 0, i64 {idx64}\n",
-                        binding.len, binding.storage
+                        "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
+                        binding.len, binding.element_ty, binding.storage
                     ));
-                    ctx.code
-                        .push_str(&format!("  {loaded} = load i32, ptr {elem_ptr}\n"));
+                    ctx.code.push_str(&format!(
+                        "  {loaded} = load {}, ptr {elem_ptr}\n",
+                        binding.element_ty
+                    ));
                     ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                     ctx.code.push_str(&format!("{out_label}:\n"));
                     ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                     ctx.code.push_str(&format!("{merge_label}:\n"));
                     let selected = ctx.value();
                     ctx.code.push_str(&format!(
-                        "  {selected} = phi i32 [ {loaded}, %{in_label} ], [ 0, %{out_label} ]\n"
+                        "  {selected} = phi {} [ {loaded}, %{in_label} ], [ {}, %{out_label} ]\n",
+                        binding.element_ty,
+                        llvm_zero_literal(&binding.element_ty, 0)
                     ));
                     let _ = (
                         binding.element_bits,
                         binding.element_align,
                         binding.element_stride,
                     );
-                    return selected;
+                    return Ok(LlvmValue {
+                        value: selected,
+                        ty: binding.element_ty,
+                    });
                 }
             }
-            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
+            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?
         }
         ast::Expr::Call { callee, args } => {
             if let Some(value) = eval_const_i32_call(callee, args, &ctx.const_strings) {
-                return value.to_string();
+                return Ok(LlvmValue {
+                    value: value.to_string(),
+                    ty: "i32".to_string(),
+                });
             }
             if let Some(value) = eval_const_string_call(callee, args, &ctx.const_strings) {
                 if let Some(id) = string_literal_ids.get(&value).copied() {
-                    return id.to_string();
+                    return Ok(LlvmValue {
+                        value: id.to_string(),
+                        ty: "i32".to_string(),
+                    });
                 }
             }
             if let Some(binding) = ctx.closures.get(callee).cloned() {
@@ -5499,16 +5909,22 @@ fn llvm_emit_expr(
                     task_ref_ids,
                 );
             }
-            let args = args
-                .iter()
-                .map(|arg| {
-                    format!(
-                        "i32 {}",
-                        llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
+            let signature = ctx.function_sigs.get(callee).cloned();
+            let mut rendered_args = Vec::with_capacity(args.len());
+            for (index, arg) in args.iter().enumerate() {
+                let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
+                let value = if let Some(sig) = &signature {
+                    if let Some(target_ty) = sig.params.get(index) {
+                        llvm_cast_value(ctx, value, target_ty)?
+                    } else {
+                        value
+                    }
+                } else {
+                    llvm_cast_value(ctx, value, "i32")?
+                };
+                rendered_args.push(format!("{} {}", value.ty, value.value));
+            }
+            let args = rendered_args.join(", ");
             let symbol = native_runtime_import_for_callee(callee)
                 .or_else(|| native_data_plane_import_for_callee(callee))
                 .map(|import| import.symbol)
@@ -5519,80 +5935,194 @@ fn llvm_emit_expr(
                 .map(|value| value.as_str())
                 .unwrap_or(symbol);
             let symbol = native_mangle_symbol(symbol);
-            let val = ctx.value();
-            ctx.code
-                .push_str(&format!("  {val} = call i32 @{symbol}({args})\n"));
-            val
+            let return_ty = signature
+                .and_then(|sig| sig.ret)
+                .unwrap_or_else(|| "i32".to_string());
+            if return_ty == "void" {
+                ctx.code
+                    .push_str(&format!("  call void @{symbol}({args})\n"));
+                LlvmValue {
+                    value: "0".to_string(),
+                    ty: "i32".to_string(),
+                }
+            } else {
+                let val = ctx.value();
+                ctx.code
+                    .push_str(&format!("  {val} = call {return_ty} @{symbol}({args})\n"));
+                LlvmValue {
+                    value: val,
+                    ty: return_ty,
+                }
+            }
         }
         ast::Expr::UnsafeBlock { body, .. } => {
             let _ = llvm_emit_linear_stmts(body, ctx, string_literal_ids, task_ref_ids);
-            "0".to_string()
+            LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            }
         }
         ast::Expr::Binary { op, left, right } => {
-            let lhs = llvm_emit_expr(left, ctx, string_literal_ids, task_ref_ids);
-            let out = ctx.value();
+            let lhs = llvm_emit_expr(left, ctx, string_literal_ids, task_ref_ids)?;
             match op {
                 ast::BinaryOp::Add => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = add i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    let op = if llvm_is_float_ty(&lhs.ty) {
+                        "fadd"
+                    } else {
+                        "add"
+                    };
+                    ctx.code.push_str(&format!(
+                        "  {out} = {op} {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::Sub => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = sub i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    let op = if llvm_is_float_ty(&lhs.ty) {
+                        "fsub"
+                    } else {
+                        "sub"
+                    };
+                    ctx.code.push_str(&format!(
+                        "  {out} = {op} {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::Mul => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = mul i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    let op = if llvm_is_float_ty(&lhs.ty) {
+                        "fmul"
+                    } else {
+                        "mul"
+                    };
+                    ctx.code.push_str(&format!(
+                        "  {out} = {op} {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::Div => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = sdiv i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    let op = if llvm_is_float_ty(&lhs.ty) {
+                        "fdiv"
+                    } else {
+                        "sdiv"
+                    };
+                    ctx.code.push_str(&format!(
+                        "  {out} = {op} {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::Mod => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = srem i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {out} = srem {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::BitAnd => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = and i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {out} = and {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::BitOr => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = or i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {out} = or {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::BitXor => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = xor i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {out} = xor {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::Shl => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = shl i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {out} = shl {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::Shr => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    ctx.code
-                        .push_str(&format!("  {out} = ashr i32 {lhs}, {rhs}\n"));
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
+                    let out = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {out} = ashr {} {}, {}\n",
+                        lhs.ty, lhs.value, rhs.value
+                    ));
+                    LlvmValue {
+                        value: out,
+                        ty: lhs.ty,
+                    }
                 }
                 ast::BinaryOp::And | ast::BinaryOp::Or => {
-                    let lhs_pred = ctx.value();
+                    let lhs_pred = llvm_emit_truthy_pred(ctx, &lhs);
                     let rhs_label = ctx.label("logical.rhs");
                     let short_label = ctx.label("logical.short");
                     let merge_label = ctx.label("logical.merge");
                     let result_slot = format!("%slot_logical_{}", ctx.next_value);
                     ctx.next_value += 1;
-                    ctx.code
-                        .push_str(&format!("  {result_slot} = alloca i32\n"));
-                    ctx.code
-                        .push_str(&format!("  {lhs_pred} = icmp ne i32 {lhs}, 0\n"));
+                    ctx.code.push_str(&format!("  {result_slot} = alloca i8\n"));
                     match op {
                         ast::BinaryOp::And => {
                             ctx.code.push_str(&format!(
@@ -5600,7 +6130,7 @@ fn llvm_emit_expr(
                             ));
                             ctx.code.push_str(&format!("{short_label}:\n"));
                             ctx.code
-                                .push_str(&format!("  store i32 0, ptr {result_slot}\n"));
+                                .push_str(&format!("  store i8 0, ptr {result_slot}\n"));
                             ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                         }
                         ast::BinaryOp::Or => {
@@ -5609,25 +6139,28 @@ fn llvm_emit_expr(
                             ));
                             ctx.code.push_str(&format!("{short_label}:\n"));
                             ctx.code
-                                .push_str(&format!("  store i32 1, ptr {result_slot}\n"));
+                                .push_str(&format!("  store i8 1, ptr {result_slot}\n"));
                             ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                         }
                         _ => unreachable!(),
                     }
                     ctx.code.push_str(&format!("{rhs_label}:\n"));
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
-                    let rhs_pred = ctx.value();
-                    let rhs_i32 = ctx.value();
+                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids)?;
+                    let rhs_pred = llvm_emit_truthy_pred(ctx, &rhs);
+                    let rhs_i8 = ctx.value();
                     ctx.code
-                        .push_str(&format!("  {rhs_pred} = icmp ne i32 {rhs}, 0\n"));
+                        .push_str(&format!("  {rhs_i8} = zext i1 {rhs_pred} to i8\n"));
                     ctx.code
-                        .push_str(&format!("  {rhs_i32} = zext i1 {rhs_pred} to i32\n"));
-                    ctx.code
-                        .push_str(&format!("  store i32 {rhs_i32}, ptr {result_slot}\n"));
+                        .push_str(&format!("  store i8 {rhs_i8}, ptr {result_slot}\n"));
                     ctx.code.push_str(&format!("  br label %{merge_label}\n"));
                     ctx.code.push_str(&format!("{merge_label}:\n"));
+                    let out = ctx.value();
                     ctx.code
-                        .push_str(&format!("  {out} = load i32, ptr {result_slot}\n"));
+                        .push_str(&format!("  {out} = load i8, ptr {result_slot}\n"));
+                    LlvmValue {
+                        value: out,
+                        ty: "i8".to_string(),
+                    }
                 }
                 ast::BinaryOp::Eq
                 | ast::BinaryOp::Neq
@@ -5635,27 +6168,47 @@ fn llvm_emit_expr(
                 | ast::BinaryOp::Lte
                 | ast::BinaryOp::Gt
                 | ast::BinaryOp::Gte => {
-                    let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+                    let rhs =
+                        llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
                     let pred = ctx.value();
-                    let cmp = match op {
-                        ast::BinaryOp::Eq => "eq",
-                        ast::BinaryOp::Neq => "ne",
-                        ast::BinaryOp::Lt => "slt",
-                        ast::BinaryOp::Lte => "sle",
-                        ast::BinaryOp::Gt => "sgt",
-                        ast::BinaryOp::Gte => "sge",
-                        _ => unreachable!(),
-                    };
-                    ctx.code
-                        .push_str(&format!("  {pred} = icmp {cmp} i32 {lhs}, {rhs}\n"));
-                    ctx.code
-                        .push_str(&format!("  {out} = zext i1 {pred} to i32\n"));
+                    if llvm_is_float_ty(&lhs.ty) {
+                        let cmp = match op {
+                            ast::BinaryOp::Eq => "oeq",
+                            ast::BinaryOp::Neq => "une",
+                            ast::BinaryOp::Lt => "olt",
+                            ast::BinaryOp::Lte => "ole",
+                            ast::BinaryOp::Gt => "ogt",
+                            ast::BinaryOp::Gte => "oge",
+                            _ => unreachable!(),
+                        };
+                        ctx.code.push_str(&format!(
+                            "  {pred} = fcmp {cmp} {} {}, {}\n",
+                            lhs.ty, lhs.value, rhs.value
+                        ));
+                    } else {
+                        let cmp = match op {
+                            ast::BinaryOp::Eq => "eq",
+                            ast::BinaryOp::Neq => "ne",
+                            ast::BinaryOp::Lt => "slt",
+                            ast::BinaryOp::Lte => "sle",
+                            ast::BinaryOp::Gt => "sgt",
+                            ast::BinaryOp::Gte => "sge",
+                            _ => unreachable!(),
+                        };
+                        ctx.code.push_str(&format!(
+                            "  {pred} = icmp {cmp} {} {}, {}\n",
+                            lhs.ty, lhs.value, rhs.value
+                        ));
+                    }
+                    llvm_bool_from_pred(ctx, &pred)
                 }
             }
-            out
         }
-        _ => "0".to_string(),
-    }
+        _ => LlvmValue {
+            value: "0".to_string(),
+            ty: "i32".to_string(),
+        },
+    })
 }
 
 fn llvm_emit_condition_value(
@@ -5663,40 +6216,44 @@ fn llvm_emit_condition_value(
     ctx: &mut LlvmFuncCtx,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
-) -> String {
+) -> Result<String> {
     match expr {
         ast::Expr::Group(inner) | ast::Expr::Await(inner) => {
             llvm_emit_condition_value(inner, ctx, string_literal_ids, task_ref_ids)
         }
         ast::Expr::Binary { op, left, right } => {
-            let lhs = llvm_emit_expr(left, ctx, string_literal_ids, task_ref_ids);
-            let rhs = llvm_emit_expr(right, ctx, string_literal_ids, task_ref_ids);
+            let lhs = llvm_emit_expr(left, ctx, string_literal_ids, task_ref_ids)?;
+            let rhs = llvm_emit_expr_as(right, ctx, string_literal_ids, task_ref_ids, &lhs.ty)?;
             let pred = ctx.value();
             let cc = match op {
-                ast::BinaryOp::Eq => Some("eq"),
-                ast::BinaryOp::Neq => Some("ne"),
-                ast::BinaryOp::Lt => Some("slt"),
-                ast::BinaryOp::Lte => Some("sle"),
-                ast::BinaryOp::Gt => Some("sgt"),
-                ast::BinaryOp::Gte => Some("sge"),
+                ast::BinaryOp::Eq => Some(("eq", "oeq")),
+                ast::BinaryOp::Neq => Some(("ne", "une")),
+                ast::BinaryOp::Lt => Some(("slt", "olt")),
+                ast::BinaryOp::Lte => Some(("sle", "ole")),
+                ast::BinaryOp::Gt => Some(("sgt", "ogt")),
+                ast::BinaryOp::Gte => Some(("sge", "oge")),
                 _ => None,
             };
             if let Some(cc) = cc {
-                ctx.code
-                    .push_str(&format!("  {pred} = icmp {cc} i32 {lhs}, {rhs}\n"));
-                return pred;
+                if llvm_is_float_ty(&lhs.ty) {
+                    ctx.code.push_str(&format!(
+                        "  {pred} = fcmp {} {} {}, {}\n",
+                        cc.1, lhs.ty, lhs.value, rhs.value
+                    ));
+                } else {
+                    ctx.code.push_str(&format!(
+                        "  {pred} = icmp {} {} {}, {}\n",
+                        cc.0, lhs.ty, lhs.value, rhs.value
+                    ));
+                }
+                return Ok(pred);
             }
-            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
-            ctx.code
-                .push_str(&format!("  {pred} = icmp ne i32 {value}, 0\n"));
-            pred
+            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
+            Ok(llvm_emit_truthy_pred(ctx, &value))
         }
         _ => {
-            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
-            let pred = ctx.value();
-            ctx.code
-                .push_str(&format!("  {pred} = icmp ne i32 {value}, 0\n"));
-            pred
+            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
+            Ok(llvm_emit_truthy_pred(ctx, &value))
         }
     }
 }
@@ -8549,8 +9106,7 @@ fn clif_emit_cfg(
                 else_target,
             } => {
                 let cond_val = clif_emit_expr(builder, ctx, condition, locals, next_var)?;
-                let zero = zero_for_type(builder, cond_val.ty);
-                let cond = builder.ins().icmp(IntCC::NotEqual, cond_val.value, zero);
+                let cond = clif_truthy_pred(builder, cond_val);
                 builder.ins().brif(
                     cond,
                     clif_blocks[*then_target],
@@ -9357,8 +9913,8 @@ fn clif_emit_expr(
                     }
                 }
                 ast::UnaryOp::Not => {
-                    let zero = zero_for_type(builder, value.ty);
-                    let pred = builder.ins().icmp(IntCC::Equal, value.value, zero);
+                    let pred = clif_truthy_pred(builder, value);
+                    let pred = builder.ins().bnot(pred);
                     bool_to_i8(builder, pred)
                 }
                 ast::UnaryOp::BitNot => {
@@ -9445,8 +10001,7 @@ fn clif_emit_expr(
             else_expr,
         } => {
             let cond = clif_emit_expr(builder, ctx, condition, locals, next_var)?;
-            let cond_zero = zero_for_type(builder, cond.ty);
-            let cond_pred = builder.ins().icmp(IntCC::NotEqual, cond.value, cond_zero);
+            let cond_pred = clif_truthy_pred(builder, cond);
 
             let then_block = builder.create_block();
             let else_block = builder.create_block();
@@ -9746,8 +10301,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::And => {
-                    let lhs_zero = zero_for_type(builder, lhs.ty);
-                    let lhs_pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, lhs_zero);
+                    let lhs_pred = clif_truthy_pred(builder, lhs);
                     let rhs_block = builder.create_block();
                     let short_block = builder.create_block();
                     let merge_block = builder.create_block();
@@ -9762,8 +10316,7 @@ fn clif_emit_expr(
 
                     builder.switch_to_block(rhs_block);
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
-                    let rhs_zero = zero_for_type(builder, rhs.ty);
-                    let rhs_pred = builder.ins().icmp(IntCC::NotEqual, rhs.value, rhs_zero);
+                    let rhs_pred = clif_truthy_pred(builder, rhs);
                     let rhs_bool = bool_to_i8(builder, rhs_pred);
                     builder.ins().jump(merge_block, &[rhs_bool.value]);
 
@@ -9777,8 +10330,7 @@ fn clif_emit_expr(
                     }
                 }
                 ast::BinaryOp::Or => {
-                    let lhs_zero = zero_for_type(builder, lhs.ty);
-                    let lhs_pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, lhs_zero);
+                    let lhs_pred = clif_truthy_pred(builder, lhs);
                     let rhs_block = builder.create_block();
                     let short_block = builder.create_block();
                     let merge_block = builder.create_block();
@@ -9793,8 +10345,7 @@ fn clif_emit_expr(
 
                     builder.switch_to_block(rhs_block);
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
-                    let rhs_zero = zero_for_type(builder, rhs.ty);
-                    let rhs_pred = builder.ins().icmp(IntCC::NotEqual, rhs.value, rhs_zero);
+                    let rhs_pred = clif_truthy_pred(builder, rhs);
                     let rhs_bool = bool_to_i8(builder, rhs_pred);
                     builder.ins().jump(merge_block, &[rhs_bool.value]);
 
@@ -9810,47 +10361,75 @@ fn clif_emit_expr(
                 ast::BinaryOp::Eq => {
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    let pred = builder.ins().icmp(IntCC::Equal, lhs.value, rhs.value);
+                    let pred = if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        builder.ins().fcmp(FloatCC::Equal, lhs.value, rhs.value)
+                    } else {
+                        builder.ins().icmp(IntCC::Equal, lhs.value, rhs.value)
+                    };
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Neq => {
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    let pred = builder.ins().icmp(IntCC::NotEqual, lhs.value, rhs.value);
+                    let pred = if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        builder.ins().fcmp(FloatCC::NotEqual, lhs.value, rhs.value)
+                    } else {
+                        builder.ins().icmp(IntCC::NotEqual, lhs.value, rhs.value)
+                    };
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Lt => {
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    let pred = builder
-                        .ins()
-                        .icmp(IntCC::SignedLessThan, lhs.value, rhs.value);
+                    let pred = if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        builder.ins().fcmp(FloatCC::LessThan, lhs.value, rhs.value)
+                    } else {
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedLessThan, lhs.value, rhs.value)
+                    };
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Lte => {
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    let pred =
+                    let pred = if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         builder
                             .ins()
-                            .icmp(IntCC::SignedLessThanOrEqual, lhs.value, rhs.value);
+                            .fcmp(FloatCC::LessThanOrEqual, lhs.value, rhs.value)
+                    } else {
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedLessThanOrEqual, lhs.value, rhs.value)
+                    };
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Gt => {
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    let pred = builder
-                        .ins()
-                        .icmp(IntCC::SignedGreaterThan, lhs.value, rhs.value);
+                    let pred = if lhs.ty == types::F32 || lhs.ty == types::F64 {
+                        builder
+                            .ins()
+                            .fcmp(FloatCC::GreaterThan, lhs.value, rhs.value)
+                    } else {
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedGreaterThan, lhs.value, rhs.value)
+                    };
                     bool_to_i8(builder, pred)
                 }
                 ast::BinaryOp::Gte => {
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
-                    let pred =
+                    let pred = if lhs.ty == types::F32 || lhs.ty == types::F64 {
                         builder
                             .ins()
-                            .icmp(IntCC::SignedGreaterThanOrEqual, lhs.value, rhs.value);
+                            .fcmp(FloatCC::GreaterThanOrEqual, lhs.value, rhs.value)
+                    } else {
+                        builder
+                            .ins()
+                            .icmp(IntCC::SignedGreaterThanOrEqual, lhs.value, rhs.value)
+                    };
                     bool_to_i8(builder, pred)
                 }
             }
@@ -10206,7 +10785,11 @@ fn default_int_clif_type() -> ClifType {
 }
 
 fn clif_array_layout_from_values(values: &[ClifValue]) -> (ClifType, u16, u8, u8) {
-    let element_ty = if values.iter().any(|value| value.ty == types::I64) {
+    let element_ty = if values.iter().any(|value| value.ty == types::F64) {
+        types::F64
+    } else if values.iter().any(|value| value.ty == types::F32) {
+        types::F32
+    } else if values.iter().any(|value| value.ty == types::I64) {
         types::I64
     } else {
         types::I32
@@ -10226,6 +10809,22 @@ fn zero_for_type(builder: &mut FunctionBuilder, ty: ClifType) -> cranelift_codeg
         builder.ins().f64const(0.0)
     } else {
         builder.ins().iconst(default_int_clif_type(), 0)
+    }
+}
+
+fn clif_truthy_pred(
+    builder: &mut FunctionBuilder,
+    value: ClifValue,
+) -> cranelift_codegen::ir::Value {
+    if value.ty == types::F32 {
+        let zero = builder.ins().f32const(0.0);
+        builder.ins().fcmp(FloatCC::NotEqual, value.value, zero)
+    } else if value.ty == types::F64 {
+        let zero = builder.ins().f64const(0.0);
+        builder.ins().fcmp(FloatCC::NotEqual, value.value, zero)
+    } else {
+        let zero = zero_for_type(builder, value.ty);
+        builder.ins().icmp(IntCC::NotEqual, value.value, zero)
     }
 }
 
@@ -17516,6 +18115,51 @@ mod tests {
         );
         assert_eq!(cranelift_exit, llvm_exit);
         assert_eq!(cranelift_exit, 13);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_float_execution_is_consistent() {
+        let project_name = format!(
+            "fozzylang-float-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn score(base: f64, bonus: f64) -> f64 {\n    return (base + bonus) / 2.0\n}\nfn main() -> i32 {\n    let blended: f64 = score(5.0, 1.0)\n    if blended >= 3.0 && blended < 4.0 {\n        return 17\n    }\n    return 9\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+        let cranelift_exit = run_native_exit(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_exit = run_native_exit(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+        assert_eq!(cranelift_exit, llvm_exit);
+        assert_eq!(cranelift_exit, 17);
 
         let _ = std::fs::remove_dir_all(root);
     }
