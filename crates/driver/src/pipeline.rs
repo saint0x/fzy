@@ -35,8 +35,9 @@ use self::native_backend_support::{
 };
 use self::llvm_support::{
     llvm_assert_finite, llvm_bool_from_pred, llvm_cast_value, llvm_emit_expr_as,
-    llvm_emit_truthy_pred, llvm_float_literal, llvm_ir_type_for_ast_type, llvm_is_float_ty,
-    llvm_restore_shadowed_slots, llvm_snapshot_closure_captures, llvm_zero_literal,
+    llvm_emit_inlined_closure_call, llvm_emit_truthy_pred, llvm_float_literal,
+    llvm_ir_type_for_ast_type, llvm_is_float_ty,
+    llvm_snapshot_closure_captures, llvm_zero_literal,
     collect_wrapped_index_candidates,
     LlvmFuncCtx,
     LlvmArrayBinding, LlvmClosureBinding, LlvmFunctionSig, LlvmValue,
@@ -3812,61 +3813,6 @@ fn llvm_emit_function(
     out.push_str(&ctx.code);
     out.push_str("}\n");
     Ok(out)
-}
-
-fn llvm_emit_inlined_closure_call(
-    binding: LlvmClosureBinding,
-    args: &[ast::Expr],
-    ctx: &mut LlvmFuncCtx,
-    string_literal_ids: &HashMap<String, i32>,
-    task_ref_ids: &HashMap<String, i32>,
-) -> Result<LlvmValue> {
-    let mut saved = HashMap::<String, Option<String>>::new();
-    let mut inserted = HashSet::<String>::new();
-    for (name, capture) in &binding.captures {
-        if !saved.contains_key(name) {
-            saved.insert(name.clone(), ctx.slots.get(name).cloned());
-        }
-        ctx.slots.insert(name.clone(), capture.slot.clone());
-        ctx.slot_tys.insert(name.clone(), capture.ty.clone());
-        inserted.insert(name.clone());
-    }
-
-    for (index, param) in binding.params.iter().enumerate() {
-        let arg = args.get(index).cloned().unwrap_or(ast::Expr::Int(0));
-        let rendered = llvm_emit_expr(&arg, ctx, string_literal_ids, task_ref_ids)?;
-        let param_ty = llvm_ir_type_for_ast_type(&param.ty);
-        let rendered = llvm_cast_value(ctx, rendered, &param_ty)?;
-        let param_slot = format!(
-            "%slot_closure_param_{}_{}",
-            native_mangle_symbol(&param.name),
-            ctx.next_value
-        );
-        ctx.code.push_str(&format!(
-            "  {param_slot} = alloca {param_ty}\n  store {param_ty} {}, ptr {param_slot}\n",
-            rendered.value
-        ));
-        if !saved.contains_key(&param.name) {
-            saved.insert(param.name.clone(), ctx.slots.get(&param.name).cloned());
-        }
-        ctx.slots.insert(param.name.clone(), param_slot);
-        ctx.slot_tys.insert(param.name.clone(), param_ty);
-        inserted.insert(param.name.clone());
-    }
-
-    let mut value = llvm_emit_expr(&binding.body, ctx, string_literal_ids, task_ref_ids)?;
-    if binding
-        .return_type
-        .as_ref()
-        .is_some_and(|ty| *ty == ast::Type::Void)
-    {
-        value = LlvmValue {
-            value: "0".to_string(),
-            ty: "i32".to_string(),
-        };
-    }
-    llvm_restore_shadowed_slots(ctx, saved, inserted);
-    Ok(value)
 }
 
 fn llvm_emit_let_pattern(

@@ -252,6 +252,52 @@ pub(super) fn llvm_restore_shadowed_slots(
     }
 }
 
+pub(super) fn llvm_emit_inlined_closure_call(
+    binding: LlvmClosureBinding,
+    args: &[ast::Expr],
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<LlvmValue> {
+    let mut saved = HashMap::<String, Option<String>>::new();
+    let mut inserted = HashSet::<String>::new();
+    for (name, capture) in &binding.captures {
+        if !saved.contains_key(name) {
+            saved.insert(name.clone(), ctx.slots.get(name).cloned());
+        }
+        ctx.slots.insert(name.clone(), capture.slot.clone());
+        ctx.slot_tys.insert(name.clone(), capture.ty.clone());
+        inserted.insert(name.clone());
+    }
+    for (param, arg) in binding.params.iter().zip(args.iter()) {
+        let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
+        let target_ty = llvm_ir_type_for_ast_type(&param.ty);
+        let value = llvm_cast_value(ctx, value, &target_ty)?;
+        if !saved.contains_key(&param.name) {
+            saved.insert(param.name.clone(), ctx.slots.get(&param.name).cloned());
+        }
+        let slot = format!("%slot_{}_{}", param.name, ctx.next_value);
+        ctx.declare_alloca(&slot, &target_ty);
+        ctx.code.push_str(&format!(
+            "  store {} {}, ptr {slot}\n",
+            value.ty, value.value
+        ));
+        ctx.slots.insert(param.name.clone(), slot);
+        ctx.slot_tys.insert(param.name.clone(), target_ty);
+        inserted.insert(param.name.clone());
+    }
+    let result = llvm_emit_expr(&binding.body, ctx, string_literal_ids, task_ref_ids)?;
+    if let Some(return_type) = &binding.return_type {
+        let target_ty = llvm_ir_type_for_ast_type(return_type);
+        let result = llvm_cast_value(ctx, result, &target_ty)?;
+        llvm_restore_shadowed_slots(ctx, saved, inserted);
+        Ok(result)
+    } else {
+        llvm_restore_shadowed_slots(ctx, saved, inserted);
+        Ok(result)
+    }
+}
+
 pub(super) fn llvm_ir_type_for_ast_type(ty: &ast::Type) -> String {
     match ty {
         ast::Type::Void | ast::Type::Never => "void".to_string(),
