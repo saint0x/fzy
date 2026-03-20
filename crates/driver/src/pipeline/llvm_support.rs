@@ -1377,6 +1377,195 @@ pub(super) fn llvm_emit_complex_expr(
     }
 }
 
+pub(super) fn llvm_emit_simple_expr(
+    expr: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Option<Result<LlvmValue>> {
+    match expr {
+        ast::Expr::Ident(name) => Some(Ok(if let Some(direct) = ctx.direct_values.get(name) {
+            direct.clone()
+        } else if let Some(slot) = ctx.slots.get(name).cloned() {
+            let ty = ctx
+                .slot_tys
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| "i32".to_string());
+            let val = ctx.value();
+            ctx.code
+                .push_str(&format!("  {val} = load {ty}, ptr {slot}\n"));
+            LlvmValue { value: val, ty }
+        } else if let Some(symbol) = ctx.mutable_globals.get(name).cloned() {
+            let val = ctx.value();
+            ctx.code
+                .push_str(&format!("  {val} = load i32, ptr @{symbol}\n"));
+            LlvmValue {
+                value: val,
+                ty: "i32".to_string(),
+            }
+        } else if let Some(value) = ctx.globals.get(name).copied() {
+            LlvmValue {
+                value: value.to_string(),
+                ty: "i32".to_string(),
+            }
+        } else if let Some(task_ref) = task_ref_ids.get(name).copied() {
+            LlvmValue {
+                value: task_ref.to_string(),
+                ty: "i32".to_string(),
+            }
+        } else {
+            LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            }
+        })),
+        ast::Expr::Discard(inner) => Some(
+            (|| {
+                let _ = llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids)?;
+                Ok(LlvmValue {
+                    value: "0".to_string(),
+                    ty: "i32".to_string(),
+                })
+            })(),
+        ),
+        ast::Expr::Closure {
+            params,
+            return_type,
+            body,
+        } => Some(Ok({
+            let captures = llvm_snapshot_closure_captures(ctx);
+            let name = format!("__closure_{}", ctx.next_value);
+            ctx.closures.insert(
+                name,
+                LlvmClosureBinding {
+                    params: params.clone(),
+                    return_type: return_type.clone(),
+                    body: (**body).clone(),
+                    captures,
+                },
+            );
+            LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            }
+        })),
+        ast::Expr::Unary { op, expr } => Some(
+            (|| {
+                let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
+                Ok(match op {
+                    ast::UnaryOp::Plus => value,
+                    ast::UnaryOp::Neg => {
+                        let out = ctx.value();
+                        if llvm_is_float_ty(&value.ty) {
+                            ctx.code.push_str(&format!(
+                                "  {out} = fsub {} 0.0, {}\n",
+                                value.ty, value.value
+                            ));
+                            llvm_assert_finite(
+                                ctx,
+                                LlvmValue {
+                                    value: out,
+                                    ty: value.ty,
+                                },
+                            )?
+                        } else {
+                            ctx.code.push_str(&format!(
+                                "  {out} = sub {} 0, {}\n",
+                                value.ty, value.value
+                            ));
+                            LlvmValue {
+                                value: out,
+                                ty: value.ty,
+                            }
+                        }
+                    }
+                    ast::UnaryOp::BitNot => {
+                        let out = ctx.value();
+                        ctx.code
+                            .push_str(&format!("  {out} = xor {} {}, -1\n", value.ty, value.value));
+                        LlvmValue {
+                            value: out,
+                            ty: value.ty,
+                        }
+                    }
+                    ast::UnaryOp::Not => {
+                        let pred = llvm_emit_truthy_pred(ctx, &value);
+                        let out = ctx.value();
+                        ctx.code.push_str(&format!("  {out} = xor i1 {pred}, true\n"));
+                        llvm_bool_from_pred(ctx, &out)
+                    }
+                })
+            })(),
+        ),
+        ast::Expr::FieldAccess { base, field } => Some(
+            (|| {
+                if let Some(field_expr) = resolve_field_expr(base, field) {
+                    return llvm_emit_expr(&field_expr, ctx, string_literal_ids, task_ref_ids);
+                }
+                if let ast::Expr::Ident(name) = base.as_ref() {
+                    if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
+                        let ty = ctx
+                            .slot_tys
+                            .get(&format!("{name}.{field}"))
+                            .cloned()
+                            .unwrap_or_else(|| "i32".to_string());
+                        let val = ctx.value();
+                        ctx.code
+                            .push_str(&format!("  {val} = load {ty}, ptr {slot}\n"));
+                        return Ok(LlvmValue { value: val, ty });
+                    }
+                }
+                if let Some(task_ref_name) = expr_task_ref_name(expr) {
+                    if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
+                        return Ok(LlvmValue {
+                            value: task_ref.to_string(),
+                            ty: "i32".to_string(),
+                        });
+                    }
+                }
+                llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
+            })(),
+        ),
+        ast::Expr::StructInit { fields, .. } => Some(
+            (|| {
+                let mut first = None;
+                for (_, value) in fields {
+                    let current = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                    if first.is_none() {
+                        first = Some(current);
+                    }
+                }
+                Ok(first.unwrap_or_else(|| LlvmValue {
+                    value: "0".to_string(),
+                    ty: "i32".to_string(),
+                }))
+            })(),
+        ),
+        ast::Expr::EnumInit {
+            enum_name,
+            variant,
+            payload,
+            named_payload,
+        } => Some(
+            (|| {
+                for value in payload {
+                    let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                }
+                for (_, value) in named_payload {
+                    let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                }
+                let key = format!("{enum_name}::{variant}");
+                Ok(LlvmValue {
+                    value: variant_tag_for_key(&key, &ctx.variant_tags).to_string(),
+                    ty: "i32".to_string(),
+                })
+            })(),
+        ),
+        _ => None,
+    }
+}
+
 pub(super) fn llvm_ir_type_for_ast_type(ty: &ast::Type) -> String {
     match ty {
         ast::Type::Void | ast::Type::Never => "void".to_string(),

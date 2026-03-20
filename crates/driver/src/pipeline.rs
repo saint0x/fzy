@@ -34,15 +34,14 @@ use self::native_backend_support::{
     native_lowerability_diagnostics,
 };
 use self::llvm_support::{
-    llvm_assert_finite, llvm_bool_from_pred, llvm_cast_value, llvm_emit_binary_expr,
+    llvm_cast_value, llvm_emit_binary_expr,
     llvm_emit_complex_expr, llvm_emit_condition_value, llvm_emit_linear_stmts,
-    llvm_emit_truthy_pred,
+    llvm_emit_simple_expr,
     llvm_float_literal,
-    llvm_ir_type_for_ast_type, llvm_is_float_ty,
-    llvm_snapshot_closure_captures, llvm_zero_literal,
+    llvm_ir_type_for_ast_type, llvm_zero_literal,
     collect_wrapped_index_candidates,
     LlvmFuncCtx,
-    LlvmClosureBinding, LlvmFunctionSig, LlvmValue,
+    LlvmFunctionSig, LlvmValue,
 };
 use self::native_metadata::{
     build_global_const_i32_map, build_mutable_static_i32_map, build_string_literal_ids,
@@ -3826,6 +3825,9 @@ fn llvm_emit_expr(
     if let Some(result) = llvm_emit_complex_expr(expr, ctx, string_literal_ids, task_ref_ids) {
         return result;
     }
+    if let Some(result) = llvm_emit_simple_expr(expr, ctx, string_literal_ids, task_ref_ids) {
+        return result;
+    }
     Ok(match expr {
         ast::Expr::Int(v) => {
             let ty = if i32::try_from(*v).is_ok() {
@@ -3862,178 +3864,15 @@ fn llvm_emit_expr(
                 .to_string(),
             ty: "i32".to_string(),
         },
-        ast::Expr::Ident(name) => {
-            if let Some(direct) = ctx.direct_values.get(name) {
-                return Ok(direct.clone());
-            }
-            if let Some(slot) = ctx.slots.get(name).cloned() {
-                let ty = ctx
-                    .slot_tys
-                    .get(name)
-                    .cloned()
-                    .unwrap_or_else(|| "i32".to_string());
-                let val = ctx.value();
-                ctx.code
-                    .push_str(&format!("  {val} = load {ty}, ptr {slot}\n"));
-                LlvmValue { value: val, ty }
-            } else if let Some(symbol) = ctx.mutable_globals.get(name).cloned() {
-                let val = ctx.value();
-                ctx.code
-                    .push_str(&format!("  {val} = load i32, ptr @{symbol}\n"));
-                LlvmValue {
-                    value: val,
-                    ty: "i32".to_string(),
-                }
-            } else if let Some(value) = ctx.globals.get(name).copied() {
-                LlvmValue {
-                    value: value.to_string(),
-                    ty: "i32".to_string(),
-                }
-            } else if let Some(task_ref) = task_ref_ids.get(name).copied() {
-                LlvmValue {
-                    value: task_ref.to_string(),
-                    ty: "i32".to_string(),
-                }
-            } else {
-                LlvmValue {
-                    value: "0".to_string(),
-                    ty: "i32".to_string(),
-                }
-            }
-        }
+        ast::Expr::Ident(_) => unreachable!("simple expressions are handled above"),
         ast::Expr::Group(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids)?,
         ast::Expr::Await(inner) => llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids)?,
-        ast::Expr::Discard(inner) => {
-            let _ = llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids)?;
-            LlvmValue {
-                value: "0".to_string(),
-                ty: "i32".to_string(),
-            }
-        }
-        ast::Expr::Closure {
-            params,
-            return_type,
-            body,
-        } => {
-            let captures = llvm_snapshot_closure_captures(ctx);
-            let name = format!("__closure_{}", ctx.next_value);
-            ctx.closures.insert(
-                name,
-                LlvmClosureBinding {
-                    params: params.clone(),
-                    return_type: return_type.clone(),
-                    body: (**body).clone(),
-                    captures,
-                },
-            );
-            LlvmValue {
-                value: "0".to_string(),
-                ty: "i32".to_string(),
-            }
-        }
-        ast::Expr::Unary { op, expr } => {
-            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
-            match op {
-                ast::UnaryOp::Plus => value,
-                ast::UnaryOp::Neg => {
-                    let out = ctx.value();
-                    if llvm_is_float_ty(&value.ty) {
-                        ctx.code.push_str(&format!(
-                            "  {out} = fsub {} 0.0, {}\n",
-                            value.ty, value.value
-                        ));
-                        llvm_assert_finite(
-                            ctx,
-                            LlvmValue {
-                                value: out,
-                                ty: value.ty,
-                            },
-                        )?
-                    } else {
-                        ctx.code
-                            .push_str(&format!("  {out} = sub {} 0, {}\n", value.ty, value.value));
-                        LlvmValue {
-                            value: out,
-                            ty: value.ty,
-                        }
-                    }
-                }
-                ast::UnaryOp::BitNot => {
-                    let out = ctx.value();
-                    ctx.code
-                        .push_str(&format!("  {out} = xor {} {}, -1\n", value.ty, value.value));
-                    LlvmValue {
-                        value: out,
-                        ty: value.ty,
-                    }
-                }
-                ast::UnaryOp::Not => {
-                    let pred = llvm_emit_truthy_pred(ctx, &value);
-                    let out = ctx.value();
-                    ctx.code
-                        .push_str(&format!("  {out} = xor i1 {pred}, true\n"));
-                    llvm_bool_from_pred(ctx, &out)
-                }
-            }
-        }
-        ast::Expr::FieldAccess { base, field } => {
-            if let Some(field_expr) = resolve_field_expr(base, field) {
-                return llvm_emit_expr(&field_expr, ctx, string_literal_ids, task_ref_ids);
-            }
-            if let ast::Expr::Ident(name) = base.as_ref() {
-                if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
-                    let ty = ctx
-                        .slot_tys
-                        .get(&format!("{name}.{field}"))
-                        .cloned()
-                        .unwrap_or_else(|| "i32".to_string());
-                    let val = ctx.value();
-                    ctx.code
-                        .push_str(&format!("  {val} = load {ty}, ptr {slot}\n"));
-                    return Ok(LlvmValue { value: val, ty });
-                }
-            }
-            if let Some(task_ref_name) = expr_task_ref_name(expr) {
-                if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
-                    return Ok(LlvmValue {
-                        value: task_ref.to_string(),
-                        ty: "i32".to_string(),
-                    });
-                }
-            }
-            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?
-        }
-        ast::Expr::StructInit { fields, .. } => {
-            let mut first = None;
-            for (_, value) in fields {
-                let current = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
-                if first.is_none() {
-                    first = Some(current);
-                }
-            }
-            first.unwrap_or_else(|| LlvmValue {
-                value: "0".to_string(),
-                ty: "i32".to_string(),
-            })
-        }
-        ast::Expr::EnumInit {
-            enum_name,
-            variant,
-            payload,
-            named_payload,
-        } => {
-            for value in payload {
-                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
-            }
-            for (_, value) in named_payload {
-                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
-            }
-            let key = format!("{enum_name}::{variant}");
-            LlvmValue {
-                value: variant_tag_for_key(&key, &ctx.variant_tags).to_string(),
-                ty: "i32".to_string(),
-            }
-        }
+        ast::Expr::Discard(_) => unreachable!("simple expressions are handled above"),
+        ast::Expr::Closure { .. } => unreachable!("simple expressions are handled above"),
+        ast::Expr::Unary { .. } => unreachable!("simple expressions are handled above"),
+        ast::Expr::FieldAccess { .. } => unreachable!("simple expressions are handled above"),
+        ast::Expr::StructInit { .. } => unreachable!("simple expressions are handled above"),
+        ast::Expr::EnumInit { .. } => unreachable!("simple expressions are handled above"),
         ast::Expr::TryCatch { try_expr, .. } => {
             llvm_emit_expr(try_expr, ctx, string_literal_ids, task_ref_ids)?
         }
