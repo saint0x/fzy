@@ -136,6 +136,7 @@ pub(super) fn llvm_cast_value(
             ));
         }
         ("float", "i32") | ("float", "i64") | ("double", "i32") | ("double", "i64") => {
+            let value = llvm_assert_finite(ctx, value)?;
             ctx.code.push_str(&format!(
                 "  {out} = fptosi {} {} to {target_ty}\n",
                 value.ty, value.value
@@ -164,6 +165,44 @@ pub(super) fn llvm_cast_value(
         value: out,
         ty: target_ty.to_string(),
     })
+}
+
+pub(super) fn llvm_assert_finite(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Result<LlvmValue> {
+    if !llvm_is_float_ty(&value.ty) {
+        return Ok(value);
+    }
+    let neg_limit = if value.ty == "float" {
+        "-3.4028234663852886e+38"
+    } else {
+        "-1.7976931348623157e+308"
+    };
+    let pos_limit = if value.ty == "float" {
+        "3.4028234663852886e+38"
+    } else {
+        "1.7976931348623157e+308"
+    };
+    let lower = ctx.value();
+    let upper = ctx.value();
+    let finite = ctx.value();
+    let ok_label = ctx.label("float.finite");
+    let trap_label = ctx.label("float.trap");
+    ctx.code.push_str(&format!(
+        "  {lower} = fcmp oge {} {}, {neg_limit}\n",
+        value.ty, value.value
+    ));
+    ctx.code.push_str(&format!(
+        "  {upper} = fcmp ole {} {}, {pos_limit}\n",
+        value.ty, value.value
+    ));
+    ctx.code
+        .push_str(&format!("  {finite} = and i1 {lower}, {upper}\n"));
+    ctx.code.push_str(&format!(
+        "  br i1 {finite}, label %{ok_label}, label %{trap_label}\n"
+    ));
+    ctx.code.push_str(&format!("{trap_label}:\n"));
+    ctx.code.push_str("  call void @llvm.trap()\n  unreachable\n");
+    ctx.code.push_str(&format!("{ok_label}:\n"));
+    Ok(value)
 }
 
 pub(super) fn llvm_emit_expr_as(

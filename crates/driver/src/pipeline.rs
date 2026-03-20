@@ -4,7 +4,7 @@ use std::process::Command;
 
 use anyhow::{anyhow, bail, Context, Result};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
-use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlags, Type as ClifType};
+use cranelift_codegen::ir::{types, AbiParam, InstBuilder, MemFlags, TrapCode, Type as ClifType};
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
@@ -17,11 +17,19 @@ use std::sync::{Mutex, Once, OnceLock};
 use std::time::UNIX_EPOCH;
 
 mod llvm_support;
+mod native_metadata;
 
 use self::llvm_support::{
-    llvm_bool_from_pred, llvm_cast_value, llvm_emit_expr_as, llvm_emit_truthy_pred,
-    llvm_float_literal, llvm_ir_type_for_ast_type, llvm_is_float_ty, llvm_zero_literal,
+    llvm_assert_finite, llvm_bool_from_pred, llvm_cast_value, llvm_emit_expr_as,
+    llvm_emit_truthy_pred, llvm_float_literal, llvm_ir_type_for_ast_type, llvm_is_float_ty,
+    llvm_zero_literal,
     LlvmArrayBinding, LlvmCaptureBinding, LlvmClosureBinding, LlvmFunctionSig, LlvmValue,
+};
+use self::native_metadata::{
+    build_global_const_i32_map, build_mutable_static_i32_map, build_string_literal_ids,
+    build_variant_tag_map, collect_native_string_literals,
+    collect_passthrough_function_map_from_module, collect_passthrough_function_map_from_typed,
+    collect_spawn_task_symbols, collect_variant_keys_from_stmt, llvm_static_symbol_name,
 };
 
 #[derive(Clone, Copy)]
@@ -4159,6 +4167,7 @@ fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<
     }
 
     let mut out = format!("; ModuleID = '{}'\n", fir.name);
+    out.push_str("declare void @llvm.trap()\n");
     let used_imports = collect_used_native_runtime_imports(fir);
     for import in &used_imports {
         let mut params = String::new();
@@ -5431,13 +5440,20 @@ fn llvm_emit_expr(
                             "  {out} = fsub {} 0.0, {}\n",
                             value.ty, value.value
                         ));
+                        llvm_assert_finite(
+                            ctx,
+                            LlvmValue {
+                                value: out,
+                                ty: value.ty,
+                            },
+                        )?
                     } else {
                         ctx.code
                             .push_str(&format!("  {out} = sub {} 0, {}\n", value.ty, value.value));
-                    }
-                    LlvmValue {
-                        value: out,
-                        ty: value.ty,
+                        LlvmValue {
+                            value: out,
+                            ty: value.ty,
+                        }
                     }
                 }
                 ast::UnaryOp::BitNot => {
@@ -5784,10 +5800,13 @@ fn llvm_emit_expr(
                 let val = ctx.value();
                 ctx.code
                     .push_str(&format!("  {val} = call {return_ty} @{symbol}({args})\n"));
-                LlvmValue {
+                llvm_assert_finite(
+                    ctx,
+                    LlvmValue {
                     value: val,
                     ty: return_ty,
-                }
+                    },
+                )?
             }
         }
         ast::Expr::UnsafeBlock { body, .. } => {
@@ -5813,10 +5832,13 @@ fn llvm_emit_expr(
                         "  {out} = {op} {} {}, {}\n",
                         lhs.ty, lhs.value, rhs.value
                     ));
-                    LlvmValue {
+                    llvm_assert_finite(
+                        ctx,
+                        LlvmValue {
                         value: out,
                         ty: lhs.ty,
-                    }
+                        },
+                    )?
                 }
                 ast::BinaryOp::Sub => {
                     let rhs =
@@ -5831,10 +5853,13 @@ fn llvm_emit_expr(
                         "  {out} = {op} {} {}, {}\n",
                         lhs.ty, lhs.value, rhs.value
                     ));
-                    LlvmValue {
+                    llvm_assert_finite(
+                        ctx,
+                        LlvmValue {
                         value: out,
                         ty: lhs.ty,
-                    }
+                        },
+                    )?
                 }
                 ast::BinaryOp::Mul => {
                     let rhs =
@@ -5849,10 +5874,13 @@ fn llvm_emit_expr(
                         "  {out} = {op} {} {}, {}\n",
                         lhs.ty, lhs.value, rhs.value
                     ));
-                    LlvmValue {
+                    llvm_assert_finite(
+                        ctx,
+                        LlvmValue {
                         value: out,
                         ty: lhs.ty,
-                    }
+                        },
+                    )?
                 }
                 ast::BinaryOp::Div => {
                     let rhs =
@@ -5867,10 +5895,13 @@ fn llvm_emit_expr(
                         "  {out} = {op} {} {}, {}\n",
                         lhs.ty, lhs.value, rhs.value
                     ));
-                    LlvmValue {
+                    llvm_assert_finite(
+                        ctx,
+                        LlvmValue {
                         value: out,
                         ty: lhs.ty,
-                    }
+                        },
+                    )?
                 }
                 ast::BinaryOp::Mod => {
                     let rhs =
@@ -6337,634 +6368,6 @@ fn collect_used_native_data_plane_imports(
         }
     }
     used
-}
-
-fn collect_string_literals(fir: &fir::FirModule) -> Vec<String> {
-    let mut literals = HashSet::<String>::new();
-    for function in &fir.typed_functions {
-        for stmt in &function.body {
-            collect_string_literals_from_stmt(stmt, &mut literals);
-        }
-    }
-    let mut literals = literals.into_iter().collect::<Vec<_>>();
-    literals.sort();
-    literals
-}
-
-fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<String> {
-    fn collect_from_body(
-        body: &[ast::Stmt],
-        const_strings: &mut HashMap<String, String>,
-        out: &mut HashSet<String>,
-    ) {
-        for stmt in body {
-            collect_from_stmt(stmt, const_strings, out);
-        }
-    }
-
-    fn collect_from_stmt(
-        stmt: &ast::Stmt,
-        const_strings: &mut HashMap<String, String>,
-        out: &mut HashSet<String>,
-    ) {
-        match stmt {
-            ast::Stmt::Let { name, value, .. } => {
-                collect_from_expr(value, const_strings, out);
-                if let Some(value) = eval_const_string_expr(value, const_strings) {
-                    const_strings.insert(name.clone(), value);
-                } else {
-                    const_strings.remove(name);
-                }
-            }
-            ast::Stmt::Assign { target, value } => {
-                collect_from_expr(value, const_strings, out);
-                if let Some(value) = eval_const_string_expr(value, const_strings) {
-                    const_strings.insert(target.clone(), value);
-                } else {
-                    const_strings.remove(target);
-                }
-            }
-            ast::Stmt::CompoundAssign { target, value, .. } => {
-                collect_from_expr(value, const_strings, out);
-                const_strings.remove(target);
-            }
-            ast::Stmt::LetPattern { value, .. }
-            | ast::Stmt::Defer(value)
-            | ast::Stmt::Requires(value)
-            | ast::Stmt::Ensures(value)
-            | ast::Stmt::Expr(value) => collect_from_expr(value, const_strings, out),
-            ast::Stmt::Return(value) => {
-                if let Some(value) = value {
-                    collect_from_expr(value, const_strings, out);
-                }
-            }
-            ast::Stmt::If {
-                condition,
-                then_body,
-                else_body,
-            } => {
-                collect_from_expr(condition, const_strings, out);
-                collect_from_body(then_body, &mut const_strings.clone(), out);
-                collect_from_body(else_body, &mut const_strings.clone(), out);
-            }
-            ast::Stmt::While { condition, body } => {
-                collect_from_expr(condition, const_strings, out);
-                collect_from_body(body, &mut const_strings.clone(), out);
-            }
-            ast::Stmt::For {
-                init,
-                condition,
-                step,
-                body,
-            } => {
-                if let Some(init) = init {
-                    collect_from_stmt(init, &mut const_strings.clone(), out);
-                }
-                if let Some(condition) = condition {
-                    collect_from_expr(condition, const_strings, out);
-                }
-                if let Some(step) = step {
-                    collect_from_stmt(step, &mut const_strings.clone(), out);
-                }
-                collect_from_body(body, &mut const_strings.clone(), out);
-            }
-            ast::Stmt::ForIn { iterable, body, .. } => {
-                collect_from_expr(iterable, const_strings, out);
-                collect_from_body(body, &mut const_strings.clone(), out);
-            }
-            ast::Stmt::Loop { body } => collect_from_body(body, &mut const_strings.clone(), out),
-            ast::Stmt::Match { scrutinee, arms } => {
-                collect_from_expr(scrutinee, const_strings, out);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_from_expr(guard, const_strings, out);
-                    }
-                    collect_from_expr(&arm.value, const_strings, out);
-                }
-            }
-            ast::Stmt::Break(_) | ast::Stmt::Continue => {}
-        }
-    }
-
-    fn collect_from_expr(
-        expr: &ast::Expr,
-        const_strings: &HashMap<String, String>,
-        out: &mut HashSet<String>,
-    ) {
-        if let Some(value) = eval_const_string_expr(expr, const_strings) {
-            out.insert(value);
-        }
-        match expr {
-            ast::Expr::Call { args, .. } => {
-                for arg in args {
-                    collect_from_expr(arg, const_strings, out);
-                }
-            }
-            ast::Expr::UnsafeBlock { .. } => {}
-            ast::Expr::FieldAccess { base, .. } => collect_from_expr(base, const_strings, out),
-            ast::Expr::StructInit { fields, .. } => {
-                for (_, value) in fields {
-                    collect_from_expr(value, const_strings, out);
-                }
-            }
-            ast::Expr::EnumInit { payload, .. } | ast::Expr::ArrayLiteral(payload) => {
-                for value in payload {
-                    collect_from_expr(value, const_strings, out);
-                }
-            }
-            ast::Expr::ObjectLiteral(fields) => {
-                for (key, value) in fields {
-                    out.insert(key.clone());
-                    collect_from_expr(value, const_strings, out);
-                }
-            }
-            ast::Expr::Closure { body, .. }
-            | ast::Expr::Group(body)
-            | ast::Expr::Await(body)
-            | ast::Expr::Discard(body) => collect_from_expr(body, const_strings, out),
-            ast::Expr::Unary { expr, .. } => collect_from_expr(expr, const_strings, out),
-            ast::Expr::TryCatch {
-                try_expr,
-                catch_expr,
-            } => {
-                collect_from_expr(try_expr, const_strings, out);
-                collect_from_expr(catch_expr, const_strings, out);
-            }
-            ast::Expr::If {
-                condition,
-                then_expr,
-                else_expr,
-            } => {
-                collect_from_expr(condition, const_strings, out);
-                collect_from_expr(then_expr, const_strings, out);
-                collect_from_expr(else_expr, const_strings, out);
-            }
-            ast::Expr::Binary { left, right, .. } => {
-                collect_from_expr(left, const_strings, out);
-                collect_from_expr(right, const_strings, out);
-            }
-            ast::Expr::Range { start, end, .. } => {
-                collect_from_expr(start, const_strings, out);
-                collect_from_expr(end, const_strings, out);
-            }
-            ast::Expr::Index { base, index } => {
-                collect_from_expr(base, const_strings, out);
-                collect_from_expr(index, const_strings, out);
-            }
-            ast::Expr::Int(_)
-            | ast::Expr::Float { .. }
-            | ast::Expr::Char(_)
-            | ast::Expr::Bool(_)
-            | ast::Expr::Str(_)
-            | ast::Expr::Ident(_) => {}
-            _ => {}
-        }
-    }
-
-    let mut out = HashSet::<String>::new();
-    for function in &fir.typed_functions {
-        collect_from_body(&function.body, &mut HashMap::new(), &mut out);
-    }
-    let mut out = out.into_iter().collect::<Vec<_>>();
-    out.sort();
-    out
-}
-
-fn collect_native_string_literals(fir: &fir::FirModule) -> Vec<String> {
-    let mut merged = collect_string_literals(fir)
-        .into_iter()
-        .collect::<HashSet<_>>();
-    for folded in collect_folded_temp_string_literals(fir) {
-        merged.insert(folded);
-    }
-    let mut merged = merged.into_iter().collect::<Vec<_>>();
-    merged.sort();
-    merged
-}
-
-fn collect_string_literals_from_stmt(stmt: &ast::Stmt, literals: &mut HashSet<String>) {
-    match stmt {
-        ast::Stmt::Let { value, .. }
-        | ast::Stmt::LetPattern { value, .. }
-        | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::CompoundAssign { value, .. }
-        | ast::Stmt::Defer(value)
-        | ast::Stmt::Requires(value)
-        | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => collect_string_literals_from_expr(value, literals),
-        ast::Stmt::Return(value) => {
-            if let Some(value) = value {
-                collect_string_literals_from_expr(value, literals);
-            }
-        }
-        ast::Stmt::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            collect_string_literals_from_expr(condition, literals);
-            for nested in then_body {
-                collect_string_literals_from_stmt(nested, literals);
-            }
-            for nested in else_body {
-                collect_string_literals_from_stmt(nested, literals);
-            }
-        }
-        ast::Stmt::While { condition, body } => {
-            collect_string_literals_from_expr(condition, literals);
-            for nested in body {
-                collect_string_literals_from_stmt(nested, literals);
-            }
-        }
-        ast::Stmt::For {
-            init,
-            condition,
-            step,
-            body,
-        } => {
-            if let Some(init) = init {
-                collect_string_literals_from_stmt(init, literals);
-            }
-            if let Some(condition) = condition {
-                collect_string_literals_from_expr(condition, literals);
-            }
-            if let Some(step) = step {
-                collect_string_literals_from_stmt(step, literals);
-            }
-            for nested in body {
-                collect_string_literals_from_stmt(nested, literals);
-            }
-        }
-        ast::Stmt::ForIn { iterable, body, .. } => {
-            collect_string_literals_from_expr(iterable, literals);
-            for nested in body {
-                collect_string_literals_from_stmt(nested, literals);
-            }
-        }
-        ast::Stmt::Loop { body } => {
-            for nested in body {
-                collect_string_literals_from_stmt(nested, literals);
-            }
-        }
-        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
-        ast::Stmt::Match { scrutinee, arms } => {
-            collect_string_literals_from_expr(scrutinee, literals);
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    collect_string_literals_from_expr(guard, literals);
-                }
-                collect_string_literals_from_expr(&arm.value, literals);
-            }
-        }
-    }
-}
-
-fn collect_string_literals_from_expr(expr: &ast::Expr, literals: &mut HashSet<String>) {
-    match expr {
-        ast::Expr::Str(value) => {
-            literals.insert(value.clone());
-        }
-        ast::Expr::Call { args, .. } => {
-            for arg in args {
-                collect_string_literals_from_expr(arg, literals);
-            }
-        }
-        ast::Expr::UnsafeBlock { .. } => {}
-        ast::Expr::FieldAccess { base, .. } => collect_string_literals_from_expr(base, literals),
-        ast::Expr::StructInit { fields, .. } => {
-            for (_, value) in fields {
-                collect_string_literals_from_expr(value, literals);
-            }
-        }
-        ast::Expr::EnumInit { payload, .. } => {
-            for value in payload {
-                collect_string_literals_from_expr(value, literals);
-            }
-        }
-        ast::Expr::ObjectLiteral(fields) => {
-            for (key, value) in fields {
-                literals.insert(key.clone());
-                collect_string_literals_from_expr(value, literals);
-            }
-        }
-        ast::Expr::Closure { body, .. } => {
-            collect_string_literals_from_expr(body, literals);
-        }
-        ast::Expr::Group(inner) => collect_string_literals_from_expr(inner, literals),
-        ast::Expr::Await(inner) => collect_string_literals_from_expr(inner, literals),
-        ast::Expr::Discard(inner) => collect_string_literals_from_expr(inner, literals),
-        ast::Expr::Unary { expr, .. } => collect_string_literals_from_expr(expr, literals),
-        ast::Expr::TryCatch {
-            try_expr,
-            catch_expr,
-        } => {
-            collect_string_literals_from_expr(try_expr, literals);
-            collect_string_literals_from_expr(catch_expr, literals);
-        }
-        ast::Expr::If {
-            condition,
-            then_expr,
-            else_expr,
-        } => {
-            collect_string_literals_from_expr(condition, literals);
-            collect_string_literals_from_expr(then_expr, literals);
-            collect_string_literals_from_expr(else_expr, literals);
-        }
-        ast::Expr::Binary { left, right, .. } => {
-            collect_string_literals_from_expr(left, literals);
-            collect_string_literals_from_expr(right, literals);
-        }
-        ast::Expr::Range { start, end, .. } => {
-            collect_string_literals_from_expr(start, literals);
-            collect_string_literals_from_expr(end, literals);
-        }
-        ast::Expr::ArrayLiteral(items) => {
-            for item in items {
-                collect_string_literals_from_expr(item, literals);
-            }
-        }
-        ast::Expr::Index { base, index } => {
-            collect_string_literals_from_expr(base, literals);
-            collect_string_literals_from_expr(index, literals);
-        }
-        ast::Expr::Int(_)
-        | ast::Expr::Float { .. }
-        | ast::Expr::Char(_)
-        | ast::Expr::Bool(_)
-        | ast::Expr::Ident(_) => {}
-        _ => {}
-    }
-}
-
-fn build_string_literal_ids(literals: &[String]) -> HashMap<String, i32> {
-    literals
-        .iter()
-        .enumerate()
-        .map(|(index, value)| (value.clone(), index as i32 + 1))
-        .collect()
-}
-
-fn build_global_const_i32_map(fir: &fir::FirModule) -> HashMap<String, i32> {
-    fir.typed_globals
-        .iter()
-        .filter_map(|item| {
-            if item.is_static && item.mutable {
-                None
-            } else {
-                item.const_i32.map(|value| (item.name.clone(), value))
-            }
-        })
-        .collect()
-}
-
-fn build_mutable_static_i32_map(fir: &fir::FirModule) -> HashMap<String, i32> {
-    fir.typed_globals
-        .iter()
-        .filter_map(|item| {
-            if item.is_static && item.mutable {
-                item.const_i32.map(|value| (item.name.clone(), value))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-fn llvm_static_symbol_name(name: &str) -> String {
-    format!("fz_static_{}", native_mangle_symbol(name))
-}
-
-fn collect_spawn_task_symbols(fir: &fir::FirModule) -> Vec<String> {
-    fir.typed_functions
-        .iter()
-        .filter(|function| function.params.is_empty())
-        .map(|function| function.name.clone())
-        .collect()
-}
-
-fn build_variant_tag_map(fir: &fir::FirModule) -> HashMap<String, i32> {
-    let mut keys = BTreeSet::<String>::new();
-    for function in &fir.typed_functions {
-        for stmt in &function.body {
-            collect_variant_keys_from_stmt(stmt, &mut keys);
-        }
-    }
-    keys.into_iter()
-        .enumerate()
-        .map(|(idx, key)| (key, idx as i32 + 1))
-        .collect()
-}
-
-fn collect_passthrough_function_map_from_typed(
-    functions: &[hir::TypedFunction],
-) -> HashMap<String, usize> {
-    let mut passthrough = HashMap::<String, usize>::new();
-    for function in functions {
-        if function.params.is_empty() || function.body.len() != 1 {
-            continue;
-        }
-        let ast::Stmt::Return(Some(ast::Expr::Ident(name))) = &function.body[0] else {
-            continue;
-        };
-        if let Some((index, _)) = function
-            .params
-            .iter()
-            .enumerate()
-            .find(|(_, param)| &param.name == name)
-        {
-            passthrough.insert(function.name.clone(), index);
-        }
-    }
-    passthrough
-}
-
-fn collect_passthrough_function_map_from_module(module: &ast::Module) -> HashMap<String, usize> {
-    let mut passthrough = HashMap::<String, usize>::new();
-    for item in &module.items {
-        let ast::Item::Function(function) = item else {
-            continue;
-        };
-        if function.params.is_empty() || function.body.len() != 1 {
-            continue;
-        }
-        let ast::Stmt::Return(Some(ast::Expr::Ident(name))) = &function.body[0] else {
-            continue;
-        };
-        if let Some((index, _)) = function
-            .params
-            .iter()
-            .enumerate()
-            .find(|(_, param)| &param.name == name)
-        {
-            passthrough.insert(function.name.clone(), index);
-        }
-    }
-    passthrough
-}
-
-fn collect_variant_keys_from_stmt(stmt: &ast::Stmt, out: &mut BTreeSet<String>) {
-    match stmt {
-        ast::Stmt::Let { value, .. }
-        | ast::Stmt::LetPattern { value, .. }
-        | ast::Stmt::Assign { value, .. }
-        | ast::Stmt::CompoundAssign { value, .. }
-        | ast::Stmt::Defer(value)
-        | ast::Stmt::Requires(value)
-        | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => collect_variant_keys_from_expr(value, out),
-        ast::Stmt::Return(value) => {
-            if let Some(value) = value {
-                collect_variant_keys_from_expr(value, out);
-            }
-        }
-        ast::Stmt::If {
-            condition,
-            then_body,
-            else_body,
-        } => {
-            collect_variant_keys_from_expr(condition, out);
-            for nested in then_body {
-                collect_variant_keys_from_stmt(nested, out);
-            }
-            for nested in else_body {
-                collect_variant_keys_from_stmt(nested, out);
-            }
-        }
-        ast::Stmt::While { condition, body } => {
-            collect_variant_keys_from_expr(condition, out);
-            for nested in body {
-                collect_variant_keys_from_stmt(nested, out);
-            }
-        }
-        ast::Stmt::For {
-            init,
-            condition,
-            step,
-            body,
-        } => {
-            if let Some(init) = init {
-                collect_variant_keys_from_stmt(init, out);
-            }
-            if let Some(condition) = condition {
-                collect_variant_keys_from_expr(condition, out);
-            }
-            if let Some(step) = step {
-                collect_variant_keys_from_stmt(step, out);
-            }
-            for nested in body {
-                collect_variant_keys_from_stmt(nested, out);
-            }
-        }
-        ast::Stmt::ForIn { iterable, body, .. } => {
-            collect_variant_keys_from_expr(iterable, out);
-            for nested in body {
-                collect_variant_keys_from_stmt(nested, out);
-            }
-        }
-        ast::Stmt::Loop { body } => {
-            for nested in body {
-                collect_variant_keys_from_stmt(nested, out);
-            }
-        }
-        ast::Stmt::Match { scrutinee, arms } => {
-            collect_variant_keys_from_expr(scrutinee, out);
-            for arm in arms {
-                collect_variant_keys_from_pattern(&arm.pattern, out);
-                if let Some(guard) = &arm.guard {
-                    collect_variant_keys_from_expr(guard, out);
-                }
-                collect_variant_keys_from_expr(&arm.value, out);
-            }
-        }
-        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
-    }
-}
-
-fn collect_variant_keys_from_expr(expr: &ast::Expr, out: &mut BTreeSet<String>) {
-    match expr {
-        ast::Expr::EnumInit {
-            enum_name, variant, ..
-        } => {
-            out.insert(format!("{enum_name}::{variant}"));
-        }
-        ast::Expr::Call { args, .. } => {
-            for arg in args {
-                collect_variant_keys_from_expr(arg, out);
-            }
-        }
-        ast::Expr::UnsafeBlock { .. } => {}
-        ast::Expr::FieldAccess { base, .. } => collect_variant_keys_from_expr(base, out),
-        ast::Expr::StructInit { fields, .. } => {
-            for (_, value) in fields {
-                collect_variant_keys_from_expr(value, out);
-            }
-        }
-        ast::Expr::Closure { body, .. } => collect_variant_keys_from_expr(body, out),
-        ast::Expr::Group(inner) => collect_variant_keys_from_expr(inner, out),
-        ast::Expr::Await(inner) => collect_variant_keys_from_expr(inner, out),
-        ast::Expr::Discard(inner) => collect_variant_keys_from_expr(inner, out),
-        ast::Expr::TryCatch {
-            try_expr,
-            catch_expr,
-        } => {
-            collect_variant_keys_from_expr(try_expr, out);
-            collect_variant_keys_from_expr(catch_expr, out);
-        }
-        ast::Expr::If {
-            condition,
-            then_expr,
-            else_expr,
-        } => {
-            collect_variant_keys_from_expr(condition, out);
-            collect_variant_keys_from_expr(then_expr, out);
-            collect_variant_keys_from_expr(else_expr, out);
-        }
-        ast::Expr::Range { start, end, .. } => {
-            collect_variant_keys_from_expr(start, out);
-            collect_variant_keys_from_expr(end, out);
-        }
-        ast::Expr::ArrayLiteral(items) => {
-            for item in items {
-                collect_variant_keys_from_expr(item, out);
-            }
-        }
-        ast::Expr::Index { base, index } => {
-            collect_variant_keys_from_expr(base, out);
-            collect_variant_keys_from_expr(index, out);
-        }
-        ast::Expr::Unary { expr, .. } => collect_variant_keys_from_expr(expr, out),
-        ast::Expr::Binary { left, right, .. } => {
-            collect_variant_keys_from_expr(left, out);
-            collect_variant_keys_from_expr(right, out);
-        }
-        ast::Expr::Int(_)
-        | ast::Expr::Float { .. }
-        | ast::Expr::Char(_)
-        | ast::Expr::Bool(_)
-        | ast::Expr::Str(_)
-        | ast::Expr::Ident(_) => {}
-        _ => {}
-    }
-}
-
-fn collect_variant_keys_from_pattern(pattern: &ast::Pattern, out: &mut BTreeSet<String>) {
-    match pattern {
-        ast::Pattern::Variant {
-            enum_name, variant, ..
-        } => {
-            out.insert(format!("{enum_name}::{variant}"));
-        }
-        ast::Pattern::Or(patterns) => {
-            for nested in patterns {
-                collect_variant_keys_from_pattern(nested, out);
-            }
-        }
-        ast::Pattern::Wildcard
-        | ast::Pattern::Int(_)
-        | ast::Pattern::Bool(_)
-        | ast::Pattern::Ident(_)
-        | ast::Pattern::Struct { .. } => {}
-    }
 }
 
 fn escape_c_string(value: &str) -> String {
@@ -9735,10 +9138,14 @@ fn clif_emit_expr(
                         } else {
                             builder.ins().f64const(0.0)
                         };
-                        ClifValue {
-                            value: builder.ins().fsub(zero, value.value),
-                            ty: value.ty,
-                        }
+                        let lowered = builder.ins().fsub(zero, value.value);
+                        clif_assert_finite(
+                            builder,
+                            ClifValue {
+                                value: lowered,
+                                ty: value.ty,
+                            },
+                        )
                     } else {
                         let zero = builder.ins().iconst(value.ty, 0);
                         ClifValue {
@@ -10031,10 +9438,14 @@ fn clif_emit_expr(
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
-                        ClifValue {
-                            value: builder.ins().fadd(lhs.value, rhs.value),
-                            ty: lhs.ty,
-                        }
+                        let lowered = builder.ins().fadd(lhs.value, rhs.value);
+                        clif_assert_finite(
+                            builder,
+                            ClifValue {
+                                value: lowered,
+                                ty: lhs.ty,
+                            },
+                        )
                     } else {
                         ClifValue {
                             value: builder.ins().iadd(lhs.value, rhs.value),
@@ -10046,10 +9457,14 @@ fn clif_emit_expr(
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
-                        ClifValue {
-                            value: builder.ins().fsub(lhs.value, rhs.value),
-                            ty: lhs.ty,
-                        }
+                        let lowered = builder.ins().fsub(lhs.value, rhs.value);
+                        clif_assert_finite(
+                            builder,
+                            ClifValue {
+                                value: lowered,
+                                ty: lhs.ty,
+                            },
+                        )
                     } else {
                         ClifValue {
                             value: builder.ins().isub(lhs.value, rhs.value),
@@ -10061,10 +9476,14 @@ fn clif_emit_expr(
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
-                        ClifValue {
-                            value: builder.ins().fmul(lhs.value, rhs.value),
-                            ty: lhs.ty,
-                        }
+                        let lowered = builder.ins().fmul(lhs.value, rhs.value);
+                        clif_assert_finite(
+                            builder,
+                            ClifValue {
+                                value: lowered,
+                                ty: lhs.ty,
+                            },
+                        )
                     } else {
                         ClifValue {
                             value: builder.ins().imul(lhs.value, rhs.value),
@@ -10076,10 +9495,14 @@ fn clif_emit_expr(
                     let rhs = clif_emit_expr(builder, ctx, right, locals, next_var)?;
                     let rhs = cast_clif_value(builder, rhs, lhs.ty)?;
                     if lhs.ty == types::F32 || lhs.ty == types::F64 {
-                        ClifValue {
-                            value: builder.ins().fdiv(lhs.value, rhs.value),
-                            ty: lhs.ty,
-                        }
+                        let lowered = builder.ins().fdiv(lhs.value, rhs.value);
+                        clif_assert_finite(
+                            builder,
+                            ClifValue {
+                                value: lowered,
+                                ty: lhs.ty,
+                            },
+                        )
                     } else {
                         ClifValue {
                             value: builder.ins().sdiv(lhs.value, rhs.value),
@@ -10304,10 +9727,13 @@ fn clif_emit_expr(
                 let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
                 let call = builder.ins().call(func_ref, &values);
                 if let Some(value) = builder.inst_results(call).first().copied() {
-                    ClifValue {
+                    clif_assert_finite(
+                        builder,
+                        ClifValue {
                         value,
                         ty: signature.ret.unwrap_or(default_int_clif_type()),
-                    }
+                        },
+                    )
                 } else {
                     ClifValue {
                         value: builder.ins().iconst(default_int_clif_type(), 0),
@@ -10663,6 +10089,37 @@ fn clif_truthy_pred(
     }
 }
 
+fn clif_assert_finite(builder: &mut FunctionBuilder, value: ClifValue) -> ClifValue {
+    if value.ty != types::F32 && value.ty != types::F64 {
+        return value;
+    }
+    let (neg_limit, pos_limit) = if value.ty == types::F32 {
+        (
+            builder.ins().f32const(-f32::MAX),
+            builder.ins().f32const(f32::MAX),
+        )
+    } else {
+        (
+            builder.ins().f64const(-f64::MAX),
+            builder.ins().f64const(f64::MAX),
+        )
+    };
+    let lower = builder.ins().fcmp(FloatCC::GreaterThanOrEqual, value.value, neg_limit);
+    let upper = builder.ins().fcmp(FloatCC::LessThanOrEqual, value.value, pos_limit);
+    let ok = builder.ins().band(lower, upper);
+    let continue_block = builder.create_block();
+    let trap_block = builder.create_block();
+    builder
+        .ins()
+        .brif(ok, continue_block, &[], trap_block, &[]);
+    builder.switch_to_block(trap_block);
+    builder.ins().trap(TrapCode::unwrap_user(1));
+    builder.seal_block(trap_block);
+    builder.switch_to_block(continue_block);
+    builder.seal_block(continue_block);
+    value
+}
+
 fn bool_to_i8(builder: &mut FunctionBuilder, pred: cranelift_codegen::ir::Value) -> ClifValue {
     let one = builder.ins().iconst(types::I8, 1);
     let zero = builder.ins().iconst(types::I8, 0);
@@ -10706,6 +10163,7 @@ fn cast_clif_value(
         });
     }
     if (value.ty == types::F32 || value.ty == types::F64) && target.is_int() {
+        let value = clif_assert_finite(builder, value);
         return Ok(ClifValue {
             value: builder.ins().fcvt_to_sint(target, value.value),
             ty: target,
@@ -16833,6 +16291,12 @@ mod tests {
             .expect("native artifact should exit with code")
     }
 
+    fn run_native_status(exe: &Path) -> std::process::ExitStatus {
+        Command::new(exe)
+            .status()
+            .expect("native artifact should execute")
+    }
+
     #[test]
     fn compile_file_runs_pipeline() {
         let file_name = format!(
@@ -17995,6 +17459,53 @@ mod tests {
         );
         assert_eq!(cranelift_exit, llvm_exit);
         assert_eq!(cranelift_exit, 17);
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_backend_non_finite_float_results_trap() {
+        let project_name = format!(
+            "fozzylang-float-nonfinite-cross-backend-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(project_name);
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let boom: f64 = 1.0 / 0.0\n    return if boom > 0.0 { 1 } else { 0 }\n}\n",
+        )
+        .expect("source should be written");
+
+        let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+            .expect("cranelift build should succeed");
+        assert_eq!(cranelift.status, "ok");
+        let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+            .expect("llvm build should succeed");
+        assert_eq!(llvm.status, "ok");
+
+        let cranelift_status = run_native_status(
+            cranelift
+                .output
+                .as_deref()
+                .expect("cranelift artifact output should exist"),
+        );
+        let llvm_status = run_native_status(
+            llvm.output
+                .as_deref()
+                .expect("llvm artifact output should exist"),
+        );
+
+        assert!(!cranelift_status.success());
+        assert!(!llvm_status.success());
 
         let _ = std::fs::remove_dir_all(root);
     }
