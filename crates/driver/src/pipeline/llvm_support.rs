@@ -298,6 +298,148 @@ pub(super) fn llvm_emit_inlined_closure_call(
     }
 }
 
+pub(super) fn llvm_emit_let_pattern(
+    pattern: &ast::Pattern,
+    value: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<()> {
+    let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+    match pattern {
+        ast::Pattern::Wildcard => {}
+        ast::Pattern::Ident(name) => {
+            let slot = format!("%slot_{}_{}", native_mangle_symbol(name), ctx.next_value);
+            ctx.declare_alloca(&slot, &rendered.ty);
+            ctx.code.push_str(&format!(
+                "  store {} {}, ptr {slot}\n",
+                rendered.ty, rendered.value
+            ));
+            ctx.slots.insert(name.clone(), slot);
+            ctx.slot_tys.insert(name.clone(), rendered.ty.clone());
+        }
+        ast::Pattern::Int(expected) => {
+            let cmp = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {cmp} = icmp eq {} {}, {expected}\n",
+                rendered.ty, rendered.value
+            ));
+        }
+        ast::Pattern::Bool(expected) => {
+            let cmp = ctx.value();
+            let expected_i32 = if *expected { 1 } else { 0 };
+            ctx.code.push_str(&format!(
+                "  {cmp} = icmp eq {} {}, {expected_i32}\n",
+                rendered.ty, rendered.value
+            ));
+        }
+        ast::Pattern::Struct { name, fields } => {
+            let ast::Expr::StructInit {
+                name: value_name,
+                fields: value_fields,
+            } = value
+            else {
+                bail!("native backend requires literal struct initializer for `let` struct destructuring");
+            };
+            if value_name != name {
+                bail!(
+                    "native backend requires exact literal struct type match for `let` struct destructuring"
+                );
+            }
+            for (field_name, binding_name) in fields {
+                if binding_name == "_" {
+                    continue;
+                }
+                let Some((_, field_expr)) =
+                    value_fields.iter().find(|(field, _)| field == field_name)
+                else {
+                    bail!("native backend requires struct literal fields to cover every bound pattern field");
+                };
+                let field_value =
+                    llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
+                let slot = format!(
+                    "%slot_{}_{}",
+                    native_mangle_symbol(binding_name),
+                    ctx.next_value
+                );
+                ctx.declare_alloca(&slot, &field_value.ty);
+                ctx.code.push_str(&format!(
+                    "  store {} {}, ptr {slot}\n",
+                    field_value.ty, field_value.value
+                ));
+                ctx.slots.insert(binding_name.clone(), slot);
+                ctx.slot_tys
+                    .insert(binding_name.clone(), field_value.ty.clone());
+            }
+        }
+        ast::Pattern::Variant {
+            enum_name,
+            variant,
+            bindings,
+            ..
+        } => {
+            let key = format!("{enum_name}::{variant}");
+            let tag = variant_tag_for_key(&key, &ctx.variant_tags);
+            let cmp = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {cmp} = icmp eq {} {}, {tag}\n",
+                rendered.ty, rendered.value
+            ));
+            if let ast::Expr::EnumInit {
+                enum_name: value_enum,
+                variant: value_variant,
+                payload,
+                ..
+            } = value
+            {
+                if value_enum == enum_name
+                    && value_variant == variant
+                    && payload.len() == bindings.len()
+                {
+                    for (binding_name, payload_expr) in bindings.iter().zip(payload.iter()) {
+                        let payload_value =
+                            llvm_emit_expr(payload_expr, ctx, string_literal_ids, task_ref_ids)?;
+                        let slot = format!(
+                            "%slot_{}_{}",
+                            native_mangle_symbol(binding_name),
+                            ctx.next_value
+                        );
+                        ctx.declare_alloca(&slot, &payload_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {slot}\n",
+                            payload_value.ty, payload_value.value
+                        ));
+                        ctx.slots.insert(binding_name.clone(), slot);
+                        ctx.slot_tys
+                            .insert(binding_name.clone(), payload_value.ty.clone());
+                    }
+                }
+            }
+        }
+        ast::Pattern::Or(patterns) => {
+            if let Some(matched) = patterns.iter().find(|pattern| {
+                pattern_matches_resolved_scrutinee(pattern, value, &ctx.variant_tags)
+            }) {
+                return llvm_emit_let_pattern(
+                    matched,
+                    value,
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                );
+            }
+            if patterns.iter().any(pattern_has_variant_payload_bindings)
+                || patterns.iter().any(pattern_has_struct_field_bindings)
+            {
+                bail!(
+                    "native backend requires resolvable initializer for payload or struct-field bindings in `let` or-patterns"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn llvm_ir_type_for_ast_type(ty: &ast::Type) -> String {
     match ty {
         ast::Type::Void | ast::Type::Never => "void".to_string(),
