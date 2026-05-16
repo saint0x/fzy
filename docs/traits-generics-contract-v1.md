@@ -26,7 +26,7 @@ This document defines production-enforced trait and generic behavior for v1.
 
 ### Trait Coherence Rules (v1)
 
-- Impl targets for trait impls must be concrete types.
+- Impl targets for trait impls may be generic when coherence remains unambiguous.
 - Overlapping impl targets for the same trait are rejected.
 - Bound resolution with more than one matching impl is rejected as ambiguous.
 

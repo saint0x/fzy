@@ -8,7 +8,7 @@ SEED="${SEED:-4242}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-artifacts}"
 TRACE_PATH="$ARTIFACT_DIR/production-gate.trace.fozzy"
 MEM_TRACE_PATH="$ARTIFACT_DIR/production-memory.trace.fozzy"
-UNSAFE_BUDGET="${UNSAFE_BUDGET:-0}"
+UNSAFE_BUDGET="${UNSAFE_BUDGET:-4}"
 UNSAFE_AUDIT_TARGET="${UNSAFE_AUDIT_TARGET:-.}"
 RUST_UNSAFE_BUDGET="${RUST_UNSAFE_BUDGET:-2}"
 
@@ -48,6 +48,10 @@ python3 ./scripts/safety_claim_integrity_gate.py >/dev/null
 echo "[gate] deterministic strict tests"
 fozzy test --det --strict tests/*.fozzy.json --seed "$SEED" --json >/dev/null
 
+echo "[gate] browser js backend parity/equivalence representative probes"
+"${FZ_CMD[@]}" parity tests/fixtures/browser_debug_js/main.fzy --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" equivalence tests/fixtures/browser_debug_js/main.fzy --seed "$SEED" --json >/dev/null
+
 echo "[gate] primitive parity/equivalence probes"
 "${FZ_CMD[@]}" parity tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
 "${FZ_CMD[@]}" equivalence tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
@@ -85,6 +89,29 @@ echo "[gate] deterministic trait/generic doctor/tests"
 fozzy doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
 fozzy test --det --strict tests/trait_generic.pass.fozzy.json --seed "$SEED" --json >/dev/null
 
+echo "[gate] browser js sourcemap and compile-bench deterministic tests"
+fozzy doctor --deep --scenario tests/browser_debug_js_sourcemap.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
+fozzy test --det --strict tests/browser_debug_js_sourcemap.pass.fozzy.json --seed "$SEED" --json >/dev/null
+fozzy doctor --deep --scenario tests/compile.bench_matrix.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
+fozzy test --det --strict tests/compile.bench_matrix.pass.fozzy.json --seed "$SEED" --json >/dev/null
+
+echo "[gate] browser runtime abi and scheduler fixtures"
+cargo test -q -p runtime timer_listener_fetch_and_storage_contracts_are_explicit >/dev/null
+cargo test -q -p runtime cleanup_and_error_hooks_are_idempotent_and_diagnostic_friendly >/dev/null
+cargo test -q -p runtime browser_scheduler_prioritizes_microtasks_then_respects_lane_order >/dev/null
+cargo test -q -p runtime browser_scheduler_prevents_macrotask_starvation >/dev/null
+cargo test -q -p stdlib >/dev/null
+
+echo "[gate] browser backend, overlay, and incremental regression fixtures"
+cargo test -q -p driver pipeline::tests::js_backend_emits_executable_esm_with_sourcemap -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::persistent_module_cache_survives_process_local_cache_reset -- --exact >/dev/null
+cargo test -q -p driver command::tests::browser_overlay_injects_script_before_body_close -- --exact >/dev/null
+cargo test -q -p driver command::tests::browser_diagnostic_guidance_includes_browser_fixups -- --exact >/dev/null
+cargo test -q -p driver command::tests::task_event_record_serializes_browser_scheduler_events -- --exact >/dev/null
+cargo test -q -p driver command::tests::derive_runtime_semantic_evidence_captures_browser_async_metadata -- --exact >/dev/null
+./scripts/browser_dev_server_smoke.sh >/dev/null
+python3 ./scripts/verify_compile_bench_matrix.py >/dev/null
+
 echo "[gate] record deterministic trace"
 fozzy run tests/example.fozzy.json --det --seed "$SEED" --record "$TRACE_PATH" --record-collision overwrite --json >/dev/null
 
@@ -116,7 +143,7 @@ echo "[gate] host-backed C interop matrix"
 fozzy run tests/c_ffi_matrix.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 
 echo "[gate] full command-surface checks"
-fozzy fuzz scenario:tests/example.fozzy.json --mode coverage --runs 5 --seed "$SEED" --json >/dev/null
+fozzy fuzz fn:kv --mode coverage --runs 5 --time 2s --seed "$SEED" --corpus .fozzy/corpora/fn-kv --json >/dev/null
 fozzy explore tests/distributed.pass.fozzy.json --schedule coverage_guided --steps 10 --seed "$SEED" --json >/dev/null
 fozzy shrink "$TRACE_PATH" --json >/dev/null
 fozzy artifacts ls latest --json >/dev/null

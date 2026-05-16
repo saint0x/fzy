@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
-use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::io::{BufRead, Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,36 +14,33 @@ use anyhow::{anyhow, bail, Context, Result};
 use formatter::{format_source, is_fzy_source_path};
 use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEvent};
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
-    compile_file_with_backend, compile_library_with_backend, emit_ir, lower_fir_cached,
-    parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact,
-    Output,
+    compile_file_with_backend, compile_file_with_options, compile_library_with_backend, emit_ir,
+    inspect_js_debug_artifact, lower_fir_cached, parse_program, refresh_lockfile, verify_file,
+    BuildArtifact, BuildProfile, LibraryArtifact, Output,
 };
 
-mod trace_native;
 mod interop;
 mod source;
+mod trace_native;
 
 use self::interop::{
     generate_c_headers, generate_rpc_artifacts, render_headers, render_rpc_artifacts,
     HeaderArtifact,
 };
-use self::source::{
-    discover_nested_project_roots, discover_project_roots, resolve_source,
-};
+use self::source::{discover_nested_project_roots, discover_project_roots, resolve_source};
 use self::trace_native::{
     convert_fozzy_trace_to_native, ensure_goal_trace_from_scenario, native_explore,
     render_trace_native_artifacts, resolve_replay_target,
 };
 
 #[cfg(test)]
-use self::trace_native::{
-    build_live_http_probe_steps, FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION,
-};
+use self::trace_native::{build_live_http_probe_steps, FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -74,6 +73,7 @@ pub enum Command {
         lib: bool,
         threads: Option<u16>,
         backend: Option<String>,
+        sourcemap: bool,
         pgo_generate: bool,
         pgo_use: Option<PathBuf>,
         link_libs: Vec<String>,
@@ -131,6 +131,12 @@ pub enum Command {
     DevLoop {
         path: PathBuf,
         backend: Option<String>,
+    },
+    DevServer {
+        path: PathBuf,
+        entry: Option<PathBuf>,
+        host: String,
+        port: u16,
     },
     DxCheck {
         path: PathBuf,
@@ -239,6 +245,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             lib,
             threads,
             backend,
+            sourcemap,
             pgo_generate,
             pgo_use,
             link_libs,
@@ -270,6 +277,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     &path,
                     profile,
                     backend.as_deref(),
+                    sourcemap,
                 )?;
                 let rendered = render_artifact(format, artifact, threads, runtime_config);
                 let unsafe_docs = maybe_generate_unsafe_docs(&path);
@@ -457,7 +465,13 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     BuildProfile::Dev
                 },
                 backend.as_deref(),
+                false,
             )?;
+            if artifact.backend == "js" {
+                return Err(anyhow!(
+                    "`fz run` does not execute js backend artifacts yet; use `fz build <path> --backend js` and run the emitted module with Node, Bun, or a browser loader"
+                ));
+            }
             if artifact.status != "ok" || artifact.output.is_none() {
                 let rendered = render_run_compile_abort(format, &artifact);
                 return Err(CommandFailure {
@@ -862,6 +876,12 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::Explain { diag_code } => explain_command(&diag_code, format),
         Command::DoctorProject { path, strict } => doctor_project_command(&path, strict, format),
         Command::DevLoop { path, backend } => devloop_command(&path, backend.as_deref(), format),
+        Command::DevServer {
+            path,
+            entry,
+            host,
+            port,
+        } => dev_server_command(&path, entry.as_deref(), &host, port, format),
         Command::DxCheck { path, strict } => dx_check_command(&path, strict, format),
         Command::SpecCheck => spec_check(format),
         Command::EmitIr { path } => {
@@ -1475,11 +1495,20 @@ fn render_artifact(
                 ("status", artifact.status.to_string()),
                 ("module", artifact.module.clone()),
                 ("profile", format!("{:?}", artifact.profile)),
+                ("backend", artifact.backend.clone()),
                 ("diagnostics", artifact.diagnostics.to_string()),
                 (
                     "output",
                     artifact
                         .output
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+                (
+                    "sourcemap",
+                    artifact
+                        .sourcemap_output
                         .as_ref()
                         .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "<none>".to_string()),
@@ -1517,6 +1546,17 @@ fn render_artifact(
                         artifact.dependency_graph_hash.is_some(),
                     ),
                 ),
+                (
+                    "incremental",
+                    format!(
+                        "version={} graph_nodes={} parse={} lower={} backend={}",
+                        artifact.incremental.cache_version,
+                        artifact.incremental.graph_nodes,
+                        artifact.incremental.parse.status,
+                        artifact.incremental.lower.status,
+                        artifact.incremental.backend.status
+                    ),
+                ),
             ]);
             let details = render_diagnostics_text(&artifact.diagnostic_details);
             if !details.is_empty() {
@@ -1528,6 +1568,7 @@ fn render_artifact(
         Format::Json => serde_json::json!({
             "module": artifact.module,
             "profile": format!("{:?}", artifact.profile),
+            "backend": artifact.backend,
             "status": artifact.status,
             "diagnostics": artifact.diagnostics,
             "items": artifact.diagnostic_details,
@@ -1545,8 +1586,13 @@ fn render_artifact(
             },
             "threads": threads,
             "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
+            "incremental": artifact.incremental,
             "output": artifact
                 .output
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            "sourcemapOutput": artifact
+                .sourcemap_output
                 .as_ref()
                 .map(|path| path.display().to_string()),
         })
@@ -1567,6 +1613,7 @@ fn render_library_artifact(
                 ("status", artifact.status.to_string()),
                 ("module", artifact.module.clone()),
                 ("profile", format!("{:?}", artifact.profile)),
+                ("backend", artifact.backend.clone()),
                 ("diagnostics", artifact.diagnostics.to_string()),
                 (
                     "static_lib",
@@ -1619,6 +1666,17 @@ fn render_library_artifact(
                         artifact.dependency_graph_hash.is_some(),
                     ),
                 ),
+                (
+                    "incremental",
+                    format!(
+                        "version={} graph_nodes={} parse={} lower={} backend={}",
+                        artifact.incremental.cache_version,
+                        artifact.incremental.graph_nodes,
+                        artifact.incremental.parse.status,
+                        artifact.incremental.lower.status,
+                        artifact.incremental.backend.status
+                    ),
+                ),
             ]);
             let details = render_diagnostics_text(&artifact.diagnostic_details);
             if !details.is_empty() {
@@ -1630,6 +1688,7 @@ fn render_library_artifact(
         Format::Json => serde_json::json!({
             "module": artifact.module,
             "profile": format!("{:?}", artifact.profile),
+            "backend": artifact.backend,
             "status": artifact.status,
             "diagnostics": artifact.diagnostics,
             "items": artifact.diagnostic_details,
@@ -1648,6 +1707,7 @@ fn render_library_artifact(
             "threads": threads,
             "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
             "buildMode": "lib",
+            "incremental": artifact.incremental,
             "staticLib": artifact
                 .static_lib
                 .as_ref()
@@ -1922,8 +1982,9 @@ fn compile_file_with_backend_with_root_guidance(
     path: &Path,
     profile: BuildProfile,
     backend_override: Option<&str>,
+    emit_sourcemap: bool,
 ) -> Result<BuildArtifact> {
-    compile_file_with_backend(path, profile, backend_override)
+    compile_file_with_options(path, profile, backend_override, emit_sourcemap)
         .map_err(|error| attach_project_root_guidance(path, error))
 }
 
@@ -2698,7 +2759,13 @@ fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<S
 
 fn devloop_command(path: &Path, backend: Option<&str>, format: Format) -> Result<String> {
     let verify = verify_file_with_root_guidance(path)?;
-    let compile = compile_file_with_backend_with_root_guidance(path, BuildProfile::Dev, backend)?;
+    let compile =
+        compile_file_with_backend_with_root_guidance(path, BuildProfile::Dev, backend, false)?;
+    if compile.backend == "js" {
+        bail!(
+            "`fz devloop` does not support backend `js` yet; use `fz build <path> --backend js --sourcemap` for browser-target iteration"
+        );
+    }
     let plan = run_non_scenario_test_plan_with_root_guidance(
         path,
         NonScenarioPlanRequest {
@@ -2786,6 +2853,64 @@ struct DxIssue {
     level: &'static str,
     file: String,
     message: String,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserDevServerConfig {
+    serve_root: PathBuf,
+    entry_source: Option<PathBuf>,
+    host: String,
+    port: u16,
+    request_budget: Option<usize>,
+}
+
+#[derive(Debug)]
+struct BrowserDevServerState {
+    compiler: Value,
+    runtime_errors: Vec<Value>,
+    changed_files: Vec<String>,
+    revision: u64,
+}
+
+impl BrowserDevServerState {
+    fn snapshot(&self) -> Value {
+        json!({
+            "schemaVersion": "fozzylang.browser_diagnostics.v1",
+            "revision": self.revision,
+            "changedFiles": self.changed_files,
+            "compiler": self.compiler,
+            "runtimeErrors": self.runtime_errors,
+            "sourceMapMode": "passthrough-original-frames",
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BrowserEventBus {
+    clients: Arc<Mutex<Vec<mpsc::Sender<String>>>>,
+}
+
+impl BrowserEventBus {
+    fn new() -> Self {
+        Self {
+            clients: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn subscribe(&self) -> mpsc::Receiver<String> {
+        let (tx, rx) = mpsc::channel();
+        if let Ok(mut clients) = self.clients.lock() {
+            clients.push(tx);
+        }
+        rx
+    }
+
+    fn broadcast(&self, event: &str, payload: &Value) {
+        let frame = format!("event: {event}\ndata: {payload}\n\n");
+        if let Ok(mut clients) = self.clients.lock() {
+            clients.retain(|client| client.send(frame.clone()).is_ok());
+        }
+    }
 }
 
 fn dx_check_command(path: &Path, strict: bool, format: Format) -> Result<String> {
@@ -2932,6 +3057,747 @@ fn dx_check_command(path: &Path, strict: bool, format: Format) -> Result<String>
         })
         .to_string()),
     }
+}
+
+fn dev_server_command(
+    path: &Path,
+    entry_override: Option<&Path>,
+    host: &str,
+    port: u16,
+    format: Format,
+) -> Result<String> {
+    let config = browser_dev_server_config(path, entry_override, host, port)?;
+    run_browser_dev_server(config)?;
+    match format {
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "dev-server".to_string()),
+            ("root", path.display().to_string()),
+            ("host", host.to_string()),
+            ("port", port.to_string()),
+        ])),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "mode": "dev-server",
+            "root": path.display().to_string(),
+            "host": host,
+            "port": port,
+        })
+        .to_string()),
+    }
+}
+
+fn browser_dev_server_config(
+    path: &Path,
+    entry_override: Option<&Path>,
+    host: &str,
+    port: u16,
+) -> Result<BrowserDevServerConfig> {
+    let serve_root = if path.is_file() {
+        path.parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."))
+    } else if path.is_dir() {
+        if path.join("public").is_dir() {
+            path.join("public")
+        } else {
+            path.to_path_buf()
+        }
+    } else {
+        bail!("dev-server path does not exist: {}", path.display());
+    };
+
+    let entry_source = if let Some(entry) = entry_override {
+        Some(entry.to_path_buf())
+    } else if path.is_file() && is_fzy_source_path(path) {
+        Some(path.to_path_buf())
+    } else if path.join("src/main.fzy").exists() {
+        Some(path.join("src/main.fzy"))
+    } else {
+        None
+    };
+
+    Ok(BrowserDevServerConfig {
+        serve_root,
+        entry_source,
+        host: host.to_string(),
+        port,
+        request_budget: None,
+    })
+}
+
+fn run_browser_dev_server(config: BrowserDevServerConfig) -> Result<()> {
+    let listener = TcpListener::bind((config.host.as_str(), config.port)).with_context(|| {
+        format!(
+            "failed binding browser dev server on {}:{}",
+            config.host, config.port
+        )
+    })?;
+    let address = listener
+        .local_addr()
+        .with_context(|| "failed reading bound dev-server address".to_string())?;
+    eprintln!(
+        "fz dev-server listening on http://{}:{} (root: {})",
+        address.ip(),
+        address.port(),
+        config.serve_root.display()
+    );
+
+    let initial_compiler = browser_compiler_payload(config.entry_source.as_deref());
+    let state = Arc::new(Mutex::new(BrowserDevServerState {
+        compiler: initial_compiler,
+        runtime_errors: Vec::new(),
+        changed_files: Vec::new(),
+        revision: 0,
+    }));
+    let events = BrowserEventBus::new();
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let watcher = spawn_browser_dev_server_watcher(
+        config.serve_root.clone(),
+        config.entry_source.clone(),
+        state.clone(),
+        events.clone(),
+        shutdown.clone(),
+    );
+
+    let mut handled_requests = 0usize;
+    for stream in listener.incoming() {
+        let stream =
+            stream.with_context(|| "failed accepting dev-server connection".to_string())?;
+        handle_dev_server_connection(stream, &config, state.clone(), events.clone())?;
+        handled_requests += 1;
+        if config
+            .request_budget
+            .is_some_and(|budget| handled_requests >= budget)
+        {
+            break;
+        }
+    }
+
+    shutdown.store(true, Ordering::SeqCst);
+    let _ = watcher.join();
+    Ok(())
+}
+
+fn spawn_browser_dev_server_watcher(
+    serve_root: PathBuf,
+    entry_source: Option<PathBuf>,
+    state: Arc<Mutex<BrowserDevServerState>>,
+    events: BrowserEventBus,
+    shutdown: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        let mut snapshot =
+            snapshot_browser_watch_paths(&serve_root, entry_source.as_deref()).unwrap_or_default();
+        while !shutdown.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(250));
+            let Ok(next_snapshot) =
+                snapshot_browser_watch_paths(&serve_root, entry_source.as_deref())
+            else {
+                continue;
+            };
+            let changed = diff_browser_snapshot(&snapshot, &next_snapshot);
+            if changed.is_empty() {
+                continue;
+            }
+            snapshot = next_snapshot;
+            let compiler = browser_compiler_payload(entry_source.as_deref());
+            let overlay = if let Ok(mut guard) = state.lock() {
+                guard.compiler = compiler;
+                guard.changed_files = changed.clone();
+                guard.revision = guard.revision.saturating_add(1);
+                guard.snapshot()
+            } else {
+                continue;
+            };
+            let hmr_payload = json!({
+                "strategy": "reload",
+                "changedFiles": changed,
+                "revision": overlay.get("revision").and_then(Value::as_u64).unwrap_or(0),
+            });
+            events.broadcast("diagnostics", &overlay);
+            events.broadcast("hmr", &hmr_payload);
+            events.broadcast("reload", &hmr_payload);
+        }
+    })
+}
+
+fn handle_dev_server_connection(
+    mut stream: TcpStream,
+    config: &BrowserDevServerConfig,
+    state: Arc<Mutex<BrowserDevServerState>>,
+    events: BrowserEventBus,
+) -> Result<()> {
+    let request = read_http_request(&mut stream)?;
+    let path_only = request
+        .path
+        .split('?')
+        .next()
+        .unwrap_or(request.path.as_str());
+    match (request.method.as_str(), path_only) {
+        ("GET", "/__fz/health") => write_http_json(
+            &mut stream,
+            200,
+            &json!({
+                "ok": true,
+                "mode": "browser-dev-server",
+                "root": config.serve_root.display().to_string(),
+                "entrySource": config
+                    .entry_source
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            }),
+        ),
+        ("GET", "/__fz/diagnostics") => {
+            let payload = state
+                .lock()
+                .map(|guard| guard.snapshot())
+                .unwrap_or_else(|_| json!({"ok": false, "message": "state unavailable"}));
+            write_http_json(&mut stream, 200, &payload)
+        }
+        ("GET", "/__fz/overlay.js") => write_http_response(
+            &mut stream,
+            200,
+            "OK",
+            "application/javascript; charset=utf-8",
+            browser_overlay_script().as_bytes(),
+        ),
+        ("GET", "/__fz/events") => serve_sse_stream(stream, events),
+        ("POST", "/__fz/runtime-error") => {
+            let payload: Value = serde_json::from_slice(&request.body).unwrap_or_else(|_| {
+                json!({
+                    "message": String::from_utf8_lossy(&request.body),
+                    "source": "browser",
+                })
+            });
+            let snapshot = {
+                let mut guard = state
+                    .lock()
+                    .map_err(|_| anyhow!("failed acquiring browser-dev-server state"))?;
+                guard.runtime_errors.push(payload);
+                if guard.runtime_errors.len() > 20 {
+                    let drop_count = guard.runtime_errors.len() - 20;
+                    guard.runtime_errors.drain(0..drop_count);
+                }
+                guard.revision = guard.revision.saturating_add(1);
+                guard.snapshot()
+            };
+            events.broadcast("runtime-error", &snapshot);
+            write_http_json(&mut stream, 200, &json!({"ok": true}))
+        }
+        ("POST", "/__fz/runtime-error/clear") => {
+            let snapshot = {
+                let mut guard = state
+                    .lock()
+                    .map_err(|_| anyhow!("failed acquiring browser-dev-server state"))?;
+                guard.runtime_errors.clear();
+                guard.revision = guard.revision.saturating_add(1);
+                guard.snapshot()
+            };
+            events.broadcast("runtime-error", &snapshot);
+            write_http_json(&mut stream, 200, &json!({"ok": true}))
+        }
+        ("GET", _) => serve_browser_static_file(&mut stream, &config.serve_root, path_only),
+        _ => write_http_response(
+            &mut stream,
+            405,
+            "Method Not Allowed",
+            "text/plain; charset=utf-8",
+            b"method not allowed",
+        ),
+    }
+}
+
+fn serve_browser_static_file(
+    stream: &mut TcpStream,
+    root: &Path,
+    request_path: &str,
+) -> Result<()> {
+    let relative = sanitize_http_path(request_path);
+    let mut full = if relative.is_empty() {
+        root.join("index.html")
+    } else {
+        root.join(&relative)
+    };
+    if full.is_dir() {
+        full = full.join("index.html");
+    }
+    if full.exists() {
+        let mut body = std::fs::read(&full)
+            .with_context(|| format!("failed reading served file: {}", full.display()))?;
+        let content_type = content_type_for_path(&full);
+        if content_type.starts_with("text/html") {
+            let html = inject_browser_overlay(
+                std::str::from_utf8(&body).unwrap_or("<!doctype html><html><body></body></html>"),
+            );
+            body = html.into_bytes();
+        }
+        write_http_response(stream, 200, "OK", content_type, &body)
+    } else if request_path == "/" || request_path.is_empty() {
+        let body = inject_browser_overlay(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><title>Fozzy Browser DX</title></head><body><main><h1>Fozzy Browser DX</h1><p>No <code>index.html</code> was found, so this generated page is serving the browser overlay and diagnostics endpoints.</p></main></body></html>",
+        );
+        write_http_response(
+            stream,
+            200,
+            "OK",
+            "text/html; charset=utf-8",
+            body.as_bytes(),
+        )
+    } else {
+        write_http_response(
+            stream,
+            404,
+            "Not Found",
+            "text/plain; charset=utf-8",
+            b"not found",
+        )
+    }
+}
+
+fn browser_compiler_payload(entry_source: Option<&Path>) -> Value {
+    let Some(path) = entry_source else {
+        return json!({
+            "target": "browser",
+            "ok": true,
+            "entrySource": Value::Null,
+            "diagnostics": [],
+            "guidance": ["No `.fzy` entry source was configured for compiler overlays."],
+        });
+    };
+    let mut payload = match lsp::diagnostics_for_path(path) {
+        Ok(value) => value,
+        Err(error) => json!({
+            "schemaVersion": diagnostics::DIAGNOSTICS_SCHEMA_VERSION,
+            "ok": false,
+            "module": path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("module"),
+            "diagnostics": [{
+                "severity": "Error",
+                "code": "E-DRV-BROWSERDX",
+                "message": error.to_string(),
+                "help": "Resolve the project root or source path, then retry the browser dev server.",
+                "path": path.display().to_string(),
+                "labels": [],
+                "notes": [],
+                "suggested_fixes": [
+                    "Confirm the project root contains `fozzy.toml` or pass `--entry <file>` explicitly."
+                ]
+            }]
+        }),
+    };
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("target".to_string(), json!("browser"));
+        object.insert("entrySource".to_string(), json!(path.display().to_string()));
+        if let Some(diagnostics) = object.get_mut("diagnostics").and_then(Value::as_array_mut) {
+            for diagnostic in diagnostics {
+                augment_browser_diagnostic(diagnostic, path);
+            }
+        }
+    }
+    payload
+}
+
+fn augment_browser_diagnostic(diagnostic: &mut Value, path: &Path) {
+    let Some(object) = diagnostic.as_object_mut() else {
+        return;
+    };
+    let code = object
+        .get("code")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let message = object
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut guidance = vec![
+        "Resolve this source diagnostic first; the browser overlay will refresh automatically."
+            .to_string(),
+    ];
+    if code.starts_with("E-NAT-") || code.starts_with("W-NAT-") {
+        guidance.push(
+            "This finding is about lowering/backends. Keep browser-target lowering contracts aligned before expecting browser execution parity."
+                .to_string(),
+        );
+    }
+    if message.contains("unresolved call target") {
+        guidance.push(
+            "For browser builds, also confirm the symbol name matches any intended JS/module interop boundary."
+                .to_string(),
+        );
+    }
+    if message.contains("missing required capability") {
+        guidance.push(
+            "Browser-target code must only depend on capabilities provided by the runtime/browser ABI contract."
+                .to_string(),
+        );
+    }
+    let mut suggested = vec![format!("fz lsp diagnostics {} --json", path.display())];
+    if !code.is_empty() {
+        suggested.push(format!("fz explain {code}"));
+    }
+    object.insert("target".to_string(), json!("browser"));
+    object.insert("browserGuidance".to_string(), json!(guidance));
+    object.insert("suggestedCommands".to_string(), json!(suggested));
+}
+
+fn snapshot_browser_watch_paths(
+    serve_root: &Path,
+    entry_source: Option<&Path>,
+) -> Result<BTreeMap<String, (u64, u128)>> {
+    let mut snapshot = BTreeMap::new();
+    for (rel, full) in collect_browser_watch_entries(serve_root, entry_source)? {
+        let metadata = std::fs::metadata(&full)
+            .with_context(|| format!("failed reading metadata for {}", full.display()))?;
+        let modified_ns = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|dur| dur.as_nanos())
+            .unwrap_or(0);
+        snapshot.insert(rel, (metadata.len(), modified_ns));
+    }
+    Ok(snapshot)
+}
+
+fn collect_browser_watch_entries(
+    serve_root: &Path,
+    entry_source: Option<&Path>,
+) -> Result<Vec<(String, PathBuf)>> {
+    let mut out = Vec::new();
+    if serve_root.is_dir() {
+        collect_files_recursive(serve_root, serve_root, &mut out)?;
+    }
+    if let Some(entry) = entry_source {
+        if entry.exists() {
+            out.push((format!("entry:{}", entry.display()), entry.to_path_buf()));
+        }
+        if let Ok(parsed) = parse_program(entry) {
+            for module_path in parsed.module_paths {
+                out.push((format!("module:{}", module_path.display()), module_path));
+            }
+        }
+    }
+    out.sort_by(|left, right| left.0.cmp(&right.0));
+    out.dedup_by(|left, right| left.0 == right.0);
+    Ok(out)
+}
+
+fn diff_browser_snapshot(
+    before: &BTreeMap<String, (u64, u128)>,
+    after: &BTreeMap<String, (u64, u128)>,
+) -> Vec<String> {
+    let mut changed = BTreeSet::new();
+    for key in before.keys().chain(after.keys()) {
+        if before.get(key) != after.get(key) {
+            changed.insert(key.clone());
+        }
+    }
+    changed.into_iter().collect()
+}
+
+fn sanitize_http_path(path: &str) -> String {
+    let trimmed = path.trim_start_matches('/');
+    let mut out = Vec::new();
+    for part in trimmed.split('/') {
+        if part.is_empty() || part == "." || part == ".." {
+            continue;
+        }
+        out.push(part);
+    }
+    out.join("/")
+}
+
+fn content_type_for_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+    {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        _ => "application/octet-stream",
+    }
+}
+
+fn inject_browser_overlay(html: &str) -> String {
+    let script = "<script type=\"module\" src=\"/__fz/overlay.js\"></script>";
+    if html.contains("/__fz/overlay.js") {
+        return html.to_string();
+    }
+    if let Some(index) = html.rfind("</body>") {
+        let mut out = String::with_capacity(html.len() + script.len());
+        out.push_str(&html[..index]);
+        out.push_str(script);
+        out.push_str(&html[index..]);
+        out
+    } else {
+        format!("{html}{script}")
+    }
+}
+
+fn serve_sse_stream(mut stream: TcpStream, events: BrowserEventBus) -> Result<()> {
+    write_http_head(
+        &mut stream,
+        200,
+        "OK",
+        "text/event-stream; charset=utf-8",
+        None,
+        &[("Cache-Control", "no-cache"), ("Connection", "keep-alive")],
+    )?;
+    stream.write_all(b"event: connected\ndata: {\"ok\":true}\n\n")?;
+    stream.flush()?;
+    let rx = events.subscribe();
+    loop {
+        match rx.recv_timeout(Duration::from_secs(15)) {
+            Ok(frame) => {
+                stream.write_all(frame.as_bytes())?;
+                stream.flush()?;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                stream.write_all(b": keepalive\n\n")?;
+                stream.flush()?;
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    body: Vec<u8>,
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest> {
+    let mut reader = std::io::BufReader::new(
+        stream
+            .try_clone()
+            .with_context(|| "failed cloning dev-server stream".to_string())?,
+    );
+    let mut request_line = String::new();
+    reader
+        .read_line(&mut request_line)
+        .with_context(|| "failed reading request line".to_string())?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing request method"))?
+        .to_string();
+    let path = parts
+        .next()
+        .ok_or_else(|| anyhow!("missing request path"))?
+        .to_string();
+    let mut content_length = 0usize;
+    loop {
+        let mut line = String::new();
+        reader
+            .read_line(&mut line)
+            .with_context(|| "failed reading request header".to_string())?;
+        if line == "\r\n" || line == "\n" || line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("content-length") {
+                content_length = value.trim().parse::<usize>().unwrap_or(0);
+            }
+        }
+    }
+    let mut body = vec![0u8; content_length];
+    if content_length > 0 {
+        reader
+            .read_exact(&mut body)
+            .with_context(|| "failed reading request body".to_string())?;
+    }
+    Ok(HttpRequest { method, path, body })
+}
+
+fn write_http_json(stream: &mut TcpStream, status: u16, payload: &Value) -> Result<()> {
+    write_http_response(
+        stream,
+        status,
+        if status == 200 { "OK" } else { "Error" },
+        "application/json; charset=utf-8",
+        payload.to_string().as_bytes(),
+    )
+}
+
+fn write_http_response(
+    stream: &mut TcpStream,
+    status: u16,
+    status_text: &str,
+    content_type: &str,
+    body: &[u8],
+) -> Result<()> {
+    write_http_head(
+        stream,
+        status,
+        status_text,
+        content_type,
+        Some(body.len()),
+        &[],
+    )?;
+    stream.write_all(body)?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn write_http_head(
+    stream: &mut TcpStream,
+    status: u16,
+    status_text: &str,
+    content_type: &str,
+    content_length: Option<usize>,
+    extra_headers: &[(&str, &str)],
+) -> Result<()> {
+    write!(stream, "HTTP/1.1 {status} {status_text}\r\n")?;
+    write!(stream, "Content-Type: {content_type}\r\n")?;
+    if let Some(length) = content_length {
+        write!(stream, "Content-Length: {length}\r\n")?;
+    }
+    write!(stream, "Access-Control-Allow-Origin: *\r\n")?;
+    for (name, value) in extra_headers {
+        write!(stream, "{name}: {value}\r\n")?;
+    }
+    write!(stream, "\r\n")?;
+    Ok(())
+}
+
+fn browser_overlay_script() -> &'static str {
+    r#"(function () {
+  if (window.__fzOverlayInstalled) return;
+  window.__fzOverlayInstalled = true;
+
+  const overlay = document.createElement('div');
+  overlay.id = '__fz-browser-overlay';
+  overlay.style.cssText = [
+    'position:fixed',
+    'right:16px',
+    'bottom:16px',
+    'z-index:2147483647',
+    'max-width:min(720px, calc(100vw - 32px))',
+    'max-height:calc(100vh - 32px)',
+    'overflow:auto',
+    'border-radius:18px',
+    'padding:18px 20px',
+    'background:linear-gradient(180deg, rgba(22,27,34,0.97), rgba(9,12,16,0.98))',
+    'color:#f5f7fb',
+    'box-shadow:0 24px 80px rgba(0,0,0,0.45)',
+    'font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace',
+    'display:none'
+  ].join(';');
+  document.documentElement.appendChild(overlay);
+
+  function esc(value) {
+    return String(value ?? '').replace(/[&<>]/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch]));
+  }
+
+  function frameLine(frame) {
+    const file = frame.originalFile || frame.file || 'unknown';
+    const line = frame.originalLine ?? frame.line ?? '?';
+    const column = frame.originalColumn ?? frame.column ?? '?';
+    const fn = frame.function ? ` ${esc(frame.function)}` : '';
+    return `<li>${esc(file)}:${esc(line)}:${esc(column)}${fn}</li>`;
+  }
+
+  function runtimeBlock(error) {
+    const frames = Array.isArray(error.frames) ? error.frames : [];
+    const asyncTrace = Array.isArray(error.asyncTrace) ? error.asyncTrace : [];
+    return `
+      <section style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.14)">
+        <div style="font-weight:700;color:#ffb4b4">Runtime Error</div>
+        <div style="margin-top:6px">${esc(error.message || 'unknown runtime error')}</div>
+        ${error.mappedStack ? `<pre style="white-space:pre-wrap;margin-top:10px">${esc(error.mappedStack)}</pre>` : ''}
+        ${frames.length ? `<ol style="margin:10px 0 0 18px;padding:0">${frames.map(frameLine).join('')}</ol>` : ''}
+        ${asyncTrace.length ? `<div style="margin-top:10px"><strong>Async trace</strong><ol style="margin:6px 0 0 18px;padding:0">${asyncTrace.map((item) => `<li>${esc(item)}</li>`).join('')}</ol></div>` : ''}
+      </section>`;
+  }
+
+  function compilerBlock(diag) {
+    const guidance = Array.isArray(diag.browserGuidance) ? diag.browserGuidance : [];
+    const commands = Array.isArray(diag.suggestedCommands) ? diag.suggestedCommands : [];
+    return `
+      <section style="margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,0.14)">
+        <div style="font-weight:700;color:${diag.severity === 'Warning' ? '#ffd36b' : '#ff8b8b'}">${esc(diag.severity || 'Error')} ${esc(diag.code || '')}</div>
+        <div style="margin-top:6px">${esc(diag.message || 'unknown diagnostic')}</div>
+        ${diag.path ? `<div style="opacity:0.8;margin-top:6px">${esc(diag.path)}</div>` : ''}
+        ${diag.help ? `<div style="margin-top:8px"><strong>Help</strong>: ${esc(diag.help)}</div>` : ''}
+        ${guidance.length ? `<ul style="margin:8px 0 0 18px;padding:0">${guidance.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>` : ''}
+        ${commands.length ? `<div style="margin-top:8px"><strong>Commands</strong>: ${commands.map((cmd) => `<code>${esc(cmd)}</code>`).join(' ')}</div>` : ''}
+      </section>`;
+  }
+
+  async function postRuntimeError(error) {
+    const frames = [];
+    const stack = typeof error?.stack === 'string' ? error.stack : '';
+    for (const line of stack.split('\n')) {
+      const match = line.match(/at\s+(.*?)\s+\(?(.+?):(\d+):(\d+)\)?$/) || line.match(/at\s+(.+?):(\d+):(\d+)$/);
+      if (!match) continue;
+      if (match.length === 5) {
+        frames.push({ function: match[1], file: match[2], line: Number(match[3]), column: Number(match[4]) });
+      } else if (match.length === 4) {
+        frames.push({ file: match[1], line: Number(match[2]), column: Number(match[3]) });
+      }
+    }
+    await fetch('/__fz/runtime-error', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source: 'browser',
+        message: error?.message || String(error),
+        stack,
+        frames
+      })
+    }).catch(() => {});
+  }
+
+  async function refresh() {
+    const response = await fetch('/__fz/diagnostics', { cache: 'no-store' });
+    const payload = await response.json();
+    const compiler = Array.isArray(payload?.compiler?.diagnostics) ? payload.compiler.diagnostics : [];
+    const runtime = Array.isArray(payload?.runtimeErrors) ? payload.runtimeErrors : [];
+    if (!compiler.length && !runtime.length) {
+      overlay.style.display = 'none';
+      overlay.innerHTML = '';
+      return;
+    }
+    overlay.style.display = 'block';
+    overlay.innerHTML = `
+      <div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start">
+        <div>
+          <div style="font-size:14px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase">Fozzy Browser Diagnostics</div>
+          <div style="opacity:0.76;margin-top:4px">Compiler and runtime diagnostics rendered from the shared CLI/LSP model.</div>
+        </div>
+        <button id="__fz-overlay-clear" style="border:0;border-radius:999px;padding:8px 12px;background:#f5f7fb;color:#12161d;cursor:pointer">Clear runtime</button>
+      </div>
+      ${compiler.map(compilerBlock).join('')}
+      ${runtime.map(runtimeBlock).join('')}
+    `;
+    const clear = document.getElementById('__fz-overlay-clear');
+    if (clear) {
+      clear.onclick = () => fetch('/__fz/runtime-error/clear', { method: 'POST' }).then(refresh);
+    }
+  }
+
+  window.addEventListener('error', (event) => { postRuntimeError(event.error || event.message); void refresh(); });
+  window.addEventListener('unhandledrejection', (event) => { postRuntimeError(event.reason); void refresh(); });
+
+  const events = new EventSource('/__fz/events');
+  events.addEventListener('diagnostics', () => { void refresh(); });
+  events.addEventListener('runtime-error', () => { void refresh(); });
+  events.addEventListener('hmr', () => { window.location.reload(); });
+  events.addEventListener('reload', () => { window.location.reload(); });
+
+  void refresh();
+})();"#
 }
 
 fn parsed_module_source(project_root: &Path, source_path: &Path) -> Result<String> {
@@ -5047,9 +5913,29 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
         },
     )?;
     let async_backtrace_ready = async_hooks == 0 || async_plan.runtime_event_count > 0;
+    let js_artifact = compile_file_with_options(path, BuildProfile::Dev, Some("js"), true)?;
+    if js_artifact.status != "ok" {
+        let rendered = render_artifact(Format::Text, js_artifact, None, None);
+        bail!("debug-check failed to build js backend\n{rendered}");
+    }
+    let js_output = js_artifact
+        .output
+        .as_ref()
+        .ok_or_else(|| anyhow!("debug-check missing js output artifact"))?;
+    let js_sourcemap = js_artifact
+        .sourcemap_output
+        .as_ref()
+        .ok_or_else(|| anyhow!("debug-check missing js sourcemap artifact"))?;
+    let js_debug = inspect_js_debug_artifact(js_output, js_sourcemap)?;
     let plan_claim_gate = validate_plan_claim_accuracy()?;
     let plan_claims_ok = plan_claim_gate.missing_evidence.is_empty();
-    let ok = debug_symbols && async_backtrace_ready && plan_claims_ok;
+    let ok = debug_symbols
+        && async_backtrace_ready
+        && js_debug.sourcemap_valid
+        && js_debug.browser_stacktrace_ready
+        && js_debug.async_frame_mapping_ready
+        && js_debug.breakpoint_ranges_ready
+        && plan_claims_ok;
     match format {
         Format::Text => Ok(render_text_fields(&[
             ("status", if ok { "ok" } else { "warn" }.to_string()),
@@ -5058,6 +5944,22 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
             ("debug_symbols", debug_symbols.to_string()),
             ("async_backtrace_ready", async_backtrace_ready.to_string()),
             ("async_hooks", async_hooks.to_string()),
+            ("js_backend", "js".to_string()),
+            ("js_output", js_output.display().to_string()),
+            ("js_sourcemap", js_sourcemap.display().to_string()),
+            ("js_sourcemap_valid", js_debug.sourcemap_valid.to_string()),
+            (
+                "browser_stacktrace_ready",
+                js_debug.browser_stacktrace_ready.to_string(),
+            ),
+            (
+                "async_frame_mapping_ready",
+                js_debug.async_frame_mapping_ready.to_string(),
+            ),
+            (
+                "breakpoint_ranges_ready",
+                js_debug.breakpoint_ranges_ready.to_string(),
+            ),
             ("plan_claims_checked", plan_claim_gate.checked.to_string()),
             (
                 "plan_claims_missing_evidence",
@@ -5070,6 +5972,16 @@ fn debug_check_command(path: &Path, format: Format) -> Result<String> {
             "debugSymbols": debug_symbols,
             "asyncBacktraceReady": async_backtrace_ready,
             "asyncHooks": async_hooks,
+            "jsBackend": js_artifact.backend,
+            "jsOutput": js_output.display().to_string(),
+            "jsSourcemap": js_sourcemap.display().to_string(),
+            "jsSourcemapValid": js_debug.sourcemap_valid,
+            "browserStacktraceReady": js_debug.browser_stacktrace_ready,
+            "asyncFrameMappingReady": js_debug.async_frame_mapping_ready,
+            "breakpointRangesReady": js_debug.breakpoint_ranges_ready,
+            "jsGeneratedLines": js_debug.generated_lines,
+            "jsMappedLines": js_debug.mapped_lines,
+            "jsAsyncFunctionCount": js_debug.async_function_count,
             "runtimeEvents": async_plan.runtime_event_count,
             "causalLinks": async_plan.causal_link_count,
             "planClaimGate": {
@@ -5341,7 +6253,7 @@ struct RuntimeSemanticEvent {
     label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct CausalLink {
     from: u64,
     to: u64,
@@ -6074,6 +6986,91 @@ impl From<&TaskEvent> for TaskEventRecord {
                 detached: None,
                 message: None,
             },
+            TaskEvent::BrowserSchedulerConfigured {
+                max_microtasks_per_tick,
+            } => Self {
+                event: "browser_scheduler_configured",
+                task_id: 0,
+                detached: None,
+                message: Some(format!("max_microtasks_per_tick={max_microtasks_per_tick}")),
+            },
+            TaskEvent::BrowserTaskEnqueued {
+                task_id,
+                lane,
+                queue,
+                origin,
+                parent_task_id,
+                promise_id,
+            } => Self {
+                event: "browser_task_enqueued",
+                task_id: *task_id,
+                detached: None,
+                message: Some(format!(
+                    "lane={} queue={} origin={} parent_task_id={} promise_id={}",
+                    lane.as_str(),
+                    queue.as_str(),
+                    origin.as_str(),
+                    parent_task_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    promise_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )),
+            },
+            TaskEvent::BrowserTaskScheduled {
+                task_id,
+                lane,
+                queue,
+                origin,
+            } => Self {
+                event: "browser_task_scheduled",
+                task_id: *task_id,
+                detached: None,
+                message: Some(format!(
+                    "lane={} queue={} origin={}",
+                    lane.as_str(),
+                    queue.as_str(),
+                    origin.as_str(),
+                )),
+            },
+            TaskEvent::BrowserPromiseSettled {
+                task_id,
+                promise_id,
+                state,
+            } => Self {
+                event: "browser_promise_settled",
+                task_id: *task_id,
+                detached: None,
+                message: Some(format!("promise_id={promise_id} state={}", state.as_str())),
+            },
+            TaskEvent::BrowserCausalLink {
+                parent_task_id,
+                child_task_id,
+                relation,
+            } => Self {
+                event: "browser_causal_link",
+                task_id: *child_task_id,
+                detached: None,
+                message: Some(format!(
+                    "parent_task_id={parent_task_id} relation={relation}"
+                )),
+            },
+            TaskEvent::BrowserStarvationPrevented {
+                task_id,
+                lane,
+                queue,
+                after_microtasks,
+            } => Self {
+                event: "browser_starvation_prevented",
+                task_id: *task_id,
+                detached: None,
+                message: Some(format!(
+                    "lane={} queue={} after_microtasks={after_microtasks}",
+                    lane.as_str(),
+                    queue.as_str(),
+                )),
+            },
         }
     }
 }
@@ -6613,6 +7610,7 @@ fn derive_runtime_semantic_evidence(
     task_ops: &BTreeMap<u64, ExecutionOp>,
 ) -> (Vec<RuntimeSemanticEvent>, Vec<CausalLink>) {
     let mut runtime_events = Vec::new();
+    let mut causal_links = Vec::new();
     for event in events {
         match event {
             TaskEvent::Started { task_id } => {
@@ -6680,10 +7678,77 @@ fn derive_runtime_semantic_evidence(
             }
             TaskEvent::JoinCycle { .. }
             | TaskEvent::PanicRootCause { .. }
-            | TaskEvent::Backpressure { .. } => {}
+            | TaskEvent::Backpressure { .. }
+            | TaskEvent::BrowserSchedulerConfigured { .. } => {}
+            TaskEvent::BrowserTaskEnqueued {
+                task_id,
+                lane,
+                queue,
+                origin,
+                ..
+            } => {
+                runtime_events.push(RuntimeSemanticEvent {
+                    task_id: *task_id,
+                    phase: "enqueued".to_string(),
+                    kind: format!("browser.{}", origin.as_str()),
+                    label: format!("{}.{}", queue.as_str(), lane.as_str()),
+                });
+            }
+            TaskEvent::BrowserTaskScheduled {
+                task_id,
+                lane,
+                queue,
+                origin,
+            } => {
+                runtime_events.push(RuntimeSemanticEvent {
+                    task_id: *task_id,
+                    phase: "scheduled".to_string(),
+                    kind: format!("browser.{}", origin.as_str()),
+                    label: format!("{}.{}", queue.as_str(), lane.as_str()),
+                });
+            }
+            TaskEvent::BrowserPromiseSettled {
+                task_id,
+                promise_id,
+                state,
+            } => {
+                runtime_events.push(RuntimeSemanticEvent {
+                    task_id: *task_id,
+                    phase: state.as_str().to_string(),
+                    kind: "browser.promise".to_string(),
+                    label: format!("promise_id={promise_id}"),
+                });
+            }
+            TaskEvent::BrowserCausalLink {
+                parent_task_id,
+                child_task_id,
+                relation,
+            } => {
+                causal_links.push(CausalLink {
+                    from: *parent_task_id,
+                    to: *child_task_id,
+                    relation: relation.clone(),
+                });
+            }
+            TaskEvent::BrowserStarvationPrevented {
+                task_id,
+                lane,
+                queue,
+                after_microtasks,
+            } => {
+                runtime_events.push(RuntimeSemanticEvent {
+                    task_id: *task_id,
+                    phase: "fairness".to_string(),
+                    kind: "browser.starvation_prevented".to_string(),
+                    label: format!(
+                        "{}.{} after_microtasks={after_microtasks}",
+                        queue.as_str(),
+                        lane.as_str()
+                    ),
+                });
+            }
         }
     }
-    let mut causal_links = Vec::new();
     let mut ordered = events
         .iter()
         .filter_map(|event| match event {
@@ -7086,7 +8151,13 @@ fn thread_health_findings(
             | TaskEvent::ChannelSend { .. }
             | TaskEvent::ChannelRecv { .. }
             | TaskEvent::MemoryPressure { .. }
-            | TaskEvent::ResourceLeak { .. } => {}
+            | TaskEvent::ResourceLeak { .. }
+            | TaskEvent::BrowserSchedulerConfigured { .. }
+            | TaskEvent::BrowserTaskEnqueued { .. }
+            | TaskEvent::BrowserTaskScheduled { .. }
+            | TaskEvent::BrowserPromiseSettled { .. }
+            | TaskEvent::BrowserCausalLink { .. }
+            | TaskEvent::BrowserStarvationPrevented { .. } => {}
         }
     }
     let mut findings = Vec::new();
@@ -9777,6 +10848,7 @@ mod tests {
                 lib: false,
                 threads: Some(3),
                 backend: None,
+                sourcemap: false,
                 pgo_generate: false,
                 pgo_use: None,
                 link_libs: Vec::new(),
@@ -9820,6 +10892,7 @@ mod tests {
                 lib: true,
                 threads: None,
                 backend: None,
+                sourcemap: false,
                 pgo_generate: false,
                 pgo_use: None,
                 link_libs: Vec::new(),
@@ -11122,6 +12195,43 @@ mod tests {
     }
 
     #[test]
+    fn browser_overlay_injects_script_before_body_close() {
+        let html = "<!doctype html><html><body><h1>Hello</h1></body></html>";
+        let injected = inject_browser_overlay(html);
+        assert!(injected.contains("/__fz/overlay.js"));
+        assert!(injected.find("/__fz/overlay.js").unwrap() < injected.find("</body>").unwrap());
+    }
+
+    #[test]
+    fn browser_diagnostic_guidance_includes_browser_fixups() {
+        let mut diagnostic = json!({
+            "severity": "Error",
+            "code": "E-NAT-12345678",
+            "message": "unresolved call target `missing_symbol`"
+        });
+        augment_browser_diagnostic(&mut diagnostic, Path::new("/tmp/demo.fzy"));
+        let guidance = diagnostic
+            .get("browserGuidance")
+            .and_then(Value::as_array)
+            .expect("guidance should exist");
+        assert!(guidance
+            .iter()
+            .any(|item| item.as_str().unwrap_or_default().contains("interop")));
+        assert_eq!(
+            diagnostic.get("target").and_then(Value::as_str),
+            Some("browser")
+        );
+    }
+
+    #[test]
+    fn sanitize_http_path_drops_parent_segments() {
+        assert_eq!(
+            sanitize_http_path("/../../public/../index.html"),
+            "public/index.html"
+        );
+    }
+
+    #[test]
     fn proof_ref_valid_accepts_existing_trace_artifact() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -11202,5 +12312,113 @@ mod tests {
         .expect("lint should succeed");
         assert!(output.contains("\"mode\":\"lint\""));
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn task_event_record_serializes_browser_scheduler_events() {
+        let record = TaskEventRecord::from(&TaskEvent::BrowserTaskEnqueued {
+            task_id: 7,
+            lane: runtime::BrowserLane::Render,
+            queue: runtime::BrowserQueueClass::Microtask,
+            origin: runtime::BrowserAsyncOrigin::AnimationFrame,
+            parent_task_id: Some(3),
+            promise_id: Some(11),
+        });
+        assert_eq!(record.event, "browser_task_enqueued");
+        assert_eq!(record.task_id, 7);
+        assert_eq!(
+            record.message.as_deref(),
+            Some(
+                "lane=render queue=microtask origin=animation_frame parent_task_id=3 promise_id=11"
+            )
+        );
+
+        let record = TaskEventRecord::from(&TaskEvent::BrowserPromiseSettled {
+            task_id: 7,
+            promise_id: 11,
+            state: runtime::PromiseState::Fulfilled,
+        });
+        assert_eq!(record.event, "browser_promise_settled");
+        assert_eq!(
+            record.message.as_deref(),
+            Some("promise_id=11 state=fulfilled")
+        );
+    }
+
+    #[test]
+    fn derive_runtime_semantic_evidence_captures_browser_async_metadata() {
+        let events = vec![
+            TaskEvent::BrowserTaskEnqueued {
+                task_id: 2,
+                lane: runtime::BrowserLane::Input,
+                queue: runtime::BrowserQueueClass::Microtask,
+                origin: runtime::BrowserAsyncOrigin::PromiseThen,
+                parent_task_id: Some(1),
+                promise_id: Some(41),
+            },
+            TaskEvent::BrowserTaskScheduled {
+                task_id: 2,
+                lane: runtime::BrowserLane::Input,
+                queue: runtime::BrowserQueueClass::Microtask,
+                origin: runtime::BrowserAsyncOrigin::PromiseThen,
+            },
+            TaskEvent::Started { task_id: 2 },
+            TaskEvent::BrowserPromiseSettled {
+                task_id: 2,
+                promise_id: 41,
+                state: runtime::PromiseState::Fulfilled,
+            },
+            TaskEvent::BrowserStarvationPrevented {
+                task_id: 9,
+                lane: runtime::BrowserLane::Background,
+                queue: runtime::BrowserQueueClass::Macrotask,
+                after_microtasks: 8,
+            },
+            TaskEvent::BrowserCausalLink {
+                parent_task_id: 1,
+                child_task_id: 2,
+                relation: "promise.then".to_string(),
+            },
+        ];
+        let mut task_ops = BTreeMap::new();
+        task_ops.insert(
+            2,
+            ExecutionOp {
+                kind: "async",
+                label: "async_fn_0".to_string(),
+            },
+        );
+
+        let (runtime_events, causal_links) =
+            derive_runtime_semantic_evidence(&events, &[2], &task_ops);
+
+        assert!(runtime_events.iter().any(|event| {
+            event.task_id == 2
+                && event.phase == "enqueued"
+                && event.kind == "browser.promise.then"
+                && event.label == "microtask.input"
+        }));
+        assert!(runtime_events.iter().any(|event| {
+            event.task_id == 2
+                && event.phase == "scheduled"
+                && event.kind == "browser.promise.then"
+                && event.label == "microtask.input"
+        }));
+        assert!(runtime_events.iter().any(|event| {
+            event.task_id == 2
+                && event.phase == "fulfilled"
+                && event.kind == "browser.promise"
+                && event.label == "promise_id=41"
+        }));
+        assert!(runtime_events.iter().any(|event| {
+            event.task_id == 9
+                && event.phase == "fairness"
+                && event.kind == "browser.starvation_prevented"
+                && event.label == "macrotask.background after_microtasks=8"
+        }));
+        assert_eq!(causal_links.len(), 1);
+        assert_eq!(causal_links[0].from, 1);
+        assert_eq!(causal_links[0].to, 2);
+        assert_eq!(causal_links[0].relation, "promise.then");
     }
 }

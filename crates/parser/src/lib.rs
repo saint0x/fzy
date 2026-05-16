@@ -861,7 +861,10 @@ impl Parser {
                 continue;
             }
             let method_name = self.expect_ident("expected trait method name")?;
-            let _method_generics = self.parse_generic_params();
+            let method_generics = self.parse_generic_params();
+            if !method_generics.is_empty() {
+                self.push_diag_here("generic trait methods are not supported in v1");
+            }
             if !self.consume(&TokenKind::LParen) {
                 self.push_diag_here("expected `(` after trait method name");
                 return None;
@@ -1876,8 +1879,9 @@ impl Parser {
                         let _ = self.consume(&TokenKind::RParen);
                     } else if self.consume(&TokenKind::LBrace) {
                         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
-                            let field_name = self
-                                .expect_ident("expected field name in enum struct-variant initializer")?;
+                            let field_name = self.expect_ident(
+                                "expected field name in enum struct-variant initializer",
+                            )?;
                             let value = if self.consume(&TokenKind::Colon) {
                                 self.parse_expr(0)?
                             } else {
@@ -3665,6 +3669,11 @@ mod tests {
                 .message
                 .contains("trait default method bodies are not supported in v1")
         }));
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("generic trait methods are not supported in v1")
+        }));
     }
 
     #[test]
@@ -3687,12 +3696,16 @@ mod tests {
             ast::Item::Trait(item) if item.name == "Cache" => Some(item),
             _ => None,
         });
-        assert!(tr.is_some_and(|item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()));
+        assert!(tr.is_some_and(
+            |item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()
+        ));
         let imp = module.items.iter().find_map(|item| match item {
             ast::Item::Impl(item) => Some(item),
             _ => None,
         });
-        assert!(imp.is_some_and(|item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()));
+        assert!(imp.is_some_and(
+            |item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()
+        ));
     }
 
     #[test]

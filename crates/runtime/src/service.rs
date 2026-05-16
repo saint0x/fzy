@@ -125,6 +125,11 @@ pub struct RuntimeStats {
     pub allocation_pressure_bytes: usize,
     pub open_file_count: usize,
     pub open_socket_count: usize,
+    pub active_browser_timer_count: usize,
+    pub active_browser_listener_count: usize,
+    pub active_browser_fetch_count: usize,
+    pub active_browser_websocket_count: usize,
+    pub last_browser_runtime_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -160,6 +165,26 @@ impl ServiceRuntime {
 
     pub fn set_socket_count(&mut self, count: usize) {
         self.stats.open_socket_count = count;
+    }
+
+    pub fn set_browser_timer_count(&mut self, count: usize) {
+        self.stats.active_browser_timer_count = count;
+    }
+
+    pub fn set_browser_listener_count(&mut self, count: usize) {
+        self.stats.active_browser_listener_count = count;
+    }
+
+    pub fn set_browser_fetch_count(&mut self, count: usize) {
+        self.stats.active_browser_fetch_count = count;
+    }
+
+    pub fn set_browser_websocket_count(&mut self, count: usize) {
+        self.stats.active_browser_websocket_count = count;
+    }
+
+    pub fn set_last_browser_runtime_error(&mut self, error: impl Into<String>) {
+        self.stats.last_browser_runtime_error = Some(error.into());
     }
 
     pub fn snapshot_stats(&self) -> RuntimeStats {
@@ -208,10 +233,23 @@ mod tests {
         runtime.set_allocation_pressure(42);
         runtime.set_file_count(2);
         runtime.set_socket_count(3);
+        runtime.set_browser_timer_count(5);
+        runtime.set_browser_listener_count(7);
+        runtime.set_browser_fetch_count(11);
+        runtime.set_browser_websocket_count(13);
+        runtime.set_last_browser_runtime_error("browser.timeout");
         let stats = runtime.snapshot_stats();
         assert_eq!(stats.task_queue_depth, 1);
         assert_eq!(stats.scheduler_lag_ms, 11);
         assert_eq!(stats.open_file_count, 2);
         assert_eq!(stats.open_socket_count, 3);
+        assert_eq!(stats.active_browser_timer_count, 5);
+        assert_eq!(stats.active_browser_listener_count, 7);
+        assert_eq!(stats.active_browser_fetch_count, 11);
+        assert_eq!(stats.active_browser_websocket_count, 13);
+        assert_eq!(
+            stats.last_browser_runtime_error.as_deref(),
+            Some("browser.timeout")
+        );
     }
 }

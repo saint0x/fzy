@@ -37,6 +37,22 @@ fn should_sample(counter: i32, sample_mod: i32) -> i32 {
     return 0
 }
 
+fn level_field(level: LogLevel) -> str {
+    match level {
+        LogLevel::Warn => return "warn",
+        LogLevel::Error => return "error",
+        _ => return "info",
+    }
+}
+
+fn level_exit_code(level: LogLevel) -> i32 {
+    match level {
+        LogLevel::Warn => return 2,
+        LogLevel::Error => return 3,
+        _ => return 1,
+    }
+}
+
 fn request_log(config: LogConfig, level: LogLevel, message: str, request_id: str, path: str, method: str) -> i32 {
     let msg = clamp_field(message, config.max_field_bytes)
     let rid = clamp_field(request_id, config.max_field_bytes)
@@ -47,21 +63,21 @@ fn request_log(config: LogConfig, level: LogLevel, message: str, request_id: str
     discard map.set(fields, "path", p)
     discard map.set(fields, "method", m)
     if config.json == 1 {
-        discard log.set_json(1)
+        let json_mode = map.new()
+        discard log.set_json(json_mode)
     }
-    if level == LogLevel::Warn {
-        discard map.set(fields, "level", "warn")
+    let tag = level_field(level)
+    discard map.set(fields, "level", tag)
+    if tag == "warn" {
         discard log.warn(msg, log.fields(fields))
-        return 2
+        return level_exit_code(level)
     }
-    if level == LogLevel::Error {
-        discard map.set(fields, "level", "error")
+    if tag == "error" {
         discard log.error(msg, log.fields(fields))
-        return 3
+        return level_exit_code(level)
     }
-    discard map.set(fields, "level", "info")
     discard log.info(msg, log.fields(fields))
-    return 1
+    return level_exit_code(level)
 }
 
 fn sample() -> i32 {

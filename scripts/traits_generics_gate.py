@@ -26,26 +26,24 @@ else:
 
 parser_src = PARSER.read_text(encoding="utf-8")
 for marker in [
-    "generic struct declarations are not supported in v1",
-    "generic enum declarations are not supported in v1",
-    "generic trait declarations are not supported in v1",
-    "generic impl headers are not supported in v1",
-    "trait associated constants are not supported in v1",
-    "trait associated types are not supported in v1",
+    "expected associated const name",
+    "expected `:` in associated const declaration",
+    "expected associated type name",
+    "expected `=` in associated type impl",
     "trait default method bodies are not supported in v1",
     "generic trait methods are not supported in v1",
 ]:
     if marker not in parser_src:
-        missing.append(f"parser missing hard-reject diagnostic: {marker}")
+        missing.append(f"parser missing trait/generic contract marker: {marker}")
 
 hir_src = HIR.read_text(encoding="utf-8")
 for marker in [
     "resolve_method_call_target",
-    "impl for trait `{}` must target a concrete type in v1",
+    "allows_generic_trait_impl_targets",
     "overlapping impls for trait",
     "has ambiguous bound",
     "validate_generic_bounds_exist",
-    "trait `{}` is not defined",
+    "impl references unknown trait",
     "invalid generic specialization syntax for call",
     "monomorphization depth limit exceeded",
     "monomorphization specialization limit exceeded",

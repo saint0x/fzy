@@ -227,7 +227,7 @@ Semantics:
   - `trait Name { fn method(...) -> ...; }`
 - Trait declarations support associated types/constants:
   - `trait Name { type Item; const LIMIT: i32; ... }`
-- Trait impl declarations support concrete impl targets:
+- Trait impl declarations support explicit impl targets, including generic targets:
   - `impl Trait for Type { fn method(...) -> ... { ... } }`
 - Trait impls support associated item definitions:
   - `impl Trait for Type { type Item = ...; const LIMIT: i32 = ...; ... }`
@@ -245,7 +245,7 @@ Semantics:
 
 ### Trait Coherence (v1)
 
-- Trait impl targets must be concrete (non-type-variable) types.
+- Trait impl targets may be generic when bound resolution remains unambiguous.
 - Overlapping impl targets for the same trait are rejected.
 - Generic bound resolution is rejected when multiple impls match (ambiguous bound).
 

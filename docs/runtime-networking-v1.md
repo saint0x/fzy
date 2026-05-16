@@ -39,7 +39,7 @@
 
 - Default log output is human-readable text lines (`[ts] level message`).
 - Structured log fields are appended as `| fields={...}`.
-- JSON log mode is opt-in only (`log.set_json(1)`).
+- JSON log mode is opt-in only (`log.set_json(map.new())`).
 
 ## TLS Boundary Strategy
 

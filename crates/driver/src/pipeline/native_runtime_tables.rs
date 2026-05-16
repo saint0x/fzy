@@ -502,6 +502,96 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
+        callee: "browser.set_timeout",
+        symbol: "fz_browser_set_timeout",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "browser.set_interval",
+        symbol: "fz_browser_set_interval",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "browser.clear_timeout",
+        symbol: "fz_browser_clear_timeout",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "browser.request_animation_frame",
+        symbol: "fz_browser_request_animation_frame",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "browser.node_handle",
+        symbol: "fz_browser_node_handle",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "browser.add_event_listener",
+        symbol: "fz_browser_add_event_listener",
+        arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "browser.remove_event_listener",
+        symbol: "fz_browser_remove_event_listener",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "browser.fetch",
+        symbol: "fz_browser_fetch",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "browser.fetch_abort",
+        symbol: "fz_browser_fetch_abort",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "browser.websocket_connect",
+        symbol: "fz_browser_websocket_connect",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "browser.websocket_close",
+        symbol: "fz_browser_websocket_close",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "browser.stream_open",
+        symbol: "fz_browser_stream_open",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "browser.local_storage_get",
+        symbol: "fz_browser_local_storage_get",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "browser.local_storage_set",
+        symbol: "fz_browser_local_storage_set",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "browser.session_storage_get",
+        symbol: "fz_browser_session_storage_get",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "browser.session_storage_set",
+        symbol: "fz_browser_session_storage_set",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "browser.console_log",
+        symbol: "fz_browser_console_log",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "browser.runtime_error_hook",
+        symbol: "fz_browser_runtime_error_hook",
+        arity: 3,
+    },
+    NativeRuntimeImport {
         callee: "http.poll_next",
         symbol: "fz_native_net_poll_next",
         arity: 0,

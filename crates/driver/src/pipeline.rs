@@ -9,37 +9,41 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variab
 use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use rayon::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, Once, OnceLock};
 use std::time::UNIX_EPOCH;
 
-mod llvm_support;
 mod clif_support;
-mod native_metadata;
+mod js_support;
+mod linker_support;
+mod llvm_support;
 mod native_backend_support;
+mod native_metadata;
 mod native_runtime_support;
 mod native_runtime_tables;
-mod linker_support;
 
 use self::clif_support::{
     ast_signature_type_to_clif_type, clif_emit_function_cfg, lower_cranelift_ir,
     variant_tag_for_key,
+};
+use self::js_support::{
+    emit_js_artifact, inspect_js_debug_readiness, JsArtifact, JsDebugReadiness,
 };
 use self::linker_support::{
     apply_extra_linker_args, apply_manifest_link_args, apply_pgo_flags,
     apply_profile_optimization_flags, apply_target_link_flags, archiver_candidates,
     linker_candidates, profile_config, unsafe_contracts_enforced, unsafe_scope_policy,
 };
+use self::llvm_support::{
+    llvm_emit_binary_expr, llvm_emit_complex_expr, llvm_emit_simple_expr, llvm_float_literal,
+    lower_llvm_ir, LlvmFuncCtx, LlvmValue,
+};
 use self::native_backend_support::{
     backend_capability_diagnostics, declare_native_data_plane_imports,
     declare_native_runtime_imports, experimental_feature_diagnostics,
     native_lowerability_diagnostics,
-};
-use self::llvm_support::{
-    llvm_emit_binary_expr, llvm_emit_complex_expr, llvm_emit_simple_expr, lower_llvm_ir,
-    llvm_float_literal, LlvmFuncCtx, LlvmValue,
 };
 use self::native_metadata::{
     build_global_const_i32_map, build_mutable_static_i32_map, build_string_literal_ids,
@@ -49,9 +53,9 @@ use self::native_metadata::{
 };
 use self::native_runtime_support::{
     collect_async_c_exports, collect_extern_c_imports, collect_used_native_data_plane_imports,
-    collect_used_native_runtime_imports, compile_runtime_shim_object,
-    ensure_native_runtime_shim, is_extern_c_abi_function, is_extern_c_import_decl,
-    native_link_symbol_for_function, native_runtime_import_contract_errors,
+    collect_used_native_runtime_imports, compile_runtime_shim_object, ensure_native_runtime_shim,
+    is_extern_c_abi_function, is_extern_c_import_decl, native_link_symbol_for_function,
+    native_runtime_import_contract_errors,
 };
 use self::native_runtime_tables::{
     native_data_plane_import_for_callee, native_runtime_import_for_callee, NativeRuntimeImport,
@@ -105,23 +109,28 @@ pub enum BuildProfile {
 pub struct BuildArtifact {
     pub module: String,
     pub profile: BuildProfile,
+    pub backend: String,
     pub status: &'static str,
     pub diagnostics: usize,
     pub diagnostic_details: Vec<diagnostics::Diagnostic>,
     pub output: Option<PathBuf>,
+    pub sourcemap_output: Option<PathBuf>,
     pub dependency_graph_hash: Option<String>,
+    pub incremental: IncrementalBuildInfo,
 }
 
 #[derive(Debug, Clone)]
 pub struct LibraryArtifact {
     pub module: String,
     pub profile: BuildProfile,
+    pub backend: String,
     pub status: &'static str,
     pub diagnostics: usize,
     pub diagnostic_details: Vec<diagnostics::Diagnostic>,
     pub static_lib: Option<PathBuf>,
     pub shared_lib: Option<PathBuf>,
     pub dependency_graph_hash: Option<String>,
+    pub incremental: IncrementalBuildInfo,
 }
 
 #[derive(Debug, Clone)]
@@ -138,9 +147,27 @@ pub struct ParsedProgram {
     pub module: ast::Module,
     pub combined_source: String,
     pub module_paths: Vec<PathBuf>,
+    pub module_graph: ModuleGraphSnapshot,
+    cache_root: PathBuf,
+    incremental: IncrementalBuildInfo,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleGraphSnapshot {
+    pub root: PathBuf,
+    pub modules: Vec<ModuleGraphModule>,
+    pub graph_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModuleGraphModule {
+    pub id: String,
+    pub path: PathBuf,
+    pub dependencies: Vec<PathBuf>,
+    pub source_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ModuleStamp {
     path: PathBuf,
     bytes: u64,
@@ -159,9 +186,50 @@ struct LowerCacheEntry {
     fir: fir::FirModule,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct IncrementalBuildInfo {
+    pub cache_version: String,
+    pub graph_nodes: usize,
+    pub invalidated_modules: Vec<String>,
+    pub reasons: Vec<String>,
+    pub parse: CacheStageInfo,
+    pub lower: CacheStageInfo,
+    pub backend: CacheStageInfo,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CacheStageInfo {
+    pub status: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistentModuleCacheEntry {
+    stamp: ModuleStamp,
+    source: String,
+    parsed_module: ast::Module,
+    module_decls: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistentLowerCacheEntry {
+    combined_source_hash: String,
+    typed: hir::TypedModule,
+    fir: fir::FirModule,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistentGraphEntry {
+    root_source: String,
+    module_paths: Vec<String>,
+    module_deps: HashMap<String, Vec<String>>,
+    module_hashes: HashMap<String, String>,
+}
+
 static PARSED_PROGRAM_CACHE: OnceLock<Mutex<HashMap<PathBuf, ParsedProgramCacheEntry>>> =
     OnceLock::new();
 static LOWER_CACHE: OnceLock<Mutex<HashMap<String, LowerCacheEntry>>> = OnceLock::new();
+static LOWER_CACHE_STATUS: OnceLock<Mutex<HashMap<String, CacheStageInfo>>> = OnceLock::new();
 static CODEGEN_POOL_INIT: Once = Once::new();
 
 #[derive(Debug, Clone)]
@@ -169,6 +237,8 @@ struct PgoConfig {
     generate_dir: Option<PathBuf>,
     use_profile: Option<PathBuf>,
 }
+
+const INCREMENTAL_CACHE_VERSION: &str = "v1";
 
 fn configured_codegen_jobs() -> Option<usize> {
     std::env::var("FZ_CODEGEN_JOBS")
@@ -212,11 +282,21 @@ pub fn compile_file_with_backend(
     profile: BuildProfile,
     backend_override: Option<&str>,
 ) -> Result<BuildArtifact> {
+    compile_file_with_options(path, profile, backend_override, false)
+}
+
+pub fn compile_file_with_options(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+    emit_sourcemap: bool,
+) -> Result<BuildArtifact> {
     let resolved = resolve_source_path(path)?;
     let parsed = parse_program(&resolved.source_path)?;
+    let mut incremental = parsed.incremental.clone();
     let experimental_diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
-    let backend = resolve_native_backend(profile, backend_override)?;
+    let backend = resolve_backend(profile, backend_override)?;
     let pgo = configured_pgo();
     if (pgo.generate_dir.is_some() || pgo.use_profile.is_some()) && backend != "llvm" {
         bail!(
@@ -224,9 +304,17 @@ pub fn compile_file_with_backend(
             backend
         );
     }
-    let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
+    if emit_sourcemap && backend != "js" {
+        bail!("`--sourcemap` is only supported with `--backend js`");
+    }
+    let native_lowerability_errors = if backend == "js" {
+        Vec::new()
+    } else {
+        native_lowerability_diagnostics(&parsed.module)
+    };
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
-    let (_typed, fir) = lower_fir_cached(&parsed);
+    let (typed, fir) = lower_fir_cached(&parsed);
+    incremental.lower = read_lower_cache_stage(&parsed);
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
@@ -270,26 +358,52 @@ pub fn compile_file_with_backend(
     diagnostic_details.extend(backend_risks);
     diagnostic_details.extend(report.diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
-    let output = if status == "ok" {
-        Some(emit_native_artifact(
-            &fir,
-            &resolved.project_root,
-            profile,
-            resolved.manifest.as_ref(),
-            Some(backend.as_str()),
-        )?)
+    let (output, sourcemap_output) = if status == "ok" {
+        if backend == "js" {
+            let artifact: JsArtifact = emit_js_artifact(
+                &parsed,
+                &typed,
+                &fir,
+                &resolved.source_path,
+                &resolved.project_root,
+                emit_sourcemap,
+            )?;
+            (
+                Some(artifact.js_path),
+                if emit_sourcemap {
+                    artifact.sourcemap_path
+                } else {
+                    None
+                },
+            )
+        } else {
+            (
+                Some(emit_native_artifact(
+                    &fir,
+                    &resolved.project_root,
+                    profile,
+                    resolved.manifest.as_ref(),
+                    Some(backend.as_str()),
+                    &mut incremental,
+                )?),
+                None,
+            )
+        }
     } else {
-        None
+        (None, None)
     };
 
     Ok(BuildArtifact {
         module: fir.name,
         profile,
+        backend,
         status,
         diagnostics: diagnostic_details.len(),
         diagnostic_details,
         output,
+        sourcemap_output,
         dependency_graph_hash: resolved.dependency_graph_hash,
+        incremental,
     })
 }
 
@@ -300,9 +414,13 @@ pub fn compile_library_with_backend(
 ) -> Result<LibraryArtifact> {
     let resolved = resolve_source_path_with_target(path, true)?;
     let parsed = parse_program(&resolved.source_path)?;
+    let mut incremental = parsed.incremental.clone();
     let experimental_diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
-    let requested_backend = resolve_native_backend(profile, backend_override)?;
+    let requested_backend = resolve_backend(profile, backend_override)?;
+    if requested_backend == "js" {
+        bail!("backend `js` is not supported for `fz build --lib`");
+    }
     let backend = if requested_backend == "llvm" {
         if backend_override.is_some_and(|value| value.trim().eq_ignore_ascii_case("llvm")) {
             bail!(
@@ -323,6 +441,7 @@ pub fn compile_library_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
     let (_typed, fir) = lower_fir_cached(&parsed);
+    incremental.lower = read_lower_cache_stage(&parsed);
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
@@ -373,6 +492,7 @@ pub fn compile_library_with_backend(
             profile,
             resolved.manifest.as_ref(),
             Some(backend.as_str()),
+            &mut incremental,
         )?
     } else {
         (None, None)
@@ -381,12 +501,14 @@ pub fn compile_library_with_backend(
     Ok(LibraryArtifact {
         module: fir.name,
         profile,
+        backend,
         status,
         diagnostics: diagnostic_details.len(),
         diagnostic_details,
         static_lib,
         shared_lib,
         dependency_graph_hash: resolved.dependency_graph_hash,
+        incremental,
     })
 }
 
@@ -542,30 +664,72 @@ pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
     Ok(parsed)
 }
 
+pub fn module_graph_snapshot(source_path: &Path) -> Result<ModuleGraphSnapshot> {
+    let canonical = source_path
+        .canonicalize()
+        .with_context(|| format!("failed resolving source file: {}", source_path.display()))?;
+    Ok(parse_program(&canonical)?.module_graph)
+}
+
 pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirModule) {
     let module_hash = sha256_hex(parsed.combined_source.as_bytes());
     let cache = LOWER_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let status_cache = LOWER_CACHE_STATUS.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(guard) = cache.lock() {
         if let Some(cached) = guard.get(&module_hash) {
+            if let Ok(mut status_guard) = status_cache.lock() {
+                status_guard.insert(
+                    module_hash,
+                    CacheStageInfo {
+                        status: "hit".to_string(),
+                        detail: "in-memory lowered IR cache hit".to_string(),
+                    },
+                );
+            }
             return (cached.typed.clone(), cached.fir.clone());
         }
+    }
+    if let Some(cached) = load_persistent_lower_cache(parsed, &module_hash) {
+        if let Ok(mut guard) = cache.lock() {
+            guard.insert(module_hash, cached.clone());
+        }
+        if let Ok(mut status_guard) = status_cache.lock() {
+            status_guard.insert(
+                sha256_hex(parsed.combined_source.as_bytes()),
+                CacheStageInfo {
+                    status: "hit".to_string(),
+                    detail: "persistent lowered IR cache hit".to_string(),
+                },
+            );
+        }
+        return (cached.typed, cached.fir);
     }
     let typed = hir::lower(&parsed.module);
     let fir_module = fir::build_owned(typed.clone());
     if let Ok(mut guard) = cache.lock() {
         guard.insert(
-            module_hash,
+            module_hash.clone(),
             LowerCacheEntry {
                 typed: typed.clone(),
                 fir: fir_module.clone(),
             },
         );
     }
+    if let Ok(mut status_guard) = status_cache.lock() {
+        status_guard.insert(
+            module_hash.clone(),
+            CacheStageInfo {
+                status: "miss".to_string(),
+                detail: "lowered IR rebuilt from parsed module graph".to_string(),
+            },
+        );
+    }
+    let _ = store_persistent_lower_cache(parsed, &module_hash, &typed, &fir_module);
     (typed, fir_module)
 }
 
 fn parse_program_uncached(canonical: &Path) -> Result<ParsedProgram> {
-    let mut state = ModuleLoadState::default();
+    let mut state = ModuleLoadState::new(canonical);
     discover_module_graph_recursive(canonical, &mut state)?;
 
     let loaded_modules = state
@@ -605,10 +769,17 @@ fn parse_program_uncached(canonical: &Path) -> Result<ParsedProgram> {
         merge_module_owned(&mut merged, loaded.ast);
     }
     canonicalize_call_targets(&mut merged);
+    let _ = store_graph_cache(canonical, &state);
+    let module_graph = build_module_graph_snapshot(canonical, &state);
+    let module_paths = state.load_order.clone();
+    let incremental = state.incremental_info();
     Ok(ParsedProgram {
         module: merged,
         combined_source,
-        module_paths: state.load_order,
+        module_paths,
+        module_graph,
+        cache_root: incremental_cache_root(canonical),
+        incremental,
     })
 }
 
@@ -632,7 +803,14 @@ fn cached_parsed_program(canonical: &Path) -> Option<ParsedProgram> {
             current.bytes == stamp.bytes && current.modified_ns == stamp.modified_ns
         })
     }) {
-        return Some(entry.parsed.clone());
+        let mut parsed = entry.parsed.clone();
+        parsed.incremental.parse = CacheStageInfo {
+            status: "hit".to_string(),
+            detail: "in-memory parsed module graph cache hit".to_string(),
+        };
+        parsed.incremental.invalidated_modules.clear();
+        parsed.incremental.reasons = vec!["reused in-memory parsed module graph".to_string()];
+        return Some(parsed);
     }
     None
 }
@@ -655,6 +833,196 @@ fn store_parsed_program_cache(canonical: &Path, parsed: &ParsedProgram) {
     }
 }
 
+fn incremental_cache_root(root_source: &Path) -> PathBuf {
+    let project_root = root_source
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    project_root
+        .join(".fz")
+        .join("cache")
+        .join("incremental")
+        .join(sha256_hex(root_source.display().to_string().as_bytes()))
+}
+
+fn module_cache_path(root_source: &Path, module_path: &Path) -> PathBuf {
+    incremental_cache_root(root_source)
+        .join("modules")
+        .join(format!(
+            "{}.json",
+            sha256_hex(module_path.display().to_string().as_bytes())
+        ))
+}
+
+fn lower_cache_path(parsed: &ParsedProgram, combined_source_hash: &str) -> PathBuf {
+    parsed
+        .cache_root
+        .join("lower")
+        .join(format!("{combined_source_hash}.json"))
+}
+
+fn graph_cache_path(root_source: &Path) -> PathBuf {
+    incremental_cache_root(root_source).join("graph.json")
+}
+
+fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
+    let bytes = std::fs::read(path).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("cache path has no parent: {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("failed creating cache directory: {}", parent.display()))?;
+    let bytes = serde_json::to_vec(value)?;
+    std::fs::write(path, bytes).with_context(|| format!("failed writing {}", path.display()))?;
+    Ok(())
+}
+
+fn load_graph_cache(root_source: &Path) -> Option<PersistentGraphEntry> {
+    read_json_file(&graph_cache_path(root_source))
+}
+
+fn store_graph_cache(root_source: &Path, state: &ModuleLoadState) -> Result<()> {
+    let graph = PersistentGraphEntry {
+        root_source: root_source.display().to_string(),
+        module_paths: state
+            .load_order
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect(),
+        module_deps: state
+            .discovered
+            .iter()
+            .map(|(path, module)| {
+                (
+                    path.display().to_string(),
+                    module
+                        .module_decls
+                        .iter()
+                        .filter_map(|decl| {
+                            let base_dir = path.parent()?;
+                            resolve_declared_module(base_dir, decl)
+                                .ok()
+                                .and_then(|resolved| resolved.canonicalize().ok())
+                                .map(|resolved| resolved.display().to_string())
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect(),
+        module_hashes: state.module_hashes.clone(),
+    };
+    write_json_file(&graph_cache_path(root_source), &graph)
+}
+
+fn build_module_graph_snapshot(root_source: &Path, state: &ModuleLoadState) -> ModuleGraphSnapshot {
+    let modules = state
+        .load_order
+        .iter()
+        .map(|path| {
+            let discovered = state
+                .discovered
+                .get(path)
+                .expect("discovered module should exist for graph snapshot");
+            let base_dir = path
+                .parent()
+                .expect("discovered module should have a parent directory");
+            let dependencies = discovered
+                .module_decls
+                .iter()
+                .filter_map(|decl| resolve_declared_module(base_dir, decl).ok())
+                .collect::<Vec<_>>();
+            ModuleGraphModule {
+                id: module_namespace(root_source, path).unwrap_or_else(|_| {
+                    path.file_stem()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("module")
+                        .to_string()
+                }),
+                path: path.clone(),
+                dependencies,
+                source_hash: sha256_hex(discovered.source.as_bytes()),
+            }
+        })
+        .collect::<Vec<_>>();
+    let graph_hash = sha256_hex(
+        serde_json::to_string(&modules)
+            .expect("module graph snapshot should serialize")
+            .as_bytes(),
+    );
+    ModuleGraphSnapshot {
+        root: root_source.to_path_buf(),
+        modules,
+        graph_hash,
+    }
+}
+
+fn load_persistent_module_cache(
+    root_source: &Path,
+    module_path: &Path,
+) -> Option<PersistentModuleCacheEntry> {
+    let entry: PersistentModuleCacheEntry =
+        read_json_file(&module_cache_path(root_source, module_path))?;
+    let current = module_stamp(module_path)?;
+    (entry.stamp.bytes == current.bytes && entry.stamp.modified_ns == current.modified_ns)
+        .then_some(entry)
+}
+
+fn store_persistent_module_cache(
+    root_source: &Path,
+    module_path: &Path,
+    entry: &PersistentModuleCacheEntry,
+) -> Result<()> {
+    write_json_file(&module_cache_path(root_source, module_path), entry)
+}
+
+fn load_persistent_lower_cache(
+    parsed: &ParsedProgram,
+    combined_source_hash: &str,
+) -> Option<LowerCacheEntry> {
+    let entry: PersistentLowerCacheEntry =
+        read_json_file(&lower_cache_path(parsed, combined_source_hash))?;
+    (entry.combined_source_hash == combined_source_hash).then_some(LowerCacheEntry {
+        typed: entry.typed,
+        fir: entry.fir,
+    })
+}
+
+fn store_persistent_lower_cache(
+    parsed: &ParsedProgram,
+    combined_source_hash: &str,
+    typed: &hir::TypedModule,
+    fir: &fir::FirModule,
+) -> Result<()> {
+    write_json_file(
+        &lower_cache_path(parsed, combined_source_hash),
+        &PersistentLowerCacheEntry {
+            combined_source_hash: combined_source_hash.to_string(),
+            typed: typed.clone(),
+            fir: fir.clone(),
+        },
+    )
+}
+
+fn read_lower_cache_stage(parsed: &ParsedProgram) -> CacheStageInfo {
+    let combined_source_hash = sha256_hex(parsed.combined_source.as_bytes());
+    if let Ok(guard) = LOWER_CACHE_STATUS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
+        if let Some(stage) = guard.get(&combined_source_hash) {
+            return stage.clone();
+        }
+    }
+    CacheStageInfo {
+        status: "miss".to_string(),
+        detail: "lowered IR rebuilt from parsed module graph".to_string(),
+    }
+}
+
 #[derive(Debug, Clone)]
 struct LoadedModule {
     ast: ast::Module,
@@ -664,6 +1032,7 @@ struct LoadedModule {
 #[derive(Debug, Clone)]
 struct DiscoveredModule {
     source: String,
+    parsed_module: ast::Module,
     module_decls: Vec<String>,
 }
 
@@ -674,6 +1043,54 @@ struct ModuleLoadState {
     load_order: Vec<PathBuf>,
     visiting: Vec<PathBuf>,
     visiting_set: HashSet<PathBuf>,
+    invalidated_modules: Vec<PathBuf>,
+    reused_modules: Vec<PathBuf>,
+    invalidation_reasons: Vec<String>,
+    module_hashes: HashMap<String, String>,
+}
+
+impl ModuleLoadState {
+    fn new(root_source: &Path) -> Self {
+        let mut state = Self::default();
+        if let Some(previous) = load_graph_cache(root_source) {
+            state.module_hashes = previous.module_hashes;
+        }
+        state
+    }
+
+    fn incremental_info(&self) -> IncrementalBuildInfo {
+        let reasons = if self.invalidation_reasons.is_empty() && !self.reused_modules.is_empty() {
+            vec!["reused persistent module graph without invalidation".to_string()]
+        } else {
+            self.invalidation_reasons.clone()
+        };
+        IncrementalBuildInfo {
+            cache_version: INCREMENTAL_CACHE_VERSION.to_string(),
+            graph_nodes: self.load_order.len(),
+            invalidated_modules: self
+                .invalidated_modules
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            reasons,
+            parse: CacheStageInfo {
+                status: if self.invalidated_modules.is_empty() {
+                    "hit".to_string()
+                } else if self.reused_modules.is_empty() {
+                    "miss".to_string()
+                } else {
+                    "partial".to_string()
+                },
+                detail: format!(
+                    "reused={} reparsed={}",
+                    self.reused_modules.len(),
+                    self.invalidated_modules.len()
+                ),
+            },
+            lower: CacheStageInfo::default(),
+            backend: CacheStageInfo::default(),
+        }
+    }
 }
 
 fn discover_module_graph_recursive(path: &Path, state: &mut ModuleLoadState) -> Result<()> {
@@ -690,20 +1107,52 @@ fn discover_module_graph_recursive(path: &Path, state: &mut ModuleLoadState) -> 
 
     state.visiting_set.insert(canonical.clone());
     state.visiting.push(canonical.clone());
-
-    let source = std::fs::read_to_string(&canonical)
-        .with_context(|| format!("failed reading source file: {}", canonical.display()))?;
-    let module_name = canonical
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| anyhow!("invalid module filename for {}", canonical.display()))?;
-    let ast = parser::parse(&source, module_name)
-        .map_err(|diagnostics| anyhow!(render_parse_failure(&canonical, &diagnostics)))?;
+    let root_source = state
+        .visiting
+        .first()
+        .cloned()
+        .unwrap_or_else(|| canonical.clone());
+    let (source, parsed_module, module_decls, reused_from_cache) =
+        if let Some(entry) = load_persistent_module_cache(&root_source, &canonical) {
+            (entry.source, entry.parsed_module, entry.module_decls, true)
+        } else {
+            let source = std::fs::read_to_string(&canonical)
+                .with_context(|| format!("failed reading source file: {}", canonical.display()))?;
+            let module_name = canonical
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| anyhow!("invalid module filename for {}", canonical.display()))?;
+            let parsed_module = parser::parse(&source, module_name)
+                .map_err(|diagnostics| anyhow!(render_parse_failure(&canonical, &diagnostics)))?;
+            let module_decls = parsed_module.modules.clone();
+            let entry = PersistentModuleCacheEntry {
+                stamp: module_stamp(&canonical).ok_or_else(|| {
+                    anyhow!("failed reading module metadata for {}", canonical.display())
+                })?,
+                source: source.clone(),
+                parsed_module: parsed_module.clone(),
+                module_decls: module_decls.clone(),
+            };
+            let _ = store_persistent_module_cache(&root_source, &canonical, &entry);
+            (source, parsed_module, module_decls, false)
+        };
+    if reused_from_cache {
+        state.reused_modules.push(canonical.clone());
+    } else {
+        state.invalidated_modules.push(canonical.clone());
+        state
+            .invalidation_reasons
+            .push(format!("reparsed {}", canonical.display()));
+    }
+    state.module_hashes.insert(
+        canonical.display().to_string(),
+        sha256_hex(source.as_bytes()),
+    );
 
     let base_dir = canonical
         .parent()
         .ok_or_else(|| anyhow!("module has no parent directory: {}", canonical.display()))?;
-    for module_decl in &ast.modules {
+    for module_decl in &module_decls {
         let module_path = resolve_declared_module(base_dir, module_decl).with_context(|| {
             format!(
                 "while resolving module `{}` from {}",
@@ -721,7 +1170,8 @@ fn discover_module_graph_recursive(path: &Path, state: &mut ModuleLoadState) -> 
         canonical,
         DiscoveredModule {
             source,
-            module_decls: ast.modules,
+            parsed_module,
+            module_decls,
         },
     );
     Ok(())
@@ -738,12 +1188,7 @@ fn parse_and_qualify_module(
             module_path.display()
         )
     })?;
-    let module_name = module_path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| anyhow!("invalid module filename for {}", module_path.display()))?;
-    let mut ast = parser::parse(&discovered_module.source, module_name)
-        .map_err(|diagnostics| anyhow!(render_parse_failure(module_path, &diagnostics)))?;
+    let mut ast = discovered_module.parsed_module.clone();
     let namespace = module_namespace(root_source, module_path)?;
     qualify_module_symbols(&mut ast, &namespace);
     ast.modules = discovered_module.module_decls.clone();
@@ -3507,7 +3952,6 @@ fn llvm_emit_expr(
     })
 }
 
-
 fn expr_task_ref_name(expr: &ast::Expr) -> Option<String> {
     match expr {
         ast::Expr::Ident(name) => Some(name.clone()),
@@ -4429,17 +4873,95 @@ fn hex_encode(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BackendArtifactCacheEntry {
+    semantic_hash: String,
+}
+
+fn backend_artifact_cache_path(
+    project_root: &Path,
+    module_name: &str,
+    backend: &str,
+    profile: BuildProfile,
+    kind: &str,
+) -> PathBuf {
+    project_root
+        .join(".fz")
+        .join("cache")
+        .join("incremental")
+        .join("backend")
+        .join(format!("{module_name}-{backend}-{profile:?}-{kind}.json"))
+}
+
+fn fir_semantic_hash(fir: &fir::FirModule) -> Result<String> {
+    Ok(sha256_hex(&serde_json::to_vec(fir)?))
+}
+
+fn try_reuse_backend_artifact(
+    project_root: &Path,
+    module_name: &str,
+    backend: &str,
+    profile: BuildProfile,
+    kind: &str,
+    expected_hash: &str,
+    required_outputs: &[&Path],
+    incremental: &mut IncrementalBuildInfo,
+) -> bool {
+    let Some(entry) = read_json_file::<BackendArtifactCacheEntry>(&backend_artifact_cache_path(
+        project_root,
+        module_name,
+        backend,
+        profile,
+        kind,
+    )) else {
+        return false;
+    };
+    if entry.semantic_hash != expected_hash || required_outputs.iter().any(|path| !path.exists()) {
+        return false;
+    }
+    incremental.backend = CacheStageInfo {
+        status: "hit".to_string(),
+        detail: format!("reused cached backend {kind} outputs"),
+    };
+    true
+}
+
+fn store_backend_artifact_cache(
+    project_root: &Path,
+    module_name: &str,
+    backend: &str,
+    profile: BuildProfile,
+    kind: &str,
+    semantic_hash: &str,
+    incremental: &mut IncrementalBuildInfo,
+) -> Result<()> {
+    write_json_file(
+        &backend_artifact_cache_path(project_root, module_name, backend, profile, kind),
+        &BackendArtifactCacheEntry {
+            semantic_hash: semantic_hash.to_string(),
+        },
+    )?;
+    incremental.backend = CacheStageInfo {
+        status: "miss".to_string(),
+        detail: format!("rebuilt backend {kind} outputs from semantic changes"),
+    };
+    Ok(())
+}
+
 fn emit_native_artifact(
     fir: &fir::FirModule,
     project_root: &Path,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
     backend_override: Option<&str>,
+    incremental: &mut IncrementalBuildInfo,
 ) -> Result<PathBuf> {
-    let backend = resolve_native_backend(profile, backend_override)?;
+    let backend = resolve_backend(profile, backend_override)?;
     match backend.as_str() {
-        "llvm" => emit_native_artifact_llvm(fir, project_root, profile, manifest),
-        "cranelift" => emit_native_artifact_cranelift(fir, project_root, profile, manifest),
+        "llvm" => emit_native_artifact_llvm(fir, project_root, profile, manifest, incremental),
+        "cranelift" => {
+            emit_native_artifact_cranelift(fir, project_root, profile, manifest, incremental)
+        }
         other => Err(anyhow!(
             "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
             other
@@ -4453,11 +4975,14 @@ fn emit_native_libraries(
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
     backend_override: Option<&str>,
+    incremental: &mut IncrementalBuildInfo,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
-    let backend = resolve_native_backend(profile, backend_override)?;
+    let backend = resolve_backend(profile, backend_override)?;
     match backend.as_str() {
-        "llvm" => emit_native_libraries_llvm(fir, project_root, profile, manifest),
-        "cranelift" => emit_native_libraries_cranelift(fir, project_root, profile, manifest),
+        "llvm" => emit_native_libraries_llvm(fir, project_root, profile, manifest, incremental),
+        "cranelift" => {
+            emit_native_libraries_cranelift(fir, project_root, profile, manifest, incremental)
+        }
         other => Err(anyhow!(
             "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
             other
@@ -4470,6 +4995,7 @@ fn emit_native_libraries_llvm(
     project_root: &Path,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
+    incremental: &mut IncrementalBuildInfo,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
     let build_dir = project_root.join(".fz").join("build");
     std::fs::create_dir_all(&build_dir)
@@ -4480,6 +5006,19 @@ fn emit_native_libraries_llvm(
     let shim_obj_path = build_dir.join(format!("{}.ffi.runtime.o", fir.name));
     let static_path = build_dir.join(format!("lib{}.a", fir.name));
     let shared_path = build_dir.join(format!("lib{}.{}", fir.name, shared_lib_extension()));
+    let semantic_hash = fir_semantic_hash(fir)?;
+    if try_reuse_backend_artifact(
+        project_root,
+        &fir.name,
+        "llvm",
+        profile,
+        "lib",
+        &semantic_hash,
+        &[static_path.as_path(), shared_path.as_path()],
+        incremental,
+    ) {
+        return Ok((Some(static_path), Some(shared_path)));
+    }
 
     let string_literals = collect_native_string_literals(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
@@ -4574,6 +5113,15 @@ fn emit_native_libraries_llvm(
         manifest,
         allow_undefined,
     )?;
+    store_backend_artifact_cache(
+        project_root,
+        &fir.name,
+        "llvm",
+        profile,
+        "lib",
+        &semantic_hash,
+        incremental,
+    )?;
     Ok((Some(static_path), Some(shared_path)))
 }
 
@@ -4582,6 +5130,7 @@ fn emit_native_libraries_cranelift(
     project_root: &Path,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
+    incremental: &mut IncrementalBuildInfo,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
     let build_dir = project_root.join(".fz").join("build");
     std::fs::create_dir_all(&build_dir)
@@ -4590,6 +5139,19 @@ fn emit_native_libraries_cranelift(
     let shim_obj_path = build_dir.join(format!("{}.ffi.runtime.o", fir.name));
     let static_path = build_dir.join(format!("lib{}.a", fir.name));
     let shared_path = build_dir.join(format!("lib{}.{}", fir.name, shared_lib_extension()));
+    let semantic_hash = fir_semantic_hash(fir)?;
+    if try_reuse_backend_artifact(
+        project_root,
+        &fir.name,
+        "cranelift",
+        profile,
+        "lib",
+        &semantic_hash,
+        &[static_path.as_path(), shared_path.as_path()],
+        incremental,
+    ) {
+        return Ok((Some(static_path), Some(shared_path)));
+    }
 
     let string_literals = collect_native_string_literals(fir);
     let plan = build_native_canonical_plan(fir, true);
@@ -4793,6 +5355,15 @@ fn emit_native_libraries_cranelift(
         manifest,
         allow_undefined,
     )?;
+    store_backend_artifact_cache(
+        project_root,
+        &fir.name,
+        "cranelift",
+        profile,
+        "lib",
+        &semantic_hash,
+        incremental,
+    )?;
     Ok((Some(static_path), Some(shared_path)))
 }
 
@@ -4886,13 +5457,13 @@ fn shared_lib_extension() -> &'static str {
     }
 }
 
-fn resolve_native_backend(profile: BuildProfile, backend_override: Option<&str>) -> Result<String> {
+fn resolve_backend(profile: BuildProfile, backend_override: Option<&str>) -> Result<String> {
     if let Some(explicit) = backend_override {
         let normalized = explicit.trim().to_ascii_lowercase();
         return match normalized.as_str() {
-            "llvm" | "cranelift" => Ok(normalized),
+            "llvm" | "cranelift" | "js" => Ok(normalized),
             other => Err(anyhow!(
-                "unknown backend `{}`; expected `llvm` or `cranelift`",
+                "unknown backend `{}`; expected `llvm`, `cranelift`, or `js`",
                 other
             )),
         };
@@ -4900,9 +5471,9 @@ fn resolve_native_backend(profile: BuildProfile, backend_override: Option<&str>)
     if let Ok(explicit) = std::env::var("FZ_NATIVE_BACKEND") {
         let normalized = explicit.trim().to_ascii_lowercase();
         return match normalized.as_str() {
-            "llvm" | "cranelift" => Ok(normalized),
+            "llvm" | "cranelift" | "js" => Ok(normalized),
             other => Err(anyhow!(
-                "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
+                "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm`, `cranelift`, or `js`",
                 other
             )),
         };
@@ -4914,11 +5485,19 @@ fn resolve_native_backend(profile: BuildProfile, backend_override: Option<&str>)
     })
 }
 
+pub fn inspect_js_debug_artifact(
+    js_path: &Path,
+    sourcemap_path: &Path,
+) -> Result<JsDebugReadiness> {
+    inspect_js_debug_readiness(js_path, Some(sourcemap_path))
+}
+
 fn emit_native_artifact_llvm(
     fir: &fir::FirModule,
     project_root: &Path,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
+    incremental: &mut IncrementalBuildInfo,
 ) -> Result<PathBuf> {
     let build_dir = project_root.join(".fz").join("build");
     std::fs::create_dir_all(&build_dir)
@@ -4926,6 +5505,19 @@ fn emit_native_artifact_llvm(
 
     let ll_path = build_dir.join(format!("{}.ll", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
+    let semantic_hash = fir_semantic_hash(fir)?;
+    if try_reuse_backend_artifact(
+        project_root,
+        &fir.name,
+        "llvm",
+        profile,
+        "bin",
+        &semantic_hash,
+        &[bin_path.as_path()],
+        incremental,
+    ) {
+        return Ok(bin_path);
+    }
     let string_literals = collect_native_string_literals(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let async_exports = collect_async_c_exports(fir);
@@ -4959,7 +5551,18 @@ fn emit_native_artifact_llvm(
         apply_pgo_flags(&mut cmd)?;
 
         match cmd.output() {
-            Ok(output) if output.status.success() => return Ok(bin_path),
+            Ok(output) if output.status.success() => {
+                store_backend_artifact_cache(
+                    project_root,
+                    &fir.name,
+                    "llvm",
+                    profile,
+                    "bin",
+                    &semantic_hash,
+                    incremental,
+                )?;
+                return Ok(bin_path);
+            }
             Ok(output) => {
                 last_error = Some(format!(
                     "{} failed: {}",
@@ -4984,6 +5587,7 @@ fn emit_native_artifact_cranelift(
     project_root: &Path,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
+    incremental: &mut IncrementalBuildInfo,
 ) -> Result<PathBuf> {
     let build_dir = project_root.join(".fz").join("build");
     std::fs::create_dir_all(&build_dir)
@@ -4991,6 +5595,19 @@ fn emit_native_artifact_cranelift(
 
     let object_path = build_dir.join(format!("{}.o", fir.name));
     let bin_path = build_dir.join(fir.name.as_str());
+    let semantic_hash = fir_semantic_hash(fir)?;
+    if try_reuse_backend_artifact(
+        project_root,
+        &fir.name,
+        "cranelift",
+        profile,
+        "bin",
+        &semantic_hash,
+        &[bin_path.as_path()],
+        incremental,
+    ) {
+        return Ok(bin_path);
+    }
     let string_literals = collect_native_string_literals(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
@@ -5205,7 +5822,18 @@ fn emit_native_artifact_cranelift(
         apply_pgo_flags(&mut cmd)?;
 
         match cmd.output() {
-            Ok(output) if output.status.success() => return Ok(bin_path),
+            Ok(output) if output.status.success() => {
+                store_backend_artifact_cache(
+                    project_root,
+                    &fir.name,
+                    "cranelift",
+                    profile,
+                    "bin",
+                    &semantic_hash,
+                    incremental,
+                )?;
+                return Ok(bin_path);
+            }
             Ok(output) => {
                 last_error = Some(format!(
                     "{} failed: {}",
@@ -5225,6 +5853,24 @@ fn emit_native_artifact_cranelift(
     ))
 }
 
+#[cfg(test)]
+fn clear_incremental_caches_for_tests() {
+    if let Some(cache) = PARSED_PROGRAM_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.clear();
+        }
+    }
+    if let Some(cache) = LOWER_CACHE.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.clear();
+        }
+    }
+    if let Some(cache) = LOWER_CACHE_STATUS.get() {
+        if let Ok(mut guard) = cache.lock() {
+            guard.clear();
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests;

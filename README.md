@@ -174,12 +174,12 @@ For the complete syntax and workflow coverage:
 
 ## What This Repo Contains
 
-- compiler CLI (binary: `fz`) (build/run/test/verify/emit-ir/rpc gen/headers)
+- compiler CLI (binary: `fz`) (build/run/test/verify/emit-ir/rpc gen/headers/dev-server/debug-check)
 - formatting and docs generation are built into `fz` (`fz fmt`, `fz doc gen`)
 - `crates/parser`, `crates/ast`, `crates/hir`, `crates/fir`: front-end + IR pipeline
 - `crates/verifier`: correctness/safety/capability checks
-- `crates/runtime`: deterministic scheduler/executor primitives
-- `crates/driver`: command orchestration + artifact emission
+- `crates/runtime`: deterministic scheduler/executor primitives plus browser scheduler/ABI contracts
+- `crates/driver`: command orchestration + native/js artifact emission
 - `tests/*.fozzy.json`: executable Fozzy scenarios
 
 ## Current State (Practical)
@@ -187,6 +187,12 @@ For the complete syntax and workflow coverage:
 Implemented and verified in this repo:
 
 - Deterministic scheduler modes (`fifo`, `random`, `coverage_guided`) for non-scenario tests
+- Official browser build target: `fz build <path> --backend js --sourcemap`
+- Readable ESM JS emission with generated `.js.map` artifacts
+- Browser runtime ABI contracts for timers, events, fetch, websocket, storage, console, and runtime-error hooks
+- Browser scheduler lanes and async causality metadata for replay-oriented diagnostics
+- Browser dev server: `fz dev-server [path] [--entry path] [--host addr] [--port N]` with overlay, live reload, HMR transport, and runtime-error ingestion
+- Persistent disk-backed incremental parse/lower caches with deterministic hit/miss reporting across CLI invocations
 - Thread/async/RPC decision artifacts in `fz test --det --record ...`
 - RPC frame model events: `rpc_send`, `rpc_recv`, `rpc_deadline`, `rpc_cancel`
 - Explore + shrink metadata artifacts for replay/shrink prioritization
@@ -220,13 +226,17 @@ cargo test --workspace
 
 ```bash
 # Build source/project (path defaults to current working directory)
-fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
+fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift|js] [--sourcemap] [-l lib] [-L path] [-framework name] [--json]
 
 # Run source/project or .fozzy scenario (path defaults to current working directory)
-fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [--json]
+fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift|js] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [--json]
 
 # Test source/project or .fozzy scenario (path defaults to current working directory)
-fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--filter substring] [--json]
+fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift|js] [--filter substring] [--json]
+
+# Browser-target iteration
+fz dev-server [path] [--entry path] [--host addr] [--port N] [--json]
+fz debug-check [path] [--json]
 
 # Verify/check/IR/docs
 fz fmt [path ...] [--check] [--json]
@@ -257,6 +267,12 @@ fz rpc gen [path] [--out-dir dir] [--json]
 fz doc gen [path] [--format json|html|markdown] [--out path] [--reference path] [--json]
 ```
 
+Browser-target notes:
+- `fz build <path> --backend js --sourcemap` is the official browser artifact path.
+- `fz dev-server [path] [--entry path] [--host addr] [--port N]` is the official browser iteration path.
+- `fz run --backend js` does not execute browser artifacts; run the emitted ESM in Node, Bun, or a browser loader.
+- `fz devloop --backend js` is not the browser dev loop; use `fz build --backend js --sourcemap` or `fz dev-server`.
+
 VS Code editor integration is available under `tooling/vscode` (language config, TextMate grammar, LSP client bootstrap to `fz lsp serve`).
 
 Runtime defaults for native host-backed HTTP:
@@ -268,7 +284,7 @@ Runtime defaults for native host-backed HTTP:
 Runtime logging defaults:
 - default log format is human-readable text (`[ts] level message`)
 - structured fields are appended as `| fields={...}`
-- JSON log mode is opt-in via `log.set_json(1)`
+- JSON log mode is opt-in via `log.set_json(map.new())`
 - `use core.text;` is invalid; `str.*` intrinsics are capability-free
 - canonical structured log fields use `log.fields(map_handle)`
 - canonical dynamic JSON builders use `json.array(list_handle)` and `json.object(map_handle)`

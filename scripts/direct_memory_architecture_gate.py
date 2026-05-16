@@ -7,6 +7,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "crates" / "driver" / "src" / "pipeline.rs"
+LLVM_SUPPORT = ROOT / "crates" / "driver" / "src" / "pipeline" / "llvm_support.rs"
+CLIF_SUPPORT = ROOT / "crates" / "driver" / "src" / "pipeline" / "clif_support.rs"
+NATIVE_METADATA = (
+    ROOT / "crates" / "driver" / "src" / "pipeline" / "native_metadata.rs"
+)
 
 
 def read_text(path: Path) -> str:
@@ -15,6 +20,9 @@ def read_text(path: Path) -> str:
 
 def main() -> int:
     src = read_text(PIPELINE)
+    llvm_src = read_text(LLVM_SUPPORT)
+    clif_src = read_text(CLIF_SUPPORT)
+    native_metadata_src = read_text(NATIVE_METADATA)
     errors: list[str] = []
 
     legacy_array_symbols = [
@@ -35,18 +43,26 @@ def main() -> int:
     if "variant_tag_for_key(" not in src:
         errors.append("canonical discriminant mapping helper missing")
 
-    required_canonical_plan_markers = [
+    required_pipeline_markers = [
         "fn build_native_canonical_plan(",
         "let plan = build_native_canonical_plan(fir, enforce_contract_checks);",
         "let plan = build_native_canonical_plan(fir, true);",
         "data_ops_by_function: HashMap<String, Vec<NativeDataOp>>",
         "fn collect_native_data_ops_for_function(",
         "render_native_data_op(",
+    ]
+    for marker in required_pipeline_markers:
+        if marker not in src:
+            errors.append(
+                f"canonical native plan wiring missing required marker: `{marker}`"
+            )
+
+    required_metadata_markers = [
         "fn collect_native_string_literals(",
         "fn collect_folded_temp_string_literals(",
     ]
-    for marker in required_canonical_plan_markers:
-        if marker not in src:
+    for marker in required_metadata_markers:
+        if marker not in native_metadata_src:
             errors.append(
                 f"canonical native plan wiring missing required marker: `{marker}`"
             )
@@ -67,14 +83,23 @@ def main() -> int:
 
     required_fail_fast_markers = [
         "fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> Result<String>",
-        "fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String>",
-        "fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String>",
         "canonical cfg unavailable for `{}`: missing entry",
-        "llvm backend failed lowering canonical cfg for `{}`:",
     ]
     for marker in required_fail_fast_markers:
         if marker not in src:
             errors.append(f"native fail-fast contract marker missing: `{marker}`")
+    if "fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String>" not in llvm_src:
+        errors.append(
+            "native fail-fast contract marker missing: `fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String>`"
+        )
+    if "fn lower_cranelift_ir(" not in clif_src or "enforce_contract_checks: bool" not in clif_src:
+        errors.append(
+            "native fail-fast contract marker missing: `fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String>`"
+        )
+    if "llvm backend failed lowering canonical cfg for `{}`:" not in llvm_src:
+        errors.append(
+            "native fail-fast contract marker missing: `llvm backend failed lowering canonical cfg for `{}`:`"
+        )
 
     fallback_markers = (
         "; cfg lowering failed:",

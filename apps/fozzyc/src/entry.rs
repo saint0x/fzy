@@ -160,6 +160,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             let lib = args.iter().any(|a| a == "--lib");
             let threads = parse_u16_flag(args, "--threads")?;
             let backend = parse_backend_flag(args)?;
+            let sourcemap = has_flag(args, "--sourcemap");
             let pgo_generate = has_flag(args, "--pgo-generate");
             let pgo_use = parse_path_flag(args, "--pgo-use")?;
             if pgo_generate && pgo_use.is_some() {
@@ -174,6 +175,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 lib,
                 threads,
                 backend,
+                sourcemap,
                 pgo_generate,
                 pgo_use,
                 link_libs,
@@ -293,6 +295,12 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("devloop") => Ok(Command::DevLoop {
             path: arg_path_or_cwd(args, 1)?,
             backend: parse_backend_flag(args)?,
+        }),
+        Some("dev-server") => Ok(Command::DevServer {
+            path: arg_path_or_cwd(args, 1)?,
+            entry: parse_path_flag(args, "--entry")?,
+            host: parse_string_flag(args, "--host")?.unwrap_or_else(|| "127.0.0.1".to_string()),
+            port: parse_u16_flag(args, "--port")?.unwrap_or(4000),
         }),
         Some("dx-check") => Ok(Command::DxCheck {
             path: arg_path_or_cwd(args, 1)?,
@@ -461,16 +469,17 @@ fn print_help() {
         "fz <command> [options]\n\
 commands:\n\
   init <name>\n\
-  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
-  run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>]\n\
-  test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
+  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift|js] [--sourcemap] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
+  run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift|js] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>]\n\
+  test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift|js] [--sched policy] [--filter substring]\n\
   fmt [path ...] [--check]\n\
   check [path]\n\
   verify [path]\n\
   lint [path] [--tier production|pedantic|compat]\n\
   explain <diag-code>\n\
   doctor project [path] [--strict]\n\
-  devloop [path] [--backend llvm|cranelift]\n\
+  devloop [path] [--backend llvm|cranelift|js]\n\
+  dev-server [path] [--entry path] [--host addr] [--port N]\n\
   dx-check [project] [--strict]\n\
   spec-check\n\
   emit-ir [path]\n\
@@ -510,7 +519,11 @@ flags:\n\
   --max-seconds <u64>\n\
   --exit-on-healthcheck <http://host:port/path>\n\
   --smoke-http <http://host:port/path>\n\
-  --backend <llvm|cranelift>\n\
+  --backend <llvm|cranelift|js>\n\
+  --sourcemap\n\
+  --entry <path>\n\
+  --host <addr>\n\
+  --port <u16>\n\
   --lib\n\
   -l|--link-lib <name> (repeatable)\n\
   -L|--link-search <path> (repeatable)\n\
@@ -591,8 +604,8 @@ fn parse_backend_flag(args: &[String]) -> Result<Option<String>> {
     };
     let normalized = value.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "llvm" | "cranelift" => Ok(Some(normalized)),
-        _ => bail!("invalid --backend `{value}`; expected `llvm` or `cranelift`"),
+        "llvm" | "cranelift" | "js" => Ok(Some(normalized)),
+        _ => bail!("invalid --backend `{value}`; expected `llvm`, `cranelift`, or `js`"),
     }
 }
 
@@ -748,6 +761,63 @@ mod tests {
                 assert_eq!(backend.as_deref(), Some("cranelift"));
             }
             _ => panic!("expected devloop command"),
+        }
+    }
+
+    #[test]
+    fn parse_dev_server_command() {
+        let args = vec![
+            "dev-server".to_string(),
+            "examples/fullstack".to_string(),
+            "--entry".to_string(),
+            "examples/fullstack/src/main.fzy".to_string(),
+            "--host".to_string(),
+            "0.0.0.0".to_string(),
+            "--port".to_string(),
+            "4173".to_string(),
+        ];
+        let command = parse_command(&args).expect("dev-server should parse");
+        match command {
+            Command::DevServer {
+                path,
+                entry,
+                host,
+                port,
+            } => {
+                assert_eq!(path, PathBuf::from("examples/fullstack"));
+                assert_eq!(
+                    entry,
+                    Some(PathBuf::from("examples/fullstack/src/main.fzy"))
+                );
+                assert_eq!(host, "0.0.0.0");
+                assert_eq!(port, 4173);
+            }
+            _ => panic!("expected dev-server command"),
+        }
+    }
+
+    #[test]
+    fn parse_build_js_sourcemap_command() {
+        let args = vec![
+            "build".to_string(),
+            "examples/fullstack".to_string(),
+            "--backend".to_string(),
+            "js".to_string(),
+            "--sourcemap".to_string(),
+        ];
+        let command = parse_command(&args).expect("build js sourcemap should parse");
+        match command {
+            Command::Build {
+                path,
+                backend,
+                sourcemap,
+                ..
+            } => {
+                assert_eq!(path, PathBuf::from("examples/fullstack"));
+                assert_eq!(backend.as_deref(), Some("js"));
+                assert!(sourcemap);
+            }
+            _ => panic!("expected build command"),
         }
     }
 

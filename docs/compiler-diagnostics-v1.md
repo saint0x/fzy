@@ -78,6 +78,17 @@ Catalog:
   - `data` payload carrying notes/help/fixes/labels/snippet
 - `fz lsp diagnostics` text mode prints full diagnostic bodies.
 
+### Browser Overlay
+
+- `fz dev-server` exposes browser-target diagnostics through `GET /__fz/diagnostics`.
+- Browser overlay diagnostics must preserve the shared schema and source anchoring contract rather than inventing a separate browser-only vocabulary.
+- Browser-target payloads may add:
+  - `target: "browser"`
+  - `browserGuidance`
+  - `suggestedCommands`
+- Runtime overlays may include source-mapped frames when browser/runtime tooling provides original-location metadata.
+- Async browser traces may be rendered in overlay payloads, but they still attach to the shared diagnostic/tracing model rather than a bespoke frontend error schema.
+
 ## Source Anchoring Policy
 
 - Semantic spans are preferred and treated as source of truth.
@@ -95,6 +106,9 @@ Recommended minimal gate for diagnostics changes:
 5. `fozzy replay artifacts/diagnostics.trace.fozzy --json`
 6. `fozzy ci artifacts/diagnostics.trace.fozzy --json`
 7. `fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`
+8. `fz build tests/fixtures/browser_debug_js/main.fzy --backend js --sourcemap --json`
+9. `fz debug-check tests/fixtures/browser_debug_js/main.fzy --json`
+10. `fozzy test --det --strict tests/browser_debug_js_sourcemap.pass.fozzy.json --json`
 
 ## Regression Classes (Required)
 
@@ -112,3 +126,5 @@ At minimum keep regressions for:
 - match exhaustiveness/unreachable arms
 - capability violations
 - FFI boundary diagnostics
+- browser overlay compiler diagnostics
+- browser overlay runtime diagnostics with source-mapped frame preference

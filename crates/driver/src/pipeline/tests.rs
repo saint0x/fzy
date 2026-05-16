@@ -2,14 +2,15 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{
-    collect_async_c_exports, compile_file, compile_file_with_backend,
-    compile_library_with_backend, derive_anchors_from_message, emit_ir, lower_backend_ir,
-    lower_llvm_ir, native_mangle_symbol, native_runtime_import_contract_errors,
-    native_runtime_import_for_callee, parse_program, refresh_lockfile, verify_file,
-    BackendKind, BuildProfile,
-};
 use super::native_runtime_support::{render_native_runtime_shim, NativeAsyncExport};
+use super::{
+    clear_incremental_caches_for_tests, collect_async_c_exports, compile_file,
+    compile_file_with_backend, compile_file_with_options, compile_library_with_backend,
+    derive_anchors_from_message, emit_ir, inspect_js_debug_artifact, lower_backend_ir,
+    lower_fir_cached, lower_llvm_ir, module_graph_snapshot, native_mangle_symbol,
+    native_runtime_import_contract_errors, native_runtime_import_for_callee, parse_program,
+    refresh_lockfile, verify_file, BackendKind, BuildProfile,
+};
 
 fn run_native_exit(exe: &Path) -> i32 {
     Command::new(exe)
@@ -23,6 +24,35 @@ fn run_native_status(exe: &Path) -> std::process::ExitStatus {
     Command::new(exe)
         .status()
         .expect("native artifact should execute")
+}
+
+fn run_js_module(module_path: &Path, expression: &str) -> String {
+    let harness = module_path.with_file_name("run_js_backend_test.mjs");
+    let module_url = module_path
+        .canonicalize()
+        .expect("module path should canonicalize")
+        .display()
+        .to_string();
+    std::fs::write(
+        &harness,
+        format!(
+            "const mod = await import({module:?});\nconst value = await ({expr});\nconsole.log(String(value));\n",
+            module = format!("file://{module_url}"),
+            expr = expression,
+        ),
+    )
+    .expect("js harness should be written");
+    let output = Command::new("node")
+        .arg(&harness)
+        .output()
+        .expect("node should execute emitted js module");
+    assert!(
+        output.status.success(),
+        "node failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_file(&harness);
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 #[test]
@@ -90,6 +120,87 @@ fn compile_project_directory_uses_manifest_target() {
     let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
     assert_eq!(artifact.module, "main");
     assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn js_backend_emits_executable_esm_with_sourcemap() {
+    let project_name = format!(
+        "fozzylang-js-backend-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/services")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo_js\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo_js\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\n\
+         mod services;\n\
+         enum Maybe { Some(i32), None }\n\
+         trait Show { fn show(v: i32) -> i32; }\n\
+         struct Boxed { value: i32 }\n\
+         impl Show for Boxed {\n\
+             fn show(v: i32) -> i32 { return v + 1 }\n\
+         }\n\
+         fn id<T: Show>(v: T) -> T { return v }\n\
+         async fn worker(v: i32) -> i32 { return v + 2 }\n\
+         async fn run_async_internal() -> i32 { return await worker(5) }\n\
+         pub fn run(flag: bool) -> i32 {\n\
+             let base: i32 = 9\n\
+             let add = |x: i32| x + base;\n\
+             let boxed = Boxed { value: add(8) }\n\
+             let kept = id<Boxed>(boxed)\n\
+             if flag {\n\
+                 return services.pick(Maybe::Some(Boxed.show(kept.value)))\n\
+             }\n\
+             return 0\n\
+         }\n\
+         pub fn run_async_marker() -> i32 { return 1 }\n",
+    )
+    .expect("main should be written");
+    std::fs::write(
+        root.join("src/services/mod.fzy"),
+        "pub fn pick(v: Maybe) -> i32 {\n\
+             match v {\n\
+                 Maybe::Some(x) => return x,\n\
+                 _ => return 0,\n\
+             }\n\
+         }\n",
+    )
+    .expect("services mod should be written");
+
+    let artifact = compile_file_with_options(&root, BuildProfile::Dev, Some("js"), true)
+        .expect("js backend build should succeed");
+    assert_eq!(artifact.status, "ok");
+    let js_output = artifact.output.as_ref().expect("js output should exist");
+    let js_sourcemap = artifact
+        .sourcemap_output
+        .as_ref()
+        .expect("js sourcemap should exist");
+    assert!(js_output.exists());
+    assert!(js_sourcemap.exists());
+    let js_text = std::fs::read_to_string(js_output).expect("js output should be readable");
+    assert!(js_text.contains("export {"));
+    assert!(js_text.contains("async function"));
+    let debug = inspect_js_debug_artifact(js_output, js_sourcemap)
+        .expect("js debug artifact should inspect");
+    assert!(debug.sourcemap_valid);
+    assert!(debug.browser_stacktrace_ready);
+    assert!(debug.async_frame_mapping_ready);
+    assert!(debug.breakpoint_ranges_ready);
+
+    let sync_value = run_js_module(js_output, "mod.__fz_run(true)");
+    assert_eq!(sync_value, "18");
+    let marker_value = run_js_module(js_output, "mod.__fz_run_async_marker()");
+    assert_eq!(marker_value, "1");
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -224,8 +335,7 @@ fn module_qualified_extern_c_import_uses_link_symbol() {
         "mod services;\nfn main() -> i32 {\n    unsafe {\n        return services.kernels.hk_mix32(1, 2)\n    }\n}\n",
     )
     .expect("main should be written");
-    std::fs::write(root.join("services/mod.fzy"), "mod kernels;\n")
-        .expect("mod should be written");
+    std::fs::write(root.join("services/mod.fzy"), "mod kernels;\n").expect("mod should be written");
     std::fs::write(
         root.join("services/kernels.fzy"),
         "ext unsafe c fn hk_mix32(a: i32, b: i32) -> i32;\n",
@@ -258,14 +368,53 @@ fn module_qualified_extern_c_import_uses_link_symbol() {
 }
 
 #[test]
+fn module_graph_snapshot_uses_official_driver_graph() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("fozzylang-module-graph-{suffix}"));
+    std::fs::create_dir_all(root.join("feature")).expect("project dir should be created");
+    std::fs::write(
+        root.join("main.fzy"),
+        "mod feature;\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("main should be written");
+    std::fs::write(root.join("feature/mod.fzy"), "mod helpers;\n")
+        .expect("feature mod should be written");
+    std::fs::write(
+        root.join("feature/helpers.fzy"),
+        "fn ready() -> i32 {\n    return 1\n}\n",
+    )
+    .expect("helper should be written");
+
+    let snapshot = module_graph_snapshot(&root.join("main.fzy")).expect("graph should resolve");
+    assert_eq!(snapshot.modules.len(), 3);
+    assert!(!snapshot.graph_hash.is_empty());
+    assert!(snapshot
+        .modules
+        .iter()
+        .any(|module| module.id == "feature.helpers"));
+    assert!(snapshot.modules.iter().any(|module| {
+        module.path.ends_with("main.fzy")
+            && module
+                .dependencies
+                .iter()
+                .any(|path| path.ends_with("feature/mod.fzy"))
+    }));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn enum_match_lowers_to_switch_for_eligible_arms() {
     let source = "enum ErrorCode { InvalidInput, NotFound, Conflict, Timeout, Io, Internal }\nfn classify(code: ErrorCode) -> i32 {\n    match code {\n        ErrorCode::Io => return 11,\n        ErrorCode::InvalidInput => return 17,\n        ErrorCode::Timeout => return 23,\n        ErrorCode::Conflict => return 31,\n        _ => return 43,\n    }\n}\nfn main() -> i32 {\n    return classify(ErrorCode::Io)\n}\n";
     let module = parser::parse(source, "match_switch").expect("source should parse");
     let typed = hir::lower(&module);
     let fir = fir::build_owned(typed);
     let llvm = lower_llvm_ir(&fir, true).expect("llvm lowering should succeed");
-    let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
-        .expect("cranelift lowering should succeed");
+    let clif =
+        lower_backend_ir(&fir, BackendKind::Cranelift).expect("cranelift lowering should succeed");
     assert!(llvm.contains("switch i32"));
     assert!(clif.contains("switch"));
 }
@@ -679,6 +828,111 @@ fn parse_program_cache_invalidates_on_source_change() {
 }
 
 #[test]
+fn persistent_module_cache_survives_process_local_cache_reset() {
+    clear_incremental_caches_for_tests();
+    let project_name = format!(
+        "fozzylang-persistent-graph-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("src").join("leaf.fzy"),
+        "fn helper() -> i32 {\n    return 41\n}\n",
+    )
+    .expect("leaf source should be written");
+    std::fs::write(
+        root.join("src").join("main.fzy"),
+        "mod leaf\nfn main() -> i32 {\n    return leaf.helper()\n}\n",
+    )
+    .expect("root source should be written");
+
+    let first =
+        parse_program(&root.join("src").join("main.fzy")).expect("first parse should succeed");
+    assert_eq!(first.incremental.parse.status, "miss");
+
+    clear_incremental_caches_for_tests();
+
+    let second =
+        parse_program(&root.join("src").join("main.fzy")).expect("second parse should succeed");
+    assert_eq!(second.incremental.parse.status, "hit");
+    assert_eq!(first.combined_source, second.combined_source);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn lowered_ir_cache_survives_process_local_cache_reset() {
+    clear_incremental_caches_for_tests();
+    let file_name = format!(
+        "fozzylang-persistent-lower-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(&path, "fn main() -> i32 {\n    return 9\n}\n")
+        .expect("temp source should be written");
+
+    let parsed = parse_program(&path).expect("parse should succeed");
+    let (_typed, fir) = lower_fir_cached(&parsed);
+    assert_eq!(fir.entry_return_const_i32, Some(9));
+
+    clear_incremental_caches_for_tests();
+
+    let reparsed = parse_program(&path).expect("reparse should succeed");
+    let (_typed, refir) = lower_fir_cached(&reparsed);
+    assert_eq!(refir.entry_return_const_i32, Some(9));
+    assert_eq!(reparsed.incremental.parse.status, "hit");
+    assert_eq!(super::read_lower_cache_stage(&reparsed).status, "hit");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn leaf_module_edit_reports_precise_invalidation() {
+    clear_incremental_caches_for_tests();
+    let project_name = format!(
+        "fozzylang-leaf-invalidation-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    let main_path = root.join("src").join("main.fzy");
+    let leaf_path = root.join("src").join("leaf.fzy");
+    std::fs::write(&leaf_path, "fn helper() -> i32 {\n    return 1\n}\n")
+        .expect("leaf source should be written");
+    std::fs::write(
+        &main_path,
+        "mod leaf\nfn main() -> i32 {\n    return leaf.helper()\n}\n",
+    )
+    .expect("root source should be written");
+
+    let _ = parse_program(&main_path).expect("initial parse should succeed");
+    clear_incremental_caches_for_tests();
+
+    std::fs::write(&leaf_path, "fn helper() -> i32 {\n    return 2\n}\n")
+        .expect("leaf source should be updated");
+    let reparsed = parse_program(&main_path).expect("reparse should succeed");
+    assert_eq!(reparsed.incremental.parse.status, "partial");
+    assert_eq!(reparsed.incremental.invalidated_modules.len(), 1);
+    assert!(
+        reparsed.incremental.invalidated_modules[0].ends_with("leaf.fzy"),
+        "unexpected invalidation set: {:?}",
+        reparsed.incremental.invalidated_modules
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn native_runtime_import_table_is_boundary_only_and_unique() {
     let errors = native_runtime_import_contract_errors();
     assert!(
@@ -690,6 +944,10 @@ fn native_runtime_import_table_is_boundary_only_and_unique() {
     let import = native_runtime_import_for_callee("http.header")
         .expect("http.header runtime import should exist");
     assert_eq!(import.symbol, "fz_native_net_header");
+
+    let browser_import = native_runtime_import_for_callee("browser.fetch")
+        .expect("browser.fetch runtime import should exist");
+    assert_eq!(browser_import.symbol, "fz_browser_fetch");
 }
 
 #[test]
@@ -717,9 +975,7 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id)"));
     assert!(shim.contains("int32_t fz_native_str_contains("));
     assert!(shim.contains("int32_t fz_native_http_header(int32_t key_id, int32_t value_id)"));
-    assert!(
-        shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)")
-    );
+    assert!(shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)"));
     assert!(shim.contains(
         "int32_t fz_native_http_post_json_capture(int32_t endpoint_id, int32_t body_id)"
     ));
@@ -730,23 +986,19 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_json_raw(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_json_from_map(int32_t map_handle)"));
     assert!(shim.contains("int32_t fz_native_json_parse(int32_t json_id)"));
+    assert!(shim.contains("int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id)"));
     assert!(
-        shim.contains("int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id)")
+        shim.contains("int32_t fz_native_json_get_str(int32_t json_value_handle, int32_t key_id)")
     );
-    assert!(shim
-        .contains("int32_t fz_native_json_get_str(int32_t json_value_handle, int32_t key_id)"));
+    assert!(shim.contains("int32_t fz_native_json_has(int32_t json_value_handle, int32_t key_id)"));
     assert!(
-        shim.contains("int32_t fz_native_json_has(int32_t json_value_handle, int32_t key_id)")
+        shim.contains("int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id)")
     );
-    assert!(shim
-        .contains("int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id)"));
     assert!(shim.contains("posix_spawnp"));
     assert!(shim.contains("int32_t fz_native_proc_spawnl("));
     assert!(shim.contains("int32_t fz_native_proc_runl("));
     assert!(shim.contains("int32_t fz_native_proc_poll(int32_t handle)"));
-    assert!(
-        shim.contains("int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes)")
-    );
+    assert!(shim.contains("int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes)"));
     assert!(shim.contains("int32_t fz_native_net_header(int32_t conn_fd, int32_t key_id)"));
     assert!(shim.contains(
         "int32_t fz_native_route_match(int32_t conn_fd, int32_t method_id, int32_t pattern_id)"
@@ -785,14 +1037,11 @@ fn native_runtime_shim_emits_async_export_handle_wrappers() {
         }],
     );
     assert!(shim.contains("extern int32_t flush(int32_t code);"));
+    assert!(shim.contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out)"));
+    assert!(shim.contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out)"));
     assert!(
-        shim.contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out)")
+        shim.contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out)")
     );
-    assert!(
-        shim.contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out)")
-    );
-    assert!(shim
-        .contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out)"));
     assert!(shim.contains("int32_t flush_async_drop(fz_async_handle_t handle)"));
 }
 
@@ -2116,8 +2365,8 @@ fn direct_memory_backend_contract_array_index_lowers_without_data_plane_runtime_
     let typed = hir::lower(&module);
     let fir = fir::build_owned(typed);
     let llvm = lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
-    let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
-        .expect("cranelift lowering should succeed");
+    let clif =
+        lower_backend_ir(&fir, BackendKind::Cranelift).expect("cranelift lowering should succeed");
 
     assert!(!llvm.contains("__native.array_"));
     assert!(!llvm.contains("fz_native_list_"));
@@ -2134,8 +2383,8 @@ fn direct_memory_backend_contract_switch_and_constant_string_chain_lowering_is_p
     let typed = hir::lower(&module);
     let fir = fir::build_owned(typed);
     let llvm = lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
-    let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
-        .expect("cranelift lowering should succeed");
+    let clif =
+        lower_backend_ir(&fir, BackendKind::Cranelift).expect("cranelift lowering should succeed");
 
     assert!(llvm.contains("switch i32"));
     assert!(clif.contains("switch"));

@@ -1,5 +1,6 @@
 pub mod abi;
 pub mod alloc;
+pub mod browser;
 pub mod bytes;
 pub mod c;
 pub mod collections;
@@ -16,6 +17,7 @@ pub mod io;
 pub mod observability;
 pub mod path;
 pub mod process;
+pub mod reactive;
 pub mod resultx;
 pub mod rng;
 pub mod security;

@@ -1,0 +1,9 @@
+use core.thread;
+
+async fn worker(v: i32) -> i32 {
+    return v + 2
+}
+
+fn main() -> i32 {
+    return 0
+}

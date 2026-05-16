@@ -2,8 +2,9 @@ use ast::Type;
 use core::CapabilitySet;
 pub use hir::UnsafeContractSite;
 use hir::{FunctionCapabilityRequirement, TypedFunction, TypedModule};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ValueType {
     Int { signed: bool, bits: u16 },
     Float { bits: u16 },
@@ -18,7 +19,7 @@ pub enum ValueType {
     Unknown,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Instruction {
     Let {
         name: String,
@@ -43,14 +44,14 @@ pub enum Instruction {
     Continue,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BasicBlock {
     pub id: usize,
     pub instructions: Vec<Instruction>,
     pub successors: Vec<usize>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionIr {
     pub name: String,
     pub return_type: ValueType,
@@ -59,21 +60,21 @@ pub struct FunctionIr {
     pub liveness: Vec<LivenessBlock>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DefUseBlock {
     pub block: usize,
     pub defs: Vec<String>,
     pub uses: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LivenessBlock {
     pub block: usize,
     pub live_in: Vec<String>,
     pub live_out: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FirModule {
     pub name: String,
     pub effects: CapabilitySet,

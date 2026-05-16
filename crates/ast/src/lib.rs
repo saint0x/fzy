@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Module {
     pub name: String,
     pub items: Vec<Item>,
@@ -13,7 +15,7 @@ pub struct Module {
     pub free_sites: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Import {
     pub path: Vec<String>,
     pub alias: Option<String>,
@@ -21,7 +23,7 @@ pub struct Import {
     pub wildcard: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Item {
     Function(Function),
     Const(ConstItem),
@@ -35,14 +37,14 @@ pub enum Item {
     Test(TestBlock),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeAlias {
     pub name: String,
     pub ty: Type,
     pub is_pub: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewType {
     pub name: String,
     pub inner: Type,
@@ -50,7 +52,7 @@ pub struct NewType {
     pub is_pub: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstItem {
     pub name: String,
     pub ty: Type,
@@ -58,7 +60,7 @@ pub struct ConstItem {
     pub is_pub: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticItem {
     pub name: String,
     pub ty: Type,
@@ -67,7 +69,7 @@ pub struct StaticItem {
     pub mutable: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Function {
     pub name: String,
     pub link_name: Option<String>,
@@ -85,19 +87,19 @@ pub struct Function {
     pub ffi_panic: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Param {
     pub name: String,
     pub ty: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenericParam {
     pub name: String,
     pub bounds: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Struct {
     pub name: String,
     pub generics: Vec<GenericParam>,
@@ -106,7 +108,7 @@ pub struct Struct {
     pub is_pub: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Enum {
     pub name: String,
     pub generics: Vec<GenericParam>,
@@ -115,20 +117,20 @@ pub struct Enum {
     pub is_pub: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Field {
     pub name: String,
     pub ty: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Variant {
     pub name: String,
     pub payload: Vec<Type>,
     pub named_payload: Vec<Field>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Trait {
     pub name: String,
     pub generics: Vec<GenericParam>,
@@ -138,20 +140,20 @@ pub struct Trait {
     pub is_pub: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitConst {
     pub name: String,
     pub ty: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraitMethod {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Type,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Impl {
     pub trait_name: Option<String>,
     pub generics: Vec<GenericParam>,
@@ -162,14 +164,14 @@ pub struct Impl {
     pub is_pub: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestBlock {
     pub name: String,
     pub deterministic: bool,
     pub body: Vec<Stmt>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Stmt {
     Let {
         name: String,
@@ -228,7 +230,7 @@ pub enum Stmt {
     Expr(Expr),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Expr {
     Int(i128),
     Float {
@@ -325,7 +327,7 @@ pub enum Expr {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsafeMeta {
     pub reason: String,
     pub invariant: String,
@@ -335,7 +337,7 @@ pub struct UnsafeMeta {
     pub proof_ref: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UnaryOp {
     Not,
     Plus,
@@ -343,7 +345,7 @@ pub enum UnaryOp {
     BitNot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinaryOp {
     Add,
     Sub,
@@ -365,7 +367,7 @@ pub enum BinaryOp {
     Neq,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MatchArm {
     pub pattern: Pattern,
     pub guard: Option<Expr>,
@@ -373,7 +375,7 @@ pub struct MatchArm {
     pub value: Expr,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Pattern {
     Wildcard,
     Int(i128),
@@ -423,7 +425,7 @@ impl Pattern {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Type {
     Never,
     Void,

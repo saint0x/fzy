@@ -20,7 +20,7 @@ NEAR_PARITY_KERNELS = {
     "arithmetic_kernel": 1.15,
     "duration_kernel": 1.15,
     "abi_pair_kernel": 1.15,
-    "http_kernel": 1.20,
+    "http_kernel_oneoff": 1.20,
     "network_kernel": 1.20,
     "concurrency_kernel": 1.20,
     "process_kernel": 1.20,

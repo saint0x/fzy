@@ -196,7 +196,11 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                                 function.return_type
                             ),
                             ty: Some(ast::Type::Function {
-                                params: function.params.iter().map(|param| param.ty.clone()).collect(),
+                                params: function
+                                    .params
+                                    .iter()
+                                    .map(|param| param.ty.clone())
+                                    .collect(),
                                 ret: Box::new(function.return_type.clone()),
                             }),
                             signature: Some(signature.clone()),
@@ -356,7 +360,10 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                             name: item.name.clone(),
                             kind: "newtype".to_string(),
                             detail: if item.transparent {
-                                format!("newtype {}({}) #[repr(transparent)]", item.name, item.inner)
+                                format!(
+                                    "newtype {}({}) #[repr(transparent)]",
+                                    item.name, item.inner
+                                )
                             } else {
                                 format!("newtype {}({})", item.name, item.inner)
                             },
@@ -464,22 +471,13 @@ fn collect_stmt_semantics(
             );
         }
         ast::Stmt::LetPattern {
-            pattern,
-            ty,
-            value,
-            ..
+            pattern, ty, value, ..
         } => {
             collect_expr_semantics(value, scope_id, scopes, decls, refs, positions);
             let inferred_binding_ty = infer_expr_type(value, scope_id, scopes, decls, decl_types);
             let binding_ty = ty.as_ref().or(inferred_binding_ty.as_ref());
             collect_pattern_bindings(
-                pattern,
-                scope_id,
-                scopes,
-                decls,
-                decl_types,
-                positions,
-                binding_ty,
+                pattern, scope_id, scopes, decls, decl_types, positions, binding_ty,
             );
         }
         ast::Stmt::Assign { target, value } => {
@@ -499,25 +497,13 @@ fn collect_stmt_semantics(
             let then_scope = push_scope(scopes, scope_id, 0, 0);
             for nested in then_body {
                 collect_stmt_semantics(
-                    nested,
-                    then_scope,
-                    scopes,
-                    decls,
-                    decl_types,
-                    refs,
-                    positions,
+                    nested, then_scope, scopes, decls, decl_types, refs, positions,
                 );
             }
             let else_scope = push_scope(scopes, scope_id, 0, 0);
             for nested in else_body {
                 collect_stmt_semantics(
-                    nested,
-                    else_scope,
-                    scopes,
-                    decls,
-                    decl_types,
-                    refs,
-                    positions,
+                    nested, else_scope, scopes, decls, decl_types, refs, positions,
                 );
             }
         }
@@ -526,13 +512,7 @@ fn collect_stmt_semantics(
             let loop_scope = push_scope(scopes, scope_id, 0, 0);
             for nested in body {
                 collect_stmt_semantics(
-                    nested,
-                    loop_scope,
-                    scopes,
-                    decls,
-                    decl_types,
-                    refs,
-                    positions,
+                    nested, loop_scope, scopes, decls, decl_types, refs, positions,
                 );
             }
         }
@@ -544,39 +524,17 @@ fn collect_stmt_semantics(
         } => {
             let for_scope = push_scope(scopes, scope_id, 0, 0);
             if let Some(init) = init {
-                collect_stmt_semantics(
-                    init,
-                    for_scope,
-                    scopes,
-                    decls,
-                    decl_types,
-                    refs,
-                    positions,
-                );
+                collect_stmt_semantics(init, for_scope, scopes, decls, decl_types, refs, positions);
             }
             if let Some(condition) = condition {
                 collect_expr_semantics(condition, for_scope, scopes, decls, refs, positions);
             }
             if let Some(step) = step {
-                collect_stmt_semantics(
-                    step,
-                    for_scope,
-                    scopes,
-                    decls,
-                    decl_types,
-                    refs,
-                    positions,
-                );
+                collect_stmt_semantics(step, for_scope, scopes, decls, decl_types, refs, positions);
             }
             for nested in body {
                 collect_stmt_semantics(
-                    nested,
-                    for_scope,
-                    scopes,
-                    decls,
-                    decl_types,
-                    refs,
-                    positions,
+                    nested, for_scope, scopes, decls, decl_types, refs, positions,
                 );
             }
         }
@@ -607,13 +565,7 @@ fn collect_stmt_semantics(
             );
             for nested in body {
                 collect_stmt_semantics(
-                    nested,
-                    loop_scope,
-                    scopes,
-                    decls,
-                    decl_types,
-                    refs,
-                    positions,
+                    nested, loop_scope, scopes, decls, decl_types, refs, positions,
                 );
             }
         }
@@ -621,13 +573,7 @@ fn collect_stmt_semantics(
             let loop_scope = push_scope(scopes, scope_id, 0, 0);
             for nested in body {
                 collect_stmt_semantics(
-                    nested,
-                    loop_scope,
-                    scopes,
-                    decls,
-                    decl_types,
-                    refs,
-                    positions,
+                    nested, loop_scope, scopes, decls, decl_types, refs, positions,
                 );
             }
         }
@@ -734,13 +680,7 @@ fn collect_pattern_bindings(
         ast::Pattern::Or(items) => {
             for item in items {
                 collect_pattern_bindings(
-                    item,
-                    scope_id,
-                    scopes,
-                    decls,
-                    decl_types,
-                    positions,
-                    binding_ty,
+                    item, scope_id, scopes, decls, decl_types, positions, binding_ty,
                 );
             }
         }
@@ -1026,11 +966,12 @@ fn infer_expr_type(
         ast::Expr::Group(inner) | ast::Expr::Discard(inner) => {
             infer_expr_type(inner, scope_id, scopes, decls, decl_types)
         }
-        ast::Expr::Await(inner) => match infer_expr_type(inner, scope_id, scopes, decls, decl_types)
-        {
-            Some(ast::Type::Future(inner)) => Some(*inner),
-            _ => None,
-        },
+        ast::Expr::Await(inner) => {
+            match infer_expr_type(inner, scope_id, scopes, decls, decl_types) {
+                Some(ast::Type::Future(inner)) => Some(*inner),
+                _ => None,
+            }
+        }
         ast::Expr::Unary { op, expr } => {
             let inner = infer_expr_type(expr, scope_id, scopes, decls, decl_types);
             match op {
@@ -1070,7 +1011,11 @@ fn infer_expr_type(
         } => {
             let then_ty = infer_expr_type(then_expr, scope_id, scopes, decls, decl_types);
             let else_ty = infer_expr_type(else_expr, scope_id, scopes, decls, decl_types);
-            if then_ty == else_ty { then_ty } else { None }
+            if then_ty == else_ty {
+                then_ty
+            } else {
+                None
+            }
         }
         ast::Expr::TryCatch {
             try_expr,
@@ -1078,7 +1023,11 @@ fn infer_expr_type(
         } => {
             let try_ty = infer_expr_type(try_expr, scope_id, scopes, decls, decl_types);
             let catch_ty = infer_expr_type(catch_expr, scope_id, scopes, decls, decl_types);
-            if try_ty == catch_ty { try_ty } else { None }
+            if try_ty == catch_ty {
+                try_ty
+            } else {
+                None
+            }
         }
         ast::Expr::Range { .. } => Some(ast::Type::Named {
             name: "Range".to_string(),
@@ -1124,7 +1073,11 @@ fn infer_expr_type(
 fn is_integral_type(ty: &ast::Type) -> bool {
     matches!(
         ty,
-        ast::Type::Int { .. } | ast::Type::ISize | ast::Type::USize | ast::Type::BigInt | ast::Type::BigUint
+        ast::Type::Int { .. }
+            | ast::Type::ISize
+            | ast::Type::USize
+            | ast::Type::BigInt
+            | ast::Type::BigUint
     )
 }
 
@@ -1136,7 +1089,9 @@ fn iterable_item_type(ty: &ast::Type) -> Option<ast::Type> {
         | ast::Type::Set(elem)
         | ast::Type::Deque(elem)
         | ast::Type::Ring(elem) => Some((**elem).clone()),
-        ast::Type::Map { key, value } => Some(ast::Type::Tuple(vec![(**key).clone(), (**value).clone()])),
+        ast::Type::Map { key, value } => {
+            Some(ast::Type::Tuple(vec![(**key).clone(), (**value).clone()]))
+        }
         ast::Type::Str => Some(ast::Type::Char),
         ast::Type::Bytes => Some(ast::Type::Int {
             signed: false,

@@ -195,11 +195,17 @@ extern char** environ;
     c.push_str("static fz_task_entry_fn fz_task_entries[] = {\n");
     c.push_str(&task_entries);
     c.push_str("};\n");
-    c.push_str(&format!("static const int fz_task_entry_count = {};\n\n", task_count));
+    c.push_str(&format!(
+        "static const int fz_task_entry_count = {};\n\n",
+        task_count
+    ));
     c.push_str("static const char* fz_string_literals[] = {\n");
     c.push_str(&literal_entries);
     c.push_str("};\n");
-    c.push_str(&format!("static const int fz_string_literal_count = {};\n\n", count));
+    c.push_str(&format!(
+        "static const int fz_string_literal_count = {};\n\n",
+        count
+    ));
     c.push_str(runtime_shim_section_core());
     c.push_str(runtime_shim_section_http());
     c.push_str(runtime_shim_section_services());

@@ -417,7 +417,12 @@ fn collect_unresolved_calls_from_expr(
             }
         }
         ast::Expr::FieldAccess { base, .. } => {
-            collect_unresolved_calls_from_expr(base, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                base,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
@@ -440,16 +445,36 @@ fn collect_unresolved_calls_from_expr(
             }
         }
         ast::Expr::Closure { body, .. } => {
-            collect_unresolved_calls_from_expr(body, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                body,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::Group(inner) => {
-            collect_unresolved_calls_from_expr(inner, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                inner,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
-            collect_unresolved_calls_from_expr(inner, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                inner,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::Unary { expr, .. } => {
-            collect_unresolved_calls_from_expr(expr, defined_functions, local_callables, unresolved);
+            collect_unresolved_calls_from_expr(
+                expr,
+                defined_functions,
+                local_callables,
+                unresolved,
+            );
         }
         ast::Expr::TryCatch {
             try_expr,

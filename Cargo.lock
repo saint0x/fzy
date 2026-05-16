@@ -58,6 +58,9 @@ checksum = "c3d036a3c4ab069c7b410a2ce876bd74808d2d0888a82667669f8e783a898bf1"
 [[package]]
 name = "ast"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "autocfg"
@@ -123,6 +126,9 @@ dependencies = [
 [[package]]
 name = "core"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "cpufeatures"
@@ -407,6 +413,7 @@ dependencies = [
  "ast",
  "core",
  "hir",
+ "serde",
 ]
 
 [[package]]
@@ -498,6 +505,7 @@ dependencies = [
  "ast",
  "core",
  "parser",
+ "serde",
 ]
 
 [[package]]
@@ -788,6 +796,9 @@ dependencies = [
 [[package]]
 name = "runtime"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "rustc-hash"

@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "name": "compile-bench-matrix-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": ["scripts/verify_compile_bench_matrix.py"],
+      "exit_code": 0,
+      "stdout": "compile-bench-matrix-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": ["scripts/verify_compile_bench_matrix.py"],
+      "expect_exit": 0,
+      "expect_stdout": "compile-bench-matrix-ok\n"
+    }
+  ]
+}

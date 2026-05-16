@@ -2,7 +2,7 @@
 
 ## Preferred Patterns
 
-- Use concrete trait impl targets.
+- Use explicit trait impl targets and avoid overlapping generic coverage.
 - Keep trait methods signature-only in trait declarations.
 - Prefer generic call inference at call sites; use explicit specialization only when needed (`fn_name<Type>(...)`).
 - Prefer type-qualified trait impl method calls in v1 (`Type.method(...)`).

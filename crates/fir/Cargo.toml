@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+serde.workspace = true
 hir = { path = "../hir" }
 core = { path = "../core" }
 ast = { path = "../ast" }

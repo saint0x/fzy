@@ -40,6 +40,115 @@ def preceding_safety_comment(lines, idx):
     return ("Safety:" in joined) or ("SAFETY:" in joined)
 
 
+def sanitize_rust_source(text: str) -> str:
+    out = []
+    i = 0
+    n = len(text)
+    state = "code"
+    raw_hashes = 0
+    while i < n:
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+
+        if state == "code":
+            if ch == "/" and nxt == "/":
+                out.append(" ")
+                out.append(" ")
+                i += 2
+                state = "line_comment"
+                continue
+            if ch == "/" and nxt == "*":
+                out.append(" ")
+                out.append(" ")
+                i += 2
+                state = "block_comment"
+                continue
+            if ch == "r":
+                j = i + 1
+                while j < n and text[j] == "#":
+                    j += 1
+                if j < n and text[j] == '"':
+                    out.extend(" " * (j - i + 1))
+                    raw_hashes = j - i - 1
+                    i = j + 1
+                    state = "raw_string"
+                    continue
+            if ch == '"':
+                out.append(" ")
+                i += 1
+                state = "string"
+                continue
+            if ch == "'":
+                out.append(" ")
+                i += 1
+                state = "char"
+                continue
+            out.append(ch)
+            i += 1
+            continue
+
+        if state == "line_comment":
+            out.append("\n" if ch == "\n" else " ")
+            i += 1
+            if ch == "\n":
+                state = "code"
+            continue
+
+        if state == "block_comment":
+            if ch == "*" and nxt == "/":
+                out.append(" ")
+                out.append(" ")
+                i += 2
+                state = "code"
+            else:
+                out.append("\n" if ch == "\n" else " ")
+                i += 1
+            continue
+
+        if state == "string":
+            if ch == "\\" and i + 1 < n:
+                out.append(" ")
+                out.append("\n" if text[i + 1] == "\n" else " ")
+                i += 2
+                continue
+            out.append("\n" if ch == "\n" else " ")
+            i += 1
+            if ch == '"':
+                state = "code"
+            continue
+
+        if state == "char":
+            if ch == "\\" and i + 1 < n:
+                out.append(" ")
+                out.append("\n" if text[i + 1] == "\n" else " ")
+                i += 2
+                continue
+            out.append("\n" if ch == "\n" else " ")
+            i += 1
+            if ch == "'":
+                state = "code"
+            continue
+
+        if state == "raw_string":
+            if ch == '"':
+                hashes = 0
+                j = i + 1
+                while j < n and text[j] == "#":
+                    hashes += 1
+                    j += 1
+                if hashes == raw_hashes:
+                    out.append(" ")
+                    out.extend(" " * hashes)
+                    i = j
+                    state = "code"
+                    continue
+            out.append("\n" if ch == "\n" else " ")
+            i += 1
+            continue
+
+    return "".join(out)
+
+
 def main():
     args = parse_args()
     root = pathlib.Path(args.root).resolve()
@@ -54,8 +163,10 @@ def main():
 
     for file_path in iter_rs_files(root):
         text = file_path.read_text(encoding="utf-8")
+        sanitized = sanitize_rust_source(text)
         lines = text.splitlines()
-        for i, line in enumerate(lines, start=1):
+        sanitized_lines = sanitized.splitlines()
+        for i, line in enumerate(sanitized_lines, start=1):
             for kind, regex in (("unsafe_block", UNSAFE_BLOCK_RE), ("unsafe_fn", UNSAFE_FN_RE)):
                 if not regex.search(line):
                     continue

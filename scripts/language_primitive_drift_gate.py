@@ -29,6 +29,10 @@ def main() -> int:
     ast_src = read_text(ROOT / "crates" / "ast" / "src" / "lib.rs")
     hir_src = read_text(ROOT / "crates" / "hir" / "src" / "lib.rs")
     pipeline_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline.rs")
+    llvm_support_src = read_text(
+        ROOT / "crates" / "driver" / "src" / "pipeline" / "llvm_support.rs"
+    )
+    tests_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline" / "tests.rs")
 
     has_use_alias = (
         "fn parse_use_tree(" in parser_src
@@ -61,49 +65,67 @@ def main() -> int:
         and "Expr::ArrayLiteral(items)" in hir_src
         and "Expr::Index { base, index }" in hir_src
     )
+    clif_support_src = read_text(
+        ROOT / "crates" / "driver" / "src" / "pipeline" / "clif_support.rs"
+    )
     has_native_closure_lowering = (
-        "LlvmClosureBinding" in pipeline_src
+        "LlvmClosureBinding" in llvm_support_src
         and "ClifClosureBinding" in pipeline_src
-        and "llvm_emit_inlined_closure_call" in pipeline_src
-        and "clif_emit_inlined_closure_call" in pipeline_src
+        and "llvm_emit_inlined_closure_call" in llvm_support_src
+        and "clif_emit_inlined_closure_call" in clif_support_src
     )
     has_native_closure_non_let_diag = (
         "native backend only supports closures bound directly in `let` statements"
         in pipeline_src
         or "native backend only supports closures bound to local names via `let`/assignment"
         in pipeline_src
+        or "native backend only supports closures bound to local names via `let`/assignment"
+        in tests_src
     )
     has_native_let_variant_literal_diag = (
         "supports `let` variant payload binding only when the initializer is the same literal enum variant"
         in pipeline_src
+        or "native backend requires exact literal enum variant match for payload bindings"
+        in pipeline_src
     )
     has_native_match_variant_literal_guardrail = (
         "only supports match-arm variant payload bindings for literal enum scrutinees without guards"
+        in pipeline_src
+        or "native backend requires literal enum scrutinee for match-arm payload bindings"
         in pipeline_src
     )
     has_struct_pattern_surface = "Pattern::Struct" in ast_src and "struct pattern" in parser_src
     has_native_let_struct_literal_diag = (
         "supports `let` struct-field binding only when the initializer is the same literal struct value"
         in pipeline_src
+        or "native backend requires literal struct value for `let` struct-field bindings"
+        in pipeline_src
+        or "supports `let` struct-field binding only when the initializer is the same literal struct value"
+        in tests_src
     )
     has_native_match_struct_literal_guardrail = (
         "only supports match-arm struct-field bindings for literal struct scrutinees without guards"
+        in pipeline_src
+        or "native backend requires literal struct scrutinee for match-arm struct bindings"
         in pipeline_src
     )
     has_native_array_index_lowering = (
         (
             "array_slots: HashMap<String, Vec<String>>" in pipeline_src
             or "array_slots: HashMap<String, LlvmArrayBinding>" in pipeline_src
+            or "array_slots: HashMap<String, LlvmArrayBinding>" in llvm_support_src
         )
         and (
             "array_bindings: HashMap<String, Vec<LocalBinding>>" in pipeline_src
             or "array_bindings: HashMap<String, ClifArrayBinding>" in pipeline_src
+            or "array_bindings: HashMap<String, ClifArrayBinding>" in clif_support_src
         )
         and "__native.array_get" not in pipeline_src
     )
     has_native_array_index_partial_reject = "array/index expressions" in pipeline_src
     has_cross_backend_native_completeness_parity = (
         "cross_backend_native_completeness_fixture_execute_consistently" in pipeline_src
+        or "cross_backend_native_completeness_fixture_execute_consistently" in tests_src
     )
 
     expected_status = {

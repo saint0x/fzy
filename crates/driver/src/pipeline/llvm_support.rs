@@ -1097,282 +1097,268 @@ pub(super) fn llvm_emit_complex_expr(
             condition,
             then_expr,
             else_expr,
-        } => Some(
-            (|| {
-                let pred =
-                    llvm_emit_condition_value(condition, ctx, string_literal_ids, task_ref_ids)?;
-                let then_label = ctx.label("if.then");
-                let else_label = ctx.label("if.else");
-                let merge_label = ctx.label("if.merge");
+        } => Some((|| {
+            let pred = llvm_emit_condition_value(condition, ctx, string_literal_ids, task_ref_ids)?;
+            let then_label = ctx.label("if.then");
+            let else_label = ctx.label("if.else");
+            let merge_label = ctx.label("if.merge");
+            ctx.code.push_str(&format!(
+                "  br i1 {pred}, label %{then_label}, label %{else_label}\n"
+            ));
+
+            ctx.code.push_str(&format!("{then_label}:\n"));
+            let then_value = llvm_emit_expr(then_expr, ctx, string_literal_ids, task_ref_ids)?;
+            ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+
+            ctx.code.push_str(&format!("{else_label}:\n"));
+            let else_value = llvm_emit_expr(else_expr, ctx, string_literal_ids, task_ref_ids)?;
+            let else_value = llvm_cast_value(ctx, else_value, &then_value.ty)?;
+            ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+
+            ctx.code.push_str(&format!("{merge_label}:\n"));
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = phi {} [ {}, %{then_label} ], [ {}, %{else_label} ]\n",
+                then_value.ty, then_value.value, else_value.value
+            ));
+            Ok(LlvmValue {
+                value: out,
+                ty: then_value.ty,
+            })
+        })()),
+        ast::Expr::ObjectLiteral(fields) => Some((|| {
+            let map_symbol = native_mangle_symbol(
+                native_runtime_import_for_callee("map.new")
+                    .expect("map.new runtime import must exist")
+                    .symbol,
+            );
+            let set_symbol = native_mangle_symbol(
+                native_runtime_import_for_callee("map.set")
+                    .expect("map.set runtime import must exist")
+                    .symbol,
+            );
+            let map_handle = ctx.value();
+            ctx.code
+                .push_str(&format!("  {map_handle} = call i32 @{map_symbol}()\n"));
+            for (key, value) in fields {
+                let key_id = string_literal_ids.get(key).copied().unwrap_or(0);
+                let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                let rendered = llvm_cast_value(ctx, rendered, "i32")?;
+                let status = ctx.value();
                 ctx.code.push_str(&format!(
-                    "  br i1 {pred}, label %{then_label}, label %{else_label}\n"
+                    "  {status} = call i32 @{set_symbol}(i32 {map_handle}, i32 {key_id}, i32 {})\n",
+                    rendered.value
                 ));
-
-                ctx.code.push_str(&format!("{then_label}:\n"));
-                let then_value = llvm_emit_expr(then_expr, ctx, string_literal_ids, task_ref_ids)?;
-                ctx.code.push_str(&format!("  br label %{merge_label}\n"));
-
-                ctx.code.push_str(&format!("{else_label}:\n"));
-                let else_value = llvm_emit_expr(else_expr, ctx, string_literal_ids, task_ref_ids)?;
-                let else_value = llvm_cast_value(ctx, else_value, &then_value.ty)?;
-                ctx.code.push_str(&format!("  br label %{merge_label}\n"));
-
-                ctx.code.push_str(&format!("{merge_label}:\n"));
-                let out = ctx.value();
-                ctx.code.push_str(&format!(
-                    "  {out} = phi {} [ {}, %{then_label} ], [ {}, %{else_label} ]\n",
-                    then_value.ty, then_value.value, else_value.value
-                ));
-                Ok(LlvmValue {
-                    value: out,
-                    ty: then_value.ty,
-                })
-            })(),
-        ),
-        ast::Expr::ObjectLiteral(fields) => Some(
-            (|| {
-                let map_symbol = native_mangle_symbol(
-                    native_runtime_import_for_callee("map.new")
-                        .expect("map.new runtime import must exist")
-                        .symbol,
-                );
-                let set_symbol = native_mangle_symbol(
-                    native_runtime_import_for_callee("map.set")
-                        .expect("map.set runtime import must exist")
-                        .symbol,
-                );
-                let map_handle = ctx.value();
-                ctx.code
-                    .push_str(&format!("  {map_handle} = call i32 @{map_symbol}()\n"));
-                for (key, value) in fields {
-                    let key_id = string_literal_ids.get(key).copied().unwrap_or(0);
-                    let rendered = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
-                    let rendered = llvm_cast_value(ctx, rendered, "i32")?;
-                    let status = ctx.value();
-                    ctx.code.push_str(&format!(
-                        "  {status} = call i32 @{set_symbol}(i32 {map_handle}, i32 {key_id}, i32 {})\n",
-                        rendered.value
-                    ));
-                }
-                Ok(LlvmValue {
-                    value: map_handle,
-                    ty: "i32".to_string(),
-                })
-            })(),
-        ),
-        ast::Expr::Index { base, index } => Some(
-            (|| {
-                let index_value =
-                    if let Some((base_name, offset)) = canonicalize_array_index_window(index) {
-                        if let Some(slot) = ctx.slots.get(&base_name).cloned() {
-                            let base_loaded = ctx.value();
-                            ctx.code
-                                .push_str(&format!("  {base_loaded} = load i32, ptr {slot}\n"));
-                            if offset == 0 {
-                                base_loaded
-                            } else {
-                                let adjusted = ctx.value();
-                                let op = if offset >= 0 { "add" } else { "sub" };
-                                let rhs = offset.unsigned_abs();
-                                ctx.code.push_str(&format!(
-                                    "  {adjusted} = {op} i32 {base_loaded}, {rhs}\n"
-                                ));
-                                adjusted
-                            }
-                        } else {
-                            llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?
-                                .value
-                        }
+            }
+            Ok(LlvmValue {
+                value: map_handle,
+                ty: "i32".to_string(),
+            })
+        })()),
+        ast::Expr::Index { base, index } => Some((|| {
+            let index_value = if let Some((base_name, offset)) =
+                canonicalize_array_index_window(index)
+            {
+                if let Some(slot) = ctx.slots.get(&base_name).cloned() {
+                    let base_loaded = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {base_loaded} = load i32, ptr {slot}\n"));
+                    if offset == 0 {
+                        base_loaded
                     } else {
-                        llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?
-                            .value
-                    };
-                if let ast::Expr::Ident(name) = base.as_ref() {
-                    if let Some(binding) = ctx.array_slots.get(name).cloned() {
-                        if binding.len == 0 {
-                            return Ok(LlvmValue {
-                                value: llvm_zero_literal(&binding.element_ty, 0),
-                                ty: binding.element_ty,
-                            });
-                        }
-                        if let ast::Expr::Ident(index_name) = index.as_ref() {
-                            if ctx
-                                .wrapped_indices
-                                .get(index_name)
-                                .map(|limits| limits.contains(&binding.len))
-                                .unwrap_or(false)
-                            {
-                                let idx64 = ctx.value();
-                                let elem_ptr = ctx.value();
-                                let loaded = ctx.value();
-                                ctx.code.push_str(&format!(
-                                    "  {idx64} = sext i32 {index_value} to i64\n"
-                                ));
-                                ctx.code.push_str(&format!(
-                                    "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
-                                    binding.len, binding.element_ty, binding.storage
-                                ));
-                                ctx.code.push_str(&format!(
-                                    "  {loaded} = load {}, ptr {elem_ptr}\n",
-                                    binding.element_ty
-                                ));
-                                return Ok(LlvmValue {
-                                    value: loaded,
-                                    ty: binding.element_ty,
-                                });
-                            }
-                        }
-                        if let Some(const_idx) = eval_const_i32_expr(index, &ctx.const_strings) {
-                            if const_idx >= 0 && (const_idx as usize) < binding.len {
-                                let elem_ptr = ctx.value();
-                                let loaded = ctx.value();
-                                ctx.code.push_str(&format!(
-                                    "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {}\n",
-                                    binding.len, binding.element_ty, binding.storage, const_idx
-                                ));
-                                ctx.code.push_str(&format!(
-                                    "  {loaded} = load {}, ptr {elem_ptr}\n",
-                                    binding.element_ty
-                                ));
-                                return Ok(LlvmValue {
-                                    value: loaded,
-                                    ty: binding.element_ty,
-                                });
-                            }
-                        }
-                        let in_label = ctx.label("idx.in");
-                        let out_label = ctx.label("idx.oob");
-                        let merge_label = ctx.label("idx.merge");
-                        let ok = ctx.value();
-                        ctx.code.push_str(&format!(
-                            "  {ok} = icmp ult i32 {index_value}, {}\n",
-                            binding.len
-                        ));
-                        ctx.code.push_str(&format!(
-                            "  br i1 {ok}, label %{in_label}, label %{out_label}\n"
-                        ));
-                        ctx.code.push_str(&format!("{in_label}:\n"));
-                        let idx64 = ctx.value();
-                        let elem_ptr = ctx.value();
-                        let loaded = ctx.value();
+                        let adjusted = ctx.value();
+                        let op = if offset >= 0 { "add" } else { "sub" };
+                        let rhs = offset.unsigned_abs();
                         ctx.code
-                            .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
-                        ctx.code.push_str(&format!(
-                            "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
-                            binding.len, binding.element_ty, binding.storage
-                        ));
-                        ctx.code.push_str(&format!(
-                            "  {loaded} = load {}, ptr {elem_ptr}\n",
-                            binding.element_ty
-                        ));
-                        ctx.code.push_str(&format!("  br label %{merge_label}\n"));
-                        ctx.code.push_str(&format!("{out_label}:\n"));
-                        ctx.code.push_str(&format!("  br label %{merge_label}\n"));
-                        ctx.code.push_str(&format!("{merge_label}:\n"));
-                        let selected = ctx.value();
-                        ctx.code.push_str(&format!(
-                            "  {selected} = phi {} [ {loaded}, %{in_label} ], [ {}, %{out_label} ]\n",
-                            binding.element_ty,
-                            llvm_zero_literal(&binding.element_ty, 0)
-                        ));
-                        let _ = (
-                            binding.element_bits,
-                            binding.element_align,
-                            binding.element_stride,
-                        );
+                            .push_str(&format!("  {adjusted} = {op} i32 {base_loaded}, {rhs}\n"));
+                        adjusted
+                    }
+                } else {
+                    llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?.value
+                }
+            } else {
+                llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?.value
+            };
+            if let ast::Expr::Ident(name) = base.as_ref() {
+                if let Some(binding) = ctx.array_slots.get(name).cloned() {
+                    if binding.len == 0 {
                         return Ok(LlvmValue {
-                            value: selected,
+                            value: llvm_zero_literal(&binding.element_ty, 0),
                             ty: binding.element_ty,
                         });
                     }
-                }
-                llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
-            })(),
-        ),
-        ast::Expr::Call { callee, args } => Some(
-            (|| {
-                if let Some(value) = eval_const_i32_call(callee, args, &ctx.const_strings) {
+                    if let ast::Expr::Ident(index_name) = index.as_ref() {
+                        if ctx
+                            .wrapped_indices
+                            .get(index_name)
+                            .map(|limits| limits.contains(&binding.len))
+                            .unwrap_or(false)
+                        {
+                            let idx64 = ctx.value();
+                            let elem_ptr = ctx.value();
+                            let loaded = ctx.value();
+                            ctx.code
+                                .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
+                            ctx.code.push_str(&format!(
+                                    "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
+                                    binding.len, binding.element_ty, binding.storage
+                                ));
+                            ctx.code.push_str(&format!(
+                                "  {loaded} = load {}, ptr {elem_ptr}\n",
+                                binding.element_ty
+                            ));
+                            return Ok(LlvmValue {
+                                value: loaded,
+                                ty: binding.element_ty,
+                            });
+                        }
+                    }
+                    if let Some(const_idx) = eval_const_i32_expr(index, &ctx.const_strings) {
+                        if const_idx >= 0 && (const_idx as usize) < binding.len {
+                            let elem_ptr = ctx.value();
+                            let loaded = ctx.value();
+                            ctx.code.push_str(&format!(
+                                    "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {}\n",
+                                    binding.len, binding.element_ty, binding.storage, const_idx
+                                ));
+                            ctx.code.push_str(&format!(
+                                "  {loaded} = load {}, ptr {elem_ptr}\n",
+                                binding.element_ty
+                            ));
+                            return Ok(LlvmValue {
+                                value: loaded,
+                                ty: binding.element_ty,
+                            });
+                        }
+                    }
+                    let in_label = ctx.label("idx.in");
+                    let out_label = ctx.label("idx.oob");
+                    let merge_label = ctx.label("idx.merge");
+                    let ok = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {ok} = icmp ult i32 {index_value}, {}\n",
+                        binding.len
+                    ));
+                    ctx.code.push_str(&format!(
+                        "  br i1 {ok}, label %{in_label}, label %{out_label}\n"
+                    ));
+                    ctx.code.push_str(&format!("{in_label}:\n"));
+                    let idx64 = ctx.value();
+                    let elem_ptr = ctx.value();
+                    let loaded = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
+                    ctx.code.push_str(&format!(
+                            "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
+                            binding.len, binding.element_ty, binding.storage
+                        ));
+                    ctx.code.push_str(&format!(
+                        "  {loaded} = load {}, ptr {elem_ptr}\n",
+                        binding.element_ty
+                    ));
+                    ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+                    ctx.code.push_str(&format!("{out_label}:\n"));
+                    ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+                    ctx.code.push_str(&format!("{merge_label}:\n"));
+                    let selected = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {selected} = phi {} [ {loaded}, %{in_label} ], [ {}, %{out_label} ]\n",
+                        binding.element_ty,
+                        llvm_zero_literal(&binding.element_ty, 0)
+                    ));
+                    let _ = (
+                        binding.element_bits,
+                        binding.element_align,
+                        binding.element_stride,
+                    );
                     return Ok(LlvmValue {
-                        value: value.to_string(),
+                        value: selected,
+                        ty: binding.element_ty,
+                    });
+                }
+            }
+            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
+        })()),
+        ast::Expr::Call { callee, args } => Some((|| {
+            if let Some(value) = eval_const_i32_call(callee, args, &ctx.const_strings) {
+                return Ok(LlvmValue {
+                    value: value.to_string(),
+                    ty: "i32".to_string(),
+                });
+            }
+            if let Some(value) = eval_const_string_call(callee, args, &ctx.const_strings) {
+                if let Some(id) = string_literal_ids.get(&value).copied() {
+                    return Ok(LlvmValue {
+                        value: id.to_string(),
                         ty: "i32".to_string(),
                     });
                 }
-                if let Some(value) = eval_const_string_call(callee, args, &ctx.const_strings) {
-                    if let Some(id) = string_literal_ids.get(&value).copied() {
-                        return Ok(LlvmValue {
-                            value: id.to_string(),
-                            ty: "i32".to_string(),
-                        });
-                    }
-                }
-                if let Some(binding) = ctx.closures.get(callee).cloned() {
-                    return llvm_emit_inlined_closure_call(
-                        binding,
-                        args,
-                        ctx,
-                        string_literal_ids,
-                        task_ref_ids,
-                    );
-                }
-                let signature = ctx.function_sigs.get(callee).cloned();
-                let mut rendered_args = Vec::with_capacity(args.len());
-                for (index, arg) in args.iter().enumerate() {
-                    let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
-                    let value = if let Some(sig) = &signature {
-                        if let Some(target_ty) = sig.params.get(index) {
-                            llvm_cast_value(ctx, value, target_ty)?
-                        } else {
-                            value
-                        }
+            }
+            if let Some(binding) = ctx.closures.get(callee).cloned() {
+                return llvm_emit_inlined_closure_call(
+                    binding,
+                    args,
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                );
+            }
+            let signature = ctx.function_sigs.get(callee).cloned();
+            let mut rendered_args = Vec::with_capacity(args.len());
+            for (index, arg) in args.iter().enumerate() {
+                let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
+                let value = if let Some(sig) = &signature {
+                    if let Some(target_ty) = sig.params.get(index) {
+                        llvm_cast_value(ctx, value, target_ty)?
                     } else {
-                        llvm_cast_value(ctx, value, "i32")?
-                    };
-                    rendered_args.push(format!("{} {}", value.ty, value.value));
-                }
-                let args = rendered_args.join(", ");
-                let symbol = native_runtime_import_for_callee(callee)
-                    .or_else(|| native_data_plane_import_for_callee(callee))
-                    .map(|import| import.symbol)
-                    .unwrap_or(callee.as_str());
-                let symbol = ctx
-                    .extern_link_symbols
-                    .get(callee)
-                    .map(|value| value.as_str())
-                    .unwrap_or(symbol);
-                let symbol = native_mangle_symbol(symbol);
-                let return_ty = signature
-                    .and_then(|sig| sig.ret)
-                    .unwrap_or_else(|| "i32".to_string());
-                if return_ty == "void" {
-                    ctx.code
-                        .push_str(&format!("  call void @{symbol}({args})\n"));
-                    Ok(LlvmValue {
-                        value: "0".to_string(),
-                        ty: "i32".to_string(),
-                    })
+                        value
+                    }
                 } else {
-                    let val = ctx.value();
-                    ctx.code
-                        .push_str(&format!("  {val} = call {return_ty} @{symbol}({args})\n"));
-                    llvm_assert_finite(
-                        ctx,
-                        LlvmValue {
-                            value: val,
-                            ty: return_ty,
-                        },
-                    )
-                }
-            })(),
-        ),
-        ast::Expr::UnsafeBlock { body, .. } => Some(
-            (|| {
-                let _ = llvm_emit_linear_stmts(body, ctx, string_literal_ids, task_ref_ids);
+                    llvm_cast_value(ctx, value, "i32")?
+                };
+                rendered_args.push(format!("{} {}", value.ty, value.value));
+            }
+            let args = rendered_args.join(", ");
+            let symbol = native_runtime_import_for_callee(callee)
+                .or_else(|| native_data_plane_import_for_callee(callee))
+                .map(|import| import.symbol)
+                .unwrap_or(callee.as_str());
+            let symbol = ctx
+                .extern_link_symbols
+                .get(callee)
+                .map(|value| value.as_str())
+                .unwrap_or(symbol);
+            let symbol = native_mangle_symbol(symbol);
+            let return_ty = signature
+                .and_then(|sig| sig.ret)
+                .unwrap_or_else(|| "i32".to_string());
+            if return_ty == "void" {
+                ctx.code
+                    .push_str(&format!("  call void @{symbol}({args})\n"));
                 Ok(LlvmValue {
                     value: "0".to_string(),
                     ty: "i32".to_string(),
                 })
-            })(),
-        ),
+            } else {
+                let val = ctx.value();
+                ctx.code
+                    .push_str(&format!("  {val} = call {return_ty} @{symbol}({args})\n"));
+                llvm_assert_finite(
+                    ctx,
+                    LlvmValue {
+                        value: val,
+                        ty: return_ty,
+                    },
+                )
+            }
+        })()),
+        ast::Expr::UnsafeBlock { body, .. } => Some((|| {
+            let _ = llvm_emit_linear_stmts(body, ctx, string_literal_ids, task_ref_ids);
+            Ok(LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            })
+        })()),
         _ => None,
     }
 }
@@ -1420,15 +1406,13 @@ pub(super) fn llvm_emit_simple_expr(
                 ty: "i32".to_string(),
             }
         })),
-        ast::Expr::Discard(inner) => Some(
-            (|| {
-                let _ = llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids)?;
-                Ok(LlvmValue {
-                    value: "0".to_string(),
-                    ty: "i32".to_string(),
-                })
-            })(),
-        ),
+        ast::Expr::Discard(inner) => Some((|| {
+            let _ = llvm_emit_expr(inner, ctx, string_literal_ids, task_ref_ids)?;
+            Ok(LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            })
+        })()),
         ast::Expr::Closure {
             params,
             return_type,
@@ -1450,118 +1434,109 @@ pub(super) fn llvm_emit_simple_expr(
                 ty: "i32".to_string(),
             }
         })),
-        ast::Expr::Unary { op, expr } => Some(
-            (|| {
-                let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
-                Ok(match op {
-                    ast::UnaryOp::Plus => value,
-                    ast::UnaryOp::Neg => {
-                        let out = ctx.value();
-                        if llvm_is_float_ty(&value.ty) {
-                            ctx.code.push_str(&format!(
-                                "  {out} = fsub {} 0.0, {}\n",
-                                value.ty, value.value
-                            ));
-                            llvm_assert_finite(
-                                ctx,
-                                LlvmValue {
-                                    value: out,
-                                    ty: value.ty,
-                                },
-                            )?
-                        } else {
-                            ctx.code.push_str(&format!(
-                                "  {out} = sub {} 0, {}\n",
-                                value.ty, value.value
-                            ));
+        ast::Expr::Unary { op, expr } => Some((|| {
+            let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
+            Ok(match op {
+                ast::UnaryOp::Plus => value,
+                ast::UnaryOp::Neg => {
+                    let out = ctx.value();
+                    if llvm_is_float_ty(&value.ty) {
+                        ctx.code.push_str(&format!(
+                            "  {out} = fsub {} 0.0, {}\n",
+                            value.ty, value.value
+                        ));
+                        llvm_assert_finite(
+                            ctx,
                             LlvmValue {
                                 value: out,
                                 ty: value.ty,
-                            }
-                        }
-                    }
-                    ast::UnaryOp::BitNot => {
-                        let out = ctx.value();
+                            },
+                        )?
+                    } else {
                         ctx.code
-                            .push_str(&format!("  {out} = xor {} {}, -1\n", value.ty, value.value));
+                            .push_str(&format!("  {out} = sub {} 0, {}\n", value.ty, value.value));
                         LlvmValue {
                             value: out,
                             ty: value.ty,
                         }
                     }
-                    ast::UnaryOp::Not => {
-                        let pred = llvm_emit_truthy_pred(ctx, &value);
-                        let out = ctx.value();
-                        ctx.code.push_str(&format!("  {out} = xor i1 {pred}, true\n"));
-                        llvm_bool_from_pred(ctx, &out)
-                    }
-                })
-            })(),
-        ),
-        ast::Expr::FieldAccess { base, field } => Some(
-            (|| {
-                if let Some(field_expr) = resolve_field_expr(base, field) {
-                    return llvm_emit_expr(&field_expr, ctx, string_literal_ids, task_ref_ids);
                 }
-                if let ast::Expr::Ident(name) = base.as_ref() {
-                    if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
-                        let ty = ctx
-                            .slot_tys
-                            .get(&format!("{name}.{field}"))
-                            .cloned()
-                            .unwrap_or_else(|| "i32".to_string());
-                        let val = ctx.value();
-                        ctx.code
-                            .push_str(&format!("  {val} = load {ty}, ptr {slot}\n"));
-                        return Ok(LlvmValue { value: val, ty });
+                ast::UnaryOp::BitNot => {
+                    let out = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {out} = xor {} {}, -1\n", value.ty, value.value));
+                    LlvmValue {
+                        value: out,
+                        ty: value.ty,
                     }
                 }
-                if let Some(task_ref_name) = expr_task_ref_name(expr) {
-                    if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
-                        return Ok(LlvmValue {
-                            value: task_ref.to_string(),
-                            ty: "i32".to_string(),
-                        });
-                    }
+                ast::UnaryOp::Not => {
+                    let pred = llvm_emit_truthy_pred(ctx, &value);
+                    let out = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {out} = xor i1 {pred}, true\n"));
+                    llvm_bool_from_pred(ctx, &out)
                 }
-                llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
-            })(),
-        ),
-        ast::Expr::StructInit { fields, .. } => Some(
-            (|| {
-                let mut first = None;
-                for (_, value) in fields {
-                    let current = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
-                    if first.is_none() {
-                        first = Some(current);
-                    }
+            })
+        })()),
+        ast::Expr::FieldAccess { base, field } => Some((|| {
+            if let Some(field_expr) = resolve_field_expr(base, field) {
+                return llvm_emit_expr(&field_expr, ctx, string_literal_ids, task_ref_ids);
+            }
+            if let ast::Expr::Ident(name) = base.as_ref() {
+                if let Some(slot) = ctx.slots.get(&format!("{name}.{field}")).cloned() {
+                    let ty = ctx
+                        .slot_tys
+                        .get(&format!("{name}.{field}"))
+                        .cloned()
+                        .unwrap_or_else(|| "i32".to_string());
+                    let val = ctx.value();
+                    ctx.code
+                        .push_str(&format!("  {val} = load {ty}, ptr {slot}\n"));
+                    return Ok(LlvmValue { value: val, ty });
                 }
-                Ok(first.unwrap_or_else(|| LlvmValue {
-                    value: "0".to_string(),
-                    ty: "i32".to_string(),
-                }))
-            })(),
-        ),
+            }
+            if let Some(task_ref_name) = expr_task_ref_name(expr) {
+                if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
+                    return Ok(LlvmValue {
+                        value: task_ref.to_string(),
+                        ty: "i32".to_string(),
+                    });
+                }
+            }
+            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
+        })()),
+        ast::Expr::StructInit { fields, .. } => Some((|| {
+            let mut first = None;
+            for (_, value) in fields {
+                let current = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                if first.is_none() {
+                    first = Some(current);
+                }
+            }
+            Ok(first.unwrap_or_else(|| LlvmValue {
+                value: "0".to_string(),
+                ty: "i32".to_string(),
+            }))
+        })()),
         ast::Expr::EnumInit {
             enum_name,
             variant,
             payload,
             named_payload,
-        } => Some(
-            (|| {
-                for value in payload {
-                    let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
-                }
-                for (_, value) in named_payload {
-                    let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
-                }
-                let key = format!("{enum_name}::{variant}");
-                Ok(LlvmValue {
-                    value: variant_tag_for_key(&key, &ctx.variant_tags).to_string(),
-                    ty: "i32".to_string(),
-                })
-            })(),
-        ),
+        } => Some((|| {
+            for value in payload {
+                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+            }
+            for (_, value) in named_payload {
+                let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+            }
+            let key = format!("{enum_name}::{variant}");
+            Ok(LlvmValue {
+                value: variant_tag_for_key(&key, &ctx.variant_tags).to_string(),
+                ty: "i32".to_string(),
+            })
+        })()),
         _ => None,
     }
 }
@@ -1730,15 +1705,13 @@ pub(super) fn llvm_assert_finite(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Res
         "  br i1 {finite}, label %{ok_label}, label %{trap_label}\n"
     ));
     ctx.code.push_str(&format!("{trap_label}:\n"));
-    ctx.code.push_str("  call void @llvm.trap()\n  unreachable\n");
+    ctx.code
+        .push_str("  call void @llvm.trap()\n  unreachable\n");
     ctx.code.push_str(&format!("{ok_label}:\n"));
     Ok(value)
 }
 
-pub(super) fn lower_llvm_ir(
-    fir: &fir::FirModule,
-    enforce_contract_checks: bool,
-) -> Result<String> {
+pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String> {
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
     if fir.typed_functions.is_empty() {
         let ret = plan

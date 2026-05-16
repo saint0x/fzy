@@ -1,3 +1,4 @@
+pub mod browser;
 pub mod service;
 
 use std::collections::BTreeMap;
@@ -74,6 +75,134 @@ pub enum TraceMode {
     ReplayCritical,
     #[default]
     Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BrowserLane {
+    Input,
+    Render,
+    Default,
+    Background,
+}
+
+impl BrowserLane {
+    const ORDER: [Self; 4] = [Self::Input, Self::Render, Self::Default, Self::Background];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Input => "input",
+            Self::Render => "render",
+            Self::Default => "default",
+            Self::Background => "background",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserQueueClass {
+    Microtask,
+    Macrotask,
+}
+
+impl BrowserQueueClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Microtask => "microtask",
+            Self::Macrotask => "macrotask",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserAsyncOrigin {
+    PromiseThen,
+    PromiseCatch,
+    PromiseFinally,
+    EventCallback,
+    Timer,
+    Interval,
+    AnimationFrame,
+    Fetch,
+    Input,
+    Render,
+    Background,
+}
+
+impl BrowserAsyncOrigin {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PromiseThen => "promise.then",
+            Self::PromiseCatch => "promise.catch",
+            Self::PromiseFinally => "promise.finally",
+            Self::EventCallback => "event.callback",
+            Self::Timer => "timer",
+            Self::Interval => "interval",
+            Self::AnimationFrame => "animation_frame",
+            Self::Fetch => "fetch",
+            Self::Input => "input",
+            Self::Render => "render",
+            Self::Background => "background",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromiseState {
+    Fulfilled,
+    Rejected,
+}
+
+impl PromiseState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fulfilled => "fulfilled",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrowserSchedulerConfig {
+    pub max_microtasks_per_tick: usize,
+}
+
+impl Default for BrowserSchedulerConfig {
+    fn default() -> Self {
+        Self {
+            max_microtasks_per_tick: 8,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BrowserSpawn {
+    pub lane: BrowserLane,
+    pub queue: BrowserQueueClass,
+    pub parent_task_id: Option<TaskId>,
+    pub origin: BrowserAsyncOrigin,
+    pub promise_id: Option<u64>,
+}
+
+impl BrowserSpawn {
+    pub fn new(lane: BrowserLane, queue: BrowserQueueClass, origin: BrowserAsyncOrigin) -> Self {
+        Self {
+            lane,
+            queue,
+            parent_task_id: None,
+            origin,
+            promise_id: None,
+        }
+    }
+
+    pub fn with_parent(mut self, parent_task_id: TaskId) -> Self {
+        self.parent_task_id = Some(parent_task_id);
+        self
+    }
+
+    pub fn with_promise(mut self, promise_id: u64) -> Self {
+        self.promise_id = Some(promise_id);
+        self
+    }
 }
 
 pub fn plan_async_checkpoints(
@@ -216,6 +345,39 @@ pub enum TaskEvent {
     Detached {
         task_id: TaskId,
     },
+    BrowserSchedulerConfigured {
+        max_microtasks_per_tick: usize,
+    },
+    BrowserTaskEnqueued {
+        task_id: TaskId,
+        lane: BrowserLane,
+        queue: BrowserQueueClass,
+        origin: BrowserAsyncOrigin,
+        parent_task_id: Option<TaskId>,
+        promise_id: Option<u64>,
+    },
+    BrowserTaskScheduled {
+        task_id: TaskId,
+        lane: BrowserLane,
+        queue: BrowserQueueClass,
+        origin: BrowserAsyncOrigin,
+    },
+    BrowserPromiseSettled {
+        task_id: TaskId,
+        promise_id: u64,
+        state: PromiseState,
+    },
+    BrowserCausalLink {
+        parent_task_id: TaskId,
+        child_task_id: TaskId,
+        relation: String,
+    },
+    BrowserStarvationPrevented {
+        task_id: TaskId,
+        lane: BrowserLane,
+        queue: BrowserQueueClass,
+        after_microtasks: usize,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -241,6 +403,8 @@ pub struct DeterministicExecutor {
     join_edges: BTreeMap<TaskId, Vec<TaskId>>,
     io_waiters: BTreeMap<String, Vec<TaskId>>,
     root_cause_hint: Option<TaskId>,
+    browser_scheduler: Option<BrowserSchedulerState>,
+    browser_tasks: BTreeMap<TaskId, BrowserTaskMetadata>,
 }
 
 struct TaskEntry {
@@ -252,9 +416,81 @@ struct TaskEntry {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct BrowserTaskMetadata {
+    lane: BrowserLane,
+    queue: BrowserQueueClass,
+    origin: BrowserAsyncOrigin,
+    parent_task_id: Option<TaskId>,
+    promise_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct QueueNode {
     prev: Option<TaskId>,
     next: Option<TaskId>,
+}
+
+#[derive(Default)]
+struct BrowserLaneQueues {
+    input: RunQueue,
+    render: RunQueue,
+    default_lane: RunQueue,
+    background: RunQueue,
+}
+
+impl BrowserLaneQueues {
+    fn len(&self) -> usize {
+        self.input.len() + self.render.len() + self.default_lane.len() + self.background.len()
+    }
+
+    fn push_back(&mut self, lane: BrowserLane, task_id: TaskId) {
+        match lane {
+            BrowserLane::Input => self.input.push_back(task_id),
+            BrowserLane::Render => self.render.push_back(task_id),
+            BrowserLane::Default => self.default_lane.push_back(task_id),
+            BrowserLane::Background => self.background.push_back(task_id),
+        }
+    }
+
+    fn remove(&mut self, task_id: TaskId) -> bool {
+        self.input.remove(task_id)
+            || self.render.remove(task_id)
+            || self.default_lane.remove(task_id)
+            || self.background.remove(task_id)
+    }
+
+    fn pop_from_lane(&mut self, lane: BrowserLane) -> Option<TaskId> {
+        match lane {
+            BrowserLane::Input => self.input.pop_front(),
+            BrowserLane::Render => self.render.pop_front(),
+            BrowserLane::Default => self.default_lane.pop_front(),
+            BrowserLane::Background => self.background.pop_front(),
+        }
+    }
+
+    fn next_non_empty_lane(&self, start: usize) -> Option<BrowserLane> {
+        for offset in 0..BrowserLane::ORDER.len() {
+            let lane = BrowserLane::ORDER[(start + offset) % BrowserLane::ORDER.len()];
+            let len = match lane {
+                BrowserLane::Input => self.input.len(),
+                BrowserLane::Render => self.render.len(),
+                BrowserLane::Default => self.default_lane.len(),
+                BrowserLane::Background => self.background.len(),
+            };
+            if len > 0 {
+                return Some(lane);
+            }
+        }
+        None
+    }
+}
+
+struct BrowserSchedulerState {
+    config: BrowserSchedulerConfig,
+    microtasks: BrowserLaneQueues,
+    macrotasks: BrowserLaneQueues,
+    lane_cursor: usize,
+    consecutive_microtasks: usize,
 }
 
 #[derive(Default)]
@@ -375,35 +611,93 @@ impl DeterministicExecutor {
         }
     }
 
+    pub fn enable_browser_scheduler(&mut self, config: BrowserSchedulerConfig) {
+        self.browser_scheduler = Some(BrowserSchedulerState {
+            config,
+            microtasks: BrowserLaneQueues::default(),
+            macrotasks: BrowserLaneQueues::default(),
+            lane_cursor: 0,
+            consecutive_microtasks: 0,
+        });
+        self.record_event(TaskEvent::BrowserSchedulerConfigured {
+            max_microtasks_per_tick: config.max_microtasks_per_tick,
+        });
+    }
+
+    pub fn browser_scheduler_config(&self) -> Option<BrowserSchedulerConfig> {
+        self.browser_scheduler.as_ref().map(|state| state.config)
+    }
+
     pub fn spawn(&mut self, task: Task) -> TaskId {
-        self.spawn_inner_unbounded(task, false).0
+        let browser_meta = self.default_browser_spawn_meta();
+        self.spawn_inner_unbounded(task, false, browser_meta).0
     }
 
     pub fn spawn_with_token(&mut self, task: Task) -> (TaskId, CancellationToken) {
-        self.spawn_inner_unbounded(task, false)
+        let browser_meta = self.default_browser_spawn_meta();
+        self.spawn_inner_unbounded(task, false, browser_meta)
     }
 
     pub fn spawn_bounded(&mut self, task: Task) -> Result<(TaskId, CancellationToken), SpawnError> {
         if let Some(capacity) = self.config.max_queue_depth {
-            if self.queue.len() >= capacity {
+            if self.pending_queue_depth() >= capacity {
                 self.record_event(TaskEvent::Backpressure {
-                    queue_depth: self.queue.len(),
+                    queue_depth: self.pending_queue_depth(),
                     capacity,
                 });
                 return Err(SpawnError::QueueSaturated {
                     capacity,
-                    queue_depth: self.queue.len(),
+                    queue_depth: self.pending_queue_depth(),
                 });
             }
         }
-        Ok(self.spawn_inner_unbounded(task, false))
+        let browser_meta = self.default_browser_spawn_meta();
+        Ok(self.spawn_inner_unbounded(task, false, browser_meta))
     }
 
     pub fn spawn_detached(&mut self, task: Task) -> TaskId {
-        self.spawn_inner_unbounded(task, true).0
+        let browser_meta = self.default_browser_spawn_meta();
+        self.spawn_inner_unbounded(task, true, browser_meta).0
     }
 
-    fn spawn_inner_unbounded(&mut self, task: Task, detached: bool) -> (TaskId, CancellationToken) {
+    pub fn spawn_browser_task(&mut self, task: Task, spawn: BrowserSpawn) -> TaskId {
+        self.spawn_inner_unbounded(
+            task,
+            false,
+            Some(BrowserTaskMetadata {
+                lane: spawn.lane,
+                queue: spawn.queue,
+                origin: spawn.origin,
+                parent_task_id: spawn.parent_task_id,
+                promise_id: spawn.promise_id,
+            }),
+        )
+        .0
+    }
+
+    pub fn record_promise_settlement(
+        &mut self,
+        task_id: TaskId,
+        promise_id: u64,
+        state: PromiseState,
+    ) -> bool {
+        if !self.tasks.contains_key(&task_id) {
+            return false;
+        }
+        self.record_event(TaskEvent::BrowserPromiseSettled {
+            task_id,
+            promise_id,
+            state,
+        });
+        true
+    }
+
+    fn spawn_inner_unbounded(
+        &mut self,
+        task: Task,
+        detached: bool,
+        browser_meta: Option<BrowserTaskMetadata>,
+    ) -> (TaskId, CancellationToken) {
         let task_id = self.next_task_id;
         self.next_task_id += 1;
         let token = CancellationToken::new();
@@ -418,10 +712,27 @@ impl DeterministicExecutor {
                 token: token.clone(),
             },
         );
-        self.queue.push_back(task_id);
+        self.enqueue_task(task_id, browser_meta);
         self.record_event(TaskEvent::Spawned { task_id, detached });
         if detached {
             self.record_event(TaskEvent::Detached { task_id });
+        }
+        if let Some(meta) = browser_meta {
+            self.record_event(TaskEvent::BrowserTaskEnqueued {
+                task_id,
+                lane: meta.lane,
+                queue: meta.queue,
+                origin: meta.origin,
+                parent_task_id: meta.parent_task_id,
+                promise_id: meta.promise_id,
+            });
+            if let Some(parent_task_id) = meta.parent_task_id {
+                self.record_event(TaskEvent::BrowserCausalLink {
+                    parent_task_id,
+                    child_task_id: task_id,
+                    relation: meta.origin.as_str().to_string(),
+                });
+            }
         }
         (task_id, token)
     }
@@ -477,6 +788,9 @@ impl DeterministicExecutor {
     }
 
     pub fn run_next(&mut self) -> Option<TaskId> {
+        if self.browser_scheduler.is_some() {
+            return self.run_next_browser();
+        }
         self.run_next_with_scheduler(Scheduler::Fifo, &mut 0)
     }
 
@@ -485,6 +799,9 @@ impl DeterministicExecutor {
         scheduler: Scheduler,
         random_state: &mut u64,
     ) -> Option<TaskId> {
+        if self.browser_scheduler.is_some() {
+            return self.run_next_browser();
+        }
         let task_id = match scheduler {
             Scheduler::Fifo => self.queue.pop_front()?,
             Scheduler::Random => self.queue.pop_random(random_state)?,
@@ -501,6 +818,26 @@ impl DeterministicExecutor {
 
         self.execute_task(task_id);
 
+        Some(task_id)
+    }
+
+    pub fn run_next_browser(&mut self) -> Option<TaskId> {
+        let (task_id, lane, queue, origin, starvation_after) = self.pop_browser_scheduled_task()?;
+        if let Some(after_microtasks) = starvation_after {
+            self.record_event(TaskEvent::BrowserStarvationPrevented {
+                task_id,
+                lane,
+                queue,
+                after_microtasks,
+            });
+        }
+        self.record_event(TaskEvent::BrowserTaskScheduled {
+            task_id,
+            lane,
+            queue,
+            origin,
+        });
+        self.execute_task(task_id);
         Some(task_id)
     }
 
@@ -568,9 +905,20 @@ impl DeterministicExecutor {
         scheduler: Scheduler,
         seed: u64,
     ) -> Vec<TaskId> {
+        if self.browser_scheduler.is_some() {
+            return self.run_until_idle_browser();
+        }
         let mut order = Vec::new();
         let mut random_state = seed.max(1);
         while let Some(task_id) = self.run_next_with_scheduler(scheduler, &mut random_state) {
+            order.push(task_id);
+        }
+        order
+    }
+
+    pub fn run_until_idle_browser(&mut self) -> Vec<TaskId> {
+        let mut order = Vec::new();
+        while let Some(task_id) = self.run_next_browser() {
             order.push(task_id);
         }
         order
@@ -660,7 +1008,7 @@ impl DeterministicExecutor {
             return false;
         }
         entry.state = TaskState::Pending;
-        self.queue.push_back(task_id);
+        self.requeue_task(task_id);
         self.record_event(TaskEvent::Yielded {
             task_id,
             reason: reason.into(),
@@ -688,7 +1036,7 @@ impl DeterministicExecutor {
         for task_id in waiters {
             if let Some(entry) = self.tasks.get_mut(&task_id) {
                 entry.state = TaskState::Pending;
-                self.queue.push_back(task_id);
+                self.requeue_task(task_id);
                 self.record_event(TaskEvent::IoReady {
                     task_id,
                     key: key.to_string(),
@@ -730,7 +1078,7 @@ impl DeterministicExecutor {
     pub fn replay_order(&mut self, execution_order: &[TaskId]) -> Vec<TaskId> {
         let mut replayed = Vec::new();
         for task_id in execution_order {
-            if self.queue.remove(*task_id) {
+            if self.remove_pending_task(*task_id) {
                 self.execute_task(*task_id);
                 replayed.push(*task_id);
             }
@@ -744,6 +1092,106 @@ impl DeterministicExecutor {
 
     pub fn state(&self, task_id: TaskId) -> Option<TaskState> {
         self.tasks.get(&task_id).map(|entry| entry.state)
+    }
+
+    fn pending_queue_depth(&self) -> usize {
+        if let Some(state) = &self.browser_scheduler {
+            state.microtasks.len() + state.macrotasks.len()
+        } else {
+            self.queue.len()
+        }
+    }
+
+    fn default_browser_spawn_meta(&self) -> Option<BrowserTaskMetadata> {
+        self.browser_scheduler
+            .as_ref()
+            .map(|_| BrowserTaskMetadata {
+                lane: BrowserLane::Default,
+                queue: BrowserQueueClass::Macrotask,
+                origin: BrowserAsyncOrigin::Background,
+                parent_task_id: None,
+                promise_id: None,
+            })
+    }
+
+    fn enqueue_task(&mut self, task_id: TaskId, browser_meta: Option<BrowserTaskMetadata>) {
+        if let Some(meta) = browser_meta {
+            self.browser_tasks.insert(task_id, meta);
+        }
+        if let Some(meta) = self.browser_tasks.get(&task_id).copied() {
+            if let Some(state) = self.browser_scheduler.as_mut() {
+                match meta.queue {
+                    BrowserQueueClass::Microtask => state.microtasks.push_back(meta.lane, task_id),
+                    BrowserQueueClass::Macrotask => state.macrotasks.push_back(meta.lane, task_id),
+                }
+                return;
+            }
+        }
+        self.queue.push_back(task_id);
+    }
+
+    fn requeue_task(&mut self, task_id: TaskId) {
+        self.enqueue_task(task_id, None);
+    }
+
+    fn remove_pending_task(&mut self, task_id: TaskId) -> bool {
+        if let Some(meta) = self.browser_tasks.get(&task_id).copied() {
+            if let Some(state) = self.browser_scheduler.as_mut() {
+                return match meta.queue {
+                    BrowserQueueClass::Microtask => state.microtasks.remove(task_id),
+                    BrowserQueueClass::Macrotask => state.macrotasks.remove(task_id),
+                };
+            }
+        }
+        self.queue.remove(task_id)
+    }
+
+    fn pop_browser_scheduled_task(
+        &mut self,
+    ) -> Option<(
+        TaskId,
+        BrowserLane,
+        BrowserQueueClass,
+        BrowserAsyncOrigin,
+        Option<usize>,
+    )> {
+        let state = self.browser_scheduler.as_mut()?;
+        let had_microtasks = state.microtasks.len() > 0;
+        let should_force_macrotask = had_microtasks
+            && state.consecutive_microtasks >= state.config.max_microtasks_per_tick
+            && state.macrotasks.len() > 0;
+
+        let (lane, queue, starvation_after) = if !should_force_macrotask {
+            if let Some(lane) = state.microtasks.next_non_empty_lane(state.lane_cursor) {
+                state.consecutive_microtasks += 1;
+                (lane, BrowserQueueClass::Microtask, None)
+            } else {
+                let lane = state.macrotasks.next_non_empty_lane(state.lane_cursor)?;
+                state.consecutive_microtasks = 0;
+                (lane, BrowserQueueClass::Macrotask, None)
+            }
+        } else {
+            let lane = state.macrotasks.next_non_empty_lane(state.lane_cursor)?;
+            let after_microtasks = state.consecutive_microtasks;
+            state.consecutive_microtasks = 0;
+            (lane, BrowserQueueClass::Macrotask, Some(after_microtasks))
+        };
+
+        let task_id = match queue {
+            BrowserQueueClass::Microtask => state.microtasks.pop_from_lane(lane)?,
+            BrowserQueueClass::Macrotask => state.macrotasks.pop_from_lane(lane)?,
+        };
+        state.lane_cursor = BrowserLane::ORDER
+            .iter()
+            .position(|candidate| *candidate == lane)
+            .map(|index| (index + 1) % BrowserLane::ORDER.len())
+            .unwrap_or(0);
+        let origin = self
+            .browser_tasks
+            .get(&task_id)
+            .map(|meta| meta.origin)
+            .unwrap_or(BrowserAsyncOrigin::Background);
+        Some((task_id, lane, queue, origin, starvation_after))
     }
 
     fn record_event(&mut self, event: TaskEvent) {
@@ -822,8 +1270,10 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        plan_async_checkpoints, CancellationToken, DeterministicExecutor, ExecutorConfig,
-        JoinOutcome, PanicReport, RuntimeConfig, Scheduler, TaskEvent, TaskLocalStore, TaskState,
+        plan_async_checkpoints, BrowserAsyncOrigin, BrowserLane, BrowserQueueClass,
+        BrowserSchedulerConfig, BrowserSpawn, CancellationToken, DeterministicExecutor,
+        ExecutorConfig, JoinOutcome, PanicReport, PromiseState, RuntimeConfig, Scheduler,
+        TaskEvent, TaskLocalStore, TaskState,
     };
 
     #[test]
@@ -996,6 +1446,151 @@ mod tests {
         assert!(executor.trace().iter().any(|event| matches!(
             event,
             TaskEvent::ResourceLeak { task_id: id, subsystem, .. } if *id == task_id && subsystem == "process"
+        )));
+    }
+
+    #[test]
+    fn browser_scheduler_prioritizes_microtasks_then_respects_lane_order() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut executor = DeterministicExecutor::new();
+        executor.enable_browser_scheduler(BrowserSchedulerConfig {
+            max_microtasks_per_tick: 8,
+        });
+
+        let input_log = Arc::clone(&log);
+        executor.spawn_browser_task(
+            Box::new(move || input_log.lock().unwrap().push("input-micro")),
+            BrowserSpawn::new(
+                BrowserLane::Input,
+                BrowserQueueClass::Microtask,
+                BrowserAsyncOrigin::PromiseThen,
+            ),
+        );
+        let render_log = Arc::clone(&log);
+        executor.spawn_browser_task(
+            Box::new(move || render_log.lock().unwrap().push("render-micro")),
+            BrowserSpawn::new(
+                BrowserLane::Render,
+                BrowserQueueClass::Microtask,
+                BrowserAsyncOrigin::AnimationFrame,
+            ),
+        );
+        let macro_log = Arc::clone(&log);
+        executor.spawn_browser_task(
+            Box::new(move || macro_log.lock().unwrap().push("background-macro")),
+            BrowserSpawn::new(
+                BrowserLane::Background,
+                BrowserQueueClass::Macrotask,
+                BrowserAsyncOrigin::Timer,
+            ),
+        );
+
+        let order = executor.run_until_idle_browser();
+        assert_eq!(order, vec![0, 1, 2]);
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["input-micro", "render-micro", "background-macro"]
+        );
+        assert!(executor.trace().iter().any(|event| matches!(
+            event,
+            TaskEvent::BrowserTaskScheduled {
+                task_id: 0,
+                lane: BrowserLane::Input,
+                queue: BrowserQueueClass::Microtask,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn browser_scheduler_prevents_macrotask_starvation() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut executor = DeterministicExecutor::new();
+        executor.enable_browser_scheduler(BrowserSchedulerConfig {
+            max_microtasks_per_tick: 2,
+        });
+
+        for label in ["micro-1", "micro-2", "micro-3"] {
+            let log = Arc::clone(&log);
+            executor.spawn_browser_task(
+                Box::new(move || log.lock().unwrap().push(label)),
+                BrowserSpawn::new(
+                    BrowserLane::Default,
+                    BrowserQueueClass::Microtask,
+                    BrowserAsyncOrigin::PromiseThen,
+                ),
+            );
+        }
+        let macro_log = Arc::clone(&log);
+        executor.spawn_browser_task(
+            Box::new(move || macro_log.lock().unwrap().push("macro")),
+            BrowserSpawn::new(
+                BrowserLane::Background,
+                BrowserQueueClass::Macrotask,
+                BrowserAsyncOrigin::Timer,
+            ),
+        );
+
+        let order = executor.run_until_idle_browser();
+        assert_eq!(order, vec![0, 1, 3, 2]);
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec!["micro-1", "micro-2", "macro", "micro-3"]
+        );
+        assert!(executor.trace().iter().any(|event| matches!(
+            event,
+            TaskEvent::BrowserStarvationPrevented {
+                task_id: 3,
+                lane: BrowserLane::Background,
+                queue: BrowserQueueClass::Macrotask,
+                after_microtasks: 2,
+            }
+        )));
+    }
+
+    #[test]
+    fn browser_scheduler_tracks_promise_lineage_and_settlement() {
+        let mut executor = DeterministicExecutor::new();
+        executor.enable_browser_scheduler(BrowserSchedulerConfig::default());
+        let parent = executor.spawn(Box::new(|| {}));
+        let child = executor.spawn_browser_task(
+            Box::new(|| {}),
+            BrowserSpawn::new(
+                BrowserLane::Default,
+                BrowserQueueClass::Microtask,
+                BrowserAsyncOrigin::PromiseThen,
+            )
+            .with_parent(parent)
+            .with_promise(17),
+        );
+
+        executor.record_promise_settlement(child, 17, PromiseState::Fulfilled);
+        let _ = executor.run_until_idle_browser();
+
+        assert!(executor.trace().iter().any(|event| matches!(
+            event,
+            TaskEvent::BrowserTaskEnqueued {
+                task_id,
+                parent_task_id: Some(source),
+                promise_id: Some(17),
+                ..
+            } if *task_id == child && *source == parent
+        )));
+        assert!(executor.trace().iter().any(|event| matches!(
+            event,
+            TaskEvent::BrowserCausalLink {
+                parent_task_id,
+                child_task_id,
+                relation,
+            } if *parent_task_id == parent && *child_task_id == child && relation == "promise.then"
+        )));
+        assert!(executor.trace().iter().any(|event| matches!(
+            event,
+            TaskEvent::BrowserPromiseSettled {
+                task_id,
+                promise_id: 17,
+                state: PromiseState::Fulfilled,
+            } if *task_id == child
         )));
     }
 }

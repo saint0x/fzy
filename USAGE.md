@@ -69,6 +69,7 @@ cargo test --workspace
 cargo run -q -p fz -- dx-check examples/fullstack --strict --json
 cargo run -q -p fz -- check examples/fullstack --json
 cargo run -q -p fz -- build examples/fullstack --backend cranelift --json
+cargo run -q -p fz -- build tests/fixtures/browser_debug_js/main.fzy --backend js --sourcemap --json
 cargo run -q -p fz -- run examples/fullstack --backend cranelift --json
 cargo run -q -p fz -- test examples/fullstack --det --seed 41 --json
 ```
@@ -118,14 +119,15 @@ Use for new projects.
 ## 5.2 Build, run, test
 
 ```bash
-fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
-fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck http://host:port/path] [--smoke-http http://host:port/path] [--json]
-fz test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
+fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift|js] [--sourcemap] [-l lib] [-L path] [-framework name] [--json]
+fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift|js] [--max-seconds N] [--exit-on-healthcheck http://host:port/path] [--smoke-http http://host:port/path] [--json]
+fz test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift|js] [--sched fifo|random|coverage_guided] [--filter substring] [--json]
 ```
 
 Use cases:
 
 - `build`: compile only
+- `build --backend js --sourcemap`: emit readable ESM JavaScript plus `<entry>.js.map` for browser-target execution
 - `build --lib`: emit `.a` + shared library (`.so`/`.dylib`) plus C header + ABI manifest
 - `run`: execute a project or scenario once
   - text mode streams child stdout/stderr live
@@ -133,6 +135,8 @@ Use cases:
   - `--exit-on-healthcheck` and `--smoke-http` probe an HTTP endpoint and exit once healthy/smoke-success is observed
 - `test`: execute discovered tests with optional deterministic scheduler policy
   - `--host-backends` on native `.fzy` sources now auto-bridges through generated temporary scenario artifacts (single command flow)
+- browser-target execution uses `build --backend js --sourcemap` plus `dev-server` or an external ESM loader; `run --backend js` is not the browser execution path
+- `devloop --backend js` is not supported; use `build --backend js --sourcemap` or `dev-server` for browser-target iteration
 - production memory safety verification is always enabled for `run` and `test`
 
 Native host-backed runtime defaults:
@@ -145,7 +149,7 @@ Native host-backed runtime defaults:
 Runtime logging defaults:
 - human-readable logs by default (`[ts] level message`)
 - structured fields appended as `| fields={...}`
-- JSON logging is opt-in (`log.set_json(1)`)
+- JSON logging is opt-in (`log.set_json(map.new())`)
 - module-level capability declaration required for log APIs: `use core.log;`
 - typed error policy surfaces use `use core.error;` in modules that rely on error contracts
 - `use core.text;` is invalid; string intrinsics (`str.*`) do not require capability imports
@@ -165,7 +169,8 @@ fz verify [path]
 fz lint [path] [--tier production|pedantic|compat]
 fz explain <diag-code>
 fz doctor project [path] [--strict]
-fz devloop [path] [--backend llvm|cranelift]
+fz devloop [path] [--backend llvm|cranelift|js]
+fz dev-server [path] [--entry path] [--host addr] [--port N]
 fz dx-check [project] [--strict]
 fz spec-check
 ```
@@ -178,7 +183,8 @@ Recommended order for feature work:
 4. `devloop`
 5. `dx-check --strict`
 6. `test --det`
-7. `verify` or `spec-check` when relevant to your gate
+7. `build --backend js --sourcemap` and `debug-check` for browser-target work
+8. `verify` or `spec-check` when relevant to your gate
 
 ## 5.4 Analysis and debugging commands
 
@@ -203,6 +209,15 @@ Default production policy keeps missing metadata non-blocking; strict CI/release
 Hardened repositories can scope unsafe usage in `fozzy.toml`:
 - `[unsafe].deny_unsafe_in = ["tests::*"]`
 - `[unsafe].allow_unsafe_in = ["runtime::*"]`
+
+Recommended browser-target verification probe:
+
+```bash
+fz build tests/fixtures/browser_debug_js/main.fzy --backend js --sourcemap --json
+fz debug-check tests/fixtures/browser_debug_js/main.fzy --json
+fozzy test --det --strict tests/browser_debug_js_sourcemap.pass.fozzy.json --json
+./scripts/browser_dev_server_smoke.sh
+```
 
 Recommended native completeness probe:
 

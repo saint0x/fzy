@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use ast::{AstVisitor, BinaryOp, Expr, Module, Stmt, Type};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypedFunction {
     pub name: String,
     pub link_name: Option<String>,
@@ -18,7 +19,7 @@ pub struct TypedFunction {
     pub required_capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypedModule {
     pub name: String,
     pub symbol_count: usize,
@@ -59,7 +60,7 @@ pub struct TypedModule {
     pub linear_type_violations: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnsafeContractSite {
     pub site_id: String,
     pub kind: String,
@@ -75,7 +76,7 @@ pub struct UnsafeContractSite {
     pub async_context: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypedGlobal {
     pub name: String,
     pub ty: Type,
@@ -85,7 +86,7 @@ pub struct TypedGlobal {
     pub const_i32: Option<i32>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCapabilityRequirement {
     pub function: String,
     pub required: Vec<String>,
@@ -767,7 +768,8 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
         };
         let recorded = trait_impl_targets.entry(trait_name.clone()).or_default();
         for existing in recorded.iter() {
-            if type_compatible(existing, &item.for_type) || type_compatible(&item.for_type, existing)
+            if type_compatible(existing, &item.for_type)
+                || type_compatible(&item.for_type, existing)
             {
                 violations.push(format!(
                     "overlapping impls for trait `{}`: `{}` conflicts with `{}`",
@@ -7074,12 +7076,9 @@ fn parse_simple_type(token: &str) -> Option<Type> {
         "f64" => Type::Float { bits: 64 },
         "Decimal128" | "decimal128" => Type::Decimal128,
         "Uuid" | "uuid" => Type::Uuid,
-        other if other.starts_with("dyn ") => Type::DynTrait(
-            other
-                .trim_start_matches("dyn ")
-                .trim()
-                .to_string(),
-        ),
+        other if other.starts_with("dyn ") => {
+            Type::DynTrait(other.trim_start_matches("dyn ").trim().to_string())
+        }
         other if other.starts_with("fn(") => return None,
         other if other.starts_with('(') && other.ends_with(')') => {
             let inside = &other[1..other.len() - 1];
@@ -7399,28 +7398,28 @@ fn collect_and_rewrite_explicit_generic_calls(
                 step,
                 body,
             } => {
-                    if let Some(init) = init {
-                        rewrite_stmts(
-                            std::slice::from_mut(init.as_mut()),
-                            templates,
-                            depth,
-                            queue,
-                            rewrite,
-                        );
-                    }
-                    if let Some(condition) = condition {
-                        rewrite_expr(condition, templates, depth, queue, rewrite);
-                    }
-                    if let Some(step) = step {
-                        rewrite_stmts(
-                            std::slice::from_mut(step.as_mut()),
-                            templates,
-                            depth,
-                            queue,
-                            rewrite,
-                        );
-                    }
-                    rewrite_stmts(body, templates, depth, queue, rewrite);
+                if let Some(init) = init {
+                    rewrite_stmts(
+                        std::slice::from_mut(init.as_mut()),
+                        templates,
+                        depth,
+                        queue,
+                        rewrite,
+                    );
+                }
+                if let Some(condition) = condition {
+                    rewrite_expr(condition, templates, depth, queue, rewrite);
+                }
+                if let Some(step) = step {
+                    rewrite_stmts(
+                        std::slice::from_mut(step.as_mut()),
+                        templates,
+                        depth,
+                        queue,
+                        rewrite,
+                    );
+                }
+                rewrite_stmts(body, templates, depth, queue, rewrite);
             }
             Expr::ForIn { iterable, body, .. } => {
                 rewrite_expr(iterable, templates, depth, queue, rewrite);
@@ -8132,6 +8131,24 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "cancel",
         "recv",
         "pulse",
+        "browser.set_timeout",
+        "browser.set_interval",
+        "browser.clear_timeout",
+        "browser.request_animation_frame",
+        "browser.node_handle",
+        "browser.add_event_listener",
+        "browser.remove_event_listener",
+        "browser.fetch",
+        "browser.fetch_abort",
+        "browser.websocket_connect",
+        "browser.websocket_close",
+        "browser.stream_open",
+        "browser.local_storage_get",
+        "browser.local_storage_set",
+        "browser.session_storage_get",
+        "browser.session_storage_set",
+        "browser.console_log",
+        "browser.runtime_error_hook",
         "task.context",
         "task.group_begin",
         "task.group_spawn",
@@ -8382,7 +8399,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
         "task.context" => (vec![], task_handle.clone()),
         "task.group_begin" => (vec![], task_group_handle.clone()),
-        "task.group_spawn" => (vec![task_group_handle.clone(), task_fn], task_handle.clone()),
+        "task.group_spawn" => (
+            vec![task_group_handle.clone(), task_fn],
+            task_handle.clone(),
+        ),
         "task.group_spawn_n" => (
             vec![task_group_handle.clone(), task_fn, i32.clone()],
             i32.clone(),
@@ -8391,6 +8411,39 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             (vec![task_group_handle.clone()], i32.clone())
         }
         "task.parallel_map" => (vec![task_group_handle.clone(), task_fn], i32.clone()),
+        "browser.set_timeout" | "browser.set_interval" => {
+            (vec![i32.clone(), task_fn.clone()], i32.clone())
+        }
+        "browser.clear_timeout" => (vec![i32.clone()], i32.clone()),
+        "browser.request_animation_frame" => (vec![task_fn.clone()], i32.clone()),
+        "browser.node_handle" => (vec![str_ty.clone()], i32.clone()),
+        "browser.add_event_listener" => (
+            vec![i32.clone(), str_ty.clone(), str_ty.clone(), task_fn.clone()],
+            i32.clone(),
+        ),
+        "browser.remove_event_listener" => (vec![i32.clone()], i32.clone()),
+        "browser.fetch" => (
+            vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
+        "browser.fetch_abort" => (vec![i32.clone()], i32.clone()),
+        "browser.websocket_connect" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "browser.websocket_close" => (vec![i32.clone()], i32.clone()),
+        "browser.stream_open" => (vec![str_ty.clone(), i32.clone()], i32.clone()),
+        "browser.local_storage_get" | "browser.session_storage_get" => {
+            (vec![str_ty.clone()], str_ty.clone())
+        }
+        "browser.local_storage_set" | "browser.session_storage_set" => {
+            (vec![str_ty.clone(), str_ty.clone()], i32.clone())
+        }
+        "browser.console_log" => (
+            vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
+        "browser.runtime_error_hook" => (
+            vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "alloc" => (vec![usize_ty], ptr_u8.clone()),
         "free" => (vec![ptr_u8], Type::Void),
         "close" => (vec![http_handle.clone()], Type::Void),
@@ -8408,9 +8461,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         }
         "http.headers" => (vec![http_handle.clone()], map_handle.clone()),
         "http.request_id" | "http.remote_addr" => (vec![http_handle.clone()], str_ty.clone()),
-        "http.write" | "http.write_json" => {
-            (vec![http_handle.clone(), i32.clone(), str_ty.clone()], i32.clone())
-        }
+        "http.write" | "http.write_json" => (
+            vec![http_handle.clone(), i32.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "http.write_response" => (
             vec![
                 http_handle.clone(),
@@ -8464,10 +8518,16 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "json.to_list" => (vec![str_ty.clone()], list_handle.clone()),
         "json.to_map" => (vec![str_ty.clone()], map_handle.clone()),
         "json.parse" => (vec![str_ty.clone()], json_handle.clone()),
-        "json.get" => (vec![json_handle.clone(), str_ty.clone()], json_handle.clone()),
+        "json.get" => (
+            vec![json_handle.clone(), str_ty.clone()],
+            json_handle.clone(),
+        ),
         "json.get_str" => (vec![json_handle.clone(), str_ty.clone()], str_ty.clone()),
         "json.has" => (vec![json_handle.clone(), str_ty.clone()], i32.clone()),
-        "json.path" => (vec![json_handle.clone(), str_ty.clone()], json_handle.clone()),
+        "json.path" => (
+            vec![json_handle.clone(), str_ty.clone()],
+            json_handle.clone(),
+        ),
         "time.now" | "time.monotonic_ms" => (vec![], i32.clone()),
         "time.sleep_ms" => (vec![i32.clone()], i32.clone()),
         "time.interval" | "time.tick" => (vec![i32.clone()], i32.clone()),
@@ -8482,7 +8542,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "fs.temp_file" => (vec![str_ty.clone()], str_ty.clone()),
         "path.join" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "path.normalize" => (vec![str_ty.clone()], str_ty.clone()),
-        "route.match" => (vec![http_handle.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "route.match" => (
+            vec![http_handle.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "route.write_404" | "route.write_405" => (vec![http_handle.clone()], i32.clone()),
         "log.info" | "log.warn" | "log.error" => {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
@@ -8512,7 +8575,12 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             i32.clone(),
         ),
         "proc.spawn_cmd" | "proc.run_cmd" => (
-            vec![str_ty.clone(), proc_argv.clone(), proc_env.clone(), str_ty.clone()],
+            vec![
+                str_ty.clone(),
+                proc_argv.clone(),
+                proc_env.clone(),
+                str_ty.clone(),
+            ],
             proc_handle.clone(),
         ),
         "proc.exec_timeout" => (vec![proc_handle.clone()], i32.clone()),
@@ -9855,7 +9923,8 @@ fn eval_expr<'a>(
             payload,
             named_payload,
         } => {
-            let mut values = Vec::with_capacity(payload.len() + usize::from(!named_payload.is_empty()));
+            let mut values =
+                Vec::with_capacity(payload.len() + usize::from(!named_payload.is_empty()));
             for value in payload {
                 values.push(eval_expr(value, env, functions)?);
             }

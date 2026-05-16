@@ -1,0 +1,122 @@
+enum TimerKind {
+    Timeout,
+    Interval,
+    AnimationFrame,
+}
+
+enum EventPropagation {
+    Bubble,
+    Capture,
+    TargetOnly,
+}
+
+enum StorageArea {
+    Local,
+    Session,
+}
+
+struct TimerPlan {
+    kind: TimerKind,
+    delay_ms: i32,
+    cancellation_token: str,
+}
+
+struct ListenerPlan {
+    event_type: str,
+    propagation: EventPropagation,
+    cleanup_required: i32,
+}
+
+struct FetchPlan {
+    url: str,
+    method: str,
+    abort_enabled: i32,
+}
+
+fn timeout_plan(delay_ms: i32, cancellation_token: str) -> TimerPlan {
+    return TimerPlan {
+        kind: TimerKind::Timeout,
+        delay_ms: delay_ms,
+        cancellation_token: cancellation_token,
+    }
+}
+
+fn interval_plan(delay_ms: i32, cancellation_token: str) -> TimerPlan {
+    return TimerPlan {
+        kind: TimerKind::Interval,
+        delay_ms: delay_ms,
+        cancellation_token: cancellation_token,
+    }
+}
+
+fn animation_frame_plan(cancellation_token: str) -> TimerPlan {
+    return TimerPlan {
+        kind: TimerKind::AnimationFrame,
+        delay_ms: 16,
+        cancellation_token: cancellation_token,
+    }
+}
+
+fn listener_plan(event_type: str, propagation: EventPropagation) -> ListenerPlan {
+    return ListenerPlan {
+        event_type: event_type,
+        propagation: propagation,
+        cleanup_required: 1,
+    }
+}
+
+fn fetch_plan(url: str, method: str) -> FetchPlan {
+    return FetchPlan {
+        url: url,
+        method: method,
+        abort_enabled: 1,
+    }
+}
+
+fn storage_scope_score(area: StorageArea) -> i32 {
+    match area {
+        StorageArea::Local => return 17,
+        StorageArea::Session => return 23,
+        _ => return 17,
+    }
+}
+
+fn propagation_score(mode: EventPropagation) -> i32 {
+    match mode {
+        EventPropagation::Bubble => return 7,
+        EventPropagation::Capture => return 13,
+        EventPropagation::TargetOnly => return 19,
+        _ => return 7,
+    }
+}
+
+fn timer_kind_base(kind: TimerKind) -> i32 {
+    match kind {
+        TimerKind::Interval => return 29,
+        TimerKind::AnimationFrame => return 31,
+        _ => return 11,
+    }
+}
+
+fn timer_score(plan: TimerPlan) -> i32 {
+    let base = timer_kind_base(plan.kind)
+    return (base + plan.delay_ms + str.len(plan.cancellation_token)) % 251
+}
+
+fn listener_score(plan: ListenerPlan) -> i32 {
+    return (str.len(plan.event_type) + propagation_score(plan.propagation) + (plan.cleanup_required * 5)) % 251
+}
+
+fn fetch_score(plan: FetchPlan) -> i32 {
+    return (str.len(plan.url) + (str.len(plan.method) * 3) + (plan.abort_enabled * 11)) % 251
+}
+
+fn sample() -> i32 {
+    let timeout = timeout_plan(50, "timer.cancel.1")
+    let frame = animation_frame_plan("frame.cancel.1")
+    let listener = listener_plan("click", EventPropagation::Capture)
+    let fetch = fetch_plan("/api/profile", "GET")
+    let local = storage_scope_score(StorageArea::Local)
+    let session = storage_scope_score(StorageArea::Session)
+    return (timer_score(timeout) + timer_score(frame) + listener_score(listener) + fetch_score(fetch) + local + session) % 251
+}

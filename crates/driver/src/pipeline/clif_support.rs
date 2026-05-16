@@ -1664,8 +1664,8 @@ pub(super) fn clif_emit_expr(
                     clif_assert_finite(
                         builder,
                         ClifValue {
-                        value,
-                        ty: signature.ret.unwrap_or(default_int_clif_type()),
+                            value,
+                            ty: signature.ret.unwrap_or(default_int_clif_type()),
                         },
                     )
                 } else {
@@ -1840,9 +1840,7 @@ pub(super) fn clif_assert_finite(builder: &mut FunctionBuilder, value: ClifValue
     let ok = builder.ins().band(lower, upper);
     let continue_block = builder.create_block();
     let trap_block = builder.create_block();
-    builder
-        .ins()
-        .brif(ok, continue_block, &[], trap_block, &[]);
+    builder.ins().brif(ok, continue_block, &[], trap_block, &[]);
     builder.switch_to_block(trap_block);
     builder.ins().trap(TrapCode::unwrap_user(1));
     builder.seal_block(trap_block);
