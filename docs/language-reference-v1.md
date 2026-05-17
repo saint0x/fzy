@@ -319,7 +319,17 @@ test "chaos_case" nondet {
   - `rpc.frame`
   - `test.event`
   - `test.assert`
-- Normalization rule: engine-specific `async.schedule` is normalized to `async.checkpoint` before equivalence comparison.
+- Normalization rule: engine-specific `async.schedule` plus browser promise scheduling evidence (`browser.promise.then`, `browser.promise.catch`, `browser.promise.finally`, `browser.promise`) are normalized to `async.checkpoint` before equivalence comparison; browser fairness/preemption evidence (`browser.starvation_prevented`) is normalized to `thread.schedule`.
+
+### Browser Async Lowering Contract
+
+- JS backend lowering does not invent a second scheduler protocol for async semantics.
+- `await <expr>` lowers to JavaScript `await <expr>`.
+- Shared runtime/task primitives such as `spawn(...)`, `join(...)`, `checkpoint()`, `browser.set_timeout(...)`, `browser.set_interval(...)`, `browser.request_animation_frame(...)`, and related browser ABI calls lower through the shared runtime intrinsic path (`__fz_intrinsic(...)`) in emitted JS.
+- Browser promise/task lineage remains part of the runtime semantic evidence surface:
+  - promise enqueue/schedule evidence normalizes into `async.checkpoint`
+  - fairness/preemption evidence normalizes into `thread.schedule`
+  - causality links such as `promise.then` remain explicit replay/equivalence metadata
 
 ## Memory Safety And UB Model
 

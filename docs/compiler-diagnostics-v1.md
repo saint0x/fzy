@@ -86,8 +86,9 @@ Catalog:
   - `target: "browser"`
   - `browserGuidance`
   - `suggestedCommands`
-- Runtime overlays may include source-mapped frames when browser/runtime tooling provides original-location metadata.
+- Runtime overlays enrich emitted-JS frames through the generated sourcemap when an entry browser source is configured, then render original file/line/column metadata through the shared overlay payload.
 - Async browser traces may be rendered in overlay payloads, but they still attach to the shared diagnostic/tracing model rather than a bespoke frontend error schema.
+- JS backend capability diagnostics must fail clearly for native-only boundaries such as C ABI imports/exports instead of silently emitting browser-incompatible artifacts.
 
 ## Source Anchoring Policy
 

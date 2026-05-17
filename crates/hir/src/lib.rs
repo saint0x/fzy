@@ -8119,6 +8119,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "spawn",
         "thread.spawn",
         "spawn_ctx",
+        "import",
         "join",
         "detach",
         "cancel_task",
@@ -8392,6 +8393,13 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     Some(match name {
         "spawn" | "thread.spawn" => (vec![task_fn.clone()], task_handle.clone()),
         "spawn_ctx" => (vec![task_fn.clone(), i32.clone()], task_handle.clone()),
+        "import" => (
+            vec![str_ty.clone()],
+            Type::Named {
+                name: "JsModuleHandle".to_string(),
+                args: Vec::new(),
+            },
+        ),
         "join" | "task_result" => (vec![task_handle.clone()], i32.clone()),
         "detach" | "cancel_task" => (vec![task_handle.clone()], i32.clone()),
         "yield" | "checkpoint" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),

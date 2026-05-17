@@ -158,6 +158,68 @@ pub(super) fn backend_capability_diagnostics(
 ) -> Vec<diagnostics::Diagnostic> {
     let mut diagnostics = Vec::new();
     let backend = backend.trim().to_ascii_lowercase();
+    if backend == "js" {
+        if for_library {
+            diagnostics.push(
+                diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Error,
+                    "backend `js` is not supported for `fz build --lib`",
+                    Some(
+                        "browser-target emission is currently a program/runtime path; build a binary entry with `fz build <path> --backend js`"
+                            .to_string(),
+                    ),
+                )
+                .with_fix("switch to a binary target or use `--backend cranelift`/`--backend llvm` for libraries"),
+            );
+        }
+        for item in &module.items {
+            let ast::Item::Function(function) = item else {
+                continue;
+            };
+            if function.is_pubext
+                && function
+                    .abi
+                    .as_deref()
+                    .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+            {
+                diagnostics.push(
+                    diagnostics::Diagnostic::new(
+                        diagnostics::Severity::Error,
+                        format!(
+                            "backend `js` does not support C ABI export `{}`",
+                            function.name
+                        ),
+                        Some(
+                            "browser-target emission preserves Fzy/browser runtime semantics and cannot provide native C ABI symbols"
+                                .to_string(),
+                        ),
+                    )
+                    .with_fix("switch backend: `fz build <path> --backend llvm`"),
+                );
+            }
+            if function.is_extern
+                && function
+                    .abi
+                    .as_deref()
+                    .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+            {
+                diagnostics.push(
+                    diagnostics::Diagnostic::new(
+                        diagnostics::Severity::Error,
+                        format!(
+                            "backend `js` does not support C ABI import `{}`",
+                            function.name
+                        ),
+                        Some(
+                            "replace this boundary with JS/browser interop or compile a native backend for C FFI paths"
+                                .to_string(),
+                        ),
+                    )
+                    .with_fix("remove the C ABI dependency from the browser-target build"),
+                );
+            }
+        }
+    }
     if backend == "cranelift" {
         for item in &module.items {
             let ast::Item::Function(function) = item else {
@@ -204,6 +266,10 @@ pub(super) fn backend_capability_diagnostics(
             }
         }
     }
+    diagnostics::assign_stable_codes(
+        &mut diagnostics,
+        diagnostics::DiagnosticDomain::Driver,
+    );
     diagnostics
 }
 

@@ -41,13 +41,17 @@ cat > "$WORK_DIR/public/index.html" <<'EOF'
 <html>
   <body>
     <div id="app">browser dx smoke</div>
+    <script type="module">
+      import { __fz_main } from '/__fz/build/main.js';
+      document.getElementById('app').setAttribute('data-main-type', typeof __fz_main);
+    </script>
   </body>
 </html>
 EOF
 
 "${FZ_CMD[@]}" dev-server "$WORK_DIR" --entry "$WORK_DIR/src/main.fzy" --port "$PORT" >/tmp/fz-browser-dev-server.log 2>&1 &
 SERVER_PID=$!
-trap 'kill "$SERVER_PID" >/dev/null 2>&1 || true; rm -rf "$WORK_DIR"' EXIT
+trap 'kill "$SERVER_PID" >/dev/null 2>&1 || true; wait "$SERVER_PID" 2>/dev/null || true; rm -rf "$WORK_DIR"' EXIT
 
 for _ in $(seq 1 120); do
   if curl -fsS "http://127.0.0.1:$PORT/__fz/health" >/dev/null; then
@@ -59,6 +63,9 @@ done
 curl -fsS "http://127.0.0.1:$PORT/" | grep "/__fz/overlay.js" >/dev/null
 curl -fsS "http://127.0.0.1:$PORT/__fz/overlay.js" | grep "Fozzy Browser Diagnostics" >/dev/null
 curl -fsS "http://127.0.0.1:$PORT/__fz/diagnostics" | grep '"target":"browser"' >/dev/null
+curl -fsS "http://127.0.0.1:$PORT/__fz/build/main.js" | grep "sourceMappingURL=/__fz/build/main.js.map" >/dev/null
+curl -fsS "http://127.0.0.1:$PORT/__fz/build/main.js.map" | grep '"/__fz/source/main.fzy"' >/dev/null
+curl -fsS "http://127.0.0.1:$PORT/__fz/source/main.fzy" | grep 'fn main() -> i32' >/dev/null
 curl -fsS -X POST "http://127.0.0.1:$PORT/__fz/runtime-error" \
   -H 'content-type: application/json' \
   -d '{"message":"runtime smoke","frames":[{"file":"index.js","line":1,"column":1}]}' >/dev/null

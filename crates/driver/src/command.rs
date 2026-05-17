@@ -3210,11 +3210,10 @@ fn spawn_browser_dev_server_watcher(
             } else {
                 continue;
             };
-            let hmr_payload = json!({
-                "strategy": "reload",
-                "changedFiles": changed,
-                "revision": overlay.get("revision").and_then(Value::as_u64).unwrap_or(0),
-            });
+            let hmr_payload = browser_hmr_payload(
+                changed,
+                overlay.get("revision").and_then(Value::as_u64).unwrap_or(0),
+            );
             events.broadcast("diagnostics", &overlay);
             events.broadcast("hmr", &hmr_payload);
             events.broadcast("reload", &hmr_payload);
@@ -3263,6 +3262,12 @@ fn handle_dev_server_connection(
             browser_overlay_script().as_bytes(),
         ),
         ("GET", "/__fz/events") => serve_sse_stream(stream, events),
+        ("GET", path) if path.starts_with("/__fz/build/") => {
+            serve_browser_build_artifact(&mut stream, config.entry_source.as_deref(), path)
+        }
+        ("GET", path) if path.starts_with("/__fz/source/") => {
+            serve_browser_source_artifact(&mut stream, config.entry_source.as_deref(), path)
+        }
         ("POST", "/__fz/runtime-error") => {
             let payload: Value = serde_json::from_slice(&request.body).unwrap_or_else(|_| {
                 json!({
@@ -3270,6 +3275,7 @@ fn handle_dev_server_connection(
                     "source": "browser",
                 })
             });
+            let payload = enrich_browser_runtime_error(config.entry_source.as_deref(), payload);
             let snapshot = {
                 let mut guard = state
                     .lock()
@@ -3353,6 +3359,132 @@ fn serve_browser_static_file(
             b"not found",
         )
     }
+}
+
+fn serve_browser_build_artifact(
+    stream: &mut TcpStream,
+    entry_source: Option<&Path>,
+    request_path: &str,
+) -> Result<()> {
+    let Some(entry_source) = entry_source else {
+        return write_http_response(
+            stream,
+            404,
+            "Not Found",
+            "text/plain; charset=utf-8",
+            b"browser build entry not configured",
+        );
+    };
+    let artifact = compile_file_with_options(entry_source, BuildProfile::Dev, Some("js"), true)?;
+    let requested = request_path.trim_start_matches("/__fz/build/");
+    let candidates = [
+        artifact.output.as_ref(),
+        artifact.sourcemap_output.as_ref(),
+    ];
+    for candidate in candidates.into_iter().flatten() {
+        if candidate
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| name == requested)
+        {
+            if candidate == artifact.sourcemap_output.as_ref().unwrap_or(candidate) {
+                let body = render_browser_sourcemap_artifact(entry_source, candidate)?;
+                return write_http_response(
+                    stream,
+                    200,
+                    "OK",
+                    content_type_for_path(candidate),
+                    &body,
+                );
+            }
+            let body = if candidate.extension().and_then(|ext| ext.to_str()) == Some("js") {
+                render_browser_js_artifact(candidate)?
+            } else {
+                std::fs::read(candidate).with_context(|| {
+                    format!(
+                        "failed reading browser build artifact: {}",
+                        candidate.display()
+                    )
+                })?
+            };
+            return write_http_response(
+                stream,
+                200,
+                "OK",
+                content_type_for_path(candidate),
+                &body,
+            );
+        }
+    }
+    write_http_response(
+        stream,
+        404,
+        "Not Found",
+        "text/plain; charset=utf-8",
+        b"browser build artifact not found",
+    )
+}
+
+fn render_browser_js_artifact(js_output: &Path) -> Result<Vec<u8>> {
+    let js_text = std::fs::read_to_string(js_output)
+        .with_context(|| format!("failed reading browser js artifact: {}", js_output.display()))?;
+    let map_name = js_output
+        .file_name()
+        .and_then(|value| value.to_str())
+        .map(|name| format!("/__fz/build/{name}.map"))
+        .unwrap_or_else(|| "/__fz/build/main.js.map".to_string());
+    let rewritten = rewrite_js_sourcemap_comment(&js_text, &map_name);
+    Ok(rewritten.into_bytes())
+}
+
+fn rewrite_js_sourcemap_comment(js_text: &str, sourcemap_url: &str) -> String {
+    let mut lines = js_text.lines().map(str::to_string).collect::<Vec<_>>();
+    let replacement = format!("//# sourceMappingURL={sourcemap_url}");
+    if let Some(last) = lines.last_mut() {
+        if last.trim_start().starts_with("//# sourceMappingURL=") {
+            *last = replacement;
+            return format!("{}\n", lines.join("\n"));
+        }
+    }
+    if js_text.ends_with('\n') {
+        format!("{js_text}{replacement}\n")
+    } else {
+        format!("{js_text}\n{replacement}\n")
+    }
+}
+
+fn serve_browser_source_artifact(
+    stream: &mut TcpStream,
+    entry_source: Option<&Path>,
+    request_path: &str,
+) -> Result<()> {
+    let Some(entry_source) = entry_source else {
+        return write_http_response(
+            stream,
+            404,
+            "Not Found",
+            "text/plain; charset=utf-8",
+            b"browser source entry not configured",
+        );
+    };
+    let requested = sanitize_http_path(request_path.trim_start_matches("/__fz/source/"));
+    let sources = load_browser_original_sources(entry_source)?;
+    let Some(source) = sources.iter().find(|source| source.relative == requested) else {
+        return write_http_response(
+            stream,
+            404,
+            "Not Found",
+            "text/plain; charset=utf-8",
+            b"browser source artifact not found",
+        );
+    };
+    write_http_response(
+        stream,
+        200,
+        "OK",
+        "text/plain; charset=utf-8",
+        source.content.as_bytes(),
+    )
 }
 
 fn browser_compiler_payload(entry_source: Option<&Path>) -> Value {
@@ -3442,6 +3574,320 @@ fn augment_browser_diagnostic(diagnostic: &mut Value, path: &Path) {
     object.insert("suggestedCommands".to_string(), json!(suggested));
 }
 
+#[derive(Debug, Clone)]
+struct BrowserSourceMapEntry {
+    generated_line: usize,
+    generated_col: usize,
+    source_index: usize,
+    original_line: usize,
+    original_col: usize,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserSourceMapData {
+    js_output: PathBuf,
+    sources: Vec<String>,
+    async_functions: Vec<String>,
+    mappings: Vec<BrowserSourceMapEntry>,
+}
+
+#[derive(Debug, Clone)]
+struct BrowserOriginalSource {
+    relative: String,
+    content: String,
+}
+
+fn enrich_browser_runtime_error(entry_source: Option<&Path>, payload: Value) -> Value {
+    let Some(entry_source) = entry_source else {
+        return payload;
+    };
+    let Ok(artifact) = compile_file_with_options(entry_source, BuildProfile::Dev, Some("js"), true)
+    else {
+        return payload;
+    };
+    let (Some(js_output), Some(sourcemap_output)) = (
+        artifact.output.as_ref(),
+        artifact.sourcemap_output.as_ref(),
+    ) else {
+        return payload;
+    };
+    let Ok(source_map) = load_browser_sourcemap_data(js_output, sourcemap_output) else {
+        return payload;
+    };
+    apply_browser_source_map_to_runtime_error(payload, &source_map)
+}
+
+fn load_browser_sourcemap_data(js_output: &Path, sourcemap_output: &Path) -> Result<BrowserSourceMapData> {
+    let payload: Value = serde_json::from_str(
+        &std::fs::read_to_string(sourcemap_output)
+            .with_context(|| format!("failed reading sourcemap: {}", sourcemap_output.display()))?,
+    )
+    .context("failed parsing browser sourcemap json")?;
+    let sources = payload
+        .get("sources")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let async_functions = payload
+        .get("x_fozzy")
+        .and_then(|value| value.get("asyncFunctions"))
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mappings = decode_browser_sourcemap_mappings(
+        payload
+            .get("mappings")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    )?;
+    Ok(BrowserSourceMapData {
+        js_output: js_output.to_path_buf(),
+        sources,
+        async_functions,
+        mappings,
+    })
+}
+
+fn render_browser_sourcemap_artifact(entry_source: &Path, sourcemap_output: &Path) -> Result<Vec<u8>> {
+    let mut payload: Value = serde_json::from_str(
+        &std::fs::read_to_string(sourcemap_output)
+            .with_context(|| format!("failed reading sourcemap: {}", sourcemap_output.display()))?,
+    )
+    .context("failed parsing browser sourcemap json")?;
+    let rewritten_sources = load_browser_original_sources(entry_source)?
+        .into_iter()
+        .map(|source| {
+            let devtools_url = format!("/__fz/source/{}", source.relative);
+            json!({
+                "devtoolsUrl": devtools_url,
+                "relative": source.relative,
+            })
+        })
+        .collect::<Vec<_>>();
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "sources".to_string(),
+            json!(
+                rewritten_sources
+                    .iter()
+                    .filter_map(|item| item.get("devtoolsUrl").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+            ),
+        );
+        object.insert("x_fzy_browser_sources".to_string(), json!(rewritten_sources));
+    }
+    serde_json::to_vec(&payload).context("failed serializing rewritten browser sourcemap")
+}
+
+fn load_browser_original_sources(entry_source: &Path) -> Result<Vec<BrowserOriginalSource>> {
+    let parsed = parse_program(entry_source)?;
+    let root_dir = entry_source
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()
+        .unwrap_or_else(|_| {
+            entry_source
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf()
+        });
+    parsed
+        .module_paths
+        .iter()
+        .map(|path| {
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("failed reading browser source file: {}", path.display()))?;
+            let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+            let relative = path
+                .strip_prefix(&root_dir)
+                .ok()
+                .or_else(|| canonical_path.strip_prefix(&root_dir).ok())
+                .map(|value| value.display().to_string())
+                .unwrap_or_else(|| canonical_path.display().to_string())
+                .replace('\\', "/");
+            Ok(BrowserOriginalSource { relative, content })
+        })
+        .collect()
+}
+
+fn apply_browser_source_map_to_runtime_error(mut payload: Value, source_map: &BrowserSourceMapData) -> Value {
+    let Some(object) = payload.as_object_mut() else {
+        return payload;
+    };
+    let Some(frames) = object.get_mut("frames").and_then(Value::as_array_mut) else {
+        return payload;
+    };
+    let js_output = source_map.js_output.display().to_string();
+    let js_name = source_map
+        .js_output
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let mut mapped_lines = Vec::new();
+    let mut async_trace = Vec::new();
+    for frame in frames {
+        let Some(frame_object) = frame.as_object_mut() else {
+            continue;
+        };
+        let file = frame_object
+            .get("file")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !frame_matches_js_output(file, &js_output, &js_name) {
+            continue;
+        }
+        let line = frame_object
+            .get("line")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let column = frame_object
+            .get("column")
+            .and_then(Value::as_u64)
+            .unwrap_or(1) as usize;
+        let Some(mapping) = browser_sourcemap_lookup(source_map, line, column) else {
+            continue;
+        };
+        let Some(original_file) = source_map.sources.get(mapping.source_index) else {
+            continue;
+        };
+        frame_object.insert("originalFile".to_string(), json!(original_file));
+        frame_object.insert("originalLine".to_string(), json!(mapping.original_line + 1));
+        frame_object.insert("originalColumn".to_string(), json!(mapping.original_col + 1));
+        let function = frame_object
+            .get("function")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        mapped_lines.push(format!(
+            "at {} ({}:{}:{})",
+            if function.is_empty() { "<anonymous>" } else { function.as_str() },
+            original_file,
+            mapping.original_line + 1,
+            mapping.original_col + 1
+        ));
+        if source_map.async_functions.iter().any(|name| name == &function) {
+            async_trace.push(format!("async function {}", function));
+        }
+    }
+    if !mapped_lines.is_empty() {
+        object.insert("mappedStack".to_string(), json!(mapped_lines.join("\n")));
+    }
+    if !async_trace.is_empty() {
+        object.insert("asyncTrace".to_string(), json!(async_trace));
+    }
+    payload
+}
+
+fn frame_matches_js_output(frame_file: &str, js_output: &str, js_name: &str) -> bool {
+    frame_file == js_output
+        || frame_file.ends_with(js_output)
+        || frame_file.ends_with(js_name)
+        || frame_file.ends_with(&format!("/{}", js_name))
+}
+
+fn browser_sourcemap_lookup(
+    source_map: &BrowserSourceMapData,
+    generated_line_one_based: usize,
+    generated_col_one_based: usize,
+) -> Option<&BrowserSourceMapEntry> {
+    if generated_line_one_based == 0 {
+        return None;
+    }
+    let target_line = generated_line_one_based - 1;
+    let target_col = generated_col_one_based.saturating_sub(1);
+    source_map
+        .mappings
+        .iter()
+        .filter(|entry| {
+            entry.generated_line == target_line && entry.generated_col <= target_col
+        })
+        .max_by_key(|entry| entry.generated_col)
+        .or_else(|| {
+            source_map
+                .mappings
+                .iter()
+                .find(|entry| entry.generated_line == target_line)
+        })
+}
+
+fn decode_browser_sourcemap_mappings(mappings: &str) -> Result<Vec<BrowserSourceMapEntry>> {
+    let mut out = Vec::new();
+    let mut prev_source = 0i64;
+    let mut prev_original_line = 0i64;
+    let mut prev_original_col = 0i64;
+    for (generated_line, line) in mappings.split(';').enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let mut prev_generated_col = 0i64;
+        for segment in line.split(',') {
+            if segment.is_empty() {
+                continue;
+            }
+            let values = decode_vlq_segment(segment)?;
+            if values.len() < 4 {
+                continue;
+            }
+            prev_generated_col += values[0];
+            prev_source += values[1];
+            prev_original_line += values[2];
+            prev_original_col += values[3];
+            out.push(BrowserSourceMapEntry {
+                generated_line,
+                generated_col: prev_generated_col.max(0) as usize,
+                source_index: prev_source.max(0) as usize,
+                original_line: prev_original_line.max(0) as usize,
+                original_col: prev_original_col.max(0) as usize,
+            });
+        }
+    }
+    Ok(out)
+}
+
+fn decode_vlq_segment(segment: &str) -> Result<Vec<i64>> {
+    let mut chars = segment.chars().peekable();
+    let mut out = Vec::new();
+    while chars.peek().is_some() {
+        let mut value = 0i64;
+        let mut shift = 0u32;
+        loop {
+            let ch = chars
+                .next()
+                .ok_or_else(|| anyhow!("unexpected end of vlq segment"))?;
+            let digit = decode_vlq_digit(ch)
+                .ok_or_else(|| anyhow!("invalid vlq digit `{ch}` in sourcemap"))?;
+            let continuation = (digit & 32) != 0;
+            value |= ((digit & 31) as i64) << shift;
+            shift += 5;
+            if !continuation {
+                break;
+            }
+        }
+        let negative = (value & 1) == 1;
+        let decoded = (value >> 1) * if negative { -1 } else { 1 };
+        out.push(decoded);
+    }
+    Ok(out)
+}
+
+fn decode_vlq_digit(ch: char) -> Option<u8> {
+    const BASE64_VLQ: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    BASE64_VLQ.find(ch).map(|idx| idx as u8)
+}
+
 fn snapshot_browser_watch_paths(
     serve_root: &Path,
     entry_source: Option<&Path>,
@@ -3459,6 +3905,14 @@ fn snapshot_browser_watch_paths(
         snapshot.insert(rel, (metadata.len(), modified_ns));
     }
     Ok(snapshot)
+}
+
+fn browser_hmr_payload(changed_files: Vec<String>, revision: u64) -> Value {
+    json!({
+        "strategy": "reload",
+        "changedFiles": changed_files,
+        "revision": revision,
+    })
 }
 
 fn collect_browser_watch_entries(
@@ -4198,7 +4652,7 @@ fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String>
             "seed": seed,
             "equivalenceNormalization": {
                 "yieldPoints": ["await", "yield", "checkpoint", "spawn", "recv", "timeout", "deadline", "cancel", "pulse"],
-                "rule": "trace_event/assert_eq_int are normalized to test-level events; scheduler/rpc categories are preserved when present in engine evidence",
+                "rule": "trace_event/assert_eq_int are normalized to test-level events; generic scheduler markers and browser promise/fairness scheduler evidence normalize into deterministic async/thread categories before comparison",
             },
             "signature": signature,
             "scenario": scenario.display().to_string(),
@@ -4281,6 +4735,11 @@ fn normalize_equivalence_event_kinds(kinds: &[String]) -> Vec<String> {
         .iter()
         .map(|kind| match kind.as_str() {
             "async.schedule" => "async.checkpoint".to_string(),
+            "browser.promise.then"
+            | "browser.promise.catch"
+            | "browser.promise.finally"
+            | "browser.promise" => "async.checkpoint".to_string(),
+            "browser.starvation_prevented" => "thread.schedule".to_string(),
             other => other.to_string(),
         })
         .collect::<Vec<_>>();
@@ -12224,11 +12683,160 @@ mod tests {
     }
 
     #[test]
+    fn browser_runtime_error_enrichment_applies_sourcemap_frames() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-browser-overlay-map-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"browser_overlay_map\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"browser_overlay_map\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "use core.thread;\nasync fn worker() -> i32 {\n    return 7\n}\npub fn run() -> i32 {\n    return 1\n}\n",
+        )
+        .expect("source should be written");
+
+        let artifact = compile_file_with_options(&root, BuildProfile::Dev, Some("js"), true)
+            .expect("js backend build should succeed");
+        let js_output = artifact.output.expect("js output should exist");
+        let js_text = std::fs::read_to_string(&js_output).expect("js should read");
+        let target_line = js_text
+            .lines()
+            .enumerate()
+            .find_map(|(index, line)| line.contains("async function").then_some(index + 1))
+            .expect("async function line should exist");
+
+        let payload = json!({
+            "message": "browser failure",
+            "frames": [{
+                "file": js_output.display().to_string(),
+                "line": target_line,
+                "column": 1,
+                "function": "worker"
+            }]
+        });
+        let enriched =
+            enrich_browser_runtime_error(Some(&root.join("src/main.fzy")), payload);
+        let frame = enriched["frames"][0].clone();
+        assert!(frame.get("originalFile").is_some());
+        assert!(frame.get("originalLine").is_some());
+        assert!(enriched.get("mappedStack").is_some());
+        assert_eq!(enriched["asyncTrace"][0], "async function worker");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn browser_sourcemap_artifact_rewrites_sources_to_devserver_endpoints() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-browser-sourcemap-devtools-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"browser_sourcemap_devtools\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"browser_sourcemap_devtools\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "pub fn run() -> i32 {\n    return 7\n}\n",
+        )
+        .expect("source should be written");
+
+        let artifact = compile_file_with_options(&root, BuildProfile::Dev, Some("js"), true)
+            .expect("js backend build should succeed");
+        let rewritten = render_browser_sourcemap_artifact(
+            &root.join("src/main.fzy"),
+            artifact
+                .sourcemap_output
+                .as_ref()
+                .expect("sourcemap should exist"),
+        )
+        .expect("rewritten sourcemap should render");
+        let payload: Value = serde_json::from_slice(&rewritten).expect("rewritten sourcemap json");
+        assert_eq!(payload["sources"][0], "/__fz/source/main.fzy");
+        assert_eq!(
+            payload["x_fzy_browser_sources"][0]["relative"],
+            "main.fzy"
+        );
+
+        let sources = load_browser_original_sources(&root.join("src/main.fzy"))
+            .expect("original sources should load");
+        assert_eq!(sources[0].relative, "main.fzy");
+        assert!(sources[0].content.contains("pub fn run"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn browser_js_artifact_rewrites_sourcemap_comment_to_devserver_path() {
+        let rendered = rewrite_js_sourcemap_comment(
+            "console.log('hi');\n//# sourceMappingURL=main.js.map\n",
+            "/__fz/build/main.js.map",
+        );
+        assert!(rendered.contains("//# sourceMappingURL=/__fz/build/main.js.map"));
+        assert!(!rendered.contains("//# sourceMappingURL=main.js.map\n"));
+    }
+
+    #[test]
     fn sanitize_http_path_drops_parent_segments() {
         assert_eq!(
             sanitize_http_path("/../../public/../index.html"),
             "public/index.html"
         );
+    }
+
+    #[test]
+    fn browser_hmr_payload_declares_reload_fallback() {
+        let payload = browser_hmr_payload(
+            vec!["entry:/tmp/demo/src/main.fzy".to_string(), "module:/tmp/demo/src/lib.fzy".to_string()],
+            7,
+        );
+        assert_eq!(payload["strategy"], "reload");
+        assert_eq!(payload["revision"], 7);
+        assert_eq!(payload["changedFiles"][0], "entry:/tmp/demo/src/main.fzy");
+    }
+
+    #[test]
+    fn browser_watch_entries_follow_official_module_graph() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-browser-watch-graph-{suffix}"));
+        std::fs::create_dir_all(root.join("src/feature")).expect("project dir should be created");
+        std::fs::create_dir_all(root.join("public")).expect("public dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"browser_watch_graph\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"browser_watch_graph\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod feature;\nfn main() -> i32 {\n    return feature.helper()\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(root.join("src/feature/mod.fzy"), "pub fn helper() -> i32 { return 1 }\n")
+            .expect("feature source should be written");
+
+        let entries = collect_browser_watch_entries(
+            &root.join("public"),
+            Some(&root.join("src/main.fzy")),
+        )
+        .expect("watch entries should resolve");
+        assert!(entries.iter().any(|(rel, _)| rel.contains("entry:")));
+        assert!(entries
+            .iter()
+            .any(|(rel, path)| rel.contains("module:") && path.ends_with("src/feature/mod.fzy")));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -12420,5 +13028,21 @@ mod tests {
         assert_eq!(causal_links[0].from, 1);
         assert_eq!(causal_links[0].to, 2);
         assert_eq!(causal_links[0].relation, "promise.then");
+    }
+
+    #[test]
+    fn equivalence_normalization_includes_browser_scheduler_events() {
+        let normalized = normalize_equivalence_event_kinds(&[
+            "browser.promise.then".to_string(),
+            "browser.promise".to_string(),
+            "browser.starvation_prevented".to_string(),
+            "rpc.frame".to_string(),
+        ]);
+        assert!(normalized.iter().any(|kind| kind == "async.checkpoint"));
+        assert!(normalized.iter().any(|kind| kind == "thread.schedule"));
+        assert!(normalized.iter().any(|kind| kind == "rpc.frame"));
+        assert!(!normalized
+            .iter()
+            .any(|kind| kind == "browser.promise.then" || kind == "browser.promise"));
     }
 }

@@ -33,23 +33,34 @@ The dev server contract is:
 - Exposes `GET /__fz/health` for readiness checks.
 - Exposes `GET /__fz/diagnostics` for browser-target diagnostic payloads derived from the shared CLI/LSP diagnostic model.
 - Exposes `GET /__fz/events` as the live-reload/HMR transport channel.
+- Exposes `GET /__fz/build/<artifact>` for emitted browser JS artifacts tied to the configured entry source.
+- Exposes `GET /__fz/source/<graph-relative-path>` for original `.fzy` module source content referenced by emitted browser sourcemaps.
 - Accepts `POST /__fz/runtime-error` for surfaced browser runtime failures.
 - Accepts `POST /__fz/runtime-error/clear` to clear overlay runtime failures during local iteration.
+- When an entry `.fzy` source is configured, runtime error ingestion enriches emitted-JS frames from the generated sourcemap before overlays render them.
 
 Current HMR transport behavior is conservative by design:
 
 - The transport emits `hmr` events with a defined fallback strategy of `reload`.
+- Changed-file detection follows the official parsed module graph for the configured entry source rather than a second browser-only dependency graph.
 - Runtime patch boundaries remain owned by the runtime/loader contract; this server only transports change notifications and browser diagnostics.
+- Unsafe or ambiguous patch cases fall back to full reload rather than claiming state preservation.
+- Production DX budgets are gated with `scripts/browser_incremental_budget_gate.py` and `scripts/browser_editor_responsiveness_gate.sh`:
+  - compile/rebuild budgets use the recorded browser compile-bench artifact
+  - editor responsiveness budgets use the `fz lsp` diagnostics/definition/hover/smoke path on a browser-target sample project
+- The current v1 browser ESM model does not require a separate loader manifest: emitted JS artifacts, sourcemaps, and original source URLs are served directly from the official module graph and native browser ESM resolution surface.
 
 ## JS Interop Contract
 
 Browser/package interop stays explicit and documented rather than implicit.
 
 - Fzy-emitted browser modules remain the ABI source of truth for Fzy symbols.
+- Dynamic `import(...)` is a supported browser-target call surface and lowers directly to emitted ESM `import(...)` rather than a backend-local shim.
 - Imported JavaScript/npm modules are treated as foreign-module boundaries that must be named explicitly and typed deliberately.
-- Source-mapped browser overlays prefer original frame metadata when runtime or sourcemap tooling provides it.
+- Source-mapped browser overlays render original file/line/column metadata when sourcemap enrichment resolves emitted JS frames.
 - Package resolution strategy for browser projects is ESM-first and bundler-compatible: emitted modules must remain loadable by direct browser ESM, Vite, Rollup, ESBuild, and Bun-compatible loaders.
 - Foreign-module typing is a contract surface, not an inference surface. Tooling should surface missing or ambiguous foreign boundaries rather than guessing.
+- Production compatibility smoke: `scripts/browser_js_compat_smoke.sh` verifies direct browser loading in Chromium plus bundler/build compatibility across Vite, Rollup, ESBuild, and Bun for the emitted JS artifact.
 
 ## VS Code Packaging
 

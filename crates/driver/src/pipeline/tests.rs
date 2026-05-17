@@ -206,6 +206,122 @@ fn js_backend_emits_executable_esm_with_sourcemap() {
 }
 
 #[test]
+fn js_backend_output_and_sourcemap_are_stable_for_unchanged_inputs() {
+    let project_name = format!(
+        "fozzylang-js-stable-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo_js_stable\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo_js_stable\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nasync fn worker(v: i32) -> i32 { return v + 1 }\npub fn run(v: i32) -> i32 {\n    let add = |x: i32| x + 2;\n    return add(v)\n}\n",
+    )
+    .expect("source should be written");
+
+    let first = compile_file_with_options(&root, BuildProfile::Dev, Some("js"), true)
+        .expect("first js build should succeed");
+    let second = compile_file_with_options(&root, BuildProfile::Dev, Some("js"), true)
+        .expect("second js build should succeed");
+    let first_js = std::fs::read_to_string(first.output.as_ref().expect("first js output"))
+        .expect("first js should read");
+    let second_js = std::fs::read_to_string(second.output.as_ref().expect("second js output"))
+        .expect("second js should read");
+    let first_map = std::fs::read_to_string(
+        first
+            .sourcemap_output
+            .as_ref()
+            .expect("first sourcemap output"),
+    )
+    .expect("first sourcemap should read");
+    let second_map = std::fs::read_to_string(
+        second
+            .sourcemap_output
+            .as_ref()
+            .expect("second sourcemap output"),
+    )
+    .expect("second sourcemap should read");
+    assert_eq!(first_js, second_js);
+    assert_eq!(first_map, second_map);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn js_backend_preserves_dynamic_import_expression() {
+    let project_name = format!(
+        "fozzylang-js-dynamic-import-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo_js_dynamic_import\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo_js_dynamic_import\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "pub fn load() -> i32 {\n    discard import(\"./lazy_chunk.mjs\")\n    return 1\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_options(&root, BuildProfile::Dev, Some("js"), true)
+        .expect("js backend build should succeed");
+    let js_output = artifact.output.expect("js output should exist");
+    let js_text = std::fs::read_to_string(js_output).expect("js output should be readable");
+    assert!(js_text.contains("import(\"./lazy_chunk.mjs\")"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn js_backend_lowers_task_and_browser_intrinsics_through_runtime_hooks() {
+    let project_name = format!(
+        "fozzylang-js-runtime-hooks-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo_js_runtime_hooks\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo_js_runtime_hooks\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nasync fn worker() -> i32 { checkpoint(); return 1 }\npub fn run() -> i32 {\n    let task = spawn(worker)\n    let handle = browser.set_timeout(16, worker)\n    discard join(task)\n    discard browser.clear_timeout(handle)\n    return 1\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_options(&root, BuildProfile::Dev, Some("js"), true)
+        .expect("js backend build should succeed");
+    let js_output = artifact.output.expect("js output should exist");
+    let js_text = std::fs::read_to_string(js_output).expect("js output should be readable");
+    assert!(js_text.contains("__fz_intrinsic(\"spawn\")"));
+    assert!(js_text.contains("__fz_intrinsic(\"checkpoint\")()"));
+    assert!(js_text.contains("__fz_intrinsic(\"browser.set_timeout\")"));
+    assert!(js_text.contains("__fz_intrinsic(\"join\")"));
+    assert!(js_text.contains("__fz_intrinsic(\"browser.clear_timeout\")"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn compile_library_uses_lib_target_when_present() {
     let project_name = format!(
         "fozzylang-project-lib-{}",
@@ -401,6 +517,38 @@ fn module_graph_snapshot_uses_official_driver_graph() {
                 .dependencies
                 .iter()
                 .any(|path| path.ends_with("feature/mod.fzy"))
+    }));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn js_backend_reports_c_abi_exports_as_capability_error() {
+    let project_name = format!(
+        "fozzylang-js-capability-diag-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo_js_capability_diag\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo_js_capability_diag\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_options(&root, BuildProfile::Dev, Some("js"), true)
+        .expect("js build should return diagnostics");
+    assert_eq!(artifact.status, "error");
+    assert!(artifact.diagnostic_details.iter().any(|diag| {
+        diag.message.contains("backend `js` does not support C ABI export")
     }));
 
     let _ = std::fs::remove_dir_all(root);

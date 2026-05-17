@@ -70,28 +70,28 @@ Agent 1 owns the official browser compilation target. Their job is to extend the
 ✅ Integrate JS backend into existing backend selection logic
 ✅ Add JS backend artifact model to driver output
 ✅ Emit readable JavaScript first
-- [ ] Emit deterministic output for unchanged inputs
+✅ Emit deterministic output for unchanged inputs
 ✅ Avoid minification as a v1 requirement
-- [ ] Avoid optimizer-driven transforms that reduce debuggability in initial rollout
+✅ Avoid optimizer-driven transforms that reduce debuggability in initial rollout
 ✅ Emit native ESM modules
-- [ ] Support `import`
+✅ Support `import`
 ✅ Support `export`
-- [ ] Support dynamic `import()`
+✅ Support dynamic `import()`
 ✅ Lower closures to JS
 ✅ Lower captures to JS
 ✅ Lower async functions to JS
-- [ ] Lower task primitives to JS runtime hooks defined by Agent 5
+✅ Lower task primitives to JS runtime hooks defined by Agent 5
 ✅ Define and implement trait lowering strategy for JS backend
 ✅ Define and implement generic lowering strategy for JS backend
 ✅ Lower enums to tagged unions with stable tag rules
-- [ ] Add backend capability diagnostics for JS target
+✅ Add backend capability diagnostics for JS target
 ✅ Add representative JS backend parity fixtures
 ✅ Add representative JS backend equivalence fixtures
-- [ ] Validate compatibility with Vite
-- [ ] Validate compatibility with Rollup
-- [ ] Validate compatibility with ESBuild
-- [ ] Validate compatibility with Bun
-- [ ] Validate direct browser loading contract
+✅ Validate compatibility with Vite
+✅ Validate compatibility with Rollup
+✅ Validate compatibility with ESBuild
+✅ Validate compatibility with Bun
+✅ Validate direct browser loading contract
 
 ### Strict Criteria for Success
 
@@ -111,7 +111,7 @@ Agent 2 owns source maps, original-location recovery, and browser-debug readines
 ✅ Add CLI support: `fz build <path> --backend js --sourcemap`
 ✅ Emit `<entry>.js`
 ✅ Emit `<entry>.js.map`
-- [ ] Emit stable source map metadata for unchanged inputs
+✅ Emit stable source map metadata for unchanged inputs
 ✅ Preserve original file mapping
 ✅ Preserve original line mapping
 ✅ Preserve original symbol mapping where possible
@@ -129,9 +129,9 @@ Agent 2 owns source maps, original-location recovery, and browser-debug readines
 
 ✅ `--sourcemap` must emit correct `.js.map` output for the JS backend
 - [ ] Browser devtools must resolve original source positions from emitted JS
-- [ ] Async stack recovery must work at least for the supported v1 async surface
-- [ ] Debugging output must use the shared diagnostic model rather than a separate error vocabulary
-- [ ] Source-map generation must remain stable and reproducible for unchanged inputs
+✅ Async stack recovery must work at least for the supported v1 async surface
+✅ Debugging output must use the shared diagnostic model rather than a separate error vocabulary
+✅ Source-map generation must remain stable and reproducible for unchanged inputs
 
 ## Agent 3: Persistent Incremental Compilation and Module Graph Performance
 
@@ -144,23 +144,23 @@ Agent 3 owns browser-target iteration speed. Their job is to take the current in
 ✅ Add disk-backed persistent typed/lowered IR cache
 ✅ Add stable cache fingerprinting and versioning
 ✅ Add dependency graph persistence across CLI invocations
-- [ ] Add fine-grained invalidation for changed leaf modules
-- [ ] Ensure leaf edits do not trigger full application recompilation
-- [ ] Track import graph fanout precisely
+✅ Add fine-grained invalidation for changed leaf modules
+✅ Ensure leaf edits do not trigger full application recompilation
+✅ Track import graph fanout precisely
 - [ ] Separate semantic invalidation from backend-output invalidation
 - [ ] Add graph-aware parallel rebuild scheduling
 - [ ] Add shared cache coordination for parallel workers
 ✅ Add deterministic observability for cache hits, misses, and invalidation causes
 ✅ Add browser-project incremental benchmark suite
-- [ ] Add cold-build target budget
-- [ ] Add warm-rebuild target budget
-- [ ] Add HMR-latency-adjacent graph budget shared with Agent 6
+✅ Add cold-build target budget
+✅ Add warm-rebuild target budget
+✅ Add HMR-latency-adjacent graph budget shared with Agent 6
 ✅ Add release gate enforcement for incremental compile budgets
 
 ### Strict Criteria for Success
 
 ✅ Warm incremental rebuilds must survive separate process invocations
-- [ ] Single-file edits must invalidate only the necessary graph slice
+✅ Single-file edits must invalidate only the necessary graph slice
 ✅ Cache format must be versioned and safely invalidated on incompatible changes
 ✅ Compile observability must clearly show why rebuild work happened
 ✅ Incremental system must integrate with the existing driver/module graph rather than replace it with a second graph engine
@@ -198,7 +198,7 @@ Agent 4 owns the browser-facing runtime ABI and only the runtime ABI. Their lane
 ✅ Browser ABI must live as runtime/stdlib/corelib primitives, not framework features
 ✅ Every ABI surface must have explicit lifetime, cancellation, and cleanup rules
 ✅ Error behavior must map into the existing runtime/diagnostic model
-- [ ] ABI must be consumable by the JS backend without backend-specific semantic exceptions
+✅ ABI must be consumable by the JS backend without backend-specific semantic exceptions
 ✅ No Fzact concepts may leak into the ABI surface
 
 ## Agent 5: Async, Event Loop Integration, and Scheduler Lanes
@@ -210,7 +210,7 @@ Agent 5 owns the semantic bridge between browser execution and the Fzy scheduler
 ✅ Deterministic scheduling foundations already exist
 ✅ Trace and replay foundations already exist
 ✅ Define browser event-loop mapping onto Fzy scheduler semantics
-- [ ] Define Promise scheduling contract used by JS backend
+✅ Define Promise scheduling contract used by JS backend
 ✅ Define microtask vs macrotask mapping policy
 ✅ Preserve deterministic ordering hooks in browser execution mode
 ✅ Add render-priority lane
@@ -221,15 +221,15 @@ Agent 5 owns the semantic bridge between browser execution and the Fzy scheduler
 ✅ Track browser async causality
 ✅ Emit replay-relevant browser scheduling metadata
 ✅ Extend trace tooling to browser async events
-- [ ] Extend equivalence tooling to browser scheduling normalization
+✅ Extend equivalence tooling to browser scheduling normalization
 ✅ Add browser scheduler regression fixtures
 
 ### Strict Criteria for Success
 
 - [ ] Browser execution must remain compatible with the browser event loop while preserving Fzy scheduling semantics
-- [ ] The JS backend must have one clear Promise/task lowering contract, not per-feature ad hoc scheduling
+✅ The JS backend must have one clear Promise/task lowering contract, not per-feature ad hoc scheduling
 ✅ Priority lanes must be explicit runtime policy, not hidden emitter behavior
-- [ ] Browser async traces must be usable by replay/equivalence tooling
+✅ Browser async traces must be usable by replay/equivalence tooling
 ✅ Scheduler semantics must remain documented, testable, and deterministic where claimed
 
 ## Agent 6: Module Loader, Dev Runtime, HMR, and Reactive Primitives
@@ -238,16 +238,16 @@ Agent 6 owns the browser-native module runtime and the smallest useful reactive 
 
 ### Checklist
 
-- [ ] Add browser-native ESM graph loading model
+✅ Add browser-native ESM graph loading model
 - [ ] Support code splitting
 - [ ] Support lazy loading
-- [ ] Support dynamic import boundaries
-- [ ] Define loader/runtime manifest format if required
-- [ ] Define HMR boundary protocol
+✅ Support dynamic import boundaries
+✅ Define loader/runtime manifest format if required
+✅ Define HMR boundary protocol
 - [ ] Add runtime hooks for module replacement
 - [ ] Add invalidation boundaries that preserve unaffected state
 - [ ] Add state preservation hooks for safe runtime patching
-- [ ] Define failure behavior when patch safety cannot be guaranteed
+✅ Define failure behavior when patch safety cannot be guaranteed
 ✅ Add `signal<T>` runtime primitive
 ✅ Add `computed<T>` runtime primitive
 ✅ Add `effect<T>` runtime primitive
@@ -259,10 +259,10 @@ Agent 6 owns the browser-native module runtime and the smallest useful reactive 
 
 ### Strict Criteria for Success
 
-- [ ] Loader and HMR behavior must build on the official module graph rather than a second hidden graph
+✅ Loader and HMR behavior must build on the official module graph rather than a second hidden graph
 ✅ Reactive primitives must remain stdlib/runtime primitives, not syntax features
 ✅ No component model, JSX model, router model, or rendering abstraction may be introduced here
-- [ ] HMR must have explicit safety boundaries and a defined fallback when state cannot be preserved
+✅ HMR must have explicit safety boundaries and a defined fallback when state cannot be preserved
 - [ ] Fzact must be able to build on these primitives without compiler-core UI assumptions
 
 ## Agent 7: Frontend Tooling, Dev Server, Browser Diagnostics, and Package Interop
@@ -274,16 +274,16 @@ Agent 7 owns the frontend-facing DX surface. Their primary lane is [crates/drive
 ✅ Existing LSP foundations already exist
 ✅ Existing diagnostics foundations already exist
 ✅ Add browser-target dev-server command surface
-- [ ] Add browser graph serving for emitted JS modules
+✅ Add browser graph serving for emitted JS modules
 ✅ Add live reload support
 ✅ Add HMR transport support
 ✅ Add browser compiler error overlay
 ✅ Add browser runtime error overlay
-- [ ] Add source-mapped stack presentation
-- [ ] Add source-mapped async trace presentation
+✅ Add source-mapped stack presentation
+✅ Add source-mapped async trace presentation
 ✅ Add browser-target-aware diagnostics
 ✅ Add JS-backend-specific fix guidance
-- [ ] Add browser-project editor responsiveness gates
+✅ Add browser-project editor responsiveness gates
 ✅ Define JS import interop model
 ✅ Define npm/package resolution strategy
 ✅ Define foreign-module typing strategy
@@ -294,29 +294,29 @@ Agent 7 owns the frontend-facing DX surface. Their primary lane is [crates/drive
 ### Strict Criteria for Success
 
 - [ ] Frontend dev loop must feel first-class, not like a native compiler awkwardly wrapped for the browser
-- [ ] Browser overlays must use source-mapped original locations
+✅ Browser overlays must use source-mapped original locations
 ✅ Browser-target diagnostics must remain aligned with the shared compiler diagnostics contract
-- [ ] Dev server and HMR transport must integrate with official graph/runtime hooks from Agents 3 and 6
+✅ Dev server and HMR transport must integrate with official graph/runtime hooks from Agents 3 and 6
 ✅ Package interop rules must be explicit and documented, not implied or accidental
 
 ## Cross-Agent Contracts
 
 ### Backend and Runtime Contract
 
-- [ ] Agent 1 and Agent 5 must agree on one Promise/task lowering contract before deep JS emitter work is considered complete
+✅ Agent 1 and Agent 5 must agree on one Promise/task lowering contract before deep JS emitter work is considered complete
 ✅ Agent 1 must consume browser ABI intrinsics defined by Agent 4 rather than invent backend-only runtime shims
-- [ ] Agent 2 must lock source-map metadata shape with Agent 1 before browser debug tooling is finalized
+✅ Agent 2 must lock source-map metadata shape with Agent 1 before browser debug tooling is finalized
 
 ### Graph and Dev Runtime Contract
 
-- [ ] Agent 3 and Agent 6 must share one module graph and invalidation model
-- [ ] Agent 3 and Agent 7 must share one performance budget story for rebuilds and interactive DX
-- [ ] Agent 6 and Agent 7 must agree on HMR boundary protocol and failure fallback behavior
+✅ Agent 3 and Agent 6 must share one module graph and invalidation model
+✅ Agent 3 and Agent 7 must share one performance budget story for rebuilds and interactive DX
+✅ Agent 6 and Agent 7 must agree on HMR boundary protocol and failure fallback behavior
 
 ### Diagnostics and Trace Contract
 
 ✅ Agent 2 and Agent 7 must share one browser debugging vocabulary built on the existing diagnostics system
-- [ ] Agent 5 and Agent 7 must share one async trace and causality surface for browser tooling
+✅ Agent 5 and Agent 7 must share one async trace and causality surface for browser tooling
 
 ## Production Gates To Add
 
@@ -325,7 +325,7 @@ Agent 7 owns the frontend-facing DX surface. Their primary lane is [crates/drive
 ✅ Add sourcemap verification fixtures to release gate
 ✅ Add browser runtime ABI conformance fixtures to release gate
 ✅ Add browser scheduler/event-loop fixtures to release gate
-- [ ] Add HMR and loader fixtures to release gate
+✅ Add HMR and loader fixtures to release gate
 ✅ Add browser-target incremental compile benchmark gates to release gate
 ✅ Add browser-target dev-server and overlay smoke gates to release gate
 
@@ -333,9 +333,9 @@ Agent 7 owns the frontend-facing DX surface. Their primary lane is [crates/drive
 
 The final overseer is responsible for integration, conflict resolution, and truthfulness of the final production claim. That means:
 
-- [ ] verify every agent stayed inside their lane
-- [ ] verify all cross-agent contracts were explicitly resolved
-- [ ] verify no Fzact concerns leaked into Fzy core
+✅ verify every agent stayed inside their lane
+✅ verify all cross-agent contracts were explicitly resolved
+✅ verify no Fzact concerns leaked into Fzy core
 - [ ] verify release gates cover the full browser-runtime claim
 ✅ verify docs, CLI, diagnostics, and implementation all agree
 - [ ] verify the final claim is production-true, not plan-true
@@ -345,7 +345,7 @@ The final overseer is responsible for integration, conflict resolution, and trut
 ✅ Fzy can compile a real browser app through an official JS backend
 ✅ Output is readable ESM JavaScript
 - [ ] Sourcemaps work in browser devtools
-- [ ] Warm incremental rebuilds are viable for frontend iteration
+✅ Warm incremental rebuilds are viable for frontend iteration
 ✅ Browser runtime ABI covers timers, events, network, storage, and debug hooks
 ✅ Browser scheduling remains deterministic and traceable where claimed
 ✅ Reactive primitives stay minimal and framework-agnostic

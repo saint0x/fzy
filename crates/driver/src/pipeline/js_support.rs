@@ -1120,13 +1120,13 @@ fn emit_expr(
                 .collect::<Result<Vec<_>>>()?
                 .join(", ");
             let callee_base = strip_generic_suffix(callee);
-            if hir::is_runtime_intrinsic(callee_base) {
+            if callee_base == "import" {
+                format!("import({rendered_args})")
+            } else if hir::is_runtime_intrinsic(callee_base) {
                 format!(
                     "__fz_intrinsic({})({rendered_args})",
                     js_string(callee_base)
                 )
-            } else if callee_base == "import" {
-                format!("import({rendered_args})")
             } else {
                 format!("{}({rendered_args})", emit_name_ref(state, callee))
             }

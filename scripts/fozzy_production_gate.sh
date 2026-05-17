@@ -107,10 +107,21 @@ cargo test -q -p driver pipeline::tests::js_backend_emits_executable_esm_with_so
 cargo test -q -p driver pipeline::tests::persistent_module_cache_survives_process_local_cache_reset -- --exact >/dev/null
 cargo test -q -p driver command::tests::browser_overlay_injects_script_before_body_close -- --exact >/dev/null
 cargo test -q -p driver command::tests::browser_diagnostic_guidance_includes_browser_fixups -- --exact >/dev/null
+cargo test -q -p driver command::tests::browser_hmr_payload_declares_reload_fallback -- --exact >/dev/null
+cargo test -q -p driver command::tests::browser_watch_entries_follow_official_module_graph -- --exact >/dev/null
+cargo test -q -p driver command::tests::browser_runtime_error_enrichment_applies_sourcemap_frames -- --exact >/dev/null
 cargo test -q -p driver command::tests::task_event_record_serializes_browser_scheduler_events -- --exact >/dev/null
 cargo test -q -p driver command::tests::derive_runtime_semantic_evidence_captures_browser_async_metadata -- --exact >/dev/null
+cargo test -q -p driver command::tests::equivalence_normalization_includes_browser_scheduler_events -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::js_backend_output_and_sourcemap_are_stable_for_unchanged_inputs -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::js_backend_preserves_dynamic_import_expression -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::js_backend_lowers_task_and_browser_intrinsics_through_runtime_hooks -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::js_backend_reports_c_abi_exports_as_capability_error -- --exact >/dev/null
 ./scripts/browser_dev_server_smoke.sh >/dev/null
+./scripts/browser_js_compat_smoke.sh >/dev/null
 python3 ./scripts/verify_compile_bench_matrix.py >/dev/null
+python3 ./scripts/browser_incremental_budget_gate.py >/dev/null
+./scripts/browser_editor_responsiveness_gate.sh >/dev/null
 
 echo "[gate] record deterministic trace"
 fozzy run tests/example.fozzy.json --det --seed "$SEED" --record "$TRACE_PATH" --record-collision overwrite --json >/dev/null
