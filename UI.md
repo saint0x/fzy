@@ -128,7 +128,7 @@ Agent 2 owns source maps, original-location recovery, and browser-debug readines
 ### Strict Criteria for Success
 
 ✅ `--sourcemap` must emit correct `.js.map` output for the JS backend
-- [ ] Browser devtools must resolve original source positions from emitted JS
+✅ Browser devtools must resolve original source positions from emitted JS
 ✅ Async stack recovery must work at least for the supported v1 async surface
 ✅ Debugging output must use the shared diagnostic model rather than a separate error vocabulary
 ✅ Source-map generation must remain stable and reproducible for unchanged inputs
@@ -147,9 +147,9 @@ Agent 3 owns browser-target iteration speed. Their job is to take the current in
 ✅ Add fine-grained invalidation for changed leaf modules
 ✅ Ensure leaf edits do not trigger full application recompilation
 ✅ Track import graph fanout precisely
-- [ ] Separate semantic invalidation from backend-output invalidation
-- [ ] Add graph-aware parallel rebuild scheduling
-- [ ] Add shared cache coordination for parallel workers
+✅ Separate semantic invalidation from backend-output invalidation
+✅ Add graph-aware parallel rebuild scheduling
+✅ Add shared cache coordination for parallel workers
 ✅ Add deterministic observability for cache hits, misses, and invalidation causes
 ✅ Add browser-project incremental benchmark suite
 ✅ Add cold-build target budget
@@ -226,7 +226,7 @@ Agent 5 owns the semantic bridge between browser execution and the Fzy scheduler
 
 ### Strict Criteria for Success
 
-- [ ] Browser execution must remain compatible with the browser event loop while preserving Fzy scheduling semantics
+✅ Browser execution must remain compatible with the browser event loop while preserving Fzy scheduling semantics
 ✅ The JS backend must have one clear Promise/task lowering contract, not per-feature ad hoc scheduling
 ✅ Priority lanes must be explicit runtime policy, not hidden emitter behavior
 ✅ Browser async traces must be usable by replay/equivalence tooling
@@ -239,14 +239,14 @@ Agent 6 owns the browser-native module runtime and the smallest useful reactive 
 ### Checklist
 
 ✅ Add browser-native ESM graph loading model
-- [ ] Support code splitting
-- [ ] Support lazy loading
+✅ Support code splitting
+✅ Support lazy loading
 ✅ Support dynamic import boundaries
 ✅ Define loader/runtime manifest format if required
 ✅ Define HMR boundary protocol
-- [ ] Add runtime hooks for module replacement
-- [ ] Add invalidation boundaries that preserve unaffected state
-- [ ] Add state preservation hooks for safe runtime patching
+✅ Add runtime hooks for module replacement
+✅ Add invalidation boundaries that preserve unaffected state
+✅ Add state preservation hooks for safe runtime patching
 ✅ Define failure behavior when patch safety cannot be guaranteed
 ✅ Add `signal<T>` runtime primitive
 ✅ Add `computed<T>` runtime primitive
@@ -255,7 +255,7 @@ Agent 6 owns the browser-native module runtime and the smallest useful reactive 
 ✅ Define cleanup semantics for effects
 ✅ Define cycle handling and diagnostics
 ✅ Define reactive graph debug/introspection hooks
-- [ ] Add HMR and reactive runtime regression fixtures
+✅ Add HMR and reactive runtime regression fixtures
 
 ### Strict Criteria for Success
 
@@ -263,7 +263,7 @@ Agent 6 owns the browser-native module runtime and the smallest useful reactive 
 ✅ Reactive primitives must remain stdlib/runtime primitives, not syntax features
 ✅ No component model, JSX model, router model, or rendering abstraction may be introduced here
 ✅ HMR must have explicit safety boundaries and a defined fallback when state cannot be preserved
-- [ ] Fzact must be able to build on these primitives without compiler-core UI assumptions
+✅ Fzact must be able to build on these primitives without compiler-core UI assumptions
 
 ## Agent 7: Frontend Tooling, Dev Server, Browser Diagnostics, and Package Interop
 
@@ -293,7 +293,7 @@ Agent 7 owns the frontend-facing DX surface. Their primary lane is [crates/drive
 
 ### Strict Criteria for Success
 
-- [ ] Frontend dev loop must feel first-class, not like a native compiler awkwardly wrapped for the browser
+✅ Frontend dev loop must feel first-class, not like a native compiler awkwardly wrapped for the browser
 ✅ Browser overlays must use source-mapped original locations
 ✅ Browser-target diagnostics must remain aligned with the shared compiler diagnostics contract
 ✅ Dev server and HMR transport must integrate with official graph/runtime hooks from Agents 3 and 6
@@ -336,17 +336,17 @@ The final overseer is responsible for integration, conflict resolution, and trut
 ✅ verify every agent stayed inside their lane
 ✅ verify all cross-agent contracts were explicitly resolved
 ✅ verify no Fzact concerns leaked into Fzy core
-- [ ] verify release gates cover the full browser-runtime claim
+✅ verify release gates cover the full browser-runtime claim
 ✅ verify docs, CLI, diagnostics, and implementation all agree
-- [ ] verify the final claim is production-true, not plan-true
+✅ verify the final claim is production-true, not plan-true
 
 ## End State
 
 ✅ Fzy can compile a real browser app through an official JS backend
 ✅ Output is readable ESM JavaScript
-- [ ] Sourcemaps work in browser devtools
+✅ Sourcemaps work in browser devtools
 ✅ Warm incremental rebuilds are viable for frontend iteration
 ✅ Browser runtime ABI covers timers, events, network, storage, and debug hooks
 ✅ Browser scheduling remains deterministic and traceable where claimed
 ✅ Reactive primitives stay minimal and framework-agnostic
-- [ ] Fzact can build above these primitives without compiler-core UI abstractions
+✅ Fzact can build above these primitives without compiler-core UI abstractions

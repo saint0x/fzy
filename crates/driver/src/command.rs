@@ -3161,10 +3161,24 @@ fn run_browser_dev_server(config: BrowserDevServerConfig) -> Result<()> {
     );
 
     let mut handled_requests = 0usize;
+    let mut workers = Vec::new();
     for stream in listener.incoming() {
         let stream =
             stream.with_context(|| "failed accepting dev-server connection".to_string())?;
-        handle_dev_server_connection(stream, &config, state.clone(), events.clone())?;
+        let worker_config = config.clone();
+        let worker_state = state.clone();
+        let worker_events = events.clone();
+        let worker_shutdown = shutdown.clone();
+        let handle = thread::spawn(move || {
+            handle_dev_server_connection(
+                stream,
+                &worker_config,
+                worker_state,
+                worker_events,
+                worker_shutdown,
+            )
+        });
+        workers.push(handle);
         handled_requests += 1;
         if config
             .request_budget
@@ -3175,6 +3189,11 @@ fn run_browser_dev_server(config: BrowserDevServerConfig) -> Result<()> {
     }
 
     shutdown.store(true, Ordering::SeqCst);
+    for worker in workers {
+        worker
+            .join()
+            .map_err(|_| anyhow!("browser dev-server worker panicked"))??;
+    }
     let _ = watcher.join();
     Ok(())
 }
@@ -3226,6 +3245,7 @@ fn handle_dev_server_connection(
     config: &BrowserDevServerConfig,
     state: Arc<Mutex<BrowserDevServerState>>,
     events: BrowserEventBus,
+    shutdown: Arc<AtomicBool>,
 ) -> Result<()> {
     let request = read_http_request(&mut stream)?;
     let path_only = request
@@ -3261,7 +3281,7 @@ fn handle_dev_server_connection(
             "application/javascript; charset=utf-8",
             browser_overlay_script().as_bytes(),
         ),
-        ("GET", "/__fz/events") => serve_sse_stream(stream, events),
+        ("GET", "/__fz/events") => serve_sse_stream(stream, events, shutdown),
         ("GET", path) if path.starts_with("/__fz/build/") => {
             serve_browser_build_artifact(&mut stream, config.entry_source.as_deref(), path)
         }
@@ -3682,10 +3702,11 @@ fn render_browser_sourcemap_artifact(entry_source: &Path, sourcemap_output: &Pat
             json!(
                 rewritten_sources
                     .iter()
-                    .filter_map(|item| item.get("devtoolsUrl").and_then(Value::as_str))
+                    .filter_map(|item| item.get("relative").and_then(Value::as_str))
                     .collect::<Vec<_>>()
             ),
         );
+        object.insert("sourceRoot".to_string(), json!("/__fz/source/"));
         object.insert("x_fzy_browser_sources".to_string(), json!(rewritten_sources));
     }
     serde_json::to_vec(&payload).context("failed serializing rewritten browser sourcemap")
@@ -3910,6 +3931,9 @@ fn snapshot_browser_watch_paths(
 fn browser_hmr_payload(changed_files: Vec<String>, revision: u64) -> Value {
     json!({
         "strategy": "reload",
+        "reloadFallback": true,
+        "boundaryProtocol": "fozzy.browser.hot.v1",
+        "preserveState": true,
         "changedFiles": changed_files,
         "revision": revision,
     })
@@ -3996,7 +4020,11 @@ fn inject_browser_overlay(html: &str) -> String {
     }
 }
 
-fn serve_sse_stream(mut stream: TcpStream, events: BrowserEventBus) -> Result<()> {
+fn serve_sse_stream(
+    mut stream: TcpStream,
+    events: BrowserEventBus,
+    shutdown: Arc<AtomicBool>,
+) -> Result<()> {
     write_http_head(
         &mut stream,
         200,
@@ -4008,15 +4036,26 @@ fn serve_sse_stream(mut stream: TcpStream, events: BrowserEventBus) -> Result<()
     stream.write_all(b"event: connected\ndata: {\"ok\":true}\n\n")?;
     stream.flush()?;
     let rx = events.subscribe();
+    let mut last_keepalive = Instant::now();
     loop {
-        match rx.recv_timeout(Duration::from_secs(15)) {
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
+        match rx.recv_timeout(Duration::from_millis(500)) {
             Ok(frame) => {
                 stream.write_all(frame.as_bytes())?;
                 stream.flush()?;
+                last_keepalive = Instant::now();
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                stream.write_all(b": keepalive\n\n")?;
-                stream.flush()?;
+                if shutdown.load(Ordering::SeqCst) {
+                    break;
+                }
+                if last_keepalive.elapsed() >= Duration::from_secs(15) {
+                    stream.write_all(b": keepalive\n\n")?;
+                    stream.flush()?;
+                    last_keepalive = Instant::now();
+                }
             }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
@@ -4129,6 +4168,7 @@ fn browser_overlay_script() -> &'static str {
     r#"(function () {
   if (window.__fzOverlayInstalled) return;
   window.__fzOverlayInstalled = true;
+  const HOT_STORAGE_KEY = '__fz_hot_state_v1__';
 
   const overlay = document.createElement('div');
   overlay.id = '__fz-browser-overlay';
@@ -4153,6 +4193,90 @@ fn browser_overlay_script() -> &'static str {
   function esc(value) {
     return String(value ?? '').replace(/[&<>]/g, (ch) => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[ch]));
   }
+
+  function safeStorageRead() {
+    try {
+      const raw = window.sessionStorage.getItem(HOT_STORAGE_KEY);
+      if (!raw) return { revision: 0, states: {} };
+      window.sessionStorage.removeItem(HOT_STORAGE_KEY);
+      const parsed = JSON.parse(raw);
+      return {
+        revision: Number(parsed?.revision || 0),
+        states: parsed && typeof parsed.states === 'object' && parsed.states ? parsed.states : {}
+      };
+    } catch (_error) {
+      return { revision: 0, states: {} };
+    }
+  }
+
+  function safeStorageWrite(payload) {
+    try {
+      window.sessionStorage.setItem(HOT_STORAGE_KEY, JSON.stringify(payload));
+    } catch (_error) {}
+  }
+
+  function createHotRuntime() {
+    const restored = safeStorageRead();
+    const boundaries = new Map();
+    return {
+      protocol: 'fozzy.browser.hot.v1',
+      revision: restored.revision,
+      changedFiles: [],
+      pendingStates: { ...restored.states },
+      registerBoundary(id, handlers) {
+        if (!id || typeof id !== 'string') {
+          throw new Error('Fozzy hot boundary id must be a non-empty string');
+        }
+        const entry = {
+          accept: typeof handlers?.accept === 'function' ? handlers.accept : null,
+          dispose: typeof handlers?.dispose === 'function' ? handlers.dispose : null,
+          capture: typeof handlers?.capture === 'function' ? handlers.capture : null,
+          restore: typeof handlers?.restore === 'function' ? handlers.restore : null
+        };
+        boundaries.set(id, entry);
+        if (Object.prototype.hasOwnProperty.call(this.pendingStates, id) && entry.restore) {
+          const saved = this.pendingStates[id];
+          delete this.pendingStates[id];
+          entry.restore(saved, {
+            revision: this.revision,
+            changedFiles: this.changedFiles.slice(),
+            strategy: 'reload'
+          });
+        }
+        return () => boundaries.delete(id);
+      },
+      prepareForReload(payload) {
+        this.revision = Number(payload?.revision || this.revision || 0);
+        this.changedFiles = Array.isArray(payload?.changedFiles) ? payload.changedFiles.slice() : [];
+        const states = {};
+        for (const [id, entry] of boundaries.entries()) {
+          if (entry.accept) {
+            entry.accept(payload || {});
+          }
+          if (entry.dispose) {
+            entry.dispose(payload || {});
+          }
+          if (entry.capture) {
+            states[id] = entry.capture(payload || {});
+          }
+        }
+        safeStorageWrite({
+          revision: this.revision,
+          states
+        });
+      },
+      snapshot() {
+        return {
+          protocol: this.protocol,
+          revision: this.revision,
+          changedFiles: this.changedFiles.slice(),
+          boundaries: Array.from(boundaries.keys()).sort()
+        };
+      }
+    };
+  }
+
+  window.__fozzyHot = window.__fozzyHot || createHotRuntime();
 
   function frameLine(frame) {
     const file = frame.originalFile || frame.file || 'unknown';
@@ -4247,8 +4371,16 @@ fn browser_overlay_script() -> &'static str {
   const events = new EventSource('/__fz/events');
   events.addEventListener('diagnostics', () => { void refresh(); });
   events.addEventListener('runtime-error', () => { void refresh(); });
-  events.addEventListener('hmr', () => { window.location.reload(); });
-  events.addEventListener('reload', () => { window.location.reload(); });
+  events.addEventListener('hmr', (event) => {
+    const payload = event?.data ? JSON.parse(event.data) : {};
+    window.__fozzyHot?.prepareForReload?.(payload);
+    window.location.reload();
+  });
+  events.addEventListener('reload', (event) => {
+    const payload = event?.data ? JSON.parse(event.data) : {};
+    window.__fozzyHot?.prepareForReload?.(payload);
+    window.location.reload();
+  });
 
   void refresh();
 })();"#
@@ -12761,7 +12893,8 @@ mod tests {
         )
         .expect("rewritten sourcemap should render");
         let payload: Value = serde_json::from_slice(&rewritten).expect("rewritten sourcemap json");
-        assert_eq!(payload["sources"][0], "/__fz/source/main.fzy");
+        assert_eq!(payload["sources"][0], "main.fzy");
+        assert_eq!(payload["sourceRoot"], "/__fz/source/");
         assert_eq!(
             payload["x_fzy_browser_sources"][0]["relative"],
             "main.fzy"
@@ -12800,8 +12933,133 @@ mod tests {
             7,
         );
         assert_eq!(payload["strategy"], "reload");
+        assert_eq!(payload["reloadFallback"], true);
+        assert_eq!(payload["preserveState"], true);
+        assert_eq!(payload["boundaryProtocol"], "fozzy.browser.hot.v1");
         assert_eq!(payload["revision"], 7);
         assert_eq!(payload["changedFiles"][0], "entry:/tmp/demo/src/main.fzy");
+    }
+
+    #[test]
+    fn browser_overlay_exposes_hot_runtime_hooks() {
+        let script = browser_overlay_script();
+        assert!(script.contains("window.__fozzyHot"));
+        assert!(script.contains("registerBoundary"));
+        assert!(script.contains("prepareForReload"));
+        assert!(script.contains("__fz_hot_state_v1__"));
+    }
+
+    #[test]
+    fn browser_dev_server_serves_artifacts_while_sse_stream_is_open() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root =
+            std::env::temp_dir().join(format!("fozzylang-browser-dev-server-concurrency-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::create_dir_all(root.join("public")).expect("public dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"browser_dev_server_concurrency\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"browser_dev_server_concurrency\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 {\n    return 1\n}\n")
+            .expect("source should be written");
+        std::fs::write(root.join("public/index.html"), "<!doctype html><body>ok</body>\n")
+            .expect("index should be written");
+
+        let listener =
+            TcpListener::bind(("127.0.0.1", 0)).expect("ephemeral test port should bind");
+        let port = listener
+            .local_addr()
+            .expect("ephemeral test port should expose local addr")
+            .port();
+        drop(listener);
+
+        let server_config = BrowserDevServerConfig {
+            serve_root: root.join("public"),
+            entry_source: Some(root.join("src/main.fzy")),
+            host: "127.0.0.1".to_string(),
+            port,
+            request_budget: Some(3),
+        };
+        let server = std::thread::spawn(move || run_browser_dev_server(server_config));
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match TcpStream::connect(("127.0.0.1", port)) {
+                Ok(mut probe) => {
+                    probe
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .expect("health timeout should set");
+                    probe
+                        .write_all(
+                            b"GET /__fz/health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+                        )
+                        .expect("health request should write");
+                    let mut response = String::new();
+                    probe
+                        .read_to_string(&mut response)
+                        .expect("health response should read");
+                    if response.contains("200 OK") {
+                        break;
+                    }
+                }
+                Err(error) if std::time::Instant::now() < deadline => {
+                    let _ = error;
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(error) => panic!("browser dev-server did not start in time: {error}"),
+            }
+        }
+
+        let mut sse = TcpStream::connect(("127.0.0.1", port)).expect("sse stream should connect");
+        sse.set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("sse timeout should set");
+        sse.write_all(
+            b"GET /__fz/events HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n",
+        )
+        .expect("sse request should write");
+        let mut header = Vec::new();
+        loop {
+            let mut chunk = [0u8; 256];
+            let chunk_len = sse
+                .read(&mut chunk)
+                .expect("sse response should produce initial bytes");
+            assert!(chunk_len > 0, "sse response should not close immediately");
+            header.extend_from_slice(&chunk[..chunk_len]);
+            if header.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let header_text = String::from_utf8_lossy(&header);
+        assert!(header_text.contains("200 OK"));
+        assert!(header_text.contains("text/event-stream"));
+
+        let mut artifact = TcpStream::connect(("127.0.0.1", port))
+            .expect("artifact request should connect while sse is open");
+        artifact
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("artifact timeout should set");
+        artifact
+            .write_all(
+                b"GET /__fz/build/main.js HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            )
+            .expect("artifact request should write");
+        let mut artifact_response = String::new();
+        artifact
+            .read_to_string(&mut artifact_response)
+            .expect("artifact response should read");
+        assert!(artifact_response.contains("200 OK"));
+        assert!(artifact_response.contains("sourceMappingURL=/__fz/build/main.js.map"));
+
+        let _ = sse.shutdown(std::net::Shutdown::Both);
+        server
+            .join()
+            .expect("browser dev-server should join")
+            .expect("browser dev-server should succeed");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

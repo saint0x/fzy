@@ -188,6 +188,7 @@ Implemented and verified in this repo:
 
 - Deterministic scheduler modes (`fifo`, `random`, `coverage_guided`) for non-scenario tests
 - Official browser build target: `fz build <path> --backend js --sourcemap`
+- Browser-target DevTools contract: authored `.fzy` sources appear in Chromium DevTools through the emitted sourcemap and authored-source breakpoints map back from emitted JS pauses.
 - Readable ESM JS emission with generated `.js.map` artifacts
 - Browser runtime ABI contracts for timers, events, fetch, websocket, storage, console, and runtime-error hooks
 - Browser scheduler lanes and async causality metadata for replay-oriented diagnostics

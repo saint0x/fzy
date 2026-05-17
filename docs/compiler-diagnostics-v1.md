@@ -87,6 +87,7 @@ Catalog:
   - `browserGuidance`
   - `suggestedCommands`
 - Runtime overlays enrich emitted-JS frames through the generated sourcemap when an entry browser source is configured, then render original file/line/column metadata through the shared overlay payload.
+- Browser-target debugging is verified against the real Chromium DevTools frontend: authored `.fzy` sources appear in the DevTools workspace, authored-source breakpoints can be set there, and pauses in emitted JS map back to the original authored location.
 - Async browser traces may be rendered in overlay payloads, but they still attach to the shared diagnostic/tracing model rather than a bespoke frontend error schema.
 - JS backend capability diagnostics must fail clearly for native-only boundaries such as C ABI imports/exports instead of silently emitting browser-incompatible artifacts.
 
@@ -110,6 +111,7 @@ Recommended minimal gate for diagnostics changes:
 8. `fz build tests/fixtures/browser_debug_js/main.fzy --backend js --sourcemap --json`
 9. `fz debug-check tests/fixtures/browser_debug_js/main.fzy --json`
 10. `fozzy test --det --strict tests/browser_debug_js_sourcemap.pass.fozzy.json --json`
+11. `./scripts/browser_devtools_sourcemap_smoke.sh`
 
 ## Regression Classes (Required)
 

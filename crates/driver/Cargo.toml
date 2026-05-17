@@ -25,6 +25,7 @@ cranelift-module = "0.116"
 cranelift-object = "0.116"
 cranelift-native = "0.116"
 rayon = "1.10"
+fs2 = "0.4"
 
 [dev-dependencies]
 anyhow.workspace = true

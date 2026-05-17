@@ -624,6 +624,11 @@ fn emit_function(
     let symbol = state
         .symbol_ref(&function.name)
         .unwrap_or_else(|| symbol_identifier(&function.name));
+    let source_lines = source_files[info.source_index]
+        .content
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     let params = function
         .params
         .iter()
@@ -639,14 +644,17 @@ fn emit_function(
         Some(&function.name),
     );
     state.indent += 1;
+    let mut line_cursor = info.start_line;
     for stmt in &function.body {
+        let stmt_line = infer_stmt_line(&source_lines, line_cursor, info.end_line, stmt);
+        line_cursor = stmt_line.saturating_add(1);
         emit_stmt(
             state,
             &function.name,
             stmt,
             source_path,
             info.source_index,
-            info.start_line,
+            stmt_line,
         )?;
     }
     state.indent -= 1;
@@ -654,6 +662,47 @@ fn emit_function(
     state.push_line("", info.source_index, info.end_line, None);
     state.pop_scope();
     Ok(())
+}
+
+fn infer_stmt_line(
+    source_lines: &[String],
+    start_line: usize,
+    end_line: usize,
+    stmt: &ast::Stmt,
+) -> usize {
+    let key = stmt_line_key(stmt);
+    let start = start_line.saturating_sub(1);
+    let end = end_line.min(source_lines.len());
+    for index in start..end {
+        let trimmed = source_lines[index].trim_start();
+        if trimmed.contains(&key) {
+            return index + 1;
+        }
+    }
+    start_line.max(1)
+}
+
+fn stmt_line_key(stmt: &ast::Stmt) -> String {
+    match stmt {
+        ast::Stmt::Let { name, .. } => format!("let {name}"),
+        ast::Stmt::LetPattern { .. } => "let ".to_string(),
+        ast::Stmt::Assign { target, .. } => format!("{target} ="),
+        ast::Stmt::CompoundAssign { target, .. } => target.clone(),
+        ast::Stmt::If { .. } => "if ".to_string(),
+        ast::Stmt::While { .. } => "while ".to_string(),
+        ast::Stmt::For { .. } => "for ".to_string(),
+        ast::Stmt::ForIn { .. } => "for ".to_string(),
+        ast::Stmt::Loop { .. } => "loop".to_string(),
+        ast::Stmt::Break(_) => "break".to_string(),
+        ast::Stmt::Continue => "continue".to_string(),
+        ast::Stmt::Return(_) => "return".to_string(),
+        ast::Stmt::Defer(_) => "defer".to_string(),
+        ast::Stmt::Requires(_) => "requires".to_string(),
+        ast::Stmt::Ensures(_) => "ensures".to_string(),
+        ast::Stmt::Match { .. } => "match ".to_string(),
+        ast::Stmt::Expr(ast::Expr::Call { callee, .. }) => callee.clone(),
+        ast::Stmt::Expr(_) => ";".to_string(),
+    }
 }
 
 fn emit_stmt(

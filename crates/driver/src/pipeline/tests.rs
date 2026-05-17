@@ -256,6 +256,41 @@ fn js_backend_output_and_sourcemap_are_stable_for_unchanged_inputs() {
 }
 
 #[test]
+fn js_backend_reports_backend_output_invalidation_separately() {
+    let project_name = format!(
+        "fozzylang-js-backend-stage-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo_js_stage\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo_js_stage\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(root.join("src/main.fzy"), "pub fn run() -> i32 {\n    return 7\n}\n")
+        .expect("source should be written");
+
+    let artifact = compile_file_with_options(&root, BuildProfile::Dev, Some("js"), true)
+        .expect("js backend build should succeed");
+    assert_eq!(artifact.incremental.backend.status, "miss");
+    assert!(artifact
+        .incremental
+        .backend
+        .detail
+        .contains("emitted js backend artifacts"));
+    assert_eq!(
+        artifact.incremental.backend_invalidated_outputs,
+        vec!["js".to_string(), "js.map".to_string()]
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn js_backend_preserves_dynamic_import_expression() {
     let project_name = format!(
         "fozzylang-js-dynamic-import-{}",
@@ -1071,10 +1106,27 @@ fn leaf_module_edit_reports_precise_invalidation() {
     let reparsed = parse_program(&main_path).expect("reparse should succeed");
     assert_eq!(reparsed.incremental.parse.status, "partial");
     assert_eq!(reparsed.incremental.invalidated_modules.len(), 1);
+    assert_eq!(reparsed.incremental.semantic_invalidated_modules.len(), 1);
+    assert!(reparsed.incremental.parallel_batches >= 1);
+    assert_eq!(reparsed.incremental.cache_coordination, "filesystem-lock");
     assert!(
         reparsed.incremental.invalidated_modules[0].ends_with("leaf.fzy"),
         "unexpected invalidation set: {:?}",
         reparsed.incremental.invalidated_modules
+    );
+    assert!(
+        reparsed.incremental.semantic_invalidated_modules[0].ends_with("leaf.fzy"),
+        "unexpected semantic invalidation set: {:?}",
+        reparsed.incremental.semantic_invalidated_modules
+    );
+    assert!(
+        reparsed
+            .incremental
+            .parse
+            .detail
+            .contains("parallel_batches="),
+        "unexpected parse detail: {}",
+        reparsed.incremental.parse.detail
     );
 
     let _ = std::fs::remove_dir_all(root);

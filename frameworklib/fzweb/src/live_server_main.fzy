@@ -35,9 +35,6 @@ fn build_signature() -> i32 {
 
 fn handle_once(mask: i32, strict_json: i32, bucket: i32) -> i32 {
     let conn = webcore.server_accept()
-    if conn < 0 {
-        return conn
-    }
     defer close(conn)
 
     discard webcore.request_read(conn)
@@ -89,10 +86,6 @@ fn run() -> i32 {
     discard log.set_json(1)
     discard log.info("fzweb.server.start", fields2("component", "fzweb", "mode", "live"))
     let listener = http.bind()
-    if listener < 0 {
-        discard log.error("fzweb.server.bind_failed", fields1("component", "fzweb"))
-        return 2
-    }
     defer close(listener)
     http.listen(listener)
     discard log.info("fzweb.server.listening", fields2("component", "fzweb", "transport", "http"))
@@ -107,18 +100,6 @@ fn run() -> i32 {
     while handled < 2000000000 {
         bucket = middleware.rate_refill(bucket, handled)
         let rc = handle_once(mask, strict_json, bucket)
-        if rc < 0 {
-            accept_fail_streak += 1
-            if accept_fail_streak == 1 {
-                discard log.warn("fzweb.accept.retry", fields2("component", "fzweb", "phase", "backoff"))
-            } else {
-                if (accept_fail_streak % 65536) == 0 {
-                    discard log.warn("fzweb.accept.retry", fields2("component", "fzweb", "phase", "backoff"))
-                }
-            }
-            yield()
-            continue
-        }
         accept_fail_streak = 0
         bucket = middleware.rate_take(bucket, 1)
         handled += 1

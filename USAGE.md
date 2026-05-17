@@ -128,6 +128,7 @@ Use cases:
 
 - `build`: compile only
 - `build --backend js --sourcemap`: emit readable ESM JavaScript plus `<entry>.js.map` for browser-target execution
+- Browser-target DevTools support is production: authored `.fzy` sources show up in Chromium DevTools and authored-source breakpoints map back from emitted JS pauses.
 - `build --lib`: emit `.a` + shared library (`.so`/`.dylib`) plus C header + ABI manifest
 - `run`: execute a project or scenario once
   - text mode streams child stdout/stderr live

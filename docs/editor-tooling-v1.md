@@ -45,6 +45,7 @@ Current HMR transport behavior is conservative by design:
 - Changed-file detection follows the official parsed module graph for the configured entry source rather than a second browser-only dependency graph.
 - Runtime patch boundaries remain owned by the runtime/loader contract; this server only transports change notifications and browser diagnostics.
 - Unsafe or ambiguous patch cases fall back to full reload rather than claiming state preservation.
+- The browser overlay script exposes `window.__fozzyHot` boundary hooks so reload-safe state capture/restore stays explicit instead of hiding implicit patch behavior in the compiler.
 - Production DX budgets are gated with `scripts/browser_incremental_budget_gate.py` and `scripts/browser_editor_responsiveness_gate.sh`:
   - compile/rebuild budgets use the recorded browser compile-bench artifact
   - editor responsiveness budgets use the `fz lsp` diagnostics/definition/hover/smoke path on a browser-target sample project
@@ -56,11 +57,16 @@ Browser/package interop stays explicit and documented rather than implicit.
 
 - Fzy-emitted browser modules remain the ABI source of truth for Fzy symbols.
 - Dynamic `import(...)` is a supported browser-target call surface and lowers directly to emitted ESM `import(...)` rather than a backend-local shim.
+- Browser-native code splitting and lazy loading are exercised through those preserved dynamic `import(...)` boundaries rather than a browser-only compiler path.
 - Imported JavaScript/npm modules are treated as foreign-module boundaries that must be named explicitly and typed deliberately.
 - Source-mapped browser overlays render original file/line/column metadata when sourcemap enrichment resolves emitted JS frames.
 - Package resolution strategy for browser projects is ESM-first and bundler-compatible: emitted modules must remain loadable by direct browser ESM, Vite, Rollup, ESBuild, and Bun-compatible loaders.
 - Foreign-module typing is a contract surface, not an inference surface. Tooling should surface missing or ambiguous foreign boundaries rather than guessing.
 - Production compatibility smoke: `scripts/browser_js_compat_smoke.sh` verifies direct browser loading in Chromium plus bundler/build compatibility across Vite, Rollup, ESBuild, and Bun for the emitted JS artifact.
+- Browser scheduler compatibility smoke: `scripts/browser_scheduler_compat_smoke.sh` verifies that emitted browser JS can execute against a browser runtime stub with preserved microtask-vs-timer ordering and cancellation semantics for the supported scheduler surface.
+- Browser hot-runtime smoke: `scripts/browser_hot_runtime_smoke.sh` verifies that `window.__fozzyHot` boundary registration, pre-reload capture, and post-reload state restore stay stable in a real browser.
+- Browser DevTools sourcemap smoke: `scripts/browser_devtools_sourcemap_smoke.sh` launches Chromium headless, attaches the real local DevTools frontend to the browser target, verifies that the authored `.fzy` source is present in the DevTools workspace, sets an authored-source breakpoint, and proves that the raw pause in emitted `main.js` maps back to the original `.fzy` UI location.
+- Framework-on-core proof: `python3 scripts/verify_fzweb_framework.py` keeps the in-repo framework package building above the language/runtime primitives without pushing component or UI abstractions into compiler core.
 
 ## VS Code Packaging
 
@@ -82,4 +88,5 @@ Required checks:
 - `fozzy test --det --strict tests/*.fozzy.json --seed 4242 --json`
 - `fozzy test --det --strict tests/browser_debug_js_sourcemap.pass.fozzy.json --seed 4242 --json`
 - `./scripts/browser_dev_server_smoke.sh`
+- `./scripts/browser_devtools_sourcemap_smoke.sh`
 - `./scripts/ship_release_gate.sh`

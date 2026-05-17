@@ -28,9 +28,17 @@ EOF
 cat >"$WORK_DIR/src/main.fzy" <<'EOF'
 pub fn run(flag: bool) -> i32 {
     if flag {
+        discard import("./lazy_chunk.mjs")
         return 7
     }
     return 3
+}
+EOF
+
+cat >"$WORK_DIR/lazy_chunk.mjs" <<'EOF'
+globalThis.__fzLazyChunkLoaded = (globalThis.__fzLazyChunkLoaded || 0) + 1;
+export function lazyValue() {
+  return 7;
 }
 EOF
 
@@ -96,13 +104,19 @@ const mod = await import(`file://${path}`);
 if (mod.__fz_run(true) !== 7 || mod.__fz_run(false) !== 3) {
   throw new Error('node direct import contract failed');
 }
+for (let i = 0; i < 100 && !globalThis.__fzLazyChunkLoaded; i += 1) {
+  await new Promise((resolve) => setTimeout(resolve, 20));
+}
+if (!globalThis.__fzLazyChunkLoaded) {
+  throw new Error('lazy chunk did not load through dynamic import boundary');
+}
 EOF
 
 npx --yes esbuild "$WORK_DIR/main.js" --bundle --format=esm --outfile="$WORK_DIR/esbuild-out.js" >/dev/null
 test -s "$WORK_DIR/esbuild-out.js"
 
-npx --yes rollup "$WORK_DIR/main.js" --format esm --file "$WORK_DIR/rollup-out.js" >/dev/null
-test -s "$WORK_DIR/rollup-out.js"
+npx --yes rollup "$WORK_DIR/main.js" --format esm --dir "$WORK_DIR/rollup-out" >/dev/null
+test -s "$WORK_DIR/rollup-out/main.js"
 
 (
   cd "$WORK_DIR"
@@ -145,6 +159,7 @@ const { test, expect } = require('@playwright/test');
 test('direct browser loading executes emitted module', async ({ page }) => {
   await page.goto(process.env.FZ_BROWSER_COMPAT_URL, { waitUntil: 'networkidle' });
   await expect(page.locator('#app')).toHaveText('7');
+  await expect.poll(async () => page.evaluate(() => globalThis.__fzLazyChunkLoaded || 0)).toBeGreaterThan(0);
 });
 EOF
 

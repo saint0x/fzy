@@ -8,6 +8,7 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Switch, Variable};
 use cranelift_module::{default_libcall_names, DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
+use fs2::FileExt;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -191,6 +192,10 @@ pub struct IncrementalBuildInfo {
     pub cache_version: String,
     pub graph_nodes: usize,
     pub invalidated_modules: Vec<String>,
+    pub semantic_invalidated_modules: Vec<String>,
+    pub backend_invalidated_outputs: Vec<String>,
+    pub parallel_batches: usize,
+    pub cache_coordination: String,
     pub reasons: Vec<String>,
     pub parse: CacheStageInfo,
     pub lower: CacheStageInfo,
@@ -368,6 +373,15 @@ pub fn compile_file_with_options(
                 &resolved.project_root,
                 emit_sourcemap,
             )?;
+            incremental.backend_invalidated_outputs = if emit_sourcemap {
+                vec!["js".to_string(), "js.map".to_string()]
+            } else {
+                vec!["js".to_string()]
+            };
+            incremental.backend = CacheStageInfo {
+                status: "miss".to_string(),
+                detail: "emitted js backend artifacts from semantic changes".to_string(),
+            };
             (
                 Some(artifact.js_path),
                 if emit_sourcemap {
@@ -731,13 +745,16 @@ pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirMo
 fn parse_program_uncached(canonical: &Path) -> Result<ParsedProgram> {
     let mut state = ModuleLoadState::new(canonical);
     discover_module_graph_recursive(canonical, &mut state)?;
-
-    let loaded_modules = state
-        .load_order
-        .par_iter()
-        .map(|path| parse_and_qualify_module(path, canonical, &state.discovered))
-        .collect::<Result<Vec<_>>>()?;
-    state.loaded = loaded_modules.into_iter().collect();
+    let parallel_batches =
+        module_graph_parallel_batches(canonical, &state.discovered, &state.load_order)?;
+    state.parallel_batches = parallel_batches.clone();
+    for batch in parallel_batches {
+        let loaded_modules = batch
+            .par_iter()
+            .map(|path| parse_and_qualify_module(path, canonical, &state.discovered))
+            .collect::<Result<Vec<_>>>()?;
+        state.loaded.extend(loaded_modules.into_iter());
+    }
 
     let mut combined_source = String::new();
     for path in &state.load_order {
@@ -866,6 +883,7 @@ fn graph_cache_path(root_source: &Path) -> PathBuf {
 }
 
 fn read_json_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Option<T> {
+    let _guard = cache_file_lock(path, false).ok()?;
     let bytes = std::fs::read(path).ok()?;
     serde_json::from_slice(&bytes).ok()
 }
@@ -876,9 +894,57 @@ fn write_json_file<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .ok_or_else(|| anyhow!("cache path has no parent: {}", path.display()))?;
     std::fs::create_dir_all(parent)
         .with_context(|| format!("failed creating cache directory: {}", parent.display()))?;
+    let _guard = cache_file_lock(path, true)?;
     let bytes = serde_json::to_vec(value)?;
     std::fs::write(path, bytes).with_context(|| format!("failed writing {}", path.display()))?;
     Ok(())
+}
+
+struct CacheFileLock {
+    file: std::fs::File,
+}
+
+impl Drop for CacheFileLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn cache_lock_path_for(path: &Path) -> PathBuf {
+    for ancestor in path.ancestors() {
+        if ancestor
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value == "incremental")
+        {
+            return ancestor.join(".cache.lock");
+        }
+    }
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".cache.lock")
+}
+
+fn cache_file_lock(path: &Path, exclusive: bool) -> Result<CacheFileLock> {
+    let lock_path = cache_lock_path_for(path);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating cache lock directory: {}", parent.display()))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("failed opening cache lock file: {}", lock_path.display()))?;
+    if exclusive {
+        file.lock_exclusive()
+            .with_context(|| format!("failed acquiring exclusive cache lock: {}", lock_path.display()))?;
+    } else {
+        file.lock_shared()
+            .with_context(|| format!("failed acquiring shared cache lock: {}", lock_path.display()))?;
+    }
+    Ok(CacheFileLock { file })
 }
 
 fn load_graph_cache(root_source: &Path) -> Option<PersistentGraphEntry> {
@@ -1007,6 +1073,70 @@ fn store_persistent_lower_cache(
     )
 }
 
+fn module_graph_parallel_batches(
+    _root_source: &Path,
+    discovered: &HashMap<PathBuf, DiscoveredModule>,
+    load_order: &[PathBuf],
+) -> Result<Vec<Vec<PathBuf>>> {
+    let mut dependents = HashMap::<PathBuf, Vec<PathBuf>>::new();
+    let mut remaining = HashMap::<PathBuf, usize>::new();
+    let module_set = load_order.iter().cloned().collect::<HashSet<_>>();
+
+    for path in load_order {
+        let discovered_module = discovered
+            .get(path)
+            .ok_or_else(|| anyhow!("missing discovered module for {}", path.display()))?;
+        let base_dir = path
+            .parent()
+            .ok_or_else(|| anyhow!("module has no parent directory: {}", path.display()))?;
+        let deps = discovered_module
+            .module_decls
+            .iter()
+            .filter_map(|decl| resolve_declared_module(base_dir, decl).ok())
+            .filter_map(|resolved| resolved.canonicalize().ok())
+            .filter(|resolved| module_set.contains(resolved))
+            .collect::<Vec<_>>();
+        remaining.insert(path.clone(), deps.len());
+        for dep in deps {
+            dependents.entry(dep).or_default().push(path.clone());
+        }
+    }
+
+    let mut frontier = load_order
+        .iter()
+        .filter(|path| remaining.get(*path).copied().unwrap_or_default() == 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut batches = Vec::new();
+    let mut visited = HashSet::new();
+    while !frontier.is_empty() {
+        frontier.sort();
+        let batch = frontier.clone();
+        for path in &batch {
+            visited.insert(path.clone());
+        }
+        batches.push(batch.clone());
+        let mut next = Vec::new();
+        for path in batch {
+            for dependent in dependents.get(&path).cloned().unwrap_or_default() {
+                let entry = remaining
+                    .get_mut(&dependent)
+                    .ok_or_else(|| anyhow!("missing dependency count for {}", dependent.display()))?;
+                *entry = entry.saturating_sub(1);
+                if *entry == 0 && !visited.contains(&dependent) {
+                    next.push(dependent);
+                }
+            }
+        }
+        frontier = next;
+    }
+
+    if visited.len() != load_order.len() {
+        return Ok(vec![load_order.to_vec()]);
+    }
+    Ok(batches)
+}
+
 fn read_lower_cache_stage(parsed: &ParsedProgram) -> CacheStageInfo {
     let combined_source_hash = sha256_hex(parsed.combined_source.as_bytes());
     if let Ok(guard) = LOWER_CACHE_STATUS
@@ -1041,6 +1171,7 @@ struct ModuleLoadState {
     discovered: HashMap<PathBuf, DiscoveredModule>,
     loaded: HashMap<PathBuf, LoadedModule>,
     load_order: Vec<PathBuf>,
+    parallel_batches: Vec<Vec<PathBuf>>,
     visiting: Vec<PathBuf>,
     visiting_set: HashSet<PathBuf>,
     invalidated_modules: Vec<PathBuf>,
@@ -1072,6 +1203,14 @@ impl ModuleLoadState {
                 .iter()
                 .map(|path| path.display().to_string())
                 .collect(),
+            semantic_invalidated_modules: self
+                .invalidated_modules
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            backend_invalidated_outputs: Vec::new(),
+            parallel_batches: self.parallel_batches.len(),
+            cache_coordination: "filesystem-lock".to_string(),
             reasons,
             parse: CacheStageInfo {
                 status: if self.invalidated_modules.is_empty() {
@@ -1082,9 +1221,10 @@ impl ModuleLoadState {
                     "partial".to_string()
                 },
                 detail: format!(
-                    "reused={} reparsed={}",
+                    "reused={} reparsed={} parallel_batches={} coordination=filesystem-lock",
                     self.reused_modules.len(),
-                    self.invalidated_modules.len()
+                    self.invalidated_modules.len(),
+                    self.parallel_batches.len()
                 ),
             },
             lower: CacheStageInfo::default(),
@@ -4919,9 +5059,12 @@ fn try_reuse_backend_artifact(
     if entry.semantic_hash != expected_hash || required_outputs.iter().any(|path| !path.exists()) {
         return false;
     }
+    incremental.backend_invalidated_outputs.clear();
     incremental.backend = CacheStageInfo {
         status: "hit".to_string(),
-        detail: format!("reused cached backend {kind} outputs"),
+        detail: format!(
+            "reused cached backend {kind} outputs without backend-output invalidation"
+        ),
     };
     true
 }
@@ -4935,6 +5078,7 @@ fn store_backend_artifact_cache(
     semantic_hash: &str,
     incremental: &mut IncrementalBuildInfo,
 ) -> Result<()> {
+    incremental.backend_invalidated_outputs = vec![kind.to_string()];
     write_json_file(
         &backend_artifact_cache_path(project_root, module_name, backend, profile, kind),
         &BackendArtifactCacheEntry {
@@ -4943,7 +5087,9 @@ fn store_backend_artifact_cache(
     )?;
     incremental.backend = CacheStageInfo {
         status: "miss".to_string(),
-        detail: format!("rebuilt backend {kind} outputs from semantic changes"),
+        detail: format!(
+            "rebuilt backend {kind} outputs from semantic changes after backend-output invalidation"
+        ),
     };
     Ok(())
 }

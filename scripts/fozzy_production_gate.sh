@@ -94,6 +94,8 @@ fozzy doctor --deep --scenario tests/browser_debug_js_sourcemap.pass.fozzy.json 
 fozzy test --det --strict tests/browser_debug_js_sourcemap.pass.fozzy.json --seed "$SEED" --json >/dev/null
 fozzy doctor --deep --scenario tests/compile.bench_matrix.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
 fozzy test --det --strict tests/compile.bench_matrix.pass.fozzy.json --seed "$SEED" --json >/dev/null
+fozzy doctor --deep --scenario tests/fzweb.framework.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
+fozzy test --det --strict tests/fzweb.framework.pass.fozzy.json --seed "$SEED" --json >/dev/null
 
 echo "[gate] browser runtime abi and scheduler fixtures"
 cargo test -q -p runtime timer_listener_fetch_and_storage_contracts_are_explicit >/dev/null
@@ -110,18 +112,25 @@ cargo test -q -p driver command::tests::browser_diagnostic_guidance_includes_bro
 cargo test -q -p driver command::tests::browser_hmr_payload_declares_reload_fallback -- --exact >/dev/null
 cargo test -q -p driver command::tests::browser_watch_entries_follow_official_module_graph -- --exact >/dev/null
 cargo test -q -p driver command::tests::browser_runtime_error_enrichment_applies_sourcemap_frames -- --exact >/dev/null
+cargo test -q -p driver command::tests::browser_overlay_exposes_hot_runtime_hooks -- --exact >/dev/null
 cargo test -q -p driver command::tests::task_event_record_serializes_browser_scheduler_events -- --exact >/dev/null
 cargo test -q -p driver command::tests::derive_runtime_semantic_evidence_captures_browser_async_metadata -- --exact >/dev/null
 cargo test -q -p driver command::tests::equivalence_normalization_includes_browser_scheduler_events -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::js_backend_output_and_sourcemap_are_stable_for_unchanged_inputs -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::js_backend_preserves_dynamic_import_expression -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::js_backend_lowers_task_and_browser_intrinsics_through_runtime_hooks -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::js_backend_reports_backend_output_invalidation_separately -- --exact >/dev/null
 cargo test -q -p driver pipeline::tests::js_backend_reports_c_abi_exports_as_capability_error -- --exact >/dev/null
+cargo test -q -p driver pipeline::tests::leaf_module_edit_reports_precise_invalidation -- --exact >/dev/null
 ./scripts/browser_dev_server_smoke.sh >/dev/null
+./scripts/browser_devtools_sourcemap_smoke.sh >/dev/null
 ./scripts/browser_js_compat_smoke.sh >/dev/null
+./scripts/browser_scheduler_compat_smoke.sh >/dev/null
+./scripts/browser_hot_runtime_smoke.sh >/dev/null
 python3 ./scripts/verify_compile_bench_matrix.py >/dev/null
 python3 ./scripts/browser_incremental_budget_gate.py >/dev/null
 ./scripts/browser_editor_responsiveness_gate.sh >/dev/null
+python3 ./scripts/verify_fzweb_framework.py >/dev/null
 
 echo "[gate] record deterministic trace"
 fozzy run tests/example.fozzy.json --det --seed "$SEED" --record "$TRACE_PATH" --record-collision overwrite --json >/dev/null
@@ -143,12 +152,19 @@ fozzy trace verify "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --strict --jso
 fozzy replay "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
 fozzy ci "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
 
+echo "[gate] fzweb framework trace record/verify/replay/ci"
+fozzy run tests/fzweb.framework.pass.fozzy.json --det --seed "$SEED" --record "$ARTIFACT_DIR/fzweb.framework.trace.fozzy" --record-collision overwrite --json >/dev/null
+fozzy trace verify "$ARTIFACT_DIR/fzweb.framework.trace.fozzy" --strict --json >/dev/null
+fozzy replay "$ARTIFACT_DIR/fzweb.framework.trace.fozzy" --json >/dev/null
+fozzy ci "$ARTIFACT_DIR/fzweb.framework.trace.fozzy" --json >/dev/null
+
 echo "[gate] host-backed run"
 fozzy run tests/runtime.bind_json_env.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/memory_graph_diff_top.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/primitive.host_operators.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/host_backends_run.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 fozzy run tests/trait_generic.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
+fozzy run tests/fzweb.framework.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
 
 echo "[gate] host-backed C interop matrix"
 fozzy run tests/c_ffi_matrix.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null

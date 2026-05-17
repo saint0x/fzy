@@ -1,0 +1,12 @@
+use core.thread;
+
+fn worker() -> i32 {
+    return 7
+}
+
+pub fn run() -> i32 {
+    let timeout = browser.set_timeout(0, worker)
+    let task = spawn(worker)
+    discard browser.clear_timeout(timeout)
+    return join(task)
+}
