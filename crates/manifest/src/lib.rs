@@ -225,6 +225,10 @@ impl Manifest {
     pub fn primary_bin_path(&self) -> Option<&str> {
         self.target.bin.first().map(|bin| bin.path.as_str())
     }
+
+    pub fn primary_bin_name(&self) -> Option<&str> {
+        self.target.bin.first().map(|bin| bin.name.as_str())
+    }
 }
 
 pub fn load(contents: &str) -> Result<Manifest, toml::de::Error> {
@@ -252,6 +256,7 @@ mod tests {
             .validate()
             .expect("manifest should pass validation");
         assert_eq!(manifest.primary_bin_path(), Some("src/main.fzy"));
+        assert_eq!(manifest.primary_bin_name(), Some("demo"));
     }
 
     #[test]

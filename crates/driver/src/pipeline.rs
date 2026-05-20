@@ -15,13 +15,13 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, Once, OnceLock};
 use std::time::UNIX_EPOCH;
 
-mod llvm_support;
 mod clif_support;
-mod native_metadata;
+mod linker_support;
+mod llvm_support;
 mod native_backend_support;
+mod native_metadata;
 mod native_runtime_support;
 mod native_runtime_tables;
-mod linker_support;
 
 use self::clif_support::{
     ast_signature_type_to_clif_type, clif_emit_function_cfg, lower_cranelift_ir,
@@ -32,14 +32,14 @@ use self::linker_support::{
     apply_profile_optimization_flags, apply_target_link_flags, archiver_candidates,
     linker_candidates, profile_config, unsafe_contracts_enforced, unsafe_scope_policy,
 };
+use self::llvm_support::{
+    llvm_emit_binary_expr, llvm_emit_complex_expr, llvm_emit_simple_expr, llvm_float_literal,
+    lower_llvm_ir, LlvmFuncCtx, LlvmValue,
+};
 use self::native_backend_support::{
     backend_capability_diagnostics, declare_native_data_plane_imports,
     declare_native_runtime_imports, experimental_feature_diagnostics,
     native_lowerability_diagnostics,
-};
-use self::llvm_support::{
-    llvm_emit_binary_expr, llvm_emit_complex_expr, llvm_emit_simple_expr, lower_llvm_ir,
-    llvm_float_literal, LlvmFuncCtx, LlvmValue,
 };
 use self::native_metadata::{
     build_global_const_i32_map, build_mutable_static_i32_map, build_string_literal_ids,
@@ -49,9 +49,9 @@ use self::native_metadata::{
 };
 use self::native_runtime_support::{
     collect_async_c_exports, collect_extern_c_imports, collect_used_native_data_plane_imports,
-    collect_used_native_runtime_imports, compile_runtime_shim_object,
-    ensure_native_runtime_shim, is_extern_c_abi_function, is_extern_c_import_decl,
-    native_link_symbol_for_function, native_runtime_import_contract_errors,
+    collect_used_native_runtime_imports, compile_runtime_shim_object, ensure_native_runtime_shim,
+    is_extern_c_abi_function, is_extern_c_import_decl, native_link_symbol_for_function,
+    native_runtime_import_contract_errors,
 };
 use self::native_runtime_tables::{
     native_data_plane_import_for_callee, native_runtime_import_for_callee, NativeRuntimeImport,
@@ -274,6 +274,7 @@ pub fn compile_file_with_backend(
         Some(emit_native_artifact(
             &fir,
             &resolved.project_root,
+            &resolved.artifact_stem,
             profile,
             resolved.manifest.as_ref(),
             Some(backend.as_str()),
@@ -370,6 +371,7 @@ pub fn compile_library_with_backend(
         emit_native_libraries(
             &fir,
             &resolved.project_root,
+            &resolved.artifact_stem,
             profile,
             resolved.manifest.as_ref(),
             Some(backend.as_str()),
@@ -3507,7 +3509,6 @@ fn llvm_emit_expr(
     })
 }
 
-
 fn expr_task_ref_name(expr: &ast::Expr) -> Option<String> {
     match expr {
         ast::Expr::Ident(name) => Some(name.clone()),
@@ -4032,6 +4033,7 @@ struct ResolvedSource {
     project_root: PathBuf,
     manifest: Option<manifest::Manifest>,
     dependency_graph_hash: Option<String>,
+    artifact_stem: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -4074,6 +4076,11 @@ fn resolve_source_path_with_target(
             project_root: root,
             manifest: None,
             dependency_graph_hash: None,
+            artifact_stem: input
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("main")
+                .to_string(),
         });
     }
     if !input.is_dir() {
@@ -4104,11 +4111,24 @@ fn resolve_source_path_with_target(
             .primary_bin_path()
             .ok_or_else(|| anyhow!("no [[target.bin]] entry in {}", manifest_path.display()))?
     };
+    let artifact_stem = if prefer_lib_target {
+        manifest
+            .target
+            .lib
+            .as_ref()
+            .map(|lib| lib.name.as_str())
+            .or_else(|| manifest.primary_bin_name())
+            .unwrap_or("main")
+            .to_string()
+    } else {
+        manifest.primary_bin_name().unwrap_or("main").to_string()
+    };
     Ok(ResolvedSource {
         source_path: input.join(relative),
         project_root: input.to_path_buf(),
         manifest: Some(manifest),
         dependency_graph_hash: Some(dependency_graph_hash),
+        artifact_stem,
     })
 }
 
@@ -4432,14 +4452,17 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn emit_native_artifact(
     fir: &fir::FirModule,
     project_root: &Path,
+    artifact_stem: &str,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
     backend_override: Option<&str>,
 ) -> Result<PathBuf> {
     let backend = resolve_native_backend(profile, backend_override)?;
     match backend.as_str() {
-        "llvm" => emit_native_artifact_llvm(fir, project_root, profile, manifest),
-        "cranelift" => emit_native_artifact_cranelift(fir, project_root, profile, manifest),
+        "llvm" => emit_native_artifact_llvm(fir, project_root, artifact_stem, profile, manifest),
+        "cranelift" => {
+            emit_native_artifact_cranelift(fir, project_root, artifact_stem, profile, manifest)
+        }
         other => Err(anyhow!(
             "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
             other
@@ -4450,14 +4473,17 @@ fn emit_native_artifact(
 fn emit_native_libraries(
     fir: &fir::FirModule,
     project_root: &Path,
+    artifact_stem: &str,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
     backend_override: Option<&str>,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
     let backend = resolve_native_backend(profile, backend_override)?;
     match backend.as_str() {
-        "llvm" => emit_native_libraries_llvm(fir, project_root, profile, manifest),
-        "cranelift" => emit_native_libraries_cranelift(fir, project_root, profile, manifest),
+        "llvm" => emit_native_libraries_llvm(fir, project_root, artifact_stem, profile, manifest),
+        "cranelift" => {
+            emit_native_libraries_cranelift(fir, project_root, artifact_stem, profile, manifest)
+        }
         other => Err(anyhow!(
             "unknown FZ_NATIVE_BACKEND `{}`; expected `llvm` or `cranelift`",
             other
@@ -4468,6 +4494,7 @@ fn emit_native_libraries(
 fn emit_native_libraries_llvm(
     fir: &fir::FirModule,
     project_root: &Path,
+    artifact_stem: &str,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
@@ -4475,11 +4502,11 @@ fn emit_native_libraries_llvm(
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
 
-    let ll_path = build_dir.join(format!("{}.ll", fir.name));
-    let obj_path = build_dir.join(format!("{}.ffi.o", fir.name));
-    let shim_obj_path = build_dir.join(format!("{}.ffi.runtime.o", fir.name));
-    let static_path = build_dir.join(format!("lib{}.a", fir.name));
-    let shared_path = build_dir.join(format!("lib{}.{}", fir.name, shared_lib_extension()));
+    let ll_path = build_dir.join(format!("{artifact_stem}.ll"));
+    let obj_path = build_dir.join(format!("{artifact_stem}.ffi.o"));
+    let shim_obj_path = build_dir.join(format!("{artifact_stem}.ffi.runtime.o"));
+    let static_path = build_dir.join(format!("lib{artifact_stem}.a"));
+    let shared_path = build_dir.join(format!("lib{artifact_stem}.{}", shared_lib_extension()));
 
     let string_literals = collect_native_string_literals(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
@@ -4580,16 +4607,17 @@ fn emit_native_libraries_llvm(
 fn emit_native_libraries_cranelift(
     fir: &fir::FirModule,
     project_root: &Path,
+    artifact_stem: &str,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
 ) -> Result<(Option<PathBuf>, Option<PathBuf>)> {
     let build_dir = project_root.join(".fz").join("build");
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
-    let object_path = build_dir.join(format!("{}.ffi.o", fir.name));
-    let shim_obj_path = build_dir.join(format!("{}.ffi.runtime.o", fir.name));
-    let static_path = build_dir.join(format!("lib{}.a", fir.name));
-    let shared_path = build_dir.join(format!("lib{}.{}", fir.name, shared_lib_extension()));
+    let object_path = build_dir.join(format!("{artifact_stem}.ffi.o"));
+    let shim_obj_path = build_dir.join(format!("{artifact_stem}.ffi.runtime.o"));
+    let static_path = build_dir.join(format!("lib{artifact_stem}.a"));
+    let shared_path = build_dir.join(format!("lib{artifact_stem}.{}", shared_lib_extension()));
 
     let string_literals = collect_native_string_literals(fir);
     let plan = build_native_canonical_plan(fir, true);
@@ -4917,6 +4945,7 @@ fn resolve_native_backend(profile: BuildProfile, backend_override: Option<&str>)
 fn emit_native_artifact_llvm(
     fir: &fir::FirModule,
     project_root: &Path,
+    artifact_stem: &str,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
 ) -> Result<PathBuf> {
@@ -4924,8 +4953,8 @@ fn emit_native_artifact_llvm(
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
 
-    let ll_path = build_dir.join(format!("{}.ll", fir.name));
-    let bin_path = build_dir.join(fir.name.as_str());
+    let ll_path = build_dir.join(format!("{artifact_stem}.ll"));
+    let bin_path = build_dir.join(artifact_stem);
     let string_literals = collect_native_string_literals(fir);
     let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let async_exports = collect_async_c_exports(fir);
@@ -4982,6 +5011,7 @@ fn emit_native_artifact_llvm(
 fn emit_native_artifact_cranelift(
     fir: &fir::FirModule,
     project_root: &Path,
+    artifact_stem: &str,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
 ) -> Result<PathBuf> {
@@ -4989,8 +5019,8 @@ fn emit_native_artifact_cranelift(
     std::fs::create_dir_all(&build_dir)
         .with_context(|| format!("failed creating build directory: {}", build_dir.display()))?;
 
-    let object_path = build_dir.join(format!("{}.o", fir.name));
-    let bin_path = build_dir.join(fir.name.as_str());
+    let object_path = build_dir.join(format!("{artifact_stem}.o"));
+    let bin_path = build_dir.join(artifact_stem);
     let string_literals = collect_native_string_literals(fir);
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
@@ -5224,7 +5254,6 @@ fn emit_native_artifact_cranelift(
         last_error.unwrap_or_else(|| "unknown compiler error".to_string())
     ))
 }
-
 
 #[cfg(test)]
 mod tests;

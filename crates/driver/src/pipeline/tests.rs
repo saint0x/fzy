@@ -2,14 +2,13 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{
-    collect_async_c_exports, compile_file, compile_file_with_backend,
-    compile_library_with_backend, derive_anchors_from_message, emit_ir, lower_backend_ir,
-    lower_llvm_ir, native_mangle_symbol, native_runtime_import_contract_errors,
-    native_runtime_import_for_callee, parse_program, refresh_lockfile, verify_file,
-    BackendKind, BuildProfile,
-};
 use super::native_runtime_support::{render_native_runtime_shim, NativeAsyncExport};
+use super::{
+    collect_async_c_exports, compile_file, compile_file_with_backend, compile_library_with_backend,
+    derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir, native_mangle_symbol,
+    native_runtime_import_contract_errors, native_runtime_import_for_callee, parse_program,
+    refresh_lockfile, verify_file, BackendKind, BuildProfile,
+};
 
 fn run_native_exit(exe: &Path) -> i32 {
     Command::new(exe)
@@ -89,6 +88,14 @@ fn compile_project_directory_uses_manifest_target() {
 
     let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
     assert_eq!(artifact.module, "main");
+    assert_eq!(
+        artifact
+            .output
+            .as_deref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str()),
+        Some("demo")
+    );
     assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
 
     let _ = std::fs::remove_dir_all(root);
@@ -224,8 +231,7 @@ fn module_qualified_extern_c_import_uses_link_symbol() {
         "mod services;\nfn main() -> i32 {\n    unsafe {\n        return services.kernels.hk_mix32(1, 2)\n    }\n}\n",
     )
     .expect("main should be written");
-    std::fs::write(root.join("services/mod.fzy"), "mod kernels;\n")
-        .expect("mod should be written");
+    std::fs::write(root.join("services/mod.fzy"), "mod kernels;\n").expect("mod should be written");
     std::fs::write(
         root.join("services/kernels.fzy"),
         "ext unsafe c fn hk_mix32(a: i32, b: i32) -> i32;\n",
@@ -264,8 +270,8 @@ fn enum_match_lowers_to_switch_for_eligible_arms() {
     let typed = hir::lower(&module);
     let fir = fir::build_owned(typed);
     let llvm = lower_llvm_ir(&fir, true).expect("llvm lowering should succeed");
-    let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
-        .expect("cranelift lowering should succeed");
+    let clif =
+        lower_backend_ir(&fir, BackendKind::Cranelift).expect("cranelift lowering should succeed");
     assert!(llvm.contains("switch i32"));
     assert!(clif.contains("switch"));
 }
@@ -717,9 +723,7 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id)"));
     assert!(shim.contains("int32_t fz_native_str_contains("));
     assert!(shim.contains("int32_t fz_native_http_header(int32_t key_id, int32_t value_id)"));
-    assert!(
-        shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)")
-    );
+    assert!(shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)"));
     assert!(shim.contains(
         "int32_t fz_native_http_post_json_capture(int32_t endpoint_id, int32_t body_id)"
     ));
@@ -730,23 +734,19 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_json_raw(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_json_from_map(int32_t map_handle)"));
     assert!(shim.contains("int32_t fz_native_json_parse(int32_t json_id)"));
+    assert!(shim.contains("int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id)"));
     assert!(
-        shim.contains("int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id)")
+        shim.contains("int32_t fz_native_json_get_str(int32_t json_value_handle, int32_t key_id)")
     );
-    assert!(shim
-        .contains("int32_t fz_native_json_get_str(int32_t json_value_handle, int32_t key_id)"));
+    assert!(shim.contains("int32_t fz_native_json_has(int32_t json_value_handle, int32_t key_id)"));
     assert!(
-        shim.contains("int32_t fz_native_json_has(int32_t json_value_handle, int32_t key_id)")
+        shim.contains("int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id)")
     );
-    assert!(shim
-        .contains("int32_t fz_native_json_path(int32_t json_value_handle, int32_t path_id)"));
     assert!(shim.contains("posix_spawnp"));
     assert!(shim.contains("int32_t fz_native_proc_spawnl("));
     assert!(shim.contains("int32_t fz_native_proc_runl("));
     assert!(shim.contains("int32_t fz_native_proc_poll(int32_t handle)"));
-    assert!(
-        shim.contains("int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes)")
-    );
+    assert!(shim.contains("int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes)"));
     assert!(shim.contains("int32_t fz_native_net_header(int32_t conn_fd, int32_t key_id)"));
     assert!(shim.contains(
         "int32_t fz_native_route_match(int32_t conn_fd, int32_t method_id, int32_t pattern_id)"
@@ -785,14 +785,11 @@ fn native_runtime_shim_emits_async_export_handle_wrappers() {
         }],
     );
     assert!(shim.contains("extern int32_t flush(int32_t code);"));
+    assert!(shim.contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out)"));
+    assert!(shim.contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out)"));
     assert!(
-        shim.contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out)")
+        shim.contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out)")
     );
-    assert!(
-        shim.contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out)")
-    );
-    assert!(shim
-        .contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out)"));
     assert!(shim.contains("int32_t flush_async_drop(fz_async_handle_t handle)"));
 }
 
@@ -887,12 +884,19 @@ fn backend_defaults_dev_cranelift_release_llvm() {
     let dev = compile_file_with_backend(&root, BuildProfile::Dev, None)
         .expect("dev build should succeed");
     assert_eq!(dev.status, "ok");
-    assert!(root.join(".fz/build/main.o").exists());
+    assert!(root.join(".fz/build/demo.o").exists());
+    assert_eq!(
+        dev.output
+            .as_deref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str()),
+        Some("demo")
+    );
 
     let release = compile_file_with_backend(&root, BuildProfile::Release, None)
         .expect("release build should succeed");
     assert_eq!(release.status, "ok");
-    assert!(root.join(".fz/build/main.ll").exists());
+    assert!(root.join(".fz/build/demo.ll").exists());
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -2116,8 +2120,8 @@ fn direct_memory_backend_contract_array_index_lowers_without_data_plane_runtime_
     let typed = hir::lower(&module);
     let fir = fir::build_owned(typed);
     let llvm = lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
-    let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
-        .expect("cranelift lowering should succeed");
+    let clif =
+        lower_backend_ir(&fir, BackendKind::Cranelift).expect("cranelift lowering should succeed");
 
     assert!(!llvm.contains("__native.array_"));
     assert!(!llvm.contains("fz_native_list_"));
@@ -2134,8 +2138,8 @@ fn direct_memory_backend_contract_switch_and_constant_string_chain_lowering_is_p
     let typed = hir::lower(&module);
     let fir = fir::build_owned(typed);
     let llvm = lower_backend_ir(&fir, BackendKind::Llvm).expect("llvm lowering should succeed");
-    let clif = lower_backend_ir(&fir, BackendKind::Cranelift)
-        .expect("cranelift lowering should succeed");
+    let clif =
+        lower_backend_ir(&fir, BackendKind::Cranelift).expect("cranelift lowering should succeed");
 
     assert!(llvm.contains("switch i32"));
     assert!(clif.contains("switch"));

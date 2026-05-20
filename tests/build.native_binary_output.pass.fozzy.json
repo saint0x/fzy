@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "build-native-binary-output-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-native-build-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text('[package]\\nname=\"build_native_binary\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"build_native_binary\"\\npath=\"src/main.fzy\"\\n'); (root / 'src/main.fzy').write_text('fn main() -> i32 {\\n    return 7\\n}\\n'); cmd = ['cargo', 'run', '-q', '-p', 'fz', '--', 'build', str(root), '--json']; proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, check=True); payload = json.loads(proc.stdout.strip()); binary = pathlib.Path(payload['output']); assert binary.exists(), binary; assert binary.name == 'build_native_binary', binary; run_proc = subprocess.run([str(binary)], cwd=str(repo), capture_output=True, text=True); assert run_proc.returncode == 7, run_proc.returncode; print('native-build-binary-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "native-build-binary-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-native-build-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text('[package]\\nname=\"build_native_binary\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"build_native_binary\"\\npath=\"src/main.fzy\"\\n'); (root / 'src/main.fzy').write_text('fn main() -> i32 {\\n    return 7\\n}\\n'); cmd = ['cargo', 'run', '-q', '-p', 'fz', '--', 'build', str(root), '--json']; proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, check=True); payload = json.loads(proc.stdout.strip()); binary = pathlib.Path(payload['output']); assert binary.exists(), binary; assert binary.name == 'build_native_binary', binary; run_proc = subprocess.run([str(binary)], cwd=str(repo), capture_output=True, text=True); assert run_proc.returncode == 7, run_proc.returncode; print('native-build-binary-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "native-build-binary-ok\n"
+    }
+  ]
+}

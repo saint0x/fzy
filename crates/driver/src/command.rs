@@ -22,26 +22,22 @@ use crate::pipeline::{
     Output,
 };
 
-mod trace_native;
 mod interop;
 mod source;
+mod trace_native;
 
 use self::interop::{
     generate_c_headers, generate_rpc_artifacts, render_headers, render_rpc_artifacts,
     HeaderArtifact,
 };
-use self::source::{
-    discover_nested_project_roots, discover_project_roots, resolve_source,
-};
+use self::source::{discover_nested_project_roots, discover_project_roots, resolve_source};
 use self::trace_native::{
     convert_fozzy_trace_to_native, ensure_goal_trace_from_scenario, native_explore,
     render_trace_native_artifacts, resolve_replay_target,
 };
 
 #[cfg(test)]
-use self::trace_native::{
-    build_live_http_probe_steps, FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION,
-};
+use self::trace_native::{build_live_http_probe_steps, FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -9798,6 +9794,61 @@ mod tests {
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(runtime_config);
+    }
+
+    #[test]
+    fn build_command_emits_runnable_binary_named_after_target() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-build-binary-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project src should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo_binary\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo_binary\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 7\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Build {
+                path: root.clone(),
+                release: false,
+                lib: false,
+                threads: None,
+                backend: None,
+                pgo_generate: false,
+                pgo_use: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
+            },
+            Format::Json,
+        )
+        .expect("build should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("build output should be valid json");
+        let artifact = std::path::PathBuf::from(
+            payload["output"]
+                .as_str()
+                .expect("build output should include artifact path"),
+        );
+        assert_eq!(
+            artifact.file_name().and_then(|name| name.to_str()),
+            Some("demo_binary")
+        );
+        assert!(artifact.exists());
+        let status = std::process::Command::new(&artifact)
+            .status()
+            .expect("native artifact should execute");
+        assert_eq!(status.code(), Some(7));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

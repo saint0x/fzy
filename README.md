@@ -197,6 +197,7 @@ Implemented and verified in this repo:
 - `fz run` executes compiled native output:
   - text mode streams child stdout/stderr live (server-friendly)
   - json mode captures `exitCode/stdout/stderr` payloads
+  - project builds emit a runnable native binary at `.fz/build/<target-name>`
 - Native HTTP runtime hardening:
   - transport failures preserve diagnostics through `http.last_error`
   - deterministic fallback failure status when HTTP status cannot be parsed

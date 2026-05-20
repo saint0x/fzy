@@ -126,6 +126,7 @@ fz test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-back
 Use cases:
 
 - `build`: compile only
+- native project builds emit a runnable executable at `.fz/build/<target-name>`
 - `build --lib`: emit `.a` + shared library (`.so`/`.dylib`) plus C header + ABI manifest
 - `run`: execute a project or scenario once
   - text mode streams child stdout/stderr live
