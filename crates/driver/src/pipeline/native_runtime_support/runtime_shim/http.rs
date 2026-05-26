@@ -228,6 +228,51 @@ int32_t fz_native_map_delete(int32_t handle, int32_t key_id) {
 int32_t fz_native_map_keys(int32_t handle) { return fz_runtime_map_keys(handle); }
 int32_t fz_native_map_len(int32_t handle) { return fz_runtime_map_len(handle); }
 
+static int fz_http_header_key_matches(const char* header_line, const char* key) {
+  if (header_line == NULL || key == NULL) {
+    return 0;
+  }
+  const char* colon = strchr(header_line, ':');
+  if (colon == NULL) {
+    return 0;
+  }
+  size_t key_len = strlen(key);
+  size_t header_key_len = (size_t)(colon - header_line);
+  while (header_key_len > 0 && isspace((unsigned char)header_line[header_key_len - 1])) {
+    header_key_len--;
+  }
+  return header_key_len == key_len && strncasecmp(header_line, key, key_len) == 0;
+}
+
+static int fz_http_header_upsert(char** header_buf, int* header_count, const char* key, const char* value) {
+  if (header_buf == NULL || header_count == NULL || key == NULL || key[0] == '\0') {
+    return -1;
+  }
+  if (value == NULL) {
+    value = "";
+  }
+  size_t n = strlen(key) + strlen(value) + 3;
+  char* kv = (char*)malloc(n);
+  if (kv == NULL) {
+    return -1;
+  }
+  snprintf(kv, n, "%s: %s", key, value);
+  for (int i = 0; i < *header_count; i++) {
+    if (fz_http_header_key_matches(header_buf[i], key)) {
+      free(header_buf[i]);
+      header_buf[i] = kv;
+      return 0;
+    }
+  }
+  if (*header_count >= FZ_MAX_HTTP_HEADERS) {
+    free(kv);
+    return -1;
+  }
+  header_buf[*header_count] = kv;
+  (*header_count)++;
+  return 0;
+}
+
 int32_t fz_native_json_from_list(int32_t list_handle) {
   pthread_mutex_lock(&fz_collections_lock);
   fz_list_state* list = fz_list_get(list_handle);
@@ -237,10 +282,8 @@ int32_t fz_native_json_from_list(int32_t list_handle) {
   }
   size_t total = 3;
   for (int i = 0; i < list->count; i++) {
-    char* escaped = fz_json_escape_owned(list->items[i] == NULL ? "" : list->items[i]);
-    if (escaped == NULL) continue;
-    total += strlen(escaped) + 3;
-    free(escaped);
+    const char* raw = list->items[i];
+    total += strlen(raw == NULL || raw[0] == '\0' ? "null" : raw) + 1;
   }
   char* out = (char*)malloc(total);
   if (out == NULL) {
@@ -251,18 +294,13 @@ int32_t fz_native_json_from_list(int32_t list_handle) {
   out[used++] = '[';
   for (int i = 0; i < list->count; i++) {
     if (i > 0) out[used++] = ',';
-    char* escaped = fz_json_escape_owned(list->items[i] == NULL ? "" : list->items[i]);
-    if (escaped == NULL) {
-      out[used++] = '\"';
-      out[used++] = '\"';
-      continue;
+    const char* raw = list->items[i];
+    if (raw == NULL || raw[0] == '\0') {
+      raw = "null";
     }
-    out[used++] = '\"';
-    size_t n = strlen(escaped);
-    memcpy(out + used, escaped, n);
+    size_t n = strlen(raw);
+    memcpy(out + used, raw, n);
     used += n;
-    out[used++] = '\"';
-    free(escaped);
   }
   out[used++] = ']';
   out[used] = '\0';
@@ -280,12 +318,11 @@ int32_t fz_native_json_from_map(int32_t map_handle) {
   size_t total = 3;
   for (int i = 0; i < map->count; i++) {
     char* k = fz_json_escape_owned(map->keys[i] == NULL ? "" : map->keys[i]);
-    char* v = fz_json_escape_owned(map->values[i] == NULL ? "" : map->values[i]);
-    if (k != NULL && v != NULL) {
-      total += strlen(k) + strlen(v) + 7;
+    const char* raw = map->values[i];
+    if (k != NULL) {
+      total += strlen(k) + strlen(raw == NULL || raw[0] == '\0' ? "null" : raw) + 5;
     }
     free(k);
-    free(v);
   }
   char* out = (char*)malloc(total);
   if (out == NULL) {
@@ -297,15 +334,13 @@ int32_t fz_native_json_from_map(int32_t map_handle) {
   for (int i = 0; i < map->count; i++) {
     if (i > 0) out[used++] = ',';
     char* k = fz_json_escape_owned(map->keys[i] == NULL ? "" : map->keys[i]);
-    char* v = fz_json_escape_owned(map->values[i] == NULL ? "" : map->values[i]);
-    if (k == NULL || v == NULL) {
+    if (k == NULL) {
       free(k);
-      free(v);
       out[used++] = '\"';
       out[used++] = '\"';
       out[used++] = ':';
-      out[used++] = '\"';
-      out[used++] = '\"';
+      memcpy(out + used, "null", 4);
+      used += 4;
       continue;
     }
     out[used++] = '\"';
@@ -314,13 +349,14 @@ int32_t fz_native_json_from_map(int32_t map_handle) {
     used += kn;
     out[used++] = '\"';
     out[used++] = ':';
-    out[used++] = '\"';
-    size_t vn = strlen(v);
-    memcpy(out + used, v, vn);
+    const char* raw = map->values[i];
+    if (raw == NULL || raw[0] == '\0') {
+      raw = "null";
+    }
+    size_t vn = strlen(raw);
+    memcpy(out + used, raw, vn);
     used += vn;
-    out[used++] = '\"';
     free(k);
-    free(v);
   }
   out[used++] = '}';
   out[used] = '\0';
@@ -554,17 +590,6 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
     fz_http_set_last_result(0, "", "http_post_json: empty endpoint");
     return return_body ? fz_intern_slice("", 0) : -1;
   }
-  if (strstr(endpoint, "api.anthropic.com") != NULL) {
-    const char* key = fz_env_get_bootstrapped("ANTHROPIC_API_KEY");
-    if (key == NULL || key[0] == '\0') {
-      const char* msg =
-          "http_post_json failed: ANTHROPIC_API_KEY missing; export it or define it in .env";
-      fz_last_exit_class = 3;
-      fz_set_last_error(22, 3, msg);
-      fz_http_set_last_result(0, "", msg);
-      return return_body ? fz_intern_slice("", 0) : -1;
-    }
-  }
   if (body == NULL || body[0] == '\0') {
     body = "{}";
   }
@@ -581,16 +606,12 @@ static int32_t fz_native_http_post_json_inner(int32_t endpoint_id, int32_t body_
     if (value == NULL) {
       value = "";
     }
-    size_t n = strlen(key) + strlen(value) + 3;
-    char* kv = (char*)malloc(n);
-    if (kv == NULL) {
-      continue;
-    }
-    snprintf(kv, n, "%s: %s", key, value);
-    header_buf[header_count++] = kv;
+    (void)fz_http_header_upsert(header_buf, &header_count, key, value);
   }
   fz_http_header_count = 0;
   pthread_mutex_unlock(&fz_http_lock);
+
+  (void)fz_http_header_upsert(header_buf, &header_count, "content-type", "application/json");
 
   int max_args = 20 + (header_count * 2);
   char** argv = (char**)calloc((size_t)max_args, sizeof(char*));

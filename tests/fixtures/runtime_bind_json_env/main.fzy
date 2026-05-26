@@ -28,11 +28,5 @@ fn main() -> i32 {
     http.read(json_conn)
     http.write_json(json_conn, 200, "bad\njson")
 
-    http.post_json_capture("https://api.anthropic.com/v1/messages", "{}")
-    let emsg = error.message()
-    if str.contains(emsg, "ANTHROPIC_API_KEY") != 1 {
-        return 91
-    }
-
     return 0
 }

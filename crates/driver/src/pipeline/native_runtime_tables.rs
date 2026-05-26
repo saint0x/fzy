@@ -47,6 +47,11 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
+        callee: "http.header_set",
+        symbol: "fz_native_http_header",
+        arity: 2,
+    },
+    NativeRuntimeImport {
         callee: "http.last_status",
         symbol: "fz_native_http_last_status",
         arity: 0,

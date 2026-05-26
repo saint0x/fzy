@@ -100,6 +100,8 @@ The v1 stdlib provides production baseline primitives for:
   - `proc.argv_new/push`
   - `proc.env_new/set`
   - `proc.spawn_cmd` / `proc.run_cmd`
+- `proc.run*` waits for completion and returns the child exit code.
+- `proc.spawn*` returns a process handle for later wait/stdout/stderr/exit inspection.
 
 ### `collections` + JSON
 
@@ -109,6 +111,9 @@ The v1 stdlib provides production baseline primitives for:
 - JSON composition uses dynamic builders:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
+- Outbound request headers are explicit:
+  - `http.header_set(key, value)`
+  - queued headers apply to the next `http.post_json` / `http.post_json_capture` call and are then cleared
 - Object literals (`#{ ... }`) lower to canonical map handles and are intended for small payload ergonomics.
 
 ### `security`

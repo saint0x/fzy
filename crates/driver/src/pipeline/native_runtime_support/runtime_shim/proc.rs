@@ -460,7 +460,11 @@ int32_t fz_native_proc_run(int32_t command_id) {
   if (waited < 0) {
     return -1;
   }
-  return handle;
+  pthread_mutex_lock(&fz_proc_lock);
+  fz_proc_state* state = fz_proc_state_get(handle);
+  int32_t exit_code = (state == NULL) ? -1 : state->exit_code;
+  pthread_mutex_unlock(&fz_proc_lock);
+  return exit_code;
 }
 
 int32_t fz_native_proc_runl(
@@ -476,7 +480,11 @@ int32_t fz_native_proc_runl(
   if (waited < 0) {
     return -1;
   }
-  return handle;
+  pthread_mutex_lock(&fz_proc_lock);
+  fz_proc_state* state = fz_proc_state_get(handle);
+  int32_t exit_code = (state == NULL) ? -1 : state->exit_code;
+  pthread_mutex_unlock(&fz_proc_lock);
+  return exit_code;
 }
 
 int32_t fz_native_proc_argv_new(void) { return fz_runtime_list_new(); }
@@ -744,6 +752,7 @@ int32_t fz_native_task_group_spawn_n(int32_t group_id, int32_t task_ref, int32_t
 }
 
 int32_t fz_native_task_group_join(int32_t group_id) {
+  int32_t first_failure = 0;
   for (;;) {
     int32_t next_handle = 0;
     pthread_mutex_lock(&fz_spawn_lock);
@@ -762,12 +771,15 @@ int32_t fz_native_task_group_join(int32_t group_id) {
     if (next_handle == 0) {
       group->in_use = 0;
       pthread_mutex_unlock(&fz_spawn_lock);
-      return 0;
+      return first_failure;
     }
     pthread_mutex_unlock(&fz_spawn_lock);
     int32_t joined = fz_native_join(next_handle);
     if (joined < 0) {
       return joined;
+    }
+    if (first_failure == 0 && joined != 0) {
+      first_failure = joined;
     }
   }
 }

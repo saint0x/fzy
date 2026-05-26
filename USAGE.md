@@ -157,6 +157,7 @@ Runtime logging defaults:
 - canonical dynamic JSON builders use `json.array(list_handle)` / `json.object(map_handle)`
 - first-class object literal syntax is available for small map payloads: `#{ "k": json.str("v") }`
 - canonical process builders use `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd` / `proc.run_cmd`
+- `proc.run*` returns exit codes; `proc.spawn*` returns handles for wait/stdout/stderr/exit inspection
 - canonical persistence helpers use `storage.append`, `storage.atomic_append`, `storage.kv_open/get/put`
 - shared helper surface is available under `core.util` for common JSON/log/http/concurrency patterns
 

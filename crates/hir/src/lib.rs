@@ -8360,6 +8360,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "http.write_response",
         "http.post_json",
         "http.post_json_capture",
+        "http.header_set",
         "http.last_status",
         "http.last_error",
         "env.get",
@@ -8604,6 +8605,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         }
         "http.headers" => (vec![http_handle.clone()], map_handle.clone()),
         "http.request_id" | "http.remote_addr" => (vec![http_handle.clone()], str_ty.clone()),
+        "http.header_set" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "http.write" | "http.write_json" => (
             vec![http_handle.clone(), i32.clone(), str_ty.clone()],
             i32.clone(),

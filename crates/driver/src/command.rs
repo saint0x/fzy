@@ -9477,7 +9477,11 @@ fn format_source_target(path: &Path, check: bool) -> Result<Vec<PathBuf>> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     use super::*;
 
@@ -10610,6 +10614,202 @@ mod tests {
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
+    fn run_task_group_spawn_n_executes_all_worker_side_effects() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-group-native-{suffix}.fzy"));
+        let out_path = std::env::temp_dir().join(format!("fozzylang-group-native-{suffix}.txt"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.proc;\nuse core.thread;\n\nfn worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'echo grouped >> {quoted_out}'\")\n}}\n\nfn main() -> i32 {{\n    let group = task.group_begin()\n    discard task.group_spawn_n(group, worker, 3)\n    return task.group_join_all(group)\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("run command should succeed for grouped worker side effects");
+        assert!(output.contains("\"exitCode\":0"));
+        let content =
+            std::fs::read_to_string(&out_path).expect("group worker output should be readable");
+        assert_eq!(
+            content.lines().count(),
+            3,
+            "expected three worker side effects"
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
+    fn run_task_group_join_all_propagates_worker_failure() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-group-failure-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.proc;\nuse core.thread;\n\nfn worker() -> i32 {\n    return proc.run(\"/bin/sh -lc 'exit 7'\")\n}\n\nfn main() -> i32 {\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    return task.group_join_all(group)\n}\n",
+        )
+        .expect("source should be written");
+
+        let error = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect_err("group worker failure should surface as command failure");
+        let command_error = error
+            .downcast_ref::<CommandFailure>()
+            .expect("expected command failure payload");
+        assert_eq!(command_error.exit_code, 7);
+        assert!(command_error.output.contains("\"exitCode\":7"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_http_post_json_applies_headers_and_preserves_raw_json_values() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener addr should resolve");
+        let captured = Arc::new(Mutex::new(String::new()));
+        let captured_clone = Arc::clone(&captured);
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("server should accept connection");
+            let mut buf = Vec::<u8>::new();
+            let mut header_end = None;
+            let mut content_length = 0usize;
+            loop {
+                let mut chunk = [0u8; 1024];
+                let read = stream.read(&mut chunk).expect("server read should succeed");
+                if read == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..read]);
+                if header_end.is_none() {
+                    if let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let end_index = end + 4;
+                        header_end = Some(end_index);
+                        let header_text = String::from_utf8_lossy(&buf[..end_index]).to_string();
+                        for line in header_text.lines() {
+                            let lower = line.to_ascii_lowercase();
+                            if let Some(value) = lower.strip_prefix("content-length:") {
+                                content_length = value.trim().parse::<usize>().unwrap_or(0);
+                            }
+                        }
+                    }
+                }
+                if let Some(end_index) = header_end {
+                    if buf.len() >= end_index + content_length {
+                        break;
+                    }
+                }
+            }
+            *captured_clone.lock().expect("capture lock should succeed") =
+                String::from_utf8_lossy(&buf).to_string();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+                )
+                .expect("server response should write");
+        });
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-http-json-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            format!(
+                "use core.http;\n\nfn main() -> i32 {{\n    discard http.header_set(\"x-demo\", \"sentinel\")\n    let inner = map.new()\n    discard map.set(inner, \"status\", json.raw(\"true\"))\n    discard map.set(inner, \"msg\", json.str(\"ok\"))\n    let items = list.new()\n    discard list.push(items, json.raw(\"1\"))\n    discard list.push(items, json.object(inner))\n    let payload = map.new()\n    discard map.set(payload, \"outer\", json.object(inner))\n    discard map.set(payload, \"items\", json.array(items))\n    discard http.post_json_capture(\"http://127.0.0.1:{}/echo\", json.object(payload))\n    let status = http.last_status()\n    if status != 200 {{\n        return status\n    }}\n    return 0\n}}\n",
+                addr.port()
+            ),
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("http json runtime program should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+
+        server.join().expect("server thread should finish");
+        let request = captured
+            .lock()
+            .expect("capture lock should succeed")
+            .clone();
+        assert!(
+            request.to_ascii_lowercase().contains("x-demo: sentinel"),
+            "expected outbound custom header in request: {request}"
+        );
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("content-type: application/json"),
+            "expected JSON content-type header in request: {request}"
+        );
+        assert!(
+            request.contains("\"outer\":{\"status\":true,\"msg\":\"ok\"}"),
+            "expected raw nested JSON object in request body: {request}"
+        );
+        assert!(
+            request.contains("\"items\":[1,{\"status\":true,\"msg\":\"ok\"}]"),
+            "expected raw JSON array values in request body: {request}"
+        );
+
+        let _ = std::fs::remove_file(source);
     }
 
     #[test]

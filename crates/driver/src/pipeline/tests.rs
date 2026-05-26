@@ -779,6 +779,9 @@ fn native_runtime_import_table_is_boundary_only_and_unique() {
     let import = native_runtime_import_for_callee("http.header")
         .expect("http.header runtime import should exist");
     assert_eq!(import.symbol, "fz_native_net_header");
+    let outbound = native_runtime_import_for_callee("http.header_set")
+        .expect("http.header_set runtime import should exist");
+    assert_eq!(outbound.symbol, "fz_native_http_header");
 }
 
 #[test]
@@ -936,7 +939,8 @@ fn native_runtime_shim_sanitizes_invalid_json_http_bodies() {
 fn native_runtime_shim_bootstraps_dotenv_for_env_and_http() {
     let shim = render_native_runtime_shim(&[], &[], &[]);
     assert!(shim.contains("FZ_DOTENV_PATH"));
-    assert!(shim.contains("ANTHROPIC_API_KEY missing"));
+    assert!(shim.contains("fz_http_header_upsert"));
+    assert!(shim.contains("content-type"));
     assert!(shim.contains("--connect-timeout"));
     assert!(shim.contains("--max-time"));
     assert!(shim.contains("unable to exec curl"));

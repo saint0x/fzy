@@ -187,6 +187,8 @@ Semantics:
 - Canonical process intrinsic namespace is `proc.*`.
 - `process.*` is removed in production v1; unresolved-call diagnostics provide migration guidance to the nearest `proc.*` intrinsic.
 - Structured process builders are first-class: `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`, `proc.run_cmd`.
+- `proc.run*` waits for completion and returns the child exit code.
+- `proc.spawn*` returns a process handle for `proc.wait`, `proc.stdout`, `proc.stderr`, and `proc.exit_code`.
 
 ## JSON And Logging Ergonomics
 
@@ -196,6 +198,10 @@ Semantics:
 - Dynamic JSON builders are canonical:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
+- Outbound request headers are explicit and runtime-owned:
+  - `http.header_set("authorization", "Bearer ...")`
+  - `http.header_set("x-request-id", "abc123")`
+  - `http.post_json*` applies queued outbound headers to the next request, then resets the queue.
 - `core.http` provides typed JSON payload wrappers for HTTP call sites:
   - `JsonPayload`
   - `json_payload_new/set_str/set_raw/encode`
