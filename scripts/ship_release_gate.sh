@@ -134,9 +134,9 @@ ANTHROPIC_TRACE="$ARTIFACT_DIR/anthropic_smoke.crossrepo.trace.fozzy"
 "${FZ_CMD[@]}" build "$ANTHROPIC_SMOKE_ROOT" --release --json >/dev/null
 "${FZ_CMD[@]}" test "$ANTHROPIC_SMOKE_ROOT" --det --strict-verify --seed "$SEED" --record "$ANTHROPIC_TRACE" --json >/dev/null
 "${FZ_CMD[@]}" run "$ANTHROPIC_SMOKE_ROOT" --strict-verify --seed "$SEED" --json >/dev/null
-fozzy trace verify "$ANTHROPIC_TRACE" --strict --json >/dev/null
-fozzy replay "$ANTHROPIC_TRACE" --json >/dev/null
-fozzy ci "$ANTHROPIC_TRACE" --json >/dev/null
+"${FZ_CMD[@]}" trace verify "$ANTHROPIC_TRACE" --strict --json >/dev/null
+"${FZ_CMD[@]}" replay "$ANTHROPIC_TRACE" --json >/dev/null
+"${FZ_CMD[@]}" ci "$ANTHROPIC_TRACE" --json >/dev/null
 echo "[ship] anthropic_smoke cross-repo ok"
 
 echo "[ship] anthropic smoke matrix (llvm + cranelift)"

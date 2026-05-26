@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
@@ -124,6 +124,14 @@ pub enum Command {
         path: PathBuf,
         strict: bool,
     },
+    ScenarioDoctor {
+        scenario: PathBuf,
+        runs: Option<u64>,
+        seed: Option<u64>,
+        strict: bool,
+        deep: bool,
+        host_backends: bool,
+    },
     DevLoop {
         path: PathBuf,
         backend: Option<String>,
@@ -138,6 +146,10 @@ pub enum Command {
     },
     Perf {
         artifact: Option<PathBuf>,
+    },
+    ArtifactsLsLatest,
+    ReportShowLatest {
+        output_format: String,
     },
     StabilityDashboard,
     Parity {
@@ -193,6 +205,21 @@ pub enum Command {
     },
     Explore {
         target: PathBuf,
+    },
+    MapSuites {
+        root: PathBuf,
+        scenario_root: PathBuf,
+        profile: String,
+    },
+    Usage,
+    Env,
+    Schema,
+    Validate {
+        scenario: PathBuf,
+    },
+    TraceVerify {
+        trace: PathBuf,
+        strict: bool,
     },
     Replay {
         trace: PathBuf,
@@ -287,58 +314,34 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             smoke_http,
         } => {
             if is_fozzy_scenario(&path) {
-                let mut fozzy_args = vec!["run".to_string(), path.display().to_string()];
-                let routing = scenario_run_routing(deterministic, host_backends);
-                let deterministic_applied = routing.deterministic_applied;
-                if deterministic_applied {
-                    fozzy_args.push("--det".to_string());
-                }
-                if strict_verify {
-                    fozzy_args.push("--strict".to_string());
-                }
-                if let Some(seed) = seed {
-                    fozzy_args.push("--seed".to_string());
-                    fozzy_args.push(seed.to_string());
-                }
-                if let Some(record) = record {
-                    fozzy_args.push("--record".to_string());
-                    fozzy_args.push(record.display().to_string());
-                }
-                if host_backends {
-                    fozzy_args.push("--proc-backend".to_string());
-                    fozzy_args.push("host".to_string());
-                    fozzy_args.push("--fs-backend".to_string());
-                    fozzy_args.push("host".to_string());
-                    fozzy_args.push("--http-backend".to_string());
-                    fozzy_args.push("host".to_string());
-                }
-                if matches!(format, Format::Json) {
-                    fozzy_args.push("--json".to_string());
-                }
-                let routed = fozzy_invoke(&fozzy_args)?;
-                return match format {
-                    Format::Text => Ok(render_text_fields(&[
-                        ("status", "ok".to_string()),
-                        ("mode", "scenario-run".to_string()),
-                        ("scenario", path.display().to_string()),
-                        ("deterministic_requested", deterministic.to_string()),
-                        ("deterministic_applied", deterministic_applied.to_string()),
-                        ("host_backends", host_backends.to_string()),
-                        ("fozzy", routed),
-                    ])),
-                    Format::Json => Ok(serde_json::json!({
-                        "scenario": path.display().to_string(),
-                        "deterministicRequested": deterministic,
-                        "deterministicApplied": deterministic_applied,
-                        "hostBackends": host_backends,
-                        "routing": {
-                            "mode": routing.mode,
-                            "reason": routing.reason,
-                        },
-                        "fozzy": routed,
-                    })
-                    .to_string()),
-                };
+                let config = scenario_config_with_backends(host_backends)?;
+                let run = fzscenario::run_scenario(
+                    &config,
+                    fzscenario::ScenarioPath::new(path.clone()),
+                    &fzscenario::RunOptions {
+                        det: deterministic,
+                        seed,
+                        timeout: None,
+                        reporter: scenario_reporter(format),
+                        record_trace_to: record.clone(),
+                        filter: None,
+                        jobs: None,
+                        fail_fast: false,
+                        record_collision: fzscenario::RecordCollisionPolicy::Append,
+                        profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
+                        proc_backend: config.proc_backend,
+                        fs_backend: config.fs_backend,
+                        http_backend: config.http_backend,
+                        memory: scenario_memory_options(&config),
+                    },
+                )
+                .map_err(scenario_error)?;
+                return render_scenario_run_result(format, run, strict_verify);
+            }
+            if deterministic && host_backends {
+                bail!(
+                    "native source runs do not support `--det --host-backends`; use a scenario target or `fz test --det --host-backends` so the goal-trace bridge can record and replay host decisions deterministically"
+                );
             }
             let unsafe_docs =
                 maybe_generate_unsafe_docs(&path).map(|value| value.display().to_string());
@@ -473,7 +476,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             };
             let rendered = match format {
                 Format::Text => {
-                    let exit_code = run_native_binary_with_bounds(
+                    let outcome = run_native_binary_with_bounds(
                         binary,
                         &args,
                         RunBounds {
@@ -486,7 +489,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     let message = render_text_fields(&[
                         (
                             "status",
-                            if exit_code == 0 {
+                            if outcome.exit_code == 0 {
                                 "ok".to_string()
                             } else {
                                 "error".to_string()
@@ -506,7 +509,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         ),
                         ("stdout", "<streamed-live>".to_string()),
                         ("stderr", "<streamed-live>".to_string()),
-                        ("exit_code", exit_code.to_string()),
+                        ("exit_code", outcome.exit_code.to_string()),
                         (
                             "policy",
                             policy_summary_text(
@@ -525,9 +528,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                             unsafe_docs.clone().unwrap_or_else(|| "<none>".to_string()),
                         ),
                     ]);
-                    if exit_code != 0 {
+                    if outcome.exit_code != 0 {
                         return Err(CommandFailure {
-                            exit_code,
+                            exit_code: outcome.exit_code,
                             output: message,
                         }
                         .into());
@@ -535,7 +538,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     message
                 }
                 Format::Json => {
-                    let exit_code = run_native_binary_with_bounds(
+                    let outcome = run_native_binary_with_bounds(
                         binary,
                         &args,
                         RunBounds {
@@ -561,7 +564,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "maxSeconds": max_seconds,
                         "exitOnHealthcheck": exit_on_healthcheck,
                         "smokeHttp": smoke_http,
-                        "deterministicApplied": deterministic && !host_backends,
+                        "deterministicApplied": deterministic,
                         "policy": {
                             "profile": if safe_profile { "verify" } else { "dev" },
                             "unsafeEnforcement": if strict_verify { "strict" } else { "profile-driven" },
@@ -573,20 +576,20 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "routing": {
                             "mode": routing_mode,
                             "reason": if host_backends && deterministic {
-                                "deterministic replay and host-backend runs are separate; use `fozzy run <scenario> --proc-backend host --fs-backend host --http-backend host --json` for host-backed validation"
+                                "native source runs reject `--det --host-backends`; use scenario replay or the host-backed deterministic test bridge"
                             } else if host_backends {
                                 "host-backed native run"
                             } else {
                                 "native run"
                             }
                         },
-                        "exitCode": exit_code,
-                        "stdout": "<captured in text mode only for bounded execution>",
-                        "stderr": "<captured in text mode only for bounded execution>",
+                        "exitCode": outcome.exit_code,
+                        "stdout": outcome.stdout,
+                        "stderr": outcome.stderr,
                     });
-                    if exit_code != 0 {
+                    if outcome.exit_code != 0 {
                         return Err(CommandFailure {
-                            exit_code,
+                            exit_code: outcome.exit_code,
                             output: payload.to_string(),
                         }
                         .into());
@@ -610,37 +613,30 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             filter,
         } => {
             if is_fozzy_scenario(&path) {
-                let mut fozzy_args = vec!["test".to_string(), path.display().to_string()];
-                if deterministic {
-                    fozzy_args.push("--det".to_string());
-                }
-                if strict_verify {
-                    fozzy_args.push("--strict".to_string());
-                }
-                if let Some(seed) = seed {
-                    fozzy_args.push("--seed".to_string());
-                    fozzy_args.push(seed.to_string());
-                }
-                if let Some(record) = record {
-                    fozzy_args.push("--record".to_string());
-                    fozzy_args.push(record.display().to_string());
-                }
-                if host_backends {
-                    fozzy_args.push("--proc-backend".to_string());
-                    fozzy_args.push("host".to_string());
-                    fozzy_args.push("--fs-backend".to_string());
-                    fozzy_args.push("host".to_string());
-                    fozzy_args.push("--http-backend".to_string());
-                    fozzy_args.push("host".to_string());
-                }
-                if let Some(scheduler) = &scheduler {
-                    fozzy_args.push("--schedule".to_string());
-                    fozzy_args.push(scheduler.clone());
-                }
-                if matches!(format, Format::Json) {
-                    fozzy_args.push("--json".to_string());
-                }
-                return fozzy_invoke(&fozzy_args);
+                let config = scenario_config_with_backends(host_backends)?;
+                let globs = vec![path.display().to_string()];
+                let run = fzscenario::run_tests(
+                    &config,
+                    &globs,
+                    &fzscenario::RunOptions {
+                        det: deterministic,
+                        seed,
+                        timeout: None,
+                        reporter: scenario_reporter(format),
+                        record_trace_to: record.clone(),
+                        filter: filter.clone(),
+                        jobs: None,
+                        fail_fast: false,
+                        record_collision: fzscenario::RecordCollisionPolicy::Append,
+                        profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
+                        proc_backend: config.proc_backend,
+                        fs_backend: config.fs_backend,
+                        http_backend: config.http_backend,
+                        memory: scenario_memory_options(&config),
+                    },
+                )
+                .map_err(scenario_error)?;
+                return render_scenario_run_result(format, run, strict_verify);
             }
             if host_backends {
                 let bridge_root = std::env::temp_dir().join("fz-host-bridge");
@@ -684,54 +680,37 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         path.display()
                     )
                 })?;
-                let mut fozzy_args = vec!["test".to_string(), scenario.display().to_string()];
-                if deterministic {
-                    fozzy_args.push("--det".to_string());
-                }
-                if strict_verify {
-                    fozzy_args.push("--strict".to_string());
-                }
-                if let Some(seed) = seed {
-                    fozzy_args.push("--seed".to_string());
-                    fozzy_args.push(seed.to_string());
-                }
-                if let Some(record) = record {
-                    fozzy_args.push("--record".to_string());
-                    fozzy_args.push(record.display().to_string());
-                }
-                fozzy_args.push("--proc-backend".to_string());
-                fozzy_args.push("host".to_string());
-                fozzy_args.push("--fs-backend".to_string());
-                fozzy_args.push("host".to_string());
-                fozzy_args.push("--http-backend".to_string());
-                fozzy_args.push("host".to_string());
-                if let Some(scheduler) = &scheduler {
-                    fozzy_args.push("--schedule".to_string());
-                    fozzy_args.push(scheduler.clone());
-                }
-                if matches!(format, Format::Json) {
-                    fozzy_args.push("--json".to_string());
-                }
-                let bridged = fozzy_invoke(&fozzy_args)?;
-                return match format {
-                    Format::Text => Ok(render_text_fields(&[
-                        ("status", "ok".to_string()),
-                        ("mode", "test-host-backends-bridge".to_string()),
-                        ("source", path.display().to_string()),
-                        ("scenario", scenario.display().to_string()),
-                        ("bridge_trace", trace_path.display().to_string()),
-                        ("fozzy", bridged),
-                    ])),
-                    Format::Json => Ok(serde_json::json!({
-                        "status": "ok",
-                        "mode": "test-host-backends-bridge",
-                        "source": path.display().to_string(),
-                        "scenario": scenario.display().to_string(),
-                        "bridgeTrace": trace_path.display().to_string(),
-                        "fozzy": bridged,
-                    })
-                    .to_string()),
-                };
+                let config = scenario_config_with_backends(true)?;
+                let globs = vec![scenario.display().to_string()];
+                let run = fzscenario::run_tests(
+                    &config,
+                    &globs,
+                    &fzscenario::RunOptions {
+                        det: deterministic,
+                        seed,
+                        timeout: None,
+                        reporter: scenario_reporter(format),
+                        record_trace_to: record.clone(),
+                        filter: None,
+                        jobs: None,
+                        fail_fast: false,
+                        record_collision: fzscenario::RecordCollisionPolicy::Append,
+                        profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
+                        proc_backend: config.proc_backend,
+                        fs_backend: config.fs_backend,
+                        http_backend: config.http_backend,
+                        memory: scenario_memory_options(&config),
+                    },
+                )
+                .map_err(scenario_error)?;
+                return render_host_bridge_test_result(
+                    format,
+                    path.as_path(),
+                    scenario.as_path(),
+                    trace_path.as_path(),
+                    run,
+                    strict_verify,
+                );
             }
             let unsafe_docs =
                 maybe_generate_unsafe_docs(&path).map(|value| value.display().to_string());
@@ -857,6 +836,28 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::Lint { path, tier } => lint_command(&path, &tier, format),
         Command::Explain { diag_code } => explain_command(&diag_code, format),
         Command::DoctorProject { path, strict } => doctor_project_command(&path, strict, format),
+        Command::ScenarioDoctor {
+            scenario,
+            runs,
+            seed,
+            strict,
+            deep,
+            host_backends,
+        } => {
+            ensure_exists(&scenario)?;
+            let config = scenario_config_with_backends(host_backends)?;
+            let report = fzscenario::doctor(
+                &config,
+                &fzscenario::DoctorOptions {
+                    deep,
+                    scenario: Some(fzscenario::ScenarioPath::new(scenario.clone())),
+                    runs: runs.unwrap_or(5) as u32,
+                    seed,
+                },
+            )
+            .map_err(scenario_error)?;
+            render_doctor_report(format, report, strict)
+        }
         Command::DevLoop { path, backend } => devloop_command(&path, backend.as_deref(), format),
         Command::DxCheck { path, strict } => dx_check_command(&path, strict, format),
         Command::SpecCheck => spec_check(format),
@@ -865,6 +866,30 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             Ok(render_output(format, output))
         }
         Command::Perf { artifact } => perf_command(artifact.as_deref(), format),
+        Command::ArtifactsLsLatest => {
+            let config = scenario_config()?;
+            let output = fzscenario::artifacts_command(
+                &config,
+                &fzscenario::ArtifactCommand::Ls {
+                    run: "latest".to_string(),
+                },
+            )
+            .map_err(scenario_error)?;
+            render_value_output(format, &output)
+        }
+        Command::ReportShowLatest { output_format } => {
+            let config = scenario_config()?;
+            let reporter = parse_scenario_reporter(&output_format)?;
+            let output = fzscenario::report_command(
+                &config,
+                &fzscenario::ReportCommand::Show {
+                    run: "latest".to_string(),
+                    format: reporter,
+                },
+            )
+            .map_err(scenario_error)?;
+            render_report_show_output(format, reporter, output)
+        }
         Command::StabilityDashboard => stability_dashboard_command(format),
         Command::Parity { path, seed } => parity_command(&path, seed.unwrap_or(1), format),
         Command::Equivalence { path, seed } => {
@@ -884,13 +909,68 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             lsp::serve_stdio(path.as_deref())?;
             Ok(render(format, "lsp server exited cleanly"))
         }
-        Command::Fuzz { target } => passthrough_fozzy("fuzz", &target, format),
+        Command::Fuzz { target } => scenario_fuzz(&target, format),
         Command::Explore { target } => {
             if is_native_trace_or_manifest(&target) {
                 native_explore(&target, format)
             } else {
-                passthrough_fozzy("explore", &target, format)
+                scenario_explore(&target, format)
             }
+        }
+        Command::MapSuites {
+            root,
+            scenario_root,
+            profile,
+        } => {
+            let config = scenario_config()?;
+            let output = fzscenario::map_command(
+                &config,
+                &fzscenario::MapCommand::Suites {
+                    root,
+                    scenario_root,
+                    min_risk: 60,
+                    profile: parse_topology_profile(&profile)?,
+                    shrink_policy: fzscenario::ShrinkCoveragePolicy::NoKnownFailures,
+                    limit: 100,
+                    offset: 0,
+                    max_matched_scenarios: 25,
+                },
+            )
+            .map_err(scenario_error)?;
+            render_value_output(format, &output)
+        }
+        Command::Usage => match format {
+            Format::Text => Ok(native_usage_text()),
+            Format::Json => Ok(native_usage_doc().to_string()),
+        },
+        Command::Env => {
+            let config = scenario_config()?;
+            let output = fzscenario::env_info(&config);
+            let output = serde_json::json!({
+                "os": output.os,
+                "arch": output.arch,
+                "fz": output.fozzy,
+                "capabilities": output.capabilities,
+            });
+            render_value_output(format, &output)
+        }
+        Command::Schema => {
+            let output = fzscenario::schema_doc();
+            render_value_output(format, &output)
+        }
+        Command::Validate { scenario } => {
+            ensure_exists(&scenario)?;
+            validate_scenario_file(&scenario)?;
+            let output = serde_json::json!({
+                "ok": true,
+                "scenario": scenario.display().to_string(),
+            });
+            render_value_output(format, &output)
+        }
+        Command::TraceVerify { trace, strict } => {
+            ensure_exists(&trace)?;
+            let output = fzscenario::verify_trace_file(&trace).map_err(scenario_error)?;
+            render_trace_verify_report(format, output, strict)
         }
         Command::Replay { trace } => replay_like("replay", &trace, format),
         Command::Shrink { trace } => replay_like("shrink", &trace, format),
@@ -1177,6 +1257,7 @@ impl Drop for BuildLinkArgsScope {
 }
 
 #[derive(Debug, Clone, Copy)]
+#[cfg(test)]
 struct ScenarioRunRouting {
     deterministic_applied: bool,
     mode: &'static str,
@@ -1190,17 +1271,27 @@ struct RunBounds<'a> {
     smoke_http: Option<&'a str>,
 }
 
+#[derive(Debug, Clone)]
+struct NativeRunOutcome {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
 fn run_native_binary_with_bounds(
     binary: &Path,
     args: &[String],
     bounds: RunBounds<'_>,
     stream_stdio: bool,
-) -> Result<i32> {
+) -> Result<NativeRunOutcome> {
     let mut child = ProcessCommand::new(binary);
     child.args(args);
     if stream_stdio {
         child.stdout(Stdio::inherit());
         child.stderr(Stdio::inherit());
+    } else {
+        child.stdout(Stdio::piped());
+        child.stderr(Stdio::piped());
     }
     let mut child = child
         .spawn()
@@ -1211,31 +1302,69 @@ fn run_native_binary_with_bounds(
             .try_wait()
             .with_context(|| format!("failed waiting for native artifact: {}", binary.display()))?
         {
-            return Ok(status.code().unwrap_or(1));
+            let (stdout, stderr) = read_child_output(&mut child)?;
+            return Ok(NativeRunOutcome {
+                exit_code: status.code().unwrap_or(1),
+                stdout,
+                stderr,
+            });
         }
         if let Some(max) = bounds.max_seconds {
             if started.elapsed() >= Duration::from_secs(max) {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Ok(124);
+                let (stdout, mut stderr) = read_child_output(&mut child)?;
+                if !stderr.is_empty() {
+                    stderr.push('\n');
+                }
+                stderr.push_str("timed out");
+                return Ok(NativeRunOutcome {
+                    exit_code: 124,
+                    stdout,
+                    stderr,
+                });
             }
         }
         if let Some(url) = bounds.exit_on_healthcheck {
             if probe_http_ok(url)? {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Ok(0);
+                let (stdout, stderr) = read_child_output(&mut child)?;
+                return Ok(NativeRunOutcome {
+                    exit_code: 0,
+                    stdout,
+                    stderr,
+                });
             }
         }
         if let Some(url) = bounds.smoke_http {
             if probe_http_ok(url)? {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Ok(0);
+                let (stdout, stderr) = read_child_output(&mut child)?;
+                return Ok(NativeRunOutcome {
+                    exit_code: 0,
+                    stdout,
+                    stderr,
+                });
             }
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+fn read_child_output(child: &mut std::process::Child) -> Result<(String, String)> {
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        out.read_to_string(&mut stdout)
+            .context("failed reading child stdout")?;
+    }
+    if let Some(mut err) = child.stderr.take() {
+        err.read_to_string(&mut stderr)
+            .context("failed reading child stderr")?;
+    }
+    Ok((stdout, stderr))
 }
 
 fn probe_http_ok(url: &str) -> Result<bool> {
@@ -1255,7 +1384,15 @@ fn probe_http_ok(url: &str) -> Result<bool> {
     } else {
         (host_port, 80u16)
     };
-    let mut stream = match TcpStream::connect((host, port)) {
+    let connect_addr = format!("{host}:{port}");
+    let resolved = connect_addr
+        .to_socket_addrs()
+        .with_context(|| format!("invalid probe host/port in URL: {url}"))?
+        .next();
+    let Some(socket_addr) = resolved else {
+        return Ok(false);
+    };
+    let mut stream = match TcpStream::connect_timeout(&socket_addr, Duration::from_millis(500)) {
         Ok(stream) => stream,
         Err(_) => return Ok(false),
     };
@@ -1272,13 +1409,13 @@ fn probe_http_ok(url: &str) -> Result<bool> {
     Ok(response.starts_with("HTTP/1.1 200") || response.starts_with("HTTP/1.0 200"))
 }
 
+#[cfg(test)]
 fn scenario_run_routing(deterministic_requested: bool, host_backends: bool) -> ScenarioRunRouting {
     if deterministic_requested && host_backends {
         return ScenarioRunRouting {
-            deterministic_applied: false,
-            mode: "host-backed-live-scenario",
-            reason:
-                "deterministic replay and host backends are separate modes; rerun host-backed as `fozzy run <scenario> --proc-backend host --fs-backend host --http-backend host --json`",
+            deterministic_applied: true,
+            mode: "host-backed-deterministic-scenario",
+            reason: "host-backed deterministic scenario replay enabled",
         };
     }
     if deterministic_requested {
@@ -3444,40 +3581,41 @@ fn fozzy_test_summary(
     host_backends: bool,
     deterministic: bool,
 ) -> Result<FozzyTestSummary> {
-    let mut args = vec![
-        "test".to_string(),
-        scenario.display().to_string(),
-        "--strict".to_string(),
-        "--json".to_string(),
-    ];
-    if deterministic {
-        args.push("--det".to_string());
-    }
-    if host_backends {
-        args.push("--proc-backend".to_string());
-        args.push("host".to_string());
-        args.push("--fs-backend".to_string());
-        args.push("host".to_string());
-        args.push("--http-backend".to_string());
-        args.push("host".to_string());
-    }
-    let output = fozzy_invoke(&args)?;
-    let value: serde_json::Value =
-        serde_json::from_str(&output).context("failed parsing fozzy test output")?;
-    let exit_class = value
-        .get("status")
-        .and_then(|status| status.as_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let passed = value
-        .get("tests")
-        .and_then(|tests| tests.get("passed"))
-        .and_then(|value| value.as_u64())
+    let config = scenario_config_with_backends(host_backends)?;
+    let globs = vec![scenario.display().to_string()];
+    let run = fzscenario::run_tests(
+        &config,
+        &globs,
+        &fzscenario::RunOptions {
+            det: deterministic,
+            seed: None,
+            timeout: None,
+            reporter: fzscenario::Reporter::Json,
+            record_trace_to: None,
+            filter: None,
+            jobs: None,
+            fail_fast: false,
+            record_collision: fzscenario::RecordCollisionPolicy::Append,
+            profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
+            proc_backend: config.proc_backend,
+            fs_backend: config.fs_backend,
+            http_backend: config.http_backend,
+            memory: scenario_memory_options(&config),
+        },
+    )
+    .map_err(scenario_error)?;
+    let exit_class = format!("{:?}", run.summary.status).to_ascii_lowercase();
+    let passed = run
+        .summary
+        .tests
+        .as_ref()
+        .map(|tests| tests.passed)
         .unwrap_or(0);
-    let failed = value
-        .get("tests")
-        .and_then(|tests| tests.get("failed"))
-        .and_then(|value| value.as_u64())
+    let failed = run
+        .summary
+        .tests
+        .as_ref()
+        .map(|tests| tests.failed)
         .unwrap_or(0);
     Ok(FozzyTestSummary {
         exit_class,
@@ -4921,10 +5059,8 @@ fn parse_abi_manifest(value: &serde_json::Value, path: &Path) -> Result<AbiManif
             .and_then(|item| item.get("contract"))
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        let export_contract = export
-            .get("contract")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null);
+        let export_contract =
+            normalize_abi_export_contract(export.get("contract"), export_mode == "async");
         let contract_signature = serde_json::to_string(&serde_json::json!({
             "params": param_contracts,
             "return": return_contract,
@@ -4945,6 +5081,32 @@ fn parse_abi_manifest(value: &serde_json::Value, path: &Path) -> Result<AbiManif
         panic_boundary,
         exports,
     })
+}
+
+fn normalize_abi_export_contract(
+    contract: Option<&serde_json::Value>,
+    is_async: bool,
+) -> serde_json::Value {
+    let mut normalized = match contract {
+        Some(serde_json::Value::Object(map)) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+    normalized
+        .entry("callbackBindings".to_string())
+        .or_insert_with(|| serde_json::json!([]));
+    normalized
+        .entry("execution".to_string())
+        .or_insert_with(|| {
+            serde_json::Value::String(if is_async {
+                "async-handle-v1".to_string()
+            } else {
+                "sync".to_string()
+            })
+        });
+    normalized
+        .entry("asyncBoundary".to_string())
+        .or_insert(serde_json::Value::Null);
+    serde_json::Value::Object(normalized)
 }
 
 fn hash_directory_tree(root: &Path) -> Result<String> {
@@ -7591,20 +7753,8 @@ fn persist_runtime_threads_config(path: &Path, threads: Option<u16>) -> Result<O
     Ok(Some(config_path))
 }
 
-fn passthrough_fozzy(command: &str, target: &Path, format: Format) -> Result<String> {
-    ensure_exists(target)?;
-
-    let mut args = vec![command.to_string(), target.display().to_string()];
-    if matches!(format, Format::Json) {
-        args.push("--json".to_string());
-    }
-    let output = fozzy_invoke(&args)?;
-    Ok(cli_output::normalize_cli_output(format, &output))
-}
-
 fn replay_like(command: &str, target: &Path, format: Format) -> Result<String> {
-    let replay_target = resolve_replay_target(target)?;
-    passthrough_fozzy(command, &replay_target, format)
+    scenario_replay_like(command, target, format)
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -8371,34 +8521,485 @@ fn parse_rpc_declarations(source: &str) -> Result<Vec<RpcMethod>> {
     Ok(methods)
 }
 
-fn fozzy_invoke(args: &[String]) -> Result<String> {
-    let mut child = ProcessCommand::new("fozzy");
-    child.args(args);
+fn scenario_error(err: impl fmt::Display) -> anyhow::Error {
+    anyhow!(err.to_string())
+}
 
-    let output = child.output().context("failed to invoke fozzy binary")?;
-    if !output.status.success() {
-        let command = args.join(" ");
-        let status = output.status.code().unwrap_or(1);
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!(
-            "fozzy {} failed (exit={}): stderr=`{}` stdout=`{}`",
-            command,
-            status,
-            if stderr.is_empty() {
-                "<empty>"
-            } else {
-                &stderr
-            },
-            if stdout.is_empty() {
-                "<empty>"
-            } else {
-                &stdout
-            }
-        );
+fn scenario_config() -> Result<fzscenario::Config> {
+    let cwd = std::env::current_dir().context("failed to resolve current working directory")?;
+    let config_path = cwd.join("fozzy.toml");
+    fzscenario::Config::load_optional_checked(&config_path).map_err(scenario_error)
+}
+
+fn scenario_config_with_backends(host_backends: bool) -> Result<fzscenario::Config> {
+    let mut config = scenario_config()?;
+    if host_backends {
+        config.proc_backend = fzscenario::ProcBackend::Host;
+        config.fs_backend = fzscenario::FsBackend::Host;
+        config.http_backend = fzscenario::HttpBackend::Host;
     }
+    Ok(config)
+}
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+fn scenario_memory_options(config: &fzscenario::Config) -> fzscenario::MemoryOptions {
+    fzscenario::MemoryOptions {
+        track: config.mem_track,
+        limit_mb: config.mem_limit_mb,
+        fail_after_allocs: config.mem_fail_after,
+        fail_on_leak: config.fail_on_leak,
+        leak_budget_bytes: config.leak_budget,
+        fragmentation_seed: config.mem_fragmentation_seed,
+        pressure_wave: config.mem_pressure_wave.clone(),
+        artifacts: config.mem_artifacts,
+    }
+}
+
+fn scenario_reporter(format: Format) -> fzscenario::Reporter {
+    match format {
+        Format::Text => fzscenario::Reporter::Pretty,
+        Format::Json => fzscenario::Reporter::Json,
+    }
+}
+
+fn parse_scenario_reporter(raw: &str) -> Result<fzscenario::Reporter> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "pretty" => Ok(fzscenario::Reporter::Pretty),
+        "json" => Ok(fzscenario::Reporter::Json),
+        "junit" => Ok(fzscenario::Reporter::Junit),
+        "html" => Ok(fzscenario::Reporter::Html),
+        other => bail!("unsupported report format `{other}`"),
+    }
+}
+
+fn parse_topology_profile(raw: &str) -> Result<fzscenario::TopologyProfile> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "balanced" => Ok(fzscenario::TopologyProfile::Balanced),
+        "pedantic" => Ok(fzscenario::TopologyProfile::Pedantic),
+        "overkill" => Ok(fzscenario::TopologyProfile::Overkill),
+        other => bail!("unsupported topology profile `{other}`"),
+    }
+}
+
+fn scenario_exit_code(status: fzscenario::ExitStatus) -> i32 {
+    match status {
+        fzscenario::ExitStatus::Pass => 0,
+        fzscenario::ExitStatus::Fail => 1,
+        fzscenario::ExitStatus::Error => 2,
+        fzscenario::ExitStatus::Timeout => 3,
+        fzscenario::ExitStatus::Crash => 4,
+    }
+}
+
+fn strict_checker_failure(summary: &fzscenario::RunSummary) -> bool {
+    summary.status == fzscenario::ExitStatus::Pass
+        && summary
+            .findings
+            .iter()
+            .any(|finding| finding.kind == fzscenario::FindingKind::Checker)
+}
+
+fn render_value_output(value_format: Format, value: &impl Serialize) -> Result<String> {
+    match value_format {
+        Format::Text => Ok(serde_json::to_string_pretty(value)?),
+        Format::Json => Ok(serde_json::to_string(value)?),
+    }
+}
+
+fn render_report_show_output(
+    format: Format,
+    reporter: fzscenario::Reporter,
+    value: serde_json::Value,
+) -> Result<String> {
+    match (format, reporter) {
+        (Format::Text, fzscenario::Reporter::Pretty)
+        | (Format::Text, fzscenario::Reporter::Junit)
+        | (Format::Text, fzscenario::Reporter::Html) => Ok(value
+            .get("content")
+            .and_then(|content| content.as_str())
+            .unwrap_or_default()
+            .to_string()),
+        _ => render_value_output(format, &value),
+    }
+}
+
+fn native_usage_doc() -> serde_json::Value {
+    serde_json::json!({
+        "title": "FZ CLI usage",
+        "items": [
+            {
+                "command": "fz map suites",
+                "when": "Start production validation with hotspot coverage mapping.",
+                "how": "fz map suites --root . --scenario-root tests --profile pedantic --json"
+            },
+            {
+                "command": "fz doctor",
+                "when": "Audit determinism and environment behavior for a scenario.",
+                "how": "fz doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 123 --json"
+            },
+            {
+                "command": "fz test",
+                "when": "Run strict deterministic scenario suites or bridge native tests into scenario execution.",
+                "how": "fz test tests/example.fozzy.json --det --strict-verify --json"
+            },
+            {
+                "command": "fz run",
+                "when": "Run a single scenario or native source target with production runtime checks.",
+                "how": "fz run tests/example.fozzy.json --det --record artifacts/example.trace.fozzy --json"
+            },
+            {
+                "command": "fz fuzz",
+                "when": "Coverage-fuzz a scenario target natively through the local scenario engine.",
+                "how": "fz fuzz tests/example.fozzy.json --json"
+            },
+            {
+                "command": "fz explore",
+                "when": "Explore distributed schedules deterministically.",
+                "how": "fz explore tests/distributed.pass.fozzy.json --json"
+            },
+            {
+                "command": "fz replay | shrink | ci",
+                "when": "Validate recorded traces, replay them, shrink them, and run the CI bundle locally.",
+                "how": "fz trace verify artifacts/example.trace.fozzy --strict --json && fz replay artifacts/example.trace.fozzy --json && fz ci artifacts/example.trace.fozzy --json"
+            },
+            {
+                "command": "fz artifacts ls latest | fz report show latest",
+                "when": "Inspect the most recent run artifacts and rendered report output.",
+                "how": "fz artifacts ls latest --json && fz report show latest --format pretty"
+            },
+            {
+                "command": "fz env | schema | validate",
+                "when": "Inspect execution capabilities, authoring schema, and scenario validity.",
+                "how": "fz env --json && fz schema --json && fz validate tests/example.fozzy.json --json"
+            }
+        ]
+    })
+}
+
+fn native_usage_text() -> String {
+    let items = native_usage_doc()
+        .get("items")
+        .and_then(|items| items.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut out = String::from("FZ CLI usage\n\n");
+    for item in items {
+        let command = item
+            .get("command")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let when = item
+            .get("when")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        let how = item
+            .get("how")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default();
+        out.push_str(&format!("{command}:\n  when: {when}\n  how:  {how}\n\n"));
+    }
+    out.trim_end().to_string()
+}
+
+fn render_scenario_run_result(
+    format: Format,
+    run: fzscenario::RunResult,
+    strict: bool,
+) -> Result<String> {
+    let status = run.summary.status;
+    let strict_failure = strict && strict_checker_failure(&run.summary);
+    let rendered = match format {
+        Format::Text => run.summary.pretty(),
+        Format::Json => serde_json::to_string(&run.summary)?,
+    };
+    if status != fzscenario::ExitStatus::Pass || strict_failure {
+        return Err(CommandFailure {
+            exit_code: if strict_failure {
+                1
+            } else {
+                scenario_exit_code(status)
+            },
+            output: rendered,
+        }
+        .into());
+    }
+    Ok(rendered)
+}
+
+fn render_host_bridge_test_result(
+    format: Format,
+    source: &Path,
+    scenario: &Path,
+    trace_path: &Path,
+    run: fzscenario::RunResult,
+    strict: bool,
+) -> Result<String> {
+    let status = run.summary.status;
+    let strict_failure = strict && strict_checker_failure(&run.summary);
+    let rendered = match format {
+        Format::Text => {
+            let mut out = run.summary.pretty();
+            out.push_str(&format!(
+                "\nbridge_source={}\nbridge_scenario={}\nbridge_trace={}",
+                source.display(),
+                scenario.display(),
+                trace_path.display()
+            ));
+            out
+        }
+        Format::Json => serde_json::to_string(&serde_json::json!({
+            "bridge": {
+                "source": source.display().to_string(),
+                "scenario": scenario.display().to_string(),
+                "trace": trace_path.display().to_string(),
+            },
+            "summary": &run.summary,
+        }))?,
+    };
+    if status != fzscenario::ExitStatus::Pass || strict_failure {
+        return Err(CommandFailure {
+            exit_code: if strict_failure {
+                1
+            } else {
+                scenario_exit_code(status)
+            },
+            output: rendered,
+        }
+        .into());
+    }
+    Ok(rendered)
+}
+
+fn render_doctor_report(
+    format: Format,
+    report: fzscenario::DoctorReport,
+    strict: bool,
+) -> Result<String> {
+    let rendered = render_value_output(format, &report)?;
+    if strict && !report.ok {
+        return Err(CommandFailure {
+            exit_code: 1,
+            output: rendered,
+        }
+        .into());
+    }
+    Ok(rendered)
+}
+
+fn render_trace_verify_report(
+    format: Format,
+    report: fzscenario::TraceVerifyReport,
+    strict: bool,
+) -> Result<String> {
+    let rendered = render_value_output(format, &report)?;
+    if !report.ok || (strict && !report.warnings.is_empty()) {
+        return Err(CommandFailure {
+            exit_code: 1,
+            output: rendered,
+        }
+        .into());
+    }
+    Ok(rendered)
+}
+
+fn validate_scenario_file(path: &Path) -> Result<()> {
+    let scenario_path = fzscenario::ScenarioPath::new(path.to_path_buf());
+    let file = fzscenario::Scenario::load_file(&scenario_path).map_err(scenario_error)?;
+    match file {
+        fzscenario::ScenarioFile::Steps(_) => {
+            let scenario = fzscenario::Scenario::load(&scenario_path).map_err(scenario_error)?;
+            scenario.validate().map_err(scenario_error)?;
+        }
+        fzscenario::ScenarioFile::Suites(_) => {}
+        fzscenario::ScenarioFile::Distributed(distributed) => {
+            distributed.validate().map_err(scenario_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn scenario_fuzz(target: &Path, format: Format) -> Result<String> {
+    ensure_exists(target)?;
+    let config = scenario_config()?;
+    let target_spec = format!("scenario:{}", target.display());
+    let parsed_target: fzscenario::FuzzTarget = target_spec.parse().map_err(scenario_error)?;
+    let corpus_name = target
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| {
+            stem.chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                .collect::<String>()
+        })
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "scenario".to_string());
+    let corpus_dir = config.corpora_dir().join("native-fz").join(corpus_name);
+    let run = fzscenario::fuzz(
+        &config,
+        &parsed_target,
+        &fzscenario::FuzzOptions {
+            det: true,
+            mode: fzscenario::FuzzMode::Coverage,
+            seed: Some(1),
+            time: None,
+            runs: Some(16),
+            max_input_bytes: 4096,
+            corpus_dir: Some(corpus_dir),
+            mutator: None,
+            shrink: false,
+            record_trace_to: None,
+            reporter: scenario_reporter(format),
+            crash_only: false,
+            minimize: false,
+            record_collision: fzscenario::RecordCollisionPolicy::Append,
+            profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
+            memory: scenario_memory_options(&config),
+        },
+    )
+    .map_err(scenario_error)?;
+    render_scenario_run_result(format, run, true)
+}
+
+fn scenario_explore(target: &Path, format: Format) -> Result<String> {
+    ensure_exists(target)?;
+    let config = scenario_config()?;
+    let run = fzscenario::explore(
+        &config,
+        fzscenario::ScenarioPath::new(target.to_path_buf()),
+        &fzscenario::ExploreOptions {
+            seed: Some(1),
+            time: None,
+            steps: Some(200),
+            nodes: None,
+            faults: None,
+            schedule: fzscenario::ScheduleStrategy::CoverageGuided,
+            checker: None,
+            record_trace_to: None,
+            shrink: true,
+            minimize: true,
+            reporter: scenario_reporter(format),
+            record_collision: fzscenario::RecordCollisionPolicy::Append,
+            profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
+            memory: scenario_memory_options(&config),
+        },
+    )
+    .map_err(scenario_error)?;
+    render_scenario_run_result(format, run, true)
+}
+
+fn scenario_replay_like(command: &str, target: &Path, format: Format) -> Result<String> {
+    let config = scenario_config()?;
+    let replay_target = resolve_replay_target(target)?;
+    match command {
+        "replay" => {
+            let run = fzscenario::replay_trace(
+                &config,
+                fzscenario::TracePath::new(replay_target.clone()),
+                &fzscenario::ReplayOptions {
+                    step: false,
+                    until: None,
+                    dump_events: false,
+                    profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
+                    reporter: scenario_reporter(format),
+                },
+            )
+            .map_err(scenario_error)?;
+            render_scenario_run_result(format, run, true)
+        }
+        "shrink" => {
+            let result = fzscenario::shrink_trace(
+                &config,
+                fzscenario::TracePath::new(replay_target.clone()),
+                &fzscenario::ShrinkOptions {
+                    out_trace_path: None,
+                    budget: Some(Duration::from_secs(30)),
+                    aggressive: false,
+                    minimize: fzscenario::ShrinkMinimize::All,
+                },
+            )
+            .map_err(scenario_error)?;
+            let status = result.result.summary.status;
+            let rendered = match format {
+                Format::Text => format!(
+                    "{}\nout_trace={}",
+                    result.result.summary.pretty(),
+                    result.out_trace_path
+                ),
+                Format::Json => serde_json::to_string(&serde_json::json!({
+                    "outTrace": &result.out_trace_path,
+                    "summary": &result.result.summary,
+                }))?,
+            };
+            if status != fzscenario::ExitStatus::Pass {
+                return Err(CommandFailure {
+                    exit_code: scenario_exit_code(status),
+                    output: rendered,
+                }
+                .into());
+            }
+            Ok(rendered)
+        }
+        "ci" => {
+            let report = fzscenario::ci_evaluate(
+                &config,
+                &fzscenario::CiOptions {
+                    trace: replay_target.clone(),
+                    flake_runs: Vec::new(),
+                    flake_budget_pct: None,
+                    perf_baseline: None,
+                    max_p99_delta_pct: None,
+                    strict: true,
+                },
+            )
+            .map_err(scenario_error)?;
+            let rendered = render_value_output(format, &report)?;
+            if !report.ok {
+                return Err(CommandFailure {
+                    exit_code: 1,
+                    output: rendered,
+                }
+                .into());
+            }
+            Ok(rendered)
+        }
+        other => bail!("unsupported replay-like command `{other}`"),
+    }
+}
+
+pub(super) fn record_goal_trace_from_scenario(
+    primary_scenario: &Path,
+    goal_trace_path: &Path,
+    seed: u64,
+) -> Result<()> {
+    let config = scenario_config()?;
+    let run = fzscenario::run_scenario(
+        &config,
+        fzscenario::ScenarioPath::new(primary_scenario.to_path_buf()),
+        &fzscenario::RunOptions {
+            det: true,
+            seed: Some(seed),
+            timeout: None,
+            reporter: fzscenario::Reporter::Json,
+            record_trace_to: Some(goal_trace_path.to_path_buf()),
+            filter: None,
+            jobs: None,
+            fail_fast: false,
+            record_collision: fzscenario::RecordCollisionPolicy::Overwrite,
+            profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
+            proc_backend: config.proc_backend,
+            fs_backend: config.fs_backend,
+            http_backend: config.http_backend,
+            memory: scenario_memory_options(&config),
+        },
+    )
+    .map_err(scenario_error)?;
+    if run.summary.status != fzscenario::ExitStatus::Pass {
+        return Err(CommandFailure {
+            exit_code: scenario_exit_code(run.summary.status),
+            output: run.summary.pretty(),
+        }
+        .into());
+    }
+    Ok(())
 }
 
 fn is_fozzy_scenario(path: &Path) -> bool {
@@ -10091,13 +10692,46 @@ mod tests {
     }
 
     #[test]
-    fn scenario_routing_disables_det_for_host_backends() {
+    fn native_run_rejects_det_with_host_backends() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-host-det-reject-{suffix}.fzy"));
+        std::fs::write(&source, "fn main() -> i32 {\n    return 0\n}\n")
+            .expect("source should be written");
+
+        let error = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(7),
+                record: None,
+                host_backends: true,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect_err("native host-backed deterministic run should be rejected");
+        assert!(error
+            .to_string()
+            .contains("do not support `--det --host-backends`"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn scenario_routing_keeps_det_for_host_backends() {
         let routing = scenario_run_routing(true, true);
-        assert!(!routing.deterministic_applied);
-        assert_eq!(routing.mode, "host-backed-live-scenario");
-        assert!(routing
-            .reason
-            .contains("deterministic replay and host backends are separate"));
+        assert!(routing.deterministic_applied);
+        assert_eq!(routing.mode, "host-backed-deterministic-scenario");
+        assert!(routing.reason.contains("deterministic"));
     }
 
     #[test]

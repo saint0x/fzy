@@ -83,12 +83,12 @@ cargo run -q -p fz -- doc gen examples/fullstack/src --format markdown --out art
 ### 3.3 Run Fozzy deterministic confidence flow
 
 ```bash
-fozzy doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json
-fozzy test --det --strict tests/run.pass.fozzy.json tests/memory.pass.fozzy.json --json
-fozzy run tests/run.pass.fozzy.json --det --record artifacts/trace.fozzy --json
-fozzy trace verify artifacts/trace.fozzy --strict --json
-fozzy replay artifacts/trace.fozzy --json
-fozzy ci artifacts/trace.fozzy --json
+fz doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json
+fz test --det --strict-verify tests/run.pass.fozzy.json tests/memory.pass.fozzy.json --json
+fz run tests/run.pass.fozzy.json --det --record artifacts/trace.fozzy --json
+fz trace verify artifacts/trace.fozzy --strict --json
+fz replay artifacts/trace.fozzy --json
+fz ci artifacts/trace.fozzy --json
 ```
 
 ## 4. Core Mental Model
@@ -97,12 +97,12 @@ Treat your workflow as three layers:
 
 1. Authoring layer (`.fzy` source and project layout)
 2. Language toolchain layer (`fz` commands)
-3. Deterministic validation layer (`fozzy` commands, trace lifecycle)
+3. Deterministic validation layer (`fz` scenario/trace commands, trace lifecycle)
 
 A complete change is not done when it only compiles. It is done when:
 
 - project conventions pass (`dx-check`)
-- deterministic tests pass (`fz test --det` and/or `fozzy test --det --strict`)
+- deterministic tests pass (`fz test --det` and/or `fz test --det --strict`)
 - at least one trace is recordable, verifiable, and replayable
 
 ## 5. `fz` Command Guide
@@ -280,9 +280,9 @@ fz ci <trace>
 
 Use this family when you already have (or want) trace-driven debugging and minimization.
 
-## 6. `fozzy` Command Guide
+## 6. `fz` Scenario Guide
 
-`fozzy` is your system-level deterministic testing plane.
+`fz` exposes the system-level deterministic testing plane through one local toolchain interface.
 
 High-level command map:
 
@@ -294,12 +294,12 @@ High-level command map:
 ## 6.1 Baseline confidence sequence (recommended)
 
 ```bash
-fozzy doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json
-fozzy test --det --strict <scenario...> --json
-fozzy run <scenario> --det --record artifacts/<name>.fozzy --json
-fozzy trace verify artifacts/<name>.fozzy --strict --json
-fozzy replay artifacts/<name>.fozzy --json
-fozzy ci artifacts/<name>.fozzy --json
+fz doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json
+fz test --det --strict-verify <scenario...> --json
+fz run <scenario> --det --record artifacts/<name>.fozzy --json
+fz trace verify artifacts/<name>.fozzy --strict --json
+fz replay artifacts/<name>.fozzy --json
+fz ci artifacts/<name>.fozzy --json
 ```
 
 Single-command strict ship release gate:
@@ -313,7 +313,7 @@ Single-command strict ship release gate:
 Use host backends when you want real OS/process/fs/http behavior in addition to deterministic scripted checks:
 
 ```bash
-fozzy run <scenario> --proc-backend host --fs-backend host --http-backend host --json
+fz run <scenario> --host-backends --json
 ```
 
 Notes:
@@ -324,11 +324,11 @@ Notes:
 ## 6.3 Useful discovery commands
 
 ```bash
-fozzy usage
-fozzy env --json
-fozzy map suites --root . --scenario-root tests --profile pedantic --json
-fozzy schema --json
-fozzy validate <scenario> --json
+fz usage
+fz env --json
+fz map suites --root . --scenario-root tests --profile pedantic --json
+fz schema --json
+fz validate <scenario> --json
 ```
 
 ## 7. Formatting and Documentation Tools
@@ -401,14 +401,14 @@ fz dx-check [project] --strict
 3. `fz check [project] --json`
 4. `fz dx-check [project] --strict --json`
 5. `fz test [project] --det --seed <seed> --json`
-6. For high confidence: record + replay a trace with `fozzy`.
+6. For high confidence: record + replay a trace with `fz`.
 
 ## 9.2 Investigate flaky or nondeterministic failures
 
-1. `fozzy doctor --deep --scenario ... --runs 5 --seed ... --json`
-2. `fozzy run ... --det --record artifacts/fail.fozzy --json`
-3. `fozzy trace verify artifacts/fail.fozzy --strict --json`
-4. `fozzy replay artifacts/fail.fozzy --json`
+1. `fz doctor --deep --scenario ... --runs 5 --seed ... --json`
+2. `fz run ... --det --record artifacts/fail.fozzy --json`
+3. `fz trace verify artifacts/fail.fozzy --strict --json`
+4. `fz replay artifacts/fail.fozzy --json`
 5. `fozzy shrink artifacts/fail.fozzy --json`
 6. `fozzy report ...` / `fozzy artifacts ...` for analysis
 
@@ -461,14 +461,14 @@ For meaningful changes, run at least:
 1. `cargo test --workspace`
 2. `fz dx-check [project] --strict --json`
 3. `fz test [project] --det --seed <seed> --json`
-4. `fozzy doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json`
+4. `fz doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json`
 5. trace lifecycle:
-   - `fozzy run ... --det --record ... --json`
-   - `fozzy trace verify ... --strict --json`
-   - `fozzy replay ... --json`
-   - `fozzy ci ... --json`
+   - `fz run ... --det --record ... --json`
+   - `fz trace verify ... --strict --json`
+   - `fz replay ... --json`
+   - `fz ci ... --json`
 6. one host-backed run when feasible:
-   - `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
+   - `fz run ... --host-backends --json`
 
 ## 13. Common Pitfalls and Fixes
 
@@ -477,7 +477,7 @@ For meaningful changes, run at least:
 - lock drift/build blocked:
   - run `fz vendor [project]`.
 - deterministic replay mismatch:
-  - verify trace file integrity with `fozzy trace verify --strict`.
+  - verify trace file integrity with `fz trace verify --strict`.
 - host-backend discrepancies:
   - keep deterministic and host-backed runs as separate confidence signals.
 
@@ -493,7 +493,7 @@ For meaningful changes, run at least:
 - `headers`, `rpc gen`
 - `fuzz`, `explore`, `replay`, `shrink`, `ci`, `version`
 
-`fozzy` top-level commands:
+`fz` top-level scenario/trace commands:
 
 - `init`, `test`, `run`, `fuzz`, `explore`, `replay`, `trace`, `shrink`, `corpus`
 - `artifacts`, `report`, `memory`, `profile`, `map`, `doctor`, `env`, `ci`, `gate`

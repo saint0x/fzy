@@ -31,23 +31,23 @@ cargo test --workspace
 Run strict deterministic validation first:
 
 ```bash
-fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json
-fozzy test --det --strict tests/example.fozzy.json tests/memory.pass.fozzy.json --json
+fz doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json
+fz test --det --strict-verify tests/example.fozzy.json tests/memory.pass.fozzy.json --json
 ```
 
 Record and validate a real trace:
 
 ```bash
-fozzy run tests/example.fozzy.json --det --record artifacts/workflow.trace.fozzy --json
-fozzy trace verify artifacts/workflow.trace.fozzy --strict --json
-fozzy replay artifacts/workflow.trace.fozzy --json
-fozzy ci artifacts/workflow.trace.fozzy --json
+fz run tests/example.fozzy.json --det --record artifacts/workflow.trace.fozzy --json
+fz trace verify artifacts/workflow.trace.fozzy --strict --json
+fz replay artifacts/workflow.trace.fozzy --json
+fz ci artifacts/workflow.trace.fozzy --json
 ```
 
 Run host-backed confidence pass:
 
 ```bash
-fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
+fz run tests/host.pass.fozzy.json --host-backends --json
 ```
 
 For native source tests, use a single command path:
@@ -61,13 +61,13 @@ This automatically generates temporary scenario artifacts and runs host-backed e
 For trait/generic language slices, include the dedicated scenario lifecycle:
 
 ```bash
-fozzy doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed 4242 --json
-fozzy test --det --strict tests/trait_generic.pass.fozzy.json --json
-fozzy run tests/trait_generic.pass.fozzy.json --det --record artifacts/trait-generic.trace.fozzy --json
-fozzy trace verify artifacts/trait-generic.trace.fozzy --strict --json
-fozzy replay artifacts/trait-generic.trace.fozzy --json
-fozzy ci artifacts/trait-generic.trace.fozzy --json
-fozzy run tests/trait_generic.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
+fz doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed 4242 --json
+fz test --det --strict-verify tests/trait_generic.pass.fozzy.json --json
+fz run tests/trait_generic.pass.fozzy.json --det --record artifacts/trait-generic.trace.fozzy --json
+fz trace verify artifacts/trait-generic.trace.fozzy --strict --json
+fz replay artifacts/trait-generic.trace.fozzy --json
+fz ci artifacts/trait-generic.trace.fozzy --json
+fz run tests/trait_generic.pass.fozzy.json --host-backends --json
 ```
 
 ## 4. Gate

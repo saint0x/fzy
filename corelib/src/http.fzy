@@ -37,7 +37,7 @@ struct ServePolicy {
 }
 
 struct JsonPayload {
-    map_handle: i32,
+    map_handle: MapHandle,
 }
 
 fn parse_method(name: str) -> Method {
@@ -231,7 +231,7 @@ fn json_payload_encode(payload: JsonPayload) -> str {
     return json.object(payload.map_handle)
 }
 
-fn write_json_payload(conn: i32, status: i32, payload: JsonPayload) -> i32 {
+fn write_json_payload(conn: HttpHandle, status: i32, payload: JsonPayload) -> i32 {
     return http.write_json(conn, status, json_payload_encode(payload))
 }
 

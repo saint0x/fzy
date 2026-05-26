@@ -37,6 +37,6 @@ Production validation includes deterministic and strict Fozzy gates.
 
 Required checks:
 
-- `fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json`
-- `fozzy test --det --strict tests/*.fozzy.json --seed 4242 --json`
+- `fz doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json`
+- `fz test --det --strict-verify tests/*.fozzy.json --seed 4242 --json`
 - `./scripts/ship_release_gate.sh`

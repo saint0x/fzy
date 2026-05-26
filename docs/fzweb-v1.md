@@ -21,10 +21,10 @@
 ## Validation Commands
 
 - `python3 scripts/verify_fzweb_framework.py`
-- `fozzy doctor --deep --scenario tests/fzweb.framework.pass.fozzy.json --runs 5 --seed 20260227 --json`
-- `fozzy test --det --strict tests/fzweb.framework.pass.fozzy.json --json`
-- `fozzy run tests/fzweb.framework.pass.fozzy.json --det --record artifacts/fzweb.framework.trace.fozzy --json`
-- `fozzy trace verify artifacts/fzweb.framework.trace.fozzy --strict --json`
-- `fozzy replay artifacts/fzweb.framework.trace.fozzy --json`
-- `fozzy ci artifacts/fzweb.framework.trace.fozzy --json`
-- `fozzy run tests/fzweb.framework.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`
+- `fz doctor --deep --scenario tests/fzweb.framework.pass.fozzy.json --runs 5 --seed 20260227 --json`
+- `fz test --det --strict-verify tests/fzweb.framework.pass.fozzy.json --json`
+- `fz run tests/fzweb.framework.pass.fozzy.json --det --record artifacts/fzweb.framework.trace.fozzy --json`
+- `fz trace verify artifacts/fzweb.framework.trace.fozzy --strict --json`
+- `fz replay artifacts/fzweb.framework.trace.fozzy --json`
+- `fz ci artifacts/fzweb.framework.trace.fozzy --json`
+- `fz run tests/fzweb.framework.pass.fozzy.json --host-backends --json`

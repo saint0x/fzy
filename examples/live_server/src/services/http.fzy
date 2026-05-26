@@ -1,6 +1,5 @@
 use core.http;
 use core.time;
-
 fn listen_public() -> i32 {
     let listener: HttpHandle = http.bind();
     http.listen(listener);
@@ -8,7 +7,6 @@ fn listen_public() -> i32 {
     time.now();
     return 0;
 }
-
 fn route_health() -> i32 {
     let conn: HttpHandle = http.accept();
     http.read(conn);
@@ -16,7 +14,6 @@ fn route_health() -> i32 {
     close(conn);
     return 0;
 }
-
 fn route_users() -> i32 {
     let conn: HttpHandle = http.accept();
     timeout(1000);

@@ -355,21 +355,21 @@ Use this exact sequence for strict confidence:
 
 ```bash
 # 1) Determinism audit first
-fozzy doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json
+fz doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json
 
 # 2) Strict deterministic tests
-fozzy test --det --strict tests/run.pass.fozzy.json tests/memory.pass.fozzy.json --json
+fz test --det --strict-verify tests/run.pass.fozzy.json tests/memory.pass.fozzy.json --json
 
 # 3) Record one real trace
-fozzy run tests/run.pass.fozzy.json --det --record artifacts/trace.fozzy --json
+fz run tests/run.pass.fozzy.json --det --record artifacts/trace.fozzy --json
 
 # 4) Validate replay pipeline
-fozzy trace verify artifacts/trace.fozzy --strict --json
-fozzy replay artifacts/trace.fozzy --json
-fozzy ci artifacts/trace.fozzy --json
+fz trace verify artifacts/trace.fozzy --strict --json
+fz replay artifacts/trace.fozzy --json
+fz ci artifacts/trace.fozzy --json
 
 # 5) Host-backed confidence pass
-fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
+fz run tests/host.pass.fozzy.json --host-backends --json
 ```
 
 Ship release gate (strict, no compatibility fallback):
@@ -468,7 +468,7 @@ cat artifacts/live_server.stats.trace.explore.json
 Host-backed internet probe scenario:
 
 ```bash
-fozzy run tests/live.server.interhttp.fozzy.json --proc-backend host --fs-backend host --http-backend host --json
+fz run tests/live.server.interhttp.fozzy.json --host-backends --json
 ```
 
 ## Plan Tracking

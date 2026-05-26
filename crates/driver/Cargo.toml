@@ -18,6 +18,7 @@ manifest = { path = "../manifest" }
 diagnostics = { path = "../diagnostics" }
 runtime = { path = "../runtime" }
 formatter = { path = "../formatter" }
+fzscenario = { path = "../fzscenario" }
 sha2 = "0.10"
 cranelift-codegen = "0.116"
 cranelift-frontend = "0.116"

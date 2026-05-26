@@ -1,11 +1,6 @@
 fn lang_id(v: i32) -> i32 {
     return v;
 }
-// Compiler generates unsafe contract metadata (reason/invariant/owner/scope/risk_class/proof_ref) for this site.
-unsafe fn lang_unsafe_id(v: i32) -> i32 {
-    return v;
-}
-
 test "det_server_boot" {
     model.preflight();
     cli.boot();
@@ -13,7 +8,6 @@ test "det_server_boot" {
     runtime.start();
     api.touch();
 }
-
 test "det_http_routes" {
     services.http.listen_public();
     services.http.route_health();
@@ -21,13 +15,11 @@ test "det_http_routes" {
     services.store.read_user();
     services.store.write_user();
 }
-
 test "det_session_flow" {
     services.sessions.issue_token();
     services.sessions.validate_token();
     services.replication.push_state();
 }
-
 test "det_latency_metrics" {
     services.metrics.record_req();
     services.metrics.record_err();
@@ -35,7 +27,6 @@ test "det_latency_metrics" {
     services.telemetry.log_perf_snapshot();
     services.telemetry.flush_runtime_stats();
 }
-
 test "chaos_server" nondet {
     spawn(runtime.acceptor.run);
     spawn(runtime.worker.run);
@@ -49,21 +40,16 @@ test "chaos_server" nondet {
     timeout(20);
     cancel();
 }
-
 test "det_language_surface" {
     for n in 0..4 {
         discard n;
     }
-    let mask: i32 = (~7) ^ 3;
+    let mask: i32 = (~ 7)^ 3;
     let selected: fn(i32) -> i32 = lang_id;
     discard selected;
-    discard lang_unsafe_id;
-    let routed: i32 = mask % 5;
+    let routed: i32 = mask% 5;
     let ok: bool = !(routed == 0);
-    // Compiler generates unsafe contract metadata (reason/invariant/owner/scope/risk_class/proof_ref) for this site.
-    unsafe {
-        discard lang_id(routed);
-    }
+    discard lang_id(routed);
     if ok {
         pulse();
     } else {

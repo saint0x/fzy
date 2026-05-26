@@ -285,6 +285,15 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 path: arg_path_or_cwd(args, 2)?,
                 strict: has_flag(args, "--strict"),
             }),
+            _ if has_flag(args, "--scenario") => Ok(Command::ScenarioDoctor {
+                scenario: parse_path_flag(args, "--scenario")?
+                    .ok_or_else(|| anyhow::anyhow!("missing value for --scenario"))?,
+                runs: parse_u64_flag(args, "--runs")?,
+                seed: parse_u64_flag(args, "--seed")?,
+                strict: has_flag(args, "--strict"),
+                deep: has_flag(args, "--deep"),
+                host_backends: has_flag(args, "--host-backends"),
+            }),
             _ => {
                 print_help();
                 bail!("unknown doctor subcommand")
@@ -305,6 +314,29 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("perf") => Ok(Command::Perf {
             artifact: parse_path_flag(args, "--artifact")?,
         }),
+        Some("artifacts") => match (
+            args.get(1).map(String::as_str),
+            args.get(2).map(String::as_str),
+        ) {
+            (Some("ls"), Some("latest")) => Ok(Command::ArtifactsLsLatest),
+            _ => {
+                print_help();
+                bail!("unknown artifacts subcommand")
+            }
+        },
+        Some("report") => match (
+            args.get(1).map(String::as_str),
+            args.get(2).map(String::as_str),
+        ) {
+            (Some("show"), Some("latest")) => Ok(Command::ReportShowLatest {
+                output_format: parse_string_flag(args, "--format")?
+                    .unwrap_or_else(|| "json".to_string()),
+            }),
+            _ => {
+                print_help();
+                bail!("unknown report subcommand")
+            }
+        },
         Some("stability-dashboard") => Ok(Command::StabilityDashboard),
         Some("parity") => Ok(Command::Parity {
             path: arg_path_or_cwd(args, 1)?,
@@ -391,6 +423,35 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("explore") => Ok(Command::Explore {
             target: arg_path(args, 1)?,
         }),
+        Some("map") => match args.get(1).map(String::as_str) {
+            Some("suites") => Ok(Command::MapSuites {
+                root: parse_path_flag(args, "--root")?.unwrap_or_else(|| PathBuf::from(".")),
+                scenario_root: parse_path_flag(args, "--scenario-root")?
+                    .unwrap_or_else(|| PathBuf::from("tests")),
+                profile: parse_string_flag(args, "--profile")?
+                    .unwrap_or_else(|| "pedantic".to_string()),
+            }),
+            _ => {
+                print_help();
+                bail!("unknown map subcommand")
+            }
+        },
+        Some("usage") => Ok(Command::Usage),
+        Some("env") => Ok(Command::Env),
+        Some("schema") => Ok(Command::Schema),
+        Some("validate") => Ok(Command::Validate {
+            scenario: arg_path(args, 1)?,
+        }),
+        Some("trace") => match args.get(1).map(String::as_str) {
+            Some("verify") => Ok(Command::TraceVerify {
+                trace: arg_path(args, 2)?,
+                strict: has_flag(args, "--strict"),
+            }),
+            _ => {
+                print_help();
+                bail!("unknown trace subcommand")
+            }
+        },
         Some("replay") => Ok(Command::Replay {
             trace: arg_path(args, 1)?,
         }),
@@ -470,11 +531,14 @@ commands:\n\
   lint [path] [--tier production|pedantic|compat]\n\
   explain <diag-code>\n\
   doctor project [path] [--strict]\n\
+  doctor --deep --scenario <scenario> [--runs N] [--seed N] [--strict] [--host-backends]\n\
   devloop [path] [--backend llvm|cranelift]\n\
   dx-check [project] [--strict]\n\
   spec-check\n\
   emit-ir [path]\n\
   perf [--artifact path]\n\
+  artifacts ls latest\n\
+  report show latest [--format json|text]\n\
   stability-dashboard\n\
   parity [path] [--seed N]\n\
   equivalence [path] [--seed N]\n\
@@ -494,6 +558,12 @@ commands:\n\
   doc gen [path] [--format json|html|markdown] [--out path] [--reference path]\n\
   fuzz <scenario>\n\
   explore <scenario>\n\
+  map suites [--root dir] [--scenario-root dir] [--profile pedantic|production|compat]\n\
+  usage\n\
+  env\n\
+  schema\n\
+  validate <scenario>\n\
+  trace verify <trace> [--strict]\n\
   replay <trace>\n\
   shrink <trace>\n\
   ci <trace>\n\
@@ -504,9 +574,12 @@ flags:\n\
   --det\n\
   --strict-verify\n\
   --check\n\
+  --deep\n\
   --seed <u64>\n\
   --record <path>\n\
   --host-backends\n\
+  --scenario <path>\n\
+  --runs <u64>\n\
   --max-seconds <u64>\n\
   --exit-on-healthcheck <http://host:port/path>\n\
   --smoke-http <http://host:port/path>\n\
@@ -520,6 +593,9 @@ flags:\n\
   --pgo-use <file>\n\
   --sched <fifo|random|coverage_guided>\n\
   --filter <substring>\n\
+  --root <path>\n\
+  --scenario-root <path>\n\
+  --profile <name>\n\
   --rich-artifacts\n\
   --out <path>\n\
   --reference <path>\n\
@@ -633,6 +709,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_artifacts_and_report_commands() {
+        assert!(matches!(
+            parse_command(&[
+                "artifacts".to_string(),
+                "ls".to_string(),
+                "latest".to_string()
+            ])
+            .expect("artifacts latest should parse"),
+            Command::ArtifactsLsLatest
+        ));
+        assert!(matches!(
+            parse_command(&[
+                "report".to_string(),
+                "show".to_string(),
+                "latest".to_string(),
+                "--format".to_string(),
+                "json".to_string()
+            ])
+            .expect("report latest should parse"),
+            Command::ReportShowLatest { .. }
+        ));
+    }
+
+    #[test]
     fn parse_run_rejects_removed_safe_profile_flag() {
         let args = vec![
             "run".to_string(),
@@ -668,6 +768,73 @@ mod tests {
         ];
         let command = parse_command(&args).expect("trace-native should parse");
         assert!(matches!(command, Command::TraceNative { .. }));
+    }
+
+    #[test]
+    fn parse_map_suites_command() {
+        let args = vec![
+            "map".to_string(),
+            "suites".to_string(),
+            "--root".to_string(),
+            ".".to_string(),
+            "--scenario-root".to_string(),
+            "tests".to_string(),
+            "--profile".to_string(),
+            "pedantic".to_string(),
+        ];
+        let command = parse_command(&args).expect("map suites should parse");
+        assert!(matches!(command, Command::MapSuites { .. }));
+    }
+
+    #[test]
+    fn parse_scenario_doctor_command() {
+        let args = vec![
+            "doctor".to_string(),
+            "--deep".to_string(),
+            "--scenario".to_string(),
+            "tests/example.fozzy.json".to_string(),
+            "--runs".to_string(),
+            "5".to_string(),
+            "--seed".to_string(),
+            "4242".to_string(),
+            "--host-backends".to_string(),
+        ];
+        let command = parse_command(&args).expect("scenario doctor should parse");
+        assert!(matches!(command, Command::ScenarioDoctor { .. }));
+    }
+
+    #[test]
+    fn parse_usage_env_schema_validate_commands() {
+        assert!(matches!(
+            parse_command(&["usage".to_string()]).expect("usage should parse"),
+            Command::Usage
+        ));
+        assert!(matches!(
+            parse_command(&["env".to_string()]).expect("env should parse"),
+            Command::Env
+        ));
+        assert!(matches!(
+            parse_command(&["schema".to_string()]).expect("schema should parse"),
+            Command::Schema
+        ));
+        assert!(matches!(
+            parse_command(&[
+                "validate".to_string(),
+                "tests/example.fozzy.json".to_string()
+            ])
+            .expect("validate should parse"),
+            Command::Validate { .. }
+        ));
+        assert!(matches!(
+            parse_command(&[
+                "trace".to_string(),
+                "verify".to_string(),
+                "artifacts/demo.trace.fozzy".to_string(),
+                "--strict".to_string()
+            ])
+            .expect("trace verify should parse"),
+            Command::TraceVerify { .. }
+        ));
     }
 
     #[test]

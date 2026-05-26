@@ -8,12 +8,28 @@ This document defines production-enforced trait and generic behavior for v1.
 
 - `trait Name { fn method(...) -> ...; }` is supported.
 - `impl Trait for Type { fn method(...) -> ... { ... } }` is supported.
-- Trait associated item surface is supported:
-  - `type Assoc;` in trait declarations and `type Assoc = ...;` in impls
-  - `const NAME: Type;` in trait declarations and `const NAME: Type = ...;` in impls
 - Impl methods are lowered as callable symbols using canonical name `<Type>.<method>`.
 - Method call resolution supports canonical type-qualified dispatch (`Type.method(...)`) and receiver-name dispatch when receiver type is known.
 - Unsupported method-call forms fail with explicit diagnostics.
+
+### Trait Associated Items (v1)
+
+- Trait associated types are supported:
+  - `type Assoc;` in trait declarations
+  - `type Assoc = ...;` in impl bodies
+- Trait associated constants are supported:
+  - `const NAME: Type;` in trait declarations
+  - `const NAME: Type = ...;` in impl bodies
+- Trait conformance validation checks:
+  - missing associated types/constants
+  - extra associated types/constants not declared by the trait
+  - associated-const type mismatches
+
+### Trait Method Restrictions (v1)
+
+- Trait default method bodies remain hard rejected.
+- Impl methods for traits must not be generic, async, or unsafe in v1.
+- Trait methods are lowered only after trait surface and impl conformance checks pass.
 
 ### Trait Conformance Rules
 
@@ -26,18 +42,26 @@ This document defines production-enforced trait and generic behavior for v1.
 
 ### Trait Coherence Rules (v1)
 
-- Impl targets for trait impls must be concrete types.
+- Generic impl targets are supported when they participate in unambiguous bound resolution.
 - Overlapping impl targets for the same trait are rejected.
 - Bound resolution with more than one matching impl is rejected as ambiguous.
 
 ## Generics
 
 - Function generic parameters are supported (`fn f<T: Bound>(...) -> ...`).
-- Generic declarations/usages are supported across structs/enums/functions/methods and trait/impl headers.
-- Generic calls support common call-site type-argument inference.
+- Generic declarations/usages are supported across structs, enums, functions, and trait/impl headers.
+- Generic calls support common call-site type-argument inference for production callsites.
 - Explicit specialization remains supported (`f<Type>(...)`).
 - Nested/composite specialization arguments are parsed as top-level-separated type argument lists.
 - Monomorphization uses canonical specialized symbols (`f<T1, T2>` rendering).
+
+### Generic Declaration Surface (v1)
+
+- Generic struct headers are supported.
+- Generic enum headers are supported.
+- Generic trait headers are supported.
+- Generic impl headers are supported.
+- Generic method bodies are supported for regular functions and methods, subject to bound validation.
 
 ## Inference and Specialization Policy (v1)
 
@@ -45,7 +69,7 @@ This document defines production-enforced trait and generic behavior for v1.
 - Explicit specialization remains available when inference needs help.
 - Invalid specialization syntax and specialization arity mismatches are deterministic hard errors.
 
-### Generic Bound Rules
+### Generic Bound Rules (v1)
 
 - Every declared generic bound must reference an existing trait.
 - Specialization-time bound checks are enforced.
@@ -61,7 +85,9 @@ This document defines production-enforced trait and generic behavior for v1.
 ## Unsupported in v1 (Hard Rejected)
 
 - Trait default method bodies.
-- Generic trait methods.
+- Generic impl methods for trait conformance.
+- Async impl methods for trait conformance.
+- Unsafe impl methods for trait conformance.
 
 ## Backend and Determinism Contract
 

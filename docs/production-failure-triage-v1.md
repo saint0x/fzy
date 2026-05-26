@@ -25,7 +25,7 @@ Fix workflow:
 3. Fix failing test behavior or update tests for intentional behavior changes.
 4. Re-run full workspace checks.
 
-### `fozzy doctor` deterministic inconsistency
+### `fz doctor` deterministic inconsistency
 
 Symptoms:
 
@@ -39,7 +39,7 @@ Fix workflow:
 3. Route randomness through deterministic scheduler/seeded paths.
 4. Re-run doctor with same seed and runs.
 
-### `fozzy test --det --strict` failure
+### `fz test --det --strict` failure
 
 Symptoms:
 
@@ -48,7 +48,7 @@ Symptoms:
 
 Fix workflow:
 
-1. Run scenario alone with `fozzy run --det` and inspect report.
+1. Run scenario alone with `fz run --det` and inspect report.
 2. Fix semantic/runtime regression.
 3. Add regression test if missing.
 4. Re-run strict test set.
@@ -157,7 +157,7 @@ Symptoms:
 
 Fix workflow:
 
-1. Run `fozzy map suites ... --profile pedantic --json` and inspect uncovered hotspots.
+1. Run `fz map suites ... --profile pedantic --json` and inspect uncovered hotspots.
 2. Add required scenarios/suites for uncovered areas.
 3. Re-run map until zero uncovered hotspots.
 

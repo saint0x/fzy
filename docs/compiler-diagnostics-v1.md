@@ -88,13 +88,13 @@ Catalog:
 
 Recommended minimal gate for diagnostics changes:
 
-1. `fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 1337 --json`
-2. `fozzy test --det --strict tests/example.fozzy.json --json`
-3. `fozzy run tests/example.fozzy.json --det --seed 1337 --record artifacts/diagnostics.trace.fozzy --json`
-4. `fozzy trace verify artifacts/diagnostics.trace.fozzy --strict --json`
-5. `fozzy replay artifacts/diagnostics.trace.fozzy --json`
-6. `fozzy ci artifacts/diagnostics.trace.fozzy --json`
-7. `fozzy run tests/host.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`
+1. `fz doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 1337 --json`
+2. `fz test --det --strict-verify tests/example.fozzy.json --json`
+3. `fz run tests/example.fozzy.json --det --seed 1337 --record artifacts/diagnostics.trace.fozzy --json`
+4. `fz trace verify artifacts/diagnostics.trace.fozzy --strict --json`
+5. `fz replay artifacts/diagnostics.trace.fozzy --json`
+6. `fz ci artifacts/diagnostics.trace.fozzy --json`
+7. `fz run tests/host.pass.fozzy.json --host-backends --json`
 
 ## Regression Classes (Required)
 

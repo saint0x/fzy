@@ -27,7 +27,7 @@ def main() -> int:
             errors.append(f"legacy array data-plane symbol reintroduced: `{symbol}`")
 
     if (
-        "ControlFlowBuilder::new(variant_tags.clone(), passthrough_functions.clone()).finish(body)"
+        "ControlFlowBuilder::new(variant_tags.clone(), pattern_source_functions.clone()).finish(body)"
         not in src
     ):
         errors.append("canonical CFG pipeline missing shared variant-tag entrypoint")
@@ -42,8 +42,8 @@ def main() -> int:
         "data_ops_by_function: HashMap<String, Vec<NativeDataOp>>",
         "fn collect_native_data_ops_for_function(",
         "render_native_data_op(",
-        "fn collect_native_string_literals(",
-        "fn collect_folded_temp_string_literals(",
+        "collect_native_string_literals,",
+        "fn build_native_cfg_map(",
     ]
     for marker in required_canonical_plan_markers:
         if marker not in src:
@@ -67,10 +67,11 @@ def main() -> int:
 
     required_fail_fast_markers = [
         "fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> Result<String>",
-        "fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String>",
-        "fn lower_cranelift_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String>",
+        "BackendKind::Llvm => lower_llvm_ir(fir, true)",
+        "BackendKind::Cranelift => lower_cranelift_ir(fir, true)",
+        "let llvm_ir = lower_llvm_ir(fir, enforce_contract_checks)?;",
         "canonical cfg unavailable for `{}`: missing entry",
-        "llvm backend failed lowering canonical cfg for `{}`:",
+        "canonical cfg unavailable for `{}`: {}",
     ]
     for marker in required_fail_fast_markers:
         if marker not in src:

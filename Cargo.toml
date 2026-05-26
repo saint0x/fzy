@@ -11,6 +11,7 @@ members = [
   "crates/fir",
   "crates/verifier",
   "crates/runtime",
+  "crates/fzscenario",
   "crates/formatter",
   "crates/stdlib",
   "crates/driver",

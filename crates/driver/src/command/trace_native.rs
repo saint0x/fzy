@@ -460,21 +460,13 @@ pub(super) fn ensure_goal_trace_from_scenario(
             )
         })?;
     }
-    let args = vec![
-        "run".to_string(),
-        primary_scenario.display().to_string(),
-        "--det".to_string(),
-        "--seed".to_string(),
-        seed.to_string(),
-        "--record".to_string(),
-        goal_trace_path.display().to_string(),
-        "--json".to_string(),
-    ];
-    fozzy_invoke(&args).with_context(|| {
-        format!(
-            "failed recording goal trace from generated scenario {}",
-            primary_scenario.display()
-        )
-    })?;
+    super::record_goal_trace_from_scenario(primary_scenario, goal_trace_path, seed).with_context(
+        || {
+            format!(
+                "failed recording goal trace from generated scenario {}",
+                primary_scenario.display()
+            )
+        },
+    )?;
     Ok(())
 }

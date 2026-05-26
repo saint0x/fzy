@@ -16,6 +16,10 @@ else:
     for marker in [
         "Traits + Generics Contract v1",
         "Trait Coherence Rules (v1)",
+        "Trait Associated Items (v1)",
+        "Trait Method Restrictions (v1)",
+        "Generic Declaration Surface (v1)",
+        "Generic Bound Rules (v1)",
         "Unsupported in v1 (Hard Rejected)",
         "Inference and Specialization Policy (v1)",
         "Monomorphization Controls (v1)",
@@ -26,22 +30,19 @@ else:
 
 parser_src = PARSER.read_text(encoding="utf-8")
 for marker in [
-    "generic struct declarations are not supported in v1",
-    "generic enum declarations are not supported in v1",
-    "generic trait declarations are not supported in v1",
-    "generic impl headers are not supported in v1",
-    "trait associated constants are not supported in v1",
-    "trait associated types are not supported in v1",
+    "expected associated const name",
+    "expected associated type name",
     "trait default method bodies are not supported in v1",
-    "generic trait methods are not supported in v1",
+    "expected trait method name",
+    "parses_generic_item_headers",
+    "parses_trait_and_impl_associated_items",
 ]:
     if marker not in parser_src:
-        missing.append(f"parser missing hard-reject diagnostic: {marker}")
+        missing.append(f"parser missing production trait/generic marker: {marker}")
 
 hir_src = HIR.read_text(encoding="utf-8")
 for marker in [
     "resolve_method_call_target",
-    "impl for trait `{}` must target a concrete type in v1",
     "overlapping impls for trait",
     "has ambiguous bound",
     "validate_generic_bounds_exist",
@@ -49,6 +50,10 @@ for marker in [
     "invalid generic specialization syntax for call",
     "monomorphization depth limit exceeded",
     "monomorphization specialization limit exceeded",
+    "impl method `{}` in trait `{}` must not declare generic parameters in v1",
+    "missing associated type",
+    "missing associated const",
+    "allows_generic_trait_impl_targets",
 ]:
     if marker not in hir_src:
         missing.append(f"hir missing enforcement hook: {marker}")

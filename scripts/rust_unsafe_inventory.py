@@ -40,6 +40,96 @@ def preceding_safety_comment(lines, idx):
     return ("Safety:" in joined) or ("SAFETY:" in joined)
 
 
+def strip_non_code(text: str) -> str:
+    chars = list(text)
+    out = chars[:]
+    i = 0
+    n = len(chars)
+
+    def blank_range(start: int, end: int) -> None:
+        for idx in range(start, end):
+            if out[idx] != "\n":
+                out[idx] = " "
+
+    while i < n:
+        ch = chars[i]
+        nxt = chars[i + 1] if i + 1 < n else ""
+
+        if ch == "/" and nxt == "/":
+            start = i
+            i += 2
+            while i < n and chars[i] != "\n":
+                i += 1
+            blank_range(start, i)
+            continue
+
+        if ch == "/" and nxt == "*":
+            start = i
+            i += 2
+            depth = 1
+            while i < n and depth > 0:
+                if chars[i] == "/" and i + 1 < n and chars[i + 1] == "*":
+                    depth += 1
+                    i += 2
+                elif chars[i] == "*" and i + 1 < n and chars[i + 1] == "/":
+                    depth -= 1
+                    i += 2
+                else:
+                    i += 1
+            blank_range(start, i)
+            continue
+
+        if ch == "r":
+            j = i + 1
+            hashes = 0
+            while j < n and chars[j] == "#":
+                hashes += 1
+                j += 1
+            if j < n and chars[j] == '"':
+                start = i
+                i = j + 1
+                closing = '"' + ("#" * hashes)
+                while i < n:
+                    if text.startswith(closing, i):
+                        i += len(closing)
+                        break
+                    i += 1
+                blank_range(start, i)
+                continue
+
+        if ch == '"':
+            start = i
+            i += 1
+            while i < n:
+                if chars[i] == "\\":
+                    i += 2
+                    continue
+                if chars[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            blank_range(start, i)
+            continue
+
+        if ch == "'":
+            start = i
+            i += 1
+            while i < n:
+                if chars[i] == "\\":
+                    i += 2
+                    continue
+                if chars[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            blank_range(start, i)
+            continue
+
+        i += 1
+
+    return "".join(out)
+
+
 def main():
     args = parse_args()
     root = pathlib.Path(args.root).resolve()
@@ -55,7 +145,8 @@ def main():
     for file_path in iter_rs_files(root):
         text = file_path.read_text(encoding="utf-8")
         lines = text.splitlines()
-        for i, line in enumerate(lines, start=1):
+        code_only_lines = strip_non_code(text).splitlines()
+        for i, line in enumerate(code_only_lines, start=1):
             for kind, regex in (("unsafe_block", UNSAFE_BLOCK_RE), ("unsafe_fn", UNSAFE_FN_RE)):
                 if not regex.search(line):
                     continue

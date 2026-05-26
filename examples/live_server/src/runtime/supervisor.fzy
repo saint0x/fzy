@@ -1,14 +1,8 @@
 use core.proc;
 use core.time;
 fn guard() -> i32 {
-    let child = proc.spawn("echo live-server-guard")
-    discard proc.exec_timeout(child)
-    time.now()
-    return 0
+    let child = proc.spawn("echo live-server-guard") discard proc.exec_timeout(child) time.now() return 0
 }
 fn begin_graceful_shutdown() -> i32 {
-    let child = proc.spawn("echo live-server-shutdown")
-    discard proc.exec_timeout(child)
-    checkpoint()
-    return 0
+    let child = proc.spawn("echo live-server-shutdown") discard proc.exec_timeout(child) checkpoint() return 0
 }

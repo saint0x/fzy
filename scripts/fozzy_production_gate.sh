@@ -21,7 +21,7 @@ fi
 mkdir -p "$ARTIFACT_DIR"
 
 echo "[gate] deterministic doctor"
-fozzy doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
 
 echo "[gate] language primitive drift gate"
 python3 ./scripts/language_primitive_drift_gate.py >/dev/null
@@ -46,7 +46,7 @@ echo "[gate] safety claim integrity gate"
 python3 ./scripts/safety_claim_integrity_gate.py >/dev/null
 
 echo "[gate] deterministic strict tests"
-fozzy test --det --strict tests/*.fozzy.json --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" test tests/*.fozzy.json --det --strict-verify --seed "$SEED" --json >/dev/null
 
 echo "[gate] primitive parity/equivalence probes"
 "${FZ_CMD[@]}" parity tests/fixtures/primitive_parity/main.fzy --seed "$SEED" --json >/dev/null
@@ -78,51 +78,51 @@ cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_rolling_win
 cargo test -q -p hir tests::flags_overlapping_trait_impls_as_ambiguous -- --exact >/dev/null
 
 echo "[gate] deterministic memory doctor/tests"
-fozzy doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
-fozzy test --det --strict tests/memory_graph_diff_top.pass.fozzy.json --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" test tests/memory_graph_diff_top.pass.fozzy.json --det --strict-verify --seed "$SEED" --json >/dev/null
 
 echo "[gate] deterministic trait/generic doctor/tests"
-fozzy doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
-fozzy test --det --strict tests/trait_generic.pass.fozzy.json --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed "$SEED" --json >/dev/null
+"${FZ_CMD[@]}" test tests/trait_generic.pass.fozzy.json --det --strict-verify --seed "$SEED" --json >/dev/null
 
 echo "[gate] record deterministic trace"
-fozzy run tests/example.fozzy.json --det --seed "$SEED" --record "$TRACE_PATH" --record-collision overwrite --json >/dev/null
+"${FZ_CMD[@]}" run tests/example.fozzy.json --det --seed "$SEED" --record "$TRACE_PATH" --json >/dev/null
 
 echo "[gate] trace verify/replay/ci"
-fozzy trace verify "$TRACE_PATH" --strict --json >/dev/null
-fozzy replay "$TRACE_PATH" --json >/dev/null
-fozzy ci "$TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" trace verify "$TRACE_PATH" --strict --json >/dev/null
+"${FZ_CMD[@]}" replay "$TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" ci "$TRACE_PATH" --json >/dev/null
 
 echo "[gate] memory trace record/verify/replay/ci"
-fozzy run tests/memory_graph_diff_top.pass.fozzy.json --det --seed "$SEED" --record "$MEM_TRACE_PATH" --record-collision overwrite --json >/dev/null
-fozzy trace verify "$MEM_TRACE_PATH" --strict --json >/dev/null
-fozzy replay "$MEM_TRACE_PATH" --json >/dev/null
-fozzy ci "$MEM_TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" run tests/memory_graph_diff_top.pass.fozzy.json --det --seed "$SEED" --record "$MEM_TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" trace verify "$MEM_TRACE_PATH" --strict --json >/dev/null
+"${FZ_CMD[@]}" replay "$MEM_TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" ci "$MEM_TRACE_PATH" --json >/dev/null
 
 echo "[gate] trait/generic trace record/verify/replay/ci"
-fozzy run tests/trait_generic.pass.fozzy.json --det --seed "$SEED" --record "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --record-collision overwrite --json >/dev/null
-fozzy trace verify "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --strict --json >/dev/null
-fozzy replay "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
-fozzy ci "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
+"${FZ_CMD[@]}" run tests/trait_generic.pass.fozzy.json --det --seed "$SEED" --record "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
+"${FZ_CMD[@]}" trace verify "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --strict --json >/dev/null
+"${FZ_CMD[@]}" replay "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
+"${FZ_CMD[@]}" ci "$ARTIFACT_DIR/trait-generic-gate.trace.fozzy" --json >/dev/null
 
 echo "[gate] host-backed run"
-fozzy run tests/runtime.bind_json_env.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
-fozzy run tests/memory_graph_diff_top.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
-fozzy run tests/primitive.host_operators.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
-fozzy run tests/host_backends_run.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
-fozzy run tests/trait_generic.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
+"${FZ_CMD[@]}" run tests/runtime.bind_json_env.pass.fozzy.json --host-backends --json >/dev/null
+"${FZ_CMD[@]}" run tests/memory_graph_diff_top.pass.fozzy.json --host-backends --json >/dev/null
+"${FZ_CMD[@]}" run tests/primitive.host_operators.pass.fozzy.json --host-backends --json >/dev/null
+"${FZ_CMD[@]}" run tests/host_backends_run.pass.fozzy.json --host-backends --json >/dev/null
+"${FZ_CMD[@]}" run tests/trait_generic.pass.fozzy.json --host-backends --json >/dev/null
 
 echo "[gate] host-backed C interop matrix"
-fozzy run tests/c_ffi_matrix.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json >/dev/null
+"${FZ_CMD[@]}" run tests/c_ffi_matrix.pass.fozzy.json --host-backends --json >/dev/null
 
 echo "[gate] full command-surface checks"
-fozzy fuzz scenario:tests/example.fozzy.json --mode coverage --runs 5 --seed "$SEED" --json >/dev/null
-fozzy explore tests/distributed.pass.fozzy.json --schedule coverage_guided --steps 10 --seed "$SEED" --json >/dev/null
-fozzy shrink "$TRACE_PATH" --json >/dev/null
-fozzy artifacts ls latest --json >/dev/null
-fozzy report show latest --format json --json >/dev/null
-fozzy env --json >/dev/null
-fozzy usage --json >/dev/null
+"${FZ_CMD[@]}" fuzz tests/example.fozzy.json --json >/dev/null
+"${FZ_CMD[@]}" explore tests/distributed.pass.fozzy.json --json >/dev/null
+"${FZ_CMD[@]}" shrink "$TRACE_PATH" --json >/dev/null
+"${FZ_CMD[@]}" artifacts ls latest --json >/dev/null
+"${FZ_CMD[@]}" report show latest --format json --json >/dev/null
+"${FZ_CMD[@]}" env --json >/dev/null
+"${FZ_CMD[@]}" usage --json >/dev/null
 ./scripts/lsp_editor_smoke.sh >/dev/null
 ./scripts/lsp_determinism_smoke.sh >/dev/null
 
@@ -133,7 +133,7 @@ RUSTFLAGS="-D warnings" cargo check -p driver --all-targets >/dev/null
 test -s "$ARTIFACT_DIR/fullstack.api.md"
 
 echo "[gate] pedantic topology closure"
-MAP_JSON="$(fozzy map suites --root . --scenario-root tests --profile pedantic --json)"
+MAP_JSON="$("${FZ_CMD[@]}" map suites --root . --scenario-root tests --profile pedantic --json)"
 python3 - <<'PY' "$MAP_JSON"
 import json, sys
 payload = json.loads(sys.argv[1])

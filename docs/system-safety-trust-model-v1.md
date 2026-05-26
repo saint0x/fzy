@@ -21,15 +21,15 @@ This document defines what can be claimed publicly today, what is intentionally 
 ## Required Evidence Artifacts for Public Claims
 
 - Runtime/verifier claim evidence:
-  - `fozzy doctor --deep --scenario ... --runs 5 --seed ... --json`
-  - `fozzy test --det --strict ... --json`
+  - `fz doctor --deep --scenario ... --runs 5 --seed ... --json`
+  - `fz test --det --strict-verify ... --json`
 - Reproducibility/trace claim evidence:
-  - `fozzy run ... --det --record <trace.fozzy> --json`
-  - `fozzy trace verify <trace.fozzy> --strict --json`
-  - `fozzy replay <trace.fozzy> --json`
-  - `fozzy ci <trace.fozzy> --json`
+  - `fz run ... --det --record <trace.fozzy> --json`
+  - `fz trace verify <trace.fozzy> --strict --json`
+  - `fz replay <trace.fozzy> --json`
+  - `fz ci <trace.fozzy> --json`
 - Host-backed claim evidence:
-  - `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
+  - `fz run ... --host-backends --json`
 - Unsafe posture claim evidence:
   - `fz audit unsafe <target> --workspace --json`
 - FFI boundary guarantee evidence:

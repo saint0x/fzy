@@ -46,11 +46,11 @@ def main() -> int:
         require_contains(trust, heading, errors, "trust model")
 
     for artifact in [
-        "fozzy trace verify",
-        "fozzy replay",
-        "fozzy ci",
-        "fozzy doctor --deep",
-        "fozzy test --det --strict",
+        "fz trace verify",
+        "fz replay",
+        "fz ci",
+        "fz doctor --deep",
+        "fz test --det --strict",
         "fz audit unsafe",
         "fz abi-check",
         "scripts/ship_release_gate.sh",

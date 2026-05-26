@@ -72,11 +72,11 @@
 
 Mandatory for memory safety releases:
 
-- `fozzy doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed <seed> --json`
-- `fozzy test --det --strict tests/memory_graph_diff_top.pass.fozzy.json --json`
-- `fozzy run tests/memory_graph_diff_top.pass.fozzy.json --det --record <trace.fozzy> --json`
-- `fozzy trace verify <trace.fozzy> --strict --json`
-- `fozzy replay <trace.fozzy> --json`
-- `fozzy ci <trace.fozzy> --json`
+- `fz doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed <seed> --json`
+- `fz test --det --strict-verify tests/memory_graph_diff_top.pass.fozzy.json --json`
+- `fz run tests/memory_graph_diff_top.pass.fozzy.json --det --record <trace.fozzy> --json`
+- `fz trace verify <trace.fozzy> --strict --json`
+- `fz replay <trace.fozzy> --json`
+- `fz ci <trace.fozzy> --json`
 - host-backed parity run for memory scenario
 - unsafe budget gate (strict mode enforces missing/invalid metadata = 0 and unsafe-context violations = 0)

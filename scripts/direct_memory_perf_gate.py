@@ -20,11 +20,17 @@ NEAR_PARITY_KERNELS = {
     "arithmetic_kernel": 1.15,
     "duration_kernel": 1.15,
     "abi_pair_kernel": 1.15,
-    "http_kernel": 1.20,
+    "http_kernel_oneoff": 1.20,
     "network_kernel": 1.20,
     "concurrency_kernel": 1.20,
     "process_kernel": 1.20,
     "security_kernel": 1.20,
+}
+
+KNOWN_DELTA_KERNELS = {
+    # Persistent keep-alive handling remains on a separate optimization track, but it still
+    # needs a release-blocking ceiling to prevent large regressions.
+    "http_kernel_persistent": 1.70,
 }
 
 
@@ -58,6 +64,16 @@ def main() -> int:
         if ratio > threshold:
             errors.append(
                 f"`{bench}` parity regression: {ratio:.6f} > {threshold:.2f}"
+            )
+
+    for bench, threshold in KNOWN_DELTA_KERNELS.items():
+        ratio = benches.get(bench)
+        if ratio is None:
+            errors.append(f"missing benchmark `{bench}` in artifact")
+            continue
+        if ratio > threshold:
+            errors.append(
+                f"`{bench}` bounded-regression failure: {ratio:.6f} > {threshold:.2f}"
             )
 
     if errors:

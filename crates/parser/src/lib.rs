@@ -1921,7 +1921,8 @@ impl Parser {
                             }
                         }
                         let _ = self.consume(&TokenKind::RParen);
-                    } else if self.consume(&TokenKind::LBrace) {
+                    } else if self.looks_like_enum_struct_variant_initializer() {
+                        let _ = self.consume(&TokenKind::LBrace);
                         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
                             let field_name = self.expect_ident(
                                 "expected field name in enum struct-variant initializer",
@@ -2413,6 +2414,40 @@ impl Parser {
                 }),
                 Some(Token {
                     kind: TokenKind::Colon,
+                    ..
+                }),
+                next,
+            ) => !matches!(
+                next,
+                Some(Token {
+                    kind: TokenKind::Colon,
+                    ..
+                })
+            ),
+            _ => false,
+        }
+    }
+
+    fn looks_like_enum_struct_variant_initializer(&self) -> bool {
+        if !self.at(&TokenKind::LBrace) {
+            return false;
+        }
+        match (self.peek_n(1), self.peek_n(2), self.peek_n(3)) {
+            (
+                Some(Token {
+                    kind: TokenKind::RBrace,
+                    ..
+                }),
+                _,
+                _,
+            ) => true,
+            (
+                Some(Token {
+                    kind: TokenKind::Ident(_),
+                    ..
+                }),
+                Some(Token {
+                    kind: TokenKind::Colon | TokenKind::Comma | TokenKind::RBrace,
                     ..
                 }),
                 next,
@@ -3794,6 +3829,24 @@ mod tests {
             _ => None,
         });
         assert_eq!(imp.map(|item| item.generics.len()), Some(1));
+    }
+
+    #[test]
+    fn parses_bare_enum_variant_before_if_block() {
+        let source = r#"
+            enum LogLevel {
+                Info,
+                Warn,
+            }
+
+            fn sample(level: LogLevel) -> i32 {
+                if level == LogLevel::Warn {
+                    return 1
+                }
+                return 0
+            }
+        "#;
+        parse(source, "enum_if_block").expect("bare enum variant in condition should parse");
     }
 
     #[test]

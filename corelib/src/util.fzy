@@ -27,15 +27,15 @@ fn json_array2(v1_json: str, v2_json: str) -> str {
     return json.array(list)
 }
 
-fn http_write_json_map(conn: i32, status: i32, map_handle: i32) -> i32 {
+fn http_write_json_map(conn: HttpHandle, status: i32, map_handle: MapHandle) -> i32 {
     return http.write_json(conn, status, json.object(map_handle))
 }
 
-fn http_post_json_capture_map(endpoint: str, map_handle: i32) -> str {
+fn http_post_json_capture_map(endpoint: str, map_handle: MapHandle) -> str {
     return http.post_json_capture(endpoint, json.object(map_handle))
 }
 
-fn task_spawn_join_all(group: i32, worker: fn() -> i32, n: i32) -> i32 {
+fn task_spawn_join_all(group: TaskGroupHandle, worker: fn() -> i32, n: i32) -> i32 {
     discard task.group_spawn_n(group, worker, n)
     return task.group_join_all(group)
 }

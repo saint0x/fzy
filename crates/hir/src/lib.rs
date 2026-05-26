@@ -8694,7 +8694,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
         }
         "log.fields" => (vec![map_handle.clone()], str_ty.clone()),
-        "log.set_json" => (vec![map_handle.clone()], i32.clone()),
+        "log.set_json" => (vec![i32.clone()], i32.clone()),
         "log.correlation_id" => (vec![map_handle.clone()], str_ty.clone()),
         "error.code" | "error.class" => (vec![], i32.clone()),
         "error.message" => (vec![], str_ty.clone()),

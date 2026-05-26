@@ -18,7 +18,7 @@
 2. Generate headers and ABI manifests via `fz headers`.
 3. Gate changes using `fz abi-check --baseline`.
 4. Keep deterministic trace evidence for boundary workflows:
-   - `fozzy run --det --record ...`
-   - `fozzy trace verify --strict ...`
-   - `fozzy replay ...`
-   - `fozzy ci ...`
+   - `fz run --det --record ...`
+   - `fz trace verify --strict ...`
+   - `fz replay ...`
+   - `fz ci ...`
