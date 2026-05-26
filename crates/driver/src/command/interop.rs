@@ -1,5 +1,5 @@
-use super::*;
 use super::source::{default_header_path, resolve_source};
+use super::*;
 
 #[derive(Debug, Clone)]
 pub(super) struct HeaderArtifact {

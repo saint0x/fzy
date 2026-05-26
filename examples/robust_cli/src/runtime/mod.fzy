@@ -10,5 +10,8 @@ fn start() -> i32 {
     spawn(worker.run) spawn(scheduler.tick) return 0
 }
 fn begin_shutdown_drain() -> i32 {
-    proc.exec_timeout(2000) checkpoint() return 0
+    let child = proc.spawn("echo robust-cli-shutdown")
+    discard proc.exec_timeout(child)
+    checkpoint()
+    return 0
 }

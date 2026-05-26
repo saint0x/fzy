@@ -1,5 +1,6 @@
 use core.thread;
 use core.time;
+use core.log;
 
 fn logger_flag() -> i32 { return 1 }
 fn cors_flag() -> i32 { return 2 }

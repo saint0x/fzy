@@ -52,7 +52,6 @@ fn maybe_handle_once(mask: i32, strict_json: i32) -> i32 {
     }
 
     let conn = webcore.server_accept()
-    if conn < 0 { return conn }
     defer close(conn)
 
     discard webcore.request_read(conn)

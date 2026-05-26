@@ -2073,8 +2073,12 @@ fn verify_accepts_native_control_flow_pattern_binding_sources() {
         diag.message.contains("literal enum scrutinee")
             || diag.message.contains("literal struct scrutinee")
             || diag.message.contains("literal tuple scrutinee")
-            || diag.message.contains("tuple initializer or tuple-bound local")
-            || diag.message.contains("struct initializer or struct-bound local")
+            || diag
+                .message
+                .contains("tuple initializer or tuple-bound local")
+            || diag
+                .message
+                .contains("struct initializer or struct-bound local")
     }));
 
     let _ = std::fs::remove_file(path);
@@ -2100,8 +2104,12 @@ fn verify_accepts_native_multistmt_helper_pattern_binding_sources() {
     assert!(!output.diagnostic_details.iter().any(|diag| {
         diag.message.contains("literal enum scrutinee")
             || diag.message.contains("literal struct scrutinee")
-            || diag.message.contains("tuple initializer or tuple-bound local")
-            || diag.message.contains("struct initializer or struct-bound local")
+            || diag
+                .message
+                .contains("tuple initializer or tuple-bound local")
+            || diag
+                .message
+                .contains("struct initializer or struct-bound local")
             || diag.message.contains("enum-bound local payloads")
     }));
 

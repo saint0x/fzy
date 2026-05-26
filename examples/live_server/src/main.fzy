@@ -5,6 +5,7 @@ use core.http;
 use core.proc;
 use core.mem;
 use core.thread;
+use core.log;
 mod api;
 mod model;
 mod services;

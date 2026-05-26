@@ -1,5 +1,6 @@
 use core.proc;
 use core.fs;
+use core.log;
 
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let m = map.new()
@@ -9,9 +10,10 @@ fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
 }
 
 fn log_access() -> i32 {
-    proc.exec_timeout(200)
+    let child = proc.spawn("echo audit-access")
+    discard proc.exec_timeout(child)
     let h = fs.open()
-    defer close(h)
+    discard h
     log.info("audit.access", fields2("component", "audit", "phase", "access"))
     return 0
 }

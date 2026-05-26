@@ -200,7 +200,9 @@ pub(super) fn collect_folded_temp_string_literals(fir: &fir::FirModule) -> Vec<S
 }
 
 pub(super) fn collect_native_string_literals(fir: &fir::FirModule) -> Vec<String> {
-    let mut merged = collect_string_literals(fir).into_iter().collect::<HashSet<_>>();
+    let mut merged = collect_string_literals(fir)
+        .into_iter()
+        .collect::<HashSet<_>>();
     for folded in collect_folded_temp_string_literals(fir) {
         merged.insert(folded);
     }

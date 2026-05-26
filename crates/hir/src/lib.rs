@@ -780,7 +780,8 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
         };
         let recorded = trait_impl_targets.entry(trait_name.clone()).or_default();
         for existing in recorded.iter() {
-            if type_compatible(existing, &item.for_type) || type_compatible(&item.for_type, existing)
+            if type_compatible(existing, &item.for_type)
+                || type_compatible(&item.for_type, existing)
             {
                 violations.push(format!(
                     "overlapping impls for trait `{}`: `{}` conflicts with `{}`",
@@ -2024,7 +2025,10 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
                 }
                 Stmt::LetPattern { .. } => {}
                 Stmt::Expr(Expr::Call { callee, args })
-                    if callee == "free" || callee.ends_with(".free") =>
+                    if callee == "free"
+                        || callee.ends_with(".free")
+                        || callee == "close"
+                        || callee.ends_with(".close") =>
                 {
                     if let Some(Expr::Ident(name)) = args.first() {
                         if !linear_owned.contains(name) {
@@ -2838,9 +2842,11 @@ fn analyze_ownership_block(
             }
         }
         match stmt {
-            Stmt::Let { name, value, .. } => {
+            Stmt::Let {
+                name, value, ty, ..
+            } => {
                 owner_candidates.insert(name.clone());
-                if is_alloc_expr(value) {
+                if ty.as_ref().is_some_and(is_linear_type) || is_alloc_expr(value) {
                     owners.insert(name.clone(), *next_alloc);
                     *next_alloc += 1;
                     moved.remove(name);
@@ -6004,7 +6010,8 @@ fn infer_expr_type(
         }
         Expr::Group(inner) => infer_expr_type(inner, scopes, env, state),
         Expr::Tuple(items) => Some(Type::Tuple(
-            items.iter()
+            items
+                .iter()
                 .map(|item| infer_expr_type(item, scopes, env, state).unwrap_or(Type::Never))
                 .collect(),
         )),
@@ -7263,12 +7270,9 @@ fn parse_simple_type(token: &str) -> Option<Type> {
         "f64" => Type::Float { bits: 64 },
         "Decimal128" | "decimal128" => Type::Decimal128,
         "Uuid" | "uuid" => Type::Uuid,
-        other if other.starts_with("dyn ") => Type::DynTrait(
-            other
-                .trim_start_matches("dyn ")
-                .trim()
-                .to_string(),
-        ),
+        other if other.starts_with("dyn ") => {
+            Type::DynTrait(other.trim_start_matches("dyn ").trim().to_string())
+        }
         other if other.starts_with("fn(") => return None,
         other if other.starts_with('(') && other.ends_with(')') => {
             let inside = &other[1..other.len() - 1];
@@ -7539,9 +7543,7 @@ fn collect_and_rewrite_explicit_generic_calls(
                     rewrite_expr(value, templates, depth, queue, rewrite);
                 }
             }
-            Expr::EnumInit { payload, .. }
-            | Expr::Tuple(payload)
-            | Expr::ArrayLiteral(payload) => {
+            Expr::EnumInit { payload, .. } | Expr::Tuple(payload) | Expr::ArrayLiteral(payload) => {
                 for value in payload {
                     rewrite_expr(value, templates, depth, queue, rewrite);
                 }
@@ -7590,28 +7592,28 @@ fn collect_and_rewrite_explicit_generic_calls(
                 step,
                 body,
             } => {
-                    if let Some(init) = init {
-                        rewrite_stmts(
-                            std::slice::from_mut(init.as_mut()),
-                            templates,
-                            depth,
-                            queue,
-                            rewrite,
-                        );
-                    }
-                    if let Some(condition) = condition {
-                        rewrite_expr(condition, templates, depth, queue, rewrite);
-                    }
-                    if let Some(step) = step {
-                        rewrite_stmts(
-                            std::slice::from_mut(step.as_mut()),
-                            templates,
-                            depth,
-                            queue,
-                            rewrite,
-                        );
-                    }
-                    rewrite_stmts(body, templates, depth, queue, rewrite);
+                if let Some(init) = init {
+                    rewrite_stmts(
+                        std::slice::from_mut(init.as_mut()),
+                        templates,
+                        depth,
+                        queue,
+                        rewrite,
+                    );
+                }
+                if let Some(condition) = condition {
+                    rewrite_expr(condition, templates, depth, queue, rewrite);
+                }
+                if let Some(step) = step {
+                    rewrite_stmts(
+                        std::slice::from_mut(step.as_mut()),
+                        templates,
+                        depth,
+                        queue,
+                        rewrite,
+                    );
+                }
+                rewrite_stmts(body, templates, depth, queue, rewrite);
             }
             Expr::ForIn { iterable, body, .. } => {
                 rewrite_expr(iterable, templates, depth, queue, rewrite);
@@ -7750,9 +7752,7 @@ fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, 
                     rewrite_expr(value, rewrite);
                 }
             }
-            Expr::EnumInit { payload, .. }
-            | Expr::Tuple(payload)
-            | Expr::ArrayLiteral(payload) => {
+            Expr::EnumInit { payload, .. } | Expr::Tuple(payload) | Expr::ArrayLiteral(payload) => {
                 for value in payload {
                     rewrite_expr(value, rewrite);
                 }
@@ -7933,9 +7933,7 @@ fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, 
                     substitute_expr(value, bindings);
                 }
             }
-            Expr::EnumInit { payload, .. }
-            | Expr::Tuple(payload)
-            | Expr::ArrayLiteral(payload) => {
+            Expr::EnumInit { payload, .. } | Expr::Tuple(payload) | Expr::ArrayLiteral(payload) => {
                 for value in payload {
                     substitute_expr(value, bindings);
                 }
@@ -8577,7 +8575,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
         "task.context" => (vec![], task_handle.clone()),
         "task.group_begin" => (vec![], task_group_handle.clone()),
-        "task.group_spawn" => (vec![task_group_handle.clone(), task_fn], task_handle.clone()),
+        "task.group_spawn" => (
+            vec![task_group_handle.clone(), task_fn],
+            task_handle.clone(),
+        ),
         "task.group_spawn_n" => (
             vec![task_group_handle.clone(), task_fn, i32.clone()],
             i32.clone(),
@@ -8603,9 +8604,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         }
         "http.headers" => (vec![http_handle.clone()], map_handle.clone()),
         "http.request_id" | "http.remote_addr" => (vec![http_handle.clone()], str_ty.clone()),
-        "http.write" | "http.write_json" => {
-            (vec![http_handle.clone(), i32.clone(), str_ty.clone()], i32.clone())
-        }
+        "http.write" | "http.write_json" => (
+            vec![http_handle.clone(), i32.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "http.write_response" => (
             vec![
                 http_handle.clone(),
@@ -8659,10 +8661,16 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "json.to_list" => (vec![str_ty.clone()], list_handle.clone()),
         "json.to_map" => (vec![str_ty.clone()], map_handle.clone()),
         "json.parse" => (vec![str_ty.clone()], json_handle.clone()),
-        "json.get" => (vec![json_handle.clone(), str_ty.clone()], json_handle.clone()),
+        "json.get" => (
+            vec![json_handle.clone(), str_ty.clone()],
+            json_handle.clone(),
+        ),
         "json.get_str" => (vec![json_handle.clone(), str_ty.clone()], str_ty.clone()),
         "json.has" => (vec![json_handle.clone(), str_ty.clone()], i32.clone()),
-        "json.path" => (vec![json_handle.clone(), str_ty.clone()], json_handle.clone()),
+        "json.path" => (
+            vec![json_handle.clone(), str_ty.clone()],
+            json_handle.clone(),
+        ),
         "time.now" | "time.monotonic_ms" => (vec![], i32.clone()),
         "time.sleep_ms" => (vec![i32.clone()], i32.clone()),
         "time.interval" | "time.tick" => (vec![i32.clone()], i32.clone()),
@@ -8677,7 +8685,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "fs.temp_file" => (vec![str_ty.clone()], str_ty.clone()),
         "path.join" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "path.normalize" => (vec![str_ty.clone()], str_ty.clone()),
-        "route.match" => (vec![http_handle.clone(), str_ty.clone(), str_ty.clone()], i32.clone()),
+        "route.match" => (
+            vec![http_handle.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "route.write_404" | "route.write_405" => (vec![http_handle.clone()], i32.clone()),
         "log.info" | "log.warn" | "log.error" => {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
@@ -8707,7 +8718,12 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             i32.clone(),
         ),
         "proc.spawn_cmd" | "proc.run_cmd" => (
-            vec![str_ty.clone(), proc_argv.clone(), proc_env.clone(), str_ty.clone()],
+            vec![
+                str_ty.clone(),
+                proc_argv.clone(),
+                proc_env.clone(),
+                str_ty.clone(),
+            ],
             proc_handle.clone(),
         ),
         "proc.exec_timeout" => (vec![proc_handle.clone()], i32.clone()),
@@ -10139,7 +10155,8 @@ fn eval_expr<'a>(
             payload,
             named_payload,
         } => {
-            let mut values = Vec::with_capacity(payload.len() + usize::from(!named_payload.is_empty()));
+            let mut values =
+                Vec::with_capacity(payload.len() + usize::from(!named_payload.is_empty()));
             for value in payload {
                 values.push(eval_expr(value, env, functions)?);
             }

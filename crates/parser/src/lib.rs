@@ -1923,8 +1923,9 @@ impl Parser {
                         let _ = self.consume(&TokenKind::RParen);
                     } else if self.consume(&TokenKind::LBrace) {
                         while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
-                            let field_name = self
-                                .expect_ident("expected field name in enum struct-variant initializer")?;
+                            let field_name = self.expect_ident(
+                                "expected field name in enum struct-variant initializer",
+                            )?;
                             let value = if self.consume(&TokenKind::Colon) {
                                 self.parse_expr(0)?
                             } else {
@@ -3750,12 +3751,16 @@ mod tests {
             ast::Item::Trait(item) if item.name == "Cache" => Some(item),
             _ => None,
         });
-        assert!(tr.is_some_and(|item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()));
+        assert!(tr.is_some_and(
+            |item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()
+        ));
         let imp = module.items.iter().find_map(|item| match item {
             ast::Item::Impl(item) => Some(item),
             _ => None,
         });
-        assert!(imp.is_some_and(|item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()));
+        assert!(imp.is_some_and(
+            |item| !item.associated_types.is_empty() && !item.associated_consts.is_empty()
+        ));
     }
 
     #[test]

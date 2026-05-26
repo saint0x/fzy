@@ -1,6 +1,7 @@
 use core.fs;
 use core.time;
 use core.proc;
+use core.log;
 
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let m = map.new()
@@ -11,7 +12,7 @@ fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
 
 fn bootstrap_metrics() -> i32 {
     let h = fs.open()
-    defer close(h)
+    discard h
     log.info("telemetry.bootstrap", fields2("component", "telemetry", "phase", "bootstrap"))
     fs.write()
     time.now()
@@ -20,7 +21,7 @@ fn bootstrap_metrics() -> i32 {
 
 fn log_latency_bucket() -> i32 {
     let h = fs.open()
-    defer close(h)
+    discard h
     log.info("telemetry.latency", fields2("component", "telemetry", "phase", "latency"))
     time.now()
     fs.write()
@@ -29,8 +30,9 @@ fn log_latency_bucket() -> i32 {
 
 fn log_perf_snapshot() -> i32 {
     let h = fs.open()
-    defer close(h)
-    proc.exec_timeout(100)
+    discard h
+    let child = proc.spawn("echo telemetry-perf")
+    discard proc.exec_timeout(child)
     log.info("telemetry.perf", fields2("component", "telemetry", "phase", "perf"))
     time.now()
     return 0
@@ -38,7 +40,7 @@ fn log_perf_snapshot() -> i32 {
 
 fn flush_runtime_stats() -> i32 {
     let h = fs.open()
-    defer close(h)
+    discard h
     log.info("telemetry.flush", fields2("component", "telemetry", "phase", "flush"))
     fs.write()
     fs.flush()

@@ -1,4 +1,5 @@
 use core.time;
+use core.log;
 
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let m = map.new()

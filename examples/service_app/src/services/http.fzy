@@ -1,5 +1,9 @@
 use core.http;
 use core.time;
 fn start() -> i32 {
-    let listener = http.bind() defer close(listener) http.listen(listener) time.now() return 0
+    let listener: HttpHandle = http.bind()
+    http.listen(listener)
+    close(listener)
+    time.now()
+    return 0
 }

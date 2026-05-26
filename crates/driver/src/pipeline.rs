@@ -44,9 +44,9 @@ use self::native_backend_support::{
 use self::native_metadata::{
     build_global_const_i32_map, build_mutable_static_i32_map, build_string_literal_ids,
     build_variant_tag_map, collect_native_string_literals,
-    collect_pattern_source_function_map_from_module, collect_pattern_source_function_map_from_typed,
-    collect_spawn_task_symbols, collect_variant_keys_from_stmt, llvm_static_symbol_name,
-    PatternSourceFunction,
+    collect_pattern_source_function_map_from_module,
+    collect_pattern_source_function_map_from_typed, collect_spawn_task_symbols,
+    collect_variant_keys_from_stmt, llvm_static_symbol_name, PatternSourceFunction,
 };
 use self::native_runtime_support::{
     collect_async_c_exports, collect_extern_c_imports, collect_used_native_data_plane_imports,
@@ -2633,13 +2633,15 @@ fn pattern_has_tuple_bindings(items: &[ast::Pattern]) -> bool {
             named_bindings,
             ..
         } => !bindings.is_empty() || !named_bindings.is_empty(),
-        ast::Pattern::Or(patterns) => patterns.iter().any(pattern_has_variant_payload_bindings)
-            || patterns.iter().any(pattern_has_struct_field_bindings)
-            || patterns.iter().any(|pattern| match pattern {
-                ast::Pattern::Tuple(nested) => pattern_has_tuple_bindings(nested),
-                ast::Pattern::Ident(_) | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => true,
-                _ => false,
-            }),
+        ast::Pattern::Or(patterns) => {
+            patterns.iter().any(pattern_has_variant_payload_bindings)
+                || patterns.iter().any(pattern_has_struct_field_bindings)
+                || patterns.iter().any(|pattern| match pattern {
+                    ast::Pattern::Tuple(nested) => pattern_has_tuple_bindings(nested),
+                    ast::Pattern::Ident(_) | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => true,
+                    _ => false,
+                })
+        }
     })
 }
 
@@ -2764,21 +2766,21 @@ fn resolve_pattern_source_expr(
                     })
                     .collect(),
             },
-            ast::Expr::Group(inner) => {
-                ast::Expr::Group(Box::new(substitute_pattern_source_template(inner, bindings)))
-            }
+            ast::Expr::Group(inner) => ast::Expr::Group(Box::new(
+                substitute_pattern_source_template(inner, bindings),
+            )),
             ast::Expr::Tuple(items) => ast::Expr::Tuple(
                 items
                     .iter()
                     .map(|item| substitute_pattern_source_template(item, bindings))
                     .collect(),
             ),
-            ast::Expr::Await(inner) => {
-                ast::Expr::Await(Box::new(substitute_pattern_source_template(inner, bindings)))
-            }
-            ast::Expr::Discard(inner) => {
-                ast::Expr::Discard(Box::new(substitute_pattern_source_template(inner, bindings)))
-            }
+            ast::Expr::Await(inner) => ast::Expr::Await(Box::new(
+                substitute_pattern_source_template(inner, bindings),
+            )),
+            ast::Expr::Discard(inner) => ast::Expr::Discard(Box::new(
+                substitute_pattern_source_template(inner, bindings),
+            )),
             ast::Expr::TryCatch {
                 try_expr,
                 catch_expr,
@@ -2862,10 +2864,7 @@ fn resolve_pattern_source_expr(
                 body: body.clone(),
                 meta: meta.clone(),
             },
-            ast::Expr::While {
-                condition,
-                body,
-            } => ast::Expr::While {
+            ast::Expr::While { condition, body } => ast::Expr::While {
                 condition: Box::new(substitute_pattern_source_template(condition, bindings)),
                 body: body.clone(),
             },
@@ -2911,11 +2910,7 @@ fn resolve_pattern_source_expr(
         }
     }
 
-    fn resolve_pattern_source_function_call<
-        ResolveFn,
-        EvalScalarFn,
-        SubstituteFn,
-    >(
+    fn resolve_pattern_source_function_call<ResolveFn, EvalScalarFn, SubstituteFn>(
         function: &PatternSourceFunction,
         args: &[ast::Expr],
         _known_values: &HashMap<String, ast::Expr>,
@@ -2971,8 +2966,7 @@ fn resolve_pattern_source_expr(
                     then_body,
                     else_body,
                 } => {
-                    let expanded_condition =
-                        substitute_pattern_source_template(condition, &env);
+                    let expanded_condition = substitute_pattern_source_template(condition, &env);
                     let condition = eval_resolved_scalar_expr(
                         &expanded_condition,
                         &env,
@@ -2984,7 +2978,11 @@ fn resolve_pattern_source_expr(
                         ast::Expr::Bool(true) => then_body,
                         ast::Expr::Bool(false) => else_body,
                         ast::Expr::Int(value) => {
-                            if value != 0 { then_body } else { else_body }
+                            if value != 0 {
+                                then_body
+                            } else {
+                                else_body
+                            }
                         }
                         _ => return None,
                     };
@@ -3008,11 +3006,7 @@ fn resolve_pattern_source_expr(
             .map(|expr| substitute_pattern_source_template(expr, &env))
     }
 
-    fn resolve_pattern_source_stmt_branch<
-        ResolveFn,
-        EvalScalarFn,
-        SubstituteFn,
-    >(
+    fn resolve_pattern_source_stmt_branch<ResolveFn, EvalScalarFn, SubstituteFn>(
         body: &[ast::Stmt],
         parent_env: &HashMap<String, ast::Expr>,
         pattern_source_functions: &HashMap<String, PatternSourceFunction>,
@@ -3083,8 +3077,7 @@ fn resolve_pattern_source_expr(
                     then_body,
                     else_body,
                 } => {
-                    let condition =
-                        substitute_pattern_source_template(condition, &env);
+                    let condition = substitute_pattern_source_template(condition, &env);
                     let condition = eval_resolved_scalar_expr(
                         &condition,
                         &env,
@@ -3096,7 +3089,11 @@ fn resolve_pattern_source_expr(
                         ast::Expr::Bool(true) => then_body,
                         ast::Expr::Bool(false) => else_body,
                         ast::Expr::Int(value) => {
-                            if value != 0 { then_body } else { else_body }
+                            if value != 0 {
+                                then_body
+                            } else {
+                                else_body
+                            }
                         }
                         _ => return None,
                     };
@@ -3352,9 +3349,11 @@ fn resolve_pattern_source_expr(
                         continue;
                     }
                     let mut guard_values = known_values.clone();
-                    if let Ok(binding_stmts) =
-                        bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee, variant_tags)
-                    {
+                    if let Ok(binding_stmts) = bindings_for_match_arm_pattern(
+                        &arm.pattern,
+                        &resolved_scrutinee,
+                        variant_tags,
+                    ) {
                         for stmt in binding_stmts {
                             if let ast::Stmt::Let { name, value, .. } = stmt {
                                 guard_values.insert(name, value);
@@ -3405,15 +3404,13 @@ fn resolve_pattern_source_expr(
             ast::Expr::EnumInit { .. } | ast::Expr::StructInit { .. } | ast::Expr::Tuple(_) => {
                 Some(expr.clone())
             }
-            ast::Expr::Group(inner) => {
-                resolve_inner(
-                    inner,
-                    known_values,
-                    pattern_source_functions,
-                    variant_tags,
-                    depth + 1,
-                )
-            }
+            ast::Expr::Group(inner) => resolve_inner(
+                inner,
+                known_values,
+                pattern_source_functions,
+                variant_tags,
+                depth + 1,
+            ),
             ast::Expr::Ident(name) => known_values.get(name).and_then(|value| {
                 resolve_inner(
                     value,
@@ -3478,7 +3475,11 @@ fn resolve_pattern_source_expr(
                     ast::Expr::Bool(true) => then_expr,
                     ast::Expr::Bool(false) => else_expr,
                     ast::Expr::Int(value) => {
-                        if value != 0 { then_expr } else { else_expr }
+                        if value != 0 {
+                            then_expr
+                        } else {
+                            else_expr
+                        }
                     }
                     _ => return None,
                 };
@@ -3516,9 +3517,11 @@ fn resolve_pattern_source_expr(
                         continue;
                     }
                     let mut arm_values = known_values.clone();
-                    if let Ok(binding_stmts) =
-                        bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee, variant_tags)
-                    {
+                    if let Ok(binding_stmts) = bindings_for_match_arm_pattern(
+                        &arm.pattern,
+                        &resolved_scrutinee,
+                        variant_tags,
+                    ) {
                         for stmt in binding_stmts {
                             if let ast::Stmt::Let { name, value, .. } = stmt {
                                 arm_values.insert(name, value);
@@ -3553,7 +3556,13 @@ fn resolve_pattern_source_expr(
         }
     }
 
-    resolve_inner(expr, known_values, pattern_source_functions, variant_tags, 0)
+    resolve_inner(
+        expr,
+        known_values,
+        pattern_source_functions,
+        variant_tags,
+        0,
+    )
 }
 
 fn resolve_field_expr(base: &ast::Expr, field: &str) -> Option<ast::Expr> {
@@ -4206,11 +4215,12 @@ fn build_native_cfg_map(
         .par_iter()
         .filter(|function| !is_extern_c_import_decl(function))
         .map(|function| {
-            let cfg = build_control_flow_cfg(&function.body, variant_tags, &pattern_source_functions)
-                .and_then(|cfg| {
-                    verify_control_flow_cfg(&cfg)?;
-                    Ok(cfg)
-                });
+            let cfg =
+                build_control_flow_cfg(&function.body, variant_tags, &pattern_source_functions)
+                    .and_then(|cfg| {
+                        verify_control_flow_cfg(&cfg)?;
+                        Ok(cfg)
+                    });
             (
                 function.name.clone(),
                 cfg.map_err(|error| error.to_string()),

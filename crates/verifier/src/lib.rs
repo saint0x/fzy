@@ -226,18 +226,44 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             .iter()
             .filter(|site| site.async_context && site.kind != "unsafe_violation_callsite")
             .count();
+        let malformed_invariants = module
+            .unsafe_contract_sites
+            .iter()
+            .filter(|site| site.kind != "unsafe_violation_callsite")
+            .filter(|site| {
+                !unsafe_invariant_matches_owner(
+                    site.invariant.as_deref().unwrap_or_default(),
+                    site.owner.as_deref().unwrap_or_default(),
+                )
+            })
+            .count();
+        let unsafe_attention_sites =
+            missing_reasons + unsafe_context_violations + async_unsafe_sites + malformed_invariants;
         report.diagnostics.push(Diagnostic::new(
             if policy.safe_profile {
                 Severity::Error
             } else {
                 Severity::Warning
             },
-            format!("detected {} explicit unsafe escape marker(s)", unsafe_sites),
+            if !policy.safe_profile && unsafe_attention_sites == 0 {
+                format!(
+                    "detected {} explicit unsafe escape marker(s); current contracts validated",
+                    unsafe_sites
+                )
+            } else if !policy.safe_profile {
+                format!(
+                    "detected {} explicit unsafe escape marker(s); {} unsafe check(s) require attention",
+                    unsafe_sites, unsafe_attention_sites
+                )
+            } else {
+                format!("detected {} explicit unsafe escape marker(s)", unsafe_sites)
+            },
             Some(if policy.safe_profile {
                 "unsafe escapes are forbidden in safe profile".to_string()
+            } else if unsafe_attention_sites == 0 {
+                "warning is informational: unsafe exists and remains review-worthy, but current compiler-generated contracts and policy checks passed".to_string()
             } else {
-                "unsafe escapes must be isolated and audited with compiler-generated contracts"
-                    .to_string()
+                "unsafe escapes exist and at least one contract or policy check still needs attention; review the accompanying unsafe diagnostics".to_string()
             }),
         ));
         if missing_reasons > 0 {
@@ -295,17 +321,6 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 ),
             ));
         }
-        let malformed_invariants = module
-            .unsafe_contract_sites
-            .iter()
-            .filter(|site| site.kind != "unsafe_violation_callsite")
-            .filter(|site| {
-                !unsafe_invariant_matches_owner(
-                    site.invariant.as_deref().unwrap_or_default(),
-                    site.owner.as_deref().unwrap_or_default(),
-                )
-            })
-            .count();
         if malformed_invariants > 0 {
             report.diagnostics.push(Diagnostic::new(
                 if policy.strict_unsafe_contracts || policy.safe_profile {
@@ -651,6 +666,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -700,6 +717,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -752,6 +771,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -805,6 +826,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -858,6 +881,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -911,6 +936,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -964,6 +991,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1024,6 +1053,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1098,6 +1129,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1158,6 +1191,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1215,6 +1250,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1268,6 +1305,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1327,6 +1366,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1388,6 +1429,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1447,6 +1490,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1466,7 +1511,11 @@ mod tests {
         );
         assert!(report.diagnostics.iter().any(|d| d
             .message
-            .contains("detected 1 explicit unsafe escape marker(s)")));
+            .contains("detected 1 explicit unsafe escape marker(s); current contracts validated")));
+        assert!(report.diagnostics.iter().any(|d| d
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("warning is informational"))));
         assert!(report.is_clean());
     }
 
@@ -1506,6 +1555,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1566,6 +1617,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1627,6 +1680,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),
@@ -1686,6 +1741,8 @@ mod tests {
             functions: Vec::new(),
             typed_functions: Vec::new(),
             typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
             type_errors: 0,
             type_error_details: Vec::new(),
             function_capability_requirements: Vec::new(),

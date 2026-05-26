@@ -348,7 +348,8 @@ fn clif_emit_cfg(
                 let mut cond_val = clif_emit_expr(builder, ctx, scrutinee, locals, next_var)?;
                 let aggregate_switch = match scrutinee {
                     ast::Expr::Ident(name) => {
-                        ctx.aggregate_bindings.contains_key(name) || clif_local_is_aggregate(name, ctx)
+                        ctx.aggregate_bindings.contains_key(name)
+                            || clif_local_is_aggregate(name, ctx)
                     }
                     ast::Expr::EnumInit { .. }
                     | ast::Expr::StructInit { .. }
@@ -356,11 +357,13 @@ fn clif_emit_cfg(
                     _ => false,
                 };
                 if aggregate_switch && cond_val.ty == types::I64 {
-                    let agg_tag_id = ctx
-                        .function_ids
-                        .get(NATIVE_AGG_TAG)
-                        .copied()
-                        .ok_or_else(|| anyhow!("missing runtime import lowering for `{NATIVE_AGG_TAG}`"))?;
+                    let agg_tag_id =
+                        ctx.function_ids
+                            .get(NATIVE_AGG_TAG)
+                            .copied()
+                            .ok_or_else(|| {
+                                anyhow!("missing runtime import lowering for `{NATIVE_AGG_TAG}`")
+                            })?;
                     let agg_tag_ref = ctx.module.declare_func_in_func(agg_tag_id, builder.func);
                     let tag_call = builder.ins().call(agg_tag_ref, &[cond_val.value]);
                     cond_val = ClifValue {
@@ -452,10 +455,7 @@ fn clif_restore_shadowed_locals(
     }
 }
 
-fn clif_cast_scalar_to_i64(
-    builder: &mut FunctionBuilder,
-    value: ClifValue,
-) -> Result<ClifValue> {
+fn clif_cast_scalar_to_i64(builder: &mut FunctionBuilder, value: ClifValue) -> Result<ClifValue> {
     cast_clif_value(builder, value, types::I64)
 }
 
@@ -493,19 +493,15 @@ fn clif_emit_aggregate_handle(
     let new_ref = ctx.module.declare_func_in_func(agg_new_id, builder.func);
     let tag_value = builder.ins().iconst(types::I32, i64::from(tag));
     let count_value = builder.ins().iconst(types::I32, items.len() as i64);
-    let handle_call = builder.ins().call(
-        new_ref,
-        &[tag_value, count_value],
-    );
+    let handle_call = builder.ins().call(new_ref, &[tag_value, count_value]);
     let handle = builder.inst_results(handle_call)[0];
     let set_ref = ctx.module.declare_func_in_func(agg_set_id, builder.func);
     for (index, item) in items.iter().cloned().enumerate() {
         let raw = clif_cast_scalar_to_i64(builder, item)?;
         let index_value = builder.ins().iconst(types::I32, index as i64);
-        let _ = builder.ins().call(
-            set_ref,
-            &[handle, index_value, raw.value],
-        );
+        let _ = builder
+            .ins()
+            .call(set_ref, &[handle, index_value, raw.value]);
     }
     Ok(ClifValue {
         value: handle,
@@ -527,7 +523,9 @@ fn clif_emit_aggregate_get(
         .ok_or_else(|| anyhow!("missing runtime import lowering for `{NATIVE_AGG_GET_I64}`"))?;
     let agg_get_ref = ctx.module.declare_func_in_func(agg_get_id, builder.func);
     let index_value = builder.ins().iconst(types::I32, index as i64);
-    let raw_call = builder.ins().call(agg_get_ref, &[handle.value, index_value]);
+    let raw_call = builder
+        .ins()
+        .call(agg_get_ref, &[handle.value, index_value]);
     let raw = builder.inst_results(raw_call)[0];
     clif_cast_i64_to_ty(builder, raw, target_ty)
 }
@@ -920,24 +918,23 @@ pub(super) fn clif_emit_let_pattern(
         } => {
             let key = format!("{enum_name}::{variant}");
             let (cmp_ty, cmp_value) = if lowered.ty == types::I64 {
-                let agg_tag_id = ctx
-                    .function_ids
-                    .get(NATIVE_AGG_TAG)
-                    .copied()
-                    .ok_or_else(|| anyhow!("missing runtime import lowering for `{NATIVE_AGG_TAG}`"))?;
+                let agg_tag_id =
+                    ctx.function_ids
+                        .get(NATIVE_AGG_TAG)
+                        .copied()
+                        .ok_or_else(|| {
+                            anyhow!("missing runtime import lowering for `{NATIVE_AGG_TAG}`")
+                        })?;
                 let agg_tag_ref = ctx.module.declare_func_in_func(agg_tag_id, builder.func);
                 let tag_call = builder.ins().call(agg_tag_ref, &[lowered.value]);
                 (types::I32, builder.inst_results(tag_call)[0])
             } else {
                 (lowered.ty, lowered.value)
             };
-            let expected_tag = builder.ins().iconst(
-                cmp_ty,
-                variant_tag_for_key(&key, ctx.variant_tags) as i64,
-            );
-            let _ = builder
+            let expected_tag = builder
                 .ins()
-                .icmp(IntCC::Equal, cmp_value, expected_tag);
+                .iconst(cmp_ty, variant_tag_for_key(&key, ctx.variant_tags) as i64);
+            let _ = builder.ins().icmp(IntCC::Equal, cmp_value, expected_tag);
             if let ast::Expr::EnumInit {
                 enum_name: value_enum,
                 variant: value_variant,
@@ -1749,13 +1746,7 @@ pub(super) fn clif_emit_expr(
                 } else if let Some(binding) = ctx.aggregate_bindings.get(name).cloned() {
                     if let Some(item) = binding.items.get(field) {
                         let handle = clif_emit_expr(builder, ctx, base, locals, next_var)?;
-                        return clif_emit_aggregate_get(
-                            builder,
-                            ctx,
-                            handle,
-                            item.index,
-                            item.ty,
-                        );
+                        return clif_emit_aggregate_get(builder, ctx, handle, item.index, item.ty);
                     } else if let Some(task_ref_name) = expr_task_ref_name(expr) {
                         if let Some(task_ref) = ctx.task_ref_ids.get(&task_ref_name).copied() {
                             ClifValue {
@@ -1772,13 +1763,7 @@ pub(super) fn clif_emit_expr(
                     }
                 } else if let Some(item) = clif_struct_field_binding_for_local(name, field, ctx) {
                     let handle = clif_emit_expr(builder, ctx, base, locals, next_var)?;
-                    return clif_emit_aggregate_get(
-                        builder,
-                        ctx,
-                        handle,
-                        item.index,
-                        item.ty,
-                    );
+                    return clif_emit_aggregate_get(builder, ctx, handle, item.index, item.ty);
                 } else if let Some(task_ref_name) = expr_task_ref_name(expr) {
                     if let Some(task_ref) = ctx.task_ref_ids.get(&task_ref_name).copied() {
                         ClifValue {
@@ -2328,8 +2313,8 @@ pub(super) fn clif_emit_expr(
                     clif_assert_finite(
                         builder,
                         ClifValue {
-                        value,
-                        ty: signature.ret.unwrap_or(default_int_clif_type()),
+                            value,
+                            ty: signature.ret.unwrap_or(default_int_clif_type()),
                         },
                     )
                 } else {
@@ -2504,9 +2489,7 @@ pub(super) fn clif_assert_finite(builder: &mut FunctionBuilder, value: ClifValue
     let ok = builder.ins().band(lower, upper);
     let continue_block = builder.create_block();
     let trap_block = builder.create_block();
-    builder
-        .ins()
-        .brif(ok, continue_block, &[], trap_block, &[]);
+    builder.ins().brif(ok, continue_block, &[], trap_block, &[]);
     builder.switch_to_block(trap_block);
     builder.ins().trap(TrapCode::unwrap_user(1));
     builder.seal_block(trap_block);

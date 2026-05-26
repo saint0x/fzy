@@ -55,6 +55,12 @@ fn write(ptr: *u8, len: usize) -> i32 {
 
 Default policy:
 - Generated contracts are enforced by profile policy from `fozzy.toml`.
+- Production verify/check output still emits a warning when unsafe exists.
+- When compiler-generated contracts and policy checks pass, that warning is informational:
+  unsafe is present, review-worthy, and explicitly acknowledged, but it is not failing current policy.
+- When contract fields, invariants, async constraints, or unsafe-context rules do not check out,
+  the summary warning will say that unsafe checks require attention and companion diagnostics will
+  explain the concrete problem.
 
 Strict CI/release mode:
 - `enforce_verify = true` / `enforce_release = true` in `[unsafe]`
