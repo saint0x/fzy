@@ -143,6 +143,9 @@ Native host-backed runtime defaults:
 - runtime bootstraps env from `.env` (or `FZ_DOTENV_PATH`) before env/http calls
 - HTTP transport diagnostics are available through `http.last_error`
 
+Language completeness note:
+- tuple/struct/enum destructuring is native in both LLVM and Cranelift, including parameter-bound values, call-returned aggregates, helper-produced aggregates, and control-flow-produced aggregates
+
 Runtime logging defaults:
 - human-readable logs by default (`[ts] level message`)
 - structured fields appended as `| fields={...}`

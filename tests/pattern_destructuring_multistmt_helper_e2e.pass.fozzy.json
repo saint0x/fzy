@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "pattern-destructuring-multistmt-helper-e2e-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-pattern-multistmt-helper-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text('[package]\\nname=\"pattern_multistmt_helper\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"pattern_multistmt_helper\"\\npath=\"src/main.fzy\"\\n'); (root / 'src/main.fzy').write_text('struct Pair { left: i32, right: i32 }\\nenum Maybe { Some { value: i32, extra: i32 }, None }\\nfn build_pair(seed: i32) -> Pair {\\n    let left = seed + 2\\n    let right = left + 3\\n    return Pair { left: left, right: right }\\n}\\nfn build_tuple(seed: i32) -> (i32, i32) {\\n    let base = seed + 4\\n    let tail = base + 5\\n    return (base, tail)\\n}\\nfn build_variant(seed: i32) -> Maybe {\\n    let value = seed + 6\\n    let extra = value + 7\\n    return Maybe::Some { value: value, extra: extra }\\n}\\nfn main() -> i32 {\\n    let Pair { left, right } = build_pair(1);\\n    let (tuple_left, tuple_right) = build_tuple(2);\\n    match build_variant(3) {\\n        Maybe::Some { value, extra } => return left + right + tuple_left + tuple_right + value + extra,\\n        _ => return 0,\\n    }\\n}\\n'); cmd = ['cargo', 'run', '-q', '-p', 'fz', '--', 'build', str(root), '--json']; proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, check=True); payload = json.loads(proc.stdout.strip()); binary = pathlib.Path(payload['output']); assert binary.exists(), binary; run_proc = subprocess.run([str(binary)], cwd=str(repo), capture_output=True, text=True); assert run_proc.returncode == 51, run_proc.returncode; print('pattern-multistmt-helper-destructuring-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "pattern-multistmt-helper-destructuring-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-pattern-multistmt-helper-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text('[package]\\nname=\"pattern_multistmt_helper\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"pattern_multistmt_helper\"\\npath=\"src/main.fzy\"\\n'); (root / 'src/main.fzy').write_text('struct Pair { left: i32, right: i32 }\\nenum Maybe { Some { value: i32, extra: i32 }, None }\\nfn build_pair(seed: i32) -> Pair {\\n    let left = seed + 2\\n    let right = left + 3\\n    return Pair { left: left, right: right }\\n}\\nfn build_tuple(seed: i32) -> (i32, i32) {\\n    let base = seed + 4\\n    let tail = base + 5\\n    return (base, tail)\\n}\\nfn build_variant(seed: i32) -> Maybe {\\n    let value = seed + 6\\n    let extra = value + 7\\n    return Maybe::Some { value: value, extra: extra }\\n}\\nfn main() -> i32 {\\n    let Pair { left, right } = build_pair(1);\\n    let (tuple_left, tuple_right) = build_tuple(2);\\n    match build_variant(3) {\\n        Maybe::Some { value, extra } => return left + right + tuple_left + tuple_right + value + extra,\\n        _ => return 0,\\n    }\\n}\\n'); cmd = ['cargo', 'run', '-q', '-p', 'fz', '--', 'build', str(root), '--json']; proc = subprocess.run(cmd, cwd=str(repo), capture_output=True, text=True, check=True); payload = json.loads(proc.stdout.strip()); binary = pathlib.Path(payload['output']); assert binary.exists(), binary; run_proc = subprocess.run([str(binary)], cwd=str(repo), capture_output=True, text=True); assert run_proc.returncode == 51, run_proc.returncode; print('pattern-multistmt-helper-destructuring-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "pattern-multistmt-helper-destructuring-ok\n"
+    }
+  ]
+}

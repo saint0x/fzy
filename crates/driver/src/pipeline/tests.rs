@@ -218,6 +218,89 @@ fn llvm_lowering_declares_extern_c_import_without_defining_stub() {
 }
 
 #[test]
+fn llvm_lowering_uses_native_aggregate_handles_for_aggregate_literals() {
+    let source = "struct Pair { left: i32, right: i32 }\nenum Maybe { Some(i32), None }\nfn main() -> i32 {\n    let pair = Pair { left: 3, right: 4 }\n    let tagged = Maybe::Some(9)\n    let tupled = (1, 2)\n    discard pair\n    discard tagged\n    discard tupled\n    return 0\n}\n";
+    let module = parser::parse(source, "agg_handles").expect("source should parse");
+    let typed = hir::lower(&module);
+    let fir = fir::build_owned(typed);
+    let ir = lower_llvm_ir(&fir, true).expect("llvm lowering should succeed");
+    assert!(ir.contains("declare i64 @fz_native_agg_new(i32, i32)"));
+    assert!(ir.contains("call i64 @fz_native_agg_new("));
+    assert!(ir.contains("call i32 @fz_native_agg_set_i64("));
+}
+
+#[test]
+fn llvm_backend_executes_handle_backed_local_destructuring() {
+    let project_name = format!(
+        "fozzylang-llvm-handle-local-destructure-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "struct Pair { left: i32, right: i32 }\nenum Maybe { Some { value: i32, extra: i32 }, None }\nfn main() -> i32 {\n    let pair = Pair { left: 10, right: 20 }\n    let Pair { left, right } = pair;\n    let tagged = Maybe::Some { value: 5, extra: 7 }\n    match tagged {\n        Maybe::Some { value, extra } => return left + right + value + extra,\n        _ => return 0,\n    }\n}\n",
+    )
+    .expect("source should be written");
+
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(llvm_exit, 42);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cranelift_backend_executes_handle_backed_local_destructuring() {
+    let project_name = format!(
+        "fozzylang-cranelift-handle-local-destructure-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "struct Pair { left: i32, right: i32 }\nenum Maybe { Some { value: i32, extra: i32 }, None }\nfn main() -> i32 {\n    let pair = Pair { left: 10, right: 20 }\n    let Pair { left, right } = pair;\n    let tagged = Maybe::Some { value: 5, extra: 7 }\n    match tagged {\n        Maybe::Some { value, extra } => return left + right + value + extra,\n        _ => return 0,\n    }\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, 42);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn module_qualified_extern_c_import_uses_link_symbol() {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1447,6 +1530,321 @@ fn cross_backend_struct_pattern_destructuring_executes_consistently() {
 }
 
 #[test]
+fn cross_backend_tuple_pattern_destructuring_executes_consistently() {
+    let project_name = format!(
+        "fozzylang-tuple-pattern-native-cross-backend-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn main() -> i32 {\n    let source = (7, (9, 11));\n    let (left, (right, _)) = source;\n    return left + right\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 16);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cross_backend_helper_returned_pattern_destructuring_executes_consistently() {
+    let project_name = format!(
+        "fozzylang-helper-pattern-native-cross-backend-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "struct Pair { left: i32, right: i32 }\nenum Maybe { Some { value: i32, extra: i32 }, None }\nfn make_pair(seed: i32) -> Pair {\n    return Pair { left: seed + 2, right: seed + 3 }\n}\nfn make_tuple(seed: i32) -> (i32, i32) {\n    return (seed, seed + 5)\n}\nfn make_variant(seed: i32) -> Maybe {\n    return Maybe::Some { value: seed + 7, extra: seed + 11 }\n}\nfn main() -> i32 {\n    let Pair { left, right } = make_pair(10);\n    let (tuple_left, tuple_right) = make_tuple(4);\n    match make_variant(1) {\n        Maybe::Some { value, extra } => return left + right + tuple_left + tuple_right + value + extra,\n        _ => return 0,\n    }\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 58);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cross_backend_control_flow_returned_pattern_destructuring_executes_consistently() {
+    let project_name = format!(
+        "fozzylang-control-flow-pattern-native-cross-backend-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "struct Pair { left: i32, right: i32 }\nenum Maybe { Some { value: i32, extra: i32 }, None }\nfn choose_pair(flag: bool) -> Pair {\n    return if flag { Pair { left: 5, right: 7 } } else { Pair { left: 1, right: 2 } }\n}\nfn choose_tuple(flag: bool) -> (i32, i32) {\n    return match flag {\n        true => (11, 13),\n        _ => (0, 0),\n    }\n}\nfn choose_variant(flag: bool) -> Maybe {\n    return if flag { Maybe::Some { value: 17, extra: 19 } } else { Maybe::None }\n}\nfn main() -> i32 {\n    let Pair { left, right } = choose_pair(true);\n    let (tuple_left, tuple_right) = choose_tuple(true);\n    match choose_variant(true) {\n        Maybe::Some { value, extra } => return left + right + tuple_left + tuple_right + value + extra,\n        _ => return 0,\n    }\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 72);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cross_backend_multistmt_helper_pattern_destructuring_executes_consistently() {
+    let project_name = format!(
+        "fozzylang-multistmt-helper-pattern-native-cross-backend-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "struct Pair { left: i32, right: i32 }\nenum Maybe { Some { value: i32, extra: i32 }, None }\nfn build_pair(seed: i32) -> Pair {\n    let left = seed + 2\n    let right = left + 3\n    return Pair { left: left, right: right }\n}\nfn build_tuple(seed: i32) -> (i32, i32) {\n    let base = seed + 4\n    let tail = base + 5\n    return (base, tail)\n}\nfn build_variant(seed: i32) -> Maybe {\n    let value = seed + 6\n    let extra = value + 7\n    return Maybe::Some { value: value, extra: extra }\n}\nfn main() -> i32 {\n    let Pair { left, right } = build_pair(1);\n    let (tuple_left, tuple_right) = build_tuple(2);\n    match build_variant(3) {\n        Maybe::Some { value, extra } => return left + right + tuple_left + tuple_right + value + extra,\n        _ => return 0,\n    }\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 51);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cross_backend_call_returned_aggregate_binding_executes_consistently() {
+    let project_name = format!(
+        "fozzylang-call-returned-aggregate-native-cross-backend-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "struct Pair { left: i32, right: i32 }\nenum Maybe { Some(i32), None }\nfn pair_id(v: Pair) -> Pair { return v }\nfn tuple_id(v: (i32, i32)) -> (i32, i32) { return v }\nfn maybe_id(v: Maybe) -> Maybe { return v }\nfn main() -> i32 {\n    let pair_source = pair_id(Pair { left: 7, right: 8 })\n    let Pair { left, right } = pair_source;\n    let tuple_source = tuple_id((3, 4))\n    let (a, b) = tuple_source;\n    let maybe_source = maybe_id(Maybe::Some(9))\n    let Maybe::Some(v) = maybe_source;\n    return left + right + a + b + v\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 31);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cross_backend_parameter_aggregate_destructuring_executes_consistently() {
+    let project_name = format!(
+        "fozzylang-parameter-aggregate-native-cross-backend-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "struct Pair { left: i32, right: i32 }\nenum Maybe { Some { value: i32, extra: i32 }, None }\nfn sum_pair(pair: Pair) -> i32 {\n    let Pair { left, right } = pair;\n    return left + right\n}\nfn sum_tuple(pair: (i32, i32)) -> i32 {\n    let (left, right) = pair;\n    return left + right\n}\nfn sum_maybe(maybe: Maybe) -> i32 {\n    match maybe {\n        Maybe::Some { value, extra } => return value + extra,\n        _ => return 0,\n    }\n}\nfn main() -> i32 {\n    return sum_pair(Pair { left: 7, right: 8 }) + sum_tuple((3, 4)) + sum_maybe(Maybe::Some { value: 5, extra: 9 })\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 36);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cross_backend_named_variant_pattern_destructuring_executes_consistently() {
+    let project_name = format!(
+        "fozzylang-variant-named-pattern-native-cross-backend-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "enum Token { Number { whole: i32, frac: i32 }, End }\nfn main() -> i32 {\n    let source = Token::Number { whole: 12, frac: 30 };\n    let Token::Number { whole, frac } = source;\n    match source {\n        Token::Number { whole: a, frac: b } => return a + b,\n        _ => return whole + frac,\n    }\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 42);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn verify_accepts_native_let_pattern_lowering() {
     let file_name = format!(
         "fozzylang-native-let-pattern-supported-{}.fzy",
@@ -1623,6 +2021,88 @@ fn verify_accepts_native_let_pattern_struct_binding_source() {
         diag.message.contains(
             "supports `let` struct-field binding only when the initializer is the same literal struct value",
         )
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_accepts_native_let_pattern_tuple_binding_source() {
+    let file_name = format!(
+        "fozzylang-native-let-tuple-pattern-source-supported-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn make(v: i32) -> (i32, i32) { return (v, v + 1) }\nfn main() -> i32 {\n    let source = make(7)\n    let (left, right) = source;\n    return left + right\n}\n",
+    )
+    .expect("temp source should be written");
+
+    let output = verify_file(&path).expect("verify should run");
+    assert!(!output.diagnostic_details.iter().any(|diag| {
+        diag.message.contains(
+            "requires tuple initializer or tuple-bound local for `let` tuple destructuring",
+        )
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_accepts_native_control_flow_pattern_binding_sources() {
+    let file_name = format!(
+        "fozzylang-native-control-flow-pattern-source-supported-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "struct Pair { left: i32, right: i32 }\nenum Maybe { Some { value: i32, extra: i32 }, None }\nfn pair(flag: bool) -> Pair {\n    return if flag { Pair { left: 3, right: 4 } } else { Pair { left: 0, right: 0 } }\n}\nfn tuple(flag: bool) -> (i32, i32) {\n    return match flag {\n        true => (5, 6),\n        _ => (0, 0),\n    }\n}\nfn tagged(flag: bool) -> Maybe {\n    return if flag { Maybe::Some { value: 7, extra: 8 } } else { Maybe::None }\n}\nfn main() -> i32 {\n    let Pair { left, right } = pair(true);\n    let (a, b) = tuple(true);\n    match tagged(true) {\n        Maybe::Some { value, extra } => return left + right + a + b + value + extra,\n        _ => return 0,\n    }\n}\n",
+    )
+    .expect("temp source should be written");
+
+    let output = verify_file(&path).expect("verify should run");
+    assert!(!output.diagnostic_details.iter().any(|diag| {
+        diag.message.contains("literal enum scrutinee")
+            || diag.message.contains("literal struct scrutinee")
+            || diag.message.contains("literal tuple scrutinee")
+            || diag.message.contains("tuple initializer or tuple-bound local")
+            || diag.message.contains("struct initializer or struct-bound local")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_accepts_native_multistmt_helper_pattern_binding_sources() {
+    let file_name = format!(
+        "fozzylang-native-multistmt-helper-pattern-source-supported-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "struct Pair { left: i32, right: i32 }\nenum Maybe { Some { value: i32, extra: i32 }, None }\nfn pair(seed: i32) -> Pair {\n    let left = seed + 1\n    let right = left + 2\n    return Pair { left: left, right: right }\n}\nfn tuple(seed: i32) -> (i32, i32) {\n    let a = seed + 3\n    let b = a + 4\n    return (a, b)\n}\nfn tagged(seed: i32) -> Maybe {\n    let value = seed + 5\n    let extra = value + 6\n    return Maybe::Some { value: value, extra: extra }\n}\nfn main() -> i32 {\n    let Pair { left, right } = pair(1);\n    let (a, b) = tuple(2);\n    match tagged(3) {\n        Maybe::Some { value, extra } => return left + right + a + b + value + extra,\n        _ => return 0,\n    }\n}\n",
+    )
+    .expect("temp source should be written");
+
+    let output = verify_file(&path).expect("verify should run");
+    assert!(!output.diagnostic_details.iter().any(|diag| {
+        diag.message.contains("literal enum scrutinee")
+            || diag.message.contains("literal struct scrutinee")
+            || diag.message.contains("tuple initializer or tuple-bound local")
+            || diag.message.contains("struct initializer or struct-bound local")
+            || diag.message.contains("enum-bound local payloads")
     }));
 
     let _ = std::fs::remove_file(path);

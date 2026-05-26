@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ast::Type;
 use core::CapabilitySet;
 pub use hir::UnsafeContractSite;
@@ -105,6 +107,8 @@ pub struct FirModule {
     pub functions: Vec<FunctionIr>,
     pub typed_functions: Vec<TypedFunction>,
     pub typed_globals: Vec<hir::TypedGlobal>,
+    pub struct_defs: HashMap<String, ast::Struct>,
+    pub enum_defs: HashMap<String, ast::Enum>,
     pub type_errors: usize,
     pub type_error_details: Vec<String>,
     pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
@@ -150,6 +154,8 @@ pub fn build_owned(typed: TypedModule) -> FirModule {
         call_graph,
         typed_functions,
         typed_globals,
+        struct_defs,
+        enum_defs,
         type_errors,
         type_error_details,
         function_capability_requirements,
@@ -215,6 +221,8 @@ pub fn build_owned(typed: TypedModule) -> FirModule {
         functions,
         typed_functions,
         typed_globals,
+        struct_defs,
+        enum_defs,
         type_errors,
         type_error_details,
         function_capability_requirements,

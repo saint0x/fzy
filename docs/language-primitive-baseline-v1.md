@@ -10,7 +10,7 @@
 | `use_group_support` | implemented | `use path::{a,b}` (including nested groups) expands into concrete imports. |
 | `pub_use_reexport_support` | implemented | `pub use ...` parses and participates in symbol resolution as stable re-export support. |
 | `let_mutability_semantics` | implemented | `let` is immutable by default; reassignment requires `let mut` and type-check enforcement. |
-| `let_pattern_destructuring` | partial | Variant-pattern destructuring in `let` lowers natively for literal variant initializers; `match` variant payload bindings lower for literal enum scrutinees without guards and are explicitly diagnosed otherwise. Struct-pattern destructuring now supports first-class `let`/`match` bindings for literal struct sources and hard-diagnoses unsupported non-literal native binding shapes; tuple-pattern parity remains open. |
+| `let_pattern_destructuring` | implemented | Tuple, struct, and enum variant patterns are parsed, typed, evaluated, and exercised in native backends. Native lowering uses first-class aggregate handles plus typed layout metadata for tuple/struct/enum locals, parameters, calls, returns, helper-produced values, and control-flow-produced values, with explicit runtime tag extraction for enum matches. |
 | `const_declaration_surface` | implemented | Module-level `const NAME: Type = expr;` is parsed/typed and resolved in function scope. |
 | `static_declaration_surface` | implemented | Module-level `static NAME: Type = expr;` is parsed/typed and resolved in function scope. |
 | `static_mut_surface` | implemented | `static mut NAME: Type = const_expr;` parses/typed-checks and lowers through native backends as mutable global storage. |

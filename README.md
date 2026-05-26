@@ -205,6 +205,7 @@ Implemented and verified in this repo:
 - Language/native completeness:
   - closure/lambda lexical capture lowering parity in LLVM + Cranelift for supported forms
   - array/index expression family lowers natively in LLVM + Cranelift with execute-and-compare parity fixtures
+  - ADT/pattern-matching native completeness: tuple/struct/enum values lower as first-class aggregate handles, and destructuring works across locals, parameters, calls, returns, helpers, and control-flow values in both LLVM and Cranelift
   - module import surface includes executable `use ... as alias` and `pub use ...` re-export semantics
   - direct-memory architecture/perf release gates:
     - `python3 scripts/direct_memory_architecture_gate.py`

@@ -28,7 +28,11 @@ def main() -> int:
     parser_src = read_text(ROOT / "crates" / "parser" / "src" / "lib.rs")
     ast_src = read_text(ROOT / "crates" / "ast" / "src" / "lib.rs")
     hir_src = read_text(ROOT / "crates" / "hir" / "src" / "lib.rs")
-    pipeline_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline.rs")
+    driver_pipeline_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline.rs")
+    clif_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline" / "clif_support.rs")
+    llvm_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline" / "llvm_support.rs")
+    tests_src = read_text(ROOT / "crates" / "driver" / "src" / "pipeline" / "tests.rs")
+    pipeline_src = "\n".join([driver_pipeline_src, clif_src, llvm_src, tests_src])
 
     has_use_alias = (
         "fn parse_use_tree(" in parser_src
@@ -73,21 +77,18 @@ def main() -> int:
         or "native backend only supports closures bound to local names via `let`/assignment"
         in pipeline_src
     )
-    has_native_let_variant_literal_diag = (
-        "supports `let` variant payload binding only when the initializer is the same literal enum variant"
-        in pipeline_src
-    )
-    has_native_match_variant_literal_guardrail = (
-        "only supports match-arm variant payload bindings for literal enum scrutinees without guards"
-        in pipeline_src
-    )
     has_struct_pattern_surface = "Pattern::Struct" in ast_src and "struct pattern" in parser_src
-    has_native_let_struct_literal_diag = (
-        "supports `let` struct-field binding only when the initializer is the same literal struct value"
-        in pipeline_src
+    has_typed_local_aggregate_metadata = (
+        "pub local_types: BTreeMap<String, Type>" in hir_src
+        and "local_types: BTreeMap<String, ast::Type>" in pipeline_src
     )
-    has_native_match_struct_literal_guardrail = (
-        "only supports match-arm struct-field bindings for literal struct scrutinees without guards"
+    has_native_aggregate_handle_lowering = (
+        "fz_native_agg_new" in pipeline_src
+        and "fz_native_agg_get_i64" in pipeline_src
+        and "fz_native_agg_tag" in pipeline_src
+    )
+    has_cross_backend_parameter_aggregate_parity = (
+        "cross_backend_parameter_aggregate_destructuring_executes_consistently"
         in pipeline_src
     )
     has_native_array_index_lowering = (
@@ -128,7 +129,7 @@ def main() -> int:
         and "let mutable = self.consume(&TokenKind::Ident(\"mut\".to_string()));"
         in parser_src
         else "missing",
-        "let_pattern_destructuring": "partial" if has_let_pattern else "missing",
+        "let_pattern_destructuring": "implemented" if has_let_pattern else "missing",
         "const_declaration_surface": "implemented"
         if "fn parse_const(" in parser_src and "ast::Item::Const" in parser_src
         else "missing",
@@ -188,26 +189,22 @@ def main() -> int:
                 "array/index parity drift: docs mark implemented but cross-backend completeness fixture parity test is missing"
             )
 
-    if matrix.get("let_pattern_destructuring") == "partial":
-        if not has_native_let_variant_literal_diag:
-            errors.append(
-                "let-pattern partial drift: expected literal-source diagnostic for unsupported native payload binding"
-            )
-        if not has_native_match_variant_literal_guardrail:
-            errors.append(
-                "match-pattern partial drift: expected guarded/literal-scrutinee diagnostic for unsupported native payload binding shapes"
-            )
+    if matrix.get("let_pattern_destructuring") == "implemented":
         if not has_struct_pattern_surface:
             errors.append(
-                "let-pattern partial drift: expected first-class struct-pattern surface in parser/AST"
+                "let-pattern implementation drift: expected first-class struct-pattern surface in parser/AST"
             )
-        if not has_native_let_struct_literal_diag:
+        if not has_typed_local_aggregate_metadata:
             errors.append(
-                "let-struct-pattern partial drift: expected literal-source diagnostic for unsupported native struct-field binding"
+                "let-pattern implementation drift: expected typed local aggregate metadata to persist through HIR/native lowering"
             )
-        if not has_native_match_struct_literal_guardrail:
+        if not has_native_aggregate_handle_lowering:
             errors.append(
-                "match-struct-pattern partial drift: expected guarded/literal-scrutinee diagnostic for unsupported native struct-field binding shapes"
+                "let-pattern implementation drift: expected first-class native aggregate handle lowering hooks"
+            )
+        if not has_cross_backend_parameter_aggregate_parity:
+            errors.append(
+                "let-pattern implementation drift: expected cross-backend parameter aggregate destructuring parity coverage"
             )
 
     if errors:

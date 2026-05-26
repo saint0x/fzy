@@ -8,6 +8,7 @@ pub struct TypedFunction {
     pub link_name: Option<String>,
     pub generics: Vec<ast::GenericParam>,
     pub params: Vec<ast::Param>,
+    pub local_types: BTreeMap<String, Type>,
     pub return_type: Type,
     pub body: Vec<Stmt>,
     pub is_unsafe: bool,
@@ -48,6 +49,8 @@ pub struct TypedModule {
     pub call_graph: Vec<(String, String)>,
     pub typed_functions: Vec<TypedFunction>,
     pub typed_globals: Vec<TypedGlobal>,
+    pub struct_defs: HashMap<String, ast::Struct>,
+    pub enum_defs: HashMap<String, ast::Enum>,
     pub type_errors: usize,
     pub type_error_details: Vec<String>,
     pub function_capability_requirements: Vec<FunctionCapabilityRequirement>,
@@ -98,6 +101,7 @@ enum Value {
     Bool(bool),
     Char(char),
     Str(String),
+    Tuple(Vec<Value>),
     List(Vec<Value>),
     Struct {
         _name: String,
@@ -457,6 +461,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     link_name: function.link_name.clone(),
                     generics: function.generics.clone(),
                     params,
+                    local_types: BTreeMap::new(),
                     return_type,
                     body: function.body.clone(),
                     is_unsafe: function.is_unsafe,
@@ -477,6 +482,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     link_name: None,
                     generics: Vec::new(),
                     params: Vec::new(),
+                    local_types: BTreeMap::new(),
                     return_type: Type::Void,
                     body: test.body.clone(),
                     is_unsafe: false,
@@ -533,6 +539,7 @@ pub fn lower(module: &Module) -> TypedModule {
                         link_name: method.link_name.clone(),
                         generics: method.generics.clone(),
                         params,
+                        local_types: BTreeMap::new(),
                         return_type,
                         body: method.body.clone(),
                         is_unsafe: method.is_unsafe,
@@ -566,11 +573,12 @@ pub fn lower(module: &Module) -> TypedModule {
         }
     }
 
-    for function in &typed_functions {
+    for function in &mut typed_functions {
         if function.body.is_empty() {
             continue;
         }
         let mut scopes = SymbolScopes::new();
+        let mut local_types = BTreeMap::new();
         let env = TypeCheckEnv {
             fn_sigs: &fn_sigs,
             fn_async: &fn_async,
@@ -589,17 +597,20 @@ pub fn lower(module: &Module) -> TypedModule {
         };
         for param in &function.params {
             scopes.insert(param.name.clone(), param.ty.clone(), false);
+            local_types.insert(param.name.clone(), param.ty.clone());
         }
         for stmt in &function.body {
             type_check_stmt(
                 stmt,
                 &mut scopes,
+                &mut local_types,
                 &env,
                 0,
                 &function.return_type,
                 &mut state,
             );
         }
+        function.local_types = local_types;
     }
     validate_async_semantics(
         &typed_functions,
@@ -727,6 +738,8 @@ pub fn lower(module: &Module) -> TypedModule {
         call_graph,
         typed_functions,
         typed_globals,
+        struct_defs,
+        enum_defs,
         type_errors,
         type_error_details,
         function_capability_requirements,
@@ -1010,6 +1023,7 @@ fn statement_uses_cap_token_intrinsic(stmt: &Stmt) -> bool {
                 .iter()
                 .any(|(_, value)| expr_has_cap_intrinsic(value)),
             Expr::EnumInit { payload, .. } => payload.iter().any(expr_has_cap_intrinsic),
+            Expr::Tuple(items) => items.iter().any(expr_has_cap_intrinsic),
             Expr::Closure { body, .. } => expr_has_cap_intrinsic(body),
             Expr::TryCatch {
                 try_expr,
@@ -1408,6 +1422,17 @@ fn analyze_expr_call_tokens(
                 analyze_expr_call_tokens(
                     function_name,
                     Some(value),
+                    local_types,
+                    requirement_map,
+                    violations,
+                );
+            }
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                analyze_expr_call_tokens(
+                    function_name,
+                    Some(item),
                     local_types,
                     requirement_map,
                     violations,
@@ -1930,6 +1955,7 @@ fn expr_has_await(expr: &Expr) -> bool {
         Expr::FieldAccess { base, .. } => expr_has_await(base),
         Expr::StructInit { fields, .. } => fields.iter().any(|(_, value)| expr_has_await(value)),
         Expr::EnumInit { payload, .. } => payload.iter().any(expr_has_await),
+        Expr::Tuple(items) => items.iter().any(expr_has_await),
         Expr::Closure { body, .. } => expr_has_await(body),
         Expr::Group(inner) => expr_has_await(inner),
         Expr::TryCatch {
@@ -2478,6 +2504,17 @@ fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String>
                     analyze_expr(
                         function_name,
                         value,
+                        in_unsafe_context,
+                        unsafe_functions,
+                        violations,
+                    );
+                }
+            }
+            Expr::Tuple(items) => {
+                for item in items {
+                    analyze_expr(
+                        function_name,
+                        item,
                         in_unsafe_context,
                         unsafe_functions,
                         violations,
@@ -3213,6 +3250,7 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
         Expr::EnumInit { payload, .. } => {
             payload.iter().any(|value| expr_uses_ident(value, target))
         }
+        Expr::Tuple(items) => items.iter().any(|value| expr_uses_ident(value, target)),
         Expr::Closure { params, body, .. } => {
             if params.iter().any(|param| param.name == target) {
                 false
@@ -3726,6 +3764,11 @@ fn collect_expr_idents(expr: &Expr, out: &mut Vec<String>) {
         Expr::EnumInit { payload, .. } => {
             for value in payload {
                 collect_expr_idents(value, out);
+            }
+        }
+        Expr::Tuple(items) => {
+            for item in items {
+                collect_expr_idents(item, out);
             }
         }
         Expr::Closure { params, body, .. } => {
@@ -4663,6 +4706,19 @@ fn collect_unsafe_contract_sites_from_expr(
                 );
             }
         }
+        Expr::Tuple(items) => {
+            for item in items {
+                collect_unsafe_contract_sites_from_expr(
+                    item,
+                    function_name,
+                    in_unsafe_context,
+                    in_async_context,
+                    owner,
+                    unsafe_functions,
+                    out,
+                );
+            }
+        }
         Expr::Closure { body, .. } => collect_unsafe_contract_sites_from_expr(
             body,
             function_name,
@@ -5129,6 +5185,7 @@ fn deferred_resource(expr: &ast::Expr) -> Option<String> {
             .iter()
             .find_map(|(_, value)| deferred_resource(value)),
         ast::Expr::EnumInit { payload, .. } => payload.iter().find_map(deferred_resource),
+        ast::Expr::Tuple(items) => items.iter().find_map(deferred_resource),
         ast::Expr::Closure { body, .. } => deferred_resource(body),
         ast::Expr::Await(inner) => deferred_resource(inner),
         ast::Expr::Discard(inner) => deferred_resource(inner),
@@ -5272,6 +5329,7 @@ struct TypeCheckState<'a> {
 fn type_check_stmt(
     stmt: &Stmt,
     scopes: &mut SymbolScopes,
+    local_types: &mut BTreeMap<String, Type>,
     env: &TypeCheckEnv<'_>,
     loop_depth: usize,
     expected_return: &Type,
@@ -5316,6 +5374,7 @@ fn type_check_stmt(
                 }
             };
             scopes.insert(name.clone(), final_ty, *mutable);
+            local_types.insert(name.clone(), scopes.get(name).unwrap_or(Type::Void));
         }
         Stmt::LetPattern {
             pattern,
@@ -5368,6 +5427,11 @@ fn type_check_stmt(
                 state.errors,
                 state.type_error_details,
             );
+            for (name, bound_ty) in
+                pattern_binding_type_map(pattern, &final_ty, struct_defs, enum_defs)
+            {
+                local_types.insert(name, bound_ty);
+            }
         }
         Stmt::Assign { target, value } => {
             let target_mutable = scopes.is_mutable(target)
@@ -5444,12 +5508,28 @@ fn type_check_stmt(
             }
             scopes.push();
             for stmt in then_body {
-                type_check_stmt(stmt, scopes, env, loop_depth, expected_return, state);
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    local_types,
+                    env,
+                    loop_depth,
+                    expected_return,
+                    state,
+                );
             }
             scopes.pop();
             scopes.push();
             for stmt in else_body {
-                type_check_stmt(stmt, scopes, env, loop_depth, expected_return, state);
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    local_types,
+                    env,
+                    loop_depth,
+                    expected_return,
+                    state,
+                );
             }
             scopes.pop();
         }
@@ -5468,7 +5548,15 @@ fn type_check_stmt(
             }
             scopes.push();
             for stmt in body {
-                type_check_stmt(stmt, scopes, env, loop_depth + 1, expected_return, state);
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    local_types,
+                    env,
+                    loop_depth + 1,
+                    expected_return,
+                    state,
+                );
             }
             scopes.pop();
         }
@@ -5480,7 +5568,15 @@ fn type_check_stmt(
         } => {
             scopes.push();
             if let Some(init) = init {
-                type_check_stmt(init, scopes, env, loop_depth + 1, expected_return, state);
+                type_check_stmt(
+                    init,
+                    scopes,
+                    local_types,
+                    env,
+                    loop_depth + 1,
+                    expected_return,
+                    state,
+                );
             }
             if let Some(condition) = condition {
                 let cond_ty = infer_expr_type(condition, scopes, env, state);
@@ -5497,10 +5593,26 @@ fn type_check_stmt(
                 }
             }
             for stmt in body {
-                type_check_stmt(stmt, scopes, env, loop_depth + 1, expected_return, state);
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    local_types,
+                    env,
+                    loop_depth + 1,
+                    expected_return,
+                    state,
+                );
             }
             if let Some(step) = step {
-                type_check_stmt(step, scopes, env, loop_depth + 1, expected_return, state);
+                type_check_stmt(
+                    step,
+                    scopes,
+                    local_types,
+                    env,
+                    loop_depth + 1,
+                    expected_return,
+                    state,
+                );
             }
             scopes.pop();
         }
@@ -5535,15 +5647,32 @@ fn type_check_stmt(
             };
             scopes.push();
             scopes.insert(binding.clone(), binding_ty, false);
+            local_types.insert(binding.clone(), scopes.get(binding).unwrap_or(Type::Void));
             for stmt in body {
-                type_check_stmt(stmt, scopes, env, loop_depth + 1, expected_return, state);
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    local_types,
+                    env,
+                    loop_depth + 1,
+                    expected_return,
+                    state,
+                );
             }
             scopes.pop();
         }
         Stmt::Loop { body } => {
             scopes.push();
             for stmt in body {
-                type_check_stmt(stmt, scopes, env, loop_depth + 1, expected_return, state);
+                type_check_stmt(
+                    stmt,
+                    scopes,
+                    local_types,
+                    env,
+                    loop_depth + 1,
+                    expected_return,
+                    state,
+                );
             }
             scopes.pop();
         }
@@ -5684,7 +5813,10 @@ fn pattern_covers_variant(
         ast::Pattern::Or(patterns) => patterns
             .iter()
             .any(|pattern| pattern_covers_variant(pattern, enum_name, covered)),
-        ast::Pattern::Int(_) | ast::Pattern::Bool(_) | ast::Pattern::Struct { .. } => false,
+        ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_)
+        | ast::Pattern::Tuple(_)
+        | ast::Pattern::Struct { .. } => false,
     }
 }
 
@@ -5871,6 +6003,11 @@ fn infer_expr_type(
             })
         }
         Expr::Group(inner) => infer_expr_type(inner, scopes, env, state),
+        Expr::Tuple(items) => Some(Type::Tuple(
+            items.iter()
+                .map(|item| infer_expr_type(item, scopes, env, state).unwrap_or(Type::Never))
+                .collect(),
+        )),
         Expr::Await(inner) => match infer_expr_type(inner, scopes, env, state) {
             Some(Type::Future(value)) => Some(*value),
             Some(other) => {
@@ -6575,8 +6712,17 @@ fn infer_expr_type(
             }
             let mut loop_scopes = scopes.clone();
             loop_scopes.push();
+            let mut loop_local_types = BTreeMap::new();
             for stmt in body {
-                type_check_stmt(stmt, &mut loop_scopes, env, 1, &Type::Void, state);
+                type_check_stmt(
+                    stmt,
+                    &mut loop_scopes,
+                    &mut loop_local_types,
+                    env,
+                    1,
+                    &Type::Void,
+                    state,
+                );
             }
             Some(Type::Void)
         }
@@ -6588,8 +6734,17 @@ fn infer_expr_type(
         } => {
             let mut loop_scopes = scopes.clone();
             loop_scopes.push();
+            let mut loop_local_types = BTreeMap::new();
             if let Some(init) = init {
-                type_check_stmt(init, &mut loop_scopes, env, 1, &Type::Void, state);
+                type_check_stmt(
+                    init,
+                    &mut loop_scopes,
+                    &mut loop_local_types,
+                    env,
+                    1,
+                    &Type::Void,
+                    state,
+                );
             }
             if let Some(condition) = condition {
                 let cond_ty = infer_expr_type(condition, &loop_scopes, env, state);
@@ -6606,10 +6761,26 @@ fn infer_expr_type(
                 }
             }
             for stmt in body {
-                type_check_stmt(stmt, &mut loop_scopes, env, 1, &Type::Void, state);
+                type_check_stmt(
+                    stmt,
+                    &mut loop_scopes,
+                    &mut loop_local_types,
+                    env,
+                    1,
+                    &Type::Void,
+                    state,
+                );
             }
             if let Some(step) = step {
-                type_check_stmt(step, &mut loop_scopes, env, 1, &Type::Void, state);
+                type_check_stmt(
+                    step,
+                    &mut loop_scopes,
+                    &mut loop_local_types,
+                    env,
+                    1,
+                    &Type::Void,
+                    state,
+                );
             }
             Some(Type::Void)
         }
@@ -6642,16 +6813,34 @@ fn infer_expr_type(
             let mut loop_scopes = scopes.clone();
             loop_scopes.push();
             loop_scopes.insert(binding.clone(), binding_ty, false);
+            let mut loop_local_types = BTreeMap::new();
             for stmt in body {
-                type_check_stmt(stmt, &mut loop_scopes, env, 1, &Type::Void, state);
+                type_check_stmt(
+                    stmt,
+                    &mut loop_scopes,
+                    &mut loop_local_types,
+                    env,
+                    1,
+                    &Type::Void,
+                    state,
+                );
             }
             Some(Type::Void)
         }
         Expr::Loop { body } => {
             let mut loop_scopes = scopes.clone();
             loop_scopes.push();
+            let mut loop_local_types = BTreeMap::new();
             for stmt in body {
-                type_check_stmt(stmt, &mut loop_scopes, env, 1, &Type::Void, state);
+                type_check_stmt(
+                    stmt,
+                    &mut loop_scopes,
+                    &mut loop_local_types,
+                    env,
+                    1,
+                    &Type::Void,
+                    state,
+                );
             }
             Some(Type::Void)
         }
@@ -7350,7 +7539,9 @@ fn collect_and_rewrite_explicit_generic_calls(
                     rewrite_expr(value, templates, depth, queue, rewrite);
                 }
             }
-            Expr::EnumInit { payload, .. } | Expr::ArrayLiteral(payload) => {
+            Expr::EnumInit { payload, .. }
+            | Expr::Tuple(payload)
+            | Expr::ArrayLiteral(payload) => {
                 for value in payload {
                     rewrite_expr(value, templates, depth, queue, rewrite);
                 }
@@ -7559,7 +7750,9 @@ fn rewrite_generic_calls_in_stmts(stmts: &mut [Stmt], rewrite: &HashMap<String, 
                     rewrite_expr(value, rewrite);
                 }
             }
-            Expr::EnumInit { payload, .. } | Expr::ArrayLiteral(payload) => {
+            Expr::EnumInit { payload, .. }
+            | Expr::Tuple(payload)
+            | Expr::ArrayLiteral(payload) => {
                 for value in payload {
                     rewrite_expr(value, rewrite);
                 }
@@ -7740,7 +7933,9 @@ fn substitute_typevars_in_stmts(stmts: &mut [Stmt], bindings: &BTreeMap<String, 
                     substitute_expr(value, bindings);
                 }
             }
-            Expr::EnumInit { payload, .. } | Expr::ArrayLiteral(payload) => {
+            Expr::EnumInit { payload, .. }
+            | Expr::Tuple(payload)
+            | Expr::ArrayLiteral(payload) => {
                 for value in payload {
                     substitute_expr(value, bindings);
                 }
@@ -8601,7 +8796,7 @@ fn runtime_default_value(ty: &Type) -> Option<Value> {
             for item in items {
                 values.push(runtime_default_value(item)?);
             }
-            Some(Value::List(values))
+            Some(Value::Tuple(values))
         }
         Type::Named { name, args } if args.is_empty() && is_runtime_handle(name) => {
             Some(Value::I32(0))
@@ -8625,6 +8820,30 @@ fn check_pattern_compatibility(
         (ast::Pattern::Int(_), Some(ty)) if is_integer_type(ty) => {}
         (ast::Pattern::Bool(_), Some(Type::Bool)) => {}
         (ast::Pattern::Wildcard, _) | (ast::Pattern::Ident(_), _) => {}
+        (ast::Pattern::Tuple(items), Some(Type::Tuple(scrutinee_items))) => {
+            if items.len() != scrutinee_items.len() {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!(
+                        "tuple pattern arity mismatch: expected {}, got {}",
+                        scrutinee_items.len(),
+                        items.len()
+                    ),
+                );
+                return;
+            }
+            for (pattern_item, ty_item) in items.iter().zip(scrutinee_items.iter()) {
+                check_pattern_compatibility(
+                    pattern_item,
+                    Some(ty_item),
+                    struct_defs,
+                    enum_defs,
+                    errors,
+                    type_error_details,
+                );
+            }
+        }
         (
             ast::Pattern::Struct { name, fields },
             Some(Type::Named {
@@ -8750,6 +8969,16 @@ fn check_pattern_compatibility(
                 "pattern `{name} {{ ... }}` could not be validated because scrutinee type is unknown"
             ),
         ),
+        (ast::Pattern::Tuple(_), Some(actual)) => record_type_error(
+            errors,
+            type_error_details,
+            format!("tuple pattern expects tuple scrutinee, got `{actual}`"),
+        ),
+        (ast::Pattern::Tuple(_), None) => record_type_error(
+            errors,
+            type_error_details,
+            "tuple pattern could not be validated because scrutinee type is unknown".to_string(),
+        ),
         (ast::Pattern::Or(patterns), ty) => {
             for pattern in patterns {
                 check_pattern_compatibility(
@@ -8793,6 +9022,35 @@ fn bind_pattern_types(
     match pattern {
         ast::Pattern::Ident(name) => {
             scopes.insert(name.clone(), scrutinee_ty.clone(), mutable);
+        }
+        ast::Pattern::Tuple(items) => {
+            let Type::Tuple(scrutinee_items) = scrutinee_ty else {
+                return;
+            };
+            if items.len() != scrutinee_items.len() {
+                record_type_error(
+                    errors,
+                    type_error_details,
+                    format!(
+                        "tuple pattern arity mismatch: expected {}, got {}",
+                        scrutinee_items.len(),
+                        items.len()
+                    ),
+                );
+                return;
+            }
+            for (pattern_item, ty_item) in items.iter().zip(scrutinee_items.iter()) {
+                bind_pattern_types(
+                    pattern_item,
+                    ty_item,
+                    mutable,
+                    scopes,
+                    struct_defs,
+                    enum_defs,
+                    errors,
+                    type_error_details,
+                );
+            }
         }
         ast::Pattern::Struct { name, fields } => {
             let Type::Named {
@@ -8966,6 +9224,24 @@ fn pattern_binding_type_map(
         ast::Pattern::Ident(name) => {
             let mut map = BTreeMap::new();
             map.insert(name.clone(), scrutinee_ty.clone());
+            map
+        }
+        ast::Pattern::Tuple(items) => {
+            let Type::Tuple(scrutinee_items) = scrutinee_ty else {
+                return BTreeMap::new();
+            };
+            if items.len() != scrutinee_items.len() {
+                return BTreeMap::new();
+            }
+            let mut map = BTreeMap::new();
+            for (pattern_item, ty_item) in items.iter().zip(scrutinee_items.iter()) {
+                map.extend(pattern_binding_type_map(
+                    pattern_item,
+                    ty_item,
+                    struct_defs,
+                    enum_defs,
+                ));
+            }
             map
         }
         ast::Pattern::Struct { name, fields } => {
@@ -9225,6 +9501,7 @@ fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
         Value::Str(_) => None,
         Value::FnRef(_)
         | Value::Closure(_)
+        | Value::Tuple(_)
         | Value::List(_)
         | Value::Struct { .. }
         | Value::Enum { .. } => None,
@@ -9605,6 +9882,13 @@ fn eval_expr<'a>(
             captures: env.clone(),
         })),
         Expr::Group(inner) => eval_expr(inner, env, functions),
+        Expr::Tuple(items) => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(eval_expr(item, env, functions)?);
+            }
+            Some(Value::Tuple(values))
+        }
         Expr::Await(inner) => eval_expr(inner, env, functions),
         Expr::Discard(inner) => {
             let _ = eval_expr(inner, env, functions)?;
@@ -10005,6 +10289,7 @@ fn truthy(v: &Value) -> bool {
         Value::F64(v) => *v != 0.0,
         Value::Char(v) => *v != '\0',
         Value::Str(v) => !v.is_empty(),
+        Value::Tuple(v) => !v.is_empty(),
         Value::List(v) => !v.is_empty(),
         Value::FnRef(_) | Value::Closure(_) | Value::Struct { .. } | Value::Enum { .. } => true,
     }
@@ -10021,6 +10306,17 @@ fn bind_pattern_values(
         (ast::Pattern::Bool(a), Value::Bool(b)) => a == b,
         (ast::Pattern::Ident(name), value) => {
             bindings.insert(name.clone(), value.clone());
+            true
+        }
+        (ast::Pattern::Tuple(pattern_items), Value::Tuple(value_items)) => {
+            if pattern_items.len() != value_items.len() {
+                return false;
+            }
+            for (pattern_item, value_item) in pattern_items.iter().zip(value_items.iter()) {
+                if !bind_pattern_values(pattern_item, value_item, bindings) {
+                    return false;
+                }
+            }
             true
         }
         (
@@ -10089,6 +10385,7 @@ fn bind_pattern_values(
         }
         (ast::Pattern::Variant { .. }, _) => false,
         (ast::Pattern::Struct { .. }, _) => false,
+        (ast::Pattern::Tuple(_), _) => false,
         (ast::Pattern::Or(patterns), value) => {
             for candidate in patterns {
                 let mut local = bindings.clone();
@@ -10109,6 +10406,7 @@ fn pattern_is_catchall(pattern: &ast::Pattern) -> bool {
         ast::Pattern::Or(patterns) => patterns.iter().any(pattern_is_catchall),
         ast::Pattern::Int(_)
         | ast::Pattern::Bool(_)
+        | ast::Pattern::Tuple(_)
         | ast::Pattern::Struct { .. }
         | ast::Pattern::Variant { .. } => false,
     }
@@ -10118,6 +10416,11 @@ fn collect_pattern_bindings(pattern: &ast::Pattern, out: &mut BTreeSet<String>) 
     match pattern {
         ast::Pattern::Ident(name) => {
             out.insert(name.clone());
+        }
+        ast::Pattern::Tuple(items) => {
+            for item in items {
+                collect_pattern_bindings(item, out);
+            }
         }
         ast::Pattern::Struct { fields, .. } => {
             for (_, binding) in fields {
@@ -10164,6 +10467,7 @@ fn eval_bool_expr(
         Value::F64(v) => Some(v != 0.0),
         Value::Char(v) => Some(v != '\0'),
         Value::Str(v) => Some(!v.is_empty()),
+        Value::Tuple(v) => Some(!v.is_empty()),
         Value::List(v) => Some(!v.is_empty()),
         Value::FnRef(_) | Value::Closure(_) | Value::Struct { .. } | Value::Enum { .. } => {
             Some(true)

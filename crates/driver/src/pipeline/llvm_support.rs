@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeMap;
 
 #[derive(Clone)]
 pub(super) struct LlvmClosureBinding {
@@ -36,6 +37,17 @@ pub(super) struct LlvmFunctionSig {
     pub(super) ret: Option<String>,
 }
 
+#[derive(Clone)]
+pub(super) struct LlvmAggregateItemBinding {
+    pub(super) index: usize,
+    pub(super) ty: String,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct LlvmAggregateBinding {
+    pub(super) items: HashMap<String, LlvmAggregateItemBinding>,
+}
+
 pub(super) struct LlvmFuncCtx {
     pub(super) next_value: usize,
     pub(super) next_label: usize,
@@ -44,6 +56,7 @@ pub(super) struct LlvmFuncCtx {
     pub(super) array_slots: HashMap<String, LlvmArrayBinding>,
     pub(super) const_strings: HashMap<String, String>,
     pub(super) direct_values: HashMap<String, LlvmValue>,
+    pub(super) aggregate_bindings: HashMap<String, LlvmAggregateBinding>,
     pub(super) wrapped_indices: HashMap<String, HashSet<usize>>,
     pub(super) extern_link_symbols: HashMap<String, String>,
     pub(super) closures: HashMap<String, LlvmClosureBinding>,
@@ -51,6 +64,9 @@ pub(super) struct LlvmFuncCtx {
     pub(super) globals: HashMap<String, i32>,
     pub(super) variant_tags: HashMap<String, i32>,
     pub(super) mutable_globals: HashMap<String, String>,
+    pub(super) local_types: BTreeMap<String, ast::Type>,
+    pub(super) struct_defs: HashMap<String, ast::Struct>,
+    pub(super) enum_defs: HashMap<String, ast::Enum>,
     pub(super) alloca_prologue: String,
     pub(super) declared_allocas: HashSet<String>,
     pub(super) code: String,
@@ -61,6 +77,9 @@ impl LlvmFuncCtx {
         globals: HashMap<String, i32>,
         variant_tags: HashMap<String, i32>,
         mutable_globals: HashMap<String, String>,
+        local_types: BTreeMap<String, ast::Type>,
+        struct_defs: HashMap<String, ast::Struct>,
+        enum_defs: HashMap<String, ast::Enum>,
         wrapped_indices: HashMap<String, HashSet<usize>>,
         extern_link_symbols: HashMap<String, String>,
         function_sigs: HashMap<String, LlvmFunctionSig>,
@@ -73,6 +92,7 @@ impl LlvmFuncCtx {
             array_slots: HashMap::new(),
             const_strings: HashMap::new(),
             direct_values: HashMap::new(),
+            aggregate_bindings: HashMap::new(),
             wrapped_indices,
             extern_link_symbols,
             closures: HashMap::new(),
@@ -80,6 +100,9 @@ impl LlvmFuncCtx {
             globals,
             variant_tags,
             mutable_globals,
+            local_types,
+            struct_defs,
+            enum_defs,
             alloca_prologue: String::new(),
             declared_allocas: HashSet::new(),
             code: String::new(),
@@ -103,6 +126,244 @@ impl LlvmFuncCtx {
             self.alloca_prologue
                 .push_str(&format!("  {slot} = alloca {ty}\n"));
         }
+    }
+}
+
+fn llvm_cast_scalar_to_i64(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> LlvmValue {
+    match value.ty.as_str() {
+        "i64" => value,
+        "i32" | "i8" | "i1" => {
+            let out = ctx.value();
+            ctx.code
+                .push_str(&format!("  {out} = zext {} {} to i64\n", value.ty, value.value));
+            LlvmValue {
+                value: out,
+                ty: "i64".to_string(),
+            }
+        }
+        _ => value,
+    }
+}
+
+fn llvm_cast_i64_to_ty(ctx: &mut LlvmFuncCtx, raw_value: String, target_ty: &str) -> LlvmValue {
+    match target_ty {
+        "i64" => LlvmValue {
+            value: raw_value,
+            ty: "i64".to_string(),
+        },
+        "i32" | "i8" | "i1" => {
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = trunc i64 {raw_value} to {target_ty}\n"
+            ));
+            LlvmValue {
+                value: out,
+                ty: target_ty.to_string(),
+            }
+        }
+        _ => LlvmValue {
+            value: raw_value,
+            ty: "i64".to_string(),
+        },
+    }
+}
+
+fn llvm_emit_aggregate_get(
+    ctx: &mut LlvmFuncCtx,
+    handle: &LlvmValue,
+    index: usize,
+    target_ty: &str,
+) -> LlvmValue {
+    let raw = ctx.value();
+    ctx.code.push_str(&format!(
+        "  {raw} = call i64 @{}(i64 {}, i32 {index})\n",
+        NATIVE_AGG_GET_I64_SYMBOL, handle.value
+    ));
+    llvm_cast_i64_to_ty(ctx, raw, target_ty)
+}
+
+fn llvm_record_aggregate_binding(
+    name: &str,
+    value: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<()> {
+    let mut binding = LlvmAggregateBinding::default();
+    match value {
+        ast::Expr::StructInit { fields, .. } => {
+            for (index, (field, field_expr)) in fields.iter().enumerate() {
+                let field_value =
+                    llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
+                binding.items.insert(
+                    field.clone(),
+                    LlvmAggregateItemBinding {
+                        index,
+                        ty: field_value.ty,
+                    },
+                );
+            }
+        }
+        ast::Expr::Tuple(items) => {
+            for (index, item_expr) in items.iter().enumerate() {
+                let item_value =
+                    llvm_emit_expr(item_expr, ctx, string_literal_ids, task_ref_ids)?;
+                binding.items.insert(
+                    format!("__tuple{index}"),
+                    LlvmAggregateItemBinding {
+                        index,
+                        ty: item_value.ty,
+                    },
+                );
+            }
+        }
+        ast::Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for (index, payload_expr) in payload.iter().enumerate() {
+                let payload_value =
+                    llvm_emit_expr(payload_expr, ctx, string_literal_ids, task_ref_ids)?;
+                binding.items.insert(
+                    format!("__payload{index}"),
+                    LlvmAggregateItemBinding {
+                        index,
+                        ty: payload_value.ty,
+                    },
+                );
+            }
+            for (offset, (field, field_expr)) in named_payload.iter().enumerate() {
+                let field_value =
+                    llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
+                binding.items.insert(
+                    field.clone(),
+                    LlvmAggregateItemBinding {
+                        index: payload.len() + offset,
+                        ty: field_value.ty,
+                    },
+                );
+            }
+        }
+        _ => return Ok(()),
+    }
+    ctx.aggregate_bindings.insert(name.to_string(), binding);
+    Ok(())
+}
+
+fn llvm_tuple_item_binding_for_local(
+    name: &str,
+    index: usize,
+    ctx: &LlvmFuncCtx,
+) -> Option<LlvmAggregateItemBinding> {
+    let ast::Type::Tuple(items) = ctx.local_types.get(name)? else {
+        return None;
+    };
+    let item_ty = items.get(index)?;
+    Some(LlvmAggregateItemBinding {
+        index,
+        ty: llvm_ir_type_for_ast_type(item_ty),
+    })
+}
+
+fn llvm_struct_field_binding_for_local(
+    name: &str,
+    field: &str,
+    ctx: &LlvmFuncCtx,
+) -> Option<LlvmAggregateItemBinding> {
+    let ast::Type::Named { name: ty_name, .. } = ctx.local_types.get(name)? else {
+        return None;
+    };
+    let struct_def = ctx.struct_defs.get(ty_name.as_str())?;
+    let (index, struct_field) = struct_def
+        .fields
+        .iter()
+        .enumerate()
+        .find(|(_, item)| item.name == field)?;
+    Some(LlvmAggregateItemBinding {
+        index,
+        ty: llvm_ir_type_for_ast_type(&struct_field.ty),
+    })
+}
+
+fn llvm_enum_payload_binding_for_local(
+    name: &str,
+    enum_name: &str,
+    variant: &str,
+    index: usize,
+    ctx: &LlvmFuncCtx,
+) -> Option<LlvmAggregateItemBinding> {
+    let ast::Type::Named { name: ty_name, .. } = ctx.local_types.get(name)? else {
+        return None;
+    };
+    if ty_name != enum_name {
+        return None;
+    }
+    let enum_def = ctx.enum_defs.get(enum_name)?;
+    let variant_def = enum_def.variants.iter().find(|item| item.name == variant)?;
+    let payload_ty = variant_def.payload.get(index)?;
+    Some(LlvmAggregateItemBinding {
+        index,
+        ty: llvm_ir_type_for_ast_type(payload_ty),
+    })
+}
+
+fn llvm_enum_named_binding_for_local(
+    name: &str,
+    enum_name: &str,
+    variant: &str,
+    field: &str,
+    ctx: &LlvmFuncCtx,
+) -> Option<LlvmAggregateItemBinding> {
+    let ast::Type::Named { name: ty_name, .. } = ctx.local_types.get(name)? else {
+        return None;
+    };
+    if ty_name != enum_name {
+        return None;
+    }
+    let enum_def = ctx.enum_defs.get(enum_name)?;
+    let variant_def = enum_def.variants.iter().find(|item| item.name == variant)?;
+    let (offset, named_field) = variant_def
+        .named_payload
+        .iter()
+        .enumerate()
+        .find(|(_, item)| item.name == field)?;
+    Some(LlvmAggregateItemBinding {
+        index: variant_def.payload.len() + offset,
+        ty: llvm_ir_type_for_ast_type(&named_field.ty),
+    })
+}
+
+fn llvm_local_is_aggregate(name: &str, ctx: &LlvmFuncCtx) -> bool {
+    matches!(
+        ctx.local_types.get(name),
+        Some(ast::Type::Tuple(_)) | Some(ast::Type::Named { .. })
+    )
+}
+
+fn llvm_emit_aggregate_handle(
+    tag: i32,
+    items: &[LlvmValue],
+    ctx: &mut LlvmFuncCtx,
+) -> LlvmValue {
+    let handle = ctx.value();
+    ctx.code.push_str(&format!(
+        "  {handle} = call i64 @{}(i32 {tag}, i32 {})\n",
+        NATIVE_AGG_NEW_SYMBOL,
+        items.len()
+    ));
+    for (index, item) in items.iter().cloned().enumerate() {
+        let raw = llvm_cast_scalar_to_i64(ctx, item);
+        let status = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {status} = call i32 @{}(i64 {handle}, i32 {index}, i64 {})\n",
+            NATIVE_AGG_SET_I64_SYMBOL,
+            raw.value
+        ));
+    }
+    LlvmValue {
+        value: handle,
+        ty: "i64".to_string(),
     }
 }
 
@@ -318,6 +579,61 @@ pub(super) fn llvm_emit_let_pattern(
             ctx.slots.insert(name.clone(), slot);
             ctx.slot_tys.insert(name.clone(), rendered.ty.clone());
         }
+        ast::Pattern::Tuple(items) => {
+            if let ast::Expr::Tuple(values) = value {
+                if items.len() != values.len() {
+                    bail!("native backend requires tuple pattern arity to match tuple initializer arity");
+                }
+                for (item, value) in items.iter().zip(values.iter()) {
+                    llvm_emit_let_pattern(item, value, ctx, string_literal_ids, task_ref_ids)?;
+                }
+            } else if let ast::Expr::Ident(name) = value {
+                for (index, item) in items.iter().enumerate() {
+                    let synthetic = format!("{name}.__tuple{index}");
+                    if ctx.slots.contains_key(&synthetic) {
+                        llvm_emit_let_pattern(
+                            item,
+                            &ast::Expr::Ident(synthetic),
+                            ctx,
+                            string_literal_ids,
+                            task_ref_ids,
+                        )?;
+                    } else {
+                        let item_binding = ctx
+                            .aggregate_bindings
+                            .get(name)
+                            .and_then(|binding| binding.items.get(&format!("__tuple{index}")).cloned())
+                            .or_else(|| llvm_tuple_item_binding_for_local(name, index, ctx))
+                            .ok_or_else(|| anyhow!("native backend requires tuple-bound aggregate metadata for `let` tuple destructuring"))?;
+                        let handle = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                        let extracted = llvm_emit_aggregate_get(
+                            ctx,
+                            &handle,
+                            item_binding.index,
+                            &item_binding.ty,
+                        );
+                        let temp_name = format!("__agg_tuple_extract_{}_{}", name, index);
+                        let slot = format!("%slot_{}_{}", native_mangle_symbol(&temp_name), ctx.next_value);
+                        ctx.declare_alloca(&slot, &extracted.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {slot}\n",
+                            extracted.ty, extracted.value
+                        ));
+                        ctx.slots.insert(temp_name.clone(), slot);
+                        ctx.slot_tys.insert(temp_name.clone(), extracted.ty.clone());
+                        llvm_emit_let_pattern(
+                            item,
+                            &ast::Expr::Ident(temp_name),
+                            ctx,
+                            string_literal_ids,
+                            task_ref_ids,
+                        )?;
+                    }
+                }
+            } else {
+                bail!("native backend requires tuple initializer or tuple-bound local for `let` tuple destructuring");
+            }
+        }
         ast::Pattern::Int(expected) => {
             let cmp = ctx.value();
             ctx.code.push_str(&format!(
@@ -334,61 +650,109 @@ pub(super) fn llvm_emit_let_pattern(
             ));
         }
         ast::Pattern::Struct { name, fields } => {
-            let ast::Expr::StructInit {
+            if let ast::Expr::StructInit {
                 name: value_name,
                 fields: value_fields,
             } = value
-            else {
-                bail!("native backend requires literal struct initializer for `let` struct destructuring");
-            };
-            if value_name != name {
-                bail!(
-                    "native backend requires exact literal struct type match for `let` struct destructuring"
-                );
-            }
-            for (field_name, binding_name) in fields {
-                if binding_name == "_" {
-                    continue;
+            {
+                if value_name != name {
+                    bail!(
+                        "native backend requires exact literal struct type match for `let` struct destructuring"
+                    );
                 }
-                let Some((_, field_expr)) =
-                    value_fields.iter().find(|(field, _)| field == field_name)
-                else {
-                    bail!("native backend requires struct literal fields to cover every bound pattern field");
-                };
-                let field_value =
-                    llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
-                let slot = format!(
-                    "%slot_{}_{}",
-                    native_mangle_symbol(binding_name),
-                    ctx.next_value
-                );
-                ctx.declare_alloca(&slot, &field_value.ty);
-                ctx.code.push_str(&format!(
-                    "  store {} {}, ptr {slot}\n",
-                    field_value.ty, field_value.value
-                ));
-                ctx.slots.insert(binding_name.clone(), slot);
-                ctx.slot_tys
-                    .insert(binding_name.clone(), field_value.ty.clone());
+                for (field_name, binding_name) in fields {
+                    if binding_name == "_" {
+                        continue;
+                    }
+                    let Some((_, field_expr)) =
+                        value_fields.iter().find(|(field, _)| field == field_name)
+                    else {
+                        bail!("native backend requires struct literal fields to cover every bound pattern field");
+                    };
+                    let field_value =
+                        llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
+                    let slot = format!(
+                        "%slot_{}_{}",
+                        native_mangle_symbol(binding_name),
+                        ctx.next_value
+                    );
+                    ctx.declare_alloca(&slot, &field_value.ty);
+                    ctx.code.push_str(&format!(
+                        "  store {} {}, ptr {slot}\n",
+                        field_value.ty, field_value.value
+                    ));
+                    ctx.slots.insert(binding_name.clone(), slot);
+                    ctx.slot_tys
+                        .insert(binding_name.clone(), field_value.ty.clone());
+                }
+            } else if let ast::Expr::Ident(name) = value {
+                for (field_name, binding_name) in fields {
+                    if binding_name == "_" {
+                        continue;
+                    }
+                    if let Some(slot) = ctx.slots.get(&format!("{name}.{field_name}")).cloned() {
+                        let ty = ctx
+                            .slot_tys
+                            .get(&format!("{name}.{field_name}"))
+                            .cloned()
+                            .unwrap_or_else(|| "i32".to_string());
+                        ctx.slots.insert(binding_name.clone(), slot);
+                        ctx.slot_tys.insert(binding_name.clone(), ty);
+                    } else {
+                        let item_binding = ctx
+                            .aggregate_bindings
+                            .get(name)
+                            .and_then(|binding| binding.items.get(field_name).cloned())
+                            .or_else(|| llvm_struct_field_binding_for_local(name, field_name, ctx))
+                            .ok_or_else(|| anyhow!("native backend requires struct-bound aggregate metadata for `let` struct destructuring"))?;
+                        let handle = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                        let extracted = llvm_emit_aggregate_get(
+                            ctx,
+                            &handle,
+                            item_binding.index,
+                            &item_binding.ty,
+                        );
+                        let slot = format!("%slot_{}_{}", native_mangle_symbol(binding_name), ctx.next_value);
+                        ctx.declare_alloca(&slot, &extracted.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {slot}\n",
+                            extracted.ty, extracted.value
+                        ));
+                        ctx.slots.insert(binding_name.clone(), slot);
+                        ctx.slot_tys.insert(binding_name.clone(), extracted.ty);
+                    }
+                }
+            } else {
+                bail!("native backend requires struct initializer or struct-bound local for `let` struct destructuring");
             }
         }
         ast::Pattern::Variant {
             enum_name,
             variant,
             bindings,
-            ..
+            named_bindings,
         } => {
             let key = format!("{enum_name}::{variant}");
             let tag = variant_tag_for_key(&key, &ctx.variant_tags);
+            let (cmp_ty, cmp_value) = if rendered.ty == "i64" {
+                let tag_value = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {tag_value} = call i32 @{}(i64 {})\n",
+                    NATIVE_AGG_TAG_SYMBOL, rendered.value
+                ));
+                ("i32".to_string(), tag_value)
+            } else {
+                (rendered.ty.clone(), rendered.value.clone())
+            };
             let cmp = ctx.value();
             ctx.code.push_str(&format!(
-                "  {cmp} = icmp eq {} {}, {tag}\n",
-                rendered.ty, rendered.value
+                "  {cmp} = icmp eq {cmp_ty} {cmp_value}, {tag}\n"
             ));
             if let ast::Expr::EnumInit {
                 enum_name: value_enum,
                 variant: value_variant,
                 payload,
+                named_payload,
                 ..
             } = value
             {
@@ -412,6 +776,119 @@ pub(super) fn llvm_emit_let_pattern(
                         ctx.slots.insert(binding_name.clone(), slot);
                         ctx.slot_tys
                             .insert(binding_name.clone(), payload_value.ty.clone());
+                    }
+                    for (field_name, binding_name) in named_bindings {
+                        if binding_name == "_" {
+                            continue;
+                        }
+                        let Some((_, field_expr)) =
+                            named_payload.iter().find(|(field, _)| field == field_name)
+                        else {
+                            bail!("native backend requires enum literal named payload fields to cover every bound pattern field");
+                        };
+                        let field_value =
+                            llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
+                        let slot = format!(
+                            "%slot_{}_{}",
+                            native_mangle_symbol(binding_name),
+                            ctx.next_value
+                        );
+                        ctx.declare_alloca(&slot, &field_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {slot}\n",
+                            field_value.ty, field_value.value
+                        ));
+                        ctx.slots.insert(binding_name.clone(), slot);
+                        ctx.slot_tys.insert(binding_name.clone(), field_value.ty.clone());
+                    }
+                }
+            } else if let ast::Expr::Ident(name) = value {
+                for (index, binding_name) in bindings.iter().enumerate() {
+                    let key = format!("{name}.__payload{index}");
+                    if let Some(slot) = ctx.slots.get(&key).cloned() {
+                        let ty = ctx
+                            .slot_tys
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or_else(|| "i32".to_string());
+                        ctx.slots.insert(binding_name.clone(), slot);
+                        ctx.slot_tys.insert(binding_name.clone(), ty);
+                    } else {
+                        let payload_key = format!("__payload{index}");
+                        let item_binding = ctx
+                            .aggregate_bindings
+                            .get(name)
+                            .and_then(|binding| binding.items.get(&payload_key).cloned())
+                            .or_else(|| {
+                                llvm_enum_payload_binding_for_local(
+                                    name,
+                                    enum_name,
+                                    variant,
+                                    index,
+                                    ctx,
+                                )
+                            })
+                            .ok_or_else(|| anyhow!("native backend requires enum-bound local payloads for `let` variant destructuring"))?;
+                        let handle = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                        let extracted = llvm_emit_aggregate_get(
+                            ctx,
+                            &handle,
+                            item_binding.index,
+                            &item_binding.ty,
+                        );
+                        let slot = format!("%slot_{}_{}", native_mangle_symbol(binding_name), ctx.next_value);
+                        ctx.declare_alloca(&slot, &extracted.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {slot}\n",
+                            extracted.ty, extracted.value
+                        ));
+                        ctx.slots.insert(binding_name.clone(), slot);
+                        ctx.slot_tys.insert(binding_name.clone(), extracted.ty);
+                    }
+                }
+                for (field_name, binding_name) in named_bindings {
+                    if binding_name == "_" {
+                        continue;
+                    }
+                    let key = format!("{name}.{field_name}");
+                    if let Some(slot) = ctx.slots.get(&key).cloned() {
+                        let ty = ctx
+                            .slot_tys
+                            .get(&key)
+                            .cloned()
+                            .unwrap_or_else(|| "i32".to_string());
+                        ctx.slots.insert(binding_name.clone(), slot);
+                        ctx.slot_tys.insert(binding_name.clone(), ty);
+                    } else {
+                        let item_binding = ctx
+                            .aggregate_bindings
+                            .get(name)
+                            .and_then(|binding| binding.items.get(field_name).cloned())
+                            .or_else(|| {
+                                llvm_enum_named_binding_for_local(
+                                    name,
+                                    enum_name,
+                                    variant,
+                                    field_name,
+                                    ctx,
+                                )
+                            })
+                            .ok_or_else(|| anyhow!("native backend requires enum-bound local named payloads for `let` variant destructuring"))?;
+                        let handle = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                        let extracted = llvm_emit_aggregate_get(
+                            ctx,
+                            &handle,
+                            item_binding.index,
+                            &item_binding.ty,
+                        );
+                        let slot = format!("%slot_{}_{}", native_mangle_symbol(binding_name), ctx.next_value);
+                        ctx.declare_alloca(&slot, &extracted.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {slot}\n",
+                            extracted.ty, extracted.value
+                        ));
+                        ctx.slots.insert(binding_name.clone(), slot);
+                        ctx.slot_tys.insert(binding_name.clone(), extracted.ty);
                     }
                 }
             }
@@ -501,6 +978,12 @@ pub(super) fn llvm_emit_linear_stmts(
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
+                    if let Some(source_ty) = ctx.local_types.get(source).cloned() {
+                        ctx.local_types.insert(name.clone(), source_ty);
+                    }
+                    if let Some(binding) = ctx.aggregate_bindings.get(source).cloned() {
+                        ctx.aggregate_bindings.insert(name.clone(), binding);
+                    }
                     if let Some(source_binding) = ctx.array_slots.get(source).cloned() {
                         ctx.array_slots.insert(name.clone(), source_binding);
                         ctx.direct_values.remove(name);
@@ -540,8 +1023,71 @@ pub(super) fn llvm_emit_linear_stmts(
                 } else {
                     ctx.direct_values.remove(name);
                 }
+                let _ = llvm_record_aggregate_binding(
+                    name,
+                    value,
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                );
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
+                        let field_value =
+                            llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
+                        let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
+                        ctx.declare_alloca(&field_slot, &field_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {field_slot}\n",
+                            field_value.ty, field_value.value
+                        ));
+                        ctx.slots.insert(format!("{name}.{field}"), field_slot);
+                        ctx.slot_tys
+                            .insert(format!("{name}.{field}"), field_value.ty.clone());
+                    }
+                }
+                if let ast::Expr::Tuple(items) = value {
+                    for (index, item_expr) in items.iter().enumerate() {
+                        let item_value =
+                            llvm_emit_expr(item_expr, ctx, string_literal_ids, task_ref_ids)?;
+                        let item_slot =
+                            format!("%slot_{}_tuple_{}_{}", name, index, ctx.next_value);
+                        ctx.declare_alloca(&item_slot, &item_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {item_slot}\n",
+                            item_value.ty, item_value.value
+                        ));
+                        ctx.slots.insert(format!("{name}.__tuple{index}"), item_slot);
+                        ctx.slot_tys.insert(
+                            format!("{name}.__tuple{index}"),
+                            item_value.ty.clone(),
+                        );
+                    }
+                }
+                if let ast::Expr::EnumInit {
+                    enum_name: _,
+                    variant: _,
+                    payload,
+                    named_payload,
+                } = value
+                {
+                    for (index, payload_expr) in payload.iter().enumerate() {
+                        let payload_value =
+                            llvm_emit_expr(payload_expr, ctx, string_literal_ids, task_ref_ids)?;
+                        let payload_slot =
+                            format!("%slot_{}_payload_{}_{}", name, index, ctx.next_value);
+                        ctx.declare_alloca(&payload_slot, &payload_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {payload_slot}\n",
+                            payload_value.ty, payload_value.value
+                        ));
+                        ctx.slots
+                            .insert(format!("{name}.__payload{index}"), payload_slot);
+                        ctx.slot_tys.insert(
+                            format!("{name}.__payload{index}"),
+                            payload_value.ty.clone(),
+                        );
+                    }
+                    for (field, field_expr) in named_payload {
                         let field_value =
                             llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
                         let field_slot = format!("%slot_{}_{}_{}", name, field, ctx.next_value);
@@ -639,6 +1185,12 @@ pub(super) fn llvm_emit_linear_stmts(
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
+                    if let Some(source_ty) = ctx.local_types.get(source).cloned() {
+                        ctx.local_types.insert(target.clone(), source_ty);
+                    }
+                    if let Some(binding) = ctx.aggregate_bindings.get(source).cloned() {
+                        ctx.aggregate_bindings.insert(target.clone(), binding);
+                    }
                     if let Some(source_binding) = ctx.array_slots.get(source).cloned() {
                         ctx.array_slots.insert(target.clone(), source_binding);
                         continue;
@@ -683,11 +1235,75 @@ pub(super) fn llvm_emit_linear_stmts(
                 ctx.slot_tys
                     .insert(target.clone(), rendered_value.ty.clone());
                 ctx.direct_values.remove(target);
+                let _ = llvm_record_aggregate_binding(
+                    target,
+                    value,
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                );
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
                         let field_value =
                             llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
                         let field_slot = format!("%slot_{}_{}_{}", target, field, ctx.next_value);
+                        ctx.declare_alloca(&field_slot, &field_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {field_slot}\n",
+                            field_value.ty, field_value.value
+                        ));
+                        ctx.slots.insert(format!("{target}.{field}"), field_slot);
+                        ctx.slot_tys
+                            .insert(format!("{target}.{field}"), field_value.ty.clone());
+                    }
+                }
+                if let ast::Expr::Tuple(items) = value {
+                    for (index, item_expr) in items.iter().enumerate() {
+                        let item_value =
+                            llvm_emit_expr(item_expr, ctx, string_literal_ids, task_ref_ids)?;
+                        let item_slot =
+                            format!("%slot_{}_tuple_{}_{}", target, index, ctx.next_value);
+                        ctx.declare_alloca(&item_slot, &item_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {item_slot}\n",
+                            item_value.ty, item_value.value
+                        ));
+                        ctx.slots.insert(format!("{target}.__tuple{index}"), item_slot);
+                        ctx.slot_tys.insert(
+                            format!("{target}.__tuple{index}"),
+                            item_value.ty.clone(),
+                        );
+                    }
+                }
+                if let ast::Expr::EnumInit {
+                    enum_name: _,
+                    variant: _,
+                    payload,
+                    named_payload,
+                } = value
+                {
+                    for (index, payload_expr) in payload.iter().enumerate() {
+                        let payload_value =
+                            llvm_emit_expr(payload_expr, ctx, string_literal_ids, task_ref_ids)?;
+                        let payload_slot =
+                            format!("%slot_{}_payload_{}_{}", target, index, ctx.next_value);
+                        ctx.declare_alloca(&payload_slot, &payload_value.ty);
+                        ctx.code.push_str(&format!(
+                            "  store {} {}, ptr {payload_slot}\n",
+                            payload_value.ty, payload_value.value
+                        ));
+                        ctx.slots
+                            .insert(format!("{target}.__payload{index}"), payload_slot);
+                        ctx.slot_tys.insert(
+                            format!("{target}.__payload{index}"),
+                            payload_value.ty.clone(),
+                        );
+                    }
+                    for (field, field_expr) in named_payload {
+                        let field_value =
+                            llvm_emit_expr(field_expr, ctx, string_literal_ids, task_ref_ids)?;
+                        let field_slot =
+                            format!("%slot_{}_{}_{}", target, field, ctx.next_value);
                         ctx.declare_alloca(&field_slot, &field_value.ty);
                         ctx.code.push_str(&format!(
                             "  store {} {}, ptr {field_slot}\n",
@@ -1515,6 +2131,28 @@ pub(super) fn llvm_emit_simple_expr(
                             .push_str(&format!("  {val} = load {ty}, ptr {slot}\n"));
                         return Ok(LlvmValue { value: val, ty });
                     }
+                    if let Some(binding) = ctx.aggregate_bindings.get(name).cloned() {
+                        if let Some(item) = binding.items.get(field) {
+                            let handle =
+                                llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?;
+                            return Ok(llvm_emit_aggregate_get(
+                                ctx,
+                                &handle,
+                                item.index,
+                                &item.ty,
+                            ));
+                        }
+                    }
+                    if let Some(item) = llvm_struct_field_binding_for_local(name, field, ctx) {
+                        let handle =
+                            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?;
+                        return Ok(llvm_emit_aggregate_get(
+                            ctx,
+                            &handle,
+                            item.index,
+                            &item.ty,
+                        ));
+                    }
                 }
                 if let Some(task_ref_name) = expr_task_ref_name(expr) {
                     if let Some(task_ref) = task_ref_ids.get(&task_ref_name).copied() {
@@ -1524,22 +2162,34 @@ pub(super) fn llvm_emit_simple_expr(
                         });
                     }
                 }
-                llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
+                let base_value = llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?;
+                if base_value.ty == "i64" {
+                    let tag_value = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {tag_value} = call i32 @{}(i64 {})\n",
+                        NATIVE_AGG_TAG_SYMBOL, base_value.value
+                    ));
+                    let _ = tag_value;
+                }
+                Ok(base_value)
+            })(),
+        ),
+        ast::Expr::Tuple(items) => Some(
+            (|| {
+                let mut rendered = Vec::with_capacity(items.len());
+                for item in items {
+                    rendered.push(llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids)?);
+                }
+                Ok(llvm_emit_aggregate_handle(0, &rendered, ctx))
             })(),
         ),
         ast::Expr::StructInit { fields, .. } => Some(
             (|| {
-                let mut first = None;
+                let mut rendered = Vec::with_capacity(fields.len());
                 for (_, value) in fields {
-                    let current = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
-                    if first.is_none() {
-                        first = Some(current);
-                    }
+                    rendered.push(llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?);
                 }
-                Ok(first.unwrap_or_else(|| LlvmValue {
-                    value: "0".to_string(),
-                    ty: "i32".to_string(),
-                }))
+                Ok(llvm_emit_aggregate_handle(0, &rendered, ctx))
             })(),
         ),
         ast::Expr::EnumInit {
@@ -1549,17 +2199,16 @@ pub(super) fn llvm_emit_simple_expr(
             named_payload,
         } => Some(
             (|| {
+                let key = format!("{enum_name}::{variant}");
+                let tag = variant_tag_for_key(&key, &ctx.variant_tags);
+                let mut rendered = Vec::with_capacity(payload.len() + named_payload.len());
                 for value in payload {
-                    let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                    rendered.push(llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?);
                 }
                 for (_, value) in named_payload {
-                    let _ = llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?;
+                    rendered.push(llvm_emit_expr(value, ctx, string_literal_ids, task_ref_ids)?);
                 }
-                let key = format!("{enum_name}::{variant}");
-                Ok(LlvmValue {
-                    value: variant_tag_for_key(&key, &ctx.variant_tags).to_string(),
-                    ty: "i32".to_string(),
-                })
+                Ok(llvm_emit_aggregate_handle(tag, &rendered, ctx))
             })(),
         ),
         _ => None,
@@ -1567,6 +2216,11 @@ pub(super) fn llvm_emit_simple_expr(
 }
 
 pub(super) fn llvm_ir_type_for_ast_type(ty: &ast::Type) -> String {
+    let pointer_ty = if std::mem::size_of::<usize>() == 8 {
+        "i64".to_string()
+    } else {
+        "i32".to_string()
+    };
     match ty {
         ast::Type::Void | ast::Type::Never => "void".to_string(),
         ast::Type::Bool => "i8".to_string(),
@@ -1581,6 +2235,7 @@ pub(super) fn llvm_ir_type_for_ast_type(ty: &ast::Type) -> String {
         ast::Type::Float { bits: 32 } => "float".to_string(),
         ast::Type::Float { bits: 64 } => "double".to_string(),
         ast::Type::Char => "i32".to_string(),
+        ast::Type::Tuple(_) | ast::Type::Named { .. } => pointer_ty,
         _ => "i32".to_string(),
     }
 }
@@ -1775,8 +2430,16 @@ pub(super) fn lower_llvm_ir(
         }
         let _ = writeln!(&mut out, "declare i32 @{}({})", import.symbol, params);
     }
+    let _ = writeln!(&mut out, "declare i64 @{}(i32, i32)", NATIVE_AGG_NEW_SYMBOL);
+    let _ = writeln!(
+        &mut out,
+        "declare i32 @{}(i64, i32, i64)",
+        NATIVE_AGG_SET_I64_SYMBOL
+    );
+    let _ = writeln!(&mut out, "declare i64 @{}(i64, i32)", NATIVE_AGG_GET_I64_SYMBOL);
+    let _ = writeln!(&mut out, "declare i32 @{}(i64)", NATIVE_AGG_TAG_SYMBOL);
     let extern_imports = collect_extern_c_imports(fir);
-    let extern_link_symbols = fir
+    let mut extern_link_symbols = fir
         .typed_functions
         .iter()
         .filter(|function| is_extern_c_abi_function(function))
@@ -1790,6 +2453,16 @@ pub(super) fn lower_llvm_ir(
             )
         })
         .collect::<HashMap<_, _>>();
+    extern_link_symbols.insert(NATIVE_AGG_NEW.to_string(), NATIVE_AGG_NEW_SYMBOL.to_string());
+    extern_link_symbols.insert(
+        NATIVE_AGG_SET_I64.to_string(),
+        NATIVE_AGG_SET_I64_SYMBOL.to_string(),
+    );
+    extern_link_symbols.insert(
+        NATIVE_AGG_GET_I64.to_string(),
+        NATIVE_AGG_GET_I64_SYMBOL.to_string(),
+    );
+    extern_link_symbols.insert(NATIVE_AGG_TAG.to_string(), NATIVE_AGG_TAG_SYMBOL.to_string());
     let mut function_sigs = HashMap::<String, LlvmFunctionSig>::new();
     for function in &fir.typed_functions {
         function_sigs.insert(
@@ -1805,6 +2478,34 @@ pub(super) fn lower_llvm_ir(
             },
         );
     }
+    function_sigs.insert(
+        NATIVE_AGG_NEW.to_string(),
+        LlvmFunctionSig {
+            params: vec!["i32".to_string(), "i32".to_string()],
+            ret: Some("i64".to_string()),
+        },
+    );
+    function_sigs.insert(
+        NATIVE_AGG_SET_I64.to_string(),
+        LlvmFunctionSig {
+            params: vec!["i64".to_string(), "i32".to_string(), "i64".to_string()],
+            ret: Some("i32".to_string()),
+        },
+    );
+    function_sigs.insert(
+        NATIVE_AGG_GET_I64.to_string(),
+        LlvmFunctionSig {
+            params: vec!["i64".to_string(), "i32".to_string()],
+            ret: Some("i64".to_string()),
+        },
+    );
+    function_sigs.insert(
+        NATIVE_AGG_TAG.to_string(),
+        LlvmFunctionSig {
+            params: vec!["i64".to_string()],
+            ret: Some("i32".to_string()),
+        },
+    );
     for import in &extern_imports {
         let params = import
             .params
@@ -1852,6 +2553,8 @@ pub(super) fn lower_llvm_ir(
                 &plan.global_const_i32,
                 &plan.variant_tags,
                 &mutable_global_symbols,
+                &fir.struct_defs,
+                &fir.enum_defs,
                 &plan.string_literal_ids,
                 &plan.task_ref_ids,
                 &extern_link_symbols,
@@ -1891,6 +2594,8 @@ pub(super) fn llvm_emit_function(
     globals: &HashMap<String, i32>,
     variant_tags: &HashMap<String, i32>,
     mutable_globals: &HashMap<String, String>,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
     extern_link_symbols: &HashMap<String, String>,
@@ -1909,6 +2614,9 @@ pub(super) fn llvm_emit_function(
         globals.clone(),
         variant_tags.clone(),
         mutable_globals.clone(),
+        function.local_types.clone(),
+        struct_defs.clone(),
+        enum_defs.clone(),
         wrapped_indices,
         extern_link_symbols.clone(),
         function_sigs.clone(),
@@ -1997,7 +2705,28 @@ pub(super) fn llvm_emit_function(
                 cases,
                 default_target,
             } => {
-                let value = llvm_emit_expr(scrutinee, &mut ctx, string_literal_ids, task_ref_ids)?;
+                let mut value =
+                    llvm_emit_expr(scrutinee, &mut ctx, string_literal_ids, task_ref_ids)?;
+                let aggregate_switch = match scrutinee {
+                    ast::Expr::Ident(name) => {
+                        ctx.aggregate_bindings.contains_key(name) || llvm_local_is_aggregate(name, &ctx)
+                    }
+                    ast::Expr::EnumInit { .. }
+                    | ast::Expr::StructInit { .. }
+                    | ast::Expr::Tuple(_) => true,
+                    _ => false,
+                };
+                if aggregate_switch && value.ty == "i64" {
+                    let tag_value = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {tag_value} = call i32 @{}(i64 {})\n",
+                        NATIVE_AGG_TAG_SYMBOL, value.value
+                    ));
+                    value = LlvmValue {
+                        value: tag_value,
+                        ty: "i32".to_string(),
+                    };
+                }
                 let default_label = labels.get(default_target).ok_or_else(|| {
                     anyhow!(
                         "missing llvm label for cfg switch default target {}",

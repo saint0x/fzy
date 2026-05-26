@@ -710,6 +710,19 @@ fn collect_pattern_bindings(
                 );
             }
         }
+        ast::Pattern::Tuple(items) => {
+            for item in items {
+                collect_pattern_bindings(
+                    item,
+                    scope_id,
+                    scopes,
+                    decls,
+                    decl_types,
+                    positions,
+                    binding_ty,
+                );
+            }
+        }
         ast::Pattern::Struct { fields, .. } => {
             for (_, binding) in fields {
                 if binding == "_" {
@@ -1008,6 +1021,11 @@ fn infer_expr_type(
             name: name.clone(),
             args: Vec::new(),
         }),
+        ast::Expr::Tuple(items) => Some(ast::Type::Tuple(
+            items.iter()
+                .filter_map(|item| infer_expr_type(item, scope_id, scopes, decls, decl_types))
+                .collect(),
+        )),
         ast::Expr::EnumInit { enum_name, .. } => Some(ast::Type::Named {
             name: enum_name.clone(),
             args: Vec::new(),

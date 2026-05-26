@@ -40,6 +40,21 @@ This document defines the v1 observable semantics contract used by the toolchain
   - `return`, `break`, and `continue` are valid in expression position and are diverging control-flow expressions (`never`).
 - `break <expr>` is accepted; in v1 it is treated as control-flow without a value-level loop result.
 
+## Tuples And Pattern Destructuring
+
+- Tuple values use `(a, b, c)` syntax.
+- Grouping remains `(expr)` with no trailing comma.
+- Tuple patterns are valid in `let` and `match`:
+  - `let (left, (right, _)) = value`
+  - `match value { (a, b) => a + b, _ => 0 }`
+- Struct and enum variant patterns remain supported:
+  - `let Pair { left, right: r } = pair`
+  - `let Token::Number { whole, frac } = token`
+- `or`-patterns remain supported with the existing identical-binding-shape rule.
+- Native backends lower tuple/struct/enum values as first-class aggregate handles.
+- `let` destructuring, field access, function parameters, calls, returns, helper-produced values, and control-flow-produced aggregate values all use typed aggregate layout metadata instead of source-shape reconstruction.
+- Enum `match` lowering switches on the runtime aggregate tag, and enum payload extraction uses the matched variant layout.
+
 ## Declarations
 
 - Module-level `const` declarations are supported:

@@ -4,7 +4,7 @@ pub(super) fn native_lowerability_diagnostics(
     module: &ast::Module,
 ) -> Vec<diagnostics::Diagnostic> {
     let mut diagnostics = Vec::new();
-    let passthrough_functions = collect_passthrough_function_map_from_module(module);
+    let pattern_source_functions = collect_pattern_source_function_map_from_module(module);
     let mut variant_keys = BTreeSet::<String>::new();
     for item in &module.items {
         let ast::Item::Function(function) = item else {
@@ -62,7 +62,7 @@ pub(super) fn native_lowerability_diagnostics(
             ));
         }
         if let Err(error) =
-            build_control_flow_cfg(&function.body, &variant_tags, &passthrough_functions)
+            build_control_flow_cfg(&function.body, &variant_tags, &pattern_source_functions)
         {
             diagnostics.push(diagnostics::Diagnostic::new(
                 diagnostics::Severity::Error,
@@ -728,6 +728,53 @@ pub(super) fn declare_native_runtime_imports(
                 params: (0..import.arity).map(|_| types::I32).collect(),
                 ret: Some(types::I32),
             },
+        );
+    }
+
+    let internal_helpers = [
+        (
+            NATIVE_AGG_NEW,
+            NATIVE_AGG_NEW_SYMBOL,
+            vec![types::I32, types::I32],
+            Some(types::I64),
+        ),
+        (
+            NATIVE_AGG_SET_I64,
+            NATIVE_AGG_SET_I64_SYMBOL,
+            vec![types::I64, types::I32, types::I64],
+            Some(types::I32),
+        ),
+        (
+            NATIVE_AGG_GET_I64,
+            NATIVE_AGG_GET_I64_SYMBOL,
+            vec![types::I64, types::I32],
+            Some(types::I64),
+        ),
+        (
+            NATIVE_AGG_TAG,
+            NATIVE_AGG_TAG_SYMBOL,
+            vec![types::I64],
+            Some(types::I32),
+        ),
+    ];
+    for (callee, symbol, params, ret) in internal_helpers {
+        if function_ids.contains_key(callee) {
+            continue;
+        }
+        let mut sig = module.make_signature();
+        for param in &params {
+            sig.params.push(AbiParam::new(*param));
+        }
+        if let Some(ret_ty) = ret {
+            sig.returns.push(AbiParam::new(ret_ty));
+        }
+        let id = module
+            .declare_function(symbol, Linkage::Import, &sig)
+            .map_err(|error| anyhow!("failed declaring internal native helper `{symbol}`: {error}"))?;
+        function_ids.insert(callee.to_string(), id);
+        function_signatures.insert(
+            callee.to_string(),
+            ClifFunctionSignature { params, ret },
         );
     }
     Ok(())

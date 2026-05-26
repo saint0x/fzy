@@ -2,6 +2,12 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::{eval_const_string_expr, native_mangle_symbol};
 
+#[derive(Debug, Clone)]
+pub(super) struct PatternSourceFunction {
+    pub(super) params: Vec<String>,
+    pub(super) body: Vec<ast::Stmt>,
+}
+
 pub(super) fn collect_string_literals(fir: &fir::FirModule) -> Vec<String> {
     let mut literals = HashSet::<String>::new();
     for function in &fir.typed_functions {
@@ -416,53 +422,61 @@ pub(super) fn build_variant_tag_map(fir: &fir::FirModule) -> HashMap<String, i32
         .collect()
 }
 
-pub(super) fn collect_passthrough_function_map_from_typed(
+pub(super) fn collect_pattern_source_function_map_from_typed(
     functions: &[hir::TypedFunction],
-) -> HashMap<String, usize> {
-    let mut passthrough = HashMap::<String, usize>::new();
+) -> HashMap<String, PatternSourceFunction> {
+    let mut out = HashMap::<String, PatternSourceFunction>::new();
     for function in functions {
-        if function.params.is_empty() || function.body.len() != 1 {
-            continue;
-        }
-        let ast::Stmt::Return(Some(ast::Expr::Ident(name))) = &function.body[0] else {
-            continue;
-        };
-        if let Some((index, _)) = function
-            .params
+        if !function
+            .body
             .iter()
-            .enumerate()
-            .find(|(_, param)| &param.name == name)
+            .any(|stmt| matches!(stmt, ast::Stmt::Return(Some(_))))
         {
-            passthrough.insert(function.name.clone(), index);
+            continue;
         }
+        out.insert(
+            function.name.clone(),
+            PatternSourceFunction {
+                params: function
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
+                body: function.body.clone(),
+            },
+        );
     }
-    passthrough
+    out
 }
 
-pub(super) fn collect_passthrough_function_map_from_module(
+pub(super) fn collect_pattern_source_function_map_from_module(
     module: &ast::Module,
-) -> HashMap<String, usize> {
-    let mut passthrough = HashMap::<String, usize>::new();
+) -> HashMap<String, PatternSourceFunction> {
+    let mut out = HashMap::<String, PatternSourceFunction>::new();
     for item in &module.items {
         let ast::Item::Function(function) = item else {
             continue;
         };
-        if function.params.is_empty() || function.body.len() != 1 {
-            continue;
-        }
-        let ast::Stmt::Return(Some(ast::Expr::Ident(name))) = &function.body[0] else {
-            continue;
-        };
-        if let Some((index, _)) = function
-            .params
+        if !function
+            .body
             .iter()
-            .enumerate()
-            .find(|(_, param)| &param.name == name)
+            .any(|stmt| matches!(stmt, ast::Stmt::Return(Some(_))))
         {
-            passthrough.insert(function.name.clone(), index);
+            continue;
         }
+        out.insert(
+            function.name.clone(),
+            PatternSourceFunction {
+                params: function
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
+                body: function.body.clone(),
+            },
+        );
     }
-    passthrough
+    out
 }
 
 pub(super) fn collect_variant_keys_from_stmt(stmt: &ast::Stmt, out: &mut BTreeSet<String>) {
@@ -626,6 +640,7 @@ fn collect_variant_keys_from_pattern(pattern: &ast::Pattern, out: &mut BTreeSet<
         | ast::Pattern::Int(_)
         | ast::Pattern::Bool(_)
         | ast::Pattern::Ident(_)
+        | ast::Pattern::Tuple(_)
         | ast::Pattern::Struct { .. } => {}
     }
 }

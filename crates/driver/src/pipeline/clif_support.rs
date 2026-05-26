@@ -1,6 +1,6 @@
 use super::*;
 use anyhow::{bail, Result};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_codegen::ir::{types, InstBuilder, TrapCode, Type as ClifType};
@@ -29,11 +29,26 @@ pub(super) struct ClifLoweringCtx<'a> {
     pub(super) task_ref_ids: &'a HashMap<String, i32>,
     pub(super) globals: &'a HashMap<String, i32>,
     pub(super) variant_tags: &'a HashMap<String, i32>,
+    pub(super) local_types: BTreeMap<String, ast::Type>,
+    pub(super) struct_defs: &'a HashMap<String, ast::Struct>,
+    pub(super) enum_defs: &'a HashMap<String, ast::Enum>,
     pub(super) mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
     pub(super) current_return_ty: Option<ClifType>,
     pub(super) closures: HashMap<String, ClifClosureBinding>,
     pub(super) array_bindings: HashMap<String, ClifArrayBinding>,
+    pub(super) aggregate_bindings: HashMap<String, ClifAggregateBinding>,
     pub(super) const_strings: HashMap<String, String>,
+}
+
+#[derive(Clone)]
+pub(super) struct ClifAggregateItemBinding {
+    pub(super) index: usize,
+    pub(super) ty: ClifType,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct ClifAggregateBinding {
+    pub(super) items: HashMap<String, ClifAggregateItemBinding>,
 }
 
 pub(super) fn lower_cranelift_ir(
@@ -152,6 +167,9 @@ pub(super) fn clif_emit_function_cfg(
     globals: &HashMap<String, i32>,
     variant_tags: &HashMap<String, i32>,
     mutable_globals: &HashMap<String, cranelift_module::DataId>,
+    local_types: BTreeMap<String, ast::Type>,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
     current_return_ty: Option<ClifType>,
     cfg: &ControlFlowCfg,
     entry_block: cranelift_codegen::ir::Block,
@@ -167,10 +185,14 @@ pub(super) fn clif_emit_function_cfg(
         task_ref_ids,
         globals,
         variant_tags,
+        local_types,
+        struct_defs,
+        enum_defs,
         mutable_globals,
         current_return_ty,
         closures: HashMap::new(),
         array_bindings: HashMap::new(),
+        aggregate_bindings: HashMap::new(),
         const_strings: HashMap::new(),
     };
     clif_emit_cfg(
@@ -323,7 +345,29 @@ fn clif_emit_cfg(
                 cases,
                 default_target,
             } => {
-                let cond_val = clif_emit_expr(builder, ctx, scrutinee, locals, next_var)?;
+                let mut cond_val = clif_emit_expr(builder, ctx, scrutinee, locals, next_var)?;
+                let aggregate_switch = match scrutinee {
+                    ast::Expr::Ident(name) => {
+                        ctx.aggregate_bindings.contains_key(name) || clif_local_is_aggregate(name, ctx)
+                    }
+                    ast::Expr::EnumInit { .. }
+                    | ast::Expr::StructInit { .. }
+                    | ast::Expr::Tuple(_) => true,
+                    _ => false,
+                };
+                if aggregate_switch && cond_val.ty == types::I64 {
+                    let agg_tag_id = ctx
+                        .function_ids
+                        .get(NATIVE_AGG_TAG)
+                        .copied()
+                        .ok_or_else(|| anyhow!("missing runtime import lowering for `{NATIVE_AGG_TAG}`"))?;
+                    let agg_tag_ref = ctx.module.declare_func_in_func(agg_tag_id, builder.func);
+                    let tag_call = builder.ins().call(agg_tag_ref, &[cond_val.value]);
+                    cond_val = ClifValue {
+                        value: builder.inst_results(tag_call)[0],
+                        ty: types::I32,
+                    };
+                }
                 let cond_val = cast_clif_value(builder, cond_val, default_int_clif_type())?;
                 let mut switch = Switch::new();
                 for (value, target) in cases {
@@ -408,6 +452,245 @@ fn clif_restore_shadowed_locals(
     }
 }
 
+fn clif_cast_scalar_to_i64(
+    builder: &mut FunctionBuilder,
+    value: ClifValue,
+) -> Result<ClifValue> {
+    cast_clif_value(builder, value, types::I64)
+}
+
+fn clif_cast_i64_to_ty(
+    builder: &mut FunctionBuilder,
+    raw_value: cranelift_codegen::ir::Value,
+    target_ty: ClifType,
+) -> Result<ClifValue> {
+    cast_clif_value(
+        builder,
+        ClifValue {
+            value: raw_value,
+            ty: types::I64,
+        },
+        target_ty,
+    )
+}
+
+fn clif_emit_aggregate_handle(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    tag: i32,
+    items: &[ClifValue],
+) -> Result<ClifValue> {
+    let agg_new_id = ctx
+        .function_ids
+        .get(NATIVE_AGG_NEW)
+        .copied()
+        .ok_or_else(|| anyhow!("missing runtime import lowering for `{NATIVE_AGG_NEW}`"))?;
+    let agg_set_id = ctx
+        .function_ids
+        .get(NATIVE_AGG_SET_I64)
+        .copied()
+        .ok_or_else(|| anyhow!("missing runtime import lowering for `{NATIVE_AGG_SET_I64}`"))?;
+    let new_ref = ctx.module.declare_func_in_func(agg_new_id, builder.func);
+    let tag_value = builder.ins().iconst(types::I32, i64::from(tag));
+    let count_value = builder.ins().iconst(types::I32, items.len() as i64);
+    let handle_call = builder.ins().call(
+        new_ref,
+        &[tag_value, count_value],
+    );
+    let handle = builder.inst_results(handle_call)[0];
+    let set_ref = ctx.module.declare_func_in_func(agg_set_id, builder.func);
+    for (index, item) in items.iter().cloned().enumerate() {
+        let raw = clif_cast_scalar_to_i64(builder, item)?;
+        let index_value = builder.ins().iconst(types::I32, index as i64);
+        let _ = builder.ins().call(
+            set_ref,
+            &[handle, index_value, raw.value],
+        );
+    }
+    Ok(ClifValue {
+        value: handle,
+        ty: types::I64,
+    })
+}
+
+fn clif_emit_aggregate_get(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    handle: ClifValue,
+    index: usize,
+    target_ty: ClifType,
+) -> Result<ClifValue> {
+    let agg_get_id = ctx
+        .function_ids
+        .get(NATIVE_AGG_GET_I64)
+        .copied()
+        .ok_or_else(|| anyhow!("missing runtime import lowering for `{NATIVE_AGG_GET_I64}`"))?;
+    let agg_get_ref = ctx.module.declare_func_in_func(agg_get_id, builder.func);
+    let index_value = builder.ins().iconst(types::I32, index as i64);
+    let raw_call = builder.ins().call(agg_get_ref, &[handle.value, index_value]);
+    let raw = builder.inst_results(raw_call)[0];
+    clif_cast_i64_to_ty(builder, raw, target_ty)
+}
+
+fn clif_record_aggregate_binding(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    name: &str,
+    value: &ast::Expr,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<()> {
+    let mut binding = ClifAggregateBinding::default();
+    match value {
+        ast::Expr::StructInit { fields, .. } => {
+            for (index, (field, field_expr)) in fields.iter().enumerate() {
+                let field_value = clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
+                binding.items.insert(
+                    field.clone(),
+                    ClifAggregateItemBinding {
+                        index,
+                        ty: field_value.ty,
+                    },
+                );
+            }
+        }
+        ast::Expr::Tuple(items) => {
+            for (index, item_expr) in items.iter().enumerate() {
+                let item_value = clif_emit_expr(builder, ctx, item_expr, locals, next_var)?;
+                binding.items.insert(
+                    format!("__tuple{index}"),
+                    ClifAggregateItemBinding {
+                        index,
+                        ty: item_value.ty,
+                    },
+                );
+            }
+        }
+        ast::Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for (index, payload_expr) in payload.iter().enumerate() {
+                let payload_value = clif_emit_expr(builder, ctx, payload_expr, locals, next_var)?;
+                binding.items.insert(
+                    format!("__payload{index}"),
+                    ClifAggregateItemBinding {
+                        index,
+                        ty: payload_value.ty,
+                    },
+                );
+            }
+            for (offset, (field, field_expr)) in named_payload.iter().enumerate() {
+                let field_value = clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
+                binding.items.insert(
+                    field.clone(),
+                    ClifAggregateItemBinding {
+                        index: payload.len() + offset,
+                        ty: field_value.ty,
+                    },
+                );
+            }
+        }
+        _ => {
+            ctx.aggregate_bindings.remove(name);
+            return Ok(());
+        }
+    }
+    ctx.aggregate_bindings.insert(name.to_string(), binding);
+    Ok(())
+}
+
+fn clif_tuple_item_binding_for_local(
+    name: &str,
+    index: usize,
+    ctx: &ClifLoweringCtx<'_>,
+) -> Option<ClifAggregateItemBinding> {
+    let ast::Type::Tuple(items) = ctx.local_types.get(name)? else {
+        return None;
+    };
+    let item_ty = items.get(index)?;
+    Some(ClifAggregateItemBinding {
+        index,
+        ty: ast_signature_type_to_clif_type(item_ty)?,
+    })
+}
+
+fn clif_struct_field_binding_for_local(
+    name: &str,
+    field: &str,
+    ctx: &ClifLoweringCtx<'_>,
+) -> Option<ClifAggregateItemBinding> {
+    let ast::Type::Named { name: ty_name, .. } = ctx.local_types.get(name)? else {
+        return None;
+    };
+    let struct_def = ctx.struct_defs.get(ty_name.as_str())?;
+    let (index, struct_field) = struct_def
+        .fields
+        .iter()
+        .enumerate()
+        .find(|(_, item)| item.name == field)?;
+    Some(ClifAggregateItemBinding {
+        index,
+        ty: ast_signature_type_to_clif_type(&struct_field.ty)?,
+    })
+}
+
+fn clif_enum_payload_binding_for_local(
+    name: &str,
+    enum_name: &str,
+    variant: &str,
+    index: usize,
+    ctx: &ClifLoweringCtx<'_>,
+) -> Option<ClifAggregateItemBinding> {
+    let ast::Type::Named { name: ty_name, .. } = ctx.local_types.get(name)? else {
+        return None;
+    };
+    if ty_name != enum_name {
+        return None;
+    }
+    let enum_def = ctx.enum_defs.get(enum_name)?;
+    let variant_def = enum_def.variants.iter().find(|item| item.name == variant)?;
+    let payload_ty = variant_def.payload.get(index)?;
+    Some(ClifAggregateItemBinding {
+        index,
+        ty: ast_signature_type_to_clif_type(payload_ty)?,
+    })
+}
+
+fn clif_enum_named_binding_for_local(
+    name: &str,
+    enum_name: &str,
+    variant: &str,
+    field: &str,
+    ctx: &ClifLoweringCtx<'_>,
+) -> Option<ClifAggregateItemBinding> {
+    let ast::Type::Named { name: ty_name, .. } = ctx.local_types.get(name)? else {
+        return None;
+    };
+    if ty_name != enum_name {
+        return None;
+    }
+    let enum_def = ctx.enum_defs.get(enum_name)?;
+    let variant_def = enum_def.variants.iter().find(|item| item.name == variant)?;
+    let (offset, named_field) = variant_def
+        .named_payload
+        .iter()
+        .enumerate()
+        .find(|(_, item)| item.name == field)?;
+    Some(ClifAggregateItemBinding {
+        index: variant_def.payload.len() + offset,
+        ty: ast_signature_type_to_clif_type(&named_field.ty)?,
+    })
+}
+
+fn clif_local_is_aggregate(name: &str, ctx: &ClifLoweringCtx<'_>) -> bool {
+    matches!(
+        ctx.local_types.get(name),
+        Some(ast::Type::Tuple(_)) | Some(ast::Type::Named { .. })
+    )
+}
+
 pub(super) fn clif_emit_inlined_closure_call(
     builder: &mut FunctionBuilder,
     ctx: &mut ClifLoweringCtx<'_>,
@@ -484,6 +767,67 @@ pub(super) fn clif_emit_let_pattern(
                 },
             );
         }
+        ast::Pattern::Tuple(items) => {
+            if let ast::Expr::Tuple(values) = value {
+                if items.len() != values.len() {
+                    bail!("native backend requires tuple pattern arity to match tuple initializer arity");
+                }
+                for (item, value) in items.iter().zip(values.iter()) {
+                    clif_emit_let_pattern(builder, ctx, item, value, locals, next_var)?;
+                }
+            } else if let ast::Expr::Ident(name) = value {
+                for (index, item) in items.iter().enumerate() {
+                    let synthetic = format!("{name}.__tuple{index}");
+                    if locals.contains_key(&synthetic) {
+                        clif_emit_let_pattern(
+                            builder,
+                            ctx,
+                            item,
+                            &ast::Expr::Ident(synthetic),
+                            locals,
+                            next_var,
+                        )?;
+                    } else {
+                        let item_binding = ctx
+                            .aggregate_bindings
+                            .get(name)
+                            .and_then(|binding| binding.items.get(&format!("__tuple{index}")).cloned())
+                            .or_else(|| clif_tuple_item_binding_for_local(name, index, ctx))
+                            .ok_or_else(|| anyhow!("native backend requires tuple-bound aggregate metadata for `let` tuple destructuring"))?;
+                        let handle = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+                        let extracted = clif_emit_aggregate_get(
+                            builder,
+                            ctx,
+                            handle,
+                            item_binding.index,
+                            item_binding.ty,
+                        )?;
+                        let temp_name = format!("__agg_tuple_extract_{}_{}", name, index);
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, extracted.ty);
+                        builder.def_var(var, extracted.value);
+                        locals.insert(
+                            temp_name.clone(),
+                            LocalBinding {
+                                var,
+                                ty: extracted.ty,
+                            },
+                        );
+                        clif_emit_let_pattern(
+                            builder,
+                            ctx,
+                            item,
+                            &ast::Expr::Ident(temp_name),
+                            locals,
+                            next_var,
+                        )?;
+                    }
+                }
+            } else {
+                bail!("native backend requires tuple initializer or tuple-bound local for `let` tuple destructuring");
+            }
+        }
         ast::Pattern::Int(expected) => {
             let expected_value = builder.ins().iconst(lowered.ty, *expected as i64);
             let _ = builder
@@ -497,59 +841,108 @@ pub(super) fn clif_emit_let_pattern(
                 .icmp(IntCC::Equal, lowered.value, expected_value);
         }
         ast::Pattern::Struct { name, fields } => {
-            let ast::Expr::StructInit {
+            if let ast::Expr::StructInit {
                 name: value_name,
                 fields: value_fields,
             } = value
-            else {
-                bail!("native backend requires literal struct initializer for `let` struct destructuring");
-            };
-            if value_name != name {
-                bail!(
-                    "native backend requires exact literal struct type match for `let` struct destructuring"
-                );
-            }
-            for (field_name, binding_name) in fields {
-                if binding_name == "_" {
-                    continue;
+            {
+                if value_name != name {
+                    bail!(
+                        "native backend requires exact literal struct type match for `let` struct destructuring"
+                    );
                 }
-                let Some((_, field_expr)) =
-                    value_fields.iter().find(|(field, _)| field == field_name)
-                else {
-                    bail!("native backend requires struct literal fields to cover every bound pattern field");
-                };
-                let payload_val = clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
-                let var = Variable::from_u32(*next_var as u32);
-                *next_var += 1;
-                builder.declare_var(var, payload_val.ty);
-                builder.def_var(var, payload_val.value);
-                locals.insert(
-                    binding_name.clone(),
-                    LocalBinding {
-                        var,
-                        ty: payload_val.ty,
-                    },
-                );
+                for (field_name, binding_name) in fields {
+                    if binding_name == "_" {
+                        continue;
+                    }
+                    let Some((_, field_expr)) =
+                        value_fields.iter().find(|(field, _)| field == field_name)
+                    else {
+                        bail!("native backend requires struct literal fields to cover every bound pattern field");
+                    };
+                    let payload_val = clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
+                    let var = Variable::from_u32(*next_var as u32);
+                    *next_var += 1;
+                    builder.declare_var(var, payload_val.ty);
+                    builder.def_var(var, payload_val.value);
+                    locals.insert(
+                        binding_name.clone(),
+                        LocalBinding {
+                            var,
+                            ty: payload_val.ty,
+                        },
+                    );
+                }
+            } else if let ast::Expr::Ident(name) = value {
+                for (field_name, binding_name) in fields {
+                    if binding_name == "_" {
+                        continue;
+                    }
+                    if let Some(binding) = locals.get(&format!("{name}.{field_name}")).copied() {
+                        locals.insert(binding_name.clone(), binding);
+                    } else {
+                        let item_binding = ctx
+                            .aggregate_bindings
+                            .get(name)
+                            .and_then(|binding| binding.items.get(field_name).cloned())
+                            .or_else(|| clif_struct_field_binding_for_local(name, field_name, ctx))
+                            .ok_or_else(|| anyhow!("native backend requires struct-bound aggregate metadata for `let` struct destructuring"))?;
+                        let handle = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+                        let extracted = clif_emit_aggregate_get(
+                            builder,
+                            ctx,
+                            handle,
+                            item_binding.index,
+                            item_binding.ty,
+                        )?;
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, extracted.ty);
+                        builder.def_var(var, extracted.value);
+                        locals.insert(
+                            binding_name.clone(),
+                            LocalBinding {
+                                var,
+                                ty: extracted.ty,
+                            },
+                        );
+                    }
+                }
+            } else {
+                bail!("native backend requires struct initializer or struct-bound local for `let` struct destructuring");
             }
         }
         ast::Pattern::Variant {
             enum_name,
             variant,
             bindings,
-            ..
+            named_bindings,
         } => {
             let key = format!("{enum_name}::{variant}");
+            let (cmp_ty, cmp_value) = if lowered.ty == types::I64 {
+                let agg_tag_id = ctx
+                    .function_ids
+                    .get(NATIVE_AGG_TAG)
+                    .copied()
+                    .ok_or_else(|| anyhow!("missing runtime import lowering for `{NATIVE_AGG_TAG}`"))?;
+                let agg_tag_ref = ctx.module.declare_func_in_func(agg_tag_id, builder.func);
+                let tag_call = builder.ins().call(agg_tag_ref, &[lowered.value]);
+                (types::I32, builder.inst_results(tag_call)[0])
+            } else {
+                (lowered.ty, lowered.value)
+            };
             let expected_tag = builder.ins().iconst(
-                lowered.ty,
+                cmp_ty,
                 variant_tag_for_key(&key, ctx.variant_tags) as i64,
             );
             let _ = builder
                 .ins()
-                .icmp(IntCC::Equal, lowered.value, expected_tag);
+                .icmp(IntCC::Equal, cmp_value, expected_tag);
             if let ast::Expr::EnumInit {
                 enum_name: value_enum,
                 variant: value_variant,
                 payload,
+                named_payload,
                 ..
             } = value
             {
@@ -569,6 +962,113 @@ pub(super) fn clif_emit_let_pattern(
                             LocalBinding {
                                 var,
                                 ty: payload_val.ty,
+                            },
+                        );
+                    }
+                    for (field_name, binding_name) in named_bindings {
+                        if binding_name == "_" {
+                            continue;
+                        }
+                        let Some((_, field_expr)) =
+                            named_payload.iter().find(|(field, _)| field == field_name)
+                        else {
+                            bail!("native backend requires enum literal named payload fields to cover every bound pattern field");
+                        };
+                        let payload_val =
+                            clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, payload_val.ty);
+                        builder.def_var(var, payload_val.value);
+                        locals.insert(
+                            binding_name.clone(),
+                            LocalBinding {
+                                var,
+                                ty: payload_val.ty,
+                            },
+                        );
+                    }
+                }
+            } else if let ast::Expr::Ident(name) = value {
+                for (index, binding_name) in bindings.iter().enumerate() {
+                    let key = format!("{name}.__payload{index}");
+                    if let Some(binding) = locals.get(&key).copied() {
+                        locals.insert(binding_name.clone(), binding);
+                    } else {
+                        let payload_key = format!("__payload{index}");
+                        let item_binding = ctx
+                            .aggregate_bindings
+                            .get(name)
+                            .and_then(|binding| binding.items.get(&payload_key).cloned())
+                            .or_else(|| {
+                                clif_enum_payload_binding_for_local(
+                                    name,
+                                    enum_name,
+                                    variant,
+                                    index,
+                                    ctx,
+                                )
+                            })
+                            .ok_or_else(|| anyhow!("native backend requires enum-bound local payloads for `let` variant destructuring"))?;
+                        let handle = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+                        let extracted = clif_emit_aggregate_get(
+                            builder,
+                            ctx,
+                            handle,
+                            item_binding.index,
+                            item_binding.ty,
+                        )?;
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, extracted.ty);
+                        builder.def_var(var, extracted.value);
+                        locals.insert(
+                            binding_name.clone(),
+                            LocalBinding {
+                                var,
+                                ty: extracted.ty,
+                            },
+                        );
+                    }
+                }
+                for (field_name, binding_name) in named_bindings {
+                    if binding_name == "_" {
+                        continue;
+                    }
+                    if let Some(binding) = locals.get(&format!("{name}.{field_name}")).copied() {
+                        locals.insert(binding_name.clone(), binding);
+                    } else {
+                        let item_binding = ctx
+                            .aggregate_bindings
+                            .get(name)
+                            .and_then(|binding| binding.items.get(field_name).cloned())
+                            .or_else(|| {
+                                clif_enum_named_binding_for_local(
+                                    name,
+                                    enum_name,
+                                    variant,
+                                    field_name,
+                                    ctx,
+                                )
+                            })
+                            .ok_or_else(|| anyhow!("native backend requires enum-bound local named payloads for `let` variant destructuring"))?;
+                        let handle = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+                        let extracted = clif_emit_aggregate_get(
+                            builder,
+                            ctx,
+                            handle,
+                            item_binding.index,
+                            item_binding.ty,
+                        )?;
+                        let var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(var, extracted.ty);
+                        builder.def_var(var, extracted.value);
+                        locals.insert(
+                            binding_name.clone(),
+                            LocalBinding {
+                                var,
+                                ty: extracted.ty,
                             },
                         );
                     }
@@ -608,6 +1108,7 @@ pub(super) fn clif_emit_linear_stmts(
                 if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
                     ctx.const_strings.insert(name.clone(), const_value);
                     ctx.array_bindings.remove(name);
+                    ctx.aggregate_bindings.remove(name);
                     continue;
                 }
                 if let ast::Expr::ArrayLiteral(items) = value {
@@ -645,9 +1146,16 @@ pub(super) fn clif_emit_linear_stmts(
                             element_stride,
                         },
                     );
+                    ctx.aggregate_bindings.remove(name);
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
+                    if let Some(source_ty) = ctx.local_types.get(source).cloned() {
+                        ctx.local_types.insert(name.clone(), source_ty);
+                    }
+                    if let Some(binding) = ctx.aggregate_bindings.get(source).cloned() {
+                        ctx.aggregate_bindings.insert(name.clone(), binding);
+                    }
                     if let Some(source_bindings) = ctx.array_bindings.get(source).cloned() {
                         ctx.array_bindings.insert(name.clone(), source_bindings);
                         continue;
@@ -668,6 +1176,7 @@ pub(super) fn clif_emit_linear_stmts(
                             captures: clif_snapshot_closure_captures(builder, locals, next_var),
                         },
                     );
+                    ctx.aggregate_bindings.remove(name);
                     continue;
                 }
                 let mut val = clif_emit_expr(builder, ctx, value, locals, next_var)?;
@@ -688,8 +1197,62 @@ pub(super) fn clif_emit_linear_stmts(
                 };
                 let val = cast_clif_value(builder, val, binding.ty)?;
                 builder.def_var(binding.var, val.value);
+                clif_record_aggregate_binding(builder, ctx, name, value, locals, next_var)?;
                 if let ast::Expr::StructInit { fields, .. } = value {
                     for (field, field_expr) in fields {
+                        let field_val = clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
+                        let field_var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(field_var, field_val.ty);
+                        builder.def_var(field_var, field_val.value);
+                        locals.insert(
+                            format!("{name}.{field}"),
+                            LocalBinding {
+                                var: field_var,
+                                ty: field_val.ty,
+                            },
+                        );
+                    }
+                }
+                if let ast::Expr::Tuple(items) = value {
+                    for (index, item_expr) in items.iter().enumerate() {
+                        let item_val = clif_emit_expr(builder, ctx, item_expr, locals, next_var)?;
+                        let item_var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(item_var, item_val.ty);
+                        builder.def_var(item_var, item_val.value);
+                        locals.insert(
+                            format!("{name}.__tuple{index}"),
+                            LocalBinding {
+                                var: item_var,
+                                ty: item_val.ty,
+                            },
+                        );
+                    }
+                }
+                if let ast::Expr::EnumInit {
+                    enum_name: _,
+                    variant: _,
+                    payload,
+                    named_payload,
+                } = value
+                {
+                    for (index, payload_expr) in payload.iter().enumerate() {
+                        let payload_val =
+                            clif_emit_expr(builder, ctx, payload_expr, locals, next_var)?;
+                        let payload_var = Variable::from_u32(*next_var as u32);
+                        *next_var += 1;
+                        builder.declare_var(payload_var, payload_val.ty);
+                        builder.def_var(payload_var, payload_val.value);
+                        locals.insert(
+                            format!("{name}.__payload{index}"),
+                            LocalBinding {
+                                var: payload_var,
+                                ty: payload_val.ty,
+                            },
+                        );
+                    }
+                    for (field, field_expr) in named_payload {
                         let field_val = clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
                         let field_var = Variable::from_u32(*next_var as u32);
                         *next_var += 1;
@@ -738,6 +1301,7 @@ pub(super) fn clif_emit_linear_stmts(
                 }
                 ctx.array_bindings.remove(name);
                 ctx.const_strings.remove(name);
+                ctx.closures.remove(name);
             }
             ast::Stmt::LetPattern { pattern, value, .. } => {
                 clif_emit_let_pattern(builder, ctx, pattern, value, locals, next_var)?;
@@ -746,6 +1310,7 @@ pub(super) fn clif_emit_linear_stmts(
                 if let Some(const_value) = eval_const_string_expr(value, &ctx.const_strings) {
                     ctx.const_strings.insert(target.clone(), const_value);
                     ctx.array_bindings.remove(target);
+                    ctx.aggregate_bindings.remove(target);
                     continue;
                 }
                 if let ast::Expr::Closure {
@@ -763,6 +1328,7 @@ pub(super) fn clif_emit_linear_stmts(
                             captures: clif_snapshot_closure_captures(builder, locals, next_var),
                         },
                     );
+                    ctx.aggregate_bindings.remove(target);
                     continue;
                 }
                 if let ast::Expr::ArrayLiteral(items) = value {
@@ -800,9 +1366,16 @@ pub(super) fn clif_emit_linear_stmts(
                             element_stride,
                         },
                     );
+                    ctx.aggregate_bindings.remove(target);
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
+                    if let Some(source_ty) = ctx.local_types.get(source).cloned() {
+                        ctx.local_types.insert(target.clone(), source_ty);
+                    }
+                    if let Some(binding) = ctx.aggregate_bindings.get(source).cloned() {
+                        ctx.aggregate_bindings.insert(target.clone(), binding);
+                    }
                     if let Some(source_bindings) = ctx.array_bindings.get(source).cloned() {
                         ctx.array_bindings.insert(target.clone(), source_bindings);
                         continue;
@@ -827,8 +1400,64 @@ pub(super) fn clif_emit_linear_stmts(
                     };
                     let val = cast_clif_value(builder, val, binding.ty)?;
                     builder.def_var(binding.var, val.value);
+                    clif_record_aggregate_binding(builder, ctx, target, value, locals, next_var)?;
                     if let ast::Expr::StructInit { fields, .. } = value {
                         for (field, field_expr) in fields {
+                            let field_val =
+                                clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
+                            let field_var = Variable::from_u32(*next_var as u32);
+                            *next_var += 1;
+                            builder.declare_var(field_var, field_val.ty);
+                            builder.def_var(field_var, field_val.value);
+                            locals.insert(
+                                format!("{target}.{field}"),
+                                LocalBinding {
+                                    var: field_var,
+                                    ty: field_val.ty,
+                                },
+                            );
+                        }
+                    }
+                    if let ast::Expr::Tuple(items) = value {
+                        for (index, item_expr) in items.iter().enumerate() {
+                            let item_val =
+                                clif_emit_expr(builder, ctx, item_expr, locals, next_var)?;
+                            let item_var = Variable::from_u32(*next_var as u32);
+                            *next_var += 1;
+                            builder.declare_var(item_var, item_val.ty);
+                            builder.def_var(item_var, item_val.value);
+                            locals.insert(
+                                format!("{target}.__tuple{index}"),
+                                LocalBinding {
+                                    var: item_var,
+                                    ty: item_val.ty,
+                                },
+                            );
+                        }
+                    }
+                    if let ast::Expr::EnumInit {
+                        enum_name: _,
+                        variant: _,
+                        payload,
+                        named_payload,
+                    } = value
+                    {
+                        for (index, payload_expr) in payload.iter().enumerate() {
+                            let payload_val =
+                                clif_emit_expr(builder, ctx, payload_expr, locals, next_var)?;
+                            let payload_var = Variable::from_u32(*next_var as u32);
+                            *next_var += 1;
+                            builder.declare_var(payload_var, payload_val.ty);
+                            builder.def_var(payload_var, payload_val.value);
+                            locals.insert(
+                                format!("{target}.__payload{index}"),
+                                LocalBinding {
+                                    var: payload_var,
+                                    ty: payload_val.ty,
+                                },
+                            );
+                        }
+                        for (field, field_expr) in named_payload {
                             let field_val =
                                 clif_emit_expr(builder, ctx, field_expr, locals, next_var)?;
                             let field_var = Variable::from_u32(*next_var as u32);
@@ -910,6 +1539,7 @@ pub(super) fn clif_emit_linear_stmts(
                 ctx.array_bindings.remove(target);
                 ctx.const_strings.remove(target);
                 ctx.closures.remove(target);
+                ctx.aggregate_bindings.remove(target);
             }
             ast::Stmt::Expr(expr)
             | ast::Stmt::Requires(expr)
@@ -1116,6 +1746,39 @@ pub(super) fn clif_emit_expr(
                         value: builder.use_var(binding.var),
                         ty: binding.ty,
                     }
+                } else if let Some(binding) = ctx.aggregate_bindings.get(name).cloned() {
+                    if let Some(item) = binding.items.get(field) {
+                        let handle = clif_emit_expr(builder, ctx, base, locals, next_var)?;
+                        return clif_emit_aggregate_get(
+                            builder,
+                            ctx,
+                            handle,
+                            item.index,
+                            item.ty,
+                        );
+                    } else if let Some(task_ref_name) = expr_task_ref_name(expr) {
+                        if let Some(task_ref) = ctx.task_ref_ids.get(&task_ref_name).copied() {
+                            ClifValue {
+                                value: builder
+                                    .ins()
+                                    .iconst(default_int_clif_type(), task_ref as i64),
+                                ty: default_int_clif_type(),
+                            }
+                        } else {
+                            clif_emit_expr(builder, ctx, base, locals, next_var)?
+                        }
+                    } else {
+                        clif_emit_expr(builder, ctx, base, locals, next_var)?
+                    }
+                } else if let Some(item) = clif_struct_field_binding_for_local(name, field, ctx) {
+                    let handle = clif_emit_expr(builder, ctx, base, locals, next_var)?;
+                    return clif_emit_aggregate_get(
+                        builder,
+                        ctx,
+                        handle,
+                        item.index,
+                        item.ty,
+                    );
                 } else if let Some(task_ref_name) = expr_task_ref_name(expr) {
                     if let Some(task_ref) = ctx.task_ref_ids.get(&task_ref_name).copied() {
                         ClifValue {
@@ -1134,18 +1797,19 @@ pub(super) fn clif_emit_expr(
                 clif_emit_expr(builder, ctx, base, locals, next_var)?
             }
         }
-        ast::Expr::StructInit { fields, .. } => {
-            let mut first = None;
-            for (_, value) in fields {
-                let out = clif_emit_expr(builder, ctx, value, locals, next_var)?;
-                if first.is_none() {
-                    first = Some(out);
-                }
+        ast::Expr::Tuple(items) => {
+            let mut rendered = Vec::with_capacity(items.len());
+            for item in items {
+                rendered.push(clif_emit_expr(builder, ctx, item, locals, next_var)?);
             }
-            first.unwrap_or_else(|| ClifValue {
-                value: builder.ins().iconst(pointer_sized_clif_type(), 0),
-                ty: pointer_sized_clif_type(),
-            })
+            clif_emit_aggregate_handle(builder, ctx, 0, &rendered)?
+        }
+        ast::Expr::StructInit { fields, .. } => {
+            let mut rendered = Vec::with_capacity(fields.len());
+            for (_, value) in fields {
+                rendered.push(clif_emit_expr(builder, ctx, value, locals, next_var)?);
+            }
+            clif_emit_aggregate_handle(builder, ctx, 0, &rendered)?
         }
         ast::Expr::EnumInit {
             enum_name,
@@ -1153,20 +1817,20 @@ pub(super) fn clif_emit_expr(
             payload,
             named_payload,
         } => {
+            let mut rendered = Vec::with_capacity(payload.len() + named_payload.len());
             for value in payload {
-                let _ = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+                rendered.push(clif_emit_expr(builder, ctx, value, locals, next_var)?);
             }
             for (_, value) in named_payload {
-                let _ = clif_emit_expr(builder, ctx, value, locals, next_var)?;
+                rendered.push(clif_emit_expr(builder, ctx, value, locals, next_var)?);
             }
             let key = format!("{enum_name}::{variant}");
-            ClifValue {
-                value: builder.ins().iconst(
-                    default_int_clif_type(),
-                    variant_tag_for_key(&key, ctx.variant_tags) as i64,
-                ),
-                ty: default_int_clif_type(),
-            }
+            clif_emit_aggregate_handle(
+                builder,
+                ctx,
+                variant_tag_for_key(&key, ctx.variant_tags),
+                &rendered,
+            )?
         }
         ast::Expr::TryCatch {
             try_expr,

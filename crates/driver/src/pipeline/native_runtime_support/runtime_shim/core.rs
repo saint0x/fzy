@@ -12,6 +12,8 @@ pub(super) fn runtime_shim_section_core() -> &'static str {
 #define FZ_MAX_LIST_ITEMS 4096
 #define FZ_MAX_MAPS 2048
 #define FZ_MAX_MAP_ENTRIES 4096
+#define FZ_MAX_AGGREGATES 4096
+#define FZ_MAX_AGGREGATE_ITEMS 64
 #define FZ_MAX_INTERVALS 512
 #define FZ_MAX_JSON_VALUES 16384
 #define FZ_MAX_STORAGE_KV 1024
@@ -104,6 +106,13 @@ typedef struct {
   int32_t map_handle;
 } fz_storage_kv_state;
 
+typedef struct {
+  int in_use;
+  int32_t tag;
+  int32_t count;
+  uint64_t items[FZ_MAX_AGGREGATE_ITEMS];
+} fz_aggregate_state;
+
 static fz_proc_state fz_proc_states[FZ_MAX_PROC_STATES];
 static pthread_mutex_t fz_proc_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_proc_default_timeout_ms = 30000;
@@ -112,6 +121,7 @@ static int32_t fz_last_exit_class = 0;
 static fz_list_state fz_lists[FZ_MAX_LISTS];
 static fz_array_state fz_arrays[FZ_MAX_LISTS];
 static fz_map_state fz_maps[FZ_MAX_MAPS];
+static fz_aggregate_state fz_aggregates[FZ_MAX_AGGREGATES];
 static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
 static fz_json_value_state fz_json_values[FZ_MAX_JSON_VALUES];
 static fz_storage_kv_state fz_storage_kv[FZ_MAX_STORAGE_KV];
@@ -276,6 +286,25 @@ static int32_t fz_list_alloc(void) {
   return -1;
 }
 
+static int32_t fz_aggregate_alloc(void) {
+  for (int i = 0; i < FZ_MAX_AGGREGATES; i++) {
+    if (!fz_aggregates[i].in_use) {
+      memset(&fz_aggregates[i], 0, sizeof(fz_aggregates[i]));
+      fz_aggregates[i].in_use = 1;
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+static fz_aggregate_state* fz_aggregate_get(uint64_t handle) {
+  if (handle == 0 || handle > (uint64_t)FZ_MAX_AGGREGATES) {
+    return NULL;
+  }
+  fz_aggregate_state* aggregate = &fz_aggregates[(size_t)handle - 1];
+  return aggregate->in_use ? aggregate : NULL;
+}
+
 static fz_list_state* fz_list_get(int32_t handle) {
   if (handle <= 0 || handle > FZ_MAX_LISTS) {
     return NULL;
@@ -324,6 +353,53 @@ static int fz_array_push_i32(fz_array_state* array, int32_t value) {
   }
   array->items[array->count++] = value;
   return 0;
+}
+
+uint64_t fz_native_agg_new(int32_t tag, int32_t count) {
+  if (count < 0 || count > FZ_MAX_AGGREGATE_ITEMS) {
+    return 0;
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_aggregate_alloc();
+  if (handle > 0) {
+    fz_aggregate_state* aggregate = &fz_aggregates[handle - 1];
+    aggregate->tag = tag;
+    aggregate->count = count;
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  return handle > 0 ? (uint64_t)handle : 0;
+}
+
+int32_t fz_native_agg_set_i64(uint64_t handle, int32_t index, uint64_t value) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_aggregate_state* aggregate = fz_aggregate_get(handle);
+  if (aggregate == NULL || index < 0 || index >= aggregate->count) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  aggregate->items[index] = value;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return 0;
+}
+
+uint64_t fz_native_agg_get_i64(uint64_t handle, int32_t index) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_aggregate_state* aggregate = fz_aggregate_get(handle);
+  if (aggregate == NULL || index < 0 || index >= aggregate->count) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  uint64_t value = aggregate->items[index];
+  pthread_mutex_unlock(&fz_collections_lock);
+  return value;
+}
+
+int32_t fz_native_agg_tag(uint64_t handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_aggregate_state* aggregate = fz_aggregate_get(handle);
+  int32_t tag = aggregate == NULL ? 0 : aggregate->tag;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return tag;
 }
 
 static int32_t fz_map_alloc(void) {

@@ -44,8 +44,9 @@ use self::native_backend_support::{
 use self::native_metadata::{
     build_global_const_i32_map, build_mutable_static_i32_map, build_string_literal_ids,
     build_variant_tag_map, collect_native_string_literals,
-    collect_passthrough_function_map_from_module, collect_passthrough_function_map_from_typed,
+    collect_pattern_source_function_map_from_module, collect_pattern_source_function_map_from_typed,
     collect_spawn_task_symbols, collect_variant_keys_from_stmt, llvm_static_symbol_name,
+    PatternSourceFunction,
 };
 use self::native_runtime_support::{
     collect_async_c_exports, collect_extern_c_imports, collect_used_native_data_plane_imports,
@@ -100,6 +101,15 @@ pub enum BuildProfile {
     Release,
     Verify,
 }
+
+const NATIVE_AGG_NEW: &str = "__fz_native_agg_new";
+const NATIVE_AGG_SET_I64: &str = "__fz_native_agg_set_i64";
+const NATIVE_AGG_GET_I64: &str = "__fz_native_agg_get_i64";
+const NATIVE_AGG_TAG: &str = "__fz_native_agg_tag";
+const NATIVE_AGG_NEW_SYMBOL: &str = "fz_native_agg_new";
+const NATIVE_AGG_SET_I64_SYMBOL: &str = "fz_native_agg_set_i64";
+const NATIVE_AGG_GET_I64_SYMBOL: &str = "fz_native_agg_get_i64";
+const NATIVE_AGG_TAG_SYMBOL: &str = "fz_native_agg_tag";
 
 #[derive(Debug, Clone)]
 pub struct BuildArtifact {
@@ -1704,14 +1714,14 @@ struct ControlFlowBuilder {
     next_loop_id: usize,
     next_temp: usize,
     variant_tags: HashMap<String, i32>,
-    passthrough_functions: HashMap<String, usize>,
+    pattern_source_functions: HashMap<String, PatternSourceFunction>,
     known_pattern_values: HashMap<String, ast::Expr>,
 }
 
 impl ControlFlowBuilder {
     fn new(
         variant_tags: HashMap<String, i32>,
-        passthrough_functions: HashMap<String, usize>,
+        pattern_source_functions: HashMap<String, PatternSourceFunction>,
     ) -> Self {
         Self {
             blocks: vec![CfgBuildBlock {
@@ -1723,7 +1733,7 @@ impl ControlFlowBuilder {
             next_loop_id: 0,
             next_temp: 0,
             variant_tags,
-            passthrough_functions,
+            pattern_source_functions,
             known_pattern_values: HashMap::new(),
         }
     }
@@ -1783,7 +1793,8 @@ impl ControlFlowBuilder {
                     if let Some(resolved) = resolve_pattern_source_expr(
                         value,
                         &self.known_pattern_values,
-                        &self.passthrough_functions,
+                        &self.pattern_source_functions,
+                        &self.variant_tags,
                     ) {
                         self.known_pattern_values.insert(name.clone(), resolved);
                     } else {
@@ -1808,7 +1819,8 @@ impl ControlFlowBuilder {
                     let resolved = resolve_pattern_source_expr(
                         value,
                         &self.known_pattern_values,
-                        &self.passthrough_functions,
+                        &self.pattern_source_functions,
+                        &self.variant_tags,
                     )
                     .unwrap_or_else(|| value.clone());
                     self.append_stmt(
@@ -1825,7 +1837,8 @@ impl ControlFlowBuilder {
                     if let Some(resolved) = resolve_pattern_source_expr(
                         value,
                         &self.known_pattern_values,
-                        &self.passthrough_functions,
+                        &self.pattern_source_functions,
+                        &self.variant_tags,
                     ) {
                         self.known_pattern_values.insert(target.clone(), resolved);
                     } else {
@@ -2239,7 +2252,8 @@ impl ControlFlowBuilder {
                     let resolved_scrutinee = resolve_pattern_source_expr(
                         scrutinee,
                         &self.known_pattern_values,
-                        &self.passthrough_functions,
+                        &self.pattern_source_functions,
+                        &self.variant_tags,
                     )
                     .unwrap_or_else(|| scrutinee.clone());
                     if arms.is_empty() {
@@ -2461,9 +2475,9 @@ impl ControlFlowBuilder {
 fn build_control_flow_cfg(
     body: &[ast::Stmt],
     variant_tags: &HashMap<String, i32>,
-    passthrough_functions: &HashMap<String, usize>,
+    pattern_source_functions: &HashMap<String, PatternSourceFunction>,
 ) -> Result<ControlFlowCfg> {
-    ControlFlowBuilder::new(variant_tags.clone(), passthrough_functions.clone()).finish(body)
+    ControlFlowBuilder::new(variant_tags.clone(), pattern_source_functions.clone()).finish(body)
 }
 
 fn body_contains_break_at_depth(body: &[ast::Stmt], depth: usize) -> bool {
@@ -2530,6 +2544,7 @@ fn pattern_to_expr(
             }
         }
         ast::Pattern::Struct { .. } => ast::Expr::Bool(true),
+        ast::Pattern::Tuple(_) => ast::Expr::Bool(true),
         ast::Pattern::Or(patterns) => {
             let mut iter = patterns.iter();
             let first = iter
@@ -2570,17 +2585,25 @@ fn pattern_switch_values(
             }
             Some(out)
         }
-        ast::Pattern::Wildcard | ast::Pattern::Ident(_) | ast::Pattern::Struct { .. } => None,
+        ast::Pattern::Wildcard
+        | ast::Pattern::Ident(_)
+        | ast::Pattern::Tuple(_)
+        | ast::Pattern::Struct { .. } => None,
     }
 }
 
 fn pattern_has_variant_payload_bindings(pattern: &ast::Pattern) -> bool {
     match pattern {
-        ast::Pattern::Variant { bindings, .. } => !bindings.is_empty(),
+        ast::Pattern::Variant {
+            bindings,
+            named_bindings,
+            ..
+        } => !bindings.is_empty() || !named_bindings.is_empty(),
         ast::Pattern::Or(patterns) => patterns.iter().any(pattern_has_variant_payload_bindings),
         ast::Pattern::Wildcard
         | ast::Pattern::Int(_)
         | ast::Pattern::Bool(_)
+        | ast::Pattern::Tuple(_)
         | ast::Pattern::Struct { .. }
         | ast::Pattern::Ident(_) => false,
     }
@@ -2593,9 +2616,31 @@ fn pattern_has_struct_field_bindings(pattern: &ast::Pattern) -> bool {
         ast::Pattern::Wildcard
         | ast::Pattern::Int(_)
         | ast::Pattern::Bool(_)
+        | ast::Pattern::Tuple(_)
         | ast::Pattern::Ident(_)
         | ast::Pattern::Variant { .. } => false,
     }
+}
+
+fn pattern_has_tuple_bindings(items: &[ast::Pattern]) -> bool {
+    items.iter().any(|item| match item {
+        ast::Pattern::Wildcard => false,
+        ast::Pattern::Int(_) | ast::Pattern::Bool(_) | ast::Pattern::Ident(_) => true,
+        ast::Pattern::Tuple(nested) => pattern_has_tuple_bindings(nested),
+        ast::Pattern::Struct { fields, .. } => fields.iter().any(|(_, binding)| binding != "_"),
+        ast::Pattern::Variant {
+            bindings,
+            named_bindings,
+            ..
+        } => !bindings.is_empty() || !named_bindings.is_empty(),
+        ast::Pattern::Or(patterns) => patterns.iter().any(pattern_has_variant_payload_bindings)
+            || patterns.iter().any(pattern_has_struct_field_bindings)
+            || patterns.iter().any(|pattern| match pattern {
+                ast::Pattern::Tuple(nested) => pattern_has_tuple_bindings(nested),
+                ast::Pattern::Ident(_) | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => true,
+                _ => false,
+            }),
+    })
 }
 
 fn pattern_matches_resolved_scrutinee(
@@ -2637,6 +2682,15 @@ fn pattern_matches_resolved_scrutinee(
                 ..
             } if value_name == name
         ),
+        ast::Pattern::Tuple(items) => match scrutinee {
+            ast::Expr::Tuple(values) => {
+                items.len() == values.len()
+                    && items.iter().zip(values.iter()).all(|(pattern, value)| {
+                        pattern_matches_resolved_scrutinee(pattern, value, variant_tags)
+                    })
+            }
+            _ => false,
+        },
         ast::Pattern::Or(patterns) => patterns
             .iter()
             .any(|pattern| pattern_matches_resolved_scrutinee(pattern, scrutinee, variant_tags)),
@@ -2646,38 +2700,860 @@ fn pattern_matches_resolved_scrutinee(
 fn resolve_pattern_source_expr(
     expr: &ast::Expr,
     known_values: &HashMap<String, ast::Expr>,
-    passthrough_functions: &HashMap<String, usize>,
+    pattern_source_functions: &HashMap<String, PatternSourceFunction>,
+    variant_tags: &HashMap<String, i32>,
 ) -> Option<ast::Expr> {
-    fn resolve_inner(
+    fn extract_terminal_return_expr(body: &[ast::Stmt]) -> Option<&ast::Expr> {
+        body.iter().rev().find_map(|stmt| match stmt {
+            ast::Stmt::Return(Some(expr)) => Some(expr),
+            _ => None,
+        })
+    }
+
+    fn substitute_pattern_source_template(
+        expr: &ast::Expr,
+        bindings: &HashMap<String, ast::Expr>,
+    ) -> ast::Expr {
+        match expr {
+            ast::Expr::Ident(name) => bindings
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| ast::Expr::Ident(name.clone())),
+            ast::Expr::Call { callee, args } => ast::Expr::Call {
+                callee: callee.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| substitute_pattern_source_template(arg, bindings))
+                    .collect(),
+            },
+            ast::Expr::FieldAccess { base, field } => ast::Expr::FieldAccess {
+                base: Box::new(substitute_pattern_source_template(base, bindings)),
+                field: field.clone(),
+            },
+            ast::Expr::StructInit { name, fields } => ast::Expr::StructInit {
+                name: name.clone(),
+                fields: fields
+                    .iter()
+                    .map(|(field, value)| {
+                        (
+                            field.clone(),
+                            substitute_pattern_source_template(value, bindings),
+                        )
+                    })
+                    .collect(),
+            },
+            ast::Expr::EnumInit {
+                enum_name,
+                variant,
+                payload,
+                named_payload,
+            } => ast::Expr::EnumInit {
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                payload: payload
+                    .iter()
+                    .map(|value| substitute_pattern_source_template(value, bindings))
+                    .collect(),
+                named_payload: named_payload
+                    .iter()
+                    .map(|(field, value)| {
+                        (
+                            field.clone(),
+                            substitute_pattern_source_template(value, bindings),
+                        )
+                    })
+                    .collect(),
+            },
+            ast::Expr::Group(inner) => {
+                ast::Expr::Group(Box::new(substitute_pattern_source_template(inner, bindings)))
+            }
+            ast::Expr::Tuple(items) => ast::Expr::Tuple(
+                items
+                    .iter()
+                    .map(|item| substitute_pattern_source_template(item, bindings))
+                    .collect(),
+            ),
+            ast::Expr::Await(inner) => {
+                ast::Expr::Await(Box::new(substitute_pattern_source_template(inner, bindings)))
+            }
+            ast::Expr::Discard(inner) => {
+                ast::Expr::Discard(Box::new(substitute_pattern_source_template(inner, bindings)))
+            }
+            ast::Expr::TryCatch {
+                try_expr,
+                catch_expr,
+            } => ast::Expr::TryCatch {
+                try_expr: Box::new(substitute_pattern_source_template(try_expr, bindings)),
+                catch_expr: Box::new(substitute_pattern_source_template(catch_expr, bindings)),
+            },
+            ast::Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => ast::Expr::If {
+                condition: Box::new(substitute_pattern_source_template(condition, bindings)),
+                then_expr: Box::new(substitute_pattern_source_template(then_expr, bindings)),
+                else_expr: Box::new(substitute_pattern_source_template(else_expr, bindings)),
+            },
+            ast::Expr::Match { scrutinee, arms } => ast::Expr::Match {
+                scrutinee: Box::new(substitute_pattern_source_template(scrutinee, bindings)),
+                arms: arms
+                    .iter()
+                    .map(|arm| ast::MatchArm {
+                        pattern: arm.pattern.clone(),
+                        guard: arm
+                            .guard
+                            .as_ref()
+                            .map(|guard| substitute_pattern_source_template(guard, bindings)),
+                        returns: arm.returns,
+                        value: substitute_pattern_source_template(&arm.value, bindings),
+                    })
+                    .collect(),
+            },
+            ast::Expr::Range {
+                start,
+                end,
+                inclusive,
+            } => ast::Expr::Range {
+                start: Box::new(substitute_pattern_source_template(start, bindings)),
+                end: Box::new(substitute_pattern_source_template(end, bindings)),
+                inclusive: *inclusive,
+            },
+            ast::Expr::ArrayLiteral(items) => ast::Expr::ArrayLiteral(
+                items
+                    .iter()
+                    .map(|item| substitute_pattern_source_template(item, bindings))
+                    .collect(),
+            ),
+            ast::Expr::ObjectLiteral(fields) => ast::Expr::ObjectLiteral(
+                fields
+                    .iter()
+                    .map(|(field, value)| {
+                        (
+                            field.clone(),
+                            substitute_pattern_source_template(value, bindings),
+                        )
+                    })
+                    .collect(),
+            ),
+            ast::Expr::Index { base, index } => ast::Expr::Index {
+                base: Box::new(substitute_pattern_source_template(base, bindings)),
+                index: Box::new(substitute_pattern_source_template(index, bindings)),
+            },
+            ast::Expr::Unary { op, expr } => ast::Expr::Unary {
+                op: *op,
+                expr: Box::new(substitute_pattern_source_template(expr, bindings)),
+            },
+            ast::Expr::Binary { op, left, right } => ast::Expr::Binary {
+                op: *op,
+                left: Box::new(substitute_pattern_source_template(left, bindings)),
+                right: Box::new(substitute_pattern_source_template(right, bindings)),
+            },
+            ast::Expr::Closure {
+                params,
+                return_type,
+                body,
+            } => ast::Expr::Closure {
+                params: params.clone(),
+                return_type: return_type.clone(),
+                body: body.clone(),
+            },
+            ast::Expr::UnsafeBlock { body, meta } => ast::Expr::UnsafeBlock {
+                body: body.clone(),
+                meta: meta.clone(),
+            },
+            ast::Expr::While {
+                condition,
+                body,
+            } => ast::Expr::While {
+                condition: Box::new(substitute_pattern_source_template(condition, bindings)),
+                body: body.clone(),
+            },
+            ast::Expr::For {
+                init,
+                condition,
+                step,
+                body,
+            } => ast::Expr::For {
+                init: init.clone(),
+                condition: condition
+                    .as_ref()
+                    .map(|value| Box::new(substitute_pattern_source_template(value, bindings))),
+                step: step.clone(),
+                body: body.clone(),
+            },
+            ast::Expr::ForIn {
+                binding,
+                iterable,
+                body,
+            } => ast::Expr::ForIn {
+                binding: binding.clone(),
+                iterable: Box::new(substitute_pattern_source_template(iterable, bindings)),
+                body: body.clone(),
+            },
+            ast::Expr::Loop { body } => ast::Expr::Loop { body: body.clone() },
+            ast::Expr::Break(value) => ast::Expr::Break(
+                value
+                    .as_ref()
+                    .map(|value| Box::new(substitute_pattern_source_template(value, bindings))),
+            ),
+            ast::Expr::Return(value) => ast::Expr::Return(
+                value
+                    .as_ref()
+                    .map(|value| Box::new(substitute_pattern_source_template(value, bindings))),
+            ),
+            ast::Expr::Int(_)
+            | ast::Expr::Float { .. }
+            | ast::Expr::Char(_)
+            | ast::Expr::Bool(_)
+            | ast::Expr::Str(_)
+            | ast::Expr::Continue => expr.clone(),
+        }
+    }
+
+    fn resolve_pattern_source_function_call<
+        ResolveFn,
+        EvalScalarFn,
+        SubstituteFn,
+    >(
+        function: &PatternSourceFunction,
+        args: &[ast::Expr],
+        _known_values: &HashMap<String, ast::Expr>,
+        pattern_source_functions: &HashMap<String, PatternSourceFunction>,
+        variant_tags: &HashMap<String, i32>,
+        depth: usize,
+        substitute_pattern_source_template: &SubstituteFn,
+        resolve_inner: &ResolveFn,
+        eval_resolved_scalar_expr: &EvalScalarFn,
+    ) -> Option<ast::Expr>
+    where
+        ResolveFn: Fn(
+            &ast::Expr,
+            &HashMap<String, ast::Expr>,
+            &HashMap<String, PatternSourceFunction>,
+            &HashMap<String, i32>,
+            usize,
+        ) -> Option<ast::Expr>,
+        EvalScalarFn: Fn(
+            &ast::Expr,
+            &HashMap<String, ast::Expr>,
+            &HashMap<String, PatternSourceFunction>,
+            &HashMap<String, i32>,
+            usize,
+        ) -> Option<ast::Expr>,
+        SubstituteFn: Fn(&ast::Expr, &HashMap<String, ast::Expr>) -> ast::Expr,
+    {
+        if function.params.len() != args.len() || depth > 32 {
+            return None;
+        }
+        let mut env = function
+            .params
+            .iter()
+            .cloned()
+            .zip(args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        for stmt in &function.body {
+            match stmt {
+                ast::Stmt::Let { name, value, .. } => {
+                    let expanded = substitute_pattern_source_template(value, &env);
+                    env.insert(name.clone(), expanded);
+                }
+                ast::Stmt::Assign { target, value } => {
+                    let expanded = substitute_pattern_source_template(value, &env);
+                    env.insert(target.clone(), expanded);
+                }
+                ast::Stmt::Return(Some(expr)) => {
+                    let expanded = substitute_pattern_source_template(expr, &env);
+                    return Some(expanded);
+                }
+                ast::Stmt::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    let expanded_condition =
+                        substitute_pattern_source_template(condition, &env);
+                    let condition = eval_resolved_scalar_expr(
+                        &expanded_condition,
+                        &env,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    )?;
+                    let branch = match condition {
+                        ast::Expr::Bool(true) => then_body,
+                        ast::Expr::Bool(false) => else_body,
+                        ast::Expr::Int(value) => {
+                            if value != 0 { then_body } else { else_body }
+                        }
+                        _ => return None,
+                    };
+                    if let Some(value) = resolve_pattern_source_stmt_branch(
+                        branch,
+                        &env,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                        substitute_pattern_source_template,
+                        resolve_inner,
+                        eval_resolved_scalar_expr,
+                    ) {
+                        return Some(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        extract_terminal_return_expr(&function.body)
+            .map(|expr| substitute_pattern_source_template(expr, &env))
+    }
+
+    fn resolve_pattern_source_stmt_branch<
+        ResolveFn,
+        EvalScalarFn,
+        SubstituteFn,
+    >(
+        body: &[ast::Stmt],
+        parent_env: &HashMap<String, ast::Expr>,
+        pattern_source_functions: &HashMap<String, PatternSourceFunction>,
+        variant_tags: &HashMap<String, i32>,
+        depth: usize,
+        substitute_pattern_source_template: &SubstituteFn,
+        resolve_inner: &ResolveFn,
+        eval_resolved_scalar_expr: &EvalScalarFn,
+    ) -> Option<ast::Expr>
+    where
+        ResolveFn: Fn(
+            &ast::Expr,
+            &HashMap<String, ast::Expr>,
+            &HashMap<String, PatternSourceFunction>,
+            &HashMap<String, i32>,
+            usize,
+        ) -> Option<ast::Expr>,
+        EvalScalarFn: Fn(
+            &ast::Expr,
+            &HashMap<String, ast::Expr>,
+            &HashMap<String, PatternSourceFunction>,
+            &HashMap<String, i32>,
+            usize,
+        ) -> Option<ast::Expr>,
+        SubstituteFn: Fn(&ast::Expr, &HashMap<String, ast::Expr>) -> ast::Expr,
+    {
+        if depth > 32 {
+            return None;
+        }
+        let mut env = parent_env.clone();
+        for stmt in body {
+            match stmt {
+                ast::Stmt::Let { name, value, .. } => {
+                    env.insert(
+                        name.clone(),
+                        substitute_pattern_source_template(value, &env),
+                    );
+                }
+                ast::Stmt::Assign { target, value } => {
+                    env.insert(
+                        target.clone(),
+                        substitute_pattern_source_template(value, &env),
+                    );
+                }
+                ast::Stmt::Return(Some(expr)) => {
+                    return Some(substitute_pattern_source_template(expr, &env));
+                }
+                ast::Stmt::Expr(expr) => {
+                    if let Some(resolved) = resolve_inner(
+                        &substitute_pattern_source_template(expr, &env),
+                        &env,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    ) {
+                        if matches!(
+                            resolved,
+                            ast::Expr::Tuple(_)
+                                | ast::Expr::StructInit { .. }
+                                | ast::Expr::EnumInit { .. }
+                        ) {
+                            return Some(resolved);
+                        }
+                    }
+                }
+                ast::Stmt::If {
+                    condition,
+                    then_body,
+                    else_body,
+                } => {
+                    let condition =
+                        substitute_pattern_source_template(condition, &env);
+                    let condition = eval_resolved_scalar_expr(
+                        &condition,
+                        &env,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    )?;
+                    let branch = match condition {
+                        ast::Expr::Bool(true) => then_body,
+                        ast::Expr::Bool(false) => else_body,
+                        ast::Expr::Int(value) => {
+                            if value != 0 { then_body } else { else_body }
+                        }
+                        _ => return None,
+                    };
+                    return resolve_pattern_source_stmt_branch(
+                        branch,
+                        &env,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                        substitute_pattern_source_template,
+                        resolve_inner,
+                        eval_resolved_scalar_expr,
+                    );
+                }
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    fn eval_resolved_scalar_expr(
         expr: &ast::Expr,
         known_values: &HashMap<String, ast::Expr>,
-        passthrough_functions: &HashMap<String, usize>,
+        pattern_source_functions: &HashMap<String, PatternSourceFunction>,
+        variant_tags: &HashMap<String, i32>,
         depth: usize,
     ) -> Option<ast::Expr> {
         if depth > 32 {
             return None;
         }
         match expr {
-            ast::Expr::EnumInit { .. } | ast::Expr::StructInit { .. } => Some(expr.clone()),
-            ast::Expr::Group(inner) => {
-                resolve_inner(inner, known_values, passthrough_functions, depth + 1)
+            ast::Expr::Int(_) | ast::Expr::Bool(_) => Some(expr.clone()),
+            ast::Expr::Group(inner) => eval_resolved_scalar_expr(
+                inner,
+                known_values,
+                pattern_source_functions,
+                variant_tags,
+                depth + 1,
+            ),
+            ast::Expr::Ident(name) => {
+                let value = known_values.get(name)?;
+                eval_resolved_scalar_expr(
+                    value,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
             }
-            ast::Expr::Ident(name) => known_values.get(name).and_then(|value| {
-                resolve_inner(value, known_values, passthrough_functions, depth + 1)
-            }),
             ast::Expr::Call { callee, args } => {
-                if let Some(index) = passthrough_functions.get(callee).copied() {
-                    let arg = args.get(index)?;
-                    resolve_inner(arg, known_values, passthrough_functions, depth + 1)
-                } else {
-                    None
+                let function = pattern_source_functions.get(callee)?;
+                if function.params.len() != args.len() {
+                    return None;
                 }
+                if let Some(resolved) = resolve_pattern_source_function_call(
+                    function,
+                    args,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                    &substitute_pattern_source_template,
+                    &resolve_inner,
+                    &eval_resolved_scalar_expr,
+                ) {
+                    return eval_resolved_scalar_expr(
+                        &resolved,
+                        known_values,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    );
+                }
+                let params = &function.params;
+                let template = extract_terminal_return_expr(&function.body)?;
+                if params.len() != args.len() {
+                    return None;
+                }
+                let bindings = params
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect::<HashMap<_, _>>();
+                let expanded = substitute_pattern_source_template(template, &bindings);
+                eval_resolved_scalar_expr(
+                    &expanded,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
+            }
+            ast::Expr::FieldAccess { base, field } => {
+                let resolved_base = resolve_inner(
+                    base,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )?;
+                let field_expr = resolve_field_expr(&resolved_base, field)?;
+                eval_resolved_scalar_expr(
+                    &field_expr,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
+            }
+            ast::Expr::Unary { op, expr } => {
+                let value = eval_resolved_scalar_expr(
+                    expr,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )?;
+                match (op, value) {
+                    (ast::UnaryOp::Not, ast::Expr::Bool(value)) => Some(ast::Expr::Bool(!value)),
+                    (ast::UnaryOp::Not, ast::Expr::Int(value)) => Some(ast::Expr::Bool(value == 0)),
+                    (ast::UnaryOp::Neg, ast::Expr::Int(value)) => Some(ast::Expr::Int(-value)),
+                    (ast::UnaryOp::Plus, ast::Expr::Int(value)) => Some(ast::Expr::Int(value)),
+                    _ => None,
+                }
+            }
+            ast::Expr::Binary { op, left, right } => {
+                let left = eval_resolved_scalar_expr(
+                    left,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )?;
+                let right = eval_resolved_scalar_expr(
+                    right,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )?;
+                match (op, left, right) {
+                    (ast::BinaryOp::Add, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        Some(ast::Expr::Int(a + b))
+                    }
+                    (ast::BinaryOp::Sub, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        Some(ast::Expr::Int(a - b))
+                    }
+                    (ast::BinaryOp::Mul, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        Some(ast::Expr::Int(a * b))
+                    }
+                    (ast::BinaryOp::Div, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        (b != 0).then_some(ast::Expr::Int(a / b))
+                    }
+                    (ast::BinaryOp::Mod, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        (b != 0).then_some(ast::Expr::Int(a % b))
+                    }
+                    (ast::BinaryOp::Eq, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        Some(ast::Expr::Bool(a == b))
+                    }
+                    (ast::BinaryOp::Neq, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        Some(ast::Expr::Bool(a != b))
+                    }
+                    (ast::BinaryOp::Lt, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        Some(ast::Expr::Bool(a < b))
+                    }
+                    (ast::BinaryOp::Lte, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        Some(ast::Expr::Bool(a <= b))
+                    }
+                    (ast::BinaryOp::Gt, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        Some(ast::Expr::Bool(a > b))
+                    }
+                    (ast::BinaryOp::Gte, ast::Expr::Int(a), ast::Expr::Int(b)) => {
+                        Some(ast::Expr::Bool(a >= b))
+                    }
+                    (ast::BinaryOp::Eq, ast::Expr::Bool(a), ast::Expr::Bool(b)) => {
+                        Some(ast::Expr::Bool(a == b))
+                    }
+                    (ast::BinaryOp::Neq, ast::Expr::Bool(a), ast::Expr::Bool(b)) => {
+                        Some(ast::Expr::Bool(a != b))
+                    }
+                    (ast::BinaryOp::And, ast::Expr::Bool(a), ast::Expr::Bool(b)) => {
+                        Some(ast::Expr::Bool(a && b))
+                    }
+                    (ast::BinaryOp::Or, ast::Expr::Bool(a), ast::Expr::Bool(b)) => {
+                        Some(ast::Expr::Bool(a || b))
+                    }
+                    _ => None,
+                }
+            }
+            ast::Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                let condition = eval_resolved_scalar_expr(
+                    condition,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )?;
+                match condition {
+                    ast::Expr::Bool(true) => eval_resolved_scalar_expr(
+                        then_expr,
+                        known_values,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    ),
+                    ast::Expr::Bool(false) => eval_resolved_scalar_expr(
+                        else_expr,
+                        known_values,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    ),
+                    ast::Expr::Int(value) => {
+                        let branch = if value != 0 { then_expr } else { else_expr };
+                        eval_resolved_scalar_expr(
+                            branch,
+                            known_values,
+                            pattern_source_functions,
+                            variant_tags,
+                            depth + 1,
+                        )
+                    }
+                    _ => None,
+                }
+            }
+            ast::Expr::Match { scrutinee, arms } => {
+                let resolved_scrutinee = resolve_inner(
+                    scrutinee,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
+                .or_else(|| {
+                    eval_resolved_scalar_expr(
+                        scrutinee,
+                        known_values,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    )
+                })?;
+                for arm in arms {
+                    if !pattern_matches_resolved_scrutinee(
+                        &arm.pattern,
+                        &resolved_scrutinee,
+                        variant_tags,
+                    ) {
+                        continue;
+                    }
+                    let mut guard_values = known_values.clone();
+                    if let Ok(binding_stmts) =
+                        bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee, variant_tags)
+                    {
+                        for stmt in binding_stmts {
+                            if let ast::Stmt::Let { name, value, .. } = stmt {
+                                guard_values.insert(name, value);
+                            }
+                        }
+                    }
+                    if let Some(guard) = &arm.guard {
+                        let Some(guard_value) = eval_resolved_scalar_expr(
+                            guard,
+                            &guard_values,
+                            pattern_source_functions,
+                            variant_tags,
+                            depth + 1,
+                        ) else {
+                            continue;
+                        };
+                        match guard_value {
+                            ast::Expr::Bool(true) => {}
+                            ast::Expr::Int(value) if value != 0 => {}
+                            _ => continue,
+                        }
+                    }
+                    return eval_resolved_scalar_expr(
+                        &arm.value,
+                        &guard_values,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    );
+                }
+                None
             }
             _ => None,
         }
     }
 
-    resolve_inner(expr, known_values, passthrough_functions, 0)
+    fn resolve_inner(
+        expr: &ast::Expr,
+        known_values: &HashMap<String, ast::Expr>,
+        pattern_source_functions: &HashMap<String, PatternSourceFunction>,
+        variant_tags: &HashMap<String, i32>,
+        depth: usize,
+    ) -> Option<ast::Expr> {
+        if depth > 32 {
+            return None;
+        }
+        match expr {
+            ast::Expr::EnumInit { .. } | ast::Expr::StructInit { .. } | ast::Expr::Tuple(_) => {
+                Some(expr.clone())
+            }
+            ast::Expr::Group(inner) => {
+                resolve_inner(
+                    inner,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
+            }
+            ast::Expr::Ident(name) => known_values.get(name).and_then(|value| {
+                resolve_inner(
+                    value,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
+            }),
+            ast::Expr::Call { callee, args } => {
+                let function = pattern_source_functions.get(callee)?;
+                let resolved = resolve_pattern_source_function_call(
+                    function,
+                    args,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                    &substitute_pattern_source_template,
+                    &resolve_inner,
+                    &eval_resolved_scalar_expr,
+                )?;
+                resolve_inner(
+                    &resolved,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
+            }
+            ast::Expr::FieldAccess { base, field } => {
+                let resolved_base = resolve_inner(
+                    base,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )?;
+                let field_expr = resolve_field_expr(&resolved_base, field)?;
+                resolve_inner(
+                    &field_expr,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
+                .or(Some(field_expr))
+            }
+            ast::Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                let condition = eval_resolved_scalar_expr(
+                    condition,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )?;
+                let branch = match condition {
+                    ast::Expr::Bool(true) => then_expr,
+                    ast::Expr::Bool(false) => else_expr,
+                    ast::Expr::Int(value) => {
+                        if value != 0 { then_expr } else { else_expr }
+                    }
+                    _ => return None,
+                };
+                resolve_inner(
+                    branch,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
+            }
+            ast::Expr::Match { scrutinee, arms } => {
+                let resolved_scrutinee = resolve_inner(
+                    scrutinee,
+                    known_values,
+                    pattern_source_functions,
+                    variant_tags,
+                    depth + 1,
+                )
+                .or_else(|| {
+                    eval_resolved_scalar_expr(
+                        scrutinee,
+                        known_values,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    )
+                })?;
+                for arm in arms {
+                    if !pattern_matches_resolved_scrutinee(
+                        &arm.pattern,
+                        &resolved_scrutinee,
+                        variant_tags,
+                    ) {
+                        continue;
+                    }
+                    let mut arm_values = known_values.clone();
+                    if let Ok(binding_stmts) =
+                        bindings_for_match_arm_pattern(&arm.pattern, &resolved_scrutinee, variant_tags)
+                    {
+                        for stmt in binding_stmts {
+                            if let ast::Stmt::Let { name, value, .. } = stmt {
+                                arm_values.insert(name, value);
+                            }
+                        }
+                    }
+                    if let Some(guard) = &arm.guard {
+                        let guard = eval_resolved_scalar_expr(
+                            guard,
+                            &arm_values,
+                            pattern_source_functions,
+                            variant_tags,
+                            depth + 1,
+                        )?;
+                        match guard {
+                            ast::Expr::Bool(true) => {}
+                            ast::Expr::Int(value) if value != 0 => {}
+                            _ => continue,
+                        }
+                    }
+                    return resolve_inner(
+                        &arm.value,
+                        &arm_values,
+                        pattern_source_functions,
+                        variant_tags,
+                        depth + 1,
+                    );
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    resolve_inner(expr, known_values, pattern_source_functions, variant_tags, 0)
 }
 
 fn resolve_field_expr(base: &ast::Expr, field: &str) -> Option<ast::Expr> {
@@ -2714,44 +3590,34 @@ fn bindings_for_match_arm_pattern(
     variant_tags: &HashMap<String, i32>,
 ) -> Result<Vec<ast::Stmt>> {
     match pattern {
+        ast::Pattern::Tuple(items) => {
+            if !pattern_has_tuple_bindings(items) {
+                Ok(Vec::new())
+            } else {
+                Ok(vec![ast::Stmt::LetPattern {
+                    pattern: pattern.clone(),
+                    mutable: false,
+                    ty: None,
+                    value: scrutinee.clone(),
+                }])
+            }
+        }
         ast::Pattern::Variant {
             enum_name,
             variant,
             bindings,
-            ..
+            named_bindings,
         } => {
-            if bindings.is_empty() {
+            if bindings.is_empty() && named_bindings.is_empty() {
                 return Ok(Vec::new());
             }
-            let ast::Expr::EnumInit {
-                enum_name: value_enum,
-                variant: value_variant,
-                payload,
-                ..
-            } = scrutinee
-            else {
-                bail!(
-                    "native backend requires literal enum scrutinee for match-arm payload bindings"
-                );
-            };
-            if value_enum != enum_name
-                || value_variant != variant
-                || payload.len() != bindings.len()
-            {
-                bail!(
-                    "native backend requires exact literal enum variant match for payload bindings"
-                );
-            }
-            let mut stmts = Vec::with_capacity(bindings.len());
-            for (name, value) in bindings.iter().zip(payload.iter()) {
-                stmts.push(ast::Stmt::Let {
-                    name: name.clone(),
-                    mutable: false,
-                    ty: None,
-                    value: value.clone(),
-                });
-            }
-            Ok(stmts)
+            let _ = (enum_name, variant);
+            Ok(vec![ast::Stmt::LetPattern {
+                pattern: pattern.clone(),
+                mutable: false,
+                ty: None,
+                value: scrutinee.clone(),
+            }])
         }
         ast::Pattern::Struct { name, fields } => {
             let binding_fields = fields
@@ -2761,35 +3627,13 @@ fn bindings_for_match_arm_pattern(
             if binding_fields.is_empty() {
                 return Ok(Vec::new());
             }
-            let ast::Expr::StructInit {
-                name: value_name,
-                fields: value_fields,
-            } = scrutinee
-            else {
-                bail!(
-                    "native backend requires literal struct scrutinee for match-arm struct bindings"
-                );
-            };
-            if value_name != name {
-                bail!(
-                    "native backend requires exact literal struct type match for struct bindings"
-                );
-            }
-            let mut stmts = Vec::with_capacity(binding_fields.len());
-            for (field_name, binding_name) in binding_fields {
-                let Some((_, field_expr)) =
-                    value_fields.iter().find(|(field, _)| field == field_name)
-                else {
-                    bail!("native backend requires struct literal fields to cover every bound pattern field");
-                };
-                stmts.push(ast::Stmt::Let {
-                    name: binding_name.clone(),
-                    mutable: false,
-                    ty: None,
-                    value: field_expr.clone(),
-                });
-            }
-            Ok(stmts)
+            let _ = name;
+            Ok(vec![ast::Stmt::LetPattern {
+                pattern: pattern.clone(),
+                mutable: false,
+                ty: None,
+                value: scrutinee.clone(),
+            }])
         }
         ast::Pattern::Or(patterns) => {
             if let Some(matched) = patterns.iter().find(|pattern| {
@@ -3356,12 +4200,13 @@ fn build_native_cfg_map(
     fir: &fir::FirModule,
     variant_tags: &HashMap<String, i32>,
 ) -> HashMap<String, Result<ControlFlowCfg, String>> {
-    let passthrough_functions = collect_passthrough_function_map_from_typed(&fir.typed_functions);
+    let pattern_source_functions =
+        collect_pattern_source_function_map_from_typed(&fir.typed_functions);
     fir.typed_functions
         .par_iter()
         .filter(|function| !is_extern_c_import_decl(function))
         .map(|function| {
-            let cfg = build_control_flow_cfg(&function.body, variant_tags, &passthrough_functions)
+            let cfg = build_control_flow_cfg(&function.body, variant_tags, &pattern_source_functions)
                 .and_then(|cfg| {
                     verify_control_flow_cfg(&cfg)?;
                     Ok(cfg)
@@ -4773,6 +5618,9 @@ fn emit_native_libraries_cranelift(
             &plan.global_const_i32,
             &plan.variant_tags,
             &mutable_global_data_ids,
+            function.local_types.clone(),
+            &fir.struct_defs,
+            &fir.enum_defs,
             signature.ret,
             cfg,
             entry,
@@ -5185,6 +6033,9 @@ fn emit_native_artifact_cranelift(
             &plan.global_const_i32,
             &plan.variant_tags,
             &mutable_global_data_ids,
+            function.local_types.clone(),
+            &fir.struct_defs,
+            &fir.enum_defs,
             signature.ret,
             cfg,
             entry,

@@ -267,6 +267,7 @@ pub enum Expr {
         body: Box<Expr>,
     },
     Group(Box<Expr>),
+    Tuple(Vec<Expr>),
     Await(Box<Expr>),
     Discard(Box<Expr>),
     TryCatch {
@@ -379,6 +380,7 @@ pub enum Pattern {
     Int(i128),
     Bool(bool),
     Ident(String),
+    Tuple(Vec<Pattern>),
     Struct {
         name: String,
         fields: Vec<(String, String)>,
@@ -396,6 +398,11 @@ impl Pattern {
     pub fn bound_names(&self, out: &mut Vec<String>) {
         match self {
             Pattern::Ident(name) => out.push(name.clone()),
+            Pattern::Tuple(items) => {
+                for item in items {
+                    item.bound_names(out);
+                }
+            }
             Pattern::Struct { fields, .. } => out.extend(
                 fields
                     .iter()
@@ -805,7 +812,7 @@ pub fn walk_expr<V: AstVisitor + ?Sized>(visitor: &mut V, expr: &Expr) {
             visitor.visit_expr(start);
             visitor.visit_expr(end);
         }
-        Expr::ArrayLiteral(items) => {
+        Expr::Tuple(items) | Expr::ArrayLiteral(items) => {
             for item in items {
                 visitor.visit_expr(item);
             }

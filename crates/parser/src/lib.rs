@@ -1481,6 +1481,32 @@ impl Parser {
 
     fn parse_single_pattern(&mut self) -> Option<Pattern> {
         let token = self.peek()?.clone();
+        if token.kind == TokenKind::LParen {
+            let _ = self.advance();
+            if self.consume(&TokenKind::RParen) {
+                return Some(Pattern::Tuple(Vec::new()));
+            }
+            let first = self.parse_pattern()?;
+            if !self.consume(&TokenKind::Comma) {
+                if !self.consume(&TokenKind::RParen) {
+                    self.push_diag_here("expected `)` to close grouped pattern");
+                    return None;
+                }
+                return Some(first);
+            }
+            let mut items = vec![first];
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                items.push(self.parse_pattern()?);
+                if !self.consume(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            if !self.consume(&TokenKind::RParen) {
+                self.push_diag_here("expected `)` to close tuple pattern");
+                return None;
+            }
+            return Some(Pattern::Tuple(items));
+        }
         if let TokenKind::Ident(struct_name) = token.kind.clone() {
             if self
                 .peek_n(1)
@@ -1526,6 +1552,27 @@ impl Parser {
                     return None;
                 }
                 Some(Pattern::Ident(name))
+            }
+            Expr::Tuple(items) => {
+                let mut patterns = Vec::with_capacity(items.len());
+                for item in items {
+                    let pattern = match item {
+                        Expr::Int(v) => Pattern::Int(v),
+                        Expr::Bool(v) => Pattern::Bool(v),
+                        Expr::Ident(name) if name == "_" => Pattern::Wildcard,
+                        Expr::Ident(name) => Pattern::Ident(name),
+                        _ => {
+                            self.push_diag_at(
+                                token.line,
+                                token.col,
+                                "tuple pattern elements must be literals, identifiers, or nested tuple patterns",
+                            );
+                            return None;
+                        }
+                    };
+                    patterns.push(pattern);
+                }
+                Some(Pattern::Tuple(patterns))
             }
             Expr::EnumInit {
                 enum_name,
@@ -1901,9 +1948,25 @@ impl Parser {
                 }
             }
             TokenKind::LParen => {
-                let inner = self.parse_expr(0)?;
-                let _ = self.consume(&TokenKind::RParen);
-                Expr::Group(Box::new(inner))
+                if self.consume(&TokenKind::RParen) {
+                    Expr::Tuple(Vec::new())
+                } else {
+                    let first = self.parse_expr(0)?;
+                    if !self.consume(&TokenKind::Comma) {
+                        let _ = self.consume(&TokenKind::RParen);
+                        Expr::Group(Box::new(first))
+                    } else {
+                        let mut items = vec![first];
+                        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                            items.push(self.parse_expr(0)?);
+                            if !self.consume(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                        let _ = self.consume(&TokenKind::RParen);
+                        Expr::Tuple(items)
+                    }
+                }
             }
             TokenKind::LBracket => {
                 let mut items = Vec::new();
@@ -4411,6 +4474,34 @@ mod tests {
                 ("right".to_string(), "r".to_string())
             ]
         );
+    }
+
+    #[test]
+    fn let_pattern_tuple_parses_as_first_class_statement() {
+        let source = r#"
+            fn main() -> i32 {
+                let (left, (right, _)) = (7, (9, 11));
+                return left + right;
+            }
+        "#;
+        let module = parse(source, "main").expect("parser should accept tuple let patterns");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        let ast::Stmt::LetPattern { pattern, .. } = &main_fn.body[0] else {
+            panic!("expected let-pattern statement");
+        };
+        let ast::Pattern::Tuple(items) = pattern else {
+            panic!("expected tuple pattern");
+        };
+        assert_eq!(items.len(), 2);
+        assert!(matches!(items[0], ast::Pattern::Ident(_)));
+        assert!(matches!(items[1], ast::Pattern::Tuple(_)));
     }
 
     #[test]

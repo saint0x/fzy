@@ -500,16 +500,16 @@
 - [✅] `static mut` declaration semantics now parse/type/lower as mutable global storage in native backends (no compatibility shim).
 - [✅] pattern/destructuring completeness in `let` and `match` for production workflows
 - [✅] pattern/destructuring slice delivered: first-class `let` pattern statements (`let Enum::Variant(...) = ...`) with scoped pattern bindings in `let` and `match`, HIR type-checking/evaluator binding semantics, FIR/driver traversal support, and parser/HIR regressions.
-- [✅] native `match` payload-binding slice delivered for literal enum scrutinees without guards, with explicit diagnostics for unsupported binding shapes.
-- [✅] struct-pattern destructuring slice delivered: first-class `Struct { field, alias: binding }` patterns in `let` and `match`, type-checked field binding semantics in HIR/evaluator, native lowering for literal struct sources, and explicit native diagnostics for unsupported non-literal struct-field binding shapes.
+- [✅] native aggregate-handle rewrite delivered for tuple/struct/enum values in LLVM + Cranelift, including runtime tag extraction and typed layout metadata for locals, parameters, calls, returns, helper-produced values, and control-flow-produced values.
+- [✅] struct/tuple/variant destructuring is now fully native across `let` and `match`, including parameter-bound and call-returned aggregates, without literal-only fallback rules.
 - [✅] expression/control construct completeness parity across parser/type/lowering/runtime/native
 - [✅] expression/control hard-reject slice delivered: parser-recognized `try/catch` now triggers explicit native compatibility diagnostics instead of silently lowering with partial semantics.
 - [✅] residual partial native expression families now hard-reject with explicit diagnostics (range outside `for-in`, non-identifier field-access chains, and unsupported struct-literal placement).
 - [✅] Ensure every parser-recognized construct is end-to-end executable with native parity or hard-rejected with explicit diagnostics and fix guidance (no silent partial semantics).
-- [✅] parser-recognized `let` pattern destructuring now lowers natively for supported pattern families (with deterministic cross-backend execution parity coverage).
-- [✅] non-lowerable native pattern cases now hard-reject with explicit diagnostics (`let` variant payload binding from non-literal sources, and `match` variant payload bindings) instead of silently degrading at emit/runtime.
+- [✅] parser-recognized `let` pattern destructuring now lowers natively through first-class aggregate handles with deterministic cross-backend execution parity coverage.
+- [✅] match-arm payload/field binding no longer depends on literal scrutinees or reconstructible source shapes.
 - [✅] Upgrade docs to publish one authoritative language-construct matrix (`implemented` / `partial` / `missing`) and gate release on matrix truthfulness.
-- [✅] Strengthen language-primitive drift gate to assert native closure lowering hooks and partial-pattern diagnostic guardrails so docs remain enforceably truthful.
+- [✅] Strengthen language-primitive drift gate to assert aggregate-handle lowering, typed local aggregate metadata, and cross-backend parameter-destructuring parity so docs remain enforceably truthful.
 
 ### Native Completeness Closure (Adoption Blocker #3)
 - [✅] Close remaining native lowering gaps so supported language constructs do not fail late in native paths.
