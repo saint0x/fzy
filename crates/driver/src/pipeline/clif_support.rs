@@ -1737,6 +1737,16 @@ pub(super) fn clif_emit_expr(
             if let Some(field_expr) = resolve_field_expr(base, field) {
                 return clif_emit_expr(builder, ctx, &field_expr, locals, next_var);
             }
+            if let Some(task_ref_name) = expr_task_ref_name(expr) {
+                if let Some(task_ref) = ctx.task_ref_ids.get(&task_ref_name).copied() {
+                    return Ok(ClifValue {
+                        value: builder
+                            .ins()
+                            .iconst(default_int_clif_type(), task_ref as i64),
+                        ty: default_int_clif_type(),
+                    });
+                }
+            }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = locals.get(&format!("{name}.{field}")).copied() {
                     ClifValue {
@@ -1747,34 +1757,12 @@ pub(super) fn clif_emit_expr(
                     if let Some(item) = binding.items.get(field) {
                         let handle = clif_emit_expr(builder, ctx, base, locals, next_var)?;
                         return clif_emit_aggregate_get(builder, ctx, handle, item.index, item.ty);
-                    } else if let Some(task_ref_name) = expr_task_ref_name(expr) {
-                        if let Some(task_ref) = ctx.task_ref_ids.get(&task_ref_name).copied() {
-                            ClifValue {
-                                value: builder
-                                    .ins()
-                                    .iconst(default_int_clif_type(), task_ref as i64),
-                                ty: default_int_clif_type(),
-                            }
-                        } else {
-                            clif_emit_expr(builder, ctx, base, locals, next_var)?
-                        }
                     } else {
                         clif_emit_expr(builder, ctx, base, locals, next_var)?
                     }
                 } else if let Some(item) = clif_struct_field_binding_for_local(name, field, ctx) {
                     let handle = clif_emit_expr(builder, ctx, base, locals, next_var)?;
                     return clif_emit_aggregate_get(builder, ctx, handle, item.index, item.ty);
-                } else if let Some(task_ref_name) = expr_task_ref_name(expr) {
-                    if let Some(task_ref) = ctx.task_ref_ids.get(&task_ref_name).copied() {
-                        ClifValue {
-                            value: builder
-                                .ins()
-                                .iconst(default_int_clif_type(), task_ref as i64),
-                            ty: default_int_clif_type(),
-                        }
-                    } else {
-                        clif_emit_expr(builder, ctx, base, locals, next_var)?
-                    }
                 } else {
                     clif_emit_expr(builder, ctx, base, locals, next_var)?
                 }

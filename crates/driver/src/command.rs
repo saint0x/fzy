@@ -338,9 +338,79 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 .map_err(scenario_error)?;
                 return render_scenario_run_result(format, run, strict_verify);
             }
-            if deterministic && host_backends {
-                bail!(
-                    "native source runs do not support `--det --host-backends`; use a scenario target or `fz test --det --host-backends` so the goal-trace bridge can record and replay host decisions deterministically"
+            if host_backends {
+                let bridge_root = std::env::temp_dir().join("fz-host-bridge");
+                std::fs::create_dir_all(&bridge_root).with_context(|| {
+                    format!(
+                        "failed creating host-backends bridge directory: {}",
+                        bridge_root.display()
+                    )
+                })?;
+                let stamp = format!(
+                    "{}-{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                );
+                let trace_path = bridge_root.join(format!("native-run-{stamp}.trace.fozzy"));
+                let bridge_plan = run_non_scenario_test_plan_with_root_guidance(
+                    &path,
+                    NonScenarioPlanRequest {
+                        deterministic: true,
+                        strict_verify,
+                        safe_profile,
+                        scheduler: Some("fifo".to_string()),
+                        seed,
+                        record: Some(&trace_path),
+                        rich_artifacts: true,
+                        filter: None,
+                    },
+                )?;
+                let artifacts = bridge_plan.artifacts.ok_or_else(|| {
+                    anyhow!(
+                        "host-backends bridge failed to produce artifacts for {}",
+                        path.display()
+                    )
+                })?;
+                let scenario = artifacts.primary_scenario_path.ok_or_else(|| {
+                    anyhow!(
+                        "host-backends bridge failed to generate a primary scenario for {}",
+                        path.display()
+                    )
+                })?;
+                let config = scenario_config_with_backends(true)?;
+                let run = fzscenario::run_scenario(
+                    &config,
+                    fzscenario::ScenarioPath::new(scenario.clone()),
+                    &fzscenario::RunOptions {
+                        det: deterministic,
+                        seed,
+                        timeout: None,
+                        reporter: scenario_reporter(format),
+                        record_trace_to: record.clone(),
+                        filter: None,
+                        jobs: None,
+                        fail_fast: false,
+                        record_collision: fzscenario::RecordCollisionPolicy::Append,
+                        profile_capture: fzscenario::ProfileCaptureLevel::Baseline,
+                        proc_backend: config.proc_backend,
+                        fs_backend: config.fs_backend,
+                        http_backend: config.http_backend,
+                        memory: scenario_memory_options(&config),
+                    },
+                )
+                .map_err(scenario_error)?;
+                return render_host_bridge_run_result(
+                    format,
+                    path.as_path(),
+                    scenario.as_path(),
+                    trace_path.as_path(),
+                    record.as_deref(),
+                    run,
+                    strict_verify,
+                    deterministic,
                 );
             }
             let unsafe_docs =
@@ -708,6 +778,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     path.as_path(),
                     scenario.as_path(),
                     trace_path.as_path(),
+                    record.as_deref(),
                     run,
                     strict_verify,
                 );
@@ -8730,9 +8801,11 @@ fn render_host_bridge_test_result(
     source: &Path,
     scenario: &Path,
     trace_path: &Path,
+    requested_record: Option<&Path>,
     run: fzscenario::RunResult,
     strict: bool,
 ) -> Result<String> {
+    materialize_requested_bridge_record(requested_record, trace_path)?;
     let status = run.summary.status;
     let strict_failure = strict && strict_checker_failure(&run.summary);
     let rendered = match format {
@@ -8767,6 +8840,83 @@ fn render_host_bridge_test_result(
         .into());
     }
     Ok(rendered)
+}
+
+fn render_host_bridge_run_result(
+    format: Format,
+    source: &Path,
+    scenario: &Path,
+    trace_path: &Path,
+    requested_record: Option<&Path>,
+    run: fzscenario::RunResult,
+    strict: bool,
+    deterministic_requested: bool,
+) -> Result<String> {
+    materialize_requested_bridge_record(requested_record, trace_path)?;
+    let status = run.summary.status;
+    let strict_failure = strict && strict_checker_failure(&run.summary);
+    let rendered = match format {
+        Format::Text => {
+            let mut out = run.summary.pretty();
+            out.push_str(&format!(
+                "\nbridge_source={}\nbridge_scenario={}\nbridge_trace={}\nrouting=host-backed-scenario-bridge\ndeterministic_requested={}",
+                source.display(),
+                scenario.display(),
+                trace_path.display(),
+                deterministic_requested
+            ));
+            out
+        }
+        Format::Json => serde_json::to_string(&serde_json::json!({
+            "bridge": {
+                "source": source.display().to_string(),
+                "scenario": scenario.display().to_string(),
+                "trace": trace_path.display().to_string(),
+                "routing": "host-backed-scenario-bridge",
+                "deterministicRequested": deterministic_requested,
+            },
+            "summary": &run.summary,
+        }))?,
+    };
+    if status != fzscenario::ExitStatus::Pass || strict_failure {
+        return Err(CommandFailure {
+            exit_code: if strict_failure {
+                1
+            } else {
+                scenario_exit_code(status)
+            },
+            output: rendered,
+        }
+        .into());
+    }
+    Ok(rendered)
+}
+
+fn materialize_requested_bridge_record(
+    requested_record: Option<&Path>,
+    bridge_trace_path: &Path,
+) -> Result<()> {
+    let Some(requested_record) = requested_record else {
+        return Ok(());
+    };
+    if requested_record == bridge_trace_path || requested_record.exists() {
+        return Ok(());
+    }
+    let parent = requested_record.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).with_context(|| {
+        format!(
+            "failed creating requested record directory: {}",
+            parent.display()
+        )
+    })?;
+    std::fs::copy(bridge_trace_path, requested_record).with_context(|| {
+        format!(
+            "failed materializing requested record {} from bridge trace {}",
+            requested_record.display(),
+            bridge_trace_path.display()
+        )
+    })?;
+    Ok(())
 }
 
 fn render_doctor_report(
@@ -10706,6 +10856,115 @@ mod tests {
     }
 
     #[test]
+    fn run_spawned_worker_preserves_json_object_payloads() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-spawn-json-{suffix}.fzy"));
+        let out_path = std::env::temp_dir().join(format!("fozzylang-spawn-json-{suffix}.json"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\nuse core.thread;\n\nfn worker() -> i32 {{\n    let payload = map.new()\n    discard map.set(payload, \"status\", json.str(\"ok\"))\n    discard map.set(payload, \"probe\", json.raw(\"7\"))\n    let doc = json.object(payload)\n    fs.write_file(\"{quoted_out}\", doc)\n    return 0\n}}\n\nfn main() -> i32 {{\n    let handle = spawn(worker)\n    return join(handle)\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("spawned json worker should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+        let content =
+            std::fs::read_to_string(&out_path).expect("spawned json output should be readable");
+        assert_ne!(
+            content.trim(),
+            "{}",
+            "spawned json payload should not collapse to empty object"
+        );
+        assert!(
+            content.contains("\"status\":\"ok\""),
+            "spawned json payload should preserve string field"
+        );
+        assert!(
+            content.contains("\"probe\":7"),
+            "spawned json payload should preserve raw numeric field"
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
+    fn run_spawned_worker_preserves_proc_result_json_payloads() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-spawn-proc-json-{suffix}.fzy"));
+        let out_path =
+            std::env::temp_dir().join(format!("fozzylang-spawn-proc-json-{suffix}.json"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn worker() -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"printf ok\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    discard proc.wait(handle, 1000)\n    let payload = map.new()\n    discard map.set(payload, \"exit\", json.str(\"0\"))\n    discard map.set(payload, \"stdout\", json.str(proc.stdout(handle)))\n    discard map.set(payload, \"stderr\", json.str(proc.stderr(handle)))\n    fs.write_file(\"{quoted_out}\", json.object(payload))\n    return 0\n}}\n\nfn main() -> i32 {{\n    let handle = spawn(worker)\n    return join(handle)\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("spawned proc json worker should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+        let content = std::fs::read_to_string(&out_path)
+            .expect("spawned proc json output should be readable");
+        assert_ne!(
+            content.trim(),
+            "{}",
+            "spawned proc json payload should not collapse to empty object"
+        );
+        assert!(content.contains("\"exit\":\"0\""));
+        assert!(content.contains("\"stdout\":\"ok\""));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
     fn native_http_post_json_applies_headers_and_preserves_raw_json_values() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let addr = listener.local_addr().expect("listener addr should resolve");
@@ -10813,6 +11072,105 @@ mod tests {
     }
 
     #[test]
+    fn request_handler_spawns_preserve_join_results_and_json_response() {
+        let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
+        let port = probe
+            .local_addr()
+            .expect("probe addr should resolve")
+            .port();
+        drop(probe);
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-http-spawn-{suffix}"));
+        let source = root.join("src/main.fzy");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"http_spawn\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"http_spawn\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.http;\nuse core.proc;\nuse core.thread;\n\nfn probe_worker() -> i32 {{\n    return 7\n}}\n\nfn left_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn right_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn write_response(conn: HttpHandle) -> i32 {{\n    let probe = spawn(probe_worker)\n    let left = spawn(left_worker)\n    let right = spawn(right_worker)\n    let probe_result = join(probe)\n    let left_result = join(left)\n    let right_result = join(right)\n    if probe_result == 7 && left_result == 0 && right_result == 0 {{\n        let payload = map.new()\n        discard map.set(payload, \"probe_result\", json.str(\"7\"))\n        discard map.set(payload, \"left_result\", json.str(\"0\"))\n        discard map.set(payload, \"right_result\", json.str(\"0\"))\n        http.write_json(conn, 200, json.object(payload))\n        return 0\n    }}\n    let err = map.new()\n    discard map.set(err, \"probe_result\", json.str(\"bad\"))\n    discard map.set(err, \"left_result\", json.str(\"bad\"))\n    discard map.set(err, \"right_result\", json.str(\"bad\"))\n    http.write_json(conn, 500, json.object(err))\n    return 13\n}}\n\nfn main() -> i32 {{\n    let listener = http.bind()\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    http.read(conn)\n    let method = http.method(conn)\n    let path = http.path(conn)\n    if method == \"POST\" && path == \"/tools/parallel_bash/run\" {{\n        return write_response(conn)\n    }}\n    http.write_json(conn, 404, \"{{}}\")\n    return 0\n}}\n",
+            ),
+        )
+        .expect("source should be written");
+
+        let artifact = compile_file_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            Some("cranelift"),
+        )
+        .expect("build should succeed");
+        assert_eq!(
+            artifact.status, "ok",
+            "request-path spawn repro should compile cleanly: diagnostics={:#?}, root={}",
+            artifact.diagnostic_details,
+            root.display()
+        );
+        let binary = artifact
+            .output
+            .unwrap_or_else(|| panic!("build artifact should include output path: root={}", root.display()));
+
+        let mut child = std::process::Command::new(&binary)
+            .env("AGENT_HOST", "127.0.0.1")
+            .env("AGENT_PORT", port.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("server child should spawn");
+
+        let start = std::time::Instant::now();
+        let mut stream = loop {
+            match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => break stream,
+                Err(_) if start.elapsed() <= std::time::Duration::from_secs(5) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    panic!("server did not become reachable: {error}");
+                }
+            }
+        };
+        use std::io::{Read as _, Write as _};
+        stream
+            .write_all(
+                b"POST /tools/parallel_bash/run HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            )
+            .expect("request should write");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response should read");
+
+        let status = child.wait().expect("server child should exit");
+        assert_eq!(status.code(), Some(0));
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response was: {response}"
+        );
+        assert!(
+            response.contains("\"probe_result\":\"7\""),
+            "response should preserve probe result json: {response}"
+        );
+        assert!(
+            response.contains("\"left_result\":\"0\""),
+            "response should preserve left result json: {response}"
+        );
+        assert!(
+            response.contains("\"right_result\":\"0\""),
+            "response should preserve right result json: {response}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn run_supports_same_function_name_in_sibling_modules() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -10858,7 +11216,7 @@ mod tests {
     }
 
     #[test]
-    fn native_run_allows_host_backends_flag() {
+    fn native_run_host_backends_uses_real_bridge() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -10884,15 +11242,16 @@ mod tests {
             },
             Format::Json,
         )
-        .expect("native host backend run should execute via native path");
-        assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
-        assert!(output.contains("\"exitCode\":0"));
+        .expect("native host backend run should use the scenario bridge");
+        assert!(output.contains("\"bridge\""));
+        assert!(output.contains("\"routing\":\"host-backed-scenario-bridge\""));
+        assert!(output.contains("\"deterministicRequested\":false"));
 
         let _ = std::fs::remove_file(source);
     }
 
     #[test]
-    fn native_run_rejects_det_with_host_backends() {
+    fn native_run_host_backends_keeps_deterministic_mode() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -10918,12 +11277,248 @@ mod tests {
             },
             Format::Json,
         )
-        .expect_err("native host-backed deterministic run should be rejected");
-        assert!(error
-            .to_string()
-            .contains("do not support `--det --host-backends`"));
+        .expect("native host-backed deterministic run should use the scenario bridge");
+        assert!(error.contains("\"routing\":\"host-backed-scenario-bridge\""));
+        assert!(error.contains("\"deterministicRequested\":true"));
 
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_test_host_backends_materializes_requested_record_path() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-host-record-{suffix}.fzy"));
+        let record =
+            std::env::temp_dir().join(format!("fozzylang-host-record-{suffix}.trace.fozzy"));
+        std::fs::write(
+            &source,
+            "test \"probe\" {}\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&record);
+
+        let output = run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: true,
+                safe_profile: false,
+                seed: Some(4242),
+                record: Some(record.clone()),
+                host_backends: true,
+                backend: None,
+                scheduler: None,
+                rich_artifacts: true,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("host-backed native test should materialize requested record path");
+        assert!(output.contains("\"bridge\""));
+        assert!(record.exists(), "requested record path should exist");
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(record);
+    }
+
+    #[test]
+    fn run_cranelift_module_qualified_spawn_executes_nested_worker() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-module-spawn-{suffix}"));
+        let output_path = std::env::temp_dir().join(format!("fozzylang-module-spawn-{suffix}.txt"));
+        let quoted_out = output_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::create_dir_all(root.join("src/services")).expect("services dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"module_spawn\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod services;\n\nfn main() -> i32 {\n    return services.tools.run_probe()\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(root.join("src/services/mod.fzy"), "mod tools;\n")
+            .expect("services mod should be written");
+        std::fs::write(
+            root.join("src/services/tools.fzy"),
+            format!(
+                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'echo nested > {quoted_out}'\")\n}}\n\nfn run_probe() -> i32 {{\n    let handle = spawn(worker)\n    let result = join(handle)\n    if result == 0 && fs.exists(\"{quoted_out}\") == 1 {{\n        return 0\n    }}\n    return 13\n}}\n"
+            ),
+        )
+        .expect("tools source should be written");
+        let _ = std::fs::remove_file(&output_path);
+
+        let output = run(
+            Command::Run {
+                path: root.join("src/main.fzy"),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("cranelift module-qualified spawn should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(
+            output_path.exists(),
+            "nested worker should create output file"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(output_path);
+    }
+
+    #[test]
+    fn run_cranelift_nested_module_spawns_complete_from_spawned_coordinator() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-nested-module-spawn-{suffix}"));
+        let left_path =
+            std::env::temp_dir().join(format!("fozzylang-nested-module-spawn-left-{suffix}.txt"));
+        let right_path =
+            std::env::temp_dir().join(format!("fozzylang-nested-module-spawn-right-{suffix}.txt"));
+        let quoted_left = left_path.to_string_lossy().replace('\"', "\\\"");
+        let quoted_right = right_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::create_dir_all(root.join("src/services")).expect("services dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"nested_module_spawn\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod services;\nuse core.thread;\n\nfn main() -> i32 {\n    let handle = spawn(services.tools.run_probe)\n    return join(handle)\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(root.join("src/services/mod.fzy"), "mod tools;\n")
+            .expect("services mod should be written");
+        std::fs::write(
+            root.join("src/services/tools.fzy"),
+            format!(
+                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn worker_left() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'echo left > {quoted_left}'\")\n}}\n\nfn worker_right() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'echo right > {quoted_right}'\")\n}}\n\nfn run_probe() -> i32 {{\n    let left = spawn(worker_left)\n    let right = spawn(worker_right)\n    let left_result = join(left)\n    let right_result = join(right)\n    if left_result == 0 && right_result == 0 && fs.exists(\"{quoted_left}\") == 1 && fs.exists(\"{quoted_right}\") == 1 {{\n        return 0\n    }}\n    return 13\n}}\n"
+            ),
+        )
+        .expect("tools source should be written");
+        let _ = std::fs::remove_file(&left_path);
+        let _ = std::fs::remove_file(&right_path);
+
+        let output = run(
+            Command::Run {
+                path: root.join("src/main.fzy"),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("nested module-qualified spawns should succeed from spawned coordinator");
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(
+            left_path.exists(),
+            "left nested worker should create output file"
+        );
+        assert!(
+            right_path.exists(),
+            "right nested worker should create output file"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(left_path);
+        let _ = std::fs::remove_file(right_path);
+    }
+
+    #[test]
+    fn run_cranelift_live_shape_spawns_preserve_proc_json_payloads() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-live-shape-spawn-{suffix}"));
+        let left_path =
+            std::env::temp_dir().join(format!("fozzylang-live-shape-left-{suffix}.json"));
+        let right_path =
+            std::env::temp_dir().join(format!("fozzylang-live-shape-right-{suffix}.json"));
+        let quoted_left = left_path.to_string_lossy().replace('\"', "\\\"");
+        let quoted_right = right_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::create_dir_all(root.join("src/services")).expect("services dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"live_shape_spawn\"\nversion = \"0.1.0\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod services;\n\nfn main() -> i32 {\n    return services.tools.run_probe()\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(root.join("src/services/mod.fzy"), "mod tools;\n")
+            .expect("services mod should be written");
+        std::fs::write(
+            root.join("src/services/tools.fzy"),
+            format!(
+                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn shell_payload(command: str, out_path: str) -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, command)\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    discard proc.wait(handle, 1000)\n    let payload = map.new()\n    discard map.set(payload, \"status\", json.str(\"ok\"))\n    discard map.set(payload, \"stdout\", json.str(proc.stdout(handle)))\n    discard map.set(payload, \"stderr\", json.str(proc.stderr(handle)))\n    fs.write_file(out_path, json.object(payload))\n    return 0\n}}\n\nfn worker_left() -> i32 {{\n    return shell_payload(\"printf left\", \"{quoted_left}\")\n}}\n\nfn worker_right() -> i32 {{\n    return shell_payload(\"printf right\", \"{quoted_right}\")\n}}\n\nfn probe_worker() -> i32 {{\n    return 7\n}}\n\nfn run_probe() -> i32 {{\n    let probe = spawn(probe_worker)\n    let probe_result = join(probe)\n    let left = spawn(worker_left)\n    let right = spawn(worker_right)\n    let left_result = join(left)\n    let right_result = join(right)\n    if probe_result == 7 && left_result == 0 && right_result == 0 && fs.exists(\"{quoted_left}\") == 1 && fs.exists(\"{quoted_right}\") == 1 {{\n        return 0\n    }}\n    return 13\n}}\n"
+            ),
+        )
+        .expect("tools source should be written");
+        let _ = std::fs::remove_file(&left_path);
+        let _ = std::fs::remove_file(&right_path);
+
+        let output = run(
+            Command::Run {
+                path: root.join("src/main.fzy"),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("live-shape nested spawns should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+        let left_content =
+            std::fs::read_to_string(&left_path).expect("left payload should be readable");
+        let right_content =
+            std::fs::read_to_string(&right_path).expect("right payload should be readable");
+        assert_ne!(left_content.trim(), "{}");
+        assert_ne!(right_content.trim(), "{}");
+        assert!(left_content.contains("\"stdout\":\"left\""));
+        assert!(right_content.contains("\"stdout\":\"right\""));
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(left_path);
+        let _ = std::fs::remove_file(right_path);
     }
 
     #[test]
