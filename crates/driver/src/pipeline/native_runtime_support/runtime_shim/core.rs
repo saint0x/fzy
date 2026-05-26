@@ -207,18 +207,25 @@ int32_t fz_native_net_write(int32_t conn_fd, int32_t status_code, int32_t body_i
 
 
 static const char* fz_lookup_string(int32_t id) {
+  const char* value = "";
+  pthread_mutex_lock(&fz_string_lock);
   if (id <= 0) {
+    pthread_mutex_unlock(&fz_string_lock);
     return "";
   }
   if (id <= fz_string_literal_count) {
     const char* literal = fz_string_literals[id - 1];
-    return literal == NULL ? "" : literal;
+    value = literal == NULL ? "" : literal;
+    pthread_mutex_unlock(&fz_string_lock);
+    return value;
   }
   int dynamic_index = id - fz_string_literal_count - 1;
   if (dynamic_index < 0 || dynamic_index >= fz_dynamic_string_count) {
+    pthread_mutex_unlock(&fz_string_lock);
     return "";
   }
-  const char* value = fz_dynamic_strings[dynamic_index];
+  value = fz_dynamic_strings[dynamic_index];
+  pthread_mutex_unlock(&fz_string_lock);
   return value == NULL ? "" : value;
 }
 
@@ -248,8 +255,9 @@ static int32_t fz_intern_owned(char* owned) {
     free(owned);
     return 0;
   }
-  int index = fz_dynamic_string_count++;
+  int index = fz_dynamic_string_count;
   fz_dynamic_strings[index] = owned;
+  fz_dynamic_string_count++;
   pthread_mutex_unlock(&fz_string_lock);
   return fz_string_literal_count + index + 1;
 }

@@ -338,7 +338,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 .map_err(scenario_error)?;
                 return render_scenario_run_result(format, run, strict_verify);
             }
-            if host_backends {
+            if host_backends && deterministic {
                 let bridge_root = std::env::temp_dir().join("fz-host-bridge");
                 std::fs::create_dir_all(&bridge_root).with_context(|| {
                     format!(
@@ -646,9 +646,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "routing": {
                             "mode": routing_mode,
                             "reason": if host_backends && deterministic {
-                                "native source runs reject `--det --host-backends`; use scenario replay or the host-backed deterministic test bridge"
+                                "host-backed deterministic run routed through the scenario bridge"
                             } else if host_backends {
-                                "host-backed native run"
+                                "host-backed native live run"
                             } else {
                                 "native run"
                             }
@@ -11107,14 +11107,18 @@ mod tests {
         )
         .expect("build should succeed");
         assert_eq!(
-            artifact.status, "ok",
+            artifact.status,
+            "ok",
             "request-path spawn repro should compile cleanly: diagnostics={:#?}, root={}",
             artifact.diagnostic_details,
             root.display()
         );
-        let binary = artifact
-            .output
-            .unwrap_or_else(|| panic!("build artifact should include output path: root={}", root.display()));
+        let binary = artifact.output.unwrap_or_else(|| {
+            panic!(
+                "build artifact should include output path: root={}",
+                root.display()
+            )
+        });
 
         let mut child = std::process::Command::new(&binary)
             .env("AGENT_HOST", "127.0.0.1")
@@ -11216,7 +11220,7 @@ mod tests {
     }
 
     #[test]
-    fn native_run_host_backends_uses_real_bridge() {
+    fn native_run_host_backends_preserves_live_run_semantics() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -11242,16 +11246,16 @@ mod tests {
             },
             Format::Json,
         )
-        .expect("native host backend run should use the scenario bridge");
-        assert!(output.contains("\"bridge\""));
-        assert!(output.contains("\"routing\":\"host-backed-scenario-bridge\""));
-        assert!(output.contains("\"deterministicRequested\":false"));
+        .expect("native host backend run should stay on the live run path");
+        assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(!output.contains("\"bridge\""));
 
         let _ = std::fs::remove_file(source);
     }
 
     #[test]
-    fn native_run_host_backends_keeps_deterministic_mode() {
+    fn native_run_host_backends_keeps_deterministic_bridge_mode() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -11519,6 +11523,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_file(left_path);
         let _ = std::fs::remove_file(right_path);
+    }
+
+    #[test]
+    fn run_spawn_ctx_workers_preserve_string_payloads_under_concurrency() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-string-race-{suffix}"));
+        let one = std::env::temp_dir().join(format!("fozzylang-string-race-one-{suffix}.json"));
+        let two = std::env::temp_dir().join(format!("fozzylang-string-race-two-{suffix}.json"));
+        let three = std::env::temp_dir().join(format!("fozzylang-string-race-three-{suffix}.json"));
+        let four = std::env::temp_dir().join(format!("fozzylang-string-race-four-{suffix}.json"));
+        let quoted_one = one.to_string_lossy().replace('\"', "\\\"");
+        let quoted_two = two.to_string_lossy().replace('\"', "\\\"");
+        let quoted_three = three.to_string_lossy().replace('\"', "\\\"");
+        let quoted_four = four.to_string_lossy().replace('\"', "\\\"");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"string_race\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"string_race\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            format!(
+                "use core.fs;\nuse core.thread;\n\nfn json_obj3(k1: str, v1: str, k2: str, v2: str, k3: str, v3: str) -> str {{\n    let obj = map.new()\n    discard map.set(obj, k1, v1)\n    discard map.set(obj, k2, v2)\n    discard map.set(obj, k3, v3)\n    return json.object(obj)\n}}\n\nfn worker_one() -> i32 {{\n    fs.write_file(\"{quoted_one}\", json_obj3(\"slot\", json.str(\"one\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\")))\n    return 0\n}}\n\nfn worker_two() -> i32 {{\n    fs.write_file(\"{quoted_two}\", json_obj3(\"slot\", json.str(\"two\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\")))\n    return 0\n}}\n\nfn worker_three() -> i32 {{\n    fs.write_file(\"{quoted_three}\", json_obj3(\"slot\", json.str(\"three\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\")))\n    return 0\n}}\n\nfn worker_four() -> i32 {{\n    fs.write_file(\"{quoted_four}\", json_obj3(\"slot\", json.str(\"four\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\")))\n    return 0\n}}\n\nfn main() -> i32 {{\n    let one = spawn_ctx(worker_one, 1)\n    let two = spawn_ctx(worker_two, 2)\n    let three = spawn_ctx(worker_three, 3)\n    let four = spawn_ctx(worker_four, 4)\n    let r1 = join(one)\n    let r2 = join(two)\n    let r3 = join(three)\n    let r4 = join(four)\n    if r1 == 0 && r2 == 0 && r3 == 0 && r4 == 0 && fs.exists(\"{quoted_one}\") == 1 && fs.exists(\"{quoted_two}\") == 1 && fs.exists(\"{quoted_three}\") == 1 && fs.exists(\"{quoted_four}\") == 1 {{\n        return 0\n    }}\n    return 13\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&one);
+        let _ = std::fs::remove_file(&two);
+        let _ = std::fs::remove_file(&three);
+        let _ = std::fs::remove_file(&four);
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("concurrent spawn_ctx writers should preserve payload strings");
+        assert!(output.contains("\"exitCode\":0"));
+        for (path, slot) in [
+            (&one, "one"),
+            (&two, "two"),
+            (&three, "three"),
+            (&four, "four"),
+        ] {
+            let content = std::fs::read_to_string(path).expect("worker payload should be readable");
+            assert_ne!(content.trim(), "", "worker payload should not be empty");
+            assert!(content.contains(&format!("\"slot\":\"{slot}\"")));
+            assert!(content.contains("\"status\":\"ok\""));
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(one);
+        let _ = std::fs::remove_file(two);
+        let _ = std::fs::remove_file(three);
+        let _ = std::fs::remove_file(four);
     }
 
     #[test]
