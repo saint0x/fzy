@@ -133,6 +133,9 @@ static int32_t fz_last_error_code = 0;
 static int32_t fz_last_error_class = 0;
 static int32_t fz_last_error_message_id = 0;
 static int fz_log_json = 0;
+static int fz_log_enabled = 1;
+static int32_t fz_log_min_level = 0;
+static int32_t fz_log_sink = 0;
 
 typedef struct {
   int32_t key_id;

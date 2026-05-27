@@ -4,11 +4,19 @@ enum LogLevel {
     Error,
 }
 
+enum LogSink {
+    Stdout,
+    Stderr,
+}
+
 struct LogConfig {
     json: i32,
     include_correlation: i32,
     max_field_bytes: i32,
     sample_mod: i32,
+    enabled: i32,
+    sink: LogSink,
+    min_level: LogLevel,
 }
 
 fn default_config() -> LogConfig {
@@ -17,7 +25,74 @@ fn default_config() -> LogConfig {
         include_correlation: 1,
         max_field_bytes: 256,
         sample_mod: 1,
+        enabled: 1,
+        sink: LogSink::Stdout,
+        min_level: LogLevel::Info,
     }
+}
+
+fn level_name(level: LogLevel) -> str {
+    match level {
+        LogLevel::Warn => return "warn",
+        LogLevel::Error => return "error",
+        _ => return "info",
+    }
+}
+
+fn sink_name(sink: LogSink) -> str {
+    match sink {
+        LogSink::Stderr => return "stderr",
+        _ => return "stdout",
+    }
+}
+
+fn set_json_mode(enabled: i32) -> i32 {
+    return log.set_json(enabled)
+}
+
+fn set_logging_enabled(enabled: i32) -> i32 {
+    return log.set_enabled(enabled)
+}
+
+fn set_level_name(level: str) -> i32 {
+    return log.set_level(level)
+}
+
+fn set_min_level(level: LogLevel) -> i32 {
+    return set_level_name(level_name(level))
+}
+
+fn set_sink_name(sink: str) -> i32 {
+    return log.set_sink(sink)
+}
+
+fn set_output_sink(sink: LogSink) -> i32 {
+    return set_sink_name(sink_name(sink))
+}
+
+fn use_stdout() -> i32 {
+    return set_output_sink(LogSink::Stdout)
+}
+
+fn use_stderr() -> i32 {
+    return set_output_sink(LogSink::Stderr)
+}
+
+fn quiet() -> i32 {
+    return log.set_enabled(0)
+}
+
+fn verbose() -> i32 {
+    return log.set_enabled(1)
+}
+
+fn set_policy(config: LogConfig) -> i32 {
+    let mut rc = 0
+    rc += set_logging_enabled(config.enabled)
+    rc += set_json_mode(config.json)
+    rc += set_output_sink(config.sink)
+    rc += set_min_level(config.min_level)
+    return rc
 }
 
 fn clamp_field(value: str, max_bytes: i32) -> str {
@@ -42,32 +117,37 @@ fn request_log(config: LogConfig, level: LogLevel, message: str, request_id: str
     let rid = clamp_field(request_id, config.max_field_bytes)
     let p = clamp_field(path, config.max_field_bytes)
     let m = clamp_field(method, 16)
-    let fields = map.new()
-    discard map.set(fields, "request_id", rid)
-    discard map.set(fields, "path", p)
-    discard map.set(fields, "method", m)
-    if config.json == 1 {
-        discard log.set_json(1)
-    }
+    let payload = map.new()
+    discard map.set(payload, "request_id", rid)
+    discard map.set(payload, "path", p)
+    discard map.set(payload, "method", m)
+    discard set_policy(config)
     if level == LogLevel::Warn {
-        discard map.set(fields, "level", "warn")
-        discard log.warn(msg, log.fields(fields))
+        discard map.set(payload, "level", "warn")
+        discard log.warn(msg, log.fields(payload))
         return 2
     }
     if level == LogLevel::Error {
-        discard map.set(fields, "level", "error")
-        discard log.error(msg, log.fields(fields))
+        discard map.set(payload, "level", "error")
+        discard log.error(msg, log.fields(payload))
         return 3
     }
-    discard map.set(fields, "level", "info")
-    discard log.info(msg, log.fields(fields))
+    discard map.set(payload, "level", "info")
+    discard log.info(msg, log.fields(payload))
     return 1
 }
 
 fn sample() -> i32 {
     let cfg = default_config()
     if should_sample(100, cfg.sample_mod) == 1 {
-        return request_log(cfg, LogLevel::Info, "corelib.log.sample", "rid-sample", "/health", "GET")
+        let mut acc = request_log(cfg, LogLevel::Info, "corelib.log.sample", "rid-sample", "/health", "GET")
+        acc += use_stdout()
+        acc += set_min_level(LogLevel::Warn)
+        acc += set_level_name("info")
+        acc += set_sink_name("stdout")
+        acc += set_logging_enabled(1)
+        acc += verbose()
+        return acc % 251
     }
     return 0
 }

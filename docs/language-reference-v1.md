@@ -179,7 +179,10 @@ Semantics:
 
 - Capabilities are declared by `use core.<name>;` at module scope.
 - Core capabilities include: `time`, `rng`, `fs`, `http`, `proc`, `mem`, `thread`, `log`, `error`.
-- `use core.text;` is invalid; text/string intrinsics are capability-free.
+- `use core.log;` now carries two roles:
+  - it satisfies the `log` capability contract
+  - it imports the `core.log` standard-library facade
+- `use core.text;` is now a valid standard-library import for text/terminal composition helpers.
 - Verifier emits diagnostics for unknown or missing required capabilities.
 
 ## Process Intrinsic Namespace
@@ -203,7 +206,7 @@ Semantics:
 - Canonical current-process terminal namespace is `term.*`.
 - This surface is distinct from child-process management in `proc.*`.
 - Canonical standard-library wrapper import is `use core.term;`.
-- `core.term` exposes ergonomic wrappers like `term.print_line`, `term.eprint_line`, `term.prompt_line`, and `term.is_interactive`.
+- `core.term` exposes ergonomic wrappers like `term.print_line`, `term.eprint_line`, `term.prompt_line`, `term.is_interactive`, and `term.transcript_kv`.
 - First-class terminal operations:
   - `term.read_line()`
   - `term.stdin_eof()`
@@ -213,6 +216,30 @@ Semantics:
   - `term.stdout_is_tty()`
 - `term.read_line()` removes a trailing newline and trailing carriage return when present.
 - EOF is observed by pairing `term.read_line()` with `term.stdin_eof()`.
+
+## Logging And Text Facades
+
+- `use core.log;` is the canonical logging import for native products.
+- Raw runtime controls remain first-class:
+  - `log.set_json(enabled)`
+  - `log.set_enabled(enabled)`
+  - `log.set_level(level_name)`
+  - `log.set_sink(sink_name)`
+- `core.log` adds policy helpers:
+  - `log.set_level_name("warn")`
+  - `log.set_sink_name("stderr")`
+  - `log.use_stdout()`
+  - `log.use_stderr()`
+  - `log.quiet()`
+  - `log.verbose()`
+  - `log.request_log(...)`
+- `use core.text;` is the canonical standard-library text helper surface:
+  - `text.repeat(piece, count)`
+  - `text.spaces(count)`
+  - `text.pad_left(value, width)`
+  - `text.pad_right(value, width)`
+  - `text.indent(value, prefix)`
+  - `text.visible_len_ansi(value)`
 
 ## JSON And Logging Ergonomics
 
@@ -227,6 +254,9 @@ Semantics:
 - Dynamic JSON builders are canonical:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
+- Transcript-style CLI UX should prefer one output stream for conversational ordering.
+  - Use `term.print*` / `term.transcript_kv` for transcript lines.
+  - Reserve `term.write_err` / `term.eprint*` for real errors or control-channel messages.
 - For inbound HTTP JSON, `http.body_json(conn)` is the canonical production path.
   - Prefer `let body = http.body_json(conn)` over `json.parse(http.body(conn))`.
   - Use `http.body(conn)` when you explicitly need the raw transport body as text.

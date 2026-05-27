@@ -58,6 +58,15 @@ fz test <module>.fzy --host-backends --json
 
 This automatically generates temporary scenario artifacts and runs host-backed execution without a separate manual scenario conversion step.
 
+For native CLI and terminal-facing products, validate both launch modes:
+
+- `fz run ...` is the canonical compiler-managed launcher and should stay in the gate.
+- direct built-binary execution is the final confidence pass for:
+  - exact stdout/stderr ordering
+  - shell piping
+  - interactive prompt behavior
+  - launch-environment inheritance
+
 For trait/generic language slices, include the dedicated scenario lifecycle:
 
 ```bash

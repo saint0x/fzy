@@ -26,11 +26,31 @@ fn is_interactive() -> i32 {
     return 0
 }
 
+fn repeat_spaces(count: i32) -> str {
+    return str.repeat(" ", count)
+}
+
+fn transcript_line(text: str) -> i32 {
+    return print_line(text)
+}
+
+fn transcript_kv(label: str, value: str, label_width: i32) -> i32 {
+    let padding = label_width - str.len(label)
+    let padded = if padding > 0 {
+        str.concat(label, repeat_spaces(padding))
+    } else {
+        label
+    }
+    return print_line(str.concat(padded, " ", value))
+}
+
 fn sample() -> i32 {
     let mut acc = 0
     acc += print("")
     acc += eprint("")
     acc += term.stdin_eof()
     acc += is_interactive()
+    acc += transcript_line("")
+    acc += transcript_kv("mode", "chat", 8)
     return acc % 251
 }

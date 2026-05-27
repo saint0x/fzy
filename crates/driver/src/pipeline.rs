@@ -1962,6 +1962,9 @@ fn merge_imported_core_stdlib_modules(root: &mut ast::Module) -> Result<()> {
                     .unwrap_or_else(|| "unknown parse failure".to_string())
             )
         })?;
+        if module_name == "log" && !module.capabilities.iter().any(|cap| cap == "log") {
+            module.capabilities.push("log".to_string());
+        }
         qualify_module_symbols(&mut module, &module_name);
         merge_module_owned(root, module);
     }
@@ -1972,6 +1975,8 @@ fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str>
     match module_name {
         "process" => Some(include_str!("../../../corelib/src/process.fzy")),
         "term" => Some(include_str!("../../../corelib/src/term.fzy")),
+        "log" => Some(include_str!("../../../corelib/src/log.fzy")),
+        "text" => Some(include_str!("../../../corelib/src/text.fzy")),
         _ => None,
     }
 }

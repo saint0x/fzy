@@ -53,6 +53,29 @@ int32_t fz_native_str_from_bool(int32_t value) {
   return fz_intern_slice(rendered, strlen(rendered));
 }
 
+int32_t fz_native_str_repeat(int32_t value_id, int32_t count) {
+  const char* value = fz_lookup_string(value_id);
+  if (value == NULL || count <= 0) {
+    return fz_intern_slice("", 0);
+  }
+  size_t value_len = strlen(value);
+  if (value_len == 0) {
+    return fz_intern_slice("", 0);
+  }
+  size_t total = value_len * (size_t)count;
+  char* out = (char*)malloc(total + 1);
+  if (out == NULL) {
+    return 0;
+  }
+  size_t used = 0;
+  for (int32_t i = 0; i < count; i++) {
+    memcpy(out + used, value, value_len);
+    used += value_len;
+  }
+  out[used] = '\0';
+  return fz_intern_owned(out);
+}
+
 int32_t fz_native_str_contains(int32_t value_id, int32_t needle_id) {
   const char* value = fz_lookup_string(value_id);
   const char* needle = fz_lookup_string(needle_id);
@@ -162,6 +185,30 @@ int32_t fz_native_str_replace(int32_t value_id, int32_t from_id, int32_t to_id) 
 int32_t fz_native_str_len(int32_t value_id) {
   const char* value = fz_lookup_string(value_id);
   return value == NULL ? 0 : (int32_t)strlen(value);
+}
+
+int32_t fz_native_str_visible_len_ansi(int32_t value_id) {
+  const unsigned char* value = (const unsigned char*)fz_lookup_string(value_id);
+  if (value == NULL) {
+    return 0;
+  }
+  int32_t visible = 0;
+  size_t index = 0;
+  while (value[index] != '\0') {
+    if (value[index] == 0x1b && value[index + 1] == '[') {
+      index += 2;
+      while (value[index] != '\0' && value[index] != 'm') {
+        index++;
+      }
+      if (value[index] == 'm') {
+        index++;
+      }
+      continue;
+    }
+    visible++;
+    index++;
+  }
+  return visible;
 }
 
 int32_t fz_native_str_slice(int32_t value_id, int32_t start, int32_t span) {

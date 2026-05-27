@@ -112,6 +112,7 @@ use core.http;
 use core.proc;
 use core.process;
 use core.term;
+use core.text;
 use core.thread;
 use core.log;
 use core.encoding;
@@ -405,11 +406,14 @@ fn host_and_io_showcase() -> i32 {
     let root = path.join("tmp", "showcase");
     let _ = fs.mkdir(root);
     log.set_json(1);
+    discard log.set_sink_name("stderr");
+    discard log.set_level_name("warn");
     let command = process.command_name();
     let mode = process.argv_or(1, "showcase");
     let interactive = term.is_interactive();
-    discard term.print_line(str.concat("command=", command));
-    discard term.print_line(str.concat("mode=", mode));
+    discard term.transcript_kv("command", command, 10);
+    discard term.transcript_kv("mode", mode, 10);
+    discard term.print_line(text.indent("ready\nwaiting", "  "));
     if interactive == 1 {
         discard term.eprint_line("interactive terminal detected");
     }

@@ -1040,7 +1040,9 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_proc_exit_code(int32_t handle)"));
     assert!(shim.contains("int32_t fz_native_env_get(int32_t key_id)"));
     assert!(shim.contains("int32_t fz_native_str_concat2(int32_t a_id, int32_t b_id)"));
+    assert!(shim.contains("int32_t fz_native_str_repeat(int32_t value_id, int32_t count)"));
     assert!(shim.contains("int32_t fz_native_str_contains("));
+    assert!(shim.contains("int32_t fz_native_str_visible_len_ansi(int32_t value_id)"));
     assert!(shim.contains("int32_t fz_native_http_header(int32_t key_id, int32_t value_id)"));
     assert!(shim.contains("int32_t fz_native_http_post_json(int32_t endpoint_id, int32_t body_id)"));
     assert!(shim.contains(
@@ -1083,6 +1085,9 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_error_code(void)"));
     assert!(shim.contains("int32_t fz_native_log_info(int32_t message_id, int32_t fields_id)"));
     assert!(shim.contains("int32_t fz_native_log_fields_map(int32_t map_handle)"));
+    assert!(shim.contains("int32_t fz_native_log_set_enabled(int32_t enabled)"));
+    assert!(shim.contains("int32_t fz_native_log_set_level(int32_t level_id)"));
+    assert!(shim.contains("int32_t fz_native_log_set_sink(int32_t sink_id)"));
     assert!(shim.contains("FD_CLOEXEC"));
     assert!(shim.contains("int32_t fz_native_proc_exit_class(void)"));
     assert!(shim.contains("int32_t fz_native_time_now(void)"));

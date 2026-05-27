@@ -449,6 +449,9 @@ impl Parser {
                 return;
             };
             if is_core_stdlib_module(name.as_str()) {
+                if let Some(capability) = core_stdlib_implied_capability(name.as_str()) {
+                    self.module.capabilities.push(capability.to_string());
+                }
                 self.module.imports.push(ast::Import {
                     path: vec![name],
                     alias: None,
@@ -2785,7 +2788,14 @@ impl Parser {
 }
 
 fn is_core_stdlib_module(name: &str) -> bool {
-    matches!(name, "process" | "term")
+    matches!(name, "process" | "term" | "log" | "text")
+}
+
+fn core_stdlib_implied_capability(name: &str) -> Option<&'static str> {
+    match name {
+        "log" => Some("log"),
+        _ => None,
+    }
 }
 
 fn parser_help(message: &str) -> Option<String> {
@@ -5113,10 +5123,15 @@ mod tests {
         let source = r#"
             use core.process;
             use core.term;
+            use core.log;
+            use core.text;
             use core.http;
         "#;
         let module = parse(source, "imports").expect("parse should succeed");
-        assert!(module.capabilities == vec!["http".to_string()]);
+        assert_eq!(
+            module.capabilities,
+            vec!["log".to_string(), "http".to_string()]
+        );
         assert!(module.imports.iter().any(|entry| {
             !entry.is_pub
                 && !entry.wildcard
@@ -5128,6 +5143,18 @@ mod tests {
                 && !entry.wildcard
                 && entry.alias.is_none()
                 && entry.path == vec!["term".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["log".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["text".to_string()]
         }));
     }
 

@@ -150,6 +150,8 @@ let err = proc.stderr(handle)
   - `term.eprint_line(text)`
   - `term.prompt_line(prompt)`
   - `term.is_interactive()`
+  - `term.transcript_line(text)`
+  - `term.transcript_kv(label, value, label_width)`
 
 Canonical production CLI shape:
 
@@ -159,13 +161,54 @@ use core.term;
 
 fn main() -> i32 {
     let mode = process.argv_or(1, "serve")
-    discard term.print_line(str.concat("mode=", mode))
+    discard term.transcript_kv("mode", mode, 8)
     if term.is_interactive() == 1 {
         discard term.eprint_line("interactive terminal detected")
     }
     return 0
 }
 ```
+
+Transcript guidance:
+
+- Use one stream consistently for transcript-style UX.
+- Prefer `term.print*` / `term.transcript_*` for ordered conversational output.
+- Use `term.eprint*` only for genuine error/control output.
+
+### `log`
+
+- `use core.log;` is both the capability declaration and the stdlib logging facade.
+- Raw runtime logging controls remain first-class:
+  - `log.info(message, fields_json)`
+  - `log.warn(message, fields_json)`
+  - `log.error(message, fields_json)`
+  - `log.fields(map_handle)`
+  - `log.set_json(enabled)`
+  - `log.set_enabled(enabled)`
+  - `log.set_level(level_name)`
+  - `log.set_sink(sink_name)`
+- Common `core.log` helpers:
+  - `log.set_level_name(level_name)`
+  - `log.set_sink_name(sink_name)`
+  - `log.use_stdout()`
+  - `log.use_stderr()`
+  - `log.quiet()`
+  - `log.verbose()`
+  - `log.default_config()`
+  - `log.request_log(...)`
+
+### `text`
+
+- `use core.text;` is the standard-library text helper module for native CLI/service rendering.
+- Common helpers:
+  - `text.trim(value)`
+  - `text.replace(value, needle, with)`
+  - `text.repeat(piece, count)`
+  - `text.spaces(count)`
+  - `text.pad_left(value, width)`
+  - `text.pad_right(value, width)`
+  - `text.indent(value, prefix)`
+  - `text.visible_len_ansi(value)`
 
 ### `path`
 

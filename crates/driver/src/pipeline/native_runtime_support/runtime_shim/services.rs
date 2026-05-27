@@ -1,23 +1,41 @@
 pub(super) fn runtime_shim_section_services() -> &'static str {
     r#"
+static int32_t fz_log_level_value(const char* level) {
+  if (level == NULL) return 0;
+  if (strcmp(level, "error") == 0) return 2;
+  if (strcmp(level, "warn") == 0) return 1;
+  return 0;
+}
+
+static FILE* fz_log_stream(void) {
+  return fz_log_sink == 1 ? stderr : stdout;
+}
+
 static int32_t fz_log_emit(const char* level, const char* message, const char* fields) {
   if (level == NULL) level = "info";
   if (message == NULL) message = "";
   if (fields == NULL) fields = "{}";
-  int64_t ts = fz_now_ms();
-  if (fz_log_json) {
-    fprintf(stdout, "{\"ts\":%lld,\"level\":\"%s\",\"msg\":\"", (long long)ts, level);
-    for (const char* p = message; *p; p++) {
-      if (*p == '"' || *p == '\\') fputc('\\', stdout);
-      fputc(*p, stdout);
-    }
-    fprintf(stdout, "\",\"fields\":%s}\n", fields[0] == '\0' ? "{}" : fields);
-  } else if (fields[0] != '\0' && strcmp(fields, "{}") != 0) {
-    fprintf(stdout, "[%lld] %s %s | fields=%s\n", (long long)ts, level, message, fields);
-  } else {
-    fprintf(stdout, "[%lld] %s %s\n", (long long)ts, level, message);
+  if (!fz_log_enabled) {
+    return 0;
   }
-  fflush(stdout);
+  if (fz_log_level_value(level) < fz_log_min_level) {
+    return 0;
+  }
+  int64_t ts = fz_now_ms();
+  FILE* stream = fz_log_stream();
+  if (fz_log_json) {
+    fprintf(stream, "{\"ts\":%lld,\"level\":\"%s\",\"msg\":\"", (long long)ts, level);
+    for (const char* p = message; *p; p++) {
+      if (*p == '"' || *p == '\\') fputc('\\', stream);
+      fputc(*p, stream);
+    }
+    fprintf(stream, "\",\"fields\":%s}\n", fields[0] == '\0' ? "{}" : fields);
+  } else if (fields[0] != '\0' && strcmp(fields, "{}") != 0) {
+    fprintf(stream, "[%lld] %s %s | fields=%s\n", (long long)ts, level, message, fields);
+  } else {
+    fprintf(stream, "[%lld] %s %s\n", (long long)ts, level, message);
+  }
+  fflush(stream);
   return 0;
 }
 
@@ -40,6 +58,43 @@ int32_t fz_native_log_fields_map(int32_t map_handle) {
 int32_t fz_native_log_set_json(int32_t enabled) {
   fz_log_json = enabled != 0 ? 1 : 0;
   return 0;
+}
+
+int32_t fz_native_log_set_enabled(int32_t enabled) {
+  fz_log_enabled = enabled != 0 ? 1 : 0;
+  return 0;
+}
+
+int32_t fz_native_log_set_level(int32_t level_id) {
+  const char* level = fz_lookup_string(level_id);
+  if (level == NULL || level[0] == '\0' || strcmp(level, "info") == 0) {
+    fz_log_min_level = 0;
+    return 0;
+  }
+  if (strcmp(level, "warn") == 0) {
+    fz_log_min_level = 1;
+    return 0;
+  }
+  if (strcmp(level, "error") == 0) {
+    fz_log_min_level = 2;
+    return 0;
+  }
+  fz_set_last_error(EINVAL, 3, "log.set_level failed: expected info, warn, or error");
+  return -1;
+}
+
+int32_t fz_native_log_set_sink(int32_t sink_id) {
+  const char* sink = fz_lookup_string(sink_id);
+  if (sink == NULL || sink[0] == '\0' || strcmp(sink, "stdout") == 0) {
+    fz_log_sink = 0;
+    return 0;
+  }
+  if (strcmp(sink, "stderr") == 0) {
+    fz_log_sink = 1;
+    return 0;
+  }
+  fz_set_last_error(EINVAL, 3, "log.set_sink failed: expected stdout or stderr");
+  return -1;
 }
 
 int32_t fz_native_log_correlation_id(int32_t conn_fd) {

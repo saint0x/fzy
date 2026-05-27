@@ -22,13 +22,56 @@ fn len(v: str) -> i32 {
     return str.len(v)
 }
 
+fn repeat(piece: str, count: i32) -> str {
+    return str.repeat(piece, count)
+}
+
+fn spaces(count: i32) -> str {
+    return str.repeat(" ", count)
+}
+
+fn pad_left(v: str, width: i32) -> str {
+    let current = len(v)
+    if current >= width {
+        return v
+    }
+    return str.concat(spaces(width - current), v)
+}
+
+fn pad_right(v: str, width: i32) -> str {
+    let current = len(v)
+    if current >= width {
+        return v
+    }
+    return str.concat(v, spaces(width - current))
+}
+
+fn indent(v: str, prefix: str) -> str {
+    if v == "" {
+        return prefix
+    }
+    return str.concat(prefix, replace(v, "\n", str.concat("\n", prefix)))
+}
+
+fn visible_len_ansi(v: str) -> i32 {
+    return str.visible_len_ansi(v)
+}
+
 fn sample() -> i32 {
     let a = trim("  alpha,beta,gamma  ")
     let b = replace(a, ",", "|")
+    let c = pad_left("7", 3)
+    let d = pad_right("ok", 4)
+    let e = indent("x\ny", "> ")
+    let f = visible_len_ansi("\x1b[31mred\x1b[0m")
     let mut acc = 0
     acc += contains(b, "beta")
     acc += starts_with(b, "alpha")
     acc += ends_with(b, "gamma")
     acc += len(a)
+    acc += len(c)
+    acc += len(d)
+    acc += len(e)
+    acc += f
     return acc
 }

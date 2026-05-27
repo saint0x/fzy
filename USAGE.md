@@ -150,10 +150,16 @@ Runtime logging defaults:
 - human-readable logs by default (`[ts] level message`)
 - structured fields appended as `| fields={...}`
 - JSON logging is opt-in (`log.set_json(1)`)
-- module-level capability declaration required for log APIs: `use core.log;`
+- `use core.log;` is now both the capability declaration and the public stdlib facade for logging policy/helpers
 - typed error policy surfaces use `use core.error;` in modules that rely on error contracts
-- `use core.text;` is invalid; string intrinsics (`str.*`) do not require capability imports
+- `use core.text;` is now the standard-library surface for terminal/text composition helpers
 - canonical structured logging fields use `log.fields(map_handle)`
+- canonical logging policy controls:
+  - raw runtime calls: `log.set_json`, `log.set_enabled`, `log.set_level`, `log.set_sink`
+  - stdlib helpers: `log.set_level_name`, `log.set_sink_name`, `log.use_stdout`, `log.use_stderr`, `log.quiet`, `log.verbose`
+- canonical terminal/text helpers:
+  - `term.transcript_kv`
+  - `text.repeat`, `text.spaces`, `text.pad_left`, `text.pad_right`, `text.indent`, `text.visible_len_ansi`
 - canonical dynamic JSON builders use `json.array(list_handle)` / `json.object(map_handle)`
 - first-class object literal syntax is available for small map payloads: `#{ "k": json.str("v") }`
 - canonical process builders use `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd` / `proc.run_cmd`
@@ -208,6 +214,15 @@ Default production policy keeps missing metadata non-blocking; strict CI/release
 Hardened repositories can scope unsafe usage in `fozzy.toml`:
 - `[unsafe].deny_unsafe_in = ["tests::*"]`
 - `[unsafe].allow_unsafe_in = ["runtime::*"]`
+
+Native CLI validation guidance:
+
+- `fz run` is the canonical compiler-managed launcher for native validation.
+- direct built-binary execution is still the best final check for:
+  - exact stdout/stderr ordering
+  - terminal-interactive behavior
+  - shell piping and environment inheritance
+- for transcript-style apps, prefer a single stream for conversational output and reserve `stderr` for real errors/control signals.
 
 Recommended native completeness probe:
 

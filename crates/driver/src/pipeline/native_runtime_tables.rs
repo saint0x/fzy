@@ -392,6 +392,21 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "log.set_enabled",
+        symbol: "fz_native_log_set_enabled",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "log.set_level",
+        symbol: "fz_native_log_set_level",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "log.set_sink",
+        symbol: "fz_native_log_set_sink",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "log.correlation_id",
         symbol: "fz_native_log_correlation_id",
         arity: 1,
@@ -805,6 +820,11 @@ pub(super) const NATIVE_DATA_PLANE_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "str.repeat",
+        symbol: "fz_native_str_repeat",
+        arity: 2,
+    },
+    NativeRuntimeImport {
         callee: "str.contains",
         symbol: "fz_native_str_contains",
         arity: 2,
@@ -837,6 +857,11 @@ pub(super) const NATIVE_DATA_PLANE_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "str.len",
         symbol: "fz_native_str_len",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "str.visible_len_ansi",
+        symbol: "fz_native_str_visible_len_ansi",
         arity: 1,
     },
     NativeRuntimeImport {

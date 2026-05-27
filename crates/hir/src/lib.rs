@@ -8567,6 +8567,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "str.concat4",
         "str.from_i32",
         "str.from_bool",
+        "str.repeat",
         "str.contains",
         "str.starts_with",
         "str.ends_with",
@@ -8574,6 +8575,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "str.trim",
         "str.split",
         "str.len",
+        "str.visible_len_ansi",
         "str.slice",
         "json.escape",
         "json.str",
@@ -8626,6 +8628,9 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "log.error",
         "log.fields",
         "log.set_json",
+        "log.set_enabled",
+        "log.set_level",
+        "log.set_sink",
         "log.correlation_id",
         "error.code",
         "error.class",
@@ -8846,6 +8851,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         ),
         "str.from_i32" => (vec![i32.clone()], str_ty.clone()),
         "str.from_bool" => (vec![Type::Bool], str_ty.clone()),
+        "str.repeat" => (vec![str_ty.clone(), i32.clone()], str_ty.clone()),
         "str.contains" | "str.starts_with" | "str.ends_with" => {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
         }
@@ -8856,6 +8862,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "str.trim" => (vec![str_ty.clone()], str_ty.clone()),
         "str.split" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "str.len" => (vec![str_ty.clone()], i32.clone()),
+        "str.visible_len_ansi" => (vec![str_ty.clone()], i32.clone()),
         "str.slice" => (
             vec![str_ty.clone(), i32.clone(), i32.clone()],
             str_ty.clone(),
@@ -8909,7 +8916,8 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
         }
         "log.fields" => (vec![map_handle.clone()], str_ty.clone()),
-        "log.set_json" => (vec![i32.clone()], i32.clone()),
+        "log.set_json" | "log.set_enabled" => (vec![i32.clone()], i32.clone()),
+        "log.set_level" | "log.set_sink" => (vec![str_ty.clone()], i32.clone()),
         "log.correlation_id" => (vec![map_handle.clone()], str_ty.clone()),
         "error.code" | "error.class" => (vec![], i32.clone()),
         "error.message" => (vec![], str_ty.clone()),

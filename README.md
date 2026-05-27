@@ -271,11 +271,14 @@ Runtime logging defaults:
 - default log format is human-readable text (`[ts] level message`)
 - structured fields are appended as `| fields={...}`
 - JSON log mode is opt-in via `log.set_json(1)`
-- `use core.text;` is invalid; `str.*` intrinsics are capability-free
+- `use core.log;` now does both:
+  - satisfies the `log` capability contract
+  - imports the standard-library logging facade
+- `use core.text;` is now a real standard-library module for terminal/text composition helpers
 - current-process CLI surface is first-class:
   - raw runtime intrinsics: `proc.argv_count/get`, `term.read_line/stdin_eof/write/write_err/stdin_is_tty/stdout_is_tty`
-  - canonical standard-library wrappers: `use core.process; use core.term;`
-  - common helpers: `process.argv_or`, `process.command_name`, `process.has_flag`, `term.print_line`, `term.eprint_line`, `term.prompt_line`, `term.is_interactive`
+  - canonical standard-library wrappers: `use core.process; use core.term; use core.log; use core.text;`
+  - common helpers: `process.argv_or`, `process.command_name`, `process.has_flag`, `term.print_line`, `term.eprint_line`, `term.prompt_line`, `term.is_interactive`, `log.set_level_name`, `log.set_sink_name`, `log.quiet`, `log.verbose`, `text.pad_left`, `text.pad_right`, `text.indent`, `text.visible_len_ansi`
 - production string escapes now include terminal-safe forms: `\xNN`, `\uNNNN`, `\u{NN...}`, and explicit octal `\NNN`
 - canonical structured log fields use `log.fields(map_handle)`
 - canonical dynamic JSON builders use `json.array(list_handle)` and `json.object(map_handle)`
@@ -301,21 +304,27 @@ With `fz test <file.fzy> --det --record artifacts/name.trace.json --json`, the d
 
 Canonical production authoring split:
 
-- current-process argv + terminal UX: `core.process`, `core.term`
+- current-process argv + terminal UX: `core.process`, `core.term`, `core.text`
+- logging policy + structured operator output: `core.log`
 - child-process execution: `proc.*`
 
 Example:
 
 ```fzy
+use core.log;
 use core.process;
 use core.term;
+use core.text;
 
 fn main() -> i32 {
     let mode = process.argv_or(1, "serve")
-    discard term.print_line(str.concat("mode=", mode))
+    discard log.set_sink_name("stderr")
+    discard log.set_level_name("warn")
+    discard term.transcript_kv("mode", mode, 8)
     if term.is_interactive() == 1 {
-        discard term.eprint_line("interactive terminal detected")
+        discard term.eprint_line(str.concat("interactive=", str.from_i32(term.is_interactive())))
     }
+    discard term.print_line(text.indent("ready\nwaiting", "  "))
     return 0
 }
 ```
@@ -324,6 +333,14 @@ EOF semantics are explicit:
 
 - empty line: `term.read_line()` returns `""` and `term.stdin_eof() == 0`
 - EOF: `term.read_line()` returns `""` and `term.stdin_eof() == 1`
+
+Production validation split for native CLI apps:
+
+- `fz run ...` is the canonical compiler-integrated launcher. Use it first for policy-aware validation, backend selection, and JSON output capture.
+- direct built-binary execution is the strongest final confidence signal for interactive CLI behavior such as exact terminal ordering, shell piping, and launch-environment expectations.
+- for serious CLI/runtime work, use both:
+  - `fz run <module>.fzy --backend cranelift --json`
+  - then execute the built artifact directly when stream ordering or terminal UX matters
 
 ## Native Backend Policy
 

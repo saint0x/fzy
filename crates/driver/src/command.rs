@@ -12101,6 +12101,94 @@ mod tests {
     }
 
     #[test]
+    fn native_run_core_log_policy_routes_and_filters_output() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-log-policy-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.log;\n\nfn main() -> i32 {\n    let hidden = map.new()\n    let shown = map.new()\n    discard map.set(hidden, \"phase\", \"hidden\")\n    discard map.set(shown, \"phase\", \"shown\")\n    discard log.set_enabled(1)\n    discard log.set_sink_name(\"stderr\")\n    discard log.set_level_name(\"warn\")\n    discard log.info(\"hidden-info\", log.fields(hidden))\n    discard log.warn(\"shown-warn\", log.fields(shown))\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("native log policy run should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(output.contains("shown-warn"), "output was: {output}");
+        assert!(!output.contains("hidden-info"), "output was: {output}");
+        assert!(output.contains("\"stderr\":\""), "output was: {output}");
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_run_core_text_and_transcript_helpers_execute() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-core-text-{suffix}.fzy"));
+        let out_path = std::env::temp_dir().join(format!("fozzylang-core-text-{suffix}.json"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\nuse core.term;\nuse core.text;\n\nfn main() -> i32 {{\n    let payload = map.new()\n    discard map.set(payload, \"left\", json.str(text.pad_left(\"7\", 3)))\n    discard map.set(payload, \"right\", json.str(text.pad_right(\"ok\", 4)))\n    discard map.set(payload, \"indented\", json.str(text.indent(\"a\\nb\", \"> \")))\n    discard map.set(payload, \"ansi_width\", json.str(str.from_i32(text.visible_len_ansi(\"\\x1b[31mred\\x1b[0m\"))))\n    fs.write_file(\"{quoted_out}\", json.object(payload))\n    discard term.transcript_kv(\"mode\", \"chat\", 8)\n    return 0\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("core text helpers run should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(output.contains("mode     chat"), "output was: {output}");
+        let content =
+            std::fs::read_to_string(&out_path).expect("core text helper output should exist");
+        assert!(content.contains("\"left\":\"  7\""), "content was: {content}");
+        assert!(content.contains("\"right\":\"ok  \""), "content was: {content}");
+        assert!(content.contains("\"ansi_width\":\"3\""), "content was: {content}");
+        assert!(content.contains("> a\\n> b"), "content was: {content}");
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
     fn native_binary_reads_piped_stdin_and_reports_non_tty_mode() {
         use std::io::Write as _;
 
