@@ -11255,6 +11255,50 @@ mod tests {
     }
 
     #[test]
+    fn native_run_project_root_host_backends_preserves_live_run_semantics() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-host-project-run-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"host_project_run\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"host_project_run\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("main source should be written");
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("project-root host backend run should stay on the live run path");
+        assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(!output.contains("\"bridge\""));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn native_run_host_backends_keeps_deterministic_bridge_mode() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -11286,6 +11330,49 @@ mod tests {
         assert!(error.contains("\"deterministicRequested\":true"));
 
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_run_project_root_host_backends_keeps_deterministic_bridge_mode() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-host-project-det-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"host_project_det\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"host_project_det\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("main source should be written");
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(7),
+                record: None,
+                host_backends: true,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("project-root host-backed deterministic run should use the scenario bridge");
+        assert!(output.contains("\"routing\":\"host-backed-scenario-bridge\""));
+        assert!(output.contains("\"deterministicRequested\":true"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
