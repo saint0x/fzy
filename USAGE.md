@@ -142,6 +142,7 @@ Native host-backed runtime defaults:
 - runtime emits effective bind `addr/port` on successful `listen`
 - runtime bootstraps env from `.env` (or `FZ_DOTENV_PATH`) before env/http calls
 - HTTP transport diagnostics are available through `http.last_error`
+- outbound streaming HTTP is first-class through `http.request_stream`, `http.post_json_stream`, `http.stream_read_line`, `http.stream_eof`, `http.stream_status`, `http.stream_error`, and `http.stream_close`
 
 Language completeness note:
 - tuple/struct/enum destructuring is native in both LLVM and Cranelift, including parameter-bound values, call-returned aggregates, helper-produced aggregates, and control-flow-produced aggregates

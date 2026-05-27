@@ -5,6 +5,7 @@ pub(super) fn runtime_shim_section_core() -> &'static str {
 #define FZ_MAX_HTTP_READ 262144
 #define FZ_MAX_PROC_STATES 1024
 #define FZ_MAX_HTTP_HEADERS 128
+#define FZ_MAX_HTTP_STREAMS 256
 #define FZ_MAX_SPAWN_THREADS 4096
 #define FZ_MAX_CONN_META 128
 #define FZ_MAX_ROUTE_PARAMS 64
@@ -142,12 +143,29 @@ typedef struct {
   int32_t value_id;
 } fz_http_header_pair;
 
+typedef struct {
+  int in_use;
+  pid_t pid;
+  int stdout_fd;
+  int stderr_fd;
+  int done;
+  int eof;
+  int closed;
+  int exit_code;
+  int32_t status_code;
+  int32_t error_id;
+  size_t stdout_read_pos;
+  fz_bytes_buf stdout_buf;
+  fz_bytes_buf stderr_buf;
+} fz_http_stream_state;
+
 static fz_http_header_pair fz_http_headers[FZ_MAX_HTTP_HEADERS];
 static int fz_http_header_count = 0;
 static pthread_mutex_t fz_http_lock = PTHREAD_MUTEX_INITIALIZER;
 static int32_t fz_http_last_status = 0;
 static int32_t fz_http_last_body_id = 0;
 static int32_t fz_http_last_error_id = 0;
+static fz_http_stream_state fz_http_stream_states[FZ_MAX_HTTP_STREAMS];
 static int fz_fs_fd = -1;
 static char fz_fs_base_path[512] = {0};
 static char fz_fs_tmp_path[544] = {0};
@@ -1360,6 +1378,17 @@ static fz_proc_state* fz_proc_state_get(int32_t handle) {
   return state;
 }
 
+static fz_http_stream_state* fz_http_stream_state_get(int32_t handle) {
+  if (handle <= 0 || handle > FZ_MAX_HTTP_STREAMS) {
+    return NULL;
+  }
+  fz_http_stream_state* state = &fz_http_stream_states[handle - 1];
+  if (!state->in_use) {
+    return NULL;
+  }
+  return state;
+}
+
 static void fz_proc_set_last_error(const char* msg) {
   if (msg == NULL) {
     msg = "proc error";
@@ -1383,6 +1412,29 @@ static int32_t fz_proc_state_alloc(pid_t pid, int stdout_fd, int stderr_fd) {
       fz_proc_states[i].stderr_id = 0;
       fz_bytes_buf_init(&fz_proc_states[i].stdout_buf);
       fz_bytes_buf_init(&fz_proc_states[i].stderr_buf);
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+static int32_t fz_http_stream_state_alloc(pid_t pid, int stdout_fd, int stderr_fd, int32_t status_code) {
+  for (int i = 0; i < FZ_MAX_HTTP_STREAMS; i++) {
+    if (!fz_http_stream_states[i].in_use) {
+      memset(&fz_http_stream_states[i], 0, sizeof(fz_http_stream_states[i]));
+      fz_http_stream_states[i].in_use = 1;
+      fz_http_stream_states[i].pid = pid;
+      fz_http_stream_states[i].stdout_fd = stdout_fd;
+      fz_http_stream_states[i].stderr_fd = stderr_fd;
+      fz_http_stream_states[i].done = 0;
+      fz_http_stream_states[i].eof = 0;
+      fz_http_stream_states[i].closed = 0;
+      fz_http_stream_states[i].exit_code = -1;
+      fz_http_stream_states[i].status_code = status_code;
+      fz_http_stream_states[i].error_id = fz_intern_slice("", 0);
+      fz_http_stream_states[i].stdout_read_pos = 0;
+      fz_bytes_buf_init(&fz_http_stream_states[i].stdout_buf);
+      fz_bytes_buf_init(&fz_http_stream_states[i].stderr_buf);
       return i + 1;
     }
   }

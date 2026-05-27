@@ -8549,6 +8549,14 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "http.write_response",
         "http.post_json",
         "http.post_json_capture",
+        "http.post_json_stream",
+        "http.request_stream",
+        "http.stream_read",
+        "http.stream_read_line",
+        "http.stream_eof",
+        "http.stream_status",
+        "http.stream_error",
+        "http.stream_close",
         "http.header_set",
         "http.last_status",
         "http.last_error",
@@ -8731,6 +8739,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         name: "HttpHandle".to_string(),
         args: Vec::new(),
     };
+    let http_stream_handle = Type::Named {
+        name: "HttpStreamHandle".to_string(),
+        args: Vec::new(),
+    };
     let json_handle = Type::Named {
         name: "JsonHandle".to_string(),
         args: Vec::new(),
@@ -8817,6 +8829,19 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "http.headers" => (vec![http_handle.clone()], map_handle.clone()),
         "http.request_id" | "http.remote_addr" => (vec![http_handle.clone()], str_ty.clone()),
         "http.header_set" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "http.request_stream" => (
+            vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
+            http_stream_handle.clone(),
+        ),
+        "http.stream_read" => (
+            vec![http_stream_handle.clone(), i32.clone()],
+            str_ty.clone(),
+        ),
+        "http.stream_read_line" => (vec![http_stream_handle.clone()], str_ty.clone()),
+        "http.stream_eof" => (vec![http_stream_handle.clone()], i32.clone()),
+        "http.stream_status" => (vec![http_stream_handle.clone()], i32.clone()),
+        "http.stream_error" => (vec![http_stream_handle.clone()], str_ty.clone()),
+        "http.stream_close" => (vec![http_stream_handle.clone()], i32.clone()),
         "http.write" | "http.write_json" => (
             vec![http_handle.clone(), i32.clone(), str_ty.clone()],
             i32.clone(),
@@ -8873,6 +8898,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "str.upper_ascii" | "str.lower_ascii" => (vec![str_ty.clone()], str_ty.clone()),
         "http.post_json" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "http.post_json_capture" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
+        "http.post_json_stream" => (vec![str_ty.clone(), str_ty.clone()], http_stream_handle.clone()),
         "http.last_status" => (vec![], i32.clone()),
         "http.last_error" => (vec![], str_ty.clone()),
         "json.escape" => (vec![str_ty.clone()], str_ty.clone()),
@@ -9008,6 +9034,7 @@ fn runtime_default_value(ty: &Type) -> Option<Value> {
             "TaskHandle"
                 | "TaskGroupHandle"
                 | "HttpHandle"
+                | "HttpStreamHandle"
                 | "JsonHandle"
                 | "ListHandle"
                 | "MapHandle"
@@ -11119,6 +11146,28 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn http_streaming_and_sse_helpers_typecheck() {
+        let source = r#"
+            fn main() -> i32 {
+                discard http.header_set("accept", "text/event-stream");
+                let stream = http.request_stream("POST", "https://example.com", "{\"stream\":true}");
+                let line = http.stream_read_line(stream);
+                let chunk = http.stream_read(stream, 128);
+                discard http.stream_status(stream);
+                discard http.stream_error(stream);
+                discard http.stream_close(stream);
+                if str.len(line) >= 0 && str.len(chunk) >= 0 {
+                    return 0;
+                }
+                return 1;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
     }
 
     #[test]

@@ -11729,6 +11729,100 @@ mod tests {
     }
 
     #[test]
+    fn native_http_request_stream_reads_sse_events_incrementally() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener addr should resolve");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("server should accept connection");
+            let mut buf = Vec::<u8>::new();
+            let mut header_end = None;
+            let mut content_length = 0usize;
+            loop {
+                let mut chunk = [0u8; 1024];
+                let read = stream.read(&mut chunk).expect("server read should succeed");
+                if read == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..read]);
+                if header_end.is_none() {
+                    if let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                        let end_index = end + 4;
+                        header_end = Some(end_index);
+                        let header_text = String::from_utf8_lossy(&buf[..end_index]).to_string();
+                        for line in header_text.lines() {
+                            let lower = line.to_ascii_lowercase();
+                            if let Some(value) = lower.strip_prefix("content-length:") {
+                                content_length = value.trim().parse::<usize>().unwrap_or(0);
+                            }
+                        }
+                    }
+                }
+                if let Some(end_index) = header_end {
+                    if buf.len() >= end_index + content_length {
+                        break;
+                    }
+                }
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .expect("server headers should write");
+            stream
+                .write_all(b"event: message_start\n\n")
+                .expect("message_start should write");
+            stream.flush().expect("message_start flush should succeed");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            stream
+                .write_all(b"event: content_block_delta\ndata: {\"type\":\"text_delta\",\"text\":\"hi\"}\n\n")
+                .expect("content block should write");
+            stream.flush().expect("content block flush should succeed");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            stream
+                .write_all(b"event: message_stop\n\n")
+                .expect("message_stop should write");
+            stream.flush().expect("message_stop flush should succeed");
+        });
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-http-stream-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            format!(
+                "use core.http;\n\nfn read_event_type(stream: HttpStreamHandle) -> str {{\n    loop {{\n        let line = http.stream_read_line(stream)\n        if line == \"\" {{\n            if http.stream_eof(stream) == 1 {{\n                return \"\"\n            }}\n            continue\n        }}\n        if str.starts_with(line, \"event:\") == 1 {{\n            let value = str.slice(line, 6, str.len(line))\n            if str.starts_with(value, \" \") == 1 {{\n                return str.slice(value, 1, str.len(value))\n            }}\n            return value\n        }}\n    }}\n}}\n\nfn read_event_data(stream: HttpStreamHandle) -> str {{\n    loop {{\n        let line = http.stream_read_line(stream)\n        if line == \"\" {{\n            if http.stream_eof(stream) == 1 {{\n                return \"\"\n            }}\n            continue\n        }}\n        if str.starts_with(line, \"data:\") == 1 {{\n            let value = str.slice(line, 5, str.len(line))\n            if str.starts_with(value, \" \") == 1 {{\n                return str.slice(value, 1, str.len(value))\n            }}\n            return value\n        }}\n    }}\n}}\n\nfn main() -> i32 {{\n    discard http.header_set(\"accept\", \"text/event-stream\")\n    let stream = http.post_json_stream(\"http://127.0.0.1:{}/sse\", \"{{\\\"stream\\\":true}}\")\n    if http.stream_status(stream) != 200 {{\n        return http.stream_status(stream)\n    }}\n    let first = read_event_type(stream)\n    let second = read_event_type(stream)\n    let second_data = read_event_data(stream)\n    let third = read_event_type(stream)\n    discard http.stream_close(stream)\n    if first == \"message_start\" && second == \"content_block_delta\" && second_data == \"{{\\\"type\\\":\\\"text_delta\\\",\\\"text\\\":\\\"hi\\\"}}\" && third == \"message_stop\" {{\n        return 0\n    }}\n    return 17\n}}\n",
+                addr.port()
+            ),
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("http streaming runtime program should succeed");
+        assert!(output.contains("\"exitCode\":0"), "unexpected output: {output}");
+
+        server.join().expect("server thread should finish");
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn request_handler_spawns_preserve_join_results_and_json_response() {
         let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
         let port = probe

@@ -2479,7 +2479,7 @@ fn merge_imported_core_stdlib_modules(root: &mut ast::Module) -> Result<()> {
                     .unwrap_or_else(|| "unknown parse failure".to_string())
             )
         })?;
-        if matches!(module_name.as_str(), "log" | "thread")
+        if matches!(module_name.as_str(), "log" | "thread" | "http")
             && !module.capabilities.iter().any(|cap| cap == &module_name)
         {
             module.capabilities.push(module_name.clone());
@@ -2498,6 +2498,7 @@ fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str>
         "log" => Some(include_str!("../../../corelib/src/log.fzy")),
         "text" => Some(include_str!("../../../corelib/src/text.fzy")),
         "io" => Some(include_str!("../../../corelib/src/io.fzy")),
+        "http" => Some(include_str!("../../../corelib/src/http.fzy")),
         _ => None,
     }
 }

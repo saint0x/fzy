@@ -39,6 +39,13 @@
 - Native HTTP transport must preserve transport diagnostics via `http.last_error`.
 - On malformed transport output (missing HTTP status trailer), runtime sets deterministic failure status (`599`) instead of silent `0` status.
 - Native HTTP transport uses robust curl execution fallback paths (`curl`, `/usr/bin/curl`, `/opt/homebrew/bin/curl`) with bounded timeout defaults.
+- Native outbound streaming transport is supported for long-lived response bodies:
+  - `http.post_json_stream(endpoint, body_json)`
+  - `http.request_stream(method, endpoint, body)`
+  - `http.stream_read_line(handle)` for ordered line/event consumption
+  - `http.stream_status(handle)` and `http.stream_error(handle)` for transport inspection
+  - `http.stream_close(handle)` for explicit shutdown
+- SSE clients should treat blank lines as event boundaries and use `http.stream_eof(handle)` as the completion signal.
 
 ## Runtime Logging Defaults
 

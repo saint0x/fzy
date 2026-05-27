@@ -40,6 +40,12 @@ struct JsonPayload {
     map_handle: MapHandle,
 }
 
+struct SseEvent {
+    event_type: str,
+    data: str,
+    done: i32,
+}
+
 fn parse_method(name: str) -> Method {
     if name == "GET" then return Method::Get
     if name == "POST" then return Method::Post
@@ -239,6 +245,82 @@ fn post_json_capture_payload(endpoint: str, payload: JsonPayload) -> str {
     return http.post_json_capture(endpoint, json_payload_encode(payload))
 }
 
+fn post_json_stream_payload(endpoint: str, payload: JsonPayload) -> HttpStreamHandle {
+    return http.post_json_stream(endpoint, json_payload_encode(payload))
+}
+
+fn sse_event(event_type: str, data: str, done: i32) -> SseEvent {
+    return SseEvent {
+        event_type: event_type,
+        data: data,
+        done: done,
+    }
+}
+
+fn sse_trim_field_value(line: str, prefix_len: i32) -> str {
+    let mut value = str.slice(line, prefix_len, str.len(line))
+    if str.len(value) > 0 && str.slice(value, 0, 1) == " " {
+        value = str.slice(value, 1, str.len(value))
+    }
+    return value
+}
+
+fn sse_next(stream: HttpStreamHandle) -> SseEvent {
+    let mut event_type = ""
+    let mut data = ""
+    let mut seen = 0
+    loop {
+        if http.stream_eof(stream) == 1 {
+            if seen == 1 {
+                if event_type == "" {
+                    event_type = "message"
+                }
+                return sse_event(event_type, data, 0)
+            }
+            return sse_event("", "", 1)
+        }
+
+        let line = http.stream_read_line(stream)
+        if line == "" {
+            if http.stream_eof(stream) == 1 {
+                if seen == 1 {
+                    if event_type == "" {
+                        event_type = "message"
+                    }
+                    return sse_event(event_type, data, 0)
+                }
+                return sse_event("", "", 1)
+            }
+            if seen == 1 {
+                if event_type == "" {
+                    event_type = "message"
+                }
+                return sse_event(event_type, data, 0)
+            }
+            continue
+        }
+
+        if str.starts_with(line, ":") == 1 {
+            continue
+        }
+        if str.starts_with(line, "event:") == 1 {
+            event_type = sse_trim_field_value(line, 6)
+            seen = 1
+            continue
+        }
+        if str.starts_with(line, "data:") == 1 {
+            let chunk = sse_trim_field_value(line, 5)
+            if data == "" {
+                data = chunk
+            } else {
+                data = str.concat(data, "\n", chunk)
+            }
+            seen = 1
+            continue
+        }
+    }
+}
+
 fn sample() -> i32 {
     let limits = default_limits()
     let policy = sanitize_policy(default_policy())
@@ -259,6 +341,7 @@ fn sample() -> i32 {
     let payload = json_payload_new()
     discard json_payload_set_str(payload, "component", "core.http")
     discard json_payload_set_raw(payload, "ok", "true")
-    let _ = json_payload_encode(payload)
-    return (score + status_class_score(status_class(201)) + oneoff + persistent + backoff + keep_alive) % 251
+    discard json_payload_encode(payload)
+    let evt = sse_event("ping", "ok", 0)
+    return (score + status_class_score(status_class(201)) + oneoff + persistent + backoff + keep_alive + evt.done) % 251
 }

@@ -202,6 +202,7 @@ Implemented and verified in this repo:
   - transport failures preserve diagnostics through `http.last_error`
   - deterministic fallback failure status when HTTP status cannot be parsed
   - curl execution fallback paths (`curl`, `/usr/bin/curl`, `/opt/homebrew/bin/curl`)
+  - outbound streaming requests are first-class through `http.request_stream` / `http.post_json_stream` plus `http.stream_read_line`, `http.stream_eof`, `http.stream_status`, `http.stream_error`, and `http.stream_close`
 - Language/native completeness:
   - closure/lambda lexical capture lowering parity in LLVM + Cranelift for supported forms
   - array/index expression family lowers natively in LLVM + Cranelift with execute-and-compare parity fixtures

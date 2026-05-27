@@ -265,6 +265,35 @@ fn compile_project_preserves_trait_impl_methods_in_nested_modules() {
 }
 
 #[test]
+fn compile_project_accepts_core_http_helper_surface() {
+    let project_name = format!(
+        "fozzylang-core-http-helpers-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nfn main() -> i32 {\n    let payload = http.json_payload_new()\n    discard http.json_payload_set_str(payload, \"message\", \"hi\")\n    discard http.json_payload_set_raw(payload, \"ok\", \"true\")\n    let body = http.json_payload_encode(payload)\n    let event = http.sse_event(\"message_start\", body, 0)\n    if str.len(event.event_type) > 0 && str.len(event.data) > 0 && event.done == 0 {\n        return 0\n    }\n    return 17\n}\n",
+    )
+    .expect("main should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    let output = artifact.output.expect("native artifact should exist");
+    assert_eq!(run_native_exit(&output), 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn parse_diagnostic_context_is_reported_as_notes_not_help() {
     let project_name = format!(
         "fozzylang-parse-note-{}",
@@ -1115,6 +1144,9 @@ fn native_runtime_import_table_is_boundary_only_and_unique() {
     let outbound = native_runtime_import_for_callee("http.header_set")
         .expect("http.header_set runtime import should exist");
     assert_eq!(outbound.symbol, "fz_native_http_header");
+    let stream = native_runtime_import_for_callee("http.request_stream")
+        .expect("http.request_stream runtime import should exist");
+    assert_eq!(stream.symbol, "fz_native_http_request_stream");
 }
 
 #[test]
@@ -1148,6 +1180,18 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains(
         "int32_t fz_native_http_post_json_capture(int32_t endpoint_id, int32_t body_id)"
     ));
+    assert!(shim.contains(
+        "int32_t fz_native_http_post_json_stream(int32_t endpoint_id, int32_t body_id)"
+    ));
+    assert!(shim.contains(
+        "int32_t fz_native_http_request_stream(int32_t method_id, int32_t endpoint_id, int32_t body_id)"
+    ));
+    assert!(shim.contains("int32_t fz_native_http_stream_read(int32_t handle, int32_t max_bytes)"));
+    assert!(shim.contains("int32_t fz_native_http_stream_read_line(int32_t handle)"));
+    assert!(shim.contains("int32_t fz_native_http_stream_eof(int32_t handle)"));
+    assert!(shim.contains("int32_t fz_native_http_stream_status(int32_t handle)"));
+    assert!(shim.contains("int32_t fz_native_http_stream_error(int32_t handle)"));
+    assert!(shim.contains("int32_t fz_native_http_stream_close(int32_t handle)"));
     assert!(shim.contains("int32_t fz_native_http_last_status(void)"));
     assert!(shim.contains("int32_t fz_native_http_last_error(void)"));
     assert!(shim.contains("int32_t fz_native_json_escape(int32_t input_id)"));

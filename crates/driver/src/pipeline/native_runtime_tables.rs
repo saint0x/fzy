@@ -87,6 +87,46 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
+        callee: "http.post_json_stream",
+        symbol: "fz_native_http_post_json_stream",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "http.request_stream",
+        symbol: "fz_native_http_request_stream",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "http.stream_read",
+        symbol: "fz_native_http_stream_read",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "http.stream_read_line",
+        symbol: "fz_native_http_stream_read_line",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "http.stream_eof",
+        symbol: "fz_native_http_stream_eof",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "http.stream_status",
+        symbol: "fz_native_http_stream_status",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "http.stream_error",
+        symbol: "fz_native_http_stream_error",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "http.stream_close",
+        symbol: "fz_native_http_stream_close",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "http.header_set",
         symbol: "fz_native_http_header",
         arity: 2,

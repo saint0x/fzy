@@ -2797,7 +2797,7 @@ impl Parser {
 fn is_core_stdlib_module(name: &str) -> bool {
     matches!(
         name,
-        "process" | "term" | "thread" | "log" | "text" | "io" | "path"
+        "process" | "term" | "thread" | "log" | "text" | "io" | "path" | "http"
     )
 }
 
@@ -2805,6 +2805,7 @@ fn core_stdlib_implied_capability(name: &str) -> Option<&'static str> {
     match name {
         "thread" => Some("thread"),
         "log" => Some("log"),
+        "http" => Some("http"),
         _ => None,
     }
 }

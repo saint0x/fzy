@@ -76,6 +76,10 @@ The v1 stdlib provides production baseline primitives for:
   - `json_payload_new/set_str/set_raw/encode`
   - `write_json_payload`
   - `post_json_capture_payload`
+  - `post_json_stream_payload`
+  - `SseEvent`
+  - `sse_event`
+  - `sse_next`
 - Rust stdlib parity is available in `stdlib::http` and routes through canonical builders (single execution path):
   - `JsonPayload`
   - `json_payload_new/set_str/set_raw/encode`
@@ -286,7 +290,20 @@ let route_base = path.basename(route_file)
 
 - Outbound request headers are explicit:
   - `http.header_set(key, value)`
-  - queued headers apply to the next `http.post_json` / `http.post_json_capture` call and are then cleared
+  - queued headers apply to the next `http.post_json`, `http.post_json_capture`, `http.post_json_stream`, or `http.request_stream` call and are then cleared
+- Outbound streaming HTTP is available directly from the runtime surface:
+  - `http.post_json_stream(endpoint, body_json)`
+  - `http.request_stream(method, endpoint, body)`
+  - `http.stream_read(handle, max_bytes)`
+  - `http.stream_read_line(handle)`
+  - `http.stream_eof(handle)`
+  - `http.stream_status(handle)`
+  - `http.stream_error(handle)`
+  - `http.stream_close(handle)`
+- SSE/event-stream clients should prefer:
+  - `http.header_set("accept", "text/event-stream")`
+  - `http.post_json_stream(...)` or `http.request_stream(...)`
+  - line-oriented event parsing with `http.stream_read_line(...)`
 - Object literals (`#{ ... }`) lower to canonical map handles and are intended for small payload ergonomics.
 - Use `http.body(conn)` plus manual parse only when you need raw protocol text or exact transport preservation.
 

@@ -328,12 +328,27 @@ fn handle(conn: HttpHandle) -> i32 {
 - Outbound request headers are explicit and runtime-owned:
   - `http.header_set("authorization", "Bearer ...")`
   - `http.header_set("x-request-id", "abc123")`
-  - `http.post_json*` applies queued outbound headers to the next request, then resets the queue.
-- `core.http` provides typed JSON payload wrappers for HTTP call sites:
+  - queued headers apply to the next `http.post_json`, `http.post_json_capture`, `http.post_json_stream`, or `http.request_stream` call, then reset.
+- Outbound streaming HTTP is first-class in the native runtime:
+  - `http.post_json_stream(endpoint, body_json) -> HttpStreamHandle`
+  - `http.request_stream(method, endpoint, body) -> HttpStreamHandle`
+  - `http.stream_read(handle, max_bytes) -> str`
+  - `http.stream_read_line(handle) -> str`
+  - `http.stream_eof(handle) -> i32`
+  - `http.stream_status(handle) -> i32`
+  - `http.stream_error(handle) -> str`
+  - `http.stream_close(handle) -> i32`
+- SSE-style integrations should prefer line-by-line stream consumption:
+  - queue `accept: text/event-stream` with `http.header_set(...)`
+  - open the stream with `http.post_json_stream(...)` or `http.request_stream(...)`
+  - consume ordered event lines with `http.stream_read_line(...)`
+  - use blank lines as event boundaries and `http.stream_eof(...)` for completion
+- `core.http` also provides helper types for production call sites:
   - `JsonPayload`
-  - `json_payload_new/set_str/set_raw/encode`
-  - `write_json_payload`
-  - `post_json_capture_payload`
+  - `post_json_capture_payload(...)`
+  - `post_json_stream_payload(...)`
+  - `SseEvent`
+  - `sse_next(stream)`
 - List/map value construction is first-class:
   - `list.new/push/pop/len/get/set/clear/join`
   - `map.new/set/get/has/delete/keys/len`

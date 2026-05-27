@@ -102,6 +102,7 @@
 // - first-class tuple/struct/enum aggregate handles in both native backends
 // - destructuring parity across locals, parameters, calls, returns, helpers, and control-flow values
 // - current-process CLI surface via `core.process` + `core.term`
+// - outbound streaming HTTP via `http.request_stream` / `http.post_json_stream`
 
 // ------------------------------------------------------------
 // SECTION A: project/module surface
@@ -136,6 +137,16 @@ static mut GLOBAL_COUNTER: i32 = 0;
 fn next_counter() -> i32 {
     GLOBAL_COUNTER = GLOBAL_COUNTER + 1;
     return GLOBAL_COUNTER;
+}
+
+fn stream_probe(endpoint: str) -> i32 {
+    discard http.header_set("accept", "text/event-stream")
+    let stream = http.post_json_stream(endpoint, "{\"stream\":true}")
+    let status = http.stream_status(stream)
+    let line = http.stream_read_line(stream)
+    discard line
+    discard http.stream_close(stream)
+    return status
 }
 
 // ------------------------------------------------------------
