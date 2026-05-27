@@ -432,13 +432,42 @@ int32_t fz_native_json_parse(int32_t json_id) {
   return fz_json_value_alloc_from_slice(start, end);
 }
 
+static int fz_json_parse_index_key(const char* key, int* out_index) {
+  if (key == NULL || key[0] == '\0' || out_index == NULL) {
+    return -1;
+  }
+  long value = 0;
+  for (const unsigned char* p = (const unsigned char*)key; *p != '\0'; p++) {
+    if (!isdigit(*p)) {
+      return -1;
+    }
+    value = (value * 10) + (*p - '0');
+    if (value > INT_MAX) {
+      return -1;
+    }
+  }
+  *out_index = (int)value;
+  return 0;
+}
+
 int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id) {
   int32_t value_id = fz_json_value_get_id(json_value_handle);
   const char* raw = fz_lookup_string(value_id);
   const char* key = fz_lookup_string(key_id);
   const char* start = NULL;
   const char* end = NULL;
-  int rc = fz_json_object_lookup(raw, key == NULL ? "" : key, &start, &end);
+  const char* root = fz_json_ws(raw);
+  int rc = -1;
+  if (root != NULL && *root == '[') {
+    int index = -1;
+    if (fz_json_parse_index_key(key, &index) == 0) {
+      rc = fz_json_array_lookup(raw, index, &start, &end);
+    } else {
+      rc = 0;
+    }
+  } else {
+    rc = fz_json_object_lookup(raw, key == NULL ? "" : key, &start, &end);
+  }
   if (rc <= 0) {
     return -1;
   }
@@ -446,7 +475,19 @@ int32_t fz_native_json_get(int32_t json_value_handle, int32_t key_id) {
 }
 
 int32_t fz_native_json_get_str(int32_t json_value_handle, int32_t key_id) {
+  const char* key = fz_lookup_string(key_id);
   int32_t child = fz_native_json_get(json_value_handle, key_id);
+  if (child <= 0) {
+    if (key != NULL && strcmp(key, "raw") == 0) {
+      int32_t value_id = fz_json_value_get_id(json_value_handle);
+      const char* raw = fz_lookup_string(value_id);
+      if (raw == NULL) {
+        return fz_intern_slice("", 0);
+      }
+      return fz_intern_slice(raw, strlen(raw));
+    }
+    return fz_intern_slice("", 0);
+  }
   int32_t value_id = fz_json_value_get_id(child);
   const char* raw = fz_lookup_string(value_id);
   if (raw == NULL) {
@@ -471,7 +512,18 @@ int32_t fz_native_json_has(int32_t json_value_handle, int32_t key_id) {
   const char* key = fz_lookup_string(key_id);
   const char* start = NULL;
   const char* end = NULL;
-  int rc = fz_json_object_lookup(raw, key == NULL ? "" : key, &start, &end);
+  const char* root = fz_json_ws(raw);
+  int rc = -1;
+  if (root != NULL && *root == '[') {
+    int index = -1;
+    if (fz_json_parse_index_key(key, &index) == 0) {
+      rc = fz_json_array_lookup(raw, index, &start, &end);
+    } else {
+      rc = 0;
+    }
+  } else {
+    rc = fz_json_object_lookup(raw, key == NULL ? "" : key, &start, &end);
+  }
   return rc > 0 ? 1 : 0;
 }
 

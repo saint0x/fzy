@@ -12020,6 +12020,135 @@ mod tests {
     }
 
     #[test]
+    fn native_run_json_array_traversal_and_raw_extraction_execute() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-json-array-{suffix}.fzy"));
+        let out_path = std::env::temp_dir().join(format!("fozzylang-json-array-{suffix}.json"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\n\nfn main() -> i32 {{\n    let parsed = json.parse(\"{{\\\"content\\\":[{{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\"}},{{\\\"type\\\":\\\"tool_use\\\",\\\"name\\\":\\\"bash\\\",\\\"input\\\":{{\\\"command\\\":\\\"printf ok\\\"}}}}]}}\")\n    let content = json.get(parsed, \"content\")\n    let block0 = json.get(content, \"0\")\n    let block1 = json.get(content, \"1\")\n    let input = json.get(block1, \"input\")\n    let out = map.new()\n    discard map.set(out, \"content_raw\", json.str(json.get_str(content, \"raw\")))\n    discard map.set(out, \"block0_type\", json.str(json.get_str(block0, \"type\")))\n    discard map.set(out, \"block0_text\", json.str(json.get_str(block0, \"text\")))\n    discard map.set(out, \"block1_type\", json.str(json.get_str(block1, \"type\")))\n    discard map.set(out, \"block1_name\", json.str(json.get_str(block1, \"name\")))\n    discard map.set(out, \"input_raw\", json.str(json.get_str(input, \"raw\")))\n    fs.write_file(\"{quoted_out}\", json.object(out))\n    return 0\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("json array traversal runtime program should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+        let content =
+            std::fs::read_to_string(&out_path).expect("json array traversal output should exist");
+        assert!(
+            content.contains("\"block0_type\":\"text\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"block0_text\":\"hi\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"block1_type\":\"tool_use\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"block1_name\":\"bash\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\\\"command\\\":\\\"printf ok\\\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\\\"type\\\":\\\"text\\\""),
+            "content was: {content}"
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
+    fn native_run_host_backends_preserves_fs_side_effects_for_json_array_traversal() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-json-array-host-{suffix}"));
+        let source = root.join("src/main.fzy");
+        let out_path =
+            std::env::temp_dir().join(format!("fozzylang-json-array-host-{suffix}.json"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"json_array_host\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"json_array_host\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\n\nfn main() -> i32 {{\n    let parsed = json.parse(\"{{\\\"content\\\":[{{\\\"type\\\":\\\"text\\\",\\\"text\\\":\\\"hi\\\"}},{{\\\"type\\\":\\\"tool_use\\\",\\\"name\\\":\\\"bash\\\",\\\"input\\\":{{\\\"command\\\":\\\"printf ok\\\"}}}}]}}\")\n    let content = json.get(parsed, \"content\")\n    let block1 = json.get(content, \"1\")\n    let input = json.get(block1, \"input\")\n    let out = map.new()\n    discard map.set(out, \"mode\", json.str(json.get_str(block1, \"type\")))\n    discard map.set(out, \"input_raw\", json.str(json.get_str(input, \"raw\")))\n    fs.write_file(\"{quoted_out}\", json.object(out))\n    return 0\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: Some("cranelift".to_string()),
+                max_seconds: Some(10),
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("host-backend json array traversal program should succeed");
+        assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+        assert!(output.contains("\"exitCode\":0"));
+        let content = std::fs::read_to_string(&out_path)
+            .expect("host-backed runtime should preserve absolute fs side effect output");
+        assert!(
+            content.contains("\"mode\":\"tool_use\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\\\"command\\\":\\\"printf ok\\\""),
+            "content was: {content}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
     fn native_run_variadic_str_concat_executes() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
