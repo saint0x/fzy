@@ -308,7 +308,7 @@ fn handle(conn: HttpHandle) -> i32 {
 - Structured logging fields use `log.fields(map_handle)` as the primary path.
 - Path-safe assembly should prefer path primitives over raw string surgery:
   - `path.join(base, child)`
- - Directory discovery should prefer the stdlib IO facade:
+- Directory discovery should prefer the stdlib IO facade:
   - `io.list_dir(path)`
 
 ## String Escape Sequences
