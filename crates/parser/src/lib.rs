@@ -549,16 +549,38 @@ impl Parser {
 
     fn parse_import_path_segments(&mut self) -> Option<Vec<String>> {
         let mut path = vec![self.expect_ident("expected import path")?];
-        while self.at_double_colon()
+        while self.at_import_path_separator()
             && self
-                .peek_n(2)
+                .peek_after_import_path_separator()
                 .is_some_and(|tok| matches!(tok.kind, TokenKind::Ident(_)))
         {
-            let _ = self.consume_double_colon();
+            let _ = self.consume_import_path_separator();
             let seg = self.expect_ident("expected import path segment")?;
             path.push(seg);
         }
         Some(path)
+    }
+
+    fn at_import_path_separator(&self) -> bool {
+        self.at_double_colon() || self.at(&TokenKind::Dot)
+    }
+
+    fn peek_after_import_path_separator(&self) -> Option<&Token> {
+        if self.at_double_colon() {
+            self.peek_n(2)
+        } else if self.at(&TokenKind::Dot) {
+            self.peek_n(1)
+        } else {
+            None
+        }
+    }
+
+    fn consume_import_path_separator(&mut self) -> bool {
+        if self.consume_double_colon() {
+            true
+        } else {
+            self.consume(&TokenKind::Dot)
+        }
     }
 
     fn at_double_colon(&self) -> bool {
@@ -4551,6 +4573,32 @@ mod tests {
                 && !entry.wildcard
                 && entry.alias.is_none()
                 && entry.path == vec!["term".to_string()]
+        }));
+    }
+
+    #[test]
+    fn supports_dotted_pub_use_reexport_paths() {
+        let source = r#"
+            pub use commands.run_chat;
+            use cli.helpers.render as render_fn;
+        "#;
+        let module = parse(source, "imports").expect("parse should succeed");
+        assert!(module.imports.iter().any(|entry| {
+            entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["commands".to_string(), "run_chat".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.as_deref() == Some("render_fn")
+                && entry.path
+                    == vec![
+                        "cli".to_string(),
+                        "helpers".to_string(),
+                        "render".to_string(),
+                    ]
         }));
     }
 

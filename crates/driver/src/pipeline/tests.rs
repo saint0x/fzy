@@ -622,6 +622,52 @@ fn compile_project_resolves_use_alias_and_pub_use_reexport_calls() {
 }
 
 #[test]
+fn compile_project_resolves_pub_use_reexport_calls_across_module_boundary() {
+    let project_name = format!(
+        "fozzylang-pub-use-cross-module-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/cli")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "mod cli;\nfn main() -> i32 {\n    return cli.run_chat()\n}\n",
+    )
+    .expect("main source should be written");
+    std::fs::write(
+        root.join("src/cli/mod.fzy"),
+        "mod commands;\npub use commands::run_chat;\npub fn boot() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("cli module should be written");
+    std::fs::write(
+        root.join("src/cli/commands.fzy"),
+        "pub fn run_chat() -> i32 {\n    return 11\n}\n",
+    )
+    .expect("commands module should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+    assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
+    let exit = run_native_exit(
+        artifact
+            .output
+            .as_deref()
+            .expect("artifact output should exist"),
+    );
+    assert_eq!(exit, 11);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn compile_with_verify_errors_skips_native_output() {
     let file_name = format!(
         "fozzylang-error-{}.fzy",
