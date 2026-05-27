@@ -858,6 +858,18 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
             _ => None,
         })
         .collect::<HashSet<_>>();
+    let local_types = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::TypeAlias(item) => Some(item.name.clone()),
+            ast::Item::NewType(item) => Some(item.name.clone()),
+            ast::Item::Struct(item) => Some(item.name.clone()),
+            ast::Item::Enum(item) => Some(item.name.clone()),
+            ast::Item::Trait(item) => Some(item.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
     let mut module_aliases = module
         .modules
         .iter()
@@ -875,11 +887,89 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
     for item in &mut module.items {
         match item {
             ast::Item::Function(function) => {
-                qualify_function(function, namespace, &local_functions, &module_aliases);
+                qualify_function(
+                    function,
+                    namespace,
+                    &local_functions,
+                    &local_types,
+                    &module_aliases,
+                );
             }
             ast::Item::Test(test) => {
                 for stmt in &mut test.body {
-                    qualify_stmt(stmt, namespace, &local_functions, &module_aliases);
+                    qualify_stmt(
+                        stmt,
+                        namespace,
+                        &local_functions,
+                        &local_types,
+                        &module_aliases,
+                    );
+                }
+            }
+            ast::Item::TypeAlias(item) => {
+                item.name = qualify_name(namespace, &item.name);
+                qualify_type(&mut item.ty, namespace, &local_types, &module_aliases);
+            }
+            ast::Item::NewType(item) => {
+                item.name = qualify_name(namespace, &item.name);
+                qualify_type(&mut item.inner, namespace, &local_types, &module_aliases);
+            }
+            ast::Item::Struct(item) => {
+                item.name = qualify_name(namespace, &item.name);
+                for field in &mut item.fields {
+                    qualify_type(&mut field.ty, namespace, &local_types, &module_aliases);
+                }
+            }
+            ast::Item::Enum(item) => {
+                item.name = qualify_name(namespace, &item.name);
+                for variant in &mut item.variants {
+                    for payload in &mut variant.payload {
+                        qualify_type(payload, namespace, &local_types, &module_aliases);
+                    }
+                    for field in &mut variant.named_payload {
+                        qualify_type(&mut field.ty, namespace, &local_types, &module_aliases);
+                    }
+                }
+            }
+            ast::Item::Trait(item) => {
+                item.name = qualify_name(namespace, &item.name);
+                for assoc in &mut item.associated_consts {
+                    qualify_type(&mut assoc.ty, namespace, &local_types, &module_aliases);
+                }
+                for method in &mut item.methods {
+                    for param in &mut method.params {
+                        qualify_type(&mut param.ty, namespace, &local_types, &module_aliases);
+                    }
+                    qualify_type(&mut method.return_type, namespace, &local_types, &module_aliases);
+                }
+            }
+            ast::Item::Impl(item) => {
+                if let Some(trait_name) = &mut item.trait_name {
+                    *trait_name =
+                        qualify_type_name(trait_name, namespace, &local_types, &module_aliases);
+                }
+                qualify_type(&mut item.for_type, namespace, &local_types, &module_aliases);
+                for (_, ty) in &mut item.associated_types {
+                    qualify_type(ty, namespace, &local_types, &module_aliases);
+                }
+                for assoc in &mut item.associated_consts {
+                    qualify_type(&mut assoc.ty, namespace, &local_types, &module_aliases);
+                    qualify_expr(
+                        &mut assoc.value,
+                        namespace,
+                        &local_functions,
+                        &local_types,
+                        &module_aliases,
+                    );
+                }
+                for method in &mut item.methods {
+                    qualify_function(
+                        method,
+                        namespace,
+                        &local_functions,
+                        &local_types,
+                        &module_aliases,
+                    );
                 }
             }
             _ => {}
@@ -947,11 +1037,21 @@ fn qualify_function(
     function: &mut ast::Function,
     namespace: &str,
     local_functions: &HashSet<String>,
+    local_types: &HashSet<String>,
     module_aliases: &HashMap<String, String>,
 ) {
     function.name = qualify_name(namespace, &function.name);
+    for param in &mut function.params {
+        qualify_type(&mut param.ty, namespace, local_types, module_aliases);
+    }
+    qualify_type(
+        &mut function.return_type,
+        namespace,
+        local_types,
+        module_aliases,
+    );
     for stmt in &mut function.body {
-        qualify_stmt(stmt, namespace, local_functions, module_aliases);
+        qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
     }
 }
 
@@ -959,20 +1059,40 @@ fn qualify_stmt(
     stmt: &mut ast::Stmt,
     namespace: &str,
     local_functions: &HashSet<String>,
+    local_types: &HashSet<String>,
     module_aliases: &HashMap<String, String>,
 ) {
     match stmt {
-        ast::Stmt::Let { value, .. }
-        | ast::Stmt::LetPattern { value, .. }
-        | ast::Stmt::Assign { value, .. }
+        ast::Stmt::Let { ty, value, .. } => {
+            if let Some(ty) = ty {
+                qualify_type(ty, namespace, local_types, module_aliases);
+            }
+            qualify_expr(value, namespace, local_functions, local_types, module_aliases)
+        }
+        ast::Stmt::LetPattern {
+            pattern, ty, value, ..
+        } => {
+            qualify_pattern(pattern, namespace, local_types, module_aliases);
+            if let Some(ty) = ty {
+                qualify_type(ty, namespace, local_types, module_aliases);
+            }
+            qualify_expr(value, namespace, local_functions, local_types, module_aliases)
+        }
+        ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => qualify_expr(value, namespace, local_functions, module_aliases),
+        | ast::Stmt::Expr(value) => qualify_expr(
+            value,
+            namespace,
+            local_functions,
+            local_types,
+            module_aliases,
+        ),
         ast::Stmt::Return(value) => {
             if let Some(value) = value {
-                qualify_expr(value, namespace, local_functions, module_aliases);
+                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Stmt::If {
@@ -980,18 +1100,30 @@ fn qualify_stmt(
             then_body,
             else_body,
         } => {
-            qualify_expr(condition, namespace, local_functions, module_aliases);
+            qualify_expr(
+                condition,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             for nested in then_body {
-                qualify_stmt(nested, namespace, local_functions, module_aliases);
+                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
             }
             for nested in else_body {
-                qualify_stmt(nested, namespace, local_functions, module_aliases);
+                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Stmt::While { condition, body } => {
-            qualify_expr(condition, namespace, local_functions, module_aliases);
+            qualify_expr(
+                condition,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             for nested in body {
-                qualify_stmt(nested, namespace, local_functions, module_aliases);
+                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Stmt::For {
@@ -1001,37 +1133,62 @@ fn qualify_stmt(
             body,
         } => {
             if let Some(init) = init {
-                qualify_stmt(init, namespace, local_functions, module_aliases);
+                qualify_stmt(init, namespace, local_functions, local_types, module_aliases);
             }
             if let Some(condition) = condition {
-                qualify_expr(condition, namespace, local_functions, module_aliases);
+                qualify_expr(
+                    condition,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             if let Some(step) = step {
-                qualify_stmt(step, namespace, local_functions, module_aliases);
+                qualify_stmt(step, namespace, local_functions, local_types, module_aliases);
             }
             for nested in body {
-                qualify_stmt(nested, namespace, local_functions, module_aliases);
+                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Stmt::ForIn { iterable, body, .. } => {
-            qualify_expr(iterable, namespace, local_functions, module_aliases);
+            qualify_expr(
+                iterable,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             for nested in body {
-                qualify_stmt(nested, namespace, local_functions, module_aliases);
+                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Stmt::Loop { body } => {
             for nested in body {
-                qualify_stmt(nested, namespace, local_functions, module_aliases);
+                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
-            qualify_expr(scrutinee, namespace, local_functions, module_aliases);
+            qualify_expr(
+                scrutinee,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             for arm in arms {
+                qualify_pattern(&mut arm.pattern, namespace, local_types, module_aliases);
                 if let Some(guard) = &mut arm.guard {
-                    qualify_expr(guard, namespace, local_functions, module_aliases);
+                    qualify_expr(guard, namespace, local_functions, local_types, module_aliases);
                 }
-                qualify_expr(&mut arm.value, namespace, local_functions, module_aliases);
+                qualify_expr(
+                    &mut arm.value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
     }
@@ -1041,76 +1198,94 @@ fn qualify_expr(
     expr: &mut ast::Expr,
     namespace: &str,
     local_functions: &HashSet<String>,
+    local_types: &HashSet<String>,
     module_aliases: &HashMap<String, String>,
 ) {
     match expr {
         ast::Expr::Call { callee, args } => {
             *callee = qualify_callee(callee, namespace, local_functions, module_aliases);
             for arg in args {
-                qualify_expr(arg, namespace, local_functions, module_aliases);
+                qualify_expr(arg, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::UnsafeBlock { body, .. } => {
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::FieldAccess { base, .. } => {
-            qualify_expr(base, namespace, local_functions, module_aliases);
+            qualify_expr(base, namespace, local_functions, local_types, module_aliases);
         }
-        ast::Expr::StructInit { fields, .. } => {
+        ast::Expr::StructInit { name, fields } => {
+            *name = qualify_type_name(name, namespace, local_types, module_aliases);
             for (_, value) in fields {
-                qualify_expr(value, namespace, local_functions, module_aliases);
+                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
             }
         }
-        ast::Expr::EnumInit { payload, .. } => {
+        ast::Expr::EnumInit {
+            enum_name,
+            payload,
+            named_payload,
+            ..
+        } => {
+            *enum_name = qualify_type_name(enum_name, namespace, local_types, module_aliases);
             for value in payload {
-                qualify_expr(value, namespace, local_functions, module_aliases);
+                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+            }
+            for (_, value) in named_payload {
+                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::Closure { body, .. } => {
-            qualify_expr(body, namespace, local_functions, module_aliases);
+            qualify_expr(body, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::Group(inner) => {
-            qualify_expr(inner, namespace, local_functions, module_aliases);
+            qualify_expr(inner, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::Tuple(items) => {
             for item in items {
-                qualify_expr(item, namespace, local_functions, module_aliases);
+                qualify_expr(item, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
-            qualify_expr(inner, namespace, local_functions, module_aliases);
+            qualify_expr(inner, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
         } => {
-            qualify_expr(try_expr, namespace, local_functions, module_aliases);
-            qualify_expr(catch_expr, namespace, local_functions, module_aliases);
+            qualify_expr(try_expr, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(catch_expr, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            qualify_expr(condition, namespace, local_functions, module_aliases);
-            qualify_expr(then_expr, namespace, local_functions, module_aliases);
-            qualify_expr(else_expr, namespace, local_functions, module_aliases);
+            qualify_expr(condition, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(then_expr, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(else_expr, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::Match { scrutinee, arms } => {
-            qualify_expr(scrutinee, namespace, local_functions, module_aliases);
+            qualify_expr(scrutinee, namespace, local_functions, local_types, module_aliases);
             for arm in arms {
+                qualify_pattern(&mut arm.pattern, namespace, local_types, module_aliases);
                 if let Some(guard) = &mut arm.guard {
-                    qualify_expr(guard, namespace, local_functions, module_aliases);
+                    qualify_expr(guard, namespace, local_functions, local_types, module_aliases);
                 }
-                qualify_expr(&mut arm.value, namespace, local_functions, module_aliases);
+                qualify_expr(
+                    &mut arm.value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::While { condition, body } => {
-            qualify_expr(condition, namespace, local_functions, module_aliases);
+            qualify_expr(condition, namespace, local_functions, local_types, module_aliases);
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::For {
@@ -1120,59 +1295,59 @@ fn qualify_expr(
             body,
         } => {
             if let Some(init) = init {
-                qualify_stmt(init, namespace, local_functions, module_aliases);
+                qualify_stmt(init, namespace, local_functions, local_types, module_aliases);
             }
             if let Some(condition) = condition {
-                qualify_expr(condition, namespace, local_functions, module_aliases);
+                qualify_expr(condition, namespace, local_functions, local_types, module_aliases);
             }
             if let Some(step) = step {
-                qualify_stmt(step, namespace, local_functions, module_aliases);
+                qualify_stmt(step, namespace, local_functions, local_types, module_aliases);
             }
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::ForIn { iterable, body, .. } => {
-            qualify_expr(iterable, namespace, local_functions, module_aliases);
+            qualify_expr(iterable, namespace, local_functions, local_types, module_aliases);
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::Loop { body } => {
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::Break(value) | ast::Expr::Return(value) => {
             if let Some(value) = value {
-                qualify_expr(value, namespace, local_functions, module_aliases);
+                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::Continue => {}
         ast::Expr::Range { start, end, .. } => {
-            qualify_expr(start, namespace, local_functions, module_aliases);
-            qualify_expr(end, namespace, local_functions, module_aliases);
+            qualify_expr(start, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(end, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::ArrayLiteral(items) => {
             for item in items {
-                qualify_expr(item, namespace, local_functions, module_aliases);
+                qualify_expr(item, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::ObjectLiteral(fields) => {
             for (_, value) in fields {
-                qualify_expr(value, namespace, local_functions, module_aliases);
+                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
             }
         }
         ast::Expr::Index { base, index } => {
-            qualify_expr(base, namespace, local_functions, module_aliases);
-            qualify_expr(index, namespace, local_functions, module_aliases);
+            qualify_expr(base, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(index, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::Unary { expr, .. } => {
-            qualify_expr(expr, namespace, local_functions, module_aliases);
+            qualify_expr(expr, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::Binary { left, right, .. } => {
-            qualify_expr(left, namespace, local_functions, module_aliases);
-            qualify_expr(right, namespace, local_functions, module_aliases);
+            qualify_expr(left, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(right, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
@@ -1180,6 +1355,127 @@ fn qualify_expr(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
+    }
+}
+
+fn qualify_pattern(
+    pattern: &mut ast::Pattern,
+    namespace: &str,
+    local_types: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) {
+    match pattern {
+        ast::Pattern::Tuple(items) | ast::Pattern::Or(items) => {
+            for item in items {
+                qualify_pattern(item, namespace, local_types, module_aliases);
+            }
+        }
+        ast::Pattern::Struct { name, .. } => {
+            *name = qualify_type_name(name, namespace, local_types, module_aliases);
+        }
+        ast::Pattern::Variant { enum_name, .. } => {
+            *enum_name = qualify_type_name(enum_name, namespace, local_types, module_aliases);
+        }
+        ast::Pattern::Wildcard
+        | ast::Pattern::Ident(_)
+        | ast::Pattern::Int(_)
+        | ast::Pattern::Bool(_) => {}
+    }
+}
+
+fn qualify_type(
+    ty: &mut ast::Type,
+    namespace: &str,
+    local_types: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) {
+    match ty {
+        ast::Type::Ptr { to, .. } | ast::Type::Ref { to, .. } => {
+            qualify_type(to, namespace, local_types, module_aliases)
+        }
+        ast::Type::Slice(inner)
+        | ast::Type::Set(inner)
+        | ast::Type::Deque(inner)
+        | ast::Type::Ring(inner)
+        | ast::Type::Option(inner)
+        | ast::Type::Vec(inner)
+        | ast::Type::Future(inner) => qualify_type(inner, namespace, local_types, module_aliases),
+        ast::Type::Array { elem, .. } => {
+            qualify_type(elem, namespace, local_types, module_aliases)
+        }
+        ast::Type::Result { ok, err } => {
+            qualify_type(ok, namespace, local_types, module_aliases);
+            qualify_type(err, namespace, local_types, module_aliases);
+        }
+        ast::Type::Map { key, value } => {
+            qualify_type(key, namespace, local_types, module_aliases);
+            qualify_type(value, namespace, local_types, module_aliases);
+        }
+        ast::Type::Function { params, ret } => {
+            for param in params {
+                qualify_type(param, namespace, local_types, module_aliases);
+            }
+            qualify_type(ret, namespace, local_types, module_aliases);
+        }
+        ast::Type::DynTrait(name) => {
+            *name = qualify_type_name(name, namespace, local_types, module_aliases);
+        }
+        ast::Type::Tuple(items) => {
+            for item in items {
+                qualify_type(item, namespace, local_types, module_aliases);
+            }
+        }
+        ast::Type::Named { name, args } => {
+            *name = qualify_type_name(name, namespace, local_types, module_aliases);
+            for arg in args {
+                qualify_type(arg, namespace, local_types, module_aliases);
+            }
+        }
+        ast::Type::Never
+        | ast::Type::Void
+        | ast::Type::Bool
+        | ast::Type::ISize
+        | ast::Type::USize
+        | ast::Type::Int { .. }
+        | ast::Type::BigInt
+        | ast::Type::BigUint
+        | ast::Type::Float { .. }
+        | ast::Type::Decimal128
+        | ast::Type::Char
+        | ast::Type::Str
+        | ast::Type::Bytes
+        | ast::Type::Uuid
+        | ast::Type::Path
+        | ast::Type::PathBuf
+        | ast::Type::Url
+        | ast::Type::SocketAddr
+        | ast::Type::Duration
+        | ast::Type::Instant
+        | ast::Type::Decimal
+        | ast::Type::DateTimeTz
+        | ast::Type::ExitStatus
+        | ast::Type::TypeVar(_) => {}
+    }
+}
+
+fn qualify_type_name(
+    name: &str,
+    namespace: &str,
+    local_types: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) -> String {
+    if let Some(exact_alias) = module_aliases.get(name) {
+        exact_alias.clone()
+    } else if let Some((head, tail)) = name.split_once('.') {
+        if let Some(qualified_head) = module_aliases.get(head) {
+            format!("{qualified_head}.{tail}")
+        } else {
+            name.to_string()
+        }
+    } else if local_types.contains(name) {
+        qualify_name(namespace, name)
+    } else {
+        name.to_string()
     }
 }
 

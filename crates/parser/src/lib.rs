@@ -1939,46 +1939,6 @@ impl Parser {
                     }
                     let _ = self.consume(&TokenKind::RBrace);
                     Expr::StructInit { name, fields }
-                } else if self.at(&TokenKind::Colon)
-                    && self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Colon)
-                {
-                    let _ = self.consume(&TokenKind::Colon);
-                    let _ = self.consume(&TokenKind::Colon);
-                    let variant = self.expect_ident("expected enum variant name")?;
-                    let mut payload = Vec::new();
-                    let mut named_payload = Vec::new();
-                    if self.consume(&TokenKind::LParen) {
-                        while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
-                            payload.push(self.parse_expr(0)?);
-                            if !self.consume(&TokenKind::Comma) {
-                                break;
-                            }
-                        }
-                        let _ = self.consume(&TokenKind::RParen);
-                    } else if self.looks_like_enum_struct_variant_initializer() {
-                        let _ = self.consume(&TokenKind::LBrace);
-                        while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
-                            let field_name = self.expect_ident(
-                                "expected field name in enum struct-variant initializer",
-                            )?;
-                            let value = if self.consume(&TokenKind::Colon) {
-                                self.parse_expr(0)?
-                            } else {
-                                Expr::Ident(field_name.clone())
-                            };
-                            named_payload.push((field_name, value));
-                            if !self.consume(&TokenKind::Comma) {
-                                break;
-                            }
-                        }
-                        let _ = self.consume(&TokenKind::RBrace);
-                    }
-                    Expr::EnumInit {
-                        enum_name: name,
-                        variant,
-                        payload,
-                        named_payload,
-                    }
                 } else {
                     Expr::Ident(name)
                 }
@@ -2028,6 +1988,14 @@ impl Parser {
                     base: Box::new(expr),
                     field: seg,
                 };
+                continue;
+            }
+            if self.at_double_colon() {
+                let Some(enum_name) = Self::expr_to_callee_name(&expr) else {
+                    self.push_diag_here("expected enum path before `::`");
+                    return None;
+                };
+                expr = self.parse_enum_value_expr(enum_name)?;
                 continue;
             }
             if self.at(&TokenKind::Lt) {
@@ -2093,6 +2061,45 @@ impl Parser {
         }
 
         Some(expr)
+    }
+
+    fn parse_enum_value_expr(&mut self, enum_name: String) -> Option<Expr> {
+        let _ = self.consume(&TokenKind::Colon);
+        let _ = self.consume(&TokenKind::Colon);
+        let variant = self.expect_ident("expected enum variant name")?;
+        let mut payload = Vec::new();
+        let mut named_payload = Vec::new();
+        if self.consume(&TokenKind::LParen) {
+            while !self.at(&TokenKind::RParen) && !self.at(&TokenKind::Eof) {
+                payload.push(self.parse_expr(0)?);
+                if !self.consume(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            let _ = self.consume(&TokenKind::RParen);
+        } else if self.looks_like_enum_struct_variant_initializer() {
+            let _ = self.consume(&TokenKind::LBrace);
+            while !self.at(&TokenKind::RBrace) && !self.at(&TokenKind::Eof) {
+                let field_name =
+                    self.expect_ident("expected field name in enum struct-variant initializer")?;
+                let value = if self.consume(&TokenKind::Colon) {
+                    self.parse_expr(0)?
+                } else {
+                    Expr::Ident(field_name.clone())
+                };
+                named_payload.push((field_name, value));
+                if !self.consume(&TokenKind::Comma) {
+                    break;
+                }
+            }
+            let _ = self.consume(&TokenKind::RBrace);
+        }
+        Some(Expr::EnumInit {
+            enum_name,
+            variant,
+            payload,
+            named_payload,
+        })
     }
 
     fn parse_match_arms(&mut self) -> Option<Vec<MatchArm>> {
@@ -5207,6 +5214,42 @@ mod tests {
                         "render".to_string(),
                     ]
         }));
+    }
+
+    #[test]
+    fn parses_cross_module_qualified_enum_values_in_value_position() {
+        let source = r#"
+            fn main() -> i32 {
+                let ok_status = model.types.control_status_label(model.types.ControlStatus::ControlOk)
+                let boot_phase = model.types.queue_phase_label(model.types.QueuePhase::QueueBoot)
+                if ok_status == boot_phase {
+                    return 1
+                }
+                return 0
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let ast::Item::Function(function) = &module.items[0] else {
+            panic!("expected function");
+        };
+        let ast::Stmt::Let { value, .. } = &function.body[0] else {
+            panic!("expected let binding");
+        };
+        let ast::Expr::Call { args, .. } = value else {
+            panic!("expected call expression");
+        };
+        assert!(matches!(
+            &args[0],
+            ast::Expr::EnumInit {
+                enum_name,
+                variant,
+                payload,
+                named_payload,
+            } if enum_name == "model.types.ControlStatus"
+                && variant == "ControlOk"
+                && payload.is_empty()
+                && named_payload.is_empty()
+        ));
     }
 
     #[test]

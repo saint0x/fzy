@@ -165,6 +165,41 @@ fn verify_file_resolves_same_module_helpers_inside_nested_object_literals() {
 }
 
 #[test]
+fn compile_project_accepts_cross_module_qualified_enum_values_in_calls() {
+    let project_name = format!(
+        "fozzylang-cross-module-enum-values-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/model")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "mod model;\nfn main() -> i32 {\n    let ok_status = model.types.control_status_label(model.types.ControlStatus::ControlOk)\n    let boot_phase = model.types.queue_phase_label(model.types.QueuePhase::QueueBoot)\n    if ok_status == \"ok\" && boot_phase == \"boot\" {\n        return 0\n    }\n    return 17\n}\n",
+    )
+    .expect("main should be written");
+    std::fs::write(root.join("src/model/mod.fzy"), "mod types;\n").expect("model mod should be written");
+    std::fs::write(
+        root.join("src/model/types.fzy"),
+        "pub enum ControlStatus { ControlOk, ControlFail }\npub enum QueuePhase { QueueBoot, QueueDrain }\n\npub fn control_status_label(value: ControlStatus) -> str {\n    match value {\n        ControlStatus::ControlOk => return \"ok\",\n        ControlStatus::ControlFail => return \"fail\",\n        _ => return \"unknown\",\n    }\n}\n\npub fn queue_phase_label(value: QueuePhase) -> str {\n    match value {\n        QueuePhase::QueueBoot => return \"boot\",\n        QueuePhase::QueueDrain => return \"drain\",\n        _ => return \"unknown\",\n    }\n}\n",
+    )
+    .expect("types module should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    let output = artifact.output.expect("native artifact should exist");
+    assert_eq!(run_native_exit(&output), 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn parse_diagnostic_context_is_reported_as_notes_not_help() {
     let project_name = format!(
         "fozzylang-parse-note-{}",
