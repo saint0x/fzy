@@ -200,6 +200,71 @@ fn compile_project_accepts_cross_module_qualified_enum_values_in_calls() {
 }
 
 #[test]
+fn compile_project_preserves_trait_impl_methods_and_generic_bounds() {
+    let project_name = format!(
+        "fozzylang-trait-generic-qualified-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "trait LangScore { fn score(v: i32) -> i32; }\ntrait LangCode { fn code(v: i32) -> i32; }\nstruct LangProbe { value: i32 }\nimpl LangScore for LangProbe { fn score(v: i32) -> i32 { return v + 1; } }\nimpl LangCode for LangProbe { fn code(v: i32) -> i32 { return v + 2; } }\nfn lang_keep<T: LangScore + LangCode>(v: T) -> T { return v; }\nfn main() -> i32 {\n    let probe = LangProbe { value: 7 };\n    let kept = lang_keep<LangProbe>(probe);\n    discard kept;\n    if LangProbe.score(7) == 8 && LangProbe.code(7) == 9 {\n        return 0;\n    }\n    return 17;\n}\n",
+    )
+    .expect("main should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    let output = artifact.output.expect("native artifact should exist");
+    assert_eq!(run_native_exit(&output), 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_project_preserves_trait_impl_methods_in_nested_modules() {
+    let project_name = format!(
+        "fozzylang-trait-generic-nested-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/tests")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "mod tests;\nfn main() -> i32 { return tests.smoke.run(); }\n",
+    )
+    .expect("main should be written");
+    std::fs::write(root.join("src/tests/mod.fzy"), "mod smoke;\n")
+        .expect("tests mod should be written");
+    std::fs::write(
+        root.join("src/tests/smoke.fzy"),
+        "trait LangScore { fn score(v: i32) -> i32; }\ntrait LangCode { fn code(v: i32) -> i32; }\nstruct LangProbe { value: i32 }\nimpl LangScore for LangProbe { fn score(v: i32) -> i32 { return v + 1; } }\nimpl LangCode for LangProbe { fn code(v: i32) -> i32 { return v + 2; } }\npub fn lang_keep<T: LangScore + LangCode>(v: T) -> T { return v; }\npub fn run() -> i32 {\n    let probe = LangProbe { value: 7 };\n    let kept = lang_keep<LangProbe>(probe);\n    discard kept;\n    if LangProbe.score(7) == 8 && LangProbe.code(7) == 9 {\n        return 0;\n    }\n    return 17;\n}\n",
+    )
+    .expect("smoke module should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    let output = artifact.output.expect("native artifact should exist");
+    assert_eq!(run_native_exit(&output), 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn parse_diagnostic_context_is_reported_as_notes_not_help() {
     let project_name = format!(
         "fozzylang-parse-note-{}",

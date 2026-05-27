@@ -933,6 +933,12 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
             }
             ast::Item::Trait(item) => {
                 item.name = qualify_name(namespace, &item.name);
+                qualify_generic_params(
+                    &mut item.generics,
+                    namespace,
+                    &local_types,
+                    &module_aliases,
+                );
                 for assoc in &mut item.associated_consts {
                     qualify_type(&mut assoc.ty, namespace, &local_types, &module_aliases);
                 }
@@ -944,6 +950,12 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
                 }
             }
             ast::Item::Impl(item) => {
+                qualify_generic_params(
+                    &mut item.generics,
+                    namespace,
+                    &local_types,
+                    &module_aliases,
+                );
                 if let Some(trait_name) = &mut item.trait_name {
                     *trait_name =
                         qualify_type_name(trait_name, namespace, &local_types, &module_aliases);
@@ -963,7 +975,7 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
                     );
                 }
                 for method in &mut item.methods {
-                    qualify_function(
+                    qualify_method(
                         method,
                         namespace,
                         &local_functions,
@@ -1041,6 +1053,37 @@ fn qualify_function(
     module_aliases: &HashMap<String, String>,
 ) {
     function.name = qualify_name(namespace, &function.name);
+    qualify_function_signature(function, namespace, local_types, module_aliases);
+    for stmt in &mut function.body {
+        qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
+    }
+}
+
+fn qualify_method(
+    function: &mut ast::Function,
+    namespace: &str,
+    local_functions: &HashSet<String>,
+    local_types: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) {
+    qualify_function_signature(function, namespace, local_types, module_aliases);
+    for stmt in &mut function.body {
+        qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
+    }
+}
+
+fn qualify_function_signature(
+    function: &mut ast::Function,
+    namespace: &str,
+    local_types: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) {
+    qualify_generic_params(
+        &mut function.generics,
+        namespace,
+        local_types,
+        module_aliases,
+    );
     for param in &mut function.params {
         qualify_type(&mut param.ty, namespace, local_types, module_aliases);
     }
@@ -1050,9 +1093,6 @@ fn qualify_function(
         local_types,
         module_aliases,
     );
-    for stmt in &mut function.body {
-        qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
-    }
 }
 
 fn qualify_stmt(
@@ -1203,7 +1243,13 @@ fn qualify_expr(
 ) {
     match expr {
         ast::Expr::Call { callee, args } => {
-            *callee = qualify_callee(callee, namespace, local_functions, module_aliases);
+            *callee = qualify_callee(
+                callee,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             for arg in args {
                 qualify_expr(arg, namespace, local_functions, local_types, module_aliases);
             }
@@ -1383,6 +1429,19 @@ fn qualify_pattern(
     }
 }
 
+fn qualify_generic_params(
+    generics: &mut [ast::GenericParam],
+    namespace: &str,
+    local_types: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) {
+    for generic in generics {
+        for bound in &mut generic.bounds {
+            *bound = qualify_type_name(bound, namespace, local_types, module_aliases);
+        }
+    }
+}
+
 fn qualify_type(
     ty: &mut ast::Type,
     namespace: &str,
@@ -1483,6 +1542,7 @@ fn qualify_callee(
     callee: &str,
     namespace: &str,
     local_functions: &HashSet<String>,
+    local_types: &HashSet<String>,
     module_aliases: &HashMap<String, String>,
 ) -> String {
     let (base, generic_suffix) = split_generic_suffix(callee);
@@ -1491,6 +1551,8 @@ fn qualify_callee(
     } else if let Some((head, tail)) = base.split_once('.') {
         if let Some(qualified_head) = module_aliases.get(head) {
             format!("{qualified_head}.{tail}")
+        } else if local_types.contains(head) {
+            format!("{}.{tail}", qualify_name(namespace, head))
         } else {
             base.to_string()
         }
@@ -1499,7 +1561,9 @@ fn qualify_callee(
     } else {
         base.to_string()
     };
-    format!("{qualified_base}{generic_suffix}")
+    let qualified_suffix =
+        qualify_generic_suffix(generic_suffix, namespace, local_types, module_aliases);
+    format!("{qualified_base}{qualified_suffix}")
 }
 
 fn split_generic_suffix(callee: &str) -> (&str, &str) {
@@ -1508,6 +1572,163 @@ fn split_generic_suffix(callee: &str) -> (&str, &str) {
     } else {
         (callee, "")
     }
+}
+
+fn qualify_generic_suffix(
+    suffix: &str,
+    namespace: &str,
+    local_types: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) -> String {
+    if suffix.is_empty() {
+        return String::new();
+    }
+    let Some(inner) = suffix.strip_prefix('<').and_then(|rest| rest.strip_suffix('>')) else {
+        return suffix.to_string();
+    };
+    let Some(parts) = split_top_level_segments(inner) else {
+        return suffix.to_string();
+    };
+    let qualified = parts
+        .into_iter()
+        .map(|part| qualify_type_expr_text(part, namespace, local_types, module_aliases))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("<{qualified}>")
+}
+
+fn qualify_type_expr_text(
+    text: &str,
+    namespace: &str,
+    local_types: &HashSet<String>,
+    module_aliases: &HashMap<String, String>,
+) -> String {
+    let text = text.trim();
+    if text.is_empty() {
+        return text.to_string();
+    }
+    if let Some(stripped) = text.strip_prefix("dyn ") {
+        let inner = qualify_type_expr_text(stripped, namespace, local_types, module_aliases);
+        return format!("dyn {inner}");
+    }
+    for prefix in ["*mut ", "*", "&mut ", "&", "[]"] {
+        if let Some(rest) = text.strip_prefix(prefix) {
+            let inner = qualify_type_expr_text(rest, namespace, local_types, module_aliases);
+            return format!("{prefix}{inner}");
+        }
+    }
+    if let Some(inner) = text.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
+        if let Some(parts) = split_top_level_segments(inner) {
+            let qualified = parts
+                .into_iter()
+                .map(|part| qualify_type_expr_text(part, namespace, local_types, module_aliases))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!("({qualified})");
+        }
+    }
+    if let Some(inner) = text.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+        if let Some((elem, len)) = split_array_type_expr(inner) {
+            let elem = qualify_type_expr_text(elem, namespace, local_types, module_aliases);
+            return format!("[{elem}; {}]", len.trim());
+        }
+    }
+    if let Some(start) = text.find('<') {
+        if text.ends_with('>') {
+            let name = text[..start].trim();
+            let inner = &text[start + 1..text.len() - 1];
+            if let Some(parts) = split_top_level_segments(inner) {
+                let qualified_name =
+                    qualify_type_name(name, namespace, local_types, module_aliases);
+                let qualified_args = parts
+                    .into_iter()
+                    .map(|part| qualify_type_expr_text(part, namespace, local_types, module_aliases))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return format!("{qualified_name}<{qualified_args}>");
+            }
+        }
+    }
+    qualify_type_name(text, namespace, local_types, module_aliases)
+}
+
+fn split_top_level_segments(input: &str) -> Option<Vec<&str>> {
+    let mut out = Vec::new();
+    let mut depth_angle = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_paren = 0usize;
+    let mut start = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => {
+                if depth_angle == 0 {
+                    return None;
+                }
+                depth_angle -= 1;
+            }
+            '[' => depth_bracket += 1,
+            ']' => {
+                if depth_bracket == 0 {
+                    return None;
+                }
+                depth_bracket -= 1;
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                if depth_paren == 0 {
+                    return None;
+                }
+                depth_paren -= 1;
+            }
+            ',' if depth_angle == 0 && depth_bracket == 0 && depth_paren == 0 => {
+                out.push(input[start..idx].trim());
+                start = idx + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth_angle != 0 || depth_bracket != 0 || depth_paren != 0 {
+        return None;
+    }
+    out.push(input[start..].trim());
+    Some(out)
+}
+
+fn split_array_type_expr(input: &str) -> Option<(&str, &str)> {
+    let mut depth_angle = 0usize;
+    let mut depth_bracket = 0usize;
+    let mut depth_paren = 0usize;
+    for (idx, ch) in input.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => {
+                if depth_angle == 0 {
+                    return None;
+                }
+                depth_angle -= 1;
+            }
+            '[' => depth_bracket += 1,
+            ']' => {
+                if depth_bracket == 0 {
+                    return None;
+                }
+                depth_bracket -= 1;
+            }
+            '(' => depth_paren += 1,
+            ')' => {
+                if depth_paren == 0 {
+                    return None;
+                }
+                depth_paren -= 1;
+            }
+            ';' if depth_angle == 0 && depth_bracket == 0 && depth_paren == 0 => {
+                return Some((input[..idx].trim(), input[idx + 1..].trim()));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn qualify_name(namespace: &str, name: &str) -> String {
