@@ -93,6 +93,12 @@ This document defines the v1 observable semantics contract used by the toolchain
 - Task scheduling is deterministic in `det` mode and recorded as replay-critical data.
 - `spawn(...)` implies thread/executor capability requirements.
 
+### `spawn_ctx(task, context_id)`
+
+- Creates a new schedulable task with an explicit task-local context id.
+- Spawned workers read that id through `thread.context_id()`.
+- `thread.context_id()` returns `0` when no task-local context is bound.
+
 ### Task Group Helpers
 
 - `task.group_spawn_n(group, worker, n)` spawns `n` tasks into a group.
@@ -106,10 +112,19 @@ fn worker() -> i32 {
     return 0
 }
 
+fn tagged_worker() -> i32 {
+    return thread.context_id()
+}
+
 fn run_group() -> i32 {
     let group = task.group_begin()
     discard task.group_spawn_n(group, worker, 8)
     return task.group_join_all(group)
+}
+
+fn run_tagged() -> i32 {
+    let handle = spawn_ctx(tagged_worker, 41)
+    return join(handle)
 }
 ```
 
@@ -122,6 +137,12 @@ fn run_group() -> i32 {
 
 - Cooperative handoff to scheduler.
 - Does not imply task completion; execution may resume later.
+
+### `thread.context_id()`
+
+- Canonical current-task context getter for `spawn_ctx(...)` workers.
+- Returns the context id bound at spawn time.
+- Returns `0` when no task-local context id is bound.
 
 ### `timeout(ms)`
 

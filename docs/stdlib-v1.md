@@ -212,6 +212,15 @@ Transcript guidance:
   - `text.upper_ascii(value)`
   - `text.lower_ascii(value)`
 
+### `thread`
+
+- `use core.thread;` is the canonical concurrency-context helper import.
+- Common helpers:
+  - `thread.context_id()`
+  - `thread.is_context_bound()`
+- `thread.context_id()` returns the `context_id` supplied to `spawn_ctx(...)`.
+- Outside a context-bound spawned worker, `thread.context_id()` returns `0`.
+
 ### `path`
 
 - `use core.path;` is the canonical import marker for path-safe helper usage.

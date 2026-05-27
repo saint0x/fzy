@@ -507,8 +507,8 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
-        callee: "task.context",
-        symbol: "fz_native_task_context",
+        callee: "task.context_id",
+        symbol: "fz_native_task_context_id",
         arity: 0,
     },
     NativeRuntimeImport {

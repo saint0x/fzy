@@ -162,6 +162,8 @@ Runtime logging defaults:
 - canonical terminal/text helpers:
   - `term.transcript_kv`
   - `text.repeat`, `text.spaces`, `text.pad_left`, `text.pad_right`, `text.indent`, `text.visible_len_ansi`, `text.upper_ascii`, `text.lower_ascii`
+- canonical task-local routing helper:
+  - `thread.context_id()` for reading `spawn_ctx(...)` task-local ids
 - canonical substring extraction uses end-exclusive slices:
   - `str.slice(value, start, end_exclusive)`
 - canonical filesystem/path helpers:

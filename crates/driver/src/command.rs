@@ -13109,7 +13109,7 @@ mod tests {
         std::fs::write(
             root.join("src/main.fzy"),
             format!(
-                "use core.fs;\nuse core.thread;\n\nfn json_obj3(k1: str, v1: str, k2: str, v2: str, k3: str, v3: str) -> str {{\n    let obj = map.new()\n    discard map.set(obj, k1, v1)\n    discard map.set(obj, k2, v2)\n    discard map.set(obj, k3, v3)\n    return json.object(obj)\n}}\n\nfn worker_one() -> i32 {{\n    fs.write_file(\"{quoted_one}\", json_obj3(\"slot\", json.str(\"one\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\")))\n    return 0\n}}\n\nfn worker_two() -> i32 {{\n    fs.write_file(\"{quoted_two}\", json_obj3(\"slot\", json.str(\"two\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\")))\n    return 0\n}}\n\nfn worker_three() -> i32 {{\n    fs.write_file(\"{quoted_three}\", json_obj3(\"slot\", json.str(\"three\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\")))\n    return 0\n}}\n\nfn worker_four() -> i32 {{\n    fs.write_file(\"{quoted_four}\", json_obj3(\"slot\", json.str(\"four\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\")))\n    return 0\n}}\n\nfn main() -> i32 {{\n    let one = spawn_ctx(worker_one, 1)\n    let two = spawn_ctx(worker_two, 2)\n    let three = spawn_ctx(worker_three, 3)\n    let four = spawn_ctx(worker_four, 4)\n    let r1 = join(one)\n    let r2 = join(two)\n    let r3 = join(three)\n    let r4 = join(four)\n    if r1 == 0 && r2 == 0 && r3 == 0 && r4 == 0 && fs.exists(\"{quoted_one}\") == 1 && fs.exists(\"{quoted_two}\") == 1 && fs.exists(\"{quoted_three}\") == 1 && fs.exists(\"{quoted_four}\") == 1 {{\n        return 0\n    }}\n    return 13\n}}\n"
+                "use core.fs;\nuse core.thread;\n\nfn json_obj4(k1: str, v1: str, k2: str, v2: str, k3: str, v3: str, k4: str, v4: str) -> str {{\n    let obj = map.new()\n    discard map.set(obj, k1, v1)\n    discard map.set(obj, k2, v2)\n    discard map.set(obj, k3, v3)\n    discard map.set(obj, k4, v4)\n    return json.object(obj)\n}}\n\nfn worker_one() -> i32 {{\n    fs.write_file(\"{quoted_one}\", json_obj4(\"slot\", json.str(\"one\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\"), \"ctx\", json.str(str.from_i32(thread.context_id()))))\n    return 0\n}}\n\nfn worker_two() -> i32 {{\n    fs.write_file(\"{quoted_two}\", json_obj4(\"slot\", json.str(\"two\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\"), \"ctx\", json.str(str.from_i32(thread.context_id()))))\n    return 0\n}}\n\nfn worker_three() -> i32 {{\n    fs.write_file(\"{quoted_three}\", json_obj4(\"slot\", json.str(\"three\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\"), \"ctx\", json.str(str.from_i32(thread.context_id()))))\n    return 0\n}}\n\nfn worker_four() -> i32 {{\n    fs.write_file(\"{quoted_four}\", json_obj4(\"slot\", json.str(\"four\"), \"status\", json.str(\"ok\"), \"kind\", json.str(\"spawn_ctx\"), \"ctx\", json.str(str.from_i32(thread.context_id()))))\n    return 0\n}}\n\nfn main() -> i32 {{\n    let one = spawn_ctx(worker_one, 1)\n    let two = spawn_ctx(worker_two, 2)\n    let three = spawn_ctx(worker_three, 3)\n    let four = spawn_ctx(worker_four, 4)\n    let r1 = join(one)\n    let r2 = join(two)\n    let r3 = join(three)\n    let r4 = join(four)\n    if r1 == 0 && r2 == 0 && r3 == 0 && r4 == 0 && fs.exists(\"{quoted_one}\") == 1 && fs.exists(\"{quoted_two}\") == 1 && fs.exists(\"{quoted_three}\") == 1 && fs.exists(\"{quoted_four}\") == 1 {{\n        return 0\n    }}\n    return 13\n}}\n"
             ),
         )
         .expect("source should be written");
@@ -13137,16 +13137,17 @@ mod tests {
         )
         .expect("concurrent spawn_ctx writers should preserve payload strings");
         assert!(output.contains("\"exitCode\":0"));
-        for (path, slot) in [
-            (&one, "one"),
-            (&two, "two"),
-            (&three, "three"),
-            (&four, "four"),
+        for (path, slot, ctx_id) in [
+            (&one, "one", "1"),
+            (&two, "two", "2"),
+            (&three, "three", "3"),
+            (&four, "four", "4"),
         ] {
             let content = std::fs::read_to_string(path).expect("worker payload should be readable");
             assert_ne!(content.trim(), "", "worker payload should not be empty");
             assert!(content.contains(&format!("\"slot\":\"{slot}\"")));
             assert!(content.contains("\"status\":\"ok\""));
+            assert!(content.contains(&format!("\"ctx\":\"{ctx_id}\"")));
         }
 
         let _ = std::fs::remove_dir_all(root);

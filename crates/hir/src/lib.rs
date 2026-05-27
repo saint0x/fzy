@@ -8514,7 +8514,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "cancel",
         "recv",
         "pulse",
-        "task.context",
+        "task.context_id",
         "task.group_begin",
         "task.group_spawn",
         "task.group_spawn_n",
@@ -8785,7 +8785,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "yield" | "checkpoint" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
         "assert.eq_i32" => (vec![i32.clone(), i32.clone()], i32.clone()),
         "timeout" | "deadline" => (vec![i32.clone()], i32.clone()),
-        "task.context" => (vec![], task_handle.clone()),
+        "task.context_id" => (vec![], i32.clone()),
         "task.group_begin" => (vec![], task_group_handle.clone()),
         "task.group_spawn" => (
             vec![task_group_handle.clone(), task_fn],

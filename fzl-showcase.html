@@ -390,6 +390,15 @@ async fn async_orchestrator() -> i32 {
     return code;
 }
 
+fn routed_worker() -> i32 {
+    return thread.context_id();
+}
+
+fn context_demo() -> i32 {
+    let handle = spawn_ctx(routed_worker, 77);
+    return join(handle);
+}
+
 fn c_view_demo() -> i32 {
     let ptr = mem.alloc(16);
     let _owned_label = c.ownership_label("owned");

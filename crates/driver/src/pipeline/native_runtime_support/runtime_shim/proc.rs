@@ -716,7 +716,7 @@ int32_t fz_native_task_result(int32_t handle) {
   return result;
 }
 
-int32_t fz_native_task_context(void) {
+int32_t fz_native_task_context_id(void) {
   return fz_tls_task_context;
 }
 
