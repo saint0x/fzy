@@ -57,6 +57,14 @@ fn visible_len_ansi(v: str) -> i32 {
     return str.visible_len_ansi(v)
 }
 
+fn upper_ascii(v: str) -> str {
+    return str.upper_ascii(v)
+}
+
+fn lower_ascii(v: str) -> str {
+    return str.lower_ascii(v)
+}
+
 fn sample() -> i32 {
     let a = trim("  alpha,beta,gamma  ")
     let b = replace(a, ",", "|")
@@ -64,6 +72,8 @@ fn sample() -> i32 {
     let d = pad_right("ok", 4)
     let e = indent("x\ny", "> ")
     let f = visible_len_ansi("\x1b[31mred\x1b[0m")
+    let g = upper_ascii("tool_arg_name")
+    let h = lower_ascii("TOOL_ARG_NAME")
     let mut acc = 0
     acc += contains(b, "beta")
     acc += starts_with(b, "alpha")
@@ -73,5 +83,7 @@ fn sample() -> i32 {
     acc += len(d)
     acc += len(e)
     acc += f
+    acc += len(g)
+    acc += len(h)
     return acc
 }

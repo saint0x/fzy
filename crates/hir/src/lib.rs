@@ -8577,6 +8577,8 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "str.len",
         "str.visible_len_ansi",
         "str.slice",
+        "str.upper_ascii",
+        "str.lower_ascii",
         "json.escape",
         "json.str",
         "json.raw",
@@ -8868,6 +8870,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             vec![str_ty.clone(), i32.clone(), i32.clone()],
             str_ty.clone(),
         ),
+        "str.upper_ascii" | "str.lower_ascii" => (vec![str_ty.clone()], str_ty.clone()),
         "http.post_json" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "http.post_json_capture" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "http.last_status" => (vec![], i32.clone()),
@@ -11222,6 +11225,26 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn string_slice_and_ascii_case_helpers_typecheck() {
+        let source = r#"
+            fn main() -> i32 {
+                let first = str.slice("name", 0, 1)
+                let middle = str.slice("name", 1, 3)
+                let upper = str.upper_ascii("tool_arg_name")
+                let lower = str.lower_ascii("TOOL_ARG_NAME")
+                discard first
+                discard middle
+                discard upper
+                discard lower
+                return 0
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
     }
 
     #[test]

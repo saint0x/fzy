@@ -211,9 +211,9 @@ int32_t fz_native_str_visible_len_ansi(int32_t value_id) {
   return visible;
 }
 
-int32_t fz_native_str_slice(int32_t value_id, int32_t start, int32_t span) {
+int32_t fz_native_str_slice(int32_t value_id, int32_t start, int32_t end_exclusive) {
   const char* value = fz_lookup_string(value_id);
-  if (value == NULL || span <= 0) {
+  if (value == NULL) {
     return fz_intern_slice("", 0);
   }
   int32_t value_len = (int32_t)strlen(value);
@@ -221,9 +221,50 @@ int32_t fz_native_str_slice(int32_t value_id, int32_t start, int32_t span) {
   if (begin > value_len) {
     begin = value_len;
   }
-  int32_t max_span = value_len - begin;
-  int32_t take = span > max_span ? max_span : span;
-  return fz_intern_slice(value + begin, (size_t)take);
+  int32_t end = end_exclusive < 0 ? 0 : end_exclusive;
+  if (end > value_len) {
+    end = value_len;
+  }
+  if (end <= begin) {
+    return fz_intern_slice("", 0);
+  }
+  return fz_intern_slice(value + begin, (size_t)(end - begin));
+}
+
+int32_t fz_native_str_upper_ascii(int32_t value_id) {
+  const char* value = fz_lookup_string(value_id);
+  if (value == NULL) {
+    return fz_intern_slice("", 0);
+  }
+  size_t len = strlen(value);
+  char* out = (char*)malloc(len + 1);
+  if (out == NULL) {
+    return 0;
+  }
+  for (size_t i = 0; i < len; i++) {
+    unsigned char ch = (unsigned char)value[i];
+    out[i] = (char)(ch >= 'a' && ch <= 'z' ? (ch - ('a' - 'A')) : ch);
+  }
+  out[len] = '\0';
+  return fz_intern_owned(out);
+}
+
+int32_t fz_native_str_lower_ascii(int32_t value_id) {
+  const char* value = fz_lookup_string(value_id);
+  if (value == NULL) {
+    return fz_intern_slice("", 0);
+  }
+  size_t len = strlen(value);
+  char* out = (char*)malloc(len + 1);
+  if (out == NULL) {
+    return 0;
+  }
+  for (size_t i = 0; i < len; i++) {
+    unsigned char ch = (unsigned char)value[i];
+    out[i] = (char)(ch >= 'A' && ch <= 'Z' ? (ch + ('a' - 'A')) : ch);
+  }
+  out[len] = '\0';
+  return fz_intern_owned(out);
 }
 
 int32_t fz_native_str_split(int32_t value_id, int32_t sep_id) {

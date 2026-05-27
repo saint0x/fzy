@@ -12189,6 +12189,62 @@ mod tests {
     }
 
     #[test]
+    fn native_run_string_slice_and_ascii_case_helpers_execute() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-str-slice-{suffix}.fzy"));
+        let out_path = std::env::temp_dir().join(format!("fozzylang-str-slice-{suffix}.json"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\nuse core.text;\n\nfn main() -> i32 {{\n    let payload = map.new()\n    discard map.set(payload, \"0\", json.str(str.slice(\"name\", 0, 1)))\n    discard map.set(payload, \"1\", json.str(str.slice(\"name\", 1, 2)))\n    discard map.set(payload, \"2\", json.str(str.slice(\"name\", 2, 3)))\n    discard map.set(payload, \"3\", json.str(str.slice(\"name\", 3, 4)))\n    discard map.set(payload, \"upper\", json.str(text.upper_ascii(\"tool_arg_name\")))\n    discard map.set(payload, \"lower\", json.str(text.lower_ascii(\"TOOL_ARG_NAME\")))\n    fs.write_file(\"{quoted_out}\", json.object(payload))\n    return 0\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("string slice/case runtime program should succeed");
+        assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+        let content =
+            std::fs::read_to_string(&out_path).expect("string slice/case output should exist");
+        assert!(content.contains("\"0\":\"n\""), "content was: {content}");
+        assert!(content.contains("\"1\":\"a\""), "content was: {content}");
+        assert!(content.contains("\"2\":\"m\""), "content was: {content}");
+        assert!(content.contains("\"3\":\"e\""), "content was: {content}");
+        assert!(
+            content.contains("\"upper\":\"TOOL_ARG_NAME\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"lower\":\"tool_arg_name\""),
+            "content was: {content}"
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
     fn native_run_core_io_and_path_helpers_execute() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

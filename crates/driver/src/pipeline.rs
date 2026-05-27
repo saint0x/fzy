@@ -4794,17 +4794,29 @@ fn eval_const_string_call(
             let start = eval_const_i32_expr(&args[1], const_strings)
                 .unwrap_or(0)
                 .max(0) as usize;
-            let span = eval_const_i32_expr(&args[2], const_strings)
+            let end = eval_const_i32_expr(&args[2], const_strings)
                 .unwrap_or(0)
                 .max(0) as usize;
             let len = value.len();
             let s = start.min(len);
-            let e = s.saturating_add(span).min(len);
+            let e = end.min(len);
             if value.is_char_boundary(s) && value.is_char_boundary(e) {
-                Some(value[s..e].to_string())
+                if e >= s {
+                    Some(value[s..e].to_string())
+                } else {
+                    Some(String::new())
+                }
             } else {
                 None
             }
+        }
+        "str.upper_ascii" if args.len() == 1 => {
+            let value = eval_const_string_expr(&args[0], const_strings)?;
+            Some(value.to_ascii_uppercase())
+        }
+        "str.lower_ascii" if args.len() == 1 => {
+            let value = eval_const_string_expr(&args[0], const_strings)?;
+            Some(value.to_ascii_lowercase())
         }
         _ => None,
     }

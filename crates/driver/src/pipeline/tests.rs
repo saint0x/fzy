@@ -3086,7 +3086,7 @@ fn cross_backend_direct_memory_string_slice_executes_consistently() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "fn main() -> i32 {\n    if str.starts_with(str.slice(\"abcdef\", 1, 3), \"bcd\") == 1 {\n        return str.len(str.slice(\"abcdef\", 1, 3)) + 16\n    }\n    return 0\n}\n",
+        "fn main() -> i32 {\n    if str.starts_with(str.slice(\"abcdef\", 1, 4), \"bcd\") == 1 {\n        return str.len(str.slice(\"abcdef\", 1, 4)) + 16\n    }\n    return 0\n}\n",
     )
     .expect("source should be written");
 

@@ -209,6 +209,8 @@ Transcript guidance:
   - `text.pad_right(value, width)`
   - `text.indent(value, prefix)`
   - `text.visible_len_ansi(value)`
+  - `text.upper_ascii(value)`
+  - `text.lower_ascii(value)`
 
 ### `path`
 

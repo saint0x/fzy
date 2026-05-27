@@ -280,7 +280,7 @@ Runtime logging defaults:
 - current-process CLI surface is first-class:
   - raw runtime intrinsics: `proc.argv_count/get`, `term.read_line/stdin_eof/write/write_err/stdin_is_tty/stdout_is_tty`
   - canonical standard-library wrappers: `use core.process; use core.term; use core.log; use core.text; use core.io; use core.path;`
-  - common helpers: `process.argv_or`, `process.command_name`, `process.has_flag`, `term.print_line`, `term.eprint_line`, `term.prompt_line`, `term.is_interactive`, `log.set_level_name`, `log.set_sink_name`, `log.quiet`, `log.verbose`, `text.pad_left`, `text.pad_right`, `text.indent`, `text.visible_len_ansi`, `io.list_dir`, `path.join`
+  - common helpers: `process.argv_or`, `process.command_name`, `process.has_flag`, `term.print_line`, `term.eprint_line`, `term.prompt_line`, `term.is_interactive`, `log.set_level_name`, `log.set_sink_name`, `log.quiet`, `log.verbose`, `text.pad_left`, `text.pad_right`, `text.indent`, `text.visible_len_ansi`, `text.upper_ascii`, `text.lower_ascii`, `io.list_dir`, `path.join`
 - production string escapes now include terminal-safe forms: `\xNN`, `\uNNNN`, `\u{NN...}`, and explicit octal `\NNN`
 - canonical structured log fields use `log.fields(map_handle)`
 - canonical dynamic JSON builders use `json.array(list_handle)` and `json.object(map_handle)`

@@ -240,6 +240,8 @@ Semantics:
   - `text.pad_right(value, width)`
   - `text.indent(value, prefix)`
   - `text.visible_len_ansi(value)`
+  - `text.upper_ascii(value)`
+  - `text.lower_ascii(value)`
 - `use core.io;` is the canonical filesystem-discovery facade:
   - `io.read_text(path)`
   - `io.write_text(path, value)`
@@ -267,6 +269,9 @@ Semantics:
   - `str.concat("svc/", tenant, "/sessions/", session_id)`
   - `str.concat2/3/4` remain stable, but `str.concat(...)` is the primary general form.
   - `+` is not defined for strings; diagnostics should steer authors toward `str.concat(...)`.
+- Canonical substring extraction uses end-exclusive slicing:
+  - `str.slice(value, start, end_exclusive)`
+  - `str.slice("name", 1, 3)` yields `"am"`
 - Dynamic JSON builders are canonical:
   - `json.array(list_handle)`
   - `json.object(map_handle)`

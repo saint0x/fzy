@@ -161,7 +161,9 @@ Runtime logging defaults:
   - stdlib helpers: `log.set_level_name`, `log.set_sink_name`, `log.use_stdout`, `log.use_stderr`, `log.quiet`, `log.verbose`
 - canonical terminal/text helpers:
   - `term.transcript_kv`
-  - `text.repeat`, `text.spaces`, `text.pad_left`, `text.pad_right`, `text.indent`, `text.visible_len_ansi`
+  - `text.repeat`, `text.spaces`, `text.pad_left`, `text.pad_right`, `text.indent`, `text.visible_len_ansi`, `text.upper_ascii`, `text.lower_ascii`
+- canonical substring extraction uses end-exclusive slices:
+  - `str.slice(value, start, end_exclusive)`
 - canonical filesystem/path helpers:
   - `io.list_dir`, `io.read_text`, `io.write_text`
   - `path.join`, `path.normalize`, `path.basename`, `path.dirname`

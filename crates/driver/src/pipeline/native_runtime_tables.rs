@@ -874,6 +874,16 @@ pub(super) const NATIVE_DATA_PLANE_IMPORTS: &[NativeRuntimeImport] = &[
         symbol: "fz_native_str_slice",
         arity: 3,
     },
+    NativeRuntimeImport {
+        callee: "str.upper_ascii",
+        symbol: "fz_native_str_upper_ascii",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "str.lower_ascii",
+        symbol: "fz_native_str_lower_ascii",
+        arity: 1,
+    },
 ];
 
 pub(super) fn native_runtime_import_for_callee(
