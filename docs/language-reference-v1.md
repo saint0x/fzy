@@ -240,6 +240,22 @@ Semantics:
   - `text.pad_right(value, width)`
   - `text.indent(value, prefix)`
   - `text.visible_len_ansi(value)`
+- `use core.io;` is the canonical filesystem-discovery facade:
+  - `io.read_text(path)`
+  - `io.write_text(path, value)`
+  - `io.mkdir(path)`
+  - `io.exists(path)`
+  - `io.remove_file(path)`
+  - `io.stat_size(path)`
+  - `io.temp_file(prefix)`
+  - `io.list_dir(path)`
+- `use core.path;` is the canonical path helper import marker:
+  - `path.join(base, child)`
+  - `path.normalize(path)`
+  - `path.basename(path)`
+  - `path.dirname(path)`
+  - `path.stem(path)`
+  - `path.extension(path)`
 
 ## JSON And Logging Ergonomics
 
@@ -292,6 +308,8 @@ fn handle(conn: HttpHandle) -> i32 {
 - Structured logging fields use `log.fields(map_handle)` as the primary path.
 - Path-safe assembly should prefer path primitives over raw string surgery:
   - `path.join(base, child)`
+ - Directory discovery should prefer the stdlib IO facade:
+  - `io.list_dir(path)`
 
 ## String Escape Sequences
 

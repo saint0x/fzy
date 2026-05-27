@@ -8901,7 +8901,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "fs.write_file" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "fs.mkdir" | "fs.exists" | "fs.remove_file" => (vec![str_ty.clone()], i32.clone()),
         "fs.stat_size" => (vec![str_ty.clone()], i32.clone()),
-        "fs.listdir" => (vec![str_ty.clone()], i32.clone()),
+        "fs.listdir" => (vec![str_ty.clone()], list_handle.clone()),
         "fs.temp_file" => (vec![str_ty.clone()], str_ty.clone()),
         "path.join" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "path.basename" | "path.dirname" | "path.stem" | "path.extension" | "path.normalize" => {
@@ -11204,6 +11204,20 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn fs_listdir_returns_list_handle_for_list_ops() {
+        let source = r#"
+            use core.fs;
+            fn main() -> i32 {
+                let entries = fs.listdir("/tmp")
+                return list.len(entries)
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
     }
 
     #[test]

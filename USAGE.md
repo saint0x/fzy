@@ -153,6 +153,8 @@ Runtime logging defaults:
 - `use core.log;` is now both the capability declaration and the public stdlib facade for logging policy/helpers
 - typed error policy surfaces use `use core.error;` in modules that rely on error contracts
 - `use core.text;` is now the standard-library surface for terminal/text composition helpers
+- `use core.io;` is now the standard-library surface for filesystem discovery helpers
+- `use core.path;` is now the canonical import marker for path helpers
 - canonical structured logging fields use `log.fields(map_handle)`
 - canonical logging policy controls:
   - raw runtime calls: `log.set_json`, `log.set_enabled`, `log.set_level`, `log.set_sink`
@@ -160,6 +162,9 @@ Runtime logging defaults:
 - canonical terminal/text helpers:
   - `term.transcript_kv`
   - `text.repeat`, `text.spaces`, `text.pad_left`, `text.pad_right`, `text.indent`, `text.visible_len_ansi`
+- canonical filesystem/path helpers:
+  - `io.list_dir`, `io.read_text`, `io.write_text`
+  - `path.join`, `path.normalize`, `path.basename`, `path.dirname`
 - canonical dynamic JSON builders use `json.array(list_handle)` / `json.object(map_handle)`
 - first-class object literal syntax is available for small map payloads: `#{ "k": json.str("v") }`
 - canonical process builders use `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd` / `proc.run_cmd`

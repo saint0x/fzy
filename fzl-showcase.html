@@ -113,6 +113,7 @@ use core.proc;
 use core.process;
 use core.term;
 use core.text;
+use core.io;
 use core.thread;
 use core.log;
 use core.encoding;
@@ -405,6 +406,7 @@ fn c_view_demo() -> i32 {
 fn host_and_io_showcase() -> i32 {
     let root = path.join("tmp", "showcase");
     let _ = fs.mkdir(root);
+    let entries = io.list_dir(root);
     log.set_json(1);
     discard log.set_sink_name("stderr");
     discard log.set_level_name("warn");
@@ -413,6 +415,7 @@ fn host_and_io_showcase() -> i32 {
     let interactive = term.is_interactive();
     discard term.transcript_kv("command", command, 10);
     discard term.transcript_kv("mode", mode, 10);
+    discard term.transcript_kv("entries", str.from_i32(list.len(entries)), 10);
     discard term.print_line(text.indent("ready\nwaiting", "  "));
     if interactive == 1 {
         discard term.eprint_line("interactive terminal detected");

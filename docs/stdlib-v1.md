@@ -212,6 +212,7 @@ Transcript guidance:
 
 ### `path`
 
+- `use core.path;` is the canonical import marker for path-safe helper usage.
 - Canonical path-safe authoring surface:
   - `path.join(base, child)`
   - `path.normalize(path)`
@@ -220,6 +221,19 @@ Transcript guidance:
   - `path.stem(path)`
   - `path.extension(path)`
 - Prefer these helpers over raw slash concatenation in service/runtime code.
+
+### `io`
+
+- `use core.io;` is the canonical filesystem-discovery facade for native products.
+- Common helpers:
+  - `io.read_text(path)`
+  - `io.write_text(path, value)`
+  - `io.mkdir(path)`
+  - `io.exists(path)`
+  - `io.remove_file(path)`
+  - `io.stat_size(path)`
+  - `io.temp_file(prefix)`
+  - `io.list_dir(path)`
 
 ### `collections` + JSON
 

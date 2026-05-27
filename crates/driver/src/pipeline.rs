@@ -1977,6 +1977,7 @@ fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str>
         "term" => Some(include_str!("../../../corelib/src/term.fzy")),
         "log" => Some(include_str!("../../../corelib/src/log.fzy")),
         "text" => Some(include_str!("../../../corelib/src/text.fzy")),
+        "io" => Some(include_str!("../../../corelib/src/io.fzy")),
         _ => None,
     }
 }

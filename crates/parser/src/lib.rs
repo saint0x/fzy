@@ -2788,7 +2788,7 @@ impl Parser {
 }
 
 fn is_core_stdlib_module(name: &str) -> bool {
-    matches!(name, "process" | "term" | "log" | "text")
+    matches!(name, "process" | "term" | "log" | "text" | "io" | "path")
 }
 
 fn core_stdlib_implied_capability(name: &str) -> Option<&'static str> {
@@ -5125,6 +5125,8 @@ mod tests {
             use core.term;
             use core.log;
             use core.text;
+            use core.io;
+            use core.path;
             use core.http;
         "#;
         let module = parse(source, "imports").expect("parse should succeed");
@@ -5155,6 +5157,18 @@ mod tests {
                 && !entry.wildcard
                 && entry.alias.is_none()
                 && entry.path == vec!["text".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["io".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["path".to_string()]
         }));
     }
 

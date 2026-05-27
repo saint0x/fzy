@@ -12189,6 +12189,51 @@ mod tests {
     }
 
     #[test]
+    fn native_run_core_io_and_path_helpers_execute() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-core-io-{suffix}"));
+        let nested = root.join("custom_tools");
+        std::fs::create_dir_all(&nested).expect("nested directory should be created");
+        std::fs::write(nested.join("tool.json"), "{\"name\":\"demo\"}")
+            .expect("probe file should be created");
+        let source = std::env::temp_dir().join(format!("fozzylang-core-io-{suffix}.fzy"));
+        let quoted_root = root.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.io;\nuse core.path;\n\nfn main() -> i32 {{\n    let dir = path.join(\"{quoted_root}\", \"custom_tools\")\n    let entries = io.list_dir(dir)\n    if list.len(entries) != 1 {{\n        return 11\n    }}\n    if list.get(entries, 0) != \"tool.json\" {{\n        return 12\n    }}\n    return 0\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("core io/path helpers run should succeed");
+        assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn native_binary_reads_piped_stdin_and_reports_non_tty_mode() {
         use std::io::Write as _;
 

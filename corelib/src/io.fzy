@@ -1,0 +1,39 @@
+use core.fs;
+
+fn read_text(path: str) -> str {
+    return fs.read_file(path)
+}
+
+fn write_text(path: str, value: str) -> i32 {
+    return fs.write_file(path, value)
+}
+
+fn mkdir(path: str) -> i32 {
+    return fs.mkdir(path)
+}
+
+fn exists(path: str) -> i32 {
+    return fs.exists(path)
+}
+
+fn remove_file(path: str) -> i32 {
+    return fs.remove_file(path)
+}
+
+fn stat_size(path: str) -> i32 {
+    return fs.stat_size(path)
+}
+
+fn temp_file(prefix: str) -> str {
+    return fs.temp_file(prefix)
+}
+
+fn list_dir(path: str) -> ListHandle {
+    return fs.listdir(path)
+}
+
+fn sample() -> i32 {
+    let probe = temp_file("coreio")
+    let entries = list_dir(path.dirname(probe))
+    return list.len(entries) % 251
+}
