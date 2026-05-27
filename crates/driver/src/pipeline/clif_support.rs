@@ -1106,7 +1106,6 @@ pub(super) fn clif_emit_linear_stmts(
                     ctx.const_strings.insert(name.clone(), const_value);
                     ctx.array_bindings.remove(name);
                     ctx.aggregate_bindings.remove(name);
-                    continue;
                 }
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let mut lowered_items = Vec::with_capacity(items.len());
@@ -1308,7 +1307,6 @@ pub(super) fn clif_emit_linear_stmts(
                     ctx.const_strings.insert(target.clone(), const_value);
                     ctx.array_bindings.remove(target);
                     ctx.aggregate_bindings.remove(target);
-                    continue;
                 }
                 if let ast::Expr::Closure {
                     params,

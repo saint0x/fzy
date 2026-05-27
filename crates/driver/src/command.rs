@@ -12245,6 +12245,57 @@ mod tests {
     }
 
     #[test]
+    fn native_run_mutable_string_accumulation_persists_concat_results() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-str-accumulate-{suffix}.fzy"));
+        let out_path =
+            std::env::temp_dir().join(format!("fozzylang-str-accumulate-{suffix}.json"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\n\nfn upper_char(ch: str) -> str {{\n    if ch == \"a\" {{ return \"A\" }}\n    if ch == \"n\" {{ return \"N\" }}\n    if ch == \"m\" {{ return \"M\" }}\n    if ch == \"e\" {{ return \"E\" }}\n    return ch\n}}\n\nfn main() -> i32 {{\n    let payload = map.new()\n    let mut serial = \"\"\n    serial = str.concat(serial, \"N\")\n    serial = str.concat(serial, \"A\")\n    serial = str.concat(serial, \"M\")\n    serial = str.concat(serial, \"E\")\n    let mut from_slice = \"\"\n    let value = \"name\"\n    let mut idx: i32 = 0\n    while idx < str.len(value) {{\n        from_slice = str.concat(from_slice, upper_char(str.slice(value, idx, idx + 1)))\n        idx += 1\n    }}\n    discard map.set(payload, \"direct\", json.str(str.concat(\"A\", \"B\")))\n    discard map.set(payload, \"serial\", json.str(serial))\n    discard map.set(payload, \"slice_loop\", json.str(from_slice))\n    fs.write_file(\"{quoted_out}\", json.object(payload))\n    return 0\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("mutable string accumulation runtime program should succeed");
+        assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+        let content =
+            std::fs::read_to_string(&out_path).expect("mutable string accumulation output should exist");
+        assert!(content.contains("\"direct\":\"AB\""), "content was: {content}");
+        assert!(content.contains("\"serial\":\"NAME\""), "content was: {content}");
+        assert!(
+            content.contains("\"slice_loop\":\"NAME\""),
+            "content was: {content}"
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
     fn native_run_core_io_and_path_helpers_execute() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
