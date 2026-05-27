@@ -11363,6 +11363,78 @@ mod tests {
     }
 
     #[test]
+    fn native_run_variadic_str_concat_executes() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-str-concat-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    let value = str.concat(\"svc/\", \"tenant/\", \"sessions/\", \"abc\", \"/latest\")\n    if str.len(value) == 30 && str.starts_with(value, \"svc/\") == 1 && str.ends_with(value, \"/latest\") == 1 {\n        return 0\n    }\n    return 13\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("variadic str.concat run should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_run_string_conversion_and_path_helpers_execute() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-path-format-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    let rendered = str.concat(\"port=\", str.from_i32(8080), \", enabled=\", str.from_bool(true))\n    let joined = path.join(\"/srv/app\", \"config/runtime.json\")\n    if rendered != \"port=8080, enabled=true\" then return 11\n    if path.dirname(joined) != \"/srv/app/config\" then return 12\n    if path.basename(joined) != \"runtime.json\" then return 13\n    if path.stem(joined) != \"runtime\" then return 14\n    if path.extension(joined) != \"json\" then return 15\n    if path.normalize(\"/srv//app/config/\") != \"/srv/app/config\" then return 16\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("path/conversion run should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn native_run_project_root_host_backends_preserves_live_run_semantics() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

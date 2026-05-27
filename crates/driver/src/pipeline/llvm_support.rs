@@ -1916,6 +1916,29 @@ pub(super) fn llvm_emit_complex_expr(
                     });
                 }
             }
+            if callee == "str.concat" && args.len() >= 2 {
+                let mut acc = llvm_emit_expr(&args[0], ctx, string_literal_ids, task_ref_ids)?;
+                for arg in args.iter().skip(1) {
+                    let rhs =
+                        llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, &acc.ty)?;
+                    let symbol = ctx
+                        .extern_link_symbols
+                        .get("str.concat")
+                        .map(|value| value.as_str())
+                        .unwrap_or("fz_native_str_concat2");
+                    let symbol = native_mangle_symbol(symbol);
+                    let val = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {val} = call {} @{symbol}({} {}, {} {})\n",
+                        acc.ty, acc.ty, acc.value, rhs.ty, rhs.value
+                    ));
+                    acc = LlvmValue {
+                        value: val,
+                        ty: acc.ty.clone(),
+                    };
+                }
+                return llvm_assert_finite(ctx, acc);
+            }
             if let Some(binding) = ctx.closures.get(callee).cloned() {
                 return llvm_emit_inlined_closure_call(
                     binding,

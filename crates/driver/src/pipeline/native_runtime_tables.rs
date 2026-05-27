@@ -302,6 +302,26 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
+        callee: "path.basename",
+        symbol: "fz_native_path_basename",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "path.dirname",
+        symbol: "fz_native_path_dirname",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "path.stem",
+        symbol: "fz_native_path_stem",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "path.extension",
+        symbol: "fz_native_path_extension",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "path.normalize",
         symbol: "fz_native_path_normalize",
         arity: 1,
@@ -733,6 +753,16 @@ pub(super) const NATIVE_DATA_PLANE_IMPORTS: &[NativeRuntimeImport] = &[
         callee: "str.concat4",
         symbol: "fz_native_str_concat4",
         arity: 4,
+    },
+    NativeRuntimeImport {
+        callee: "str.from_i32",
+        symbol: "fz_native_str_from_i32",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "str.from_bool",
+        symbol: "fz_native_str_from_bool",
+        arity: 1,
     },
     NativeRuntimeImport {
         callee: "str.contains",

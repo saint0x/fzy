@@ -42,6 +42,17 @@ int32_t fz_native_str_concat4(int32_t a_id, int32_t b_id, int32_t c_id, int32_t 
   return fz_native_str_concat_parts(parts, 4);
 }
 
+int32_t fz_native_str_from_i32(int32_t value) {
+  char rendered[32];
+  snprintf(rendered, sizeof(rendered), "%d", value);
+  return fz_intern_slice(rendered, strlen(rendered));
+}
+
+int32_t fz_native_str_from_bool(int32_t value) {
+  const char* rendered = value == 0 ? "false" : "true";
+  return fz_intern_slice(rendered, strlen(rendered));
+}
+
 int32_t fz_native_str_contains(int32_t value_id, int32_t needle_id) {
   const char* value = fz_lookup_string(value_id);
   const char* needle = fz_lookup_string(needle_id);

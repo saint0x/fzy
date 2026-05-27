@@ -28,7 +28,9 @@
 - Native host-backed runtime must emit effective listen target (`addr`, `port`, source) at startup.
 - Inbound JSON request handlers should use `http.body_json(conn)` as the primary decode surface.
 - `json.parse(http.body(conn))` is valid but is not the preferred production path for normal JSON APIs.
+- Raw-body handling (`http.body(conn)`) is the preferred escape hatch for generic protocol endpoints, signature-sensitive requests, or bridge/adaptor layers that must preserve exact transport text.
 - Runtime stability work and regressions are keyed to the direct `http.read(conn)` -> `http.body_json(conn)` -> `json.get*` flow.
+- When a handler stays on the raw-body path, document why exact transport preservation is required instead of normal typed JSON decode.
 
 ## Runtime Env Ergonomics
 

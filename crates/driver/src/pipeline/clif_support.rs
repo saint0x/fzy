@@ -2278,6 +2278,44 @@ pub(super) fn clif_emit_expr(
                     });
                 }
             }
+            if callee == "str.concat" && args.len() >= 2 {
+                let function_id = ctx
+                    .function_ids
+                    .get("str.concat")
+                    .copied()
+                    .or_else(|| ctx.function_ids.get("str.concat2").copied())
+                    .ok_or_else(|| {
+                        anyhow!("missing native function signature metadata for `str.concat`")
+                    })?;
+                let signature = ctx
+                    .function_signatures
+                    .get("str.concat")
+                    .or_else(|| ctx.function_signatures.get("str.concat2"))
+                    .ok_or_else(|| {
+                        anyhow!("missing native function signature metadata for `str.concat`")
+                    })?;
+                let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
+                let mut acc = clif_emit_expr(builder, ctx, &args[0], locals, next_var)?;
+                if let Some(target) = signature.params.first().copied() {
+                    acc = cast_clif_value(builder, acc, target)?;
+                }
+                for arg in args.iter().skip(1) {
+                    let mut rhs = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+                    if let Some(target) = signature.params.get(1).copied() {
+                        rhs = cast_clif_value(builder, rhs, target)?;
+                    }
+                    let call = builder.ins().call(func_ref, &[acc.value, rhs.value]);
+                    let value = builder.inst_results(call)[0];
+                    acc = clif_assert_finite(
+                        builder,
+                        ClifValue {
+                            value,
+                            ty: signature.ret.unwrap_or(default_int_clif_type()),
+                        },
+                    );
+                }
+                return Ok(acc);
+            }
             if let Some(binding) = ctx.closures.get(callee).cloned() {
                 return clif_emit_inlined_closure_call(
                     builder, ctx, binding, args, locals, next_var,

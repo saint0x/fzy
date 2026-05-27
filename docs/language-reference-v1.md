@@ -189,18 +189,27 @@ Semantics:
 - Structured process builders are first-class: `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`, `proc.run_cmd`.
 - `proc.run*` waits for completion and returns the child exit code.
 - `proc.spawn*` returns a process handle for `proc.wait`, `proc.stdout`, `proc.stderr`, and `proc.exit_code`.
+- Small-value string conversion is first-class:
+  - `str.from_i32(value)`
+  - `str.from_bool(flag)`
 
 ## JSON And Logging Ergonomics
 
 - First-class object literals are supported and lower to canonical map primitives:
   - `#{ "component": json.str("api"), "phase": json.str("boot") }`
 - Object literal keys must be quoted strings.
+- Canonical string assembly uses `str.concat(...)`.
+  - `str.concat("a", "b")`
+  - `str.concat("svc/", tenant, "/sessions/", session_id)`
+  - `str.concat2/3/4` remain stable, but `str.concat(...)` is the primary general form.
+  - `+` is not defined for strings; diagnostics should steer authors toward `str.concat(...)`.
 - Dynamic JSON builders are canonical:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
 - For inbound HTTP JSON, `http.body_json(conn)` is the canonical production path.
   - Prefer `let body = http.body_json(conn)` over `json.parse(http.body(conn))`.
   - Use `http.body(conn)` when you explicitly need the raw transport body as text.
+  - Use the raw-body path for generic protocol surfaces, signature-sensitive payloads, or custom transport bridges where exact incoming text matters.
   - Typical handler shape:
 
 ```fzy
@@ -230,6 +239,35 @@ fn handle(conn: HttpHandle) -> i32 {
   - `list.new/push/pop/len/get/set/clear/join`
   - `map.new/set/get/has/delete/keys/len`
 - Structured logging fields use `log.fields(map_handle)` as the primary path.
+- Path-safe assembly should prefer path primitives over raw string surgery:
+  - `path.join(base, child)`
+  - `path.normalize(path)`
+  - `path.basename(path)`
+  - `path.dirname(path)`
+  - `path.stem(path)`
+  - `path.extension(path)`
+
+### String And Path Assembly
+
+- Canonical string assembly uses `str.concat(...)`.
+  - `str.concat("svc/", tenant, "/sessions/", session_id)`
+  - `str.concat2/3/4` remain stable, but `str.concat(...)` is the primary general form.
+  - `+` is not defined for strings; diagnostics should steer authors toward `str.concat(...)`.
+- Use `str.from_i32(...)` and `str.from_bool(...)` for everyday diagnostics, labels, and config rendering work.
+- Prefer `path.*` helpers over manual slash concatenation in production code.
+  - `path.join` and `path.normalize` are the canonical path-construction surface.
+  - `path.basename`, `path.dirname`, `path.stem`, and `path.extension` are the canonical decomposition surface.
+
+```fzy
+let label = str.concat(
+    "worker=",
+    str.from_i32(worker_id),
+    " healthy=",
+    str.from_bool(healthy),
+)
+let checkpoint = path.join("/var/lib/myservice", "checkpoint.json")
+let ext = path.extension(checkpoint)
+```
 
 ## Storage Primitives
 

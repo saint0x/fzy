@@ -496,6 +496,56 @@ int32_t fz_native_path_normalize(int32_t path_id) {
   return fz_intern_owned(out);
 }
 
+static const char* fz_path_last_segment(const char* path) {
+  const char* last = strrchr(path, '/');
+  if (last == NULL) return path;
+  if (last[1] == '\0') return last;
+  return last + 1;
+}
+
+int32_t fz_native_path_basename(int32_t path_id) {
+  int32_t normalized_id = fz_native_path_normalize(path_id);
+  const char* normalized = fz_lookup_string(normalized_id);
+  if (normalized == NULL || normalized[0] == '\0') return fz_intern_slice(".", 1);
+  if (strcmp(normalized, "/") == 0) return fz_intern_slice("/", 1);
+  const char* base = fz_path_last_segment(normalized);
+  if (base[0] == '\0') return fz_intern_slice(".", 1);
+  return fz_intern_slice(base, strlen(base));
+}
+
+int32_t fz_native_path_dirname(int32_t path_id) {
+  int32_t normalized_id = fz_native_path_normalize(path_id);
+  const char* normalized = fz_lookup_string(normalized_id);
+  if (normalized == NULL || normalized[0] == '\0') return fz_intern_slice(".", 1);
+  if (strcmp(normalized, "/") == 0) return fz_intern_slice("/", 1);
+  const char* last = strrchr(normalized, '/');
+  if (last == NULL) return fz_intern_slice(".", 1);
+  if (last == normalized) return fz_intern_slice("/", 1);
+  return fz_intern_slice(normalized, (size_t)(last - normalized));
+}
+
+int32_t fz_native_path_stem(int32_t path_id) {
+  int32_t base_id = fz_native_path_basename(path_id);
+  const char* base = fz_lookup_string(base_id);
+  if (base == NULL || base[0] == '\0' || strcmp(base, "/") == 0 || strcmp(base, ".") == 0) {
+    return fz_intern_slice(base == NULL ? "" : base, base == NULL ? 0 : strlen(base));
+  }
+  const char* dot = strrchr(base, '.');
+  if (dot == NULL || dot == base) return fz_intern_slice(base, strlen(base));
+  return fz_intern_slice(base, (size_t)(dot - base));
+}
+
+int32_t fz_native_path_extension(int32_t path_id) {
+  int32_t base_id = fz_native_path_basename(path_id);
+  const char* base = fz_lookup_string(base_id);
+  if (base == NULL || base[0] == '\0' || strcmp(base, "/") == 0 || strcmp(base, ".") == 0) {
+    return fz_intern_slice("", 0);
+  }
+  const char* dot = strrchr(base, '.');
+  if (dot == NULL || dot == base || dot[1] == '\0') return fz_intern_slice("", 0);
+  return fz_intern_slice(dot + 1, strlen(dot + 1));
+}
+
 int32_t fz_native_net_bind(void) {
   (void)pthread_once(&fz_env_bootstrap_once, fz_env_bootstrap);
   int fd = socket(AF_INET, SOCK_STREAM, 0);

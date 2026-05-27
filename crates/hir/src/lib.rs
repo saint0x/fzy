@@ -6116,6 +6116,32 @@ fn infer_expr_type(
                 );
                 return None;
             }
+            if base_callee == "str.concat" {
+                if args.len() < 2 {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        "runtime call `str.concat` expects at least 2 string args; use `str.concat(a, b, ...)`".to_string(),
+                    );
+                    return None;
+                }
+                for arg in args {
+                    let actual = infer_expr_type(arg, scopes, env, state);
+                    if let Some(actual) = actual.as_ref() {
+                        if !type_compatible(&Type::Str, actual) {
+                            record_type_error(
+                                state.errors,
+                                state.type_error_details,
+                                format!(
+                                    "runtime call `str.concat` argument type mismatch: expected `str`, got `{}`",
+                                    actual
+                                ),
+                            );
+                        }
+                    }
+                }
+                return Some(Type::Str);
+            }
             let runtime_sig = runtime_call_signature(base_callee);
             let mut is_function_async = false;
             let (params, ret) = if let Some((params, ret)) = fn_sigs.get(base_callee) {
@@ -6225,6 +6251,13 @@ fn infer_expr_type(
                         format!(
                             "runtime call `{}` migrated to `(conn, status, body)`; update call sites like `{}(conn, 200, \"ok\")`",
                             base_callee, base_callee
+                        )
+                    } else if matches!(base_callee, "str.concat2" | "str.concat3" | "str.concat4") {
+                        format!(
+                            "runtime call `{}` expects {} args but got {}; use `str.concat(...)` for the general string-assembly path or match the fixed helper arity exactly",
+                            base_callee,
+                            params.len(),
+                            args.len()
                         )
                     } else {
                         format!(
@@ -7026,13 +7059,25 @@ fn infer_expr_type(
                             .as_ref()
                             .map(ToString::to_string)
                             .unwrap_or_else(|| "unknown".to_string());
-                        record_type_error(
-                            state.errors,
-                            state.type_error_details,
+                        let detail = if *op == BinaryOp::Add
+                            && left_ty.as_ref().is_some_and(|ty| matches!(ty, Type::Str))
+                            && right_ty.as_ref().is_some_and(|ty| matches!(ty, Type::Str))
+                        {
+                            "string addition is unsupported; use `str.concat(left, right)`"
+                                .to_string()
+                        } else if *op == BinaryOp::Add
+                            && (left_ty.as_ref().is_some_and(|ty| matches!(ty, Type::Str))
+                                || right_ty.as_ref().is_some_and(|ty| matches!(ty, Type::Str)))
+                        {
+                            format!(
+                                "string addition is unsupported; use `str.concat(...)` with string arguments instead of `+` (got left=`{left}` right=`{right}`)"
+                            )
+                        } else {
                             format!(
                                 "arithmetic operands must be numeric-compatible, got left=`{left}` right=`{right}`"
-                            ),
-                        );
+                            )
+                        };
+                        record_type_error(state.errors, state.type_error_details, detail);
                         None
                     }
                 }
@@ -8368,6 +8413,8 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "str.concat2",
         "str.concat3",
         "str.concat4",
+        "str.from_i32",
+        "str.from_bool",
         "str.contains",
         "str.starts_with",
         "str.ends_with",
@@ -8414,6 +8461,10 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "fs.listdir",
         "fs.temp_file",
         "path.join",
+        "path.basename",
+        "path.dirname",
+        "path.stem",
+        "path.extension",
         "path.normalize",
         "route.match",
         "route.write_404",
@@ -8635,6 +8686,8 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             ],
             str_ty.clone(),
         ),
+        "str.from_i32" => (vec![i32.clone()], str_ty.clone()),
+        "str.from_bool" => (vec![Type::Bool], str_ty.clone()),
         "str.contains" | "str.starts_with" | "str.ends_with" => {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
         }
@@ -8686,7 +8739,9 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "fs.listdir" => (vec![str_ty.clone()], i32.clone()),
         "fs.temp_file" => (vec![str_ty.clone()], str_ty.clone()),
         "path.join" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
-        "path.normalize" => (vec![str_ty.clone()], str_ty.clone()),
+        "path.basename" | "path.dirname" | "path.stem" | "path.extension" | "path.normalize" => {
+            (vec![str_ty.clone()], str_ty.clone())
+        }
         "route.match" => (
             vec![http_handle.clone(), str_ty.clone(), str_ty.clone()],
             i32.clone(),
@@ -10899,6 +10954,90 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn variadic_str_concat_typechecks() {
+        let source = r#"
+            fn main() -> i32 {
+                let path = str.concat("svc/", "tenant/", "sessions/", "abc", "/latest")
+                if str.len(path) > 0 {
+                    return 0;
+                }
+                return 1;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn string_conversion_and_path_helpers_typecheck() {
+        let source = r#"
+            fn main() -> i32 {
+                let rendered = str.concat("port=", str.from_i32(8080), ", enabled=", str.from_bool(true))
+                let joined = path.join("/srv/app", "config/runtime.json")
+                let base = path.basename(joined)
+                let dir = path.dirname(joined)
+                let stem = path.stem(joined)
+                let extension = path.extension(joined)
+                discard rendered
+                discard base
+                discard dir
+                discard stem
+                discard extension
+                return 0
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn string_addition_reports_actionable_concat_guidance() {
+        let source = r#"
+            fn main() -> i32 {
+                let path = "svc/" + "tenant"
+                if str.len(path) > 0 {
+                    return 0;
+                }
+                return 1;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("string addition is unsupported")
+                    && detail.contains("str.concat")),
+            "expected string-addition guidance, got {:?}",
+            typed.type_error_details
+        );
+    }
+
+    #[test]
+    fn fixed_arity_concat_reports_variadic_guidance() {
+        let source = r#"
+            fn main() -> i32 {
+                let value = str.concat3("worker=", "7")
+                discard value
+                return 0
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("str.concat(...)")),
+            "expected variadic concat guidance, got {:?}",
+            typed.type_error_details
+        );
     }
 
     #[test]

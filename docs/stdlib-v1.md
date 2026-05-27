@@ -104,12 +104,42 @@ The v1 stdlib provides production baseline primitives for:
   - `proc.spawn_cmd` / `proc.run_cmd`
 - `proc.run*` waits for completion and returns the child exit code.
 - `proc.spawn*` returns a process handle for later wait/stdout/stderr/exit inspection.
+- Canonical structured process pattern:
+
+```fzy
+let argv = proc.argv_new()
+discard proc.argv_push(argv, "--format")
+discard proc.argv_push(argv, "json")
+let env_map = proc.env_new()
+discard proc.env_set(env_map, "MODE", "prod")
+let handle = proc.spawn_cmd("/usr/bin/tool", argv, env_map, "")
+discard proc.wait(handle, 1000)
+let exit = proc.exit_code(handle)
+let out = proc.stdout(handle)
+let err = proc.stderr(handle)
+```
+
+### `path`
+
+- Canonical path-safe authoring surface:
+  - `path.join(base, child)`
+  - `path.normalize(path)`
+  - `path.basename(path)`
+  - `path.dirname(path)`
+  - `path.stem(path)`
+  - `path.extension(path)`
+- Prefer these helpers over raw slash concatenation in service/runtime code.
 
 ### `collections` + JSON
 
 - Dynamic list/map handle APIs are first-class for runtime-safe composition:
   - `list.new/push/pop/len/get/set/clear/join`
   - `map.new/set/get/has/delete/keys/len`
+- Canonical string assembly uses `str.concat(...)` for multi-part string construction.
+- `str.concat2/3/4` remain stable, but `str.concat(...)` is the main authoring path.
+- Small-value conversion helpers are first-class:
+  - `str.from_i32(value)`
+  - `str.from_bool(flag)`
 - JSON composition uses dynamic builders:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
@@ -125,10 +155,20 @@ discard map.set(payload, "name", json.str(name))
 http.write_json(conn, 200, json.object(payload))
 ```
 
+- Canonical string/path assembly pattern:
+
+```fzy
+let port_label = str.concat("port=", str.from_i32(port))
+let route_file = path.join("/srv/app/routes", str.concat(route_name, ".json"))
+let route_dir = path.dirname(route_file)
+let route_base = path.basename(route_file)
+```
+
 - Outbound request headers are explicit:
   - `http.header_set(key, value)`
   - queued headers apply to the next `http.post_json` / `http.post_json_capture` call and are then cleared
 - Object literals (`#{ ... }`) lower to canonical map handles and are intended for small payload ergonomics.
+- Use `http.body(conn)` plus manual parse only when you need raw protocol text or exact transport preservation.
 
 ### `security`
 
