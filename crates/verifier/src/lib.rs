@@ -90,14 +90,6 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     for effect in &module.unknown_effects {
-        if effect == "text" {
-            report.diagnostics.push(Diagnostic::new(
-                Severity::Error,
-                "`use core.text;` is invalid: string/text intrinsics require no capability import",
-                Some("remove `use core.text;` and call `str.*` intrinsics directly".to_string()),
-            ));
-            continue;
-        }
         report.diagnostics.push(Diagnostic::new(
             Severity::Error,
             format!("unknown capability: {effect}"),
@@ -951,7 +943,7 @@ mod tests {
         assert!(report
             .diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic.message.contains("`use core.text;` is invalid") }));
+            .any(|diagnostic| diagnostic.message.contains("unknown capability: text")));
         assert!(!report.diagnostics.iter().any(|diagnostic| {
             diagnostic
                 .message
