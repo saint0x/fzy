@@ -198,6 +198,25 @@ Semantics:
 - Dynamic JSON builders are canonical:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
+- For inbound HTTP JSON, `http.body_json(conn)` is the canonical production path.
+  - Prefer `let body = http.body_json(conn)` over `json.parse(http.body(conn))`.
+  - Use `http.body(conn)` when you explicitly need the raw transport body as text.
+  - Typical handler shape:
+
+```fzy
+use core.http;
+
+fn handle(conn: HttpHandle) -> i32 {
+    http.read(conn)
+    let body = http.body_json(conn)
+    let message = json.get_str(body, "message")
+    let payload = map.new()
+    discard map.set(payload, "ok", json.raw("true"))
+    discard map.set(payload, "message", json.str(message))
+    return http.write_json(conn, 200, json.object(payload))
+}
+```
+
 - Outbound request headers are explicit and runtime-owned:
   - `http.header_set("authorization", "Bearer ...")`
   - `http.header_set("x-request-id", "abc123")`

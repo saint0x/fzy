@@ -69,6 +69,8 @@ The v1 stdlib provides production baseline primitives for:
 - HTTP/1.1 parsing/serving includes chunked transfer and `Expect: 100-continue` behavior.
 - Request/response size and timeout limits are bounded by default.
 - Error semantics preserve parse vs timeout vs IO separation.
+- Inbound JSON request handling should prefer `http.body_json(conn)` over `http.body(conn)` plus `json.parse(...)`.
+- `http.body(conn)` remains the raw-text escape hatch for non-JSON or signature-sensitive payloads.
 - Typed JSON payload helpers are available in `core.http`:
   - `JsonPayload`
   - `json_payload_new/set_str/set_raw/encode`
@@ -111,6 +113,18 @@ The v1 stdlib provides production baseline primitives for:
 - JSON composition uses dynamic builders:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
+- Canonical inbound JSON handler shape:
+
+```fzy
+http.read(conn)
+let body = http.body_json(conn)
+let name = json.get_str(body, "name")
+let payload = map.new()
+discard map.set(payload, "ok", json.raw("true"))
+discard map.set(payload, "name", json.str(name))
+http.write_json(conn, 200, json.object(payload))
+```
+
 - Outbound request headers are explicit:
   - `http.header_set(key, value)`
   - queued headers apply to the next `http.post_json` / `http.post_json_capture` call and are then cleared

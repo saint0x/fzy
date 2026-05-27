@@ -26,6 +26,9 @@
 - Keepalive policy is explicit and bounded (`keepalive_max_requests`).
 - Native host-backed runtime bind defaults are explicit: host `127.0.0.1`, port `8787`.
 - Native host-backed runtime must emit effective listen target (`addr`, `port`, source) at startup.
+- Inbound JSON request handlers should use `http.body_json(conn)` as the primary decode surface.
+- `json.parse(http.body(conn))` is valid but is not the preferred production path for normal JSON APIs.
+- Runtime stability work and regressions are keyed to the direct `http.read(conn)` -> `http.body_json(conn)` -> `json.get*` flow.
 
 ## Runtime Env Ergonomics
 
@@ -40,6 +43,8 @@
 - Default log output is human-readable text lines (`[ts] level message`).
 - Structured log fields are appended as `| fields={...}`.
 - JSON log mode is opt-in only (`log.set_json(1)`).
+- Services should avoid unnecessary per-request artifact churn on hot paths.
+- When richer request logging is required, prefer bounded structured fields and JSON responses over ad hoc repeated string re-encoding.
 
 ## TLS Boundary Strategy
 

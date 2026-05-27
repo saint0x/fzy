@@ -96,6 +96,20 @@ Fix workflow:
 3. Validate direct upstream connectivity with an equivalent out-of-band curl probe.
 4. If direct probe succeeds but runtime path fails, treat as runtime HTTP adapter regression and capture stderr diagnostics from `http.last_error`.
 
+### Request handler JSON decode instability / unnecessary parse churn
+
+Symptoms:
+
+- handlers read JSON via `http.body(conn)` and immediately call `json.parse(...)`
+- hot paths do repeated string rebuilding, parse/re-parse, or emit excessive per-request artifacts
+
+Fix workflow:
+
+1. Move normal JSON handlers to `http.read(conn)` followed by `http.body_json(conn)`.
+2. Use `json.get*` / `json.path` directly on the decoded handle instead of reparsing raw text.
+3. Keep hot-path logging/artifact generation bounded and structured.
+4. If failures persist after moving to `http.body_json(conn)`, capture a minimal repro and treat it as runtime stress-hardening work.
+
 ### LSP editor/protocol/determinism smoke failure
 
 Symptoms:
