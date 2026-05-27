@@ -1020,6 +1020,14 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_proc_runl("));
     assert!(shim.contains("int32_t fz_native_proc_poll(int32_t handle)"));
     assert!(shim.contains("int32_t fz_native_proc_read_stdout(int32_t handle, int32_t max_bytes)"));
+    assert!(shim.contains("int32_t fz_native_proc_argv_count(void)"));
+    assert!(shim.contains("int32_t fz_native_proc_argv_get(int32_t index)"));
+    assert!(shim.contains("int32_t fz_native_term_read_line(void)"));
+    assert!(shim.contains("int32_t fz_native_term_stdin_eof(void)"));
+    assert!(shim.contains("int32_t fz_native_term_write(int32_t text_id)"));
+    assert!(shim.contains("int32_t fz_native_term_write_err(int32_t text_id)"));
+    assert!(shim.contains("int32_t fz_native_term_stdin_is_tty(void)"));
+    assert!(shim.contains("int32_t fz_native_term_stdout_is_tty(void)"));
     assert!(shim.contains("int32_t fz_native_net_header(int32_t conn_fd, int32_t key_id)"));
     assert!(shim.contains(
         "int32_t fz_native_route_match(int32_t conn_fd, int32_t method_id, int32_t pattern_id)"

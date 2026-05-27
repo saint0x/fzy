@@ -186,12 +186,29 @@ Semantics:
 
 - Canonical process intrinsic namespace is `proc.*`.
 - `process.*` is removed in production v1; unresolved-call diagnostics provide migration guidance to the nearest `proc.*` intrinsic.
+- Current-process argv access is first-class:
+  - `proc.argv_count()`
+  - `proc.argv_get(index)`
 - Structured process builders are first-class: `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`, `proc.run_cmd`.
 - `proc.run*` waits for completion and returns the child exit code.
 - `proc.spawn*` returns a process handle for `proc.wait`, `proc.stdout`, `proc.stderr`, and `proc.exit_code`.
 - Small-value string conversion is first-class:
   - `str.from_i32(value)`
   - `str.from_bool(flag)`
+
+## Terminal Intrinsic Namespace
+
+- Canonical current-process terminal namespace is `term.*`.
+- This surface is distinct from child-process management in `proc.*`.
+- First-class terminal operations:
+  - `term.read_line()`
+  - `term.stdin_eof()`
+  - `term.write(text)`
+  - `term.write_err(text)`
+  - `term.stdin_is_tty()`
+  - `term.stdout_is_tty()`
+- `term.read_line()` removes a trailing newline and trailing carriage return when present.
+- EOF is observed by pairing `term.read_line()` with `term.stdin_eof()`.
 
 ## JSON And Logging Ergonomics
 

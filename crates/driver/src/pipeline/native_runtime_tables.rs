@@ -32,6 +32,46 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "proc.argv_count",
+        symbol: "fz_native_proc_argv_count",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "proc.argv_get",
+        symbol: "fz_native_proc_argv_get",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "term.read_line",
+        symbol: "fz_native_term_read_line",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "term.stdin_eof",
+        symbol: "fz_native_term_stdin_eof",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "term.write",
+        symbol: "fz_native_term_write",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "term.write_err",
+        symbol: "fz_native_term_write_err",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "term.stdin_is_tty",
+        symbol: "fz_native_term_stdin_is_tty",
+        arity: 0,
+    },
+    NativeRuntimeImport {
+        callee: "term.stdout_is_tty",
+        symbol: "fz_native_term_stdout_is_tty",
+        arity: 0,
+    },
+    NativeRuntimeImport {
         callee: "time.now",
         symbol: "fz_native_time_now",
         arity: 0,

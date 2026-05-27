@@ -98,6 +98,9 @@ The v1 stdlib provides production baseline primitives for:
 - `run_child_with_capability(config, token) -> Result<ProcessResult, CapabilityError>`
 - Structured process config supports argv/env/stdin/resource limits/signal behavior.
 - Timeout and cancellation states are explicit in returned process status.
+- Current-process argv helpers are first-class:
+  - `proc.argv_count()`
+  - `proc.argv_get(index)`
 - Canonical language-facing process builders map to structured handles:
   - `proc.argv_new/push`
   - `proc.env_new/set`
@@ -118,6 +121,28 @@ let exit = proc.exit_code(handle)
 let out = proc.stdout(handle)
 let err = proc.stderr(handle)
 ```
+
+### `term`
+
+- Current-process terminal I/O is first-class:
+  - `term.read_line()`
+  - `term.stdin_eof()`
+  - `term.write(text)`
+  - `term.write_err(text)`
+  - `term.stdin_is_tty()`
+  - `term.stdout_is_tty()`
+- `term.read_line()` strips the trailing newline and a trailing `\r` when present.
+- Empty line and EOF are distinct:
+  - empty line returns `""` with `term.stdin_eof() == 0`
+  - EOF returns `""` with `term.stdin_eof() == 1`
+- Canonical standard-library wrappers live in `core.term` and `core.process`:
+  - `core.term.print_line`
+  - `core.term.eprint_line`
+  - `core.term.prompt_line`
+  - `core.term.is_interactive`
+  - `core.process.argv_or`
+  - `core.process.command_name`
+  - `core.process.has_flag`
 
 ### `path`
 

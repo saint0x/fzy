@@ -8553,6 +8553,14 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "http.last_status",
         "http.last_error",
         "env.get",
+        "proc.argv_count",
+        "proc.argv_get",
+        "term.read_line",
+        "term.stdin_eof",
+        "term.write",
+        "term.write_err",
+        "term.stdin_is_tty",
+        "term.stdout_is_tty",
         "str.concat",
         "str.concat2",
         "str.concat3",
@@ -8816,6 +8824,12 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             i32.clone(),
         ),
         "env.get" => (vec![str_ty.clone()], str_ty.clone()),
+        "proc.argv_count" => (vec![], i32.clone()),
+        "proc.argv_get" => (vec![i32.clone()], str_ty.clone()),
+        "term.read_line" => (vec![], str_ty.clone()),
+        "term.stdin_eof" => (vec![], i32.clone()),
+        "term.write" | "term.write_err" => (vec![str_ty.clone()], i32.clone()),
+        "term.stdin_is_tty" | "term.stdout_is_tty" => (vec![], i32.clone()),
         "str.concat" | "str.concat2" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "str.concat3" => (
             vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
@@ -11023,6 +11037,26 @@ mod tests {
                 proc.env_set(env, "K", "V");
                 proc.spawn_cmd("echo", argv, env, "stdin");
                 return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn current_process_cli_intrinsics_typecheck() {
+        let source = r#"
+            use core.proc;
+            fn main() -> i32 {
+                let argc = proc.argv_count();
+                let arg0 = proc.argv_get(0);
+                let line = term.read_line();
+                discard term.write(arg0);
+                discard term.write_err(line);
+                discard term.stdin_is_tty();
+                discard term.stdout_is_tty();
+                return argc + term.stdin_eof();
             }
         "#;
         let module = parser::parse(source, "main").expect("parse");

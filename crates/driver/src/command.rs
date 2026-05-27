@@ -12020,6 +12020,176 @@ mod tests {
     }
 
     #[test]
+    fn native_run_preserves_cli_args_and_terminal_output() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-term-args-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.process;\nuse core.term;\n\nfn main() -> i32 {\n    let argc = process.argv_count()\n    let cmd = process.command_name()\n    let mode = process.argv_or(1, \"\")\n    let flag = process.argv_or(2, \"\")\n    discard term.print_line(str.concat(\"argc=\", str.from_i32(argc)))\n    discard term.print_line(str.concat(\"cmd=\", cmd))\n    discard term.print_line(str.concat(\"mode=\", mode))\n    discard term.eprint_line(str.concat(\"flag=\", flag))\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: vec!["serve".to_string(), "--json".to_string()],
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("native run with cli args should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(output.contains("argc=3"), "output was: {output}");
+        assert!(output.contains("mode=serve"), "output was: {output}");
+        assert!(output.contains("flag=--json"), "output was: {output}");
+        assert!(output.contains("\"stdout\":\""), "output was: {output}");
+        assert!(output.contains("\"stderr\":\""), "output was: {output}");
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_run_host_backends_preserves_cli_args_and_terminal_output() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-term-host-args-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.process;\nuse core.term;\n\nfn main() -> i32 {\n    discard term.print_line(str.concat(\"argc=\", str.from_i32(process.argv_count())))\n    discard term.print_line(str.concat(\"mode=\", process.argv_or(1, \"\")))\n    discard term.eprint_line(str.concat(\"flag=\", process.argv_or(2, \"\")))\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: vec!["serve".to_string(), "--json".to_string()],
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: Some("cranelift".to_string()),
+                max_seconds: Some(10),
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("native host backend run with cli args should succeed");
+        assert!(output.contains("\"routing\":{\"mode\":\"native-host-runtime\""));
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(output.contains("argc=3"), "output was: {output}");
+        assert!(output.contains("mode=serve"), "output was: {output}");
+        assert!(output.contains("flag=--json"), "output was: {output}");
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn native_binary_reads_piped_stdin_and_reports_non_tty_mode() {
+        use std::io::Write as _;
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-term-stdin-{suffix}"));
+        let source = root.join("src/main.fzy");
+        let out_path = std::env::temp_dir().join(format!("fozzylang-term-stdin-{suffix}.json"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"term_stdin\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"term_stdin\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\nuse core.term;\n\nfn main() -> i32 {{\n    let line = term.read_line()\n    let eof_before = term.stdin_eof()\n    let second = term.read_line()\n    let eof_after = term.stdin_eof()\n    let payload = map.new()\n    discard map.set(payload, \"line\", json.str(line))\n    discard map.set(payload, \"second\", json.str(second))\n    discard map.set(payload, \"eof_before\", json.str(str.from_i32(eof_before)))\n    discard map.set(payload, \"eof_after\", json.str(str.from_i32(eof_after)))\n    discard map.set(payload, \"stdin_tty\", json.str(str.from_i32(term.stdin_is_tty())))\n    discard map.set(payload, \"stdout_tty\", json.str(str.from_i32(term.stdout_is_tty())))\n    fs.write_file(\"{quoted_out}\", json.object(payload))\n    discard term.print(\"prompt> \")\n    discard term.eprint_line(\"warn\")\n    return 0\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let artifact = compile_file_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            Some("cranelift"),
+        )
+        .expect("build should succeed");
+        assert_eq!(artifact.status, "ok");
+        let binary = artifact
+            .output
+            .expect("build artifact should include output path");
+
+        let mut child = std::process::Command::new(&binary)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("binary should spawn");
+        child
+            .stdin
+            .take()
+            .expect("stdin pipe should exist")
+            .write_all(b"hello world\n")
+            .expect("stdin should write");
+        let output = child.wait_with_output().expect("child should exit");
+        assert_eq!(output.status.code(), Some(0));
+
+        let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
+        let stderr = String::from_utf8(output.stderr).expect("stderr should be utf8");
+        assert!(stdout.contains("prompt> "), "stdout was: {stdout}");
+        assert!(stderr.contains("warn"), "stderr was: {stderr}");
+
+        let content =
+            std::fs::read_to_string(&out_path).expect("stdin runtime output should exist");
+        assert!(
+            content.contains("\"line\":\"hello world\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"second\":\"\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"eof_before\":\"0\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"eof_after\":\"1\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"stdin_tty\":\"0\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"stdout_tty\":\"0\""),
+            "content was: {content}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
     fn native_run_json_array_traversal_and_raw_extraction_execute() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

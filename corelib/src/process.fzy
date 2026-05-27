@@ -1,9 +1,43 @@
+use core.proc;
+
 enum ExitClass {
     Ok,
     Failure,
     Timeout,
     Cancelled,
     Signaled,
+}
+
+fn argv_count() -> i32 {
+    return proc.argv_count()
+}
+
+fn argv(index: i32) -> str {
+    return proc.argv_get(index)
+}
+
+fn argv_or(index: i32, fallback: str) -> str {
+    let value = argv(index)
+    if value == "" {
+        return fallback
+    }
+    return value
+}
+
+fn command_name() -> str {
+    return argv_or(0, "")
+}
+
+fn has_flag(flag: str) -> i32 {
+    let count = argv_count()
+    let mut index = 1
+    while index < count {
+        if argv(index) == flag {
+            return 1
+        }
+        index += 1
+    }
+    return 0
 }
 
 struct ProcessLimits {
@@ -69,5 +103,7 @@ fn sample() -> i32 {
     let a = class_score(class)
     let b = budget_score(4, 12, limits)
     let c = retry_delay_ms(5, 4, 128)
-    return (a + b + c) % 251
+    let d = argv_count()
+    let e = if has_flag("--sample") == 1 { 17 } else { 0 }
+    return (a + b + c + d + e) % 251
 }

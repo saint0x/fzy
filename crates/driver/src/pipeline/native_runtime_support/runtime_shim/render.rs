@@ -4,6 +4,7 @@ use super::core::runtime_shim_section_core;
 use super::http::runtime_shim_section_http;
 use super::proc::runtime_shim_section_proc;
 use super::services::runtime_shim_section_services;
+use super::term::runtime_shim_section_term;
 
 fn escape_c_string(value: &str) -> String {
     let mut escaped = String::new();
@@ -164,9 +165,13 @@ pub(crate) fn render_native_runtime_shim(
     c.push_str(
         r#"#include <arpa/inet.h>
 #include <ctype.h>
+#ifdef __APPLE__
+#include <crt_externs.h>
+#endif
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <sched.h>
@@ -210,6 +215,7 @@ extern char** environ;
     c.push_str(runtime_shim_section_http());
     c.push_str(runtime_shim_section_services());
     c.push_str(runtime_shim_section_proc());
+    c.push_str(runtime_shim_section_term());
     c.push_str(&async_export_shim);
     c
 }

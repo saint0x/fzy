@@ -445,10 +445,19 @@ impl Parser {
                 self.push_diag_here("expected `.` after `use core`");
                 return;
             }
-            let Some(cap) = self.expect_ident("expected capability name") else {
+            let Some(name) = self.expect_ident("expected capability or stdlib module name") else {
                 return;
             };
-            self.module.capabilities.push(cap);
+            if is_core_stdlib_module(name.as_str()) {
+                self.module.imports.push(ast::Import {
+                    path: vec![name],
+                    alias: None,
+                    is_pub: false,
+                    wildcard: false,
+                });
+            } else {
+                self.module.capabilities.push(name);
+            }
             let _ = self.consume(&TokenKind::Semi);
             return;
         }
@@ -2753,6 +2762,10 @@ impl Parser {
     }
 }
 
+fn is_core_stdlib_module(name: &str) -> bool {
+    matches!(name, "process" | "term")
+}
+
 fn parser_help(message: &str) -> Option<String> {
     if message == "expected parameter name" {
         Some(
@@ -4515,6 +4528,29 @@ mod tests {
             !entry.is_pub
                 && entry.wildcard
                 && entry.path == vec!["app".to_string(), "os".to_string()]
+        }));
+    }
+
+    #[test]
+    fn parses_core_stdlib_module_imports_without_treating_them_as_capabilities() {
+        let source = r#"
+            use core.process;
+            use core.term;
+            use core.http;
+        "#;
+        let module = parse(source, "imports").expect("parse should succeed");
+        assert!(module.capabilities == vec!["http".to_string()]);
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["process".to_string()]
+        }));
+        assert!(module.imports.iter().any(|entry| {
+            !entry.is_pub
+                && !entry.wildcard
+                && entry.alias.is_none()
+                && entry.path == vec!["term".to_string()]
         }));
     }
 

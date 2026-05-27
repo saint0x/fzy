@@ -645,6 +645,7 @@ fn parse_program_uncached_with_root_source(
             .ok_or_else(|| anyhow!("internal module cache miss for {}", path.display()))?;
         merge_module_owned(&mut merged, loaded.ast);
     }
+    merge_imported_core_stdlib_modules(&mut merged)?;
     canonicalize_call_targets(&mut merged);
     Ok(ParsedProgram {
         module: merged,
@@ -1832,6 +1833,47 @@ fn merge_module_owned(root: &mut ast::Module, mut module: ast::Module) {
     root.capabilities.append(&mut module.capabilities);
     root.host_syscall_sites += module.host_syscall_sites;
     root.unsafe_reasoned_sites += module.unsafe_reasoned_sites;
+}
+
+fn merge_imported_core_stdlib_modules(root: &mut ast::Module) -> Result<()> {
+    let imported = root
+        .imports
+        .iter()
+        .filter_map(|import| {
+            if import.path.len() == 1 {
+                embedded_core_stdlib_module_source(import.path[0].as_str())
+                    .map(|source| (import.path[0].clone(), source))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut merged_names = HashSet::<String>::new();
+    for (module_name, source) in imported {
+        if !merged_names.insert(module_name.clone()) {
+            continue;
+        }
+        let mut module = parser::parse(source, &module_name).map_err(|diagnostics| {
+            anyhow!(
+                "failed parsing embedded core stdlib module `{module_name}`: {}",
+                diagnostics
+                    .first()
+                    .map(|diag| diag.message.clone())
+                    .unwrap_or_else(|| "unknown parse failure".to_string())
+            )
+        })?;
+        qualify_module_symbols(&mut module, &module_name);
+        merge_module_owned(root, module);
+    }
+    Ok(())
+}
+
+fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str> {
+    match module_name {
+        "process" => Some(include_str!("../../../corelib/src/process.fzy")),
+        "term" => Some(include_str!("../../../corelib/src/term.fzy")),
+        _ => None,
+    }
 }
 
 fn format_module_cycle(stack: &[PathBuf], repeated: &Path) -> String {
