@@ -262,6 +262,22 @@ fn handle(conn: HttpHandle) -> i32 {
 - Structured logging fields use `log.fields(map_handle)` as the primary path.
 - Path-safe assembly should prefer path primitives over raw string surgery:
   - `path.join(base, child)`
+
+## String Escape Sequences
+
+- Supported string and char escapes:
+  - `\\`
+  - `\"`
+  - `\'`
+  - `\n`
+  - `\r`
+  - `\t`
+  - `\0`
+  - hex byte/scalar form: `\xNN`
+  - fixed-width Unicode form: `\uNNNN`
+  - braced Unicode scalar form: `\u{NN...}`
+  - octal form: `\NNN` with 1-3 octal digits
+- Terminal/control-character authoring should prefer `\x1b` or `\u001b` over raw literal escape bytes in source.
   - `path.normalize(path)`
   - `path.basename(path)`
   - `path.dirname(path)`

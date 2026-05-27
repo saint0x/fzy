@@ -3251,28 +3251,20 @@ impl<'a> Lexer<'a> {
         let _ = iter.next();
         let (_, first) = iter.next()?;
         if first == '\\' {
-            let (_, esc) = iter.next()?;
+            let mut scratch = Vec::new();
+            let value = self.decode_escape_sequence_from_iter(
+                &mut iter,
+                self.line,
+                self.col + 1,
+                "char",
+                &mut scratch,
+            )?;
             let (_, end_quote) = iter.next()?;
             if end_quote != '\'' {
                 return None;
             }
-            let value = match esc {
-                'n' => '\n',
-                'r' => '\r',
-                't' => '\t',
-                '\\' => '\\',
-                '\'' => '\'',
-                '0' => '\0',
-                _ => {
-                    self.diagnostics.push(Diagnostic::new(
-                        Severity::Error,
-                        format!("unsupported char escape `\\{esc}`"),
-                        Some("supported escapes: \\\\, \\\', \\n, \\r, \\t, \\0".to_string()),
-                    ));
-                    esc
-                }
-            };
-            return Some((value, 4));
+            let consumed_cols = scratch.len() + 3;
+            return Some((value, consumed_cols));
         }
         let (_, end_quote) = iter.next()?;
         if end_quote != '\'' {
@@ -3327,7 +3319,7 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 '\\' => {
-                    let Some((_, escape)) = self.peek_char() else {
+                    if self.peek_char().is_none() {
                         self.diagnostics.push(
                             Diagnostic::new(
                                 Severity::Error,
@@ -3339,33 +3331,14 @@ impl<'a> Lexer<'a> {
                             .with_span(start_line, start_col, self.line, self.col),
                         );
                         break;
-                    };
-                    self.advance_char();
-                    match escape {
-                        '"' => value.push('"'),
-                        '\\' => value.push('\\'),
-                        'n' => value.push('\n'),
-                        'r' => value.push('\r'),
-                        't' => value.push('\t'),
-                        '0' => value.push('\0'),
-                        _ => {
-                            self.diagnostics.push(
-                                Diagnostic::new(
-                                    Severity::Error,
-                                    format!("unsupported string escape `\\{escape}`"),
-                                    Some(
-                                        "supported escapes: \\\\, \\\", \\n, \\r, \\t, \\0"
-                                            .to_string(),
-                                    ),
-                                )
-                                .with_span(
-                                    self.line,
-                                    self.col.saturating_sub(1),
-                                    self.line,
-                                    self.col,
-                                ),
-                            );
-                            value.push(escape);
+                    }
+                    let mut raw = Vec::new();
+                    match self.decode_escape_sequence(self.line, self.col, "string", &mut raw) {
+                        Some(decoded) => value.push(decoded),
+                        None => {
+                            if let Some(last) = raw.last() {
+                                value.push(*last);
+                            }
                         }
                     }
                 }
@@ -3392,6 +3365,497 @@ impl<'a> Lexer<'a> {
             return if value.is_empty() { fallback } else { value };
         }
         value
+    }
+
+    fn decode_escape_sequence(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        literal_kind: &str,
+        raw: &mut Vec<char>,
+    ) -> Option<char> {
+        let Some((_, escape)) = self.peek_char() else {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("unterminated {literal_kind} escape"),
+                    Some("complete the escape sequence".to_string()),
+                )
+                .with_span(start_line, start_col, self.line, self.col),
+            );
+            return None;
+        };
+        self.advance_char();
+        raw.push(escape);
+        self.decode_escape_tail(
+            escape,
+            start_line,
+            start_col,
+            literal_kind,
+            raw,
+            |lexer| lexer.peek_char(),
+            |lexer| lexer.advance_char(),
+        )
+    }
+
+    fn decode_escape_sequence_from_iter(
+        &mut self,
+        iter: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+        start_line: usize,
+        start_col: usize,
+        literal_kind: &str,
+        raw: &mut Vec<char>,
+    ) -> Option<char> {
+        let (_, escape) = iter.next()?;
+        raw.push(escape);
+        match escape {
+            '"' => Some('"'),
+            '\'' => Some('\''),
+            '\\' => Some('\\'),
+            'n' => Some('\n'),
+            'r' => Some('\r'),
+            't' => Some('\t'),
+            '0'..='7' => {
+                let mut digits = String::from(escape);
+                for _ in 0..2 {
+                    let Some((_, next)) = iter.peek().copied() else {
+                        break;
+                    };
+                    if !matches!(next, '0'..='7') {
+                        break;
+                    }
+                    let _ = iter.next();
+                    raw.push(next);
+                    digits.push(next);
+                }
+                self.finish_numeric_escape(&digits, 8, start_line, start_col, literal_kind, "octal")
+            }
+            'x' => self.decode_fixed_width_escape_from_iter(
+                iter,
+                2,
+                16,
+                start_line,
+                start_col,
+                literal_kind,
+                raw,
+                "hex",
+            ),
+            'u' => {
+                if let Some((_, '{')) = iter.peek().copied() {
+                    let _ = iter.next();
+                    raw.push('{');
+                    self.decode_braced_unicode_escape_from_iter(
+                        iter,
+                        start_line,
+                        start_col,
+                        literal_kind,
+                        raw,
+                    )
+                } else {
+                    self.decode_fixed_width_escape_from_iter(
+                        iter,
+                        4,
+                        16,
+                        start_line,
+                        start_col,
+                        literal_kind,
+                        raw,
+                        "unicode",
+                    )
+                }
+            }
+            _ => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("unsupported {literal_kind} escape `\\{escape}`"),
+                        Some(
+                            "supported escapes: \\\\, \\\", \\\', \\n, \\r, \\t, \\0, \\xNN, \\uNNNN, \\u{NN...}, \\NNN"
+                                .to_string(),
+                        ),
+                    )
+                    .with_span(start_line, start_col, self.line, self.col),
+                );
+                Some(escape)
+            }
+        }
+    }
+
+    fn decode_escape_tail<Peek, Advance>(
+        &mut self,
+        escape: char,
+        start_line: usize,
+        start_col: usize,
+        literal_kind: &str,
+        raw: &mut Vec<char>,
+        mut peek: Peek,
+        mut advance: Advance,
+    ) -> Option<char>
+    where
+        Peek: FnMut(&mut Self) -> Option<(usize, char)>,
+        Advance: FnMut(&mut Self),
+    {
+        match escape {
+            '"' => Some('"'),
+            '\'' => Some('\''),
+            '\\' => Some('\\'),
+            'n' => Some('\n'),
+            'r' => Some('\r'),
+            't' => Some('\t'),
+            '0'..='7' => self.decode_octal_escape(
+                escape,
+                start_line,
+                start_col,
+                literal_kind,
+                raw,
+                &mut peek,
+                &mut advance,
+            ),
+            'x' => self.decode_fixed_width_escape(
+                2,
+                16,
+                start_line,
+                start_col,
+                literal_kind,
+                raw,
+                "hex",
+                &mut peek,
+                &mut advance,
+            ),
+            'u' => {
+                if let Some((_, '{')) = peek(self) {
+                    advance(self);
+                    raw.push('{');
+                    self.decode_braced_unicode_escape(
+                        start_line,
+                        start_col,
+                        literal_kind,
+                        raw,
+                        &mut peek,
+                        &mut advance,
+                    )
+                } else {
+                    self.decode_fixed_width_escape(
+                        4,
+                        16,
+                        start_line,
+                        start_col,
+                        literal_kind,
+                        raw,
+                        "unicode",
+                        &mut peek,
+                        &mut advance,
+                    )
+                }
+            }
+            _ => {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("unsupported {literal_kind} escape `\\{escape}`"),
+                        Some(
+                            "supported escapes: \\\\, \\\", \\\', \\n, \\r, \\t, \\0, \\xNN, \\uNNNN, \\u{NN...}, \\NNN"
+                                .to_string(),
+                        ),
+                    )
+                    .with_span(start_line, start_col, self.line, self.col),
+                );
+                Some(escape)
+            }
+        }
+    }
+
+    fn decode_octal_escape<Peek, Advance>(
+        &mut self,
+        first: char,
+        start_line: usize,
+        start_col: usize,
+        literal_kind: &str,
+        raw: &mut Vec<char>,
+        peek: &mut Peek,
+        advance: &mut Advance,
+    ) -> Option<char>
+    where
+        Peek: FnMut(&mut Self) -> Option<(usize, char)>,
+        Advance: FnMut(&mut Self),
+    {
+        let mut digits = String::from(first);
+        for _ in 0..2 {
+            let Some((_, next)) = peek(self) else {
+                break;
+            };
+            if !matches!(next, '0'..='7') {
+                break;
+            }
+            advance(self);
+            raw.push(next);
+            digits.push(next);
+        }
+        self.finish_numeric_escape(&digits, 8, start_line, start_col, literal_kind, "octal")
+    }
+
+    fn decode_fixed_width_escape<Peek, Advance>(
+        &mut self,
+        width: usize,
+        radix: u32,
+        start_line: usize,
+        start_col: usize,
+        literal_kind: &str,
+        raw: &mut Vec<char>,
+        label: &str,
+        peek: &mut Peek,
+        advance: &mut Advance,
+    ) -> Option<char>
+    where
+        Peek: FnMut(&mut Self) -> Option<(usize, char)>,
+        Advance: FnMut(&mut Self),
+    {
+        let mut digits = String::new();
+        for _ in 0..width {
+            let Some((_, next)) = peek(self) else {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("incomplete {literal_kind} {label} escape"),
+                        Some(format!(
+                            "expected {width} hexadecimal digit(s) after `\\{}`",
+                            if label == "unicode" { "u" } else { "x" }
+                        )),
+                    )
+                    .with_span(start_line, start_col, self.line, self.col),
+                );
+                return None;
+            };
+            if !next.is_ascii_hexdigit() {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("invalid {literal_kind} {label} escape"),
+                        Some(format!(
+                            "use only hexadecimal digits in `\\{}` escapes",
+                            if label == "unicode" { "u" } else { "x" }
+                        )),
+                    )
+                    .with_span(start_line, start_col, self.line, self.col + 1),
+                );
+                return Some(next);
+            }
+            advance(self);
+            raw.push(next);
+            digits.push(next);
+        }
+        self.finish_numeric_escape(&digits, radix, start_line, start_col, literal_kind, label)
+    }
+
+    fn decode_braced_unicode_escape<Peek, Advance>(
+        &mut self,
+        start_line: usize,
+        start_col: usize,
+        literal_kind: &str,
+        raw: &mut Vec<char>,
+        peek: &mut Peek,
+        advance: &mut Advance,
+    ) -> Option<char>
+    where
+        Peek: FnMut(&mut Self) -> Option<(usize, char)>,
+        Advance: FnMut(&mut Self),
+    {
+        let mut digits = String::new();
+        while let Some((_, next)) = peek(self) {
+            if next == '}' {
+                advance(self);
+                raw.push('}');
+                if digits.is_empty() || digits.len() > 6 {
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            format!("invalid {literal_kind} unicode escape"),
+                            Some(
+                                "use between 1 and 6 hexadecimal digits inside `\\u{...}`"
+                                    .to_string(),
+                            ),
+                        )
+                        .with_span(start_line, start_col, self.line, self.col),
+                    );
+                    return None;
+                }
+                return self.finish_numeric_escape(
+                    &digits,
+                    16,
+                    start_line,
+                    start_col,
+                    literal_kind,
+                    "unicode",
+                );
+            }
+            if !next.is_ascii_hexdigit() {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("invalid {literal_kind} unicode escape"),
+                        Some("use only hexadecimal digits inside `\\u{...}`".to_string()),
+                    )
+                    .with_span(start_line, start_col, self.line, self.col + 1),
+                );
+                return Some(next);
+            }
+            advance(self);
+            raw.push(next);
+            digits.push(next);
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                format!("unterminated {literal_kind} unicode escape"),
+                Some("close the escape with `}`".to_string()),
+            )
+            .with_span(start_line, start_col, self.line, self.col),
+        );
+        None
+    }
+
+    fn decode_fixed_width_escape_from_iter(
+        &mut self,
+        iter: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+        width: usize,
+        radix: u32,
+        start_line: usize,
+        start_col: usize,
+        literal_kind: &str,
+        raw: &mut Vec<char>,
+        label: &str,
+    ) -> Option<char> {
+        let mut digits = String::new();
+        for _ in 0..width {
+            let Some((_, next)) = iter.peek().copied() else {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("incomplete {literal_kind} {label} escape"),
+                        Some(format!(
+                            "expected {width} hexadecimal digit(s) after `\\{}`",
+                            if label == "unicode" { "u" } else { "x" }
+                        )),
+                    )
+                    .with_span(start_line, start_col, self.line, self.col),
+                );
+                return None;
+            };
+            if !next.is_ascii_hexdigit() {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("invalid {literal_kind} {label} escape"),
+                        Some(format!(
+                            "use only hexadecimal digits in `\\{}` escapes",
+                            if label == "unicode" { "u" } else { "x" }
+                        )),
+                    )
+                    .with_span(start_line, start_col, self.line, self.col + 1),
+                );
+                return Some(next);
+            }
+            let _ = iter.next();
+            raw.push(next);
+            digits.push(next);
+        }
+        self.finish_numeric_escape(&digits, radix, start_line, start_col, literal_kind, label)
+    }
+
+    fn decode_braced_unicode_escape_from_iter(
+        &mut self,
+        iter: &mut std::iter::Peekable<std::str::CharIndices<'a>>,
+        start_line: usize,
+        start_col: usize,
+        literal_kind: &str,
+        raw: &mut Vec<char>,
+    ) -> Option<char> {
+        let mut digits = String::new();
+        while let Some((_, next)) = iter.peek().copied() {
+            if next == '}' {
+                let _ = iter.next();
+                raw.push('}');
+                if digits.is_empty() || digits.len() > 6 {
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            format!("invalid {literal_kind} unicode escape"),
+                            Some(
+                                "use between 1 and 6 hexadecimal digits inside `\\u{...}`"
+                                    .to_string(),
+                            ),
+                        )
+                        .with_span(start_line, start_col, self.line, self.col),
+                    );
+                    return None;
+                }
+                return self.finish_numeric_escape(
+                    &digits,
+                    16,
+                    start_line,
+                    start_col,
+                    literal_kind,
+                    "unicode",
+                );
+            }
+            if !next.is_ascii_hexdigit() {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("invalid {literal_kind} unicode escape"),
+                        Some("use only hexadecimal digits inside `\\u{...}`".to_string()),
+                    )
+                    .with_span(start_line, start_col, self.line, self.col + 1),
+                );
+                return Some(next);
+            }
+            let _ = iter.next();
+            raw.push(next);
+            digits.push(next);
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                Severity::Error,
+                format!("unterminated {literal_kind} unicode escape"),
+                Some("close the escape with `}`".to_string()),
+            )
+            .with_span(start_line, start_col, self.line, self.col),
+        );
+        None
+    }
+
+    fn finish_numeric_escape(
+        &mut self,
+        digits: &str,
+        radix: u32,
+        start_line: usize,
+        start_col: usize,
+        literal_kind: &str,
+        label: &str,
+    ) -> Option<char> {
+        let Ok(value) = u32::from_str_radix(digits, radix) else {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("invalid {literal_kind} {label} escape"),
+                    Some(format!("could not parse {label} digits `{digits}`")),
+                )
+                .with_span(start_line, start_col, self.line, self.col),
+            );
+            return None;
+        };
+        let Some(decoded) = char::from_u32(value) else {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("{literal_kind} {label} escape is out of range"),
+                    Some("use a valid Unicode scalar value".to_string()),
+                )
+                .with_span(start_line, start_col, self.line, self.col),
+            );
+            return None;
+        };
+        Some(decoded)
     }
 }
 
@@ -3711,6 +4175,97 @@ mod tests {
             panic!("expected string literal");
         };
         assert_eq!(value, "{\"model\":\"claude-sonnet-4-6\",\"msg\":\"x:y\"}");
+    }
+
+    #[test]
+    fn string_literal_supports_hex_unicode_and_octal_escapes() {
+        let source = r#"
+            fn main() -> i32 {
+                let ansi: str = "\x1b[31mred\u001b[0m\033";
+                let scalar: str = "\u{1f642}";
+                return 0;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function");
+        let first = match &main_fn.body[0] {
+            ast::Stmt::Let { value, .. } => value,
+            _ => panic!("expected first statement to be let"),
+        };
+        let second = match &main_fn.body[1] {
+            ast::Stmt::Let { value, .. } => value,
+            _ => panic!("expected second statement to be let"),
+        };
+        let ast::Expr::Str(ansi) = first else {
+            panic!("expected ansi string literal");
+        };
+        let ast::Expr::Str(scalar) = second else {
+            panic!("expected scalar string literal");
+        };
+        assert_eq!(ansi, "\u{001b}[31mred\u{001b}[0m\u{001b}");
+        assert_eq!(scalar, "\u{1f642}");
+    }
+
+    #[test]
+    fn char_literal_supports_hex_unicode_and_octal_escapes() {
+        let source = r#"
+            fn main() -> i32 {
+                let esc: char = '\x1b';
+                let nul: char = '\000';
+                let smile: char = '\u263a';
+                return 0;
+            }
+        "#;
+        let module = parse(source, "main").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function");
+        let chars = main_fn
+            .body
+            .iter()
+            .filter_map(|stmt| match stmt {
+                ast::Stmt::Let {
+                    value: ast::Expr::Char(ch),
+                    ..
+                } => Some(*ch),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(chars, vec!['\u{001b}', '\0', '\u{263a}']);
+    }
+
+    #[test]
+    fn invalid_hex_unicode_and_octal_escapes_report_actionable_errors() {
+        let source = r#"
+            fn main() -> i32 {
+                let a = "\xzz";
+                let b = "\u12";
+                let c = "\u{110000}";
+                return 0;
+            }
+        "#;
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("invalid string hex escape")));
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.message.contains("invalid string unicode escape")));
+        assert!(diagnostics.iter().any(|diag| diag
+            .message
+            .contains("string unicode escape is out of range")));
     }
 
     #[test]

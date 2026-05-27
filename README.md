@@ -276,6 +276,7 @@ Runtime logging defaults:
   - raw runtime intrinsics: `proc.argv_count/get`, `term.read_line/stdin_eof/write/write_err/stdin_is_tty/stdout_is_tty`
   - canonical standard-library wrappers: `use core.process; use core.term;`
   - common helpers: `process.argv_or`, `process.command_name`, `process.has_flag`, `term.print_line`, `term.eprint_line`, `term.prompt_line`, `term.is_interactive`
+- production string escapes now include terminal-safe forms: `\xNN`, `\uNNNN`, `\u{NN...}`, and explicit octal `\NNN`
 - canonical structured log fields use `log.fields(map_handle)`
 - canonical dynamic JSON builders use `json.array(list_handle)` and `json.object(map_handle)`
 - first-class object literal syntax is available for map-backed payloads: `#{ "k": json.str("v") }`

@@ -12391,6 +12391,47 @@ mod tests {
     }
 
     #[test]
+    fn native_run_terminal_hex_and_unicode_escapes_preserve_ansi_bytes() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-ansi-escape-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    discard term.write(\"\\x1b[31mred\\u001b[0m\\033\\n\")\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("ansi escape run should succeed");
+        assert!(output.contains("\"exitCode\":0"));
+        assert!(
+            output.contains("\\u001b[31mred\\u001b[0m\\u001b\\n")
+                || output.contains("\u{001b}[31mred\u{001b}[0m\u{001b}\n"),
+            "output was: {output}"
+        );
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn native_run_project_root_host_backends_preserves_live_run_semantics() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
