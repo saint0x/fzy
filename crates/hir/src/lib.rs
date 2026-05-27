@@ -232,6 +232,105 @@ fn resolve_alias_type(ty: &Type, aliases: &HashMap<String, Type>, depth: usize) 
     }
 }
 
+fn resolve_impl_context_type(
+    ty: &Type,
+    self_type: &Type,
+    associated_types: &HashMap<String, Type>,
+) -> Type {
+    match ty {
+        Type::Named { name, .. } if name == "Self" => self_type.clone(),
+        Type::Named { name, args: _ } if name.starts_with("Self::") => associated_types
+            .get(name.trim_start_matches("Self::"))
+            .cloned()
+            .unwrap_or_else(|| ty.clone()),
+        Type::Named { name, args } => Type::Named {
+            name: name.clone(),
+            args: args
+                .iter()
+                .map(|arg| resolve_impl_context_type(arg, self_type, associated_types))
+                .collect(),
+        },
+        Type::Ptr { mutable, to } => Type::Ptr {
+            mutable: *mutable,
+            to: Box::new(resolve_impl_context_type(to, self_type, associated_types)),
+        },
+        Type::Ref {
+            mutable,
+            lifetime,
+            to,
+        } => Type::Ref {
+            mutable: *mutable,
+            lifetime: lifetime.clone(),
+            to: Box::new(resolve_impl_context_type(to, self_type, associated_types)),
+        },
+        Type::Slice(inner) => Type::Slice(Box::new(resolve_impl_context_type(
+            inner,
+            self_type,
+            associated_types,
+        ))),
+        Type::Array { elem, len } => Type::Array {
+            elem: Box::new(resolve_impl_context_type(elem, self_type, associated_types)),
+            len: *len,
+        },
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(resolve_impl_context_type(ok, self_type, associated_types)),
+            err: Box::new(resolve_impl_context_type(err, self_type, associated_types)),
+        },
+        Type::Map { key, value } => Type::Map {
+            key: Box::new(resolve_impl_context_type(key, self_type, associated_types)),
+            value: Box::new(resolve_impl_context_type(
+                value,
+                self_type,
+                associated_types,
+            )),
+        },
+        Type::Set(inner) => Type::Set(Box::new(resolve_impl_context_type(
+            inner,
+            self_type,
+            associated_types,
+        ))),
+        Type::Deque(inner) => Type::Deque(Box::new(resolve_impl_context_type(
+            inner,
+            self_type,
+            associated_types,
+        ))),
+        Type::Ring(inner) => Type::Ring(Box::new(resolve_impl_context_type(
+            inner,
+            self_type,
+            associated_types,
+        ))),
+        Type::Option(inner) => Type::Option(Box::new(resolve_impl_context_type(
+            inner,
+            self_type,
+            associated_types,
+        ))),
+        Type::Vec(inner) => Type::Vec(Box::new(resolve_impl_context_type(
+            inner,
+            self_type,
+            associated_types,
+        ))),
+        Type::Future(inner) => Type::Future(Box::new(resolve_impl_context_type(
+            inner,
+            self_type,
+            associated_types,
+        ))),
+        Type::Function { params, ret } => Type::Function {
+            params: params
+                .iter()
+                .map(|param| resolve_impl_context_type(param, self_type, associated_types))
+                .collect(),
+            ret: Box::new(resolve_impl_context_type(ret, self_type, associated_types)),
+        },
+        Type::Tuple(items) => Type::Tuple(
+            items
+                .iter()
+                .map(|item| resolve_impl_context_type(item, self_type, associated_types))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 pub fn lower(module: &Module) -> TypedModule {
     let mut fn_sigs = HashMap::<String, (Vec<Type>, Type)>::new();
     let mut fn_async = HashMap::<String, bool>::new();
@@ -496,16 +595,34 @@ pub fn lower(module: &Module) -> TypedModule {
             ast::Item::Impl(item) => {
                 let for_type = resolve_alias_type(&item.for_type, &type_aliases, 0);
                 let receiver = for_type.to_string();
+                let impl_associated_types = item
+                    .associated_types
+                    .iter()
+                    .map(|(name, ty)| {
+                        let resolved = resolve_alias_type(ty, &type_aliases, 0);
+                        let contextual =
+                            resolve_impl_context_type(&resolved, &for_type, &HashMap::new());
+                        (name.clone(), contextual)
+                    })
+                    .collect::<HashMap<_, _>>();
                 for method in &item.methods {
                     let params = method
                         .params
                         .iter()
                         .map(|param| ast::Param {
                             name: param.name.clone(),
-                            ty: resolve_alias_type(&param.ty, &type_aliases, 0),
+                            ty: resolve_impl_context_type(
+                                &resolve_alias_type(&param.ty, &type_aliases, 0),
+                                &for_type,
+                                &impl_associated_types,
+                            ),
                         })
                         .collect::<Vec<_>>();
-                    let return_type = resolve_alias_type(&method.return_type, &type_aliases, 0);
+                    let return_type = resolve_impl_context_type(
+                        &resolve_alias_type(&method.return_type, &type_aliases, 0),
+                        &for_type,
+                        &impl_associated_types,
+                    );
                     let method_symbol = format!("{receiver}.{}", method.name);
                     for detail in
                         validate_generic_bounds_exist(&method_symbol, &method.generics, &trait_defs)
@@ -794,6 +911,12 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
             violations.push(format!("impl references unknown trait `{trait_name}`"));
             continue;
         };
+        let self_type = &item.for_type;
+        let impl_associated_types = item
+            .associated_types
+            .iter()
+            .map(|(name, ty)| (name.clone(), ty.clone()))
+            .collect::<HashMap<_, _>>();
         for (name, _) in &item.associated_types {
             if !trait_def
                 .associated_types
@@ -842,10 +965,13 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
                 ));
                 continue;
             };
-            if !type_compatible(&found.ty, &assoc_const.ty) {
+            let expected_ty =
+                resolve_impl_context_type(&assoc_const.ty, self_type, &impl_associated_types);
+            let actual_ty = resolve_impl_context_type(&found.ty, self_type, &impl_associated_types);
+            if !type_compatible(&actual_ty, &expected_ty) {
                 violations.push(format!(
                     "impl associated const `{}` type mismatch for trait `{}`: expected `{}`, got `{}`",
-                    assoc_const.name, trait_name, assoc_const.ty, found.ty
+                    assoc_const.name, trait_name, expected_ty, actual_ty
                 ));
             }
         }
@@ -882,17 +1008,25 @@ fn validate_trait_impls(module: &Module, trait_defs: &HashMap<String, ast::Trait
             for (index, (found_param, trait_param)) in
                 found.params.iter().zip(method.params.iter()).enumerate()
             {
-                if !type_compatible(&found_param.ty, &trait_param.ty) {
+                let expected_ty =
+                    resolve_impl_context_type(&trait_param.ty, self_type, &impl_associated_types);
+                let actual_ty =
+                    resolve_impl_context_type(&found_param.ty, self_type, &impl_associated_types);
+                if !type_compatible(&actual_ty, &expected_ty) {
                     violations.push(format!(
                         "impl method `{}` parameter {} type mismatch for trait `{}`: expected `{}`, got `{}`",
-                        method.name, index, trait_name, trait_param.ty, found_param.ty
+                        method.name, index, trait_name, expected_ty, actual_ty
                     ));
                 }
             }
-            if !type_compatible(&found.return_type, &method.return_type) {
+            let expected_return =
+                resolve_impl_context_type(&method.return_type, self_type, &impl_associated_types);
+            let actual_return =
+                resolve_impl_context_type(&found.return_type, self_type, &impl_associated_types);
+            if !type_compatible(&actual_return, &expected_return) {
                 violations.push(format!(
-                    "impl method `{}` return type mismatch for trait `{}`",
-                    method.name, trait_name
+                    "impl method `{}` return type mismatch for trait `{}`: expected `{}`, got `{}`",
+                    method.name, trait_name, expected_return, actual_return
                 ));
             }
             if !found.generics.is_empty() {
@@ -2149,8 +2283,11 @@ fn collect_function_caps_and_calls(
                         "rng" | "random" | "std.rand" => {
                             self.caps.insert("rng".to_string());
                         }
-                        "fs" | "file" | "std.io" | "storage" => {
+                        "fs" | "file" | "std.io" => {
                             self.caps.insert("fs".to_string());
+                        }
+                        "storage" => {
+                            self.caps.insert("storage".to_string());
                         }
                         "http" | "socket" | "std.http" => {
                             self.caps.insert("http".to_string());
@@ -3934,8 +4071,11 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                             "rng" | "random" | "std.rand" => {
                                 self.caps.insert("rng".to_string());
                             }
-                            "fs" | "file" | "std.io" | "storage" => {
+                            "fs" | "file" | "std.io" => {
                                 self.caps.insert("fs".to_string());
+                            }
+                            "storage" => {
+                                self.caps.insert("storage".to_string());
                             }
                             "http" | "socket" | "std.http" => {
                                 self.caps.insert("http".to_string());
@@ -6975,6 +7115,10 @@ fn infer_expr_type(
             })
         }
         Expr::ObjectLiteral(fields) => {
+            let map_handle = Type::Named {
+                name: "MapHandle".to_string(),
+                args: Vec::new(),
+            };
             let mut has_error = false;
             for (key, value) in fields {
                 if key.trim().is_empty() {
@@ -7002,9 +7146,9 @@ fn infer_expr_type(
             if has_error {
                 None
             } else {
-                // Object literals lower to runtime map handles (`i32`) and interoperate with
-                // `log.fields(map)` and `json.object(map)`.
-                Some(i32_type())
+                // Object literals lower to canonical runtime map handles and interoperate
+                // directly with `log.fields(map)` and `json.object(map)`.
+                Some(map_handle)
             }
         }
         Expr::Index { base, index } => {
@@ -10673,6 +10817,31 @@ mod tests {
     }
 
     #[test]
+    fn resolves_self_and_associated_types_inside_trait_impl_methods() {
+        let source = r#"
+            trait Cache {
+                type Key;
+                fn get(self: Self, key: Self::Key) -> i32;
+            }
+            struct Store { value: i32 }
+            impl Cache for Store {
+                type Key = i32;
+                fn get(self: Self, key: i32) -> i32 {
+                    return self.value + key;
+                }
+            }
+            fn main() -> i32 {
+                let store = Store { value: 3 };
+                return Store.get(store, 4);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed.trait_violations.is_empty());
+    }
+
+    #[test]
     fn allows_generic_trait_impl_targets() {
         let source = r#"
             trait Show { fn show(v: i32) -> i32; }
@@ -11055,6 +11224,23 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn object_literal_can_flow_directly_into_json_object_and_log_fields() {
+        let source = r#"
+            fn main() -> i32 {
+                let payload = json.object(#{"ok": json.raw("true"), "msg": json.str("hi")});
+                discard log.fields(#{"component": json.str("boot"), "phase": json.str("init")});
+                if payload == "" {
+                    return 1;
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
     }
 
     #[test]

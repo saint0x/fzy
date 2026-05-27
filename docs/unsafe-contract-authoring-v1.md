@@ -64,7 +64,7 @@ Default policy:
 
 Strict CI/release mode:
 - `enforce_verify = true` / `enforce_release = true` in `[unsafe]`
-- Fails on missing/invalid generated contracts.
+- Fails on missing/invalid generated contracts, invalid proof refs, or unresolved unsafe site locations.
 - Fails on unsafe-context violations (unsafe calls outside unsafe context).
 - Optional hardened scope controls in `[unsafe]`:
   - `deny_unsafe_in = ["tests::*"]` denies unsafe sites in matching modules.

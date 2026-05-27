@@ -2262,6 +2262,19 @@ impl Parser {
         }
 
         let name = self.expect_ident("expected type")?;
+        let mut path_segments = vec![name];
+        while self.at(&TokenKind::Colon)
+            && self
+                .peek_n(1)
+                .is_some_and(|token| matches!(token.kind, TokenKind::Colon))
+        {
+            let _ = self.consume(&TokenKind::Colon);
+            let _ = self.consume(&TokenKind::Colon);
+            let Some(segment) = self.expect_ident("expected type segment after `::`") else {
+                return None;
+            };
+            path_segments.push(segment);
+        }
         let mut args = Vec::new();
         if self.consume(&TokenKind::Lt) {
             while !self.at(&TokenKind::Gt) && !self.at(&TokenKind::Eof) {
@@ -2274,8 +2287,13 @@ impl Parser {
             }
             let _ = self.consume(&TokenKind::Gt);
         }
+        let joined_name = path_segments.join("::");
+        let scalar_name = path_segments
+            .first()
+            .map(String::as_str)
+            .unwrap_or(joined_name.as_str());
 
-        let ty = match (name.as_str(), args.as_slice()) {
+        let ty = match (scalar_name, args.as_slice()) {
             ("never", []) => Type::Never,
             ("void", []) => Type::Void,
             ("bool", []) => Type::Bool,
@@ -2354,10 +2372,18 @@ impl Parser {
             ("DateTimeTz", []) | ("datetime_tz", []) => Type::DateTimeTz,
             ("ExitStatus", []) | ("exit_status", []) => Type::ExitStatus,
             _ => {
-                if args.is_empty() && name.chars().all(|c| c.is_ascii_uppercase() || c == '_') {
-                    Type::TypeVar(name)
+                if path_segments.len() == 1
+                    && args.is_empty()
+                    && joined_name
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_')
+                {
+                    Type::TypeVar(joined_name)
                 } else {
-                    Type::Named { name, args }
+                    Type::Named {
+                        name: joined_name,
+                        args,
+                    }
                 }
             }
         };
@@ -2661,13 +2687,11 @@ impl Parser {
     }
 
     fn push_diag_at(&mut self, line: usize, col: usize, message: &str) {
-        self.diagnostics
-            .push(Diagnostic::new(Severity::Error, message, None).with_span(
-                line,
-                col,
-                line,
-                col + 1,
-            ));
+        self.diagnostics.push(
+            Diagnostic::new(Severity::Error, message, parser_help(message))
+                .with_catalog_key(parser_catalog_key(message))
+                .with_span(line, col, line, col + 1),
+        );
     }
 
     fn consume_until(&mut self, kinds: &[TokenKind]) {
@@ -2726,6 +2750,58 @@ impl Parser {
             TokenKind::Eof,
         ]);
         let _ = self.consume(&TokenKind::Semi);
+    }
+}
+
+fn parser_help(message: &str) -> Option<String> {
+    if message == "expected parameter name" {
+        Some(
+            "add a parameter name before `:` or remove the stray punctuation in the function signature, then rerun `fz check`"
+                .to_string(),
+        )
+    } else if message == "expected function body `{ ... }` or `;`" {
+        Some(
+            "finish the signature with a function body or terminate an extern-style declaration with `;`, then rerun `fz check`"
+                .to_string(),
+        )
+    } else if message.starts_with("expected `") {
+        Some(
+            "insert the expected syntax at the highlighted location, then rerun `fz check`"
+                .to_string(),
+        )
+    } else if message.contains("unexpected token in expression") {
+        Some(
+            "finish the current expression before starting a new one; check for a missing delimiter, separator, or operator immediately before this token"
+                .to_string(),
+        )
+    } else if message.contains("invalid match pattern") {
+        Some(
+            "rewrite the pattern into a supported match form and keep qualifiers explicit for enum variants"
+                .to_string(),
+        )
+    } else if message.contains("invalid") || message.contains("unsupported") {
+        Some(
+            "rewrite the highlighted syntax into a supported language form, then rerun `fz check`"
+                .to_string(),
+        )
+    } else {
+        Some("fix the highlighted syntax issue and rerun `fz check`".to_string())
+    }
+}
+
+fn parser_catalog_key(message: &str) -> &'static str {
+    match message {
+        "expected parameter name" => "parser.expected_parameter_name",
+        "expected function body `{ ... }` or `;`" => "parser.expected_function_body_or_semi",
+        _ if message.starts_with("expected `") => "parser.expected_token",
+        _ if message.contains("unexpected token in expression") => {
+            "parser.unexpected_token_in_expression"
+        }
+        _ if message.contains("invalid match pattern") => "parser.invalid_match_pattern",
+        _ if message.contains("invalid") || message.contains("unsupported") => {
+            "parser.unsupported_syntax"
+        }
+        _ => "parser.syntax_error",
     }
 }
 
@@ -3799,6 +3875,26 @@ mod tests {
     }
 
     #[test]
+    fn parses_trait_methods_using_associated_type_paths() {
+        let source = r#"
+            trait Store {
+                type Key;
+                const VERSION: i32;
+                fn get(self: Self, key: Self::Key) -> i32;
+            }
+        "#;
+        let module = parse(source, "assoc_paths").expect("trait with Self::Key should parse");
+        let method = module.items.iter().find_map(|item| match item {
+            ast::Item::Trait(item) if item.name == "Store" => item.methods.first(),
+            _ => None,
+        });
+        let key_ty = method
+            .and_then(|method| method.params.get(1))
+            .map(|param| param.ty.to_string());
+        assert_eq!(key_ty.as_deref(), Some("Self::Key"));
+    }
+
+    #[test]
     fn parses_generic_item_headers() {
         let source = r#"
             struct Box<T> { value: T }
@@ -4786,5 +4882,17 @@ mod tests {
             _ => None,
         });
         assert!(newtype.is_some_and(|item| item.is_pub && item.transparent));
+    }
+
+    #[test]
+    fn parse_errors_include_actionable_help() {
+        let source = "fn main() -> i32 {\n    let value = 1\n    let add = |x: i32 x + value;\n}\n";
+        let diagnostics = parse(source, "main").expect_err("parse should fail");
+        let help = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.help.is_some())
+            .and_then(|diagnostic| diagnostic.help.as_deref())
+            .unwrap_or_default();
+        assert!(help.contains("rerun `fz check`"));
     }
 }

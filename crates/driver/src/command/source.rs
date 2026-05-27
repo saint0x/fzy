@@ -7,6 +7,20 @@ pub(super) struct ResolvedSource {
     pub(super) manifest: Option<manifest::Manifest>,
 }
 
+#[derive(Debug, Clone)]
+pub(super) struct ResolvedModuleSource {
+    pub(super) path: PathBuf,
+    pub(super) module_name: String,
+    pub(super) source: String,
+    pub(super) ast: ast::Module,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ResolvedModuleSet {
+    pub(super) resolved: ResolvedSource,
+    pub(super) modules: Vec<ResolvedModuleSource>,
+}
+
 pub(super) fn resolve_source(path: &Path) -> Result<ResolvedSource> {
     if path.is_file() {
         let root = path
@@ -181,4 +195,106 @@ pub(super) fn default_header_path(resolved: &ResolvedSource) -> PathBuf {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(format!("{stem}.h"))
+}
+
+pub(super) fn load_resolved_module_set(path: &Path) -> Result<ResolvedModuleSet> {
+    if path.is_dir() && !path.join("fozzy.toml").exists() {
+        let module_paths = collect_all_fzy_files(path)?;
+        if module_paths.is_empty() {
+            bail!("no .fzy sources found under {}", path.display());
+        }
+        let mut modules = Vec::new();
+        for module_path in &module_paths {
+            let source = std::fs::read_to_string(module_path).with_context(|| {
+                format!("failed reading source file: {}", module_path.display())
+            })?;
+            let module_name = module_path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| anyhow!("invalid module filename: {}", module_path.display()))?
+                .to_string();
+            let ast = parser::parse(&source, &module_name).map_err(|diagnostics| {
+                let detail = diagnostics
+                    .first()
+                    .map(|diag| diag.message.clone())
+                    .unwrap_or_else(|| "unknown parse failure".to_string());
+                anyhow!(
+                    "failed parsing module source for generation: {} ({detail})",
+                    module_path.display()
+                )
+            })?;
+            modules.push(ResolvedModuleSource {
+                path: module_path.clone(),
+                module_name,
+                source,
+                ast,
+            });
+        }
+        return Ok(ResolvedModuleSet {
+            resolved: ResolvedSource {
+                source_path: module_paths[0].clone(),
+                project_root: path.to_path_buf(),
+                manifest: None,
+            },
+            modules,
+        });
+    }
+    let resolved = resolve_source(path)?;
+    let parsed = parse_program(&resolved.source_path)?;
+    let mut module_paths = parsed.module_paths;
+    let source_root = resolved.project_root.join("src");
+    if source_root.is_dir() {
+        module_paths.extend(collect_all_fzy_files(&source_root)?);
+    }
+    module_paths.sort();
+    module_paths.dedup();
+    let mut modules = Vec::new();
+    for module_path in module_paths {
+        let source = std::fs::read_to_string(&module_path)
+            .with_context(|| format!("failed reading source file: {}", module_path.display()))?;
+        let module_name = module_path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| anyhow!("invalid module filename: {}", module_path.display()))?
+            .to_string();
+        let ast = parser::parse(&source, &module_name).map_err(|diagnostics| {
+            let detail = diagnostics
+                .first()
+                .map(|diag| diag.message.clone())
+                .unwrap_or_else(|| "unknown parse failure".to_string());
+            anyhow!(
+                "failed parsing module source for generation: {} ({detail})",
+                module_path.display()
+            )
+        })?;
+        modules.push(ResolvedModuleSource {
+            path: module_path,
+            module_name,
+            source,
+            ast,
+        });
+    }
+    Ok(ResolvedModuleSet { resolved, modules })
+}
+
+fn collect_all_fzy_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut queue = VecDeque::from([root.to_path_buf()]);
+    while let Some(dir) = queue.pop_front() {
+        let entries = std::fs::read_dir(&dir)
+            .with_context(|| format!("failed reading directory: {}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.with_context(|| format!("failed iterating {}", dir.display()))?;
+            let path = entry.path();
+            if path.is_dir() {
+                queue.push_back(path);
+            } else if is_fzy_source_path(&path) {
+                let canonical = path.canonicalize().unwrap_or(path);
+                files.push(canonical);
+            }
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
 }

@@ -159,9 +159,10 @@ Symptoms:
 Fix workflow:
 
 1. Run `fz doc gen` command manually with same args.
-2. Fix malformed declarations/comments in source.
-3. Ensure output directory exists and is writable.
-4. Re-run smoke and verify non-empty output.
+2. Verify the generated surface includes expected exported APIs and RPC declarations, not just a non-empty file.
+3. Fix malformed declarations/comments or source-path selection issues in the affected module tree.
+4. Ensure output directory exists and is writable.
+5. Re-run smoke and verify expected signatures are present in the rendered artifact.
 
 ### Pedantic topology closure failure
 
@@ -185,6 +186,7 @@ Symptoms:
 Fix workflow:
 
 1. Run `fz audit unsafe [target] --workspace --json`.
-2. Add missing unsafe metadata on unsafe blocks (`reason/invariant/owner/scope/risk_class/proof_ref`) where needed.
-3. Remove unnecessary unsafe usage or explicitly approve budget changes.
-4. Re-run gate and confirm budget compliance.
+2. Inspect entries with `line = 0`, invalid proof refs, or unsafe-context violations first; those indicate generator/provenance drift rather than ordinary policy debt.
+3. Fix the unsafe site, its proof artifact, or the project unsafe policy so compiler-generated contracts validate cleanly.
+4. Remove unnecessary unsafe usage or explicitly approve budget changes.
+5. Re-run gate and confirm budget compliance.

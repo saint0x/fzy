@@ -182,7 +182,18 @@ fn parse_command(args: &[String]) -> Result<Command> {
             })
         }
         Some("run") => {
-            let path = arg_path_or_cwd(args, 1)?;
+            let path = command_path_or_cwd(
+                args,
+                1,
+                &[
+                    "--seed",
+                    "--record",
+                    "--backend",
+                    "--max-seconds",
+                    "--exit-on-healthcheck",
+                    "--smoke-http",
+                ],
+            )?;
             if has_flag(args, "--strict") {
                 bail!("`--strict` was removed; use `--strict-verify`");
             }
@@ -222,7 +233,11 @@ fn parse_command(args: &[String]) -> Result<Command> {
             })
         }
         Some("test") => {
-            let path = arg_path_or_cwd(args, 1)?;
+            let path = command_path_or_cwd(
+                args,
+                1,
+                &["--seed", "--record", "--backend", "--sched", "--filter"],
+            )?;
             if has_flag(args, "--strict") {
                 bail!("`--strict` was removed; use `--strict-verify`");
             }
@@ -515,6 +530,27 @@ fn arg_path_or_cwd(args: &[String], idx: usize) -> Result<PathBuf> {
         }
         Some(raw) => Ok(PathBuf::from(raw)),
     }
+}
+
+fn command_path_or_cwd(args: &[String], start_idx: usize, value_flags: &[&str]) -> Result<PathBuf> {
+    let split = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let mut idx = start_idx;
+    while idx < split {
+        let raw = &args[idx];
+        if value_flags.iter().any(|flag| raw == flag) {
+            idx += 2;
+            continue;
+        }
+        if raw.starts_with('-') {
+            idx += 1;
+            continue;
+        }
+        return Ok(PathBuf::from(raw));
+    }
+    std::env::current_dir().context("failed to resolve current working directory")
 }
 
 fn print_help() {
@@ -863,6 +899,55 @@ mod tests {
                 assert!(deterministic);
             }
             _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn parse_run_accepts_flag_first_path_style() {
+        let args = vec![
+            "run".to_string(),
+            "--det".to_string(),
+            "--seed".to_string(),
+            "1337".to_string(),
+            "tests/run.pass.fozzy.json".to_string(),
+        ];
+        let command = parse_command(&args).expect("run should parse flag-first path");
+        match command {
+            Command::Run {
+                path,
+                deterministic,
+                seed,
+                ..
+            } => {
+                assert_eq!(path, PathBuf::from("tests/run.pass.fozzy.json"));
+                assert!(deterministic);
+                assert_eq!(seed, Some(1337));
+            }
+            _ => panic!("expected run command"),
+        }
+    }
+
+    #[test]
+    fn parse_test_accepts_flag_first_path_style() {
+        let args = vec![
+            "test".to_string(),
+            "--det".to_string(),
+            "--strict-verify".to_string(),
+            "tests/example.fozzy.json".to_string(),
+        ];
+        let command = parse_command(&args).expect("test should parse flag-first path");
+        match command {
+            Command::Test {
+                path,
+                deterministic,
+                strict_verify,
+                ..
+            } => {
+                assert_eq!(path, PathBuf::from("tests/example.fozzy.json"));
+                assert!(deterministic);
+                assert!(strict_verify);
+            }
+            _ => panic!("expected test command"),
         }
     }
 

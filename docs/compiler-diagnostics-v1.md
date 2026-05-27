@@ -16,6 +16,7 @@ This document defines the production diagnostics contract for `fz` and `fz lsp d
 - Core fields:
   - `severity`
   - `code`
+  - `catalog_key`
   - `message`
   - `path`
   - `span`
@@ -49,7 +50,8 @@ Domain prefixes:
 
 Catalog:
 
-- `fz explain <code>` returns family guidance + catalog summary/example.
+- `fz explain <catalog_key>` returns exact-match production guidance for known diagnostic classes.
+- `fz explain <code>` falls back to the best matching catalog family when an exact `catalog_key` is not available.
 - `fz explain catalog` returns the typed catalog index (`fozzylang.diagnostic_catalog.v1`).
 
 ## Output Modes
@@ -60,6 +62,7 @@ Catalog:
 - Includes source location and multi-line code frames when span is available.
 - Includes related labels with related-location frames.
 - Includes help, notes, and suggestions.
+- Includes `catalog_key` when the diagnostic matches a known exact production playbook.
 - Repeated unresolved/type-check findings are de-duplicated into grouped root diagnostics.
 - Type-check cascade mode reports one primary cause and summarizes suppressed secondary roots/counts.
 - Removed-API unresolved calls include migration autofix guidance where possible (for example fixed-arity JSON/log helper removals).
@@ -75,7 +78,7 @@ Catalog:
   - `code`
   - `relatedInformation`
   - `codeDescription`
-  - `data` payload carrying notes/help/fixes/labels/snippet
+  - `data` payload carrying `catalogKey`, notes/help/fixes/labels/snippet
 - `fz lsp diagnostics` text mode prints full diagnostic bodies.
 
 ## Source Anchoring Policy

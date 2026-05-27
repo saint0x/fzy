@@ -131,6 +131,15 @@ RUSTFLAGS="-D warnings" cargo check -p driver --all-targets >/dev/null
 "${FZ_CMD[@]}" fmt examples/fullstack/src examples/robust_cli/src --check >/dev/null
 "${FZ_CMD[@]}" doc gen examples/fullstack/src --format markdown --out "$ARTIFACT_DIR/fullstack.api.md" >/dev/null
 test -s "$ARTIFACT_DIR/fullstack.api.md"
+grep -q 'pubext c fn fs_open' "$ARTIFACT_DIR/fullstack.api.md"
+grep -q 'rpc GetUser(req: GetUserReq) -> GetUserRes;' "$ARTIFACT_DIR/fullstack.api.md"
+"${FZ_CMD[@]}" rpc gen examples/fullstack --out-dir "$ARTIFACT_DIR/fullstack-rpc" --json >/dev/null
+test -s "$ARTIFACT_DIR/fullstack-rpc/rpc.schema.json"
+grep -q '"schemaVersion": "fozzylang.rpc.v1"' "$ARTIFACT_DIR/fullstack-rpc/rpc.schema.json"
+grep -q '"mode": "bidirectional_streaming"' "$ARTIFACT_DIR/fullstack-rpc/rpc.schema.json"
+! grep -q 'transport_send' "$ARTIFACT_DIR/fullstack-rpc/rpc.client.fzy"
+grep -q 'return GetUser(req)' "$ARTIFACT_DIR/fullstack-rpc/rpc.client.fzy"
+grep -q 'prepare_getuser_handler' "$ARTIFACT_DIR/fullstack-rpc/rpc.server.fzy"
 
 echo "[gate] pedantic topology closure"
 MAP_JSON="$("${FZ_CMD[@]}" map suites --root . --scenario-root tests --profile pedantic --json)"

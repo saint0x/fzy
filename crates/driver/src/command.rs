@@ -30,7 +30,10 @@ use self::interop::{
     generate_c_headers, generate_rpc_artifacts, render_headers, render_rpc_artifacts,
     HeaderArtifact,
 };
-use self::source::{discover_nested_project_roots, discover_project_roots, resolve_source};
+use self::source::{
+    discover_nested_project_roots, discover_project_roots, load_resolved_module_set,
+    resolve_source, ResolvedModuleSource,
+};
 use self::trace_native::{
     convert_fozzy_trace_to_native, ensure_goal_trace_from_scenario, native_explore,
     render_trace_native_artifacts, resolve_replay_target,
@@ -2009,12 +2012,17 @@ fn render_diagnostics_text(items: &[diagnostics::Diagnostic]) -> String {
             out.push_str(&format!(" fix: {fix}\n"));
         }
         out.push_str(&format!(" root_cause: {}\n", diagnostic.message));
+        if let Some(catalog_key) = &diagnostic.catalog_key {
+            out.push_str(&format!(" catalog_key: {catalog_key}\n"));
+        }
         let verify_with = diagnostic
             .path
             .as_deref()
             .map(|path| format!("fz check {path}"))
             .unwrap_or_else(|| "fz check <path>".to_string());
-        if let Some(code) = &diagnostic.code {
+        if let Some(catalog_key) = &diagnostic.catalog_key {
+            out.push_str(&format!(" explain: fz explain {catalog_key}\n"));
+        } else if let Some(code) = &diagnostic.code {
             out.push_str(&format!(" explain: fz explain {code}\n"));
         }
         out.push_str(&format!(" verify_with: {verify_with}\n"));
@@ -2197,7 +2205,8 @@ fn maybe_generate_unsafe_docs(path: &Path) -> Option<PathBuf> {
 }
 
 fn explain_command(diag_code: &str, format: Format) -> Result<String> {
-    let normalized = diag_code.trim().to_ascii_uppercase();
+    let raw = diag_code.trim();
+    let normalized = raw.to_ascii_uppercase();
     if normalized.is_empty() {
         bail!("missing diagnostic code: usage `fz explain <diag-code>`");
     }
@@ -2225,49 +2234,83 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
             .to_string()),
         };
     }
-    let family = if normalized.starts_with("E-PAR-") || normalized.starts_with("W-PAR-") {
-        "parser"
-    } else if normalized.starts_with("E-HIR-") || normalized.starts_with("W-HIR-") {
-        "hir"
-    } else if normalized.starts_with("E-VER-") || normalized.starts_with("W-VER-") {
-        "verifier"
-    } else if normalized.starts_with("E-NAT-") || normalized.starts_with("W-NAT-") {
-        "native-lowering"
-    } else if normalized.starts_with("E-DRV-") || normalized.starts_with("W-DRV-") {
-        "driver"
-    } else {
-        "unknown"
-    };
-    let likely_fix = match family {
-        "parser" => "Fix syntax at the primary span, then rerun `fz check <path>`.",
-        "hir" => "Fix name/type mismatch and rerun `fz check <path>`.",
-        "verifier" => "Fix policy/type contract violation and rerun `fz verify <path>`.",
-        "native-lowering" => {
-            "Adjust unsupported lowering shape or switch backend, then rerun `fz build <path>`."
-        }
-        "driver" => "Fix project/configuration issue and rerun the failing command.",
-        _ => "Run `fz check <path>` to regenerate diagnostics with spans and helps.",
-    };
     let catalog_entry = catalog
         .iter()
-        .find(|entry| normalized.starts_with(&entry.code_prefix))
-        .cloned();
+        .find(|entry| entry.key.eq_ignore_ascii_case(raw))
+        .cloned()
+        .or_else(|| {
+            catalog
+                .iter()
+                .find(|entry| normalized.starts_with(&entry.code_prefix))
+                .cloned()
+        });
+    let family = catalog_entry
+        .as_ref()
+        .map(|entry| entry.family.as_str())
+        .unwrap_or_else(|| {
+            if normalized.starts_with("E-PAR-") || normalized.starts_with("W-PAR-") {
+                "parser"
+            } else if normalized.starts_with("E-HIR-") || normalized.starts_with("W-HIR-") {
+                "hir"
+            } else if normalized.starts_with("E-VER-") || normalized.starts_with("W-VER-") {
+                "verifier"
+            } else if normalized.starts_with("E-NAT-") || normalized.starts_with("W-NAT-") {
+                "native-lowering"
+            } else if normalized.starts_with("E-DRV-") || normalized.starts_with("W-DRV-") {
+                "driver"
+            } else {
+                "unknown"
+            }
+        });
+    let likely_fix = catalog_entry
+        .as_ref()
+        .map(|entry| entry.likely_fix.clone())
+        .unwrap_or_else(|| match family {
+            "parser" => "Fix syntax at the primary span, then rerun `fz check <path>`.".to_string(),
+            "hir" => "Fix name/type mismatch and rerun `fz check <path>`.".to_string(),
+            "verifier" => {
+                "Fix policy/type contract violation and rerun `fz verify <path>`.".to_string()
+            }
+            "native-lowering" => {
+                "Adjust unsupported lowering shape or switch backend, then rerun `fz build <path>`."
+                    .to_string()
+            }
+            "driver" => {
+                "Fix project/configuration issue and rerun the failing command.".to_string()
+            }
+            _ => {
+                "Run `fz check <path>` to regenerate diagnostics with spans and helps.".to_string()
+            }
+        });
+    let root_cause = catalog_entry
+        .as_ref()
+        .map(|entry| entry.summary.clone())
+        .unwrap_or_else(|| format!("diagnostic family `{family}`"));
+    let next_command = catalog_entry
+        .as_ref()
+        .map(|entry| entry.next_command.clone())
+        .unwrap_or_else(|| "fz check <path> --json".to_string());
     match format {
         Format::Text => {
             let mut fields = vec![
-                ("code", normalized),
+                ("code", normalized.clone()),
                 ("family", family.to_string()),
+                ("root_cause", root_cause.clone()),
+                ("likely_fix", likely_fix.clone()),
+                ("verify_with", "fz check <path> --json".to_string()),
                 (
-                    "root_cause",
-                    "Diagnostic codes are stable hashes of message+span in their domain"
+                    "diagnostic_identity",
+                    "codes are stable within a domain for unchanged message and source anchor"
                         .to_string(),
                 ),
-                ("likely_fix", likely_fix.to_string()),
-                ("verify_with", "fz check <path> --json".to_string()),
             ];
             if let Some(entry) = catalog_entry {
+                fields.push(("catalog_key", entry.key));
                 fields.push(("catalog_summary", entry.summary));
                 fields.push(("catalog_example", entry.example));
+                fields.push(("common_triggers", entry.common_triggers.join(" | ")));
+                fields.push(("production_action", entry.production_action));
+                fields.push(("production_risk", entry.production_risk));
                 fields.push(("next_command", entry.next_command));
             }
             Ok(render_text_fields(&fields))
@@ -2275,10 +2318,16 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
         Format::Json => Ok(serde_json::json!({
             "code": normalized,
             "family": family,
-            "rootCause": "Diagnostic code encodes severity/domain and a stable hash of diagnostic content.",
+            "rootCause": root_cause,
             "likelyFix": likely_fix,
             "verifyWith": "fz check <path> --json",
+            "diagnosticIdentity": "codes are stable within a domain for unchanged message and source anchor",
             "catalog": catalog_entry,
+            "catalogKey": catalog_entry.as_ref().map(|entry| entry.key.clone()),
+            "commonTriggers": catalog_entry.as_ref().map(|entry| entry.common_triggers.clone()).unwrap_or_default(),
+            "productionAction": catalog_entry.as_ref().map(|entry| entry.production_action.clone()),
+            "productionRisk": catalog_entry.as_ref().map(|entry| entry.production_risk.clone()),
+            "nextCommand": next_command,
         })
         .to_string()),
     }
@@ -2286,49 +2335,349 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
 
 #[derive(Debug, Clone, Serialize)]
 struct DiagnosticCatalogEntry {
+    key: String,
     code_prefix: String,
     family: String,
     summary: String,
     example: String,
+    likely_fix: String,
+    common_triggers: Vec<String>,
+    production_action: String,
+    production_risk: String,
     next_command: String,
 }
 
 fn diagnostic_catalog() -> Vec<DiagnosticCatalogEntry> {
     vec![
         DiagnosticCatalogEntry {
+            key: "parser.expected_parameter_name".to_string(),
             code_prefix: "E-PAR-".to_string(),
             family: "parser".to_string(),
-            summary: "Syntax/grammar parse failure at source text boundary.".to_string(),
-            example: "E-PAR-xxxx: expected `catch` in try/catch expression".to_string(),
+            summary: "A function or method signature is missing a parameter identifier at the highlighted span.".to_string(),
+            example: "E-PAR-xxxx: expected parameter name".to_string(),
+            likely_fix: "Add the missing parameter name before `:` or remove the stray punctuation in the signature.".to_string(),
+            common_triggers: vec![
+                "a comma or `(` is followed directly by `:` or a type".to_string(),
+                "the function signature was partially edited and lost an identifier".to_string(),
+            ],
+            production_action: "Repair the signature first, then rerun `fz check`; parser recovery after a broken parameter list is often noisy.".to_string(),
+            production_risk: "High: this blocks parsing of the declaration and can mislead downstream diagnostics.".to_string(),
             next_command: "fz check <path> --json".to_string(),
         },
         DiagnosticCatalogEntry {
+            key: "parser.expected_function_body_or_semi".to_string(),
+            code_prefix: "E-PAR-".to_string(),
+            family: "parser".to_string(),
+            summary: "A function declaration ended without either a body or a terminating `;`.".to_string(),
+            example: "E-PAR-xxxx: expected function body `{ ... }` or `;`".to_string(),
+            likely_fix: "Finish the declaration with `{ ... }` for an implementation or `;` for an extern-style declaration.".to_string(),
+            common_triggers: vec![
+                "unfinished function signature after return type".to_string(),
+                "extern/import declaration missing terminating `;`".to_string(),
+            ],
+            production_action: "Decide whether the declaration is implemented or external, then make that shape explicit and rerun parsing.".to_string(),
+            production_risk: "High: this blocks the parser from establishing the function boundary correctly.".to_string(),
+            next_command: "fz check <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "parser.expected_token".to_string(),
+            code_prefix: "E-PAR-".to_string(),
+            family: "parser".to_string(),
+            summary: "The parser expected a required token or keyword at the highlighted location.".to_string(),
+            example: "E-PAR-xxxx: expected `catch` in try/catch expression".to_string(),
+            likely_fix: "Insert the missing token or keyword and re-run parsing before trusting later diagnostics.".to_string(),
+            common_triggers: vec![
+                "missing delimiter or keyword near the highlighted token".to_string(),
+                "unfinished function signature, block, or expression".to_string(),
+            ],
+            production_action: "Fix the earliest parser error first; later parse diagnostics often collapse once the grammar is restored.".to_string(),
+            production_risk: "High: parser failures block every later compiler stage and can hide real semantic issues.".to_string(),
+            next_command: "fz check <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "parser.unexpected_token_in_expression".to_string(),
+            code_prefix: "E-PAR-".to_string(),
+            family: "parser".to_string(),
+            summary: "The parser found a token that cannot continue the current expression.".to_string(),
+            example: "E-PAR-xxxx: unexpected token in expression".to_string(),
+            likely_fix: "Finish the expression before the highlighted token or insert the missing operator, separator, or delimiter.".to_string(),
+            common_triggers: vec![
+                "missing delimiter between expressions".to_string(),
+                "unfinished call, tuple, or block expression".to_string(),
+            ],
+            production_action: "Fix the local expression shape first, then rerun `fz check` before trusting downstream semantic diagnostics.".to_string(),
+            production_risk: "High: malformed expressions often trigger broad parser recovery noise.".to_string(),
+            next_command: "fz check <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "parser.invalid_match_pattern".to_string(),
+            code_prefix: "E-PAR-".to_string(),
+            family: "parser".to_string(),
+            summary: "A match arm pattern uses a syntax form that is not accepted in the current grammar.".to_string(),
+            example: "E-PAR-xxxx: invalid match pattern".to_string(),
+            likely_fix: "Rewrite the highlighted pattern into a supported variant, tuple, struct, wildcard, or literal pattern.".to_string(),
+            common_triggers: vec![
+                "enum variant pattern is missing required qualifiers".to_string(),
+                "unsupported nested or malformed pattern syntax".to_string(),
+            ],
+            production_action: "Normalize the pattern shape first so later exhaustiveness and type diagnostics are anchored to a valid match tree.".to_string(),
+            production_risk: "High: invalid patterns undermine both parsing and later semantic match analysis.".to_string(),
+            next_command: "fz check <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "parser.unsupported_syntax".to_string(),
+            code_prefix: "E-PAR-".to_string(),
+            family: "parser".to_string(),
+            summary: "The source uses a syntax form that is intentionally unsupported in the current language contract.".to_string(),
+            example: "E-PAR-xxxx: unsupported attribute".to_string(),
+            likely_fix: "Rewrite the highlighted syntax into a supported production form.".to_string(),
+            common_triggers: vec![
+                "removed syntax from an older language revision".to_string(),
+                "experimental surface used without a supported production form".to_string(),
+            ],
+            production_action: "Replace the unsupported syntax rather than trying to recover around it; this class is a hard contract boundary.".to_string(),
+            production_risk: "Medium to high: unsupported syntax blocks production compilation and usually indicates docs/tooling drift.".to_string(),
+            next_command: "fz check <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "parser.syntax_error".to_string(),
+            code_prefix: "E-PAR-".to_string(),
+            family: "parser".to_string(),
+            summary: "A general syntax error was detected at the highlighted source span.".to_string(),
+            example: "E-PAR-xxxx: expected `{` after `unsafe`".to_string(),
+            likely_fix: "Repair the highlighted syntax and rerun `fz check` to regenerate parser output.".to_string(),
+            common_triggers: vec![
+                "missing delimiter or keyword".to_string(),
+                "partial edit left a declaration or expression incomplete".to_string(),
+            ],
+            production_action: "Start with the earliest syntax error in the file; later parse findings are often secondary effects.".to_string(),
+            production_risk: "High: parser failures prevent trusted semantic analysis.".to_string(),
+            next_command: "fz check <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "native.unresolved_call".to_string(),
+            code_prefix: "E-NAT-".to_string(),
+            family: "native-lowering".to_string(),
+            summary: "The native backend found a call target that has no native implementation on the chosen execution surface.".to_string(),
+            example: "E-NAT-xxxx: native backend cannot execute unresolved call `missing_symbol`".to_string(),
+            likely_fix: "Provide a native implementation, use the runtime/scenario path for that symbol, or switch to a backend that supports it.".to_string(),
+            common_triggers: vec![
+                "symbol only exists in scenario/runtime execution surface".to_string(),
+                "backend-specific unsupported construct or missing native implementation".to_string(),
+            ],
+            production_action: "Confirm whether the symbol is supposed to run natively; if not, route it through the Fozzy runtime path instead of forcing native lowering.".to_string(),
+            production_risk: "High: native builds may fail or exercise the wrong execution surface if ignored.".to_string(),
+            next_command: "fz build <path> --backend llvm --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "native.cranelift_async_c_export_unsupported".to_string(),
+            code_prefix: "E-NAT-".to_string(),
+            family: "native-lowering".to_string(),
+            summary: "The Cranelift backend cannot lower an async C export surface.".to_string(),
+            example: "E-NAT-xxxx: backend `cranelift` does not support async C export `serve`".to_string(),
+            likely_fix: "Switch to the LLVM backend or remove the async C export surface from the native path.".to_string(),
+            common_triggers: vec![
+                "async function is exported through `pubext c fn`".to_string(),
+                "backend selection stayed on Cranelift for an FFI async surface".to_string(),
+            ],
+            production_action: "Treat this as a backend capability mismatch and make the backend/surface choice explicit before shipping.".to_string(),
+            production_risk: "High: native builds on the selected backend cannot represent the exported ABI shape.".to_string(),
+            next_command: "fz build <path> --backend llvm --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "native.cranelift_async_unsafe_unsupported".to_string(),
+            code_prefix: "E-NAT-".to_string(),
+            family: "native-lowering".to_string(),
+            summary: "The Cranelift backend rejects functions that combine async execution with an unsafe body.".to_string(),
+            example: "E-NAT-xxxx: backend `cranelift` rejects async+unsafe function `risky`".to_string(),
+            likely_fix: "Switch to LLVM or refactor unsafe operations outside the async function boundary.".to_string(),
+            common_triggers: vec![
+                "async function body contains an unsafe contract surface".to_string(),
+                "Cranelift selected for a code shape only supported by LLVM".to_string(),
+            ],
+            production_action: "Choose a backend that supports the shape or simplify the function surface before production release.".to_string(),
+            production_risk: "High: the selected native backend cannot lower the function at all.".to_string(),
+            next_command: "fz build <path> --backend llvm --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.grouped_type_error".to_string(),
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "The verifier collapsed multiple related type-check failures into a single root-cause diagnostic.".to_string(),
+            example: "E-VER-xxxx: type-check failed: let binding `value` type mismatch: expected `i32`, got `str`".to_string(),
+            likely_fix: "Fix the primary mismatch first, then re-run `fz check` or `fz verify` to see which grouped cascades disappear.".to_string(),
+            common_triggers: vec![
+                "declared type does not match inferred value".to_string(),
+                "an unresolved call or invalid symbol triggered downstream type noise".to_string(),
+            ],
+            production_action: "Treat the first root cause as the real blocker and use the grouped notes only as supporting context.".to_string(),
+            production_risk: "High: grouped type errors indicate the program is not semantically stable enough for trusted lowering.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.missing_explicit_capabilities".to_string(),
+            code_prefix: "W-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "The module compiled without declaring any explicit capability surface.".to_string(),
+            example: "W-VER-xxxx: module has declarations but no explicit capabilities".to_string(),
+            likely_fix: "Add the required `use core.<capability>;` imports for effects the module actually uses, or leave the module effect-free on purpose.".to_string(),
+            common_triggers: vec![
+                "new module was created before capability imports were added".to_string(),
+                "the code is effect-free but still being checked under production policy".to_string(),
+            ],
+            production_action: "Confirm whether the module is intentionally effect-free; if not, make the capability contract explicit before relying on the diagnostics surface.".to_string(),
+            production_risk: "Low to medium: this is a warning, but it can hide incomplete capability declarations in growing modules.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.missing_required_capability".to_string(),
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "A module or function uses an effect that was not declared in the capability surface.".to_string(),
+            example: "E-VER-xxxx: missing required capability: http".to_string(),
+            likely_fix: "Add the required `use core.<capability>;` import or thread the capability requirement through the calling surface.".to_string(),
+            common_triggers: vec![
+                "module-level capability import is missing".to_string(),
+                "function-level capability requirement is stronger than the enclosing module declaration".to_string(),
+            ],
+            production_action: "Update the capability contract explicitly; do not suppress this because it is part of the production trust boundary.".to_string(),
+            production_risk: "High: the declared capability surface no longer matches the behavior the program requires.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.function_missing_required_capability".to_string(),
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "A specific function requires a capability that is not available from the enclosing module contract.".to_string(),
+            example: "E-VER-xxxx: function `main` is missing required capability: proc".to_string(),
+            likely_fix: "Declare the capability at module scope or thread the capability token through the affected function boundary.".to_string(),
+            common_triggers: vec![
+                "function-level capability requirement exceeds module imports".to_string(),
+                "migration to a runtime intrinsic introduced a new capability dependency".to_string(),
+            ],
+            production_action: "Fix the narrowest function boundary that explains the missing effect, then rerun verifier checks to confirm the module contract is coherent.".to_string(),
+            production_risk: "High: callers and module policy no longer match the function’s effect requirements.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.safe_profile_forbidden_capability".to_string(),
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "A safe-profile build attempted to use a capability that is forbidden under the production safety contract.".to_string(),
+            example: "E-VER-xxxx: safe profile forbids capability: http".to_string(),
+            likely_fix: "Remove the forbidden capability usage from the safe-profile path or build in a profile that explicitly permits it.".to_string(),
+            common_triggers: vec![
+                "safe profile was enabled for a runtime-backed capability".to_string(),
+                "production safety policy conflicts with I/O, process, memory, or thread usage".to_string(),
+            ],
+            production_action: "Decide whether the code belongs in the safe-profile surface at all; if it does, refactor toward a capability-free path.".to_string(),
+            production_risk: "High: safe-profile violations break the promised production memory/safety envelope.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.host_syscall_requires_abi_boundary".to_string(),
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "Host syscall usage was detected without the required audited `ext c fn` boundary.".to_string(),
+            example: "E-VER-xxxx: host syscall usage requires an `ext c fn` boundary".to_string(),
+            likely_fix: "Move the syscall surface behind an explicit `ext c fn` wrapper.".to_string(),
+            common_triggers: vec![
+                "raw host syscall primitives are called directly from language code".to_string(),
+                "FFI wrapper surface was omitted during host integration".to_string(),
+            ],
+            production_action: "Force the syscall boundary to be explicit before release so review and policy checks have a concrete trust boundary.".to_string(),
+            production_risk: "High: unaudited syscall surfaces bypass intended FFI policy enforcement.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.host_syscall_forbidden_under_production_memory_safety".to_string(),
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "Host syscall usage violated the production memory-safety policy.".to_string(),
+            example: "E-VER-xxxx: host syscall usage is forbidden under production memory safety".to_string(),
+            likely_fix: "Move the syscall path behind audited FFI boundaries or remove it from the production memory-safe surface.".to_string(),
+            common_triggers: vec![
+                "production memory-safety policy is enabled".to_string(),
+                "host integration uses syscall surfaces that bypass audited wrappers".to_string(),
+            ],
+            production_action: "Treat this as a release blocker until the host effect boundary is redesigned or explicitly audited.".to_string(),
+            production_risk: "High: the code is outside the supported production memory-safety model.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.extern_c_pointer_requires_unsafe".to_string(),
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "An extern C import exposes pointer-like ownership or aliasing risk without an explicit unsafe boundary.".to_string(),
+            example: "E-VER-xxxx: extern C import `c_read` exposes pointer-like contract and must be declared `ext unsafe c fn`".to_string(),
+            likely_fix: "Mark the import as `ext unsafe c fn` or redesign the signature to use a safe non-pointer contract.".to_string(),
+            common_triggers: vec![
+                "pointer-like return or out-parameter crosses a C boundary".to_string(),
+                "FFI contract implies ownership or mutation without an unsafe marker".to_string(),
+            ],
+            production_action: "Audit the boundary explicitly and force callers to acknowledge the unsafe contract rather than treating it as a normal import.".to_string(),
+            production_risk: "High: this is an FFI soundness boundary and should be treated as a release blocker.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "hir.semantic_error".to_string(),
             code_prefix: "E-HIR-".to_string(),
             family: "hir".to_string(),
             summary: "Type/name/call graph semantic mismatch in typed lowering.".to_string(),
             example: "E-HIR-xxxx: unresolved call target `missing_symbol`".to_string(),
+            likely_fix: "Fix the unresolved symbol, field, variant, or type mismatch at the primary span and rerun `fz check`.".to_string(),
+            common_triggers: vec![
+                "unresolved symbol, field, or enum variant".to_string(),
+                "declared type does not match inferred value".to_string(),
+            ],
+            production_action: "Fix the primary unresolved symbol or type mismatch, then rerun `fz check` to see whether grouped cascades disappear.".to_string(),
+            production_risk: "High: HIR failures usually mean the program shape is not semantically well-formed enough for reliable lowering.".to_string(),
             next_command: "fz check <path> --json".to_string(),
         },
         DiagnosticCatalogEntry {
+            key: "verifier.policy_error".to_string(),
             code_prefix: "E-VER-".to_string(),
             family: "verifier".to_string(),
             summary: "Policy/safety contract violation in verification.".to_string(),
             example: "E-VER-xxxx: missing required capability: http".to_string(),
+            likely_fix: "Fix the contract violation at the primary span or policy boundary, then rerun `fz verify`.".to_string(),
+            common_triggers: vec![
+                "missing capability import or policy contract".to_string(),
+                "grouped type-check root cause promoted to verifier output".to_string(),
+            ],
+            production_action: "Treat verifier errors as production blockers; fix the primary contract violation and rerun `fz verify` or the full strict scenario gate.".to_string(),
+            production_risk: "High: verifier failures indicate policy, safety, or production-readiness invariants are not satisfied.".to_string(),
             next_command: "fz verify <path> --json".to_string(),
         },
         DiagnosticCatalogEntry {
+            key: "native.lowering_error".to_string(),
             code_prefix: "E-NAT-".to_string(),
             family: "native-lowering".to_string(),
             summary: "Native backend lowerability contract violation.".to_string(),
             example: "E-NAT-xxxx: native backend cannot lower unresolved call target `missing_fn`"
                 .to_string(),
+            likely_fix: "Adjust the unsupported lowering shape or switch backend, then rerun `fz build`.".to_string(),
+            common_triggers: vec![
+                "symbol only exists in scenario/runtime execution surface".to_string(),
+                "backend-specific unsupported construct or missing native implementation".to_string(),
+            ],
+            production_action: "Either provide a native implementation, move execution to the Fozzy runtime path, or switch to a backend that supports the construct.".to_string(),
+            production_risk: "High: native builds may fail or silently miss the intended execution surface if this is ignored.".to_string(),
             next_command: "fz build <path> --backend llvm --json".to_string(),
         },
         DiagnosticCatalogEntry {
+            key: "driver.pipeline_error".to_string(),
             code_prefix: "E-DRV-".to_string(),
             family: "driver".to_string(),
             summary: "Driver pipeline/configuration/runtime orchestration failure.".to_string(),
             example: "E-DRV-xxxx: lockfile drift detected".to_string(),
+            likely_fix: "Repair the project or runtime orchestration issue, then rerun the failing command and the broader doctor path.".to_string(),
+            common_triggers: vec![
+                "manifest, lockfile, or project layout drift".to_string(),
+                "command orchestration failure before compilation or execution completes".to_string(),
+            ],
+            production_action: "Repair the project/runtime setup first, then rerun the exact command that failed and the broader doctor/CI path if this is a release gate.".to_string(),
+            production_risk: "Medium to high: driver failures can invalidate build reproducibility and release automation.".to_string(),
             next_command: "fz doctor project <path> --strict --json".to_string(),
         },
     ]
@@ -3739,34 +4088,9 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
     }
     let mut entries = Vec::new();
     for project_root in &project_roots {
-        let resolved = resolve_source(project_root)?;
-        let parsed = parse_program(&resolved.source_path)?;
-        for module_path in &parsed.module_paths {
-            let source = std::fs::read_to_string(module_path).with_context(|| {
-                format!(
-                    "failed reading module for unsafe audit: {}",
-                    module_path.display()
-                )
-            })?;
-            let module_name = module_path
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .ok_or_else(|| anyhow!("invalid module filename for {}", module_path.display()))?;
-            let module = parser::parse(&source, module_name).map_err(|diagnostics| {
-                let detail = diagnostics
-                    .first()
-                    .map(|diag| diag.message.clone())
-                    .unwrap_or_else(|| "unknown parse failure".to_string());
-                anyhow!(
-                    "failed parsing module for unsafe audit: {} ({detail})",
-                    module_path.display()
-                )
-            })?;
-            entries.extend(collect_semantic_unsafe_entries(
-                module_path,
-                project_root,
-                &module.items,
-            ));
+        let module_set = load_resolved_module_set(project_root)?;
+        for module in &module_set.modules {
+            entries.extend(collect_semantic_unsafe_entries(module, project_root));
         }
     }
     let missing_contract_count = entries
@@ -3872,7 +4196,7 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
     })?;
     let mut markdown = String::from("# Unsafe Inventory\n\n");
     markdown.push_str(&format!(
-        "- Entries: {}\n- Missing metadata: {}\n- Invalid proof refs: {}\n- Unsafe context violations: {}\n\n",
+        "- Entries: {}\n- Contract gaps: {}\n- Invalid proof refs: {}\n- Unsafe context violations: {}\n\n",
         payload["entries"].as_array().map(|v| v.len()).unwrap_or(0),
         missing_contract_count,
         invalid_proof_ref_count,
@@ -3886,13 +4210,14 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
             let site_id = entry["site_id"].as_str().unwrap_or("missing");
             let kind = entry["kind"].as_str().unwrap_or("unknown");
             let function = entry["function"].as_str().unwrap_or("?");
+            let line = entry["line"].as_u64().unwrap_or(0);
             let snippet = entry["snippet"].as_str().unwrap_or("?");
-            let reason = entry["reason"].as_str().unwrap_or("metadata missing");
-            let owner = entry["owner"].as_str().unwrap_or("metadata missing");
-            let risk = entry["risk_class"].as_str().unwrap_or("metadata missing");
-            let proof = entry["proof_ref"].as_str().unwrap_or("metadata missing");
+            let reason = entry["reason"].as_str().unwrap_or("contract missing");
+            let owner = entry["owner"].as_str().unwrap_or("contract missing");
+            let risk = entry["risk_class"].as_str().unwrap_or("contract missing");
+            let proof = entry["proof_ref"].as_str().unwrap_or("contract missing");
             markdown.push_str(&format!(
-                "| `{site_id}` | {kind} | {function} | `{snippet}` | {reason} | {owner} | {risk} | `{proof}` |\n"
+                "| `{site_id}` | {kind} | {function}:{line} | `{snippet}` | {reason} | {owner} | {risk} | `{proof}` |\n"
             ));
         }
     }
@@ -4080,8 +4405,12 @@ fn unsafe_site_id(
 fn bind_proof_ref(project_root: &Path, site_id: &str, fallback: &str) -> String {
     let artifact_dir = project_root.join("artifacts");
     if let Ok(entries) = std::fs::read_dir(&artifact_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
+        let mut candidates = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        candidates.sort();
+        for path in candidates {
             let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
                 continue;
             };
@@ -4097,19 +4426,21 @@ fn bind_proof_ref(project_root: &Path, site_id: &str, fallback: &str) -> String 
 }
 
 fn collect_semantic_unsafe_entries(
-    module_path: &Path,
+    module: &ResolvedModuleSource,
     project_root: &Path,
-    items: &[ast::Item],
 ) -> Vec<UnsafeEntry> {
     let mut entries = Vec::new();
-    let unsafe_callees = items
+    let lines = module.source.lines().collect::<Vec<_>>();
+    let unsafe_callees = module
+        .ast
+        .items
         .iter()
         .filter_map(|item| match item {
             ast::Item::Function(function) if function.is_unsafe => Some(function.name.clone()),
             _ => None,
         })
         .collect::<BTreeSet<_>>();
-    for item in items {
+    for item in &module.ast.items {
         let ast::Item::Function(function) = item else {
             continue;
         };
@@ -4119,7 +4450,7 @@ fn collect_semantic_unsafe_entries(
             let site_id = unsafe_site_id(
                 "unsafe_fn",
                 project_root,
-                module_path,
+                &module.path,
                 &function.name,
                 &snippet,
             );
@@ -4134,9 +4465,9 @@ fn collect_semantic_unsafe_entries(
                 site_id,
                 kind: "unsafe_fn".to_string(),
                 project: project_root.display().to_string(),
-                file: module_path.display().to_string(),
+                file: module.path.display().to_string(),
                 function: function.name.clone(),
-                line: 0,
+                line: find_function_decl_line(&lines, function).unwrap_or(0),
                 snippet,
                 reason: Some(reason),
                 invariant: Some(invariant),
@@ -4151,7 +4482,7 @@ fn collect_semantic_unsafe_entries(
             let site_id = unsafe_site_id(
                 "unsafe_import",
                 project_root,
-                module_path,
+                &module.path,
                 &function.name,
                 &snippet,
             );
@@ -4166,9 +4497,9 @@ fn collect_semantic_unsafe_entries(
                 site_id,
                 kind: "unsafe_import".to_string(),
                 project: project_root.display().to_string(),
-                file: module_path.display().to_string(),
+                file: module.path.display().to_string(),
                 function: function.name.clone(),
-                line: 0,
+                line: find_function_decl_line(&lines, function).unwrap_or(0),
                 snippet,
                 reason: Some(reason),
                 invariant: Some(invariant),
@@ -4181,8 +4512,9 @@ fn collect_semantic_unsafe_entries(
         for stmt in &function.body {
             collect_semantic_unsafe_entries_from_stmt(
                 stmt,
-                module_path,
+                &module.path,
                 project_root,
+                &lines,
                 &function.name,
                 function.is_unsafe,
                 &default_owner,
@@ -4194,10 +4526,116 @@ fn collect_semantic_unsafe_entries(
     entries
 }
 
+fn find_function_decl_line(lines: &[&str], function: &ast::Function) -> Option<usize> {
+    let name = function.name.as_str();
+    lines
+        .iter()
+        .position(|line| function_decl_line_matches(line.trim_start(), function, name))
+        .map(|idx| idx + 1)
+}
+
+fn function_decl_line_matches(line: &str, function: &ast::Function, name: &str) -> bool {
+    let line = strip_leading_attributes_inline(line);
+    if function.is_extern && function.abi.as_deref() == Some("rpc") {
+        return line.starts_with(&format!("rpc {name}("));
+    }
+    if function.is_extern && function.abi.as_deref() == Some("c") && function.is_unsafe {
+        return line.contains(&format!("ext unsafe c fn {name}("));
+    }
+    if function.is_pubext && function.is_async && function.abi.as_deref() == Some("c") {
+        return line.contains(&format!("pubext async c fn {name}("));
+    }
+    if function.is_pubext && function.abi.as_deref() == Some("c") {
+        return line.contains(&format!("pubext c fn {name}("));
+    }
+    if function.is_async && function.is_unsafe {
+        return line.contains(&format!("async unsafe fn {name}("))
+            || line.contains(&format!("unsafe async fn {name}("))
+            || line.contains(&format!("unsafe fn {name}("));
+    }
+    if function.is_async {
+        return line.contains(&format!("async fn {name}("));
+    }
+    if function.is_unsafe {
+        return line.contains(&format!("unsafe fn {name}("));
+    }
+    line.contains(&format!("fn {name}("))
+}
+
+fn strip_leading_attributes_inline(line: &str) -> &str {
+    let mut cursor = line.trim_start();
+    while let Some(rest) = cursor.strip_prefix("#[") {
+        let Some(close) = rest.find(']') else {
+            break;
+        };
+        cursor = rest[(close + 1)..].trim_start();
+    }
+    cursor
+}
+
+fn find_function_body_end_line(lines: &[&str], start_line: usize) -> usize {
+    if start_line == 0 || start_line > lines.len() {
+        return start_line;
+    }
+    let mut seen_body = false;
+    let mut brace_depth = 0usize;
+    for (idx, line) in lines.iter().enumerate().skip(start_line - 1) {
+        for ch in line.chars() {
+            match ch {
+                '{' => {
+                    brace_depth += 1;
+                    seen_body = true;
+                }
+                '}' => {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    if seen_body && brace_depth == 0 {
+                        return idx + 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !seen_body && line.trim_end().ends_with(';') {
+            return idx + 1;
+        }
+    }
+    lines.len()
+}
+
+fn find_line_in_function(
+    lines: &[&str],
+    function_name: &str,
+    matcher: impl Fn(&str) -> bool,
+) -> Option<usize> {
+    let function = ast::Function {
+        name: function_name.to_string(),
+        link_name: None,
+        generics: Vec::new(),
+        params: Vec::new(),
+        return_type: ast::Type::Void,
+        body: Vec::new(),
+        is_unsafe: false,
+        unsafe_meta: None,
+        is_async: false,
+        is_pub: false,
+        is_pubext: false,
+        is_extern: false,
+        abi: None,
+        ffi_panic: None,
+    };
+    let start_line = find_function_decl_line(lines, &function)?;
+    let end_line = find_function_body_end_line(lines, start_line);
+    lines[start_line.saturating_sub(1)..end_line]
+        .iter()
+        .position(|line| matcher(line.trim_start()))
+        .map(|idx| start_line + idx)
+}
+
 fn collect_semantic_unsafe_entries_from_stmt(
     stmt: &ast::Stmt,
     module_path: &Path,
     project_root: &Path,
+    source_lines: &[&str],
     function_name: &str,
     in_unsafe_context: bool,
     default_owner: &str,
@@ -4216,6 +4654,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
             value,
             module_path,
             project_root,
+            source_lines,
             function_name,
             in_unsafe_context,
             default_owner,
@@ -4228,6 +4667,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     value,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4245,6 +4685,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 condition,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4256,6 +4697,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4268,6 +4710,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4281,6 +4724,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 condition,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4292,6 +4736,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4311,6 +4756,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     init,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4323,6 +4769,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     condition,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4335,6 +4782,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     step,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4347,6 +4795,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4360,6 +4809,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 iterable,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4371,6 +4821,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4385,6 +4836,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     nested,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4399,6 +4851,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                 scrutinee,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4411,6 +4864,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                         guard,
                         module_path,
                         project_root,
+                        source_lines,
                         function_name,
                         in_unsafe_context,
                         default_owner,
@@ -4422,6 +4876,7 @@ fn collect_semantic_unsafe_entries_from_stmt(
                     &arm.value,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4437,6 +4892,7 @@ fn collect_semantic_unsafe_entries_from_expr(
     expr: &ast::Expr,
     module_path: &Path,
     project_root: &Path,
+    source_lines: &[&str],
     function_name: &str,
     in_unsafe_context: bool,
     default_owner: &str,
@@ -4466,7 +4922,10 @@ fn collect_semantic_unsafe_entries_from_expr(
                 project: project_root.display().to_string(),
                 file: module_path.display().to_string(),
                 function: function_name.to_string(),
-                line: 0,
+                line: find_line_in_function(source_lines, function_name, |line| {
+                    line.contains("unsafe {")
+                })
+                .unwrap_or(0),
                 snippet,
                 reason: Some(reason),
                 invariant: Some(invariant),
@@ -4480,6 +4939,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                     stmt,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     true,
                     default_owner,
@@ -4504,7 +4964,10 @@ fn collect_semantic_unsafe_entries_from_expr(
                     project: project_root.display().to_string(),
                     file: module_path.display().to_string(),
                     function: function_name.to_string(),
-                    line: 0,
+                    line: find_line_in_function(source_lines, function_name, |line| {
+                        line.contains(&format!("{callee}("))
+                    })
+                    .unwrap_or(0),
                     snippet,
                     reason: None,
                     invariant: None,
@@ -4519,6 +4982,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                     arg,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4532,6 +4996,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 base,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4545,6 +5010,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                     value,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4559,6 +5025,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                     value,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4572,6 +5039,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 body,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4584,6 +5052,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 inner,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4596,6 +5065,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 expr,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4611,6 +5081,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 try_expr,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4621,6 +5092,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 catch_expr,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4637,6 +5109,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 condition,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4647,6 +5120,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 then_expr,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4657,6 +5131,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 else_expr,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4669,6 +5144,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 left,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4679,6 +5155,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 right,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4691,6 +5168,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 start,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4701,6 +5179,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 end,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4714,6 +5193,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                     item,
                     module_path,
                     project_root,
+                    source_lines,
                     function_name,
                     in_unsafe_context,
                     default_owner,
@@ -4727,6 +5207,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 base,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -4737,6 +5218,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 index,
                 module_path,
                 project_root,
+                source_lines,
                 function_name,
                 in_unsafe_context,
                 default_owner,
@@ -8404,16 +8886,16 @@ fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
         | ast::Type::Void
         | ast::Type::Bool
         | ast::Type::Char
-        | ast::Type::BigInt
-        | ast::Type::BigUint
-        | ast::Type::Decimal128
         | ast::Type::Float { .. }
         | ast::Type::ISize
         | ast::Type::USize
         | ast::Type::Int { .. } => true,
         ast::Type::Ptr { to, .. } => is_ffi_stable_type(to, repr_c_names),
         ast::Type::Named { name, args } => args.is_empty() && repr_c_names.contains(name),
-        ast::Type::Str
+        ast::Type::BigInt
+        | ast::Type::BigUint
+        | ast::Type::Decimal128
+        | ast::Type::Str
         | ast::Type::Bytes
         | ast::Type::Uuid
         | ast::Type::DynTrait(_)
@@ -8508,10 +8990,6 @@ fn to_c_type(ty: &ast::Type) -> String {
 #[derive(Debug, Clone)]
 struct RpcMethod {
     name: String,
-    request: String,
-    response: String,
-    client_streaming: bool,
-    server_streaming: bool,
 }
 
 fn parse_rpc_declarations(source: &str) -> Result<Vec<RpcMethod>> {
@@ -8550,14 +9028,6 @@ fn parse_rpc_declarations(source: &str) -> Result<Vec<RpcMethod>> {
                 line_index + 1
             );
         }
-        let args = declaration[(open + 1)..close].trim();
-        let request = if args.is_empty() {
-            "void".to_string()
-        } else if let Some((_, ty)) = args.split_once(':') {
-            ty.trim().to_string()
-        } else {
-            args.to_string()
-        };
         let after = declaration[(close + 1)..].trim();
         let response = after
             .strip_prefix("->")
@@ -8580,10 +9050,6 @@ fn parse_rpc_declarations(source: &str) -> Result<Vec<RpcMethod>> {
 
         methods.push(RpcMethod {
             name: name.to_string(),
-            client_streaming: request.starts_with("stream<"),
-            server_streaming: response.starts_with("stream<"),
-            request,
-            response,
         });
     }
     if methods.is_empty() {
@@ -9236,14 +9702,19 @@ fn generate_doc_artifacts(
     out: Option<&Path>,
     reference: Option<&Path>,
 ) -> Result<DocArtifacts> {
-    let files = discover_doc_sources(path)?;
+    let module_set = load_resolved_module_set(path)?;
     let mut items = Vec::<DocItem>::new();
-    for file in files {
-        items.extend(extract_doc_items(&file)?);
+    for module in &module_set.modules {
+        items.extend(extract_doc_items_from_module(module));
     }
     items.sort_by(|a, b| a.path.cmp(&b.path).then(a.line.cmp(&b.line)));
     let rendered = match output_format.trim().to_ascii_lowercase().as_str() {
-        "json" => serde_json::to_string_pretty(&items)?,
+        "json" => serde_json::to_string_pretty(&serde_json::json!({
+            "schemaVersion": "fozzylang.doc.v1",
+            "source": module_set.resolved.source_path.display().to_string(),
+            "projectRoot": module_set.resolved.project_root.display().to_string(),
+            "items": items,
+        }))?,
         "markdown" | "md" => render_docs_markdown(&items),
         "html" => render_docs_html(&items),
         other => bail!("unsupported doc format `{other}` (expected json|html|markdown)"),
@@ -9308,171 +9779,272 @@ fn render_doc_artifacts(format: Format, artifacts: DocArtifacts) -> String {
     }
 }
 
-fn discover_doc_sources(path: &Path) -> Result<Vec<PathBuf>> {
-    if path.is_file() {
-        return Ok(vec![path.to_path_buf()]);
+fn extract_doc_items_from_module(module: &ResolvedModuleSource) -> Vec<DocItem> {
+    let mut items = Vec::new();
+    let lines = module.source.lines().collect::<Vec<_>>();
+    for item in &module.ast.items {
+        if let Some(doc_item) = doc_item_from_ast(module, &lines, item) {
+            items.push(doc_item);
+        }
     }
-    if !path.is_dir() {
-        bail!(
-            "input path is neither a file nor directory: {}",
-            path.display()
+    items
+}
+
+fn doc_item_from_ast(
+    module: &ResolvedModuleSource,
+    lines: &[&str],
+    item: &ast::Item,
+) -> Option<DocItem> {
+    match item {
+        ast::Item::Function(function) => {
+            let line = find_function_decl_line(lines, function).unwrap_or(0);
+            Some(DocItem {
+                kind: doc_function_kind(function).to_string(),
+                name: function.name.clone(),
+                signature: render_doc_function_signature(function),
+                module: module.module_name.clone(),
+                path: module.path.display().to_string(),
+                line,
+                docs: docs_before_line(lines, line),
+            })
+        }
+        ast::Item::Struct(item) => Some(doc_named_item(
+            module,
+            lines,
+            "struct",
+            &item.name,
+            line_starts_with(lines, "struct", &item.name),
+            render_named_signature("struct", &item.name),
+        )),
+        ast::Item::Enum(item) => Some(doc_named_item(
+            module,
+            lines,
+            "enum",
+            &item.name,
+            line_starts_with(lines, "enum", &item.name),
+            render_named_signature("enum", &item.name),
+        )),
+        ast::Item::Trait(item) => Some(doc_named_item(
+            module,
+            lines,
+            "trait",
+            &item.name,
+            line_starts_with(lines, "trait", &item.name),
+            render_named_signature("trait", &item.name),
+        )),
+        ast::Item::TypeAlias(item) => Some(doc_named_item(
+            module,
+            lines,
+            "type",
+            &item.name,
+            line_starts_with(lines, "type", &item.name),
+            format!("type {} = {};", item.name, item.ty),
+        )),
+        ast::Item::NewType(item) => Some(doc_named_item(
+            module,
+            lines,
+            "newtype",
+            &item.name,
+            line_starts_with(lines, "newtype", &item.name),
+            format!("newtype {} = {};", item.name, item.inner),
+        )),
+        ast::Item::Const(item) => Some(doc_named_item(
+            module,
+            lines,
+            "const",
+            &item.name,
+            line_starts_with(lines, "const", &item.name),
+            format!("const {}: {};", item.name, item.ty),
+        )),
+        ast::Item::Static(item) => Some(doc_named_item(
+            module,
+            lines,
+            "static",
+            &item.name,
+            line_starts_with(lines, "static", &item.name),
+            format!("static {}: {};", item.name, item.ty),
+        )),
+        ast::Item::Impl(item) => Some(doc_named_item(
+            module,
+            lines,
+            "impl",
+            &item.for_type.to_string(),
+            line_starts_with(lines, "impl", &item.for_type.to_string()),
+            render_impl_signature(item),
+        )),
+        ast::Item::Test(item) => Some(doc_named_item(
+            module,
+            lines,
+            "test",
+            &item.name,
+            find_test_line(lines, &item.name),
+            format!("test \"{}\"", item.name),
+        )),
+    }
+}
+
+fn doc_named_item(
+    module: &ResolvedModuleSource,
+    lines: &[&str],
+    kind: &str,
+    name: &str,
+    line: Option<usize>,
+    signature: String,
+) -> DocItem {
+    let line = line.unwrap_or(0);
+    DocItem {
+        kind: kind.to_string(),
+        name: name.to_string(),
+        signature,
+        module: module.module_name.clone(),
+        path: module.path.display().to_string(),
+        line,
+        docs: docs_before_line(lines, line),
+    }
+}
+
+fn doc_function_kind(function: &ast::Function) -> &'static str {
+    if function.is_extern && function.abi.as_deref() == Some("rpc") {
+        "rpc"
+    } else if function.is_pubext && function.abi.as_deref() == Some("c") {
+        "ffi-export"
+    } else if function.is_extern && function.abi.as_deref() == Some("c") {
+        "ffi-import"
+    } else if function.is_unsafe {
+        "unsafe-fn"
+    } else {
+        "fn"
+    }
+}
+
+fn render_doc_function_signature(function: &ast::Function) -> String {
+    let params = function
+        .params
+        .iter()
+        .map(|param| format!("{}: {}", param.name, param.ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if function.is_extern && function.abi.as_deref() == Some("rpc") {
+        return format!(
+            "rpc {}({}) -> {};",
+            function.name, params, function.return_type
         );
     }
-    let mut files = Vec::<PathBuf>::new();
-    collect_fzy_files(path, &mut files)?;
-    files.sort();
-    Ok(files)
-}
-
-fn collect_fzy_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in
-        std::fs::read_dir(dir).with_context(|| format!("failed reading {}", dir.display()))?
-    {
-        let entry = entry.with_context(|| format!("failed iterating {}", dir.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_fzy_files(&path, files)?;
-            continue;
-        }
-        if is_fzy_source_path(&path) {
-            files.push(path);
-        }
+    let mut signature = String::new();
+    if function.is_pubext {
+        signature.push_str("pubext ");
+    } else if function.is_pub {
+        signature.push_str("pub ");
     }
-    Ok(())
+    if function.is_async {
+        signature.push_str("async ");
+    }
+    if function.is_extern && function.abi.as_deref() == Some("c") && !function.is_pubext {
+        signature.push_str("ext ");
+    }
+    if function.is_unsafe {
+        signature.push_str("unsafe ");
+    }
+    if function.is_extern {
+        signature.push_str("c fn ");
+    } else {
+        signature.push_str("fn ");
+    }
+    signature.push_str(&function.name);
+    signature.push('(');
+    signature.push_str(&params);
+    signature.push(')');
+    if !matches!(function.return_type, ast::Type::Void) {
+        signature.push_str(" -> ");
+        signature.push_str(&function.return_type.to_string());
+    }
+    if function.body.is_empty() {
+        signature.push(';');
+    }
+    signature
 }
 
-fn extract_doc_items(path: &Path) -> Result<Vec<DocItem>> {
-    let source = std::fs::read_to_string(path)
-        .with_context(|| format!("failed reading source file: {}", path.display()))?;
-    let module = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("unknown")
-        .to_string();
-    let path_string = path.display().to_string();
+fn render_named_signature(kind: &str, name: &str) -> String {
+    format!("{kind} {name}")
+}
 
-    let mut items = Vec::new();
-    let mut pending_docs = Vec::<String>::new();
-    let mut in_block_doc = false;
-    for (index, raw) in source.lines().enumerate() {
-        let line_number = index + 1;
-        let line = raw.trim();
-        if in_block_doc {
-            if let Some(prefix) = line.strip_suffix("*/") {
-                let cleaned = prefix.trim_start_matches('*').trim();
-                if !cleaned.is_empty() {
-                    pending_docs.push(cleaned.to_string());
-                }
-                in_block_doc = false;
-                continue;
-            }
-            let cleaned = line.trim_start_matches('*').trim();
-            if !cleaned.is_empty() {
-                pending_docs.push(cleaned.to_string());
-            }
-            continue;
-        }
-        if let Some(doc) = line.strip_prefix("///") {
-            pending_docs.push(doc.trim().to_string());
-            continue;
-        }
-        if let Some(after) = line.strip_prefix("/**") {
-            if let Some(mid) = after.strip_suffix("*/") {
-                let cleaned = mid.trim();
-                if !cleaned.is_empty() {
-                    pending_docs.push(cleaned.to_string());
-                }
+fn render_impl_signature(item: &ast::Impl) -> String {
+    match &item.trait_name {
+        Some(trait_name) => format!("impl {} for {}", trait_name, item.for_type),
+        None => format!("impl {}", item.for_type),
+    }
+}
+
+fn line_starts_with(lines: &[&str], keyword: &str, name: &str) -> Option<usize> {
+    lines
+        .iter()
+        .position(|line| {
+            let line = strip_leading_attributes_inline(line);
+            line.starts_with(&format!("{keyword} {name}"))
+                || line.starts_with(&format!("pub {keyword} {name}"))
+                || (keyword == "static" && line.starts_with(&format!("static mut {name}")))
+        })
+        .map(|idx| idx + 1)
+}
+
+fn find_test_line(lines: &[&str], name: &str) -> Option<usize> {
+    lines
+        .iter()
+        .position(|line| line.trim_start().starts_with(&format!("test \"{name}\"")))
+        .map(|idx| idx + 1)
+}
+
+fn docs_before_line(lines: &[&str], line: usize) -> String {
+    if line <= 1 || line > lines.len() {
+        return String::new();
+    }
+    let mut cursor = line - 1;
+    while cursor > 0 && lines[cursor - 1].trim().is_empty() {
+        cursor -= 1;
+    }
+    if cursor == 0 {
+        return String::new();
+    }
+    if lines[cursor - 1].trim_start().starts_with("///") {
+        let mut docs = Vec::new();
+        let mut idx = cursor - 1;
+        loop {
+            let line = lines[idx].trim_start();
+            if let Some(doc) = line.strip_prefix("///") {
+                docs.push(doc.trim().to_string());
             } else {
-                let cleaned = after.trim_start_matches('*').trim();
-                if !cleaned.is_empty() {
-                    pending_docs.push(cleaned.to_string());
-                }
-                in_block_doc = true;
+                break;
             }
-            continue;
+            if idx == 0 {
+                break;
+            }
+            idx -= 1;
         }
-        if line.is_empty() || line.starts_with("//") {
-            continue;
+        docs.reverse();
+        return docs.join("\n");
+    }
+    if lines[cursor - 1].trim_end().ends_with("*/") {
+        let mut docs = Vec::new();
+        let mut idx = cursor - 1;
+        loop {
+            let line = lines[idx].trim();
+            let cleaned = line
+                .trim_end_matches("*/")
+                .trim_start_matches("/**")
+                .trim_start_matches('*')
+                .trim();
+            if !cleaned.is_empty() {
+                docs.push(cleaned.to_string());
+            }
+            if line.contains("/**") || idx == 0 {
+                break;
+            }
+            idx -= 1;
         }
-        let without_attrs = strip_doc_leading_attributes(line);
-        if without_attrs.is_empty() {
-            continue;
-        }
-        if let Some((kind, name, signature)) = parse_doc_decl(&without_attrs) {
-            items.push(DocItem {
-                kind,
-                name,
-                signature,
-                module: module.clone(),
-                path: path_string.clone(),
-                line: line_number,
-                docs: pending_docs.join("\n"),
-            });
-            pending_docs.clear();
-            continue;
-        }
-        pending_docs.clear();
+        docs.reverse();
+        return docs.join("\n");
     }
-    Ok(items)
-}
-
-fn strip_doc_leading_attributes(line: &str) -> String {
-    let mut cursor = line.trim();
-    while let Some(rest) = cursor.strip_prefix("#[") {
-        if let Some(close) = rest.find(']') {
-            cursor = rest[(close + 1)..].trim_start();
-        } else {
-            break;
-        }
-    }
-    cursor.to_string()
-}
-
-fn parse_doc_decl(line: &str) -> Option<(String, String, String)> {
-    if let Some(rest) = line.strip_prefix("fn ") {
-        let name = rest.split('(').next()?.trim();
-        return Some(("fn".to_string(), clean_doc_name(name), line.to_string()));
-    }
-    if let Some(rest) = line.strip_prefix("struct ") {
-        let name = rest.split('{').next()?.trim();
-        return Some(("struct".to_string(), clean_doc_name(name), line.to_string()));
-    }
-    if let Some(rest) = line.strip_prefix("enum ") {
-        let name = rest.split('{').next()?.trim();
-        return Some(("enum".to_string(), clean_doc_name(name), line.to_string()));
-    }
-    if let Some(rest) = line.strip_prefix("trait ") {
-        let name = rest.split('{').next()?.trim();
-        return Some(("trait".to_string(), clean_doc_name(name), line.to_string()));
-    }
-    if let Some(rest) = line.strip_prefix("impl ") {
-        let name = rest.split('{').next()?.trim();
-        return Some(("impl".to_string(), clean_doc_name(name), line.to_string()));
-    }
-    if let Some(rest) = line.strip_prefix("rpc ") {
-        let name = rest.split('(').next()?.trim();
-        return Some(("rpc".to_string(), clean_doc_name(name), line.to_string()));
-    }
-    if let Some(rest) = line.strip_prefix("test ") {
-        let name = rest
-            .trim()
-            .trim_start_matches('"')
-            .split('"')
-            .next()
-            .unwrap_or(rest.trim())
-            .trim();
-        return Some(("test".to_string(), clean_doc_name(name), line.to_string()));
-    }
-    None
-}
-
-fn clean_doc_name(raw: &str) -> String {
-    raw.trim()
-        .trim_matches('{')
-        .trim_matches('(')
-        .trim_matches(')')
-        .trim_matches(';')
-        .to_string()
+    String::new()
 }
 
 fn render_docs_markdown(items: &[DocItem]) -> String {
@@ -9774,6 +10346,7 @@ mod tests {
         .expect("audit should succeed");
         assert!(output.contains("\"missingContractCount\":0"));
         assert!(output.contains("compiler-generated"));
+        assert!(output.contains("\"line\":2"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -9802,6 +10375,7 @@ mod tests {
         assert!(output.contains("\"missingContractCount\":0"));
         assert!(output.contains("compiler-generated"));
         assert!(output.contains("\"strictUnsafeAudit\":true"));
+        assert!(!output.contains("\"line\":0"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -10203,19 +10777,31 @@ mod tests {
         )
         .expect("rpc gen should succeed");
         assert!(output.contains("\"methods\":2"));
+        assert!(output.contains("\"schema\":\""));
         assert!(out_dir.join("rpc.schema.json").exists());
         assert!(out_dir.join("rpc.client.fzy").exists());
         assert!(out_dir.join("rpc.server.fzy").exists());
+        let schema = std::fs::read_to_string(out_dir.join("rpc.schema.json"))
+            .expect("rpc schema should be readable");
         let client = std::fs::read_to_string(out_dir.join("rpc.client.fzy"))
             .expect("rpc client should be readable");
         let server = std::fs::read_to_string(out_dir.join("rpc.server.fzy"))
             .expect("rpc server should be readable");
         assert!(!client.contains("TODO"));
         assert!(!server.contains("TODO"));
+        assert!(schema.contains("\"schemaVersion\": \"fozzylang.rpc.v1\""));
+        assert!(schema.contains("\"mode\": \"unary\""));
+        assert!(schema.contains("\"mode\": \"bidirectional_streaming\""));
+        assert!(schema.contains("\"clientStreaming\": true"));
         assert!(client.contains("deadline("));
         assert!(client.contains("cancel()"));
+        assert!(client.contains("return Ping(req)"));
+        assert!(client.contains("return Stream(arg0)"));
+        assert!(!client.contains("transport_send"));
         assert!(server.contains("deadline("));
-        assert!(server.contains("cancel()"));
+        assert!(server.contains("prepare_ping_handler"));
+        assert!(server.contains("prepare_stream_handler"));
+        assert!(!server.contains("transport_recv"));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_dir_all(out_dir);
@@ -10506,9 +11092,80 @@ mod tests {
         let server = std::fs::read_to_string(out_dir.join("rpc.server.fzy"))
             .expect("rpc server should be readable");
         assert!(server.contains("apply_rpc_handler_contract"));
+        assert!(server.contains("prepare_ping_handler"));
 
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(out_dir);
+    }
+
+    #[test]
+    fn doc_gen_includes_rpc_and_ffi_surfaces_from_semantic_modules() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-doc-project-{suffix}"));
+        std::fs::create_dir_all(root.join("src/api")).expect("project src should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"doc_project\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"doc_project\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod api;\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(root.join("src/api/mod.fzy"), "mod ffi;\nmod rpc;\n")
+            .expect("api module should be written");
+        std::fs::write(
+            root.join("src/api/ffi.fzy"),
+            "/// Hash bytes for the host boundary.\npubext c fn hash32(ptr_borrowed: *u8, len: usize) -> u32;\n",
+        )
+        .expect("ffi source should be written");
+        std::fs::write(
+            root.join("src/api/rpc.fzy"),
+            "/// Ping the service edge.\nrpc Ping(req: PingReq) -> PingRes;\n",
+        )
+        .expect("rpc source should be written");
+
+        let output = run(
+            Command::DocGen {
+                path: root.clone(),
+                format: "json".to_string(),
+                out: None,
+                reference: None,
+            },
+            Format::Json,
+        )
+        .expect("doc gen should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("doc gen json should parse");
+        let rendered = payload["rendered"]
+            .as_str()
+            .expect("rendered docs should be present");
+        let rendered_json: serde_json::Value =
+            serde_json::from_str(rendered).expect("rendered docs payload should parse");
+        assert_eq!(rendered_json["schemaVersion"], "fozzylang.doc.v1");
+        let items = rendered_json["items"]
+            .as_array()
+            .expect("doc items should be an array");
+        assert!(items.iter().any(|item| item["kind"] == "ffi-export"
+            && item["signature"]
+                .as_str()
+                .is_some_and(|value| value.contains("pubext c fn hash32"))
+            && item["docs"]
+                .as_str()
+                .is_some_and(|value| value.contains("Hash bytes for the host boundary."))));
+        assert!(items.iter().any(|item| item["kind"] == "rpc"
+            && item["signature"]
+                .as_str()
+                .is_some_and(|value| value.contains("rpc Ping(req: PingReq) -> PingRes;"))
+            && item["docs"]
+                .as_str()
+                .is_some_and(|value| value.contains("Ping the service edge."))));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -12751,6 +13408,31 @@ mod tests {
     }
 
     #[test]
+    fn lsp_diagnostics_text_uses_human_grouped_type_notes() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-lsp-grouped-notes-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    let value: i32 = \"oops\"\n    missing_symbol(1)\n    return value\n}\n",
+        )
+        .expect("source should be written");
+        let diagnostics = run(
+            Command::LspDiagnostics {
+                path: source.clone(),
+            },
+            Format::Text,
+        )
+        .expect("lsp diagnostics should succeed");
+        assert!(diagnostics.contains("additional grouped root cause: unresolved call target"));
+        assert!(!diagnostics.contains("type_error_count="));
+        assert!(diagnostics.contains("explain: fz explain verifier.grouped_type_error"));
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn diagnostics_regression_unresolved_call_and_field_variant_resolution() {
         let unresolved = run_check_text(
             "fn main() -> i32 {\n    return missing_symbol()\n}\n",
@@ -13003,6 +13685,53 @@ mod tests {
         .expect("catalog explain should succeed");
         assert!(output.contains("\"schemaVersion\":\"fozzylang.diagnostic_catalog.v1\""));
         assert!(output.contains("\"code_prefix\":\"E-HIR-\""));
+    }
+
+    #[test]
+    fn explain_text_includes_production_action_fields() {
+        let output = run(
+            Command::Explain {
+                diag_code: "E-VER-DEADBEEF".to_string(),
+            },
+            Format::Text,
+        )
+        .expect("explain should succeed");
+        assert!(output.contains("common_triggers"));
+        assert!(output.contains("production_action"));
+        assert!(output.contains("production_risk"));
+    }
+
+    #[test]
+    fn explain_accepts_exact_catalog_key() {
+        let output = run(
+            Command::Explain {
+                diag_code: "verifier.grouped_type_error".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("explain should succeed");
+        assert!(output.contains("\"catalogKey\":\"verifier.grouped_type_error\""));
+        assert!(output.contains("collapsed multiple related type-check failures"));
+    }
+
+    #[test]
+    fn explain_accepts_rendered_catalog_keys() {
+        for key in [
+            "verifier.missing_explicit_capabilities",
+            "parser.syntax_error",
+            "verifier.function_missing_required_capability",
+            "native.cranelift_async_unsafe_unsupported",
+        ] {
+            let output = run(
+                Command::Explain {
+                    diag_code: key.to_string(),
+                },
+                Format::Json,
+            )
+            .expect("explain should succeed");
+            assert!(output.contains(&format!("\"catalogKey\":\"{key}\"")));
+            assert!(!output.contains("\"family\":\"unknown\""));
+        }
     }
 
     #[test]

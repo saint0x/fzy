@@ -5,6 +5,7 @@ pub enum Capability {
     Time,
     Random,
     FileSystem,
+    Storage,
     Http,
     Process,
     Memory,
@@ -19,6 +20,7 @@ impl Capability {
             "time" => Some(Self::Time),
             "rng" | "random" => Some(Self::Random),
             "fs" | "filesystem" => Some(Self::FileSystem),
+            "storage" => Some(Self::Storage),
             "http" => Some(Self::Http),
             "proc" | "process" => Some(Self::Process),
             "mem" | "memory" => Some(Self::Memory),
@@ -34,6 +36,7 @@ impl Capability {
             Self::Time => "time",
             Self::Random => "rng",
             Self::FileSystem => "fs",
+            Self::Storage => "storage",
             Self::Http => "http",
             Self::Process => "proc",
             Self::Memory => "mem",
@@ -136,6 +139,7 @@ mod tests {
     #[test]
     fn parse_aliases_work() {
         assert_eq!(Capability::parse("fs"), Some(Capability::FileSystem));
+        assert_eq!(Capability::parse("storage"), Some(Capability::Storage));
         assert_eq!(Capability::parse("http"), Some(Capability::Http));
         assert_eq!(Capability::parse("threads"), Some(Capability::Thread));
         assert_eq!(Capability::parse("log"), Some(Capability::Log));

@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::pipeline::parse_program;
+use crate::pipeline::{parse_program, verify_file, verify_file_with_root_source};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LspSymbol {
@@ -1163,43 +1163,16 @@ fn scan_identifier_tokens(source: &str) -> Vec<IdentifierToken> {
 }
 
 pub fn diagnostics_for_path(path: &Path) -> Result<Value> {
-    let resolved = resolve_source(path)?;
-    let source = std::fs::read_to_string(&resolved.source_path).with_context(|| {
-        format!(
-            "failed reading source for diagnostics: {}",
-            resolved.source_path.display()
-        )
-    })?;
-    let module_name = resolved
-        .source_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("module");
-    let mut diagnostics = Vec::new();
-    match parser::parse(&source, module_name) {
-        Err(parse_errors) => diagnostics.extend(parse_errors),
-        Ok(module) => {
-            let typed = hir::lower(&module);
-            diagnostics.extend(type_diagnostics(&typed));
-            let fir = fir::build_owned(typed);
-            let verify = verifier::verify(&fir);
-            diagnostics.extend(verify.diagnostics);
-        }
-    }
-    hydrate_document_context(
-        &mut diagnostics,
-        &source,
-        resolved.source_path.display().to_string(),
-    );
-
-    let ok = diagnostics
+    let output = verify_file(path)?;
+    let ok = output
+        .diagnostic_details
         .iter()
         .all(|diag| !matches!(diag.severity, diagnostics::Severity::Error));
     Ok(json!({
         "schemaVersion": diagnostics::DIAGNOSTICS_SCHEMA_VERSION,
         "ok": ok,
-        "module": module_name,
-        "diagnostics": diagnostics,
+        "module": output.module,
+        "diagnostics": output.diagnostic_details,
     }))
 }
 
@@ -2201,24 +2174,10 @@ fn lsp_semantic_tokens(ws: &WorkspaceState, params: &Value) -> Result<Value> {
 
 fn publish_diagnostics(ws: &WorkspaceState, uri: &str, writer: &mut dyn Write) -> Result<()> {
     let doc = workspace_doc(ws, uri)?;
-    let module_name = doc
-        .path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("module");
+    let output = verify_file_with_root_source(&doc.path, Some(&doc.text))?;
 
-    let mut diagnostics = Vec::new();
-    if let Err(parse_errors) = parser::parse(&doc.text, module_name) {
-        diagnostics.extend(parse_errors);
-    } else if let Ok(parsed) = parse_program(&doc.path) {
-        let typed = hir::lower(&parsed.module);
-        diagnostics.extend(type_diagnostics(&typed));
-        let fir = fir::build_owned(typed);
-        diagnostics.extend(verifier::verify(&fir).diagnostics);
-    }
-    hydrate_document_context(&mut diagnostics, &doc.text, doc.path.display().to_string());
-
-    let payload = diagnostics
+    let payload = output
+        .diagnostic_details
         .iter()
         .map(to_lsp_diagnostic)
         .collect::<Vec<_>>();
@@ -2733,6 +2692,7 @@ fn to_lsp_diagnostic(diag: &diagnostics::Diagnostic) -> Value {
         "relatedInformation": related_information,
         "codeDescription": diag.code.as_ref().map(|code| json!({"href": format!("https://fozzylang.dev/diagnostics/{code}")})),
         "data": {
+            "catalogKey": diag.catalog_key.clone(),
             "path": diag.path.clone(),
             "help": diag.help.clone(),
             "fix": diag.fix.clone(),
@@ -2749,91 +2709,6 @@ fn severity_to_lsp(severity: &diagnostics::Severity) -> u8 {
         diagnostics::Severity::Error => 1,
         diagnostics::Severity::Warning => 2,
         diagnostics::Severity::Note => 3,
-    }
-}
-
-fn type_diagnostics(typed: &hir::TypedModule) -> Vec<diagnostics::Diagnostic> {
-    fn with_migration_fixes(
-        mut diag: diagnostics::Diagnostic,
-        detail: &str,
-    ) -> diagnostics::Diagnostic {
-        if detail.contains("unresolved call target `json.object") && detail.contains("autofix") {
-            diag = diag.with_suggested_fix(
-                "replace fixed-arity JSON object helper with object literal: `json.object(#{\"k\": json.str(\"v\")})`",
-            );
-        } else if detail.contains("unresolved call target `json.array")
-            && detail.contains("autofix")
-        {
-            diag = diag.with_suggested_fix(
-                "replace fixed-arity JSON array helper with array literal: `json.array([item1, item2])`",
-            );
-        } else if detail.contains("unresolved call target `log.fields")
-            && detail.contains("autofix")
-        {
-            diag = diag.with_suggested_fix(
-                "replace removed log fields arity helper with object literal: `log.fields(#{\"k\": json.str(\"v\")})`",
-            );
-        }
-        diag
-    }
-
-    let mut out = Vec::new();
-    for detail in &typed.type_error_details {
-        let diag = diagnostics::Diagnostic::new(
-            diagnostics::Severity::Error,
-            detail.clone(),
-            Some("fix type mismatch before running".to_string()),
-        );
-        out.push(with_migration_fixes(diag, detail));
-    }
-    for violation in &typed.trait_violations {
-        out.push(diagnostics::Diagnostic::new(
-            diagnostics::Severity::Error,
-            violation.clone(),
-            Some("trait implementation contract violated".to_string()),
-        ));
-    }
-    for violation in &typed.ownership_violations {
-        out.push(diagnostics::Diagnostic::new(
-            diagnostics::Severity::Error,
-            violation.clone(),
-            Some("ownership rule violation".to_string()),
-        ));
-    }
-    for violation in &typed.reference_lifetime_violations {
-        out.push(diagnostics::Diagnostic::new(
-            diagnostics::Severity::Warning,
-            violation.clone(),
-            Some("reference lifetime issue".to_string()),
-        ));
-    }
-    diagnostics::assign_stable_codes(&mut out, diagnostics::DiagnosticDomain::Hir);
-    out
-}
-
-fn hydrate_document_context(
-    diagnostics: &mut [diagnostics::Diagnostic],
-    source: &str,
-    path: String,
-) {
-    let lines = source.lines().map(ToString::to_string).collect::<Vec<_>>();
-    for diagnostic in diagnostics {
-        if diagnostic.path.is_none() {
-            diagnostic.path = Some(path.clone());
-        }
-        if let Some(span) = &diagnostic.span {
-            if diagnostic.snippet.is_none() && span.start_line > 0 && span.start_line <= lines.len()
-            {
-                diagnostic.snippet = Some(lines[span.start_line - 1].clone());
-            }
-            if diagnostic.labels.is_empty() {
-                diagnostic.labels.push(diagnostics::Label {
-                    message: diagnostic.message.clone(),
-                    primary: true,
-                    span: Some(span.clone()),
-                });
-            }
-        }
     }
 }
 
@@ -3285,6 +3160,96 @@ mod tests {
             .filter_map(|hint| hint.get("label").and_then(Value::as_str))
             .collect::<Vec<_>>();
         assert!(labels.iter().any(|label| label == &": i32"));
+    }
+
+    #[test]
+    fn diagnostics_for_project_file_match_project_aware_pipeline() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-lsp-project-diag-{suffix}"));
+        std::fs::create_dir_all(root.join("src/model")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "mod model;\nfn main() -> i32 {\n    model.preflight();\n    return 0\n}\n",
+        )
+        .expect("main should be written");
+        std::fs::write(
+            root.join("src/model/mod.fzy"),
+            "fn preflight() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("model module should be written");
+
+        let diagnostics = diagnostics_for_path(&root).expect("project diagnostics should succeed");
+        assert_eq!(diagnostics.get("ok").and_then(Value::as_bool), Some(true));
+        let items = diagnostics
+            .get("diagnostics")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            items.iter().all(|item| {
+                let message = item
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                !message.contains("unresolved call target")
+            }),
+            "expected project-aware diagnostics without false unresolved calls, got {items:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn lsp_diagnostic_data_includes_catalog_key() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-lsp-catalog-key-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    let value: i32 = \"oops\"\n    return value\n}\n",
+        )
+        .expect("source should be written");
+        let diagnostics = diagnostics_for_path(&source).expect("diagnostics should succeed");
+        let items = diagnostics
+            .get("diagnostics")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(items.iter().any(|item| {
+            item.get("catalog_key")
+                .and_then(Value::as_str)
+                .is_some_and(|key| key == "verifier.grouped_type_error")
+        }));
+        let grouped = items
+            .iter()
+            .find(|item| {
+                item.get("catalog_key")
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| key == "verifier.grouped_type_error")
+            })
+            .cloned()
+            .expect("grouped type diagnostic should be present");
+        let lsp_payload = serde_json::from_value::<diagnostics::Diagnostic>(grouped)
+            .map(|diag| to_lsp_diagnostic(&diag))
+            .expect("grouped type diagnostic should convert to lsp");
+        assert_eq!(
+            lsp_payload
+                .get("data")
+                .and_then(|data| data.get("catalogKey"))
+                .and_then(Value::as_str),
+            Some("verifier.grouped_type_error")
+        );
+        let _ = std::fs::remove_file(source);
     }
 
     #[test]

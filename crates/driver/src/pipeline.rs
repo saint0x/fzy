@@ -403,23 +403,33 @@ pub fn compile_library_with_backend(
 }
 
 pub fn verify_file(path: &Path) -> Result<Output> {
+    verify_file_with_root_source(path, None)
+}
+
+pub fn verify_file_with_root_source(
+    path: &Path,
+    root_source_override: Option<&str>,
+) -> Result<Output> {
     let resolved = resolve_source_path(path)?;
     let module_name = resolved
         .source_path
         .file_stem()
         .and_then(|v| v.to_str())
         .ok_or_else(|| anyhow!("invalid module filename"))?;
-    let parsed = match parse_program(&resolved.source_path) {
+    let parsed = match parse_program_with_root_source(&resolved.source_path, root_source_override) {
         Ok(parsed) => parsed,
         Err(error) => {
-            let mut diagnostics =
-                collect_parse_diagnostics(&resolved.source_path).unwrap_or_else(|_| {
-                    vec![diagnostics::Diagnostic::new(
-                        diagnostics::Severity::Error,
-                        error.to_string(),
-                        None,
-                    )]
-                });
+            let mut diagnostics = collect_parse_diagnostics_with_root_source(
+                &resolved.source_path,
+                root_source_override,
+            )
+            .unwrap_or_else(|_| {
+                vec![diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Error,
+                    error.to_string(),
+                    None,
+                )]
+            });
             for diagnostic in &mut diagnostics {
                 if diagnostic.path.is_none() {
                     diagnostic.path = Some(resolved.source_path.display().to_string());
@@ -441,6 +451,12 @@ pub fn verify_file(path: &Path) -> Result<Output> {
     };
     let mut diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
+    let backend = resolve_native_backend(BuildProfile::Verify, None)?;
+    diagnostics.extend(backend_capability_diagnostics(
+        &parsed.module,
+        &backend,
+        false,
+    ));
     diagnostics.extend(native_lowerability_diagnostics(&parsed.module));
     let (_typed, fir) = lower_fir_cached(&parsed);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
@@ -543,13 +559,23 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
 }
 
 pub fn parse_program(source_path: &Path) -> Result<ParsedProgram> {
+    parse_program_with_root_source(source_path, None)
+}
+
+pub fn parse_program_with_root_source(
+    source_path: &Path,
+    root_source_override: Option<&str>,
+) -> Result<ParsedProgram> {
     let canonical = source_path
         .canonicalize()
         .with_context(|| format!("failed resolving source file: {}", source_path.display()))?;
+    if let Some(source_override) = root_source_override {
+        return parse_program_uncached_with_root_source(&canonical, Some(source_override));
+    }
     if let Some(cached) = cached_parsed_program(&canonical) {
         return Ok(cached);
     }
-    let parsed = parse_program_uncached(&canonical)?;
+    let parsed = parse_program_uncached_with_root_source(&canonical, None)?;
     store_parsed_program_cache(&canonical, &parsed);
     Ok(parsed)
 }
@@ -576,9 +602,12 @@ pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirMo
     (typed, fir_module)
 }
 
-fn parse_program_uncached(canonical: &Path) -> Result<ParsedProgram> {
+fn parse_program_uncached_with_root_source(
+    canonical: &Path,
+    root_source_override: Option<&str>,
+) -> Result<ParsedProgram> {
     let mut state = ModuleLoadState::default();
-    discover_module_graph_recursive(canonical, &mut state)?;
+    discover_module_graph_recursive(canonical, canonical, root_source_override, &mut state)?;
 
     let loaded_modules = state
         .load_order
@@ -622,6 +651,20 @@ fn parse_program_uncached(canonical: &Path) -> Result<ParsedProgram> {
         combined_source,
         module_paths: state.load_order,
     })
+}
+
+fn read_module_source(
+    canonical: &Path,
+    root_path: &Path,
+    root_source_override: Option<&str>,
+) -> Result<String> {
+    if canonical == root_path {
+        if let Some(source_override) = root_source_override {
+            return Ok(source_override.to_string());
+        }
+    }
+    std::fs::read_to_string(canonical)
+        .with_context(|| format!("failed reading source file: {}", canonical.display()))
 }
 
 fn module_stamp(path: &Path) -> Option<ModuleStamp> {
@@ -688,7 +731,12 @@ struct ModuleLoadState {
     visiting_set: HashSet<PathBuf>,
 }
 
-fn discover_module_graph_recursive(path: &Path, state: &mut ModuleLoadState) -> Result<()> {
+fn discover_module_graph_recursive(
+    path: &Path,
+    root_path: &Path,
+    root_source_override: Option<&str>,
+    state: &mut ModuleLoadState,
+) -> Result<()> {
     let canonical = path
         .canonicalize()
         .with_context(|| format!("failed resolving module path: {}", path.display()))?;
@@ -703,8 +751,7 @@ fn discover_module_graph_recursive(path: &Path, state: &mut ModuleLoadState) -> 
     state.visiting_set.insert(canonical.clone());
     state.visiting.push(canonical.clone());
 
-    let source = std::fs::read_to_string(&canonical)
-        .with_context(|| format!("failed reading source file: {}", canonical.display()))?;
+    let source = read_module_source(&canonical, root_path, root_source_override)?;
     let module_name = canonical
         .file_stem()
         .and_then(|value| value.to_str())
@@ -723,7 +770,7 @@ fn discover_module_graph_recursive(path: &Path, state: &mut ModuleLoadState) -> 
                 canonical.display()
             )
         })?;
-        discover_module_graph_recursive(&module_path, state)?;
+        discover_module_graph_recursive(&module_path, root_path, root_source_override, state)?;
     }
 
     state.visiting.pop();
@@ -1349,13 +1396,22 @@ fn task_ref_expr_from_name(name: &str) -> ast::Expr {
     expr
 }
 
-fn collect_parse_diagnostics(source_path: &Path) -> Result<Vec<diagnostics::Diagnostic>> {
+fn collect_parse_diagnostics_with_root_source(
+    source_path: &Path,
+    root_source_override: Option<&str>,
+) -> Result<Vec<diagnostics::Diagnostic>> {
     let canonical = source_path
         .canonicalize()
         .with_context(|| format!("failed resolving source file: {}", source_path.display()))?;
     let mut visited = HashSet::<PathBuf>::new();
     let mut visiting = HashSet::<PathBuf>::new();
-    match collect_parse_diagnostics_recursive(&canonical, &mut visited, &mut visiting)? {
+    match collect_parse_diagnostics_recursive(
+        &canonical,
+        &canonical,
+        root_source_override,
+        &mut visited,
+        &mut visiting,
+    )? {
         Some((failed_path, import_chain, diagnostics)) => Ok(diagnostics
             .into_iter()
             .map(|diagnostic| annotate_parse_diagnostic(diagnostic, &failed_path, &import_chain))
@@ -1368,6 +1424,8 @@ type ParseDiagnosticsHit = (PathBuf, Vec<PathBuf>, Vec<diagnostics::Diagnostic>)
 
 fn collect_parse_diagnostics_recursive(
     path: &Path,
+    root_path: &Path,
+    root_source_override: Option<&str>,
     visited: &mut HashSet<PathBuf>,
     visiting: &mut HashSet<PathBuf>,
 ) -> Result<Option<ParseDiagnosticsHit>> {
@@ -1378,8 +1436,7 @@ fn collect_parse_diagnostics_recursive(
         return Ok(None);
     }
     visiting.insert(canonical.clone());
-    let source = std::fs::read_to_string(&canonical)
-        .with_context(|| format!("failed reading source file: {}", canonical.display()))?;
+    let source = read_module_source(&canonical, root_path, root_source_override)?;
     let module_name = canonical
         .file_stem()
         .and_then(|value| value.to_str())
@@ -1408,7 +1465,13 @@ fn collect_parse_diagnostics_recursive(
             )
         })?;
         if let Some((failed_path, mut import_chain, diagnostics)) =
-            collect_parse_diagnostics_recursive(&module_path, visited, visiting)?
+            collect_parse_diagnostics_recursive(
+                &module_path,
+                root_path,
+                root_source_override,
+                visited,
+                visiting,
+            )?
         {
             import_chain.insert(0, canonical.clone());
             return Ok(Some((failed_path, import_chain, diagnostics)));
@@ -1424,24 +1487,17 @@ fn annotate_parse_diagnostic(
     import_chain: &[PathBuf],
 ) -> diagnostics::Diagnostic {
     diagnostic.path = Some(module_path.display().to_string());
-    let mut help = diagnostic.help.unwrap_or_default();
-    if !help.is_empty() {
-        help.push(' ');
-    }
-    help.push_str(&format!("source: {}", module_path.display()));
+    diagnostic
+        .notes
+        .push(format!("source: {}", module_path.display()));
     if import_chain.len() > 1 {
         let chain = import_chain
             .iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
             .join(" -> ");
-        if !help.is_empty() {
-            help.push(' ');
-        }
-        help.push_str(&format!("import chain: {chain}"));
         diagnostic.notes.push(format!("import chain: {chain}"));
     }
-    diagnostic.help = Some(help);
     diagnostic
 }
 
@@ -1508,7 +1564,9 @@ fn enrich_diagnostics_context(diagnostics: &mut [diagnostics::Diagnostic]) {
                         span: Some(span.clone()),
                     });
                 }
-            } else if let Some(anchors) = derive_anchors_from_message(&diagnostic.message, lines) {
+            } else if let Some(anchors) =
+                derive_context_anchors_from_message(&diagnostic.message, lines)
+            {
                 if let Some((primary_token, primary_span)) = anchors.first() {
                     diagnostic.span = Some(primary_span.clone());
                     diagnostic.snippet = Some(lines[primary_span.start_line - 1].clone());
@@ -1532,6 +1590,18 @@ fn enrich_diagnostics_context(diagnostics: &mut [diagnostics::Diagnostic]) {
             }
         }
     }
+}
+
+fn derive_context_anchors_from_message(
+    message: &str,
+    lines: &[String],
+) -> Option<Vec<(String, diagnostics::Span)>> {
+    if message.contains("non-exhaustive match for enum `") {
+        if let Some(span) = find_token_span(lines, "match") {
+            return Some(vec![("match".to_string(), span)]);
+        }
+    }
+    derive_anchors_from_message(message, lines)
 }
 
 fn derive_anchors_from_message(
@@ -1574,7 +1644,10 @@ fn extract_backticked_tokens(message: &str) -> Vec<String> {
 
 fn find_token_span(lines: &[String], token: &str) -> Option<diagnostics::Span> {
     for (line_idx, line) in lines.iter().enumerate() {
-        if let Some(col_idx) = line.find(token) {
+        for (col_idx, _) in line.match_indices(token) {
+            if !token_boundary_matches(line, col_idx, token.len()) {
+                continue;
+            }
             return Some(diagnostics::Span {
                 start_line: line_idx + 1,
                 start_col: col_idx + 1,
@@ -1584,6 +1657,21 @@ fn find_token_span(lines: &[String], token: &str) -> Option<diagnostics::Span> {
         }
     }
     None
+}
+
+fn token_boundary_matches(line: &str, start: usize, len: usize) -> bool {
+    let token = &line[start..start.saturating_add(len)];
+    if !token.chars().all(is_ident_char) {
+        return true;
+    }
+    let end = start.saturating_add(len);
+    let left = line[..start].chars().next_back();
+    let right = line[end..].chars().next();
+    !(left.is_some_and(is_ident_char) || right.is_some_and(is_ident_char))
+}
+
+fn is_ident_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_'
 }
 
 fn resolve_declared_module(base_dir: &Path, module_decl: &str) -> Result<PathBuf> {

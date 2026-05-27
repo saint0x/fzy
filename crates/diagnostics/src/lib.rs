@@ -29,6 +29,8 @@ pub struct Diagnostic {
     pub severity: Severity,
     #[serde(default)]
     pub code: Option<String>,
+    #[serde(default)]
+    pub catalog_key: Option<String>,
     pub message: String,
     pub help: Option<String>,
     pub span: Option<Span>,
@@ -57,6 +59,7 @@ impl Diagnostic {
         Self {
             severity,
             code: None,
+            catalog_key: None,
             message: message.into(),
             help,
             span: None,
@@ -128,6 +131,11 @@ impl Diagnostic {
 
     pub fn with_code(mut self, code: impl Into<String>) -> Self {
         self.code = Some(code.into());
+        self
+    }
+
+    pub fn with_catalog_key(mut self, key: impl Into<String>) -> Self {
+        self.catalog_key = Some(key.into());
         self
     }
 }

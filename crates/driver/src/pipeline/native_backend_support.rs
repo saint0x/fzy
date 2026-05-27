@@ -97,32 +97,42 @@ pub(super) fn native_lowerability_diagnostics(
     let mut unresolved = unresolved.into_iter().collect::<Vec<_>>();
     unresolved.sort();
     diagnostics.extend(unresolved.into_iter().map(|callee| {
-        let nearest = hir::runtime_intrinsic_names()
-            .iter()
-            .map(|candidate| {
-                (
-                    *candidate,
-                    candidate
-                        .chars()
-                        .zip(callee.chars())
-                        .filter(|(left, right)| left != right)
-                        .count()
-                        + candidate.len().abs_diff(callee.len()),
-                )
-            })
-            .min_by_key(|(_, distance)| *distance)
-            .and_then(|(candidate, distance)| (distance <= 6).then_some(candidate));
         let mut help =
             "run via Fozzy scenario/host backends or provide a real native implementation for this symbol"
                 .to_string();
-        if let Some(suggested) = nearest {
-            help.push_str(&format!("; did you mean `{suggested}`?"));
+        if let Some(stripped) = callee.strip_prefix("process.") {
+            let migrated = format!("proc.{stripped}");
+            if hir::runtime_intrinsic_names().contains(&migrated.as_str()) {
+                help.push_str(&format!(
+                    "; `process.*` was removed, migrate to `{migrated}`"
+                ));
+            }
+        } else {
+            let nearest = hir::runtime_intrinsic_names()
+                .iter()
+                .map(|candidate| {
+                    (
+                        *candidate,
+                        candidate
+                            .chars()
+                            .zip(callee.chars())
+                            .filter(|(left, right)| left != right)
+                            .count()
+                            + candidate.len().abs_diff(callee.len()),
+                    )
+                })
+                .min_by_key(|(_, distance)| *distance)
+                .and_then(|(candidate, distance)| (distance <= 6).then_some(candidate));
+            if let Some(suggested) = nearest {
+                help.push_str(&format!("; did you mean `{suggested}`?"));
+            }
         }
         diagnostics::Diagnostic::new(
             diagnostics::Severity::Error,
             format!("native backend cannot execute unresolved call `{callee}`"),
             Some(help),
         )
+        .with_catalog_key("native.unresolved_call")
     }));
 
     diagnostics::assign_stable_codes(
@@ -183,6 +193,7 @@ pub(super) fn backend_capability_diagnostics(
                                 .to_string(),
                         ),
                     )
+                    .with_catalog_key("native.cranelift_async_c_export_unsupported")
                     .with_fix("switch backend: `fz build <path> --backend llvm`"),
                 );
             }
@@ -199,11 +210,16 @@ pub(super) fn backend_capability_diagnostics(
                                 .to_string(),
                         ),
                     )
+                    .with_catalog_key("native.cranelift_async_unsafe_unsupported")
                     .with_fix("switch backend: `fz build <path> --backend llvm`"),
                 );
             }
         }
     }
+    diagnostics::assign_stable_codes(
+        &mut diagnostics,
+        diagnostics::DiagnosticDomain::NativeLowering,
+    );
     diagnostics
 }
 

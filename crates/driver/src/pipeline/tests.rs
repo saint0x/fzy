@@ -7,7 +7,7 @@ use super::{
     collect_async_c_exports, compile_file, compile_file_with_backend, compile_library_with_backend,
     derive_anchors_from_message, emit_ir, lower_backend_ir, lower_llvm_ir, native_mangle_symbol,
     native_runtime_import_contract_errors, native_runtime_import_for_callee, parse_program,
-    refresh_lockfile, verify_file, BackendKind, BuildProfile,
+    refresh_lockfile, verify_file, verify_file_with_root_source, BackendKind, BuildProfile,
 };
 
 fn run_native_exit(exe: &Path) -> i32 {
@@ -62,6 +62,153 @@ fn derive_anchors_from_message_extracts_primary_and_related_tokens() {
     assert_eq!(anchors.len(), 2);
     assert_eq!(anchors[0].0, "payload");
     assert_eq!(anchors[1].0, "missing");
+}
+
+#[test]
+fn derive_anchors_from_message_requires_exact_identifier_matches() {
+    let lines = vec![
+        "fn feature_surface_demo(seed: i32) -> i32 {".to_string(),
+        "    let surface: bool = feature_surface_demo(1)".to_string(),
+        "}".to_string(),
+    ];
+    let anchors = derive_anchors_from_message(
+        "let binding `surface` type mismatch: expected `bool`, got `i32`",
+        &lines,
+    )
+    .expect("anchors should be extracted");
+    assert_eq!(anchors[0].0, "surface");
+    assert_eq!(anchors[0].1.start_line, 2);
+}
+
+#[test]
+fn verify_file_with_root_source_uses_project_graph_for_unsaved_buffers() {
+    let project_name = format!(
+        "fozzylang-root-override-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/model")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "mod model;\nfn main() -> i32 {\n    model.preflight();\n    return 0\n}\n",
+    )
+    .expect("main should be written");
+    std::fs::write(
+        root.join("src/model/mod.fzy"),
+        "fn preflight() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("model module should be written");
+
+    let override_source =
+        "mod model;\nfn main() -> i32 {\n    let surface: bool = 1;\n    model.preflight();\n    return 0\n}\n";
+    let output = verify_file_with_root_source(&root, Some(override_source))
+        .expect("verify with source override should run");
+    assert!(output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| diagnostic.message.contains("type-check failed")));
+    assert!(
+        !output.diagnostic_details.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("unresolved call target `model.preflight`"))
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn parse_diagnostic_context_is_reported_as_notes_not_help() {
+    let project_name = format!(
+        "fozzylang-parse-note-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/model")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "mod model;\nfn main() -> i32 { return 0 }\n",
+    )
+    .expect("main should be written");
+    std::fs::write(
+        root.join("src/model/mod.fzy"),
+        "fn broken( -> i32 {\n    return 0\n}\n",
+    )
+    .expect("broken module should be written");
+
+    let output = verify_file(&root).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("expected parameter name"))
+        .expect("parse diagnostic should be present");
+    assert!(diagnostic
+        .help
+        .as_deref()
+        .is_some_and(|help| !help.contains("source:") && !help.contains("import chain:")));
+    assert!(diagnostic.notes.iter().any(|note| note.contains("source:")));
+    assert!(diagnostic
+        .notes
+        .iter()
+        .any(|note| note.contains("import chain:")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn backend_capability_diagnostics_keep_native_domain_codes() {
+    let project_name = format!(
+        "fozzylang-native-domain-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n[build]\nbackend=\"cranelift\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "pubext async c fn risky() -> i32 { return 0 }\nfn main() -> i32 { return 0 }\n",
+    )
+    .expect("main should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Verify, Some("cranelift"))
+        .expect("compile should succeed with diagnostics");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("backend `cranelift` does not support async C export")
+        })
+        .expect("backend diagnostic should be present");
+    assert!(diagnostic
+        .code
+        .as_deref()
+        .is_some_and(|code| code.starts_with("E-NAT-")));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
@@ -2942,6 +3089,73 @@ fn cross_backend_unsafe_local_function_calls_execute_consistently() {
     let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
     assert_eq!(cranelift_exit, 7);
     assert_eq!(llvm_exit, 7);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_non_exhaustive_match_anchors_to_match_site() {
+    let file_name = format!(
+        "fozzylang-non-exhaustive-match-anchor-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "enum State { Ready, Waiting, Done }\n\nfn main(flag: bool) -> i32 {\n    let current = if flag { State::Ready } else { State::Waiting };\n    match current {\n        State::Ready => return 1,\n        _ if flag => return 2,\n    }\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("non-exhaustive match for enum `State`")
+        })
+        .expect("non-exhaustive diagnostic should be present");
+    let span = diagnostic
+        .span
+        .as_ref()
+        .expect("non-exhaustive diagnostic should be anchored");
+    assert_eq!(span.start_line, 5);
+    assert_eq!(diagnostic.snippet.as_deref(), Some("    match current {"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_process_namespace_migration_matches_verifier_guidance() {
+    let file_name = format!(
+        "fozzylang-process-namespace-guidance-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() {\n    discard process.run(\"echo hi\");\n    return;\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("native backend cannot execute unresolved call `process.run`")
+        })
+        .expect("native unresolved-call diagnostic should be present");
+    let help = diagnostic.help.as_deref().unwrap_or_default();
+    assert!(help.contains("migrate to `proc.run`"));
+    assert!(!help.contains("proc.stdout"));
 
     let _ = std::fs::remove_file(path);
 }

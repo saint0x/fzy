@@ -40,41 +40,50 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         ));
     }
 
-    if module.nodes > 0 && module.effects.is_empty() {
-        report.diagnostics.push(Diagnostic::new(
-            Severity::Warning,
-            "module has declarations but no explicit capabilities",
-            Some("declare required capabilities with `use core.<name>;`".to_string()),
-        ));
+    if module.nodes > 0 && module.effects.is_empty() && module.unknown_effects.is_empty() {
+        report.diagnostics.push(
+            Diagnostic::new(
+                Severity::Warning,
+                "module has declarations but no explicit capabilities",
+                Some("declare required capabilities with `use core.<name>;`".to_string()),
+            )
+            .with_catalog_key("verifier.missing_explicit_capabilities"),
+        );
     }
 
     for required in module.required_effects.iter() {
         if !module.effects.contains(required) {
-            report.diagnostics.push(Diagnostic::new(
-                Severity::Error,
-                format!("missing required capability: {}", required.as_str()),
-                Some(format!(
-                    "add `use core.{};` to module scope",
-                    required.as_str()
-                )),
-            ));
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!("missing required capability: {}", required.as_str()),
+                    Some(format!(
+                        "add `use core.{};` to module scope",
+                        required.as_str()
+                    )),
+                )
+                .with_catalog_key("verifier.missing_required_capability"),
+            );
         }
     }
     for function in &module.function_capability_requirements {
         for required in &function.required {
             if let Some(parsed) = core::Capability::parse(required) {
                 if !module.effects.contains(parsed) {
-                    report.diagnostics.push(Diagnostic::new(
-                        Severity::Error,
-                        format!(
-                            "function `{}` is missing required capability: {}",
-                            function.function, required
-                        ),
-                        Some(format!(
-                            "declare `use core.{}` or propagate a capability token to `{}`",
-                            required, function.function
-                        )),
-                    ));
+                    report.diagnostics.push(
+                        Diagnostic::new(
+                            Severity::Error,
+                            format!(
+                                "function `{}` is missing required capability: {}",
+                                function.function, required
+                            ),
+                            Some(format!(
+                                "declare `use core.{}` or propagate a capability token to `{}`",
+                                required, function.function
+                            )),
+                        )
+                        .with_catalog_key("verifier.function_missing_required_capability"),
+                    );
                 }
             }
         }
@@ -92,7 +101,9 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         report.diagnostics.push(Diagnostic::new(
             Severity::Error,
             format!("unknown capability: {effect}"),
-            Some("allowed: time, rng, fs, http, proc, mem, thread, log, error".to_string()),
+            Some(
+                "allowed: time, rng, fs, storage, http, proc, mem, thread, log, error".to_string(),
+            ),
         ));
     }
 
@@ -101,6 +112,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             core::Capability::Time,
             core::Capability::Random,
             core::Capability::FileSystem,
+            core::Capability::Storage,
             core::Capability::Http,
             core::Capability::Process,
             core::Capability::Memory,
@@ -109,32 +121,41 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             core::Capability::Error,
         ] {
             if module.effects.contains(disallowed) || module.required_effects.contains(disallowed) {
-                report.diagnostics.push(Diagnostic::new(
-                    Severity::Error,
-                    format!("safe profile forbids capability: {}", disallowed.as_str()),
-                    Some(
-                        "remove unsafe capability usage or compile with a non-safe profile"
-                            .to_string(),
-                    ),
-                ));
+                report.diagnostics.push(
+                    Diagnostic::new(
+                        Severity::Error,
+                        format!("safe profile forbids capability: {}", disallowed.as_str()),
+                        Some(
+                            "remove unsafe capability usage or compile with a non-safe profile"
+                                .to_string(),
+                        ),
+                    )
+                    .with_catalog_key("verifier.safe_profile_forbidden_capability"),
+                );
             }
         }
     }
 
     if module.host_syscall_sites > 0 {
         if module.extern_c_abi_functions == 0 {
-            report.diagnostics.push(Diagnostic::new(
-                Severity::Error,
-                "host syscall usage requires an `ext c fn` boundary",
-                Some("declare syscall wrappers as `ext c fn ...;`".to_string()),
-            ));
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "host syscall usage requires an `ext c fn` boundary",
+                    Some("declare syscall wrappers as `ext c fn ...;`".to_string()),
+                )
+                .with_catalog_key("verifier.host_syscall_requires_abi_boundary"),
+            );
         }
         if memory_safety_enforced {
-            report.diagnostics.push(Diagnostic::new(
-                Severity::Error,
-                "host syscall usage is forbidden under production memory safety",
-                Some("move syscall code behind audited FFI boundaries".to_string()),
-            ));
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    "host syscall usage is forbidden under production memory safety",
+                    Some("move syscall code behind audited FFI boundaries".to_string()),
+                )
+                .with_catalog_key("verifier.host_syscall_forbidden_under_production_memory_safety"),
+            );
         }
     }
 
@@ -160,7 +181,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                     "mark this import as `ext unsafe c fn` or change signature to a safe non-pointer contract"
                         .to_string(),
                 ),
-            ));
+            ).with_catalog_key("verifier.extern_c_pointer_requires_unsafe"));
         }
     }
 
@@ -479,19 +500,17 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         fn apply_type_fix_hints(mut diag: Diagnostic, detail: &str) -> Diagnostic {
             if detail.contains("unresolved call target `json.object") && detail.contains("autofix")
             {
-                diag = diag.with_suggested_fix(
+                diag = diag.with_fix(
                     "replace fixed-arity call with `json.object(#{\"k\": json.str(\"v\")})`",
                 );
             } else if detail.contains("unresolved call target `json.array")
                 && detail.contains("autofix")
             {
-                diag = diag.with_suggested_fix(
-                    "replace fixed-arity call with `json.array([item1, item2])`",
-                );
+                diag = diag.with_fix("replace fixed-arity call with `json.array([item1, item2])`");
             } else if detail.contains("unresolved call target `log.fields")
                 && detail.contains("autofix")
             {
-                diag = diag.with_suggested_fix(
+                diag = diag.with_fix(
                     "replace removed arity helper with `log.fields(#{\"k\": json.str(\"v\")})`",
                 );
             }
@@ -511,21 +530,34 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         let mut diag = Diagnostic::new(
             Severity::Error,
             format!("type-check failed: {primary_detail}"),
-            Some("primary cause shown; additional cascades were grouped".to_string()),
+            Some(
+                "fix the primary mismatch first; the compiler grouped related downstream failures below"
+                    .to_string(),
+            ),
         )
-        .with_note(format!("type_error_count={}", module.type_errors))
-        .with_note(format!("unique_root_details={unique_count}"));
-        let top_roots = grouped
-            .keys()
-            .take(5)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(" | ");
-        if !top_roots.is_empty() {
-            diag = diag.with_note(format!("top_root_details={top_roots}"));
+        .with_catalog_key("verifier.grouped_type_error")
+        .with_note(format!(
+            "detected {} type-check failure(s) collapsing to {} unique root cause(s)",
+            module.type_errors, unique_count
+        ));
+        let additional_details = module
+            .type_error_details
+            .iter()
+            .filter(|detail| *detail != &primary_detail)
+            .fold(Vec::<String>::new(), |mut acc, detail| {
+                if !acc.iter().any(|existing| existing == detail) {
+                    acc.push(detail.clone());
+                }
+                acc
+            });
+        for detail in additional_details.iter().take(4) {
+            diag = diag.with_note(format!("additional grouped root cause: {detail}"));
         }
         if unique_count > 5 {
-            diag = diag.with_note(format!("suppressed_root_details={}", unique_count - 5));
+            diag = diag.with_note(format!(
+                "{} more grouped root cause(s) were suppressed after the first 5 for brevity",
+                unique_count - 5
+            ));
         }
         report
             .diagnostics
@@ -734,6 +766,261 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.message.contains("unknown capability")));
+    }
+
+    #[test]
+    fn grouped_type_errors_use_human_readable_notes() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: None,
+            entry_return_const_i32: None,
+            entry_has_return_expr: false,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 3,
+            type_error_details: vec![
+                "let binding `value` type mismatch: expected `i32`, got `str`".to_string(),
+                "unresolved call target `missing_symbol`".to_string(),
+                "unresolved call target `missing_symbol`".to_string(),
+            ],
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify(&module);
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("type-check failed"))
+            .expect("grouped type diagnostic should be present");
+        assert!(diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("detected 3 type-check failure(s)")));
+        assert!(diagnostic
+            .notes
+            .iter()
+            .any(|note| note.contains("additional grouped root cause: unresolved call target")));
+        assert!(diagnostic
+            .notes
+            .iter()
+            .all(|note| !note.contains("type_error_count=")));
+    }
+
+    #[test]
+    fn grouped_type_errors_do_not_repeat_primary_root_cause() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: None,
+            entry_return_const_i32: None,
+            entry_has_return_expr: false,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 3,
+            type_error_details: vec![
+                "let binding `value` type mismatch: expected `i32`, got `str`".to_string(),
+                "let binding `value` type mismatch: expected `i32`, got `str`".to_string(),
+                "unresolved call target `missing_symbol`".to_string(),
+            ],
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify(&module);
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("type-check failed"))
+            .expect("grouped type diagnostic should be present");
+        assert!(diagnostic.notes.iter().any(|note| {
+            note.contains("additional grouped root cause: unresolved call target `missing_symbol`")
+        }));
+        assert!(!diagnostic.notes.iter().any(|note| {
+            note.contains(
+                "additional grouped root cause: let binding `value` type mismatch: expected `i32`, got `str`",
+            )
+        }));
+    }
+
+    #[test]
+    fn invalid_capability_import_does_not_emit_missing_capability_warning() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec!["text".to_string()],
+            nodes: 1,
+            entry_return_type: None,
+            entry_return_const_i32: None,
+            entry_has_return_expr: false,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify(&module);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic.message.contains("`use core.text;` is invalid") }));
+        assert!(!report.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("module has declarations but no explicit capabilities")
+        }));
+    }
+
+    #[test]
+    fn removed_api_type_diagnostics_surface_fix_text() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: None,
+            entry_return_const_i32: None,
+            entry_has_return_expr: false,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 1,
+            type_error_details: vec![
+                "unresolved call target `json.object3` (autofix: use `json.object(map_handle)` instead)"
+                    .to_string(),
+            ],
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify(&module);
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("type-check failed"))
+            .expect("grouped type diagnostic should be present");
+        assert_eq!(
+            diagnostic.fix.as_deref(),
+            Some("replace fixed-arity call with `json.object(#{\"k\": json.str(\"v\")})`")
+        );
+        assert!(diagnostic
+            .suggested_fixes
+            .iter()
+            .any(|fix| fix.contains("json.object")));
     }
 
     #[test]
@@ -1088,6 +1375,7 @@ mod tests {
             Capability::Time,
             Capability::Random,
             Capability::FileSystem,
+            Capability::Storage,
             Capability::Http,
             Capability::Process,
             Capability::Memory,
@@ -1148,7 +1436,9 @@ mod tests {
                 ..VerifyPolicy::default()
             },
         );
-        for expected in ["time", "rng", "fs", "http", "proc", "mem", "thread"] {
+        for expected in [
+            "time", "rng", "fs", "storage", "http", "proc", "mem", "thread",
+        ] {
             assert!(report.diagnostics.iter().any(|d| d
                 .message
                 .contains(&format!("safe profile forbids capability: {expected}"))));
