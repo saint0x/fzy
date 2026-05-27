@@ -284,6 +284,7 @@ Runtime logging defaults:
 - production string escapes now include terminal-safe forms: `\xNN`, `\uNNNN`, `\u{NN...}`, and explicit octal `\NNN`
 - canonical structured log fields use `log.fields(map_handle)`
 - canonical dynamic JSON builders use `json.array(list_handle)` and `json.object(map_handle)`
+- parsed JSON iteration is first-class with `json.keys(json_handle)`
 - first-class object literal syntax is available for map-backed payloads: `#{ "k": json.str("v") }`
 - canonical process builders use `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`/`proc.run_cmd`
 - `proc.run*` returns exit codes; `proc.spawn*` returns handles for wait/stdout/stderr/exit inspection

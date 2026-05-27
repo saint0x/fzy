@@ -270,6 +270,10 @@ Semantics:
 - Dynamic JSON builders are canonical:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
+- Dynamic parsed-JSON iteration is first-class:
+  - `json.keys(json_handle)` for object key iteration
+  - `json.to_map(json_handle)` for object shapes whose values are strings
+  - `json.to_list(json_handle)` for array shapes whose items are strings
 - Transcript-style CLI UX should prefer one output stream for conversational ordering.
   - Use `term.print*` / `term.transcript_kv` for transcript lines.
   - Reserve `term.write_err` / `term.eprint*` for real errors or control-channel messages.
@@ -286,9 +290,11 @@ fn handle(conn: HttpHandle) -> i32 {
     http.read(conn)
     let body = http.body_json(conn)
     let message = json.get_str(body, "message")
+    let keys = json.keys(body)
     let payload = map.new()
     discard map.set(payload, "ok", json.raw("true"))
     discard map.set(payload, "message", json.str(message))
+    discard map.set(payload, "field_count", json.str(str.from_i32(list.len(keys))))
     return http.write_json(conn, 200, json.object(payload))
 }
 ```

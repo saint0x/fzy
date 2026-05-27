@@ -147,6 +147,11 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "json.keys",
+        symbol: "fz_native_json_keys",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "json.parse",
         symbol: "fz_native_json_parse",
         arity: 1,

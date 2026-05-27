@@ -8586,6 +8586,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "json.object",
         "json.to_list",
         "json.to_map",
+        "json.keys",
         "json.parse",
         "json.get",
         "json.get_str",
@@ -8878,8 +8879,9 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "json.from_map" => (vec![map_handle.clone()], str_ty.clone()),
         "json.array" => (vec![list_handle.clone()], str_ty.clone()),
         "json.object" => (vec![map_handle.clone()], str_ty.clone()),
-        "json.to_list" => (vec![str_ty.clone()], list_handle.clone()),
-        "json.to_map" => (vec![str_ty.clone()], map_handle.clone()),
+        "json.to_list" => (vec![json_handle.clone()], list_handle.clone()),
+        "json.to_map" => (vec![json_handle.clone()], map_handle.clone()),
+        "json.keys" => (vec![json_handle.clone()], list_handle.clone()),
         "json.parse" => (vec![str_ty.clone()], json_handle.clone()),
         "json.get" => (
             vec![json_handle.clone(), str_ty.clone()],
@@ -11165,6 +11167,22 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn json_keys_and_bridges_accept_json_handles() {
+        let source = r#"
+            fn main() -> i32 {
+                let parsed = json.parse("{\"message\":\"hi\",\"count\":\"2\"}")
+                let keys = json.keys(parsed)
+                let as_map = json.to_map(parsed)
+                discard map.keys(as_map)
+                return list.len(keys)
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
     }
 
     #[test]

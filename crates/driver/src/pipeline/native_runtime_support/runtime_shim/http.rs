@@ -423,7 +423,8 @@ int32_t fz_native_json_from_map(int32_t map_handle) {
 }
 
 int32_t fz_native_json_to_list(int32_t json_id) {
-  const char* raw = fz_lookup_string(json_id);
+  int32_t value_id = fz_json_value_get_id(json_id);
+  const char* raw = fz_lookup_string(value_id);
   char** items = NULL;
   int count = 0;
   if (fz_parse_json_string_array(raw, &items, &count) != 0) {
@@ -443,7 +444,8 @@ int32_t fz_native_json_to_list(int32_t json_id) {
 }
 
 int32_t fz_native_json_to_map(int32_t json_id) {
-  const char* raw = fz_lookup_string(json_id);
+  int32_t value_id = fz_json_value_get_id(json_id);
+  const char* raw = fz_lookup_string(value_id);
   char** pairs = NULL;
   int count = 0;
   if (fz_parse_json_env_object(raw, &pairs, &count) != 0) {
@@ -467,6 +469,60 @@ int32_t fz_native_json_to_map(int32_t json_id) {
   pthread_mutex_unlock(&fz_collections_lock);
   fz_free_string_list(pairs, count);
   return handle;
+}
+
+int32_t fz_native_json_keys(int32_t json_value_handle) {
+  int32_t value_id = fz_json_value_get_id(json_value_handle);
+  const char* raw = fz_lookup_string(value_id);
+  if (raw == NULL) {
+    return -1;
+  }
+  const char* p = fz_json_ws(raw);
+  if (p == NULL || *p != '{') {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_list_alloc();
+  fz_list_state* list = fz_list_get(handle);
+  pthread_mutex_unlock(&fz_collections_lock);
+  if (list == NULL) {
+    return -1;
+  }
+  p = fz_json_ws(p + 1);
+  if (*p == '}') {
+    return handle;
+  }
+  for (;;) {
+    char* key = NULL;
+    if (fz_json_parse_string(&p, &key) != 0) {
+      free(key);
+      return -1;
+    }
+    pthread_mutex_lock(&fz_collections_lock);
+    list = fz_list_get(handle);
+    if (list != NULL) {
+      (void)fz_list_push_cstr(list, key == NULL ? "" : key);
+    }
+    pthread_mutex_unlock(&fz_collections_lock);
+    free(key);
+    p = fz_json_ws(p);
+    if (*p != ':') {
+      return -1;
+    }
+    p = fz_json_ws(p + 1);
+    if (fz_json_skip_value_token(&p, 0) != 0) {
+      return -1;
+    }
+    p = fz_json_ws(p);
+    if (*p == ',') {
+      p = fz_json_ws(p + 1);
+      continue;
+    }
+    if (*p == '}') {
+      return handle;
+    }
+    return -1;
+  }
 }
 
 int32_t fz_native_json_parse(int32_t json_id) {

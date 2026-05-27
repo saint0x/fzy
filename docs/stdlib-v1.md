@@ -248,6 +248,10 @@ Transcript guidance:
 - JSON composition uses dynamic builders:
   - `json.array(list_handle)`
   - `json.object(map_handle)`
+- Parsed JSON object/array bridges are first-class:
+  - `json.keys(json_handle)` iterates arbitrary object keys
+  - `json.to_map(json_handle)` bridges string-valued objects into `MapHandle`
+  - `json.to_list(json_handle)` bridges string arrays into `ListHandle`
 - Canonical inbound JSON handler shape:
 
 ```fzy

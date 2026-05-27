@@ -12391,6 +12391,62 @@ mod tests {
     }
 
     #[test]
+    fn native_run_json_object_key_iteration_execute() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-json-keys-{suffix}.fzy"));
+        let out_path = std::env::temp_dir().join(format!("fozzylang-json-keys-{suffix}.json"));
+        let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\n\nfn main() -> i32 {{\n    let parsed = json.parse(\"{{\\\"message\\\":\\\"hi\\\",\\\"count\\\":\\\"2\\\"}}\")\n    let keys = json.keys(parsed)\n    let child = json.get(parsed, list.get(keys, 0))\n    let as_map = json.to_map(parsed)\n    let out = map.new()\n    discard map.set(out, \"keys_len\", json.str(str.from_i32(list.len(keys))))\n    discard map.set(out, \"first_key\", json.str(list.get(keys, 0)))\n    discard map.set(out, \"first_raw\", json.str(json.get_str(child, \"raw\")))\n    discard map.set(out, \"map_keys_len\", json.str(str.from_i32(list.len(map.keys(as_map)))))\n    fs.write_file(\"{quoted_out}\", json.object(out))\n    return 0\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+        let _ = std::fs::remove_file(&out_path);
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("json object key iteration runtime program should succeed");
+        assert!(output.contains("\"exitCode\":0"), "output was: {output}");
+        let content =
+            std::fs::read_to_string(&out_path).expect("json key iteration output should exist");
+        assert!(content.contains("\"keys_len\":\"2\""), "content was: {content}");
+        assert!(content.contains("\"map_keys_len\":\"2\""), "content was: {content}");
+        assert!(
+            content.contains("\"first_key\":\"message\"")
+                || content.contains("\"first_key\":\"count\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"first_raw\":\"\\\"hi\\\"\"")
+                || content.contains("\"first_raw\":\"\\\"2\\\"\""),
+            "content was: {content}"
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(out_path);
+    }
+
+    #[test]
     fn native_run_host_backends_preserves_fs_side_effects_for_json_array_traversal() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
