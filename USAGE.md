@@ -166,6 +166,10 @@ Runtime logging defaults:
   - `io.list_dir`, `io.read_text`, `io.write_text`
   - `path.join`, `path.normalize`, `path.basename`, `path.dirname`
 - canonical dynamic JSON builders use `json.array(list_handle)` / `json.object(map_handle)`
+- canonical parsed-JSON iteration and bridges:
+  - `json.keys(json_handle)` for arbitrary object keys
+  - `json.to_map(json_handle)` for string-valued object bridges
+  - `json.to_list(json_handle)` for string-array bridges
 - first-class object literal syntax is available for small map payloads: `#{ "k": json.str("v") }`
 - canonical process builders use `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd` / `proc.run_cmd`
 - `proc.run*` returns exit codes; `proc.spawn*` returns handles for wait/stdout/stderr/exit inspection
