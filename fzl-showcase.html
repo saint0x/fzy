@@ -435,6 +435,8 @@ fn host_and_io_showcase() -> i32 {
     discard term.transcript_kv("json_keys", str.from_i32(list.len(parsed_keys)), 10);
     let parsed_map = json.to_map(parsed);
     discard term.transcript_kv("json_map", str.from_i32(list.len(map.keys(parsed_map))), 10);
+    let env_key = text.upper_ascii(str.concat("tool_arg_", str.slice("message", 0, 7)));
+    discard term.transcript_kv("env_key", env_key, 10);
 
     let listener = http.bind();
     if listener >= 0 {
