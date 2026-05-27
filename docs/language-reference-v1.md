@@ -189,6 +189,8 @@ Semantics:
 - Current-process argv access is first-class:
   - `proc.argv_count()`
   - `proc.argv_get(index)`
+- Canonical standard-library wrapper import is `use core.process;`.
+- `core.process` exposes ergonomic wrappers like `process.argv_or`, `process.command_name`, and `process.has_flag`.
 - Structured process builders are first-class: `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`, `proc.run_cmd`.
 - `proc.run*` waits for completion and returns the child exit code.
 - `proc.spawn*` returns a process handle for `proc.wait`, `proc.stdout`, `proc.stderr`, and `proc.exit_code`.
@@ -200,6 +202,8 @@ Semantics:
 
 - Canonical current-process terminal namespace is `term.*`.
 - This surface is distinct from child-process management in `proc.*`.
+- Canonical standard-library wrapper import is `use core.term;`.
+- `core.term` exposes ergonomic wrappers like `term.print_line`, `term.eprint_line`, `term.prompt_line`, and `term.is_interactive`.
 - First-class terminal operations:
   - `term.read_line()`
   - `term.stdin_eof()`

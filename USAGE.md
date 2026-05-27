@@ -358,6 +358,40 @@ fz doc gen examples/robust_cli/src --format markdown --out artifacts/robust_cli.
 fz doc gen examples/robust_cli/src --format markdown --reference docs/language-reference-v1.md --out artifacts/robust_cli.api.md
 ```
 
+## 7.3 Native CLI Surface
+
+Use the standard-library modules for current-process CLI behavior:
+
+- `use core.process;`
+- `use core.term;`
+
+These are distinct from child-process primitives in `proc.*`.
+
+Canonical pattern:
+
+```fzy
+use core.process;
+use core.term;
+
+fn main() -> i32 {
+    let command = process.command_name()
+    let mode = process.argv_or(1, "serve")
+    discard term.print_line(str.concat("command=", command))
+    discard term.print_line(str.concat("mode=", mode))
+    if term.is_interactive() == 1 {
+        discard term.eprint_line("interactive terminal detected")
+    }
+    return 0
+}
+```
+
+Behavioral contract:
+
+- raw argv intrinsics remain `proc.argv_count()` / `proc.argv_get(index)`
+- raw terminal intrinsics remain `term.read_line()`, `term.stdin_eof()`, `term.write()`, `term.write_err()`, `term.stdin_is_tty()`, `term.stdout_is_tty()`
+- `term.read_line()` strips trailing newline / `\r`
+- empty line and EOF are distinguished via `term.stdin_eof()`
+
 ## 8. Repository Conventions You Must Follow
 
 Source of truth: `docs/project-conventions-v1.md`.

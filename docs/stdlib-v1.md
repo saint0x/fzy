@@ -98,9 +98,16 @@ The v1 stdlib provides production baseline primitives for:
 - `run_child_with_capability(config, token) -> Result<ProcessResult, CapabilityError>`
 - Structured process config supports argv/env/stdin/resource limits/signal behavior.
 - Timeout and cancellation states are explicit in returned process status.
+- Canonical current-process wrapper module is `core.process`.
 - Current-process argv helpers are first-class:
   - `proc.argv_count()`
   - `proc.argv_get(index)`
+- Common `core.process` helpers:
+  - `process.argv_count()`
+  - `process.argv(index)`
+  - `process.argv_or(index, fallback)`
+  - `process.command_name()`
+  - `process.has_flag(flag)`
 - Canonical language-facing process builders map to structured handles:
   - `proc.argv_new/push`
   - `proc.env_new/set`
@@ -135,14 +142,30 @@ let err = proc.stderr(handle)
 - Empty line and EOF are distinct:
   - empty line returns `""` with `term.stdin_eof() == 0`
   - EOF returns `""` with `term.stdin_eof() == 1`
-- Canonical standard-library wrappers live in `core.term` and `core.process`:
-  - `core.term.print_line`
-  - `core.term.eprint_line`
-  - `core.term.prompt_line`
-  - `core.term.is_interactive`
-  - `core.process.argv_or`
-  - `core.process.command_name`
-  - `core.process.has_flag`
+- Canonical standard-library wrapper module is `core.term`.
+- Common `core.term` helpers:
+  - `term.print(text)`
+  - `term.print_line(text)`
+  - `term.eprint(text)`
+  - `term.eprint_line(text)`
+  - `term.prompt_line(prompt)`
+  - `term.is_interactive()`
+
+Canonical production CLI shape:
+
+```fzy
+use core.process;
+use core.term;
+
+fn main() -> i32 {
+    let mode = process.argv_or(1, "serve")
+    discard term.print_line(str.concat("mode=", mode))
+    if term.is_interactive() == 1 {
+        discard term.eprint_line("interactive terminal detected")
+    }
+    return 0
+}
+```
 
 ### `path`
 

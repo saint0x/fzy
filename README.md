@@ -272,6 +272,10 @@ Runtime logging defaults:
 - structured fields are appended as `| fields={...}`
 - JSON log mode is opt-in via `log.set_json(1)`
 - `use core.text;` is invalid; `str.*` intrinsics are capability-free
+- current-process CLI surface is first-class:
+  - raw runtime intrinsics: `proc.argv_count/get`, `term.read_line/stdin_eof/write/write_err/stdin_is_tty/stdout_is_tty`
+  - canonical standard-library wrappers: `use core.process; use core.term;`
+  - common helpers: `process.argv_or`, `process.command_name`, `process.has_flag`, `term.print_line`, `term.eprint_line`, `term.prompt_line`, `term.is_interactive`
 - canonical structured log fields use `log.fields(map_handle)`
 - canonical dynamic JSON builders use `json.array(list_handle)` and `json.object(map_handle)`
 - first-class object literal syntax is available for map-backed payloads: `#{ "k": json.str("v") }`
@@ -291,6 +295,34 @@ With `fz test <file.fzy> --det --record artifacts/name.trace.json --json`, the d
 - `*.scenarios/`: generated language-native `.fozzy.json` scenarios
 - `*.scenarios.json`: index for generated scenarios
 - `*.manifest.json`: artifact map including primary scenario path
+
+## Native CLI Surface
+
+Canonical production authoring split:
+
+- current-process argv + terminal UX: `core.process`, `core.term`
+- child-process execution: `proc.*`
+
+Example:
+
+```fzy
+use core.process;
+use core.term;
+
+fn main() -> i32 {
+    let mode = process.argv_or(1, "serve")
+    discard term.print_line(str.concat("mode=", mode))
+    if term.is_interactive() == 1 {
+        discard term.eprint_line("interactive terminal detected")
+    }
+    return 0
+}
+```
+
+EOF semantics are explicit:
+
+- empty line: `term.read_line()` returns `""` and `term.stdin_eof() == 0`
+- EOF: `term.read_line()` returns `""` and `term.stdin_eof() == 1`
 
 ## Native Backend Policy
 

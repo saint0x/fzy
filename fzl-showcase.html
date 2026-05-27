@@ -101,6 +101,7 @@
 // - direct-memory native lowering contract + gate-backed parity
 // - first-class tuple/struct/enum aggregate handles in both native backends
 // - destructuring parity across locals, parameters, calls, returns, helpers, and control-flow values
+// - current-process CLI surface via `core.process` + `core.term`
 
 // ------------------------------------------------------------
 // SECTION A: project/module surface
@@ -109,6 +110,8 @@ use core.time;
 use core.fs;
 use core.http;
 use core.proc;
+use core.process;
+use core.term;
 use core.thread;
 use core.log;
 use core.encoding;
@@ -402,9 +405,18 @@ fn host_and_io_showcase() -> i32 {
     let root = path.join("tmp", "showcase");
     let _ = fs.mkdir(root);
     log.set_json(1);
+    let command = process.command_name();
+    let mode = process.argv_or(1, "showcase");
+    let interactive = term.is_interactive();
+    discard term.print_line(str.concat("command=", command));
+    discard term.print_line(str.concat("mode=", mode));
+    if interactive == 1 {
+        discard term.eprint_line("interactive terminal detected");
+    }
     let fields_start = map.new();
     map.set(fields_start, "component", "showcase");
     map.set(fields_start, "phase", "host_io");
+    map.set(fields_start, "mode", mode);
     log.info("showcase.start", log.fields(fields_start));
 
     let payload = encoding.json_encode("{\"ok\":true}");
@@ -424,8 +436,12 @@ fn host_and_io_showcase() -> i32 {
         log.warn("showcase.bind_failed", log.fields(fields_bind));
     }
 
-    let proc_id = proc.spawn("echo", ["fzl", "showcase"]);
-    let _exit = proc.wait(proc_id);
+    let proc_argv = proc.argv_new();
+    discard proc.argv_push(proc_argv, "fzl");
+    discard proc.argv_push(proc_argv, "showcase");
+    let proc_env = proc.env_new();
+    let proc_id = proc.spawn_cmd("echo", proc_argv, proc_env, "");
+    let _exit = proc.wait(proc_id, 1000);
 
     // Compiler-generated unsafe contracts/docs include reason/invariant/owner/scope/risk_class/proof_ref.
     unsafe {
