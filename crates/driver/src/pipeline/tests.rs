@@ -125,6 +125,46 @@ fn verify_file_with_root_source_uses_project_graph_for_unsaved_buffers() {
 }
 
 #[test]
+fn verify_file_resolves_same_module_helpers_inside_nested_object_literals() {
+    let project_name = format!(
+        "fozzylang-helper-object-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/services")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "mod services;\nfn main() -> i32 {\n    services.security.check();\n    return 0\n}\n",
+    )
+    .expect("main should be written");
+    std::fs::write(root.join("src/services/mod.fzy"), "mod security;\n")
+        .expect("services mod should be written");
+    std::fs::write(
+        root.join("src/services/security.fzy"),
+        "fn helper() -> str {\n    return \"ok\"\n}\n\nfn nested() -> str {\n    let payload = json.object(#{\n        \"mode\": json.str(helper()),\n        \"tuple\": json.str(if helper() == \"ok\" { helper() } else { \"no\" }),\n    })\n    return payload\n}\n\npub fn check() -> i32 {\n    if str.len(nested()) > 0 {\n        return 0\n    }\n    return 1\n}\n",
+    )
+    .expect("security module should be written");
+
+    let output = verify_file(&root).expect("verify should return diagnostics payload");
+    assert!(
+        !output.diagnostic_details.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("unresolved call target `helper`")),
+        "same-module helper calls inside object literals should be qualified"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn parse_diagnostic_context_is_reported_as_notes_not_help() {
     let project_name = format!(
         "fozzylang-parse-note-{}",

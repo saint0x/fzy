@@ -1046,11 +1046,13 @@ fn qualify_expr(
         ast::Expr::Group(inner) => {
             qualify_expr(inner, namespace, local_functions, module_aliases);
         }
+        ast::Expr::Tuple(items) => {
+            for item in items {
+                qualify_expr(item, namespace, local_functions, module_aliases);
+            }
+        }
         ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             qualify_expr(inner, namespace, local_functions, module_aliases);
-        }
-        ast::Expr::Unary { expr, .. } => {
-            qualify_expr(expr, namespace, local_functions, module_aliases);
         }
         ast::Expr::TryCatch {
             try_expr,
@@ -1068,10 +1070,57 @@ fn qualify_expr(
             qualify_expr(then_expr, namespace, local_functions, module_aliases);
             qualify_expr(else_expr, namespace, local_functions, module_aliases);
         }
-        ast::Expr::Binary { left, right, .. } => {
-            qualify_expr(left, namespace, local_functions, module_aliases);
-            qualify_expr(right, namespace, local_functions, module_aliases);
+        ast::Expr::Match { scrutinee, arms } => {
+            qualify_expr(scrutinee, namespace, local_functions, module_aliases);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    qualify_expr(guard, namespace, local_functions, module_aliases);
+                }
+                qualify_expr(&mut arm.value, namespace, local_functions, module_aliases);
+            }
         }
+        ast::Expr::While { condition, body } => {
+            qualify_expr(condition, namespace, local_functions, module_aliases);
+            for stmt in body {
+                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                qualify_stmt(init, namespace, local_functions, module_aliases);
+            }
+            if let Some(condition) = condition {
+                qualify_expr(condition, namespace, local_functions, module_aliases);
+            }
+            if let Some(step) = step {
+                qualify_stmt(step, namespace, local_functions, module_aliases);
+            }
+            for stmt in body {
+                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            qualify_expr(iterable, namespace, local_functions, module_aliases);
+            for stmt in body {
+                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Expr::Loop { body } => {
+            for stmt in body {
+                qualify_stmt(stmt, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Expr::Break(value) | ast::Expr::Return(value) => {
+            if let Some(value) = value {
+                qualify_expr(value, namespace, local_functions, module_aliases);
+            }
+        }
+        ast::Expr::Continue => {}
         ast::Expr::Range { start, end, .. } => {
             qualify_expr(start, namespace, local_functions, module_aliases);
             qualify_expr(end, namespace, local_functions, module_aliases);
@@ -1081,9 +1130,21 @@ fn qualify_expr(
                 qualify_expr(item, namespace, local_functions, module_aliases);
             }
         }
+        ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                qualify_expr(value, namespace, local_functions, module_aliases);
+            }
+        }
         ast::Expr::Index { base, index } => {
             qualify_expr(base, namespace, local_functions, module_aliases);
             qualify_expr(index, namespace, local_functions, module_aliases);
+        }
+        ast::Expr::Unary { expr, .. } => {
+            qualify_expr(expr, namespace, local_functions, module_aliases);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            qualify_expr(left, namespace, local_functions, module_aliases);
+            qualify_expr(right, namespace, local_functions, module_aliases);
         }
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
@@ -1091,7 +1152,6 @@ fn qualify_expr(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
-        _ => {}
     }
 }
 
@@ -1294,11 +1354,13 @@ fn canonicalize_expr_calls(
         ast::Expr::Group(inner) => {
             canonicalize_expr_calls(inner, namespace, known_functions);
         }
+        ast::Expr::Tuple(items) => {
+            for item in items {
+                canonicalize_expr_calls(item, namespace, known_functions);
+            }
+        }
         ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
             canonicalize_expr_calls(inner, namespace, known_functions);
-        }
-        ast::Expr::Unary { expr, .. } => {
-            canonicalize_expr_calls(expr, namespace, known_functions);
         }
         ast::Expr::TryCatch {
             try_expr,
@@ -1316,10 +1378,57 @@ fn canonicalize_expr_calls(
             canonicalize_expr_calls(then_expr, namespace, known_functions);
             canonicalize_expr_calls(else_expr, namespace, known_functions);
         }
-        ast::Expr::Binary { left, right, .. } => {
-            canonicalize_expr_calls(left, namespace, known_functions);
-            canonicalize_expr_calls(right, namespace, known_functions);
+        ast::Expr::Match { scrutinee, arms } => {
+            canonicalize_expr_calls(scrutinee, namespace, known_functions);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    canonicalize_expr_calls(guard, namespace, known_functions);
+                }
+                canonicalize_expr_calls(&mut arm.value, namespace, known_functions);
+            }
         }
+        ast::Expr::While { condition, body } => {
+            canonicalize_expr_calls(condition, namespace, known_functions);
+            for stmt in body {
+                canonicalize_stmt_calls(stmt, namespace, known_functions);
+            }
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                canonicalize_stmt_calls(init, namespace, known_functions);
+            }
+            if let Some(condition) = condition {
+                canonicalize_expr_calls(condition, namespace, known_functions);
+            }
+            if let Some(step) = step {
+                canonicalize_stmt_calls(step, namespace, known_functions);
+            }
+            for stmt in body {
+                canonicalize_stmt_calls(stmt, namespace, known_functions);
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            canonicalize_expr_calls(iterable, namespace, known_functions);
+            for stmt in body {
+                canonicalize_stmt_calls(stmt, namespace, known_functions);
+            }
+        }
+        ast::Expr::Loop { body } => {
+            for stmt in body {
+                canonicalize_stmt_calls(stmt, namespace, known_functions);
+            }
+        }
+        ast::Expr::Break(value) | ast::Expr::Return(value) => {
+            if let Some(value) = value {
+                canonicalize_expr_calls(value, namespace, known_functions);
+            }
+        }
+        ast::Expr::Continue => {}
         ast::Expr::Range { start, end, .. } => {
             canonicalize_expr_calls(start, namespace, known_functions);
             canonicalize_expr_calls(end, namespace, known_functions);
@@ -1329,9 +1438,21 @@ fn canonicalize_expr_calls(
                 canonicalize_expr_calls(item, namespace, known_functions);
             }
         }
+        ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                canonicalize_expr_calls(value, namespace, known_functions);
+            }
+        }
         ast::Expr::Index { base, index } => {
             canonicalize_expr_calls(base, namespace, known_functions);
             canonicalize_expr_calls(index, namespace, known_functions);
+        }
+        ast::Expr::Unary { expr, .. } => {
+            canonicalize_expr_calls(expr, namespace, known_functions);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            canonicalize_expr_calls(left, namespace, known_functions);
+            canonicalize_expr_calls(right, namespace, known_functions);
         }
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
@@ -1339,7 +1460,6 @@ fn canonicalize_expr_calls(
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
-        _ => {}
     }
 }
 
