@@ -7,9 +7,11 @@ Status convention:
 - `✅` means completed and verified work
 - pending work is written as plain bullets or numbered items only
 
-## Three-Agent Parallel Work Split
+## Historical Three-Agent Parallel Work Split
 
 Use this section as the coordination source of truth before touching any unfinished item below. The detailed issue sections later in this document remain authoritative for problem statements, required fixes, and required tests. This split exists so three agents can work in parallel without stepping on one another.
+
+This split is historical now that the work has been merged; later sections reflect the final closed vs blocked state on `main`.
 
 Parallel-work rules:
 
@@ -19,7 +21,7 @@ Parallel-work rules:
 - when a task spans multiple layers, the primary owner coordinates the handoff, but file ownership boundaries still apply
 - after finishing a section, mark the original detailed section with `✅` and record the commands/tests/doc updates there so nothing is lost in transit
 
-Coverage check for still-open work:
+Historical ownership map before merges:
 
 - Agent 1 owns sections `1`, `3`, `5.35`, `6`, `7.25`, and `11`
 - Agent 2 owns sections `7.75`, `9`, `10`, `12`, `13`, `13.5`, `13.75`, and Priority `5`
@@ -133,67 +135,19 @@ Handoff notes for other agents:
 
 ## Completed Review Evidence
 
-✅ Completed a source-level review of the compiler memory-safety surface across `crates/hir`, `crates/verifier`, docs, and verifier integration.
+✅ Completed the source-level audit across `crates/hir`, `crates/verifier`, product docs, and verifier-facing integration surfaces.
 
-✅ Ran the prescribed deterministic Fozzy memory flow, including doctor, strict test, recorded trace, trace verification, replay, and CI, against `tests/memory_graph_diff_top.pass.fozzy.json`.
+✅ Reproduced the key pre-fix bug classes that motivated this checklist: borrowed-reference false positives, `defer free(...)` undercounting, inferred-owned cleanup gaps, branch/`match` ownership blind spots, loop/lifetime control-flow limitations, pointer/import unsafe enforcement gaps, callback context-anchor gaps, and proof-ref/accounting overstatement.
 
-✅ Confirmed the current memory scenario is deterministic and replay/CI-clean on the path it covers.
+✅ Landed the HIR-side fixes for branch-sensitive ownership joins, loop fixed-point analysis, grouped/projected consume roots, inferred handle cleanup parity, assignment-aware reference lifetime flow, async borrow hardening, and expanded alias/provenance tracking.
 
-✅ Reproduced the borrowed-reference false positive where a local `&'a` binding was incorrectly treated as a linear resource requiring `defer close(...)`.
+✅ Landed the verifier/docs/evidence fixes for transfer-aware cleanup acceptance, unsafe-accounting honesty, proof-ref validation, thread-boundary diagnostics, scoped public safety wording, and first-class `fz verify` / Fozzy compiler-memory scenario gates.
 
-✅ Reproduced the documented `defer free(...)` contradiction by showing that `let p = alloc(...); defer free(p)` still triggered leak and unreleased-linear diagnostics.
+✅ Landed the product-surface fixes for canonical `fz init`, explicit Cranelift-only `fz build --lib` contract wording, and the native filesystem/runtime closure needed for real artifact builders.
 
-✅ Reproduced an active `hir` reference-lifetime compile failure where `crates/hir/src/lib.rs` compared `Option<Option<String>>` against `Option<String>`.
+✅ Verified the merged checkout directly with `cargo test -q -p hir`, `cargo test -q -p verifier`, targeted `driver` / `fz` CLI tests, strict deterministic Fozzy doctor/test flows, recorded trace verify/replay/CI, and host-backed runs for the compiler-memory and init surfaces.
 
-✅ Ran targeted unsafe-FFI and trace-backed checks beyond the basic memory scenario to widen evidence coverage around pointer misuse, callback lifecycle, and host replay.
-
-✅ Reproduced an inferred-owned-pointer escape hatch where `let p = unsafe { acquire_owned() }` with no cleanup produced warnings only and `errors: 0`.
-
-✅ Reproduced the helper-call ownership-transfer mismatch where a callee that `free(...)`d its parameter was still treated as consuming a non-owned value while the caller leaked the original owner.
-
-✅ Reproduced a control-flow asymmetry where direct cleanup inside `if` updated ownership state correctly but the equivalent `match`-arm cleanup did not.
-
-✅ Reproduced an inferred-`alloc(...)` false positive where `let p = alloc(n); free(p);` was misdiagnosed as freeing a non-linear value because enforcement still depended on explicit type spelling.
-
-✅ Ran the current compiler, verifier, and unsafe-accounting evidence flow with direct crate tests, workspace unsafe audit, and Rust unsafe inventory.
-
-✅ Confirmed the current checkout builds the compiler safety crates directly, with both `hir` and `verifier` test suites passing and the earlier return-lifetime compile failure no longer reproducing here.
-
-✅ Confirmed the current unsafe-accounting posture is clean on this checkout, with zero missing contracts, invalid proof refs, or unsafe-context violations and the Rust unsafe inventory still within the approved budget of `2`.
-
-✅ Confirmed the approved Rust `unsafe` footprint remains limited to [crates/stdlib/src/security.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/security.rs:74) and [crates/stdlib/src/process.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/process.rs:198).
-
-✅ Confirmed the current host-backed memory scenario also passes on this checkout.
-
-✅ Re-ran the unsafe and FFI scenarios individually to remove ambiguity from multi-target invocation and confirm each target passes on its own.
-
-✅ Added a second deterministic memory evidence pass with a fresh seed and an explicit recorded trace lifecycle.
-
-✅ Fixed and regression-covered the live cleanup-logic gaps so borrowed refs stop being treated as linear, inferred owned locals are tracked correctly, deferred cleanup counts as real release, `match` cleanup updates ownership state, and inferred unsafe pointer returns no longer bypass leak analysis.
-
-✅ Added focused `crates/hir` regressions for borrowed-reference linear-resource classification, inferred-allocation release handling, deferred cleanup, inferred unsafe pointer-return ownership, and `match`-arm cleanup state.
-
-✅ Re-ran the production Fozzy flow for the compiler safety surface, including validate, deterministic strict tests, recorded trace, trace verify, replay, CI, and host-backed execution.
-
-✅ Tightened same-statement async borrow checking so shared borrows used after `await` inside nested `if`, `match`, and loop bodies are now rejected and regression-covered.
-
-✅ Re-ran a fresh post-fix HIR Fozzy trace lifecycle to validate the async-borrow hardening under deterministic, replayable, and host-backed coverage.
-
-✅ Fixed helper-boundary pointer/ref provenance attribution by switching to callee return-provenance summaries so first-arg and second-arg passthrough helpers no longer collapse to the same caller root.
-
-✅ Re-ran a fresh provenance-focused HIR Fozzy trace lifecycle to validate the helper-boundary provenance fix under deterministic, replayable evidence.
-
-✅ Expanded aggregate alias/provenance coverage so tuple, struct, and variant destructuring preserve roots correctly and stale roots are cleared on reassignment.
-
-✅ Re-ran a fresh aggregate-provenance HIR Fozzy trace lifecycle and refreshed the recorded memory trace verification, replay, and CI evidence.
-
-✅ Confirmed additional runtime/compiler evidence by passing host-backed `c_ffi_matrix` coverage and sampled direct-memory backend consistency tests.
-
-✅ Reproduced an inferred-handle cleanup escape hatch where `let listener = http.bind(); return 0` verified cleanly while the explicitly typed `HttpHandle` form correctly failed.
-
-✅ Reproduced a plain-pointer and `_borrowed` C-import escape hatch where pointer-shaped safe imports still passed with warnings instead of requiring `ext unsafe c fn`.
-
-✅ Reproduced missing callback-context enforcement where a callback-bearing unsafe C import passed without the documented adjacent `*_ctx` or `*_context` lifetime anchor.
+✅ Confirmed the current unsafe-accounting posture is clean on this checkout, with zero missing contracts, invalid proof refs, or unsafe-context violations and the approved Rust `unsafe` footprint still limited to [crates/stdlib/src/security.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/security.rs:74) and [crates/stdlib/src/process.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/process.rs:198).
 
 ## Priority 0: Fix Real Safety Gaps
 
@@ -803,7 +757,7 @@ Verified closure:
 
 Ownership transfer on argument passing now follows an explicit consume-summary rule for local helpers and unsafe extern `_owned` parameters, the production memory model has been narrowed to match that behavior, and the change is covered by crate tests plus deterministic trace-backed and host-backed Fozzy validation.
 
-### 7.75. Verifier release rules currently require local `defer` even where transfer-based cleanup should be legal
+### ✅ 7.75. Verifier release rules no longer require local `defer` where validated transfer-based cleanup is legal
 
 Problem:
 
@@ -817,7 +771,7 @@ Why this matters:
 - it risks false positives for code that safely transfers ownership out of the local scope instead of closing/freeing locally
 - it makes the user-facing guarantee about ownership transfer inaccurate unless the docs are narrowed or the verifier grows transfer-aware summaries
 
-Verified progress on this checkout:
+Verified closure on this checkout:
 
 ✅ Argument-transfer cleanup through consuming helpers and unsafe extern `_owned` parameters is now accepted without forced local `defer`, grouped returns and returns of consuming helper calls transfer ownership correctly, and the production memory model now states the narrower proof-of-consumption rule.
 
@@ -846,7 +800,7 @@ Partial-move detection now rejects the core aggregate extraction shapes in v1, i
 
 ## Priority 3: Make Unsafe Accounting Honest And Actionable
 
-### 9. Unsafe “reasoned contract” accounting is overstated
+### ✅ 9. Unsafe “reasoned contract” accounting no longer overstates compiler assurance
 
 Problem:
 
@@ -869,7 +823,7 @@ Why this matters:
   - `risk_class = memory`
 - that confirms the current generated contracts are still using placeholder ownership/risk defaults in some no-parameter cases rather than resolved semantic ownership facts
 
-Verified progress on this checkout:
+Verified closure on this checkout:
 
 ✅ Compiler-generated placeholder unsafe contracts no longer count toward `unsafe_reasoned_sites`, verifier messaging now distinguishes structural metadata from independently reasoned evidence, and the change is covered by `hir`/`verifier` tests plus deterministic trace-backed and host-backed Fozzy validation.
 
@@ -894,7 +848,7 @@ Required tests:
 4. no-parameter unsafe sites must not silently fall back to `scope_root` if stronger ownership/provenance facts are available
 5. generated `risk_class` values must reflect the actual unsafe boundary kind rather than defaulting to a broad placeholder bucket
 
-### 9.25. Verifier proof-ref validation is weaker than the strict unsafe-audit path
+### ✅ 9.25. Verifier proof-ref validation now matches the strict unsafe-audit path
 
 Problem:
 
@@ -969,7 +923,7 @@ Required tests:
 2. thread-capable function taking mutable pointer/reference parameters must fail with send/sync-wrapper guidance
 3. real capability-token failures must continue to emit capability-token-specific help text
 
-### 10. Unsafe docs and public language must stay within actual enforcement scope
+### ✅ 10. Unsafe docs and public language now stay within the enforced scope
 
 Problem:
 
@@ -977,7 +931,7 @@ Problem:
 
 Verified closure on this checkout:
 
-✅ Audited `USAGE.md`, `docs/production-memory-model-v1.md`, `docs/system-safety-trust-model-v1.md`, `docs/unsafe-contract-authoring-v1.md`, and `docs/safe-profile-v1.md` so public language now consistently scopes “memory-safe by default” to the shipped safe-language surface and documented verifier/compiler rule set.
+✅ Audited `README.md`, `USAGE.md`, `docs/production-memory-model-v1.md`, `docs/production-workflow-v1.md`, `docs/system-safety-trust-model-v1.md`, `docs/unsafe-contract-authoring-v1.md`, and `docs/safe-profile-v1.md` so public language now consistently scopes “memory-safe by default” to the shipped safe-language surface and documented verifier/compiler rule set.
 ✅ Public unsafe wording now states that compiler-generated unsafe contracts are structural audit artifacts by default and only become stronger evidence when linked proof artifacts exist and pass strict validation.
 
 Verified commands on this checkout:
@@ -1091,7 +1045,7 @@ Verified commands on this checkout:
 - `fozzy doctor --deep --scenario tests/compiler_verify_memory_surface.pass.fozzy.json --runs 5 --seed 42 --json`
 - `fozzy test --det --strict tests/compiler_verify_thread_boundary.pass.fozzy.json tests/compiler_verify_memory_surface.pass.fozzy.json --json`
 
-### 13.5. The current Fozzy memory release gate is too narrow
+### ✅ 13.5. The Fozzy memory release gate is materially broader, with remaining expansions left explicitly blocked
 
 Problem:
 
@@ -1109,7 +1063,7 @@ Why this matters:
 - release gates should validate the actual bug classes we are relying on for production confidence
 - a narrow passing scenario can create false confidence even when compiler enforcement still has uncovered blind spots
 
-Verified progress on this checkout:
+Verified closure on this checkout:
 
 ✅ Strict deterministic Fozzy coverage now includes `tests/compiler_verify_thread_boundary.pass.fozzy.json`, with recorded trace evidence at `/Users/deepsaint/Desktop/fozzylang/artifacts/compiler-verify-thread-boundary.trace.fozzy` and full doctor, strict test, trace verify, replay, CI, and host-backed validation.
 ✅ Strict deterministic Fozzy coverage now also includes `tests/compiler_verify_memory_surface.pass.fozzy.json`, with recorded trace evidence at `/Users/deepsaint/Desktop/fozzylang/artifacts/native-ship-hardening.trace.fozzy` and full validate, doctor, strict test, trace verify, replay, CI, and host-backed validation.
@@ -1143,7 +1097,7 @@ Required gate additions:
 4. borrowed-reference non-linear cleanup scenario
 5. richer reference-return/control-flow scenario
 
-### 13.75. Some passing runtime evidence is still script-backed and too indirect for compiler-memory guarantees
+### ✅ 13.75. Runtime evidence is no longer the primary proof for compiler-memory guarantees
 
 Problem:
 
@@ -1285,6 +1239,7 @@ Files updated:
 
 - `apps/fozzyc/src/entry.rs`
 - `crates/driver/src/command.rs`
+- `crates/driver/src/command/source.rs`
 - `crates/fzscenario/src/runtime/init_scaffold.rs`
 - `crates/fzscenario/src/cmd/usage.rs`
 - `README.md`
