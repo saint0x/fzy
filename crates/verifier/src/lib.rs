@@ -278,6 +278,12 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             .filter(|site| site.kind != "unsafe_violation_callsite")
             .filter(|site| !unsafe_proof_ref_valid(site.proof_ref.as_deref().unwrap_or_default()))
             .count();
+        let placeholder_generated_sites = module
+            .unsafe_contract_sites
+            .iter()
+            .filter(|site| site.kind != "unsafe_violation_callsite")
+            .filter(|site| unsafe_contract_is_placeholder_generated(site))
+            .count();
         let unsafe_attention_sites = missing_reasons
             + unsafe_context_violations
             + async_unsafe_sites
@@ -290,10 +296,16 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             } else {
                 Severity::Warning
             },
-            if !policy.safe_profile && unsafe_attention_sites == 0 {
+            if !policy.safe_profile && unsafe_attention_sites == 0 && placeholder_generated_sites == 0
+            {
                 format!(
                     "detected {} explicit unsafe escape marker(s); compiler contract checks passed",
                     unsafe_sites
+                )
+            } else if !policy.safe_profile && unsafe_attention_sites == 0 {
+                format!(
+                    "detected {} explicit unsafe escape marker(s); structural unsafe contract metadata is present, but independently reasoned evidence is still required for {} site(s)",
+                    unsafe_sites, placeholder_generated_sites
                 )
             } else if !policy.safe_profile {
                 format!(
@@ -305,8 +317,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             },
             Some(if policy.safe_profile {
                 "unsafe escapes are forbidden in safe profile".to_string()
-            } else if unsafe_attention_sites == 0 {
+            } else if unsafe_attention_sites == 0 && placeholder_generated_sites == 0 {
                 "warning is informational: unsafe exists and remains review-worthy, but the current compiler checks did not detect contract-policy defects".to_string()
+            } else if unsafe_attention_sites == 0 {
+                "warning is informational: compiler-generated unsafe contracts currently count as structural audit records, not independently validated safety evidence".to_string()
             } else {
                 "unsafe escapes exist and at least one contract or policy check still needs attention; review the accompanying unsafe diagnostics".to_string()
             }),
@@ -762,6 +776,17 @@ fn unsafe_proof_ref_valid(proof_ref: &str) -> bool {
         return false;
     }
     matches!(scheme, "gate" | "trace" | "run" | "test" | "ci")
+}
+
+fn unsafe_contract_is_placeholder_generated(site: &fir::UnsafeContractSite) -> bool {
+    site.proof_ref
+        .as_deref()
+        .is_some_and(|proof_ref| proof_ref.starts_with("gate://compiler-generated/"))
+        || site
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("compiler-generated:"))
+        || site.owner.as_deref() == Some("scope_root")
 }
 
 #[cfg(test)]
@@ -2257,13 +2282,82 @@ mod tests {
             },
         );
         assert!(report.diagnostics.iter().any(|d| d.message.contains(
-            "detected 1 explicit unsafe escape marker(s); compiler contract checks passed"
+            "structural unsafe contract metadata is present, but independently reasoned evidence is still required"
         )));
         assert!(report.diagnostics.iter().any(|d| d
             .help
             .as_deref()
-            .is_some_and(|help| help
-                .contains("current compiler checks did not detect contract-policy defects"))));
+            .is_some_and(|help| help.contains("structural audit records"))));
+        assert!(report.is_clean());
+    }
+
+    #[test]
+    fn production_mode_distinguishes_placeholder_unsafe_contracts_from_reasoned_evidence() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: vec![unsafe_site_complete()],
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                production_memory_safety: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(report.diagnostics.iter().any(|d| d.message.contains(
+            "structural unsafe contract metadata is present, but independently reasoned evidence is still required"
+        )));
+        assert!(report.diagnostics.iter().any(|d| d
+            .help
+            .as_deref()
+            .is_some_and(|help| help.contains("structural audit records"))));
+        assert!(!report.diagnostics.iter().any(|d| {
+            d.message.contains(
+                "detected 1 explicit unsafe escape marker(s); compiler contract checks passed",
+            )
+        }));
         assert!(report.is_clean());
     }
 

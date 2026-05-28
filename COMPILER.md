@@ -993,6 +993,29 @@ Why this matters:
   - `risk_class = memory`
 - that confirms the current generated contracts are still using placeholder ownership/risk defaults in some no-parameter cases rather than resolved semantic ownership facts
 
+Verified progress on this checkout:
+
+- ✅ compiler-generated placeholder unsafe contracts no longer count toward `unsafe_reasoned_sites`
+- ✅ verifier production messaging now distinguishes:
+  - structural unsafe contract metadata present
+  - independently reasoned evidence still required
+- ✅ placeholder-generated contracts with `gate://compiler-generated/...` and `scope_root` ownership remain visible as audit records, but no longer trigger the over-claiming “compiler contract checks passed” wording
+- `cargo test -q -p hir` now includes:
+  - `compiler_generated_unsafe_sites_are_not_counted_as_reasoned`
+- `cargo test -q -p verifier` now includes:
+  - `production_mode_distinguishes_placeholder_unsafe_contracts_from_reasoned_evidence`
+- compiler suites passed on this checkout:
+  - `cargo test -q -p hir`
+  - `cargo test -q -p verifier`
+- Fozzy production checks passed on this checkout:
+  - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 1901 --json`
+  - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
+  - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/unsafe-accounting-hardening.trace.fozzy --json`
+  - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/unsafe-accounting-hardening.trace.fozzy --strict --json`
+  - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/unsafe-accounting-hardening.trace.fozzy --json`
+  - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/unsafe-accounting-hardening.trace.fozzy --json`
+  - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+
 Required fixes:
 
 1. redefine `unsafe_reasoned_sites` so it means something stronger than “unsafe site exists”
@@ -1276,6 +1299,47 @@ Recommended downstream builder scope:
 - packaging, install/export flows, and higher-level product UX
 - multi-project automation on top of `fz` machine-readable outputs
 7. Lock everything in with unit tests, verifier fixtures, and Fozzy scenarios.
+
+## Additional Completed DX / Runtime Hardening
+
+✅ Closed the process-handle lifecycle contract gap on the current checkout.
+
+- `proc.spawn*` handles now have an explicit typed cleanup path through `proc.close(handle)`
+- native runtime tables and shim support were updated to carry the process-close intrinsic end to end
+- focused regression added in `crates/hir` for wait/observe/close typing
+- wrapper helpers that consume linear handle parameters now pass the same verifier accounting as direct close sites
+- validated with:
+  - `cargo test -q -p hir process_close_typechecks_after_wait_and_observation`
+  - `cargo test -q -p hir process_close`
+  - `cargo run -q -p fz -- check /Users/deepsaint/Desktop/fzaudio --json`
+  - `cargo run -q -p fz -- build /Users/deepsaint/Desktop/fzaudio --backend cranelift --json`
+
+✅ Closed the qualified module-path inconsistency for production code on the current checkout.
+
+- dot-qualified type paths such as `-> model.types.ProjectKind` now parse in function signatures
+- cross-module const/static value paths such as `model.types.CONST_VALUE` now resolve consistently with sibling helper calls
+- focused regressions added in `crates/parser` and `crates/driver`
+- validated with:
+  - `cargo test -q -p parser parses_dot_qualified_return_types_in_function_signatures`
+  - `cargo test -q -p driver compile_project_resolves_cross_module_const_value_paths`
+
+✅ Closed the `core.log` stdlib/verifier import poison on the current checkout.
+
+- `core.log` helper construction no longer leaks linear map ownership during ordinary import/configuration flows
+- focused regression added in `crates/driver`
+- docs were updated so logging boot helpers remain a supported production pattern
+- validated with:
+  - `cargo test -q -p driver verify_file_accepts_log_import_without_stdlib_leak_diagnostics`
+
+✅ Re-ran the production Fozzy trace lifecycle after these DX/runtime fixes on the current checkout.
+
+- `cargo run -q -p fz -- doctor --deep --scenario tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 42 --json`
+- `cargo run -q -p fz -- test tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --strict-verify --json`
+- `cargo run -q -p fz -- run tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --record artifacts/process-dx-hardening.trace.fozzy --json`
+- `cargo run -q -p fz -- trace verify artifacts/process-dx-hardening.trace.fozzy --strict --json`
+- `cargo run -q -p fz -- replay artifacts/process-dx-hardening.trace.fozzy --json`
+- `cargo run -q -p fz -- ci artifacts/process-dx-hardening.trace.fozzy --json`
+- `cargo run -q -p fz -- run tests/pedantic.crates_hir.lib.host_backends_run.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
 
 ## Tracking Notes
 

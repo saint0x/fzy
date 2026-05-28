@@ -779,14 +779,7 @@ pub fn lower(module: &Module) -> TypedModule {
     let unsafe_reasoned_sites = unsafe_contract_sites
         .iter()
         .filter(|site| site.kind != "unsafe_violation_callsite")
-        .filter(|site| {
-            site.reason.as_deref().is_some_and(|v| !v.is_empty())
-                && site.invariant.as_deref().is_some_and(|v| !v.is_empty())
-                && site.owner.as_deref().is_some_and(|v| !v.is_empty())
-                && site.scope.as_deref().is_some_and(|v| !v.is_empty())
-                && site.risk_class.as_deref().is_some_and(|v| !v.is_empty())
-                && site.proof_ref.as_deref().is_some_and(|v| !v.is_empty())
-        })
+        .filter(|site| unsafe_contract_counts_as_reasoned(site))
         .count();
     let inferred_capabilities = infer_capabilities(&typed_functions);
     let extern_c_abi_functions = module
@@ -2720,7 +2713,12 @@ fn expr_has_await(expr: &Expr) -> bool {
 fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     for function in functions {
-        let mut linear_owned = BTreeSet::<String>::new();
+        let mut linear_owned = function
+            .params
+            .iter()
+            .filter(|param| is_linear_type(&param.ty))
+            .map(|param| param.name.clone())
+            .collect::<BTreeSet<_>>();
         let mut linear_freed = BTreeSet::<String>::new();
         struct Collector<'a> {
             function: &'a TypedFunction,
@@ -4527,18 +4525,15 @@ fn build_function_memory_summaries(
         let mut free_sites = 0usize;
         let mut close_sites = 0usize;
         let mut unsafe_sites = 0usize;
-        let mut unsafe_reasoned_sites = 0usize;
         let mut has_await = false;
         if function.is_unsafe {
             unsafe_sites += 1;
-            unsafe_reasoned_sites += 1;
         }
         struct Collector<'a> {
             alloc_sites: &'a mut usize,
             free_sites: &'a mut usize,
             close_sites: &'a mut usize,
             unsafe_sites: &'a mut usize,
-            unsafe_reasoned_sites: &'a mut usize,
             has_await: &'a mut bool,
         }
         impl AstVisitor for Collector<'_> {
@@ -4558,7 +4553,6 @@ fn build_function_memory_summaries(
                     }
                     Expr::UnsafeBlock { .. } => {
                         *self.unsafe_sites += 1;
-                        *self.unsafe_reasoned_sites += 1;
                     }
                     Expr::Await(_) => {
                         *self.has_await = true;
@@ -4573,7 +4567,6 @@ fn build_function_memory_summaries(
             free_sites: &mut free_sites,
             close_sites: &mut close_sites,
             unsafe_sites: &mut unsafe_sites,
-            unsafe_reasoned_sites: &mut unsafe_reasoned_sites,
             has_await: &mut has_await,
         };
         for stmt in &function.body {
@@ -4601,7 +4594,7 @@ fn build_function_memory_summaries(
                 free_sites,
                 close_sites,
                 unsafe_sites,
-                unsafe_reasoned_sites,
+                unsafe_reasoned_sites: 0,
                 has_mut_ref_params,
                 has_ref_params,
                 returns_ref,
@@ -4613,6 +4606,34 @@ fn build_function_memory_summaries(
         );
     }
     out
+}
+
+fn unsafe_contract_counts_as_reasoned(site: &UnsafeContractSite) -> bool {
+    unsafe_contract_metadata_complete(site)
+        && unsafe_contract_invariant_is_specific(site)
+        && unsafe_contract_has_independent_proof(site)
+}
+
+fn unsafe_contract_metadata_complete(site: &UnsafeContractSite) -> bool {
+    site.reason.as_deref().is_some_and(|v| !v.is_empty())
+        && site.invariant.as_deref().is_some_and(|v| !v.is_empty())
+        && site.owner.as_deref().is_some_and(|v| !v.is_empty())
+        && site.scope.as_deref().is_some_and(|v| !v.is_empty())
+        && site.risk_class.as_deref().is_some_and(|v| !v.is_empty())
+        && site.proof_ref.as_deref().is_some_and(|v| !v.is_empty())
+}
+
+fn unsafe_contract_invariant_is_specific(site: &UnsafeContractSite) -> bool {
+    site.owner
+        .as_deref()
+        .is_some_and(|owner| owner != "scope_root")
+}
+
+fn unsafe_contract_has_independent_proof(site: &UnsafeContractSite) -> bool {
+    let Some(proof_ref) = site.proof_ref.as_deref() else {
+        return false;
+    };
+    !proof_ref.starts_with("gate://compiler-generated/")
 }
 
 fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
@@ -13568,6 +13589,26 @@ mod tests {
     }
 
     #[test]
+    fn process_close_wrapper_can_consume_linear_param() {
+        let source = r#"
+            use core.proc;
+            fn close_wrapper(handle: ProcessHandle) -> i32 {
+                return proc.close(handle);
+            }
+            fn main() -> i32 {
+                let argv = proc.argv_new();
+                let env = proc.env_new();
+                let handle = proc.spawn_cmd("echo", argv, env, "");
+                discard close_wrapper(handle);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
+    }
+
+    #[test]
     fn current_process_cli_intrinsics_typecheck() {
         let source = r#"
             use core.proc;
@@ -14632,6 +14673,25 @@ mod tests {
             .ownership_violations
             .iter()
             .any(|detail| { detail.contains("performs partial move from owned aggregate") }));
+    }
+
+    #[test]
+    fn compiler_generated_unsafe_sites_are_not_counted_as_reasoned() {
+        let source = r#"
+            unsafe fn main() -> i32 {
+                unsafe {
+                    return 0;
+                }
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.unsafe_sites > 0);
+        assert_eq!(typed.unsafe_reasoned_sites, 0);
+        assert!(typed
+            .unsafe_contract_sites
+            .iter()
+            .any(|site| site.owner.as_deref() == Some("scope_root")));
     }
 
     #[test]
