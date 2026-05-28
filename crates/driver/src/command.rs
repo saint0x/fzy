@@ -1648,7 +1648,11 @@ fn ensure_init_target_ready(
             root.display(),
             collisions
                 .iter()
-                .map(|path| path.strip_prefix(root).unwrap_or(path).display().to_string())
+                .map(|path| path
+                    .strip_prefix(root)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -1676,9 +1680,7 @@ fn render_init_manifest(package: &str) -> String {
 }
 
 fn render_init_main(package: &str) -> String {
-    format!(
-        "fn main() -> i32 {{\n    let _app = \"{package}\"\n    return 0\n}}\n"
-    )
+    format!("fn main() -> i32 {{\n    let _app = \"{package}\"\n    return 0\n}}\n")
 }
 
 fn write_init_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
@@ -8454,10 +8456,7 @@ fn render_c_header(
     if exports.iter().any(|function| function.is_async) {
         header.push_str("typedef uint64_t fz_async_handle_t;\n\n");
     }
-    header.push_str(&render_callback_type_defs(
-        callback_types,
-        repr_c_aliases,
-    ));
+    header.push_str(&render_callback_type_defs(callback_types, repr_c_aliases));
     header.push_str(&render_repr_c_type_defs(module, repr_c_aliases));
     if !header.ends_with("\n\n") {
         header.push('\n');
@@ -8507,7 +8506,10 @@ fn render_c_header(
     header
 }
 
-fn render_repr_c_type_defs(module: &ast::Module, repr_c_aliases: &BTreeMap<String, String>) -> String {
+fn render_repr_c_type_defs(
+    module: &ast::Module,
+    repr_c_aliases: &BTreeMap<String, String>,
+) -> String {
     let mut out = String::new();
     for item in &module.items {
         match item {
@@ -9136,7 +9138,9 @@ fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
         ast::Type::Ptr { to, .. } => is_ffi_stable_type(to, repr_c_names),
         ast::Type::Named { name, args } => args.is_empty() && repr_c_names.contains(name),
         ast::Type::Function { params, ret } => {
-            params.iter().all(|param| is_ffi_stable_type(param, repr_c_names))
+            params
+                .iter()
+                .all(|param| is_ffi_stable_type(param, repr_c_names))
                 && is_ffi_stable_type(ret, repr_c_names)
         }
         ast::Type::BigInt
@@ -14132,6 +14136,41 @@ mod tests {
         assert!(output.contains("\"schedules\""));
 
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn explore_command_accepts_steps_scenarios() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let scenario =
+            std::env::temp_dir().join(format!("fozzylang-steps-explore-{suffix}.fozzy.json"));
+        std::fs::write(
+            &scenario,
+            serde_json::json!({
+                "version": 1,
+                "name": "steps-explore",
+                "steps": [
+                    {"type": "trace_event", "name": "boot"},
+                    {"type": "assert_eq_int", "a": 1, "b": 1}
+                ]
+            })
+            .to_string(),
+        )
+        .expect("scenario should be written");
+
+        let output = run(
+            Command::Explore {
+                target: scenario.clone(),
+            },
+            Format::Json,
+        )
+        .expect("explore should succeed for steps scenarios");
+        assert!(output.contains("\"mode\":\"explore\""));
+        assert!(output.contains("\"status\":\"pass\""));
+
+        let _ = std::fs::remove_file(scenario);
     }
 
     #[test]

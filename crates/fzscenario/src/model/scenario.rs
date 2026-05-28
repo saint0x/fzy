@@ -36,6 +36,18 @@ pub struct ScenarioV1Steps {
     pub steps: Vec<Step>,
 }
 
+impl ScenarioV1Steps {
+    pub fn validate(&self) -> FozzyResult<()> {
+        if self.version != 1 {
+            return Err(FozzyError::Scenario(format!(
+                "unsupported scenario version {} (expected 1)",
+                self.version
+            )));
+        }
+        validate_steps(&self.steps)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioV1Suites {
     pub version: u32,
@@ -408,12 +420,7 @@ impl Scenario {
         let file = Self::load_file(path)?;
         match file {
             ScenarioFile::Steps(s) => {
-                if s.version != 1 {
-                    return Err(FozzyError::Scenario(format!(
-                        "unsupported scenario version {} (expected 1)",
-                        s.version
-                    )));
-                }
+                s.validate()?;
                 Ok(Self {
                     name: s.name,
                     steps: s.steps,

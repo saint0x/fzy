@@ -336,7 +336,7 @@ fz shrink <trace>
 fz ci <trace>
 ```
 
-Use this family when you already have (or want) trace-driven debugging and minimization.
+Use this family when you already have (or want) trace-driven debugging and minimization. `fz explore` accepts both plain `steps` scenarios and `distributed` scenarios; schedule/fault options apply to distributed scenarios.
 
 ## 6. `fz` Scenario Guide
 

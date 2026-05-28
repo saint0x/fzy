@@ -85,8 +85,8 @@ pub fn usage_doc() -> UsageDoc {
             },
             UsageItem {
                 command: "fz explore".to_string(),
-                when: "Test distributed/system scenarios by exploring schedules and injecting faults deterministically.".to_string(),
-                how: "fz explore tests/kv.explore.fozzy.json --schedule coverage_guided --faults partition-first-two --checker kv_all_equal:k --nodes 3 --steps 200 --json. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
+                when: "Investigate scenario behavior in explore mode: distributed scenarios get schedule/fault exploration, while plain steps scenarios run as deterministic explore traces.".to_string(),
+                how: "fz explore tests/kv.explore.fozzy.json --schedule coverage_guided --faults partition-first-two --checker kv_all_equal:k --nodes 3 --steps 200 --json; plain `steps` scenarios are also accepted and run in explore mode without distributed-only scheduling knobs. Strictest setting: strict mode is on by default; add `--unsafe` only to opt out.".to_string(),
             },
             UsageItem {
                 command: "fz corpus".to_string(),
