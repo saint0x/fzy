@@ -1,6 +1,6 @@
 # fzy User Guide (USAGE.md)
 
-This is the definitive user manual for working with the fzy toolchain in this repository.
+This is the definitive user manual for working with the fzy toolchain.
 
 It is optimized for onboarding and day-to-day developer experience:
 
@@ -10,6 +10,13 @@ It is optimized for onboarding and day-to-day developer experience:
 - team conventions to follow
 
 It intentionally avoids deep internal compiler/runtime implementation details.
+
+Current production summary:
+
+- the language is memory-safe by default
+- unsafe behavior is explicit and auditable
+- deterministic verification, replay, and artifacts are normal delivery requirements
+- the native runtime surface now covers serious modern systems work: async/tasks, RPC, ADTs, traits/generics, process/terminal/logging, filesystem/path, JSON control-plane workflows, and outbound HTTP streaming
 
 Canonical production workflow: `docs/production-workflow-v1.md`  
 Failure triage playbook: `docs/production-failure-triage-v1.md`
@@ -25,7 +32,7 @@ You will mainly use these tools:
 - `fz fmt`: source formatter for `.fzy`
 - `fz doc gen`: API docs extractor/generator for `.fzy`
 
-In this repo, the canonical way to invoke local binaries is:
+The canonical way to invoke local binaries from source is:
 
 ```bash
 cargo run -q -p <tool> -- <args>
@@ -51,7 +58,7 @@ fz ...
 Minimum expected environment:
 
 - Rust toolchain (`cargo`) installed
-- Run commands from repo root
+- Run commands from the project root
 - Network access only when you intentionally run host-backed scenarios
 
 Recommended sanity check:
@@ -84,7 +91,7 @@ cargo run -q -p fz -- doc gen examples/fullstack/src --format markdown --out art
 
 ```bash
 fz doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json
-fz test --det --strict-verify tests/run.pass.fozzy.json tests/memory.pass.fozzy.json --json
+fz test --det --strict tests/run.pass.fozzy.json tests/memory.pass.fozzy.json --json
 fz run tests/run.pass.fozzy.json --det --record artifacts/trace.fozzy --json
 fz trace verify artifacts/trace.fozzy --strict --json
 fz replay artifacts/trace.fozzy --json
@@ -104,6 +111,13 @@ A complete change is not done when it only compiles. It is done when:
 - project conventions pass (`dx-check`)
 - deterministic tests pass (`fz test --det` and/or `fz test --det --strict`)
 - at least one trace is recordable, verifiable, and replayable
+
+The production stance is:
+
+- safe-by-default code is the norm
+- unsafe usage is explicit and reviewable
+- reproducibility is expected, not optional
+- the compiler/runtime/docs story should match the executable surface exactly
 
 ## 5. `fz` Command Guide
 
@@ -146,6 +160,11 @@ Native host-backed runtime defaults:
 
 Language completeness note:
 - tuple/struct/enum destructuring is native in both LLVM and Cranelift, including parameter-bound values, call-returned aggregates, helper-produced aggregates, and control-flow-produced aggregates
+- production trait/generic support includes common generic structs/enums/functions/methods, trait impls, associated items, concrete bounds, and cross-module qualification
+- production stdlib/runtime facade support includes:
+  - `core.process`, `core.term`, `core.thread`, `core.log`, `core.text`, `core.io`, `core.path`, `core.http`
+  - parsed JSON key iteration through `json.keys(...)`
+  - outbound streaming HTTP plus SSE-style line consumption
 
 Runtime logging defaults:
 - human-readable logs by default (`[ts] level message`)
@@ -180,6 +199,13 @@ Runtime logging defaults:
 - `proc.run*` returns exit codes; `proc.spawn*` returns handles for wait/stdout/stderr/exit inspection
 - canonical persistence helpers use `storage.append`, `storage.atomic_append`, `storage.kv_open/get/put`
 - shared helper surface is available under `core.util` for common JSON/log/http/concurrency patterns
+
+Canonical native product posture:
+
+- prefer the standard-library facades over ad hoc app-local wrappers when the surface exists
+- validate both `fz run ...` and direct built-binary execution for terminal-facing products
+- prefer typed JSON/control-plane operations over string-scanning workarounds
+- keep transcript-style output on one stream unless there is a real error/control-channel split
 
 ## 5.3 Quality and verification
 
@@ -225,7 +251,7 @@ Unsafe island details (`unsafe fn`, `unsafe { ... }`, optional metadata, strict 
 - `.fz/unsafe-docs.workspace.md`
 - `.fz/unsafe-docs.workspace.html`
 Default production policy keeps missing metadata non-blocking; strict CI/release policy can make missing/invalid metadata blocking.
-Hardened repositories can scope unsafe usage in `fozzy.toml`:
+Hardened codebases can scope unsafe usage in `fozzy.toml`:
 - `[unsafe].deny_unsafe_in = ["tests::*"]`
 - `[unsafe].allow_unsafe_in = ["runtime::*"]`
 
@@ -581,4 +607,4 @@ For meaningful changes, run at least:
 
 ---
 
-If you are new to the repo, start with section 3, then section 9, then adopt section 12 as your default PR checklist.
+If you are new to fzy, start with section 3, then section 9, then adopt section 12 as your default change checklist.

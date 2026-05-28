@@ -1,6 +1,6 @@
 # Production Workflow v1
 
-This is the canonical production workflow for this repository.
+This is the canonical production workflow for fzy.
 
 ## Scope
 
@@ -12,6 +12,13 @@ Use this flow for every production change:
 4. Run full production gate.
 5. Record/update exit-criteria tracking evidence.
 6. Release only on green gate + exit-criteria readiness.
+
+This workflow assumes the current production posture:
+
+- memory-safe by default
+- explicit unsafe islands instead of ambient unsafety
+- deterministic validation and replay as release evidence
+- native and host-backed execution both matter for confidence
 
 ## 1. Author
 
@@ -32,7 +39,7 @@ Run strict deterministic validation first:
 
 ```bash
 fz doctor --deep --scenario tests/example.fozzy.json --runs 5 --seed 4242 --json
-fz test --det --strict-verify tests/example.fozzy.json tests/memory.pass.fozzy.json --json
+fz test --det --strict tests/example.fozzy.json tests/memory.pass.fozzy.json --json
 ```
 
 Record and validate a real trace:
@@ -67,11 +74,19 @@ For native CLI and terminal-facing products, validate both launch modes:
   - interactive prompt behavior
   - launch-environment inheritance
 
+For native runtime surface changes, prefer evidence that covers:
+
+- compiler/verifier correctness
+- native execution behavior
+- host-backed behavior where real process/fs/http integration matters
+- trace record/verify/replay lifecycle
+- docs/showcase alignment with the executable surface
+
 For trait/generic language slices, include the dedicated scenario lifecycle:
 
 ```bash
 fz doctor --deep --scenario tests/trait_generic.pass.fozzy.json --runs 5 --seed 4242 --json
-fz test --det --strict-verify tests/trait_generic.pass.fozzy.json --json
+fz test --det --strict tests/trait_generic.pass.fozzy.json --json
 fz run tests/trait_generic.pass.fozzy.json --det --record artifacts/trait-generic.trace.fozzy --json
 fz trace verify artifacts/trait-generic.trace.fozzy --strict --json
 fz replay artifacts/trait-generic.trace.fozzy --json

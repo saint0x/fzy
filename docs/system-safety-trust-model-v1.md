@@ -4,6 +4,7 @@ This document defines what can be claimed publicly today, what is intentionally 
 
 ## Enforced Guarantees Today
 
+- Memory-safe-by-default production posture for the shipped safe-language surface.
 - Verifier-enforced ownership/borrow constraints in shipped rule scope (including documented async suspension constraints).
 - Runtime fail-closed defaults for capability-sensitive and limit-sensitive paths.
 - Native-lowering fail-fast diagnostics for unsupported or partial language shapes (no silent partial semantics on documented guardrails).
@@ -13,10 +14,23 @@ This document defines what can be claimed publicly today, what is intentionally 
 
 ## Explicit Non-Goals (Current Scope)
 
-- No claim of Rust-equivalent theorem-proven soundness.
+- No claim of Rust-equivalent theorem-proven soundness, even though the shipped language posture is memory-safe by default.
 - No claim of complete alias/lifetime theorem proving for all low-level patterns.
 - No claim of arbitrary OS-preemptive interleaving coverage beyond documented deterministic scheduling model.
 - No claim that every safety property is formally verified end-to-end.
+
+## Public Claim Shape
+
+Public-facing language should follow this shape:
+
+- acceptable:
+  - "memory-safe by default"
+  - "safe code is the default and unsafe behavior is explicit"
+  - "verifiable correctness and deterministic replay are first-class"
+- not acceptable:
+  - "formally proven sound for all programs"
+  - "stronger than Rust's proof story"
+  - "covers arbitrary unsafely expressed low-level patterns without caveat"
 
 ## Required Evidence Artifacts for Public Claims
 

@@ -1,10 +1,16 @@
 # fzy (fozzylang)
 
-Correctness-first systems language toolchain with deterministic verification workflows.
+Memory-safe-by-default systems language and production toolchain with verifiable correctness, deterministic execution, and replay-first debugging built in.
 
-fzy pairs a language/compiler (`fz`) with Fozzy runtime testing so determinism, replay, and artifact-driven debugging are first-class, not bolt-ons.
+fzy pairs the language/compiler (`fz`) with Fozzy runtime validation so correctness, determinism, replay, incident artifacts, and production evidence are first-class parts of the workflow instead of afterthoughts.
 
-A quick way to think about fzy is zig but safer, rust but more sane.
+The current production posture is:
+
+- safe by default, with explicit unsafe islands instead of ambient unsafety
+- deterministic verification and replay as normal delivery gates
+- memory-safety, capability, FFI, and lowerability enforcement in the verifier
+- modern native language/runtime features across async, tasks, RPC, ADTs, traits/generics, JSON, process, terminal, logging, filesystem/path, and streaming HTTP
+- LLVM and Cranelift native backends with parity-oriented validation
 
 ## Start Here
 
@@ -172,7 +178,7 @@ For the complete syntax and workflow coverage:
 - language and command examples: `CODE.md`
 - production-style projects: `examples/`
 
-## What This Repo Contains
+## What fzy Contains
 
 - compiler CLI (binary: `fz`) (build/run/test/verify/emit-ir/rpc gen/headers)
 - formatting and docs generation are built into `fz` (`fz fmt`, `fz doc gen`)
@@ -184,8 +190,13 @@ For the complete syntax and workflow coverage:
 
 ## Current State (Practical)
 
-Implemented and verified in this repo:
+Implemented and verified today:
 
+- Production safety/correctness model:
+  - safe-by-default language/runtime posture with explicit unsafe islands and compiler-generated unsafe inventory/docs
+  - verifier-enforced ownership/borrow rules, capability rules, FFI boundary rules, and native lowerability rules
+  - deterministic trace/replay lifecycle as a normal production gate, not a lab-only feature
+  - host-backed confidence path for real filesystem/process/HTTP validation
 - Deterministic scheduler modes (`fifo`, `random`, `coverage_guided`) for non-scenario tests
 - Thread/async/RPC decision artifacts in `fz test --det --record ...`
 - RPC frame model events: `rpc_send`, `rpc_recv`, `rpc_deadline`, `rpc_cancel`
@@ -194,6 +205,12 @@ Implemented and verified in this repo:
 - Recursive multi-file module loading from `mod` declarations (`foo.fzy`, `foo/mod.fzy`, `foo::bar`)
 - C header generation from exported `pubext c fn` signatures
 - RPC schema/client/server stub generation (`fz rpc gen`)
+- Modern language/runtime surface:
+  - production-supported ADTs and pattern matching across tuple/struct/enum values, locals, parameters, returns, helper values, and control-flow values
+  - production-supported trait/generic surface for the v1 contract, including concrete impls, associated items, generic bounds, and nested-module qualification
+  - current-process CLI/runtime surface through `core.process`, `core.term`, `core.log`, `core.text`, `core.thread`, `core.io`, `core.path`, `core.http`
+  - parsed JSON object-key iteration and JSON bridge helpers
+  - end-exclusive string slicing, ASCII case helpers, production string escapes, and mutable string accumulation parity in native backends
 - `fz run` executes compiled native output:
   - text mode streams child stdout/stderr live (server-friendly)
   - json mode captures `exitCode/stdout/stderr` payloads
@@ -208,9 +225,30 @@ Implemented and verified in this repo:
   - array/index expression family lowers natively in LLVM + Cranelift with execute-and-compare parity fixtures
   - ADT/pattern-matching native completeness: tuple/struct/enum values lower as first-class aggregate handles, and destructuring works across locals, parameters, calls, returns, helpers, and control-flow values in both LLVM and Cranelift
   - module import surface includes executable `use ... as alias` and `pub use ...` re-export semantics
+  - native runtime surface includes current-process CLI, task-local context ids for `spawn_ctx(...)`, parsed JSON key iteration, outbound HTTP/SSE streaming, and core stdlib facades that line up with executable native behavior
   - direct-memory architecture/perf release gates:
     - `python3 scripts/direct_memory_architecture_gate.py`
     - `python3 scripts/direct_memory_perf_gate.py`
+
+## Production Claims
+
+These are the production claims fzy is set up to support today:
+
+- Memory-safe by default:
+  - safe code is the baseline
+  - unsafe behavior is isolated behind explicit unsafe islands and audited artifacts
+  - production policy does not rely on silent unsound fallback paths
+- Verifiable correctness:
+  - verifier, diagnostics, deterministic runtime testing, trace verification, replay, and CI artifacts are part of the normal shipping workflow
+- Deterministic execution:
+  - recorded traces, replay, and deterministic scheduler modes are first-class and production-facing
+- Modern systems surface:
+  - async/tasks, RPC, ADTs/pattern matching, traits/generics, process control, terminal I/O, structured logging, filesystem/path helpers, JSON control-plane work, and outbound streaming HTTP are all part of the shipped language/runtime story
+
+See also:
+- `docs/system-safety-trust-model-v1.md`
+- `docs/production-memory-model-v1.md`
+- `docs/production-workflow-v1.md`
 
 ## Build And Test
 
@@ -532,7 +570,7 @@ fz run tests/live.server.interhttp.fozzy.json --host-backends --json
 
 ## Plan Tracking
 
-Execution planning docs are tracked in-repo and versioned:
+Execution planning docs are tracked alongside the source and versioned:
 
 - `PLAN.md`
 - `FEATURES-TO-SHIP.md`
