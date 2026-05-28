@@ -14,23 +14,6 @@ Status convention:
 - `✅` means completed and verified work
 - pending work is written as plain bullets or numbered items only
 
-## Current Sit Rep
-
-The current memory-safety story is promising, but not yet complete enough to claim that the compiler area is bug free or that all shipped memory-safety guarantees are fully enforced in all relevant control-flow shapes.
-
-The biggest concerns today are:
-
-1. the current `hir` memory-safety path is not buildable on this checkout
-2. ownership/control-flow unsoundness around conditional and `match` paths
-3. false-positive rejection of valid borrowed-reference code as if it were a linear resource
-4. analysis passes that only cover top-level or simplified shapes rather than full program structure
-5. async borrow checking is still statement-shaped and can miss some same-statement suspension misuse
-6. unsafe-contract accounting that currently acts more like metadata presence than proven safety evidence
-7. inferred pointer-return ownership can bypass cleanup enforcement entirely
-8. some FFI ownership/alias checks are still identifier-shaped heuristics
-9. public ownership-transfer wording is stronger than the current call-site ownership model
-10. the current Fozzy memory release gate is too narrow to justify stronger compiler memory-safety claims
-
 ## Completed Review Evidence
 
 ✅ Completed a source-level review of the compiler memory-safety surface across `crates/hir`, `crates/verifier`, docs, and verifier integration.
