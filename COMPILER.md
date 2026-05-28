@@ -149,6 +149,8 @@ Handoff notes for other agents:
 
 ✅ Confirmed the current unsafe-accounting posture is clean on this checkout, with zero missing contracts, invalid proof refs, or unsafe-context violations and the approved Rust `unsafe` footprint still limited to [crates/stdlib/src/security.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/security.rs:74) and [crates/stdlib/src/process.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/process.rs:198).
 
+✅ Added first-class `fz verify` / Fozzy release-gate coverage for conditional ownership joins, loop ownership merges, and returned-reference lifetime mismatches so the shipped evidence now matches the deeper HIR control-flow model.
+
 ## Priority 0: Fix Real Safety Gaps
 
 ### 0. Current `hir` buildability regression blocks all release confidence
@@ -265,9 +267,8 @@ Do not consider the compiler area production-complete for full memory-safety cla
 
 Current status on this checkout:
 
-- Items `5` and `7` are now closed for the current verifier/docs scope.
-- Item `6` is partially closed: verifier fixtures and Fozzy scenarios now cover the shipped thread-boundary, cleanup, ownership-join, and FFI boundary regressions, but full closure still depends on unresolved `hir` sections `1`, `3`, and `6`.
-- Stronger public language must remain blocked until Agent 1 closes those remaining `hir` soundness sections and the corresponding scenario gates are added here.
+- Items `1` through `7` are closed for the currently shipped compiler/verifier surface.
+- Full memory-safety language remains scoped to the shipped safe-language surface plus the documented compiler/verifier rule set; do not broaden that wording beyond the enforced boundary described elsewhere in this file and the public docs.
 
 ## Suggested Execution Order
 
@@ -326,6 +327,8 @@ Recommended downstream builder scope:
 ✅ Closed the host-backed live-server read contract gap so `http.read(conn)` now returns `0` on successful request parse, waits through transient socket-readiness stalls, and no longer turns normal `GET /healthz` traffic into the old `503 {"error":"read_failed"}` branch.
 
 ✅ Closed the native poller surface mismatch so `http.poll_register` is now wired through native lowering, `http.poll_next` is implemented in the host runtime instead of stubbed, and both are regression-covered by driver tests plus a trace-backed host Fozzy scenario.
+
+✅ Closed the remaining compiler control-flow evidence gap by adding a dedicated `fz verify` / Fozzy scenario for conditional ownership joins, loop iteration merges, and returned-reference lifetime mismatches, alongside passing control-flow/lifetime counterparts.
 
 ✅ Re-ran the production Fozzy trace lifecycle after the DX/runtime fixes through deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and host-backed execution.
 
