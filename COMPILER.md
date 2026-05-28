@@ -2,13 +2,6 @@
 
 This document tracks the current compiler-side memory-safety hardening work for production readiness.
 
-It is intentionally focused on:
-
-- concrete correctness gaps
-- over-claimed or under-specified guarantees
-- missing analysis coverage
-- regression tests and release gates needed to close the gaps
-
 Status convention:
 
 - `✅` means completed and verified work
