@@ -1,11 +1,12 @@
 # fzy (fozzylang)
 
-Memory-safe-by-default systems language and production toolchain with verifiable correctness, deterministic execution, and replay-first debugging built in.
+Memory-safe-by-default general-purpose systems language and production toolchain with verifiable correctness, deterministic execution, and replay-first debugging built in.
 
 fzy pairs the language/compiler (`fz`) with Fozzy runtime validation so correctness, determinism, replay, incident artifacts, and production evidence are first-class parts of the workflow instead of afterthoughts.
 
 The current production posture is:
 
+- general-purpose systems language scope, not a niche single-domain language
 - safe by default, with explicit unsafe islands instead of ambient unsafety
 - deterministic verification and replay as normal delivery gates
 - memory-safety, capability, FFI, and lowerability enforcement in the verifier
@@ -193,6 +194,7 @@ For the complete syntax and workflow coverage:
 Implemented and verified today:
 
 - Production safety/correctness model:
+  - general-purpose systems-language posture with application, service, runtime, CLI, control-plane, and integration workloads in scope
   - safe-by-default language/runtime posture with explicit unsafe islands and compiler-generated unsafe inventory/docs
   - verifier-enforced ownership/borrow rules, capability rules, FFI boundary rules, and native lowerability rules
   - deterministic trace/replay lifecycle as a normal production gate, not a lab-only feature
@@ -242,7 +244,7 @@ These are the production claims fzy is set up to support today:
   - verifier, diagnostics, deterministic runtime testing, trace verification, replay, and CI artifacts are part of the normal shipping workflow
 - Deterministic execution:
   - recorded traces, replay, and deterministic scheduler modes are first-class and production-facing
-- Modern systems surface:
+- General-purpose systems surface:
   - async/tasks, RPC, ADTs/pattern matching, traits/generics, process control, terminal I/O, structured logging, filesystem/path helpers, JSON control-plane work, and outbound streaming HTTP are all part of the shipped language/runtime story
 
 See also:
