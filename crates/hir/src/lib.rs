@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
 use ast::{AstVisitor, BinaryOp, Expr, Module, Stmt, Type};
@@ -9764,7 +9765,8 @@ fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
         .collect::<HashMap<_, _>>();
     let main = map.get("main")?;
     let mut env = BTreeMap::new();
-    eval_block(&main.body, &mut env, &map).and_then(|value| match value {
+    CONST_EVAL_BUDGET.with(|budget| budget.set(CONST_EVAL_STEP_LIMIT));
+    let result = eval_block(&main.body, &mut env, &map).and_then(|value| match value {
         Value::I32(v) => Some(v),
         Value::F64(v) => Some(v as i32),
         Value::Bool(v) => Some(v as i32),
@@ -9776,7 +9778,9 @@ fn interpret_entry_i32(functions: &[TypedFunction]) -> Option<i32> {
         | Value::List(_)
         | Value::Struct { .. }
         | Value::Enum { .. } => None,
-    })
+    });
+    CONST_EVAL_BUDGET.with(|budget| budget.set(0));
+    result
 }
 
 fn function_has_explicit_return(body: &[Stmt]) -> bool {
@@ -9832,6 +9836,24 @@ enum EvalOutcome {
     Return(Value),
 }
 
+thread_local! {
+    static CONST_EVAL_BUDGET: Cell<usize> = const { Cell::new(0) };
+}
+
+const CONST_EVAL_STEP_LIMIT: usize = 20_000;
+
+fn const_eval_allow_step() -> bool {
+    CONST_EVAL_BUDGET.with(|budget| {
+        let remaining = budget.get();
+        if remaining == 0 {
+            false
+        } else {
+            budget.set(remaining - 1);
+            true
+        }
+    })
+}
+
 fn eval_block<'a>(
     body: &[Stmt],
     env: &mut BTreeMap<String, Value>,
@@ -9849,6 +9871,9 @@ fn eval_block_control<'a>(
     functions: &HashMap<&'a str, &'a TypedFunction>,
 ) -> EvalOutcome {
     for stmt in body {
+        if !const_eval_allow_step() {
+            return EvalOutcome::Continue;
+        }
         match stmt {
             Stmt::Let { name, value, .. } => {
                 let Some(val) = eval_expr(value, env, functions) else {
@@ -10073,6 +10098,9 @@ fn eval_expr<'a>(
     env: &BTreeMap<String, Value>,
     functions: &HashMap<&'a str, &'a TypedFunction>,
 ) -> Option<Value> {
+    if !const_eval_allow_step() {
+        return None;
+    }
     fn has_function_ref(functions: &HashMap<&str, &TypedFunction>, candidate: &str) -> bool {
         if functions.contains_key(candidate) {
             return true;

@@ -6,12 +6,6 @@ mod webcore;
 mod middleware;
 mod support;
 
-fn fields1(k1: str, v1: str) -> str {
-    let m = map.new()
-    discard map.set(m, k1, v1)
-    return log.fields(m)
-}
-
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let m = map.new()
     discard map.set(m, k1, v1)
@@ -95,12 +89,10 @@ fn run() -> i32 {
     let strict_json = 1
     let mut handled = 0
     let mut bucket = middleware.rate_init(support.default_rate_tokens(), support.default_rate_refill_ms())
-    let mut accept_fail_streak = 0
 
     while handled < 2000000000 {
         bucket = middleware.rate_refill(bucket, handled)
         let rc = handle_once(mask, strict_json, bucket)
-        accept_fail_streak = 0
         bucket = middleware.rate_take(bucket, 1)
         handled += 1 + (rc * 0)
         if (handled % 1024) == 0 {

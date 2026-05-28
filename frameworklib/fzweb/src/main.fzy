@@ -1,6 +1,5 @@
-use webcore.http;
-use core.log;
-use webcore.thread;
+use core.http;
+use core.thread;
 
 mod webcore;
 mod middleware;
@@ -40,10 +39,11 @@ fn worker_probe_b() -> i32 {
 }
 
 fn run_parallel_probes() -> i32 {
-    spawn(worker_probe_a)
-    spawn(worker_probe_b)
-    yield()
-    return 3
+    let probe_a = spawn(worker_probe_a)
+    let probe_b = spawn(worker_probe_b)
+    let left = join(probe_a)
+    let right = join(probe_b)
+    return left + right
 }
 
 fn maybe_handle_once(mask: i32, strict_json: i32) -> i32 {

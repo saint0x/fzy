@@ -1764,6 +1764,22 @@ fn non_entry_infinite_loop_function_fixture_stays_non_regressing() {
 }
 
 #[test]
+fn live_server_main_check_path_terminates_without_const_eval_hang() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../frameworklib/fzweb/src");
+    let source = root.join("live_server_main.fzy");
+    let parsed = parse_program(&source).expect("live_server_main should parse");
+    let typed = hir::lower(&parsed.module);
+    assert_eq!(
+        typed.entry_return_const_i32, None,
+        "long-lived live server entrypoint should not be eagerly const-evaluated"
+    );
+    let fir = fir::build_owned(typed);
+    assert!(fir.nodes > 0, "live_server_main should lower to FIR");
+    let report = verify_file(&source).expect("live_server_main verify should return");
+    assert_eq!(report.diagnostics, 0, "expected clean diagnostics for live_server_main");
+}
+
+#[test]
 fn verify_reports_unsupported_native_signature_types() {
     let file_name = format!(
         "fozzylang-native-signature-unsupported-{}.fzy",

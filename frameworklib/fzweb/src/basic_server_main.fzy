@@ -1,15 +1,8 @@
-use webcore.http;
+use core.http;
 use core.log;
-use core.error;
 mod webcore;
 mod middleware;
 mod support;
-
-fn fields1(k1: str, v1: str) -> str {
-    let m = map.new()
-    discard map.set(m, k1, v1)
-    return log.fields(m)
-}
 
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
     let m = map.new()
