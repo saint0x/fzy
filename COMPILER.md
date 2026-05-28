@@ -336,6 +336,8 @@ Recommended downstream builder scope:
 
 ## ✅ Production Blocker: Native Filesystem Surface Is Closed On This Checkout
 
+✅ Closed the native runtime shim helper-ordering bug by emitting forward declarations for the shared bytes-buffer and fd-wait helpers before first use, adding a shim render regression plus a native build/run Fozzy gate, and re-verifying real `fzaudio` `check` / `build` / `run` on the production path.
+
 ## Tracking Notes
 
 When work is completed, mark the relevant line or section with `✅` and briefly note:

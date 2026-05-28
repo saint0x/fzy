@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "native-runtime-shim-helper-order-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-runtime-shim-order-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text('[package]\\nname=\"demo\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"demo\"\\npath=\"src/main.fzy\"\\n', encoding='utf-8'); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\nuse core.http;\nuse core.proc;\n\nfn main() -> i32 {\n    let payload = http.json_payload_new()\n    discard http.json_payload_set_str(payload, \"message\", \"shim\")\n    let encoded = http.json_payload_encode(payload)\n    if str.len(encoded) == 0 {\n        return 17\n    }\n    if proc.argv_count() >= 0 {\n        return 0\n    }\n    return 19\n}\n'''), encoding='utf-8'); build_proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'build', str(root), '--backend', 'cranelift', '--json'], cwd=str(repo), capture_output=True, text=True); assert build_proc.returncode == 0, (build_proc.returncode, build_proc.stdout, build_proc.stderr); build_payload = json.loads(build_proc.stdout.strip()); binary = pathlib.Path(build_payload['output']); assert binary.exists(), binary; run_proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(root), '--backend', 'cranelift', '--json'], cwd=str(repo), capture_output=True, text=True); assert run_proc.returncode == 0, (run_proc.returncode, run_proc.stdout, run_proc.stderr); run_payload = json.loads(run_proc.stdout.strip()); assert run_payload.get('exitCode') == 0, run_payload; print('native-runtime-shim-helper-order-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "native-runtime-shim-helper-order-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-runtime-shim-order-')); (root / 'src').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text('[package]\\nname=\"demo\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"demo\"\\npath=\"src/main.fzy\"\\n', encoding='utf-8'); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\nuse core.http;\nuse core.proc;\n\nfn main() -> i32 {\n    let payload = http.json_payload_new()\n    discard http.json_payload_set_str(payload, \"message\", \"shim\")\n    let encoded = http.json_payload_encode(payload)\n    if str.len(encoded) == 0 {\n        return 17\n    }\n    if proc.argv_count() >= 0 {\n        return 0\n    }\n    return 19\n}\n'''), encoding='utf-8'); build_proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'build', str(root), '--backend', 'cranelift', '--json'], cwd=str(repo), capture_output=True, text=True); assert build_proc.returncode == 0, (build_proc.returncode, build_proc.stdout, build_proc.stderr); build_payload = json.loads(build_proc.stdout.strip()); binary = pathlib.Path(build_payload['output']); assert binary.exists(), binary; run_proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(root), '--backend', 'cranelift', '--json'], cwd=str(repo), capture_output=True, text=True); assert run_proc.returncode == 0, (run_proc.returncode, run_proc.stdout, run_proc.stderr); run_payload = json.loads(run_proc.stdout.strip()); assert run_payload.get('exitCode') == 0, run_payload; print('native-runtime-shim-helper-order-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "native-runtime-shim-helper-order-ok\n"
+    }
+  ]
+}

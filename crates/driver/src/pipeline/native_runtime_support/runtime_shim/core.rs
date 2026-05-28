@@ -223,6 +223,10 @@ typedef struct {
 
 static int fz_mark_cloexec(int fd);
 static void fz_proc_set_last_error(const char* msg);
+static void fz_bytes_buf_init(fz_bytes_buf* buf);
+static void fz_bytes_buf_free(fz_bytes_buf* buf);
+static int fz_bytes_buf_append(fz_bytes_buf* buf, const char* data, size_t len);
+static int fz_wait_for_fd_event(int fd, short events, int timeout_ms);
 static void fz_dotenv_load(void);
 static void fz_env_bootstrap(void);
 static const char* fz_env_get_bootstrapped(const char* key);

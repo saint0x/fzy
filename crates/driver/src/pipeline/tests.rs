@@ -1543,6 +1543,41 @@ fn native_runtime_shim_bootstraps_dotenv_for_env_and_http() {
 }
 
 #[test]
+fn native_runtime_shim_declares_shared_helpers_before_first_use() {
+    let shim = render_native_runtime_shim(&[], &[], &[]);
+
+    let bytes_init_decl = shim
+        .find("static void fz_bytes_buf_init(fz_bytes_buf* buf);")
+        .expect("bytes init prototype should be emitted");
+    let bytes_free_decl = shim
+        .find("static void fz_bytes_buf_free(fz_bytes_buf* buf);")
+        .expect("bytes free prototype should be emitted");
+    let bytes_append_decl = shim
+        .find("static int fz_bytes_buf_append(fz_bytes_buf* buf, const char* data, size_t len);")
+        .expect("bytes append prototype should be emitted");
+    let wait_decl = shim
+        .find("static int fz_wait_for_fd_event(int fd, short events, int timeout_ms);")
+        .expect("wait helper prototype should be emitted");
+    let bytes_init_def = shim
+        .find("static void fz_bytes_buf_init(fz_bytes_buf* buf) {")
+        .expect("bytes init definition should be emitted");
+    let bytes_free_def = shim
+        .find("static void fz_bytes_buf_free(fz_bytes_buf* buf) {")
+        .expect("bytes free definition should be emitted");
+    let bytes_append_def = shim
+        .find("static int fz_bytes_buf_append(fz_bytes_buf* buf, const char* data, size_t len) {")
+        .expect("bytes append definition should be emitted");
+    let wait_def = shim
+        .find("static int fz_wait_for_fd_event(int fd, short events, int timeout_ms) {")
+        .expect("wait helper definition should be emitted");
+
+    assert!(bytes_init_decl < bytes_init_def);
+    assert!(bytes_free_decl < bytes_free_def);
+    assert!(bytes_append_decl < bytes_append_def);
+    assert!(wait_decl < wait_def);
+}
+
+#[test]
 fn backend_defaults_dev_cranelift_release_llvm() {
     let project_name = format!(
         "fozzylang-backend-defaults-{}",
