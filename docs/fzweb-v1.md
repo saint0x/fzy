@@ -6,10 +6,9 @@
 
 - Concern-grouped modules (not one-file-per-function).
 - Deterministic hot path.
-- Rust-backed `webcore.http` transport usage.
+- Rust-backed `core.http` transport usage through `webcore` wrappers.
 - First-class `core.log` structured logging in live server path.
-- First-class `core.error` capability usage in framework/corelib surfaces.
-- Concurrency hooks via `spawn/yield` for multithreaded execution support.
+- Concurrency hooks via `spawn`/`join`/`yield` for multithreaded execution support.
 
 ## Module Groups
 
@@ -27,4 +26,4 @@
 - `fz trace verify artifacts/fzweb.framework.trace.fozzy --strict --json`
 - `fz replay artifacts/fzweb.framework.trace.fozzy --json`
 - `fz ci artifacts/fzweb.framework.trace.fozzy --json`
-- `fz run tests/fzweb.framework.pass.fozzy.json --host-backends --json`
+- `fz run tests/fzweb.framework.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`

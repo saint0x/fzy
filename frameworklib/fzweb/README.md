@@ -6,10 +6,9 @@
 
 - Lightweight hot path with deterministic dispatch.
 - Full-featured middleware-ready surface.
-- HTTP transport through `webcore.http` (Rust-backed path).
+- HTTP transport through `core.http`, surfaced through `webcore` request/response helpers.
 - First-class structured logging via `core.log` in live-server paths.
-- First-class typed error capability surface via `core.error`.
-- Built-in concurrent probe/worker hooks using thread/task primitives.
+- Built-in concurrent probe/worker hooks using `spawn`/`join`/`yield`.
 
 ## Layout (Grouped by Concern)
 
