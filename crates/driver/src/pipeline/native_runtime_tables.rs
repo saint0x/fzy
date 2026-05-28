@@ -667,6 +667,11 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
+        callee: "http.poll_register",
+        symbol: "fz_native_net_poll_register",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "proc.run",
         symbol: "fz_native_proc_run",
         arity: 1,

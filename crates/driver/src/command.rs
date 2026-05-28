@@ -12242,6 +12242,90 @@ mod tests {
     }
 
     #[test]
+    fn host_backed_http_read_succeeds_after_poll_registration() {
+        let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
+        let port = probe
+            .local_addr()
+            .expect("probe addr should resolve")
+            .port();
+        drop(probe);
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-http-read-poll-{suffix}"));
+        let source = root.join("src/main.fzy");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"http_read_poll\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"http_read_poll\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.poll_register(conn) != 0 {\n        return 23\n    }\n    discard http.poll_next()\n    let read_status = http.read(conn)\n    if read_status != 0 {\n        http.write(conn, 503, \"{\\\"error\\\":\\\"read_failed\\\"}\")\n        return 25\n    }\n    http.write(conn, 200, \"ok\")\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let artifact = compile_file_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            Some("cranelift"),
+        )
+        .expect("build should succeed");
+        assert_eq!(artifact.status, "ok");
+        let binary = artifact
+            .output
+            .expect("build artifact should include output path");
+
+        let mut child = std::process::Command::new(&binary)
+            .env("AGENT_HOST", "127.0.0.1")
+            .env("AGENT_PORT", port.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("server child should spawn");
+
+        use std::io::{Read as _, Write as _};
+        let start = std::time::Instant::now();
+        let mut stream = loop {
+            match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => break stream,
+                Err(_) if start.elapsed() <= std::time::Duration::from_secs(5) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    panic!("server did not become reachable: {error}");
+                }
+            }
+        };
+        stream
+            .write_all(
+                b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+            )
+            .expect("request should write");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response should read");
+
+        let status = child.wait().expect("server child should exit");
+        assert_eq!(status.code(), Some(0));
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response was: {response}"
+        );
+        assert!(
+            response.ends_with("ok"),
+            "response body should be ok: {response}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn request_handler_body_json_stays_stable_under_repeated_json_churn() {
         let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
         let port = probe

@@ -18,6 +18,7 @@ pub(super) fn runtime_shim_section_core() -> &'static str {
 #define FZ_MAX_INTERVALS 512
 #define FZ_MAX_JSON_VALUES 16384
 #define FZ_MAX_STORAGE_KV 1024
+#define FZ_MAX_NET_POLL_WATCHES 256
 
 static char* fz_dynamic_strings[FZ_MAX_DYNAMIC_STRINGS];
 static int fz_dynamic_string_count = 0;
@@ -25,6 +26,15 @@ static pthread_mutex_t fz_string_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int fz_listener_fd = -1;
 static pthread_mutex_t fz_listener_lock = PTHREAD_MUTEX_INITIALIZER;
+
+typedef struct {
+  int in_use;
+  int fd;
+  short events;
+} fz_net_poll_watch;
+
+static fz_net_poll_watch fz_net_poll_watches[FZ_MAX_NET_POLL_WATCHES];
+static pthread_mutex_t fz_net_poll_lock = PTHREAD_MUTEX_INITIALIZER;
 
 typedef struct {
   int in_use;

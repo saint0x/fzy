@@ -1035,12 +1035,64 @@ int32_t fz_native_net_accept(void) {
   return conn_fd;
 }
 
+static int fz_wait_for_fd_event(int fd, short events, int timeout_ms) {
+  struct pollfd pfd;
+  pfd.fd = fd;
+  pfd.events = events;
+  pfd.revents = 0;
+  for (;;) {
+    int ready = poll(&pfd, 1, timeout_ms);
+    if (ready > 0) {
+      return 0;
+    }
+    if (ready == 0) {
+      errno = ETIMEDOUT;
+      return -1;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    return -1;
+  }
+}
+
+int32_t fz_native_net_poll_register(int32_t fd) {
+  if (fd < 0) {
+    fz_set_last_error(EINVAL, 3, "http.poll_register failed: invalid handle");
+    return -1;
+  }
+  pthread_mutex_lock(&fz_net_poll_lock);
+  for (int i = 0; i < FZ_MAX_NET_POLL_WATCHES; i++) {
+    if (fz_net_poll_watches[i].in_use && fz_net_poll_watches[i].fd == fd) {
+      fz_net_poll_watches[i].events = POLLIN;
+      pthread_mutex_unlock(&fz_net_poll_lock);
+      fz_set_last_error(0, 0, "");
+      return 0;
+    }
+  }
+  for (int i = 0; i < FZ_MAX_NET_POLL_WATCHES; i++) {
+    if (!fz_net_poll_watches[i].in_use) {
+      fz_net_poll_watches[i].in_use = 1;
+      fz_net_poll_watches[i].fd = fd;
+      fz_net_poll_watches[i].events = POLLIN;
+      pthread_mutex_unlock(&fz_net_poll_lock);
+      fz_set_last_error(0, 0, "");
+      return 0;
+    }
+  }
+  pthread_mutex_unlock(&fz_net_poll_lock);
+  fz_set_last_error(ENOSPC, 3, "http.poll_register failed: poll watch queue full");
+  return -1;
+}
+
 int32_t fz_native_net_read(int32_t conn_fd) {
   if (conn_fd < 0) {
+    fz_set_last_error(EINVAL, 3, "http.read failed: invalid connection handle");
     return -1;
   }
   char* req = (char*)malloc(FZ_MAX_HTTP_READ + 1);
   if (req == NULL) {
+    fz_set_last_error(ENOMEM, 3, "http.read failed: allocation failed");
     return -1;
   }
   int total = 0;
@@ -1052,10 +1104,32 @@ int32_t fz_native_net_read(int32_t conn_fd) {
       if (errno == EINTR) {
         continue;
       }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        if (fz_wait_for_fd_event(conn_fd, POLLIN, 2500) == 0) {
+          continue;
+        }
+      }
+      char msg[256];
+      snprintf(
+          msg,
+          sizeof(msg),
+          "http.read failed fd=%d errno=%d (%s)",
+          conn_fd,
+          errno,
+          strerror(errno));
+      fz_set_last_error(errno, 3, msg);
       free(req);
       return -1;
     }
     if (got == 0) {
+      if (total == 0) {
+        fz_set_last_error(
+            ECONNRESET,
+            3,
+            "http.read failed: peer closed before a complete request was received");
+        free(req);
+        return -1;
+      }
       break;
     }
     total += (int)got;
@@ -1076,27 +1150,30 @@ int32_t fz_native_net_read(int32_t conn_fd) {
       }
     }
   }
-  if (total <= 0) {
-    free(req);
-    return total;
-  }
   if (header_end < 0) {
+    fz_set_last_error(
+        EPROTO,
+        3,
+        "http.read failed: request headers were incomplete or malformed");
     free(req);
     return -1;
   }
 
   const char* line_end = strstr(req, "\r\n");
   if (line_end == NULL) {
+    fz_set_last_error(EPROTO, 3, "http.read failed: missing request line terminator");
     free(req);
     return -1;
   }
   const char* sp1 = memchr(req, ' ', (size_t)(line_end - req));
   if (sp1 == NULL) {
+    fz_set_last_error(EPROTO, 3, "http.read failed: malformed request method/path");
     free(req);
     return -1;
   }
   const char* sp2 = memchr(sp1 + 1, ' ', (size_t)(line_end - (sp1 + 1)));
   if (sp2 == NULL) {
+    fz_set_last_error(EPROTO, 3, "http.read failed: malformed request path/version");
     free(req);
     return -1;
   }
@@ -1174,8 +1251,64 @@ int32_t fz_native_net_read(int32_t conn_fd) {
   }
   pthread_mutex_unlock(&fz_conn_lock);
 
+  fz_set_last_error(0, 0, "");
   free(req);
-  return total;
+  return 0;
+}
+
+int32_t fz_native_net_poll_next(void) {
+  struct pollfd pfds[FZ_MAX_NET_POLL_WATCHES];
+  int slots[FZ_MAX_NET_POLL_WATCHES];
+  int count = 0;
+  pthread_mutex_lock(&fz_net_poll_lock);
+  for (int i = 0; i < FZ_MAX_NET_POLL_WATCHES; i++) {
+    if (!fz_net_poll_watches[i].in_use) {
+      continue;
+    }
+    pfds[count].fd = fz_net_poll_watches[i].fd;
+    pfds[count].events = fz_net_poll_watches[i].events | POLLERR | POLLHUP;
+    pfds[count].revents = 0;
+    slots[count] = i;
+    count++;
+  }
+  pthread_mutex_unlock(&fz_net_poll_lock);
+
+  if (count == 0) {
+    fz_set_last_error(EINVAL, 3, "http.poll_next failed: no registered sockets");
+    return -1;
+  }
+
+  for (;;) {
+    int ready = poll(pfds, (nfds_t)count, 2500);
+    if (ready > 0) {
+      for (int i = 0; i < count; i++) {
+        if (pfds[i].revents == 0) {
+          continue;
+        }
+        int fd = pfds[i].fd;
+        pthread_mutex_lock(&fz_net_poll_lock);
+        fz_net_poll_watches[slots[i]].in_use = 0;
+        fz_net_poll_watches[slots[i]].fd = -1;
+        fz_net_poll_watches[slots[i]].events = 0;
+        pthread_mutex_unlock(&fz_net_poll_lock);
+        fz_set_last_error(0, 0, "");
+        return fd;
+      }
+      fz_set_last_error(EIO, 3, "http.poll_next failed: poll reported readiness without events");
+      return -1;
+    }
+    if (ready == 0) {
+      fz_set_last_error(ETIMEDOUT, 3, "http.poll_next timed out waiting for socket readiness");
+      return -1;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    char msg[256];
+    snprintf(msg, sizeof(msg), "http.poll_next failed errno=%d (%s)", errno, strerror(errno));
+    fz_set_last_error(errno, 3, msg);
+    return -1;
+  }
 }
 
 int32_t fz_native_net_method(int32_t conn_fd) {

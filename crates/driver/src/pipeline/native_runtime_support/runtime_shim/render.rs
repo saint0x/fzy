@@ -182,6 +182,7 @@ pub(crate) fn render_native_runtime_shim(
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/poll.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/types.h>

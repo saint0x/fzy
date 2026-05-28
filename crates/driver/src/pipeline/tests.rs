@@ -1546,7 +1546,7 @@ fn verify_accepts_runtime_and_dotted_native_calls() {
     let path = std::env::temp_dir().join(file_name);
     std::fs::write(
         &path,
-        "use core.http;\nfn main() -> i32 {\n    let listener = http.bind()\n    http.listen(listener)\n    return 0\n}\n",
+        "use core.http;\nfn main() -> i32 {\n    let listener = http.bind()\n    http.listen(listener)\n    http.poll_register(listener)\n    discard http.poll_next()\n    return 0\n}\n",
     )
     .expect("temp source should be written");
 

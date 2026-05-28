@@ -894,10 +894,6 @@ int32_t fz_native_pulse(void) {
   return 0;
 }
 
-int32_t fz_native_net_poll_next(void) {
-  return -1;
-}
-
 int32_t fz_host_init(void) {
   pthread_mutex_lock(&fz_host_lock);
   fz_host_initialized = 1;
