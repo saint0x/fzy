@@ -254,8 +254,30 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 )
             })
             .count();
-        let unsafe_attention_sites =
-            missing_reasons + unsafe_context_violations + async_unsafe_sites + malformed_invariants;
+        let malformed_owner_ids = module
+            .unsafe_contract_sites
+            .iter()
+            .filter(|site| site.kind != "unsafe_violation_callsite")
+            .filter(|site| {
+                !unsafe_owner_id_matches_owner(
+                    site.function.as_str(),
+                    site.owner.as_deref().unwrap_or_default(),
+                    site.owner_id.as_deref().unwrap_or_default(),
+                )
+            })
+            .count();
+        let malformed_proof_refs = module
+            .unsafe_contract_sites
+            .iter()
+            .filter(|site| site.kind != "unsafe_violation_callsite")
+            .filter(|site| !unsafe_proof_ref_valid(site.proof_ref.as_deref().unwrap_or_default()))
+            .count();
+        let unsafe_attention_sites = missing_reasons
+            + unsafe_context_violations
+            + async_unsafe_sites
+            + malformed_invariants
+            + malformed_owner_ids
+            + malformed_proof_refs;
         report.diagnostics.push(Diagnostic::new(
             if policy.safe_profile {
                 Severity::Error
@@ -264,7 +286,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             },
             if !policy.safe_profile && unsafe_attention_sites == 0 {
                 format!(
-                    "detected {} explicit unsafe escape marker(s); current contracts validated",
+                    "detected {} explicit unsafe escape marker(s); compiler contract checks passed",
                     unsafe_sites
                 )
             } else if !policy.safe_profile {
@@ -278,7 +300,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             Some(if policy.safe_profile {
                 "unsafe escapes are forbidden in safe profile".to_string()
             } else if unsafe_attention_sites == 0 {
-                "warning is informational: unsafe exists and remains review-worthy, but current compiler-generated contracts and policy checks passed".to_string()
+                "warning is informational: unsafe exists and remains review-worthy, but the current compiler checks did not detect contract-policy defects".to_string()
             } else {
                 "unsafe escapes exist and at least one contract or policy check still needs attention; review the accompanying unsafe diagnostics".to_string()
             }),
@@ -355,6 +377,40 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 ),
             ));
         }
+        if malformed_owner_ids > 0 {
+            report.diagnostics.push(Diagnostic::new(
+                if policy.strict_unsafe_contracts || policy.safe_profile {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                },
+                format!(
+                    "{} unsafe site(s) have malformed owner identity metadata",
+                    malformed_owner_ids
+                ),
+                Some(
+                    "expected owner identity form `owner::<function>::<owner>` matching the resolved owner"
+                        .to_string(),
+                ),
+            ));
+        }
+        if malformed_proof_refs > 0 {
+            report.diagnostics.push(Diagnostic::new(
+                if policy.strict_unsafe_contracts || policy.safe_profile {
+                    Severity::Error
+                } else {
+                    Severity::Warning
+                },
+                format!(
+                    "{} unsafe site(s) have malformed proof references",
+                    malformed_proof_refs
+                ),
+                Some(
+                    "expected proof_ref to use gate://, trace://, run://, test://, or ci:// with non-empty location data"
+                        .to_string(),
+                ),
+            ));
+        }
     }
     if module.reference_sites > 0
         && memory_safety_enforced
@@ -363,10 +419,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         report.diagnostics.push(Diagnostic::new(
             Severity::Warning,
             format!(
-                "safe profile observed {} reference-region site(s) with explicit lifetime proofs",
+                "safe profile observed {} reference-region site(s) with no lifetime violations detected by current compiler analysis",
                 module.reference_sites
             ),
-            Some("continue preferring owned values when possible in safe profile".to_string()),
+            Some("continue preferring owned values when possible and add regression coverage for borrowed control-flow paths".to_string()),
         ));
     }
     if module.alloc_sites > module.free_sites {
@@ -449,9 +505,9 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         if !released {
             report.diagnostics.push(Diagnostic::new(
                 Severity::Error,
-                format!("linear resource `{resource}` is not released via defer"),
+                format!("linear resource `{resource}` is not released by `free(...)`, `close(...)`, or `defer` cleanup"),
                 Some(format!(
-                    "add `defer close({resource})` or equivalent cleanup in scope"
+                    "release `{resource}` exactly once with direct cleanup or `defer` cleanup in scope"
                 )),
             ));
         }
@@ -631,6 +687,30 @@ fn unsafe_invariant_matches_owner(invariant: &str, owner: &str) -> bool {
     invariant == format!("owner_live({owner})")
 }
 
+fn unsafe_owner_id_matches_owner(function_name: &str, owner: &str, owner_id: &str) -> bool {
+    let function_name = function_name.trim();
+    let owner = owner.trim();
+    let owner_id = owner_id.trim();
+    if function_name.is_empty() || owner.is_empty() || owner_id.is_empty() {
+        return false;
+    }
+    owner_id == format!("owner::{function_name}::{owner}")
+}
+
+fn unsafe_proof_ref_valid(proof_ref: &str) -> bool {
+    let proof_ref = proof_ref.trim();
+    if proof_ref.is_empty() {
+        return false;
+    }
+    let Some((scheme, rest)) = proof_ref.split_once("://") else {
+        return false;
+    };
+    if rest.trim().is_empty() {
+        return false;
+    }
+    matches!(scheme, "gate" | "trace" | "run" | "test" | "ci")
+}
+
 #[cfg(test)]
 mod tests {
     use core::Capability;
@@ -651,6 +731,20 @@ mod tests {
             risk_class: Some("memory".to_string()),
             proof_ref: Some("gate://compiler-generated/main/usite_test".to_string()),
             async_context: false,
+        }
+    }
+
+    fn unsafe_site_bad_proof_ref() -> fir::UnsafeContractSite {
+        fir::UnsafeContractSite {
+            proof_ref: Some("bogus://missing".to_string()),
+            ..unsafe_site_complete()
+        }
+    }
+
+    fn unsafe_site_bad_owner_id() -> fir::UnsafeContractSite {
+        fir::UnsafeContractSite {
+            owner_id: Some("owner::wrong::scope_root".to_string()),
+            ..unsafe_site_complete()
         }
     }
 
@@ -717,10 +811,9 @@ mod tests {
             linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
-        assert!(report
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("module has declarations but no explicit capabilities")));
+        assert!(report.diagnostics.iter().any(|d| d
+            .message
+            .contains("module has declarations but no explicit capabilities")));
     }
 
     #[test]
@@ -1243,10 +1336,9 @@ mod tests {
             linear_type_violations: Vec::new(),
         };
         let report = verify(&module);
-        assert!(report
-            .diagnostics
-            .iter()
-            .any(|d| d.message.contains("not released via defer")));
+        assert!(report.diagnostics.iter().any(|d| d
+            .message
+            .contains("is not released by `free(...)`, `close(...)`, or `defer` cleanup")));
     }
 
     #[test]
@@ -1861,13 +1953,14 @@ mod tests {
                 ..VerifyPolicy::default()
             },
         );
-        assert!(report.diagnostics.iter().any(|d| d
-            .message
-            .contains("detected 1 explicit unsafe escape marker(s); current contracts validated")));
+        assert!(report.diagnostics.iter().any(|d| d.message.contains(
+            "detected 1 explicit unsafe escape marker(s); compiler contract checks passed"
+        )));
         assert!(report.diagnostics.iter().any(|d| d
             .help
             .as_deref()
-            .is_some_and(|help| help.contains("warning is informational"))));
+            .is_some_and(|help| help
+                .contains("current compiler checks did not detect contract-policy defects"))));
         assert!(report.is_clean());
     }
 
@@ -1994,6 +2087,130 @@ mod tests {
                 && d.message
                     .contains("unsafe escape site(s) missing required contract fields")
         }));
+    }
+
+    #[test]
+    fn strict_unsafe_contracts_reject_malformed_proof_refs() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 1,
+            unsafe_contract_sites: vec![unsafe_site_bad_proof_ref()],
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                strict_unsafe_contracts: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("malformed proof references")));
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn strict_unsafe_contracts_reject_malformed_owner_ids() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 1,
+            unsafe_contract_sites: vec![unsafe_site_bad_owner_id()],
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                strict_unsafe_contracts: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("malformed owner identity metadata")));
+        assert!(!report.is_clean());
     }
 
     #[test]

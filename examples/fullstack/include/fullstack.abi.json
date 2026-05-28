@@ -5,8 +5,11 @@
   "dataLayoutHash": "4ef19cf377b4271c24656e2451536d23b76c8d7e35289fdb42706f8eff5d7afa",
   "exports": [
     {
+      "async": false,
       "contract": {
-        "callbackBindings": []
+        "asyncBoundary": null,
+        "callbackBindings": [],
+        "execution": "sync"
       },
       "name": "fs_open",
       "params": [
@@ -50,8 +53,11 @@
       "symbolVersion": 1
     },
     {
+      "async": false,
       "contract": {
-        "callbackBindings": []
+        "asyncBoundary": null,
+        "callbackBindings": [],
+        "execution": "sync"
       },
       "name": "fs_write",
       "params": [
@@ -107,8 +113,11 @@
       "symbolVersion": 1
     },
     {
+      "async": false,
       "contract": {
-        "callbackBindings": []
+        "asyncBoundary": null,
+        "callbackBindings": [],
+        "execution": "sync"
       },
       "name": "hash32",
       "params": [
@@ -165,7 +174,7 @@
     {
       "align": 1,
       "kind": "struct",
-      "name": "UserRow",
+      "name": "model.types.UserRow",
       "size": 0
     }
   ],

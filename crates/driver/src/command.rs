@@ -11816,7 +11816,10 @@ mod tests {
             Format::Json,
         )
         .expect("http streaming runtime program should succeed");
-        assert!(output.contains("\"exitCode\":0"), "unexpected output: {output}");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
 
         server.join().expect("server thread should finish");
         let _ = std::fs::remove_file(source);
@@ -12273,9 +12276,18 @@ mod tests {
         assert!(output.contains("mode     chat"), "output was: {output}");
         let content =
             std::fs::read_to_string(&out_path).expect("core text helper output should exist");
-        assert!(content.contains("\"left\":\"  7\""), "content was: {content}");
-        assert!(content.contains("\"right\":\"ok  \""), "content was: {content}");
-        assert!(content.contains("\"ansi_width\":\"3\""), "content was: {content}");
+        assert!(
+            content.contains("\"left\":\"  7\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"right\":\"ok  \""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"ansi_width\":\"3\""),
+            "content was: {content}"
+        );
         assert!(content.contains("> a\\n> b"), "content was: {content}");
 
         let _ = std::fs::remove_file(source);
@@ -12345,8 +12357,7 @@ mod tests {
             .expect("clock should be after epoch")
             .as_nanos();
         let source = std::env::temp_dir().join(format!("fozzylang-str-accumulate-{suffix}.fzy"));
-        let out_path =
-            std::env::temp_dir().join(format!("fozzylang-str-accumulate-{suffix}.json"));
+        let out_path = std::env::temp_dir().join(format!("fozzylang-str-accumulate-{suffix}.json"));
         let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
         std::fs::write(
             &source,
@@ -12376,10 +12387,16 @@ mod tests {
         )
         .expect("mutable string accumulation runtime program should succeed");
         assert!(output.contains("\"exitCode\":0"), "output was: {output}");
-        let content =
-            std::fs::read_to_string(&out_path).expect("mutable string accumulation output should exist");
-        assert!(content.contains("\"direct\":\"AB\""), "content was: {content}");
-        assert!(content.contains("\"serial\":\"NAME\""), "content was: {content}");
+        let content = std::fs::read_to_string(&out_path)
+            .expect("mutable string accumulation output should exist");
+        assert!(
+            content.contains("\"direct\":\"AB\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"serial\":\"NAME\""),
+            "content was: {content}"
+        );
         assert!(
             content.contains("\"slice_loop\":\"NAME\""),
             "content was: {content}"
@@ -12630,8 +12647,14 @@ mod tests {
         assert!(output.contains("\"exitCode\":0"), "output was: {output}");
         let content =
             std::fs::read_to_string(&out_path).expect("json key iteration output should exist");
-        assert!(content.contains("\"keys_len\":\"2\""), "content was: {content}");
-        assert!(content.contains("\"map_keys_len\":\"2\""), "content was: {content}");
+        assert!(
+            content.contains("\"keys_len\":\"2\""),
+            "content was: {content}"
+        );
+        assert!(
+            content.contains("\"map_keys_len\":\"2\""),
+            "content was: {content}"
+        );
         assert!(
             content.contains("\"first_key\":\"message\"")
                 || content.contains("\"first_key\":\"count\""),

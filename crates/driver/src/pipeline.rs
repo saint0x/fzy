@@ -272,7 +272,7 @@ pub fn compile_file_with_backend(
         || has_native_lowerability_errors
         || has_backend_risks
         || has_contract_errors
-        || (checks_enabled && has_verifier_errors)
+        || has_verifier_errors
     {
         "error"
     } else {
@@ -373,7 +373,7 @@ pub fn compile_library_with_backend(
         || has_native_lowerability_errors
         || has_backend_risks
         || has_contract_errors
-        || (checks_enabled && has_verifier_errors)
+        || has_verifier_errors
     {
         "error"
     } else {

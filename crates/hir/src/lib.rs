@@ -1893,6 +1893,10 @@ fn capability_name_from_type(ty: &Type) -> Option<String> {
 
 fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
+    let signatures = functions
+        .iter()
+        .map(|function| (function.name.clone(), function.clone()))
+        .collect::<BTreeMap<_, _>>();
     for function in functions {
         let has_await = function_body_has_await(&function.body);
         let mut ref_bindings = BTreeMap::<String, (Option<String>, bool)>::new();
@@ -1921,34 +1925,18 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
                 }
             }
         }
-        let return_lifetime = match &function.return_type {
-            Type::Ref { lifetime, .. } => {
-                if lifetime.is_none() {
-                    violations.push(format!(
-                        "function `{}` return reference is missing explicit lifetime annotation",
-                        function.name
-                    ));
-                }
-                lifetime.clone()
-            }
-            _ => None,
-        };
-        for stmt in &function.body {
-            if let Stmt::Let {
-                name,
-                ty: Some(Type::Ref {
-                    lifetime, mutable, ..
-                }),
-                ..
-            } = stmt
+        for (name, ty) in &function.local_types {
+            if let Type::Ref {
+                lifetime, mutable, ..
+            } = ty
             {
+                ref_bindings.insert(name.clone(), (lifetime.clone(), *mutable));
                 if lifetime.is_none() {
                     violations.push(format!(
                         "function `{}` local reference `{}` is missing explicit lifetime annotation",
                         function.name, name
                     ));
                 }
-                ref_bindings.insert(name.clone(), (lifetime.clone(), *mutable));
                 if function.is_async
                     && has_await
                     && ref_used_after_await(&function.body, name, *mutable)
@@ -1961,24 +1949,323 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
                     ));
                 }
             }
-            if let Stmt::Return(Some(Expr::Ident(name))) = stmt {
-                if let Some((bound_lifetime, _)) = ref_bindings.get(name) {
-                    if return_lifetime.is_some() && return_lifetime != *bound_lifetime {
-                        violations.push(format!(
-                            "function `{}` returns reference `{}` with mismatched lifetime (expected {:?}, got {:?})",
-                            function.name, name, return_lifetime, bound_lifetime
-                        ));
-                    }
-                } else if return_lifetime.is_some() {
+        }
+        let return_lifetime = match &function.return_type {
+            Type::Ref { lifetime, .. } => {
+                if lifetime.is_none() {
                     violations.push(format!(
-                        "function `{}` returns local reference `{}` without valid lifetime region",
-                        function.name, name
+                        "function `{}` return reference is missing explicit lifetime annotation",
+                        function.name
                     ));
                 }
+                lifetime.clone()
             }
+            _ => None,
+        };
+        if return_lifetime.is_some() {
+            validate_reference_returns(
+                &function.body,
+                function,
+                &ref_bindings,
+                &signatures,
+                &return_lifetime,
+                &mut violations,
+            );
         }
     }
     violations
+}
+
+fn validate_reference_returns(
+    body: &[Stmt],
+    function: &TypedFunction,
+    ref_bindings: &BTreeMap<String, (Option<String>, bool)>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    return_lifetime: &Option<String>,
+    violations: &mut Vec<String>,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::Return(Some(expr)) => {
+                let inferred = infer_reference_lifetime(expr, ref_bindings, signatures);
+                if inferred.is_none() {
+                    violations.push(format!(
+                        "function `{}` returns reference expression without a statically traced lifetime source",
+                        function.name
+                    ));
+                    continue;
+                }
+                if inferred != Some(return_lifetime.clone()) {
+                    violations.push(format!(
+                        "function `{}` returns reference expression with mismatched lifetime (expected {:?}, got {:?})",
+                        function.name, return_lifetime, inferred
+                    ));
+                }
+            }
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                validate_reference_returns(
+                    then_body,
+                    function,
+                    ref_bindings,
+                    signatures,
+                    return_lifetime,
+                    violations,
+                );
+                validate_reference_returns(
+                    else_body,
+                    function,
+                    ref_bindings,
+                    signatures,
+                    return_lifetime,
+                    violations,
+                );
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::ForIn { body, .. } => {
+                validate_reference_returns(
+                    body,
+                    function,
+                    ref_bindings,
+                    signatures,
+                    return_lifetime,
+                    violations,
+                );
+            }
+            Stmt::For {
+                init, step, body, ..
+            } => {
+                if let Some(init) = init {
+                    validate_reference_returns(
+                        std::slice::from_ref(init.as_ref()),
+                        function,
+                        ref_bindings,
+                        signatures,
+                        return_lifetime,
+                        violations,
+                    );
+                }
+                validate_reference_returns(
+                    body,
+                    function,
+                    ref_bindings,
+                    signatures,
+                    return_lifetime,
+                    violations,
+                );
+                if let Some(step) = step {
+                    validate_reference_returns(
+                        std::slice::from_ref(step.as_ref()),
+                        function,
+                        ref_bindings,
+                        signatures,
+                        return_lifetime,
+                        violations,
+                    );
+                }
+            }
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    if expr_contains_return(&arm.value) {
+                        validate_reference_return_expr(
+                            &arm.value,
+                            function,
+                            ref_bindings,
+                            signatures,
+                            return_lifetime,
+                            violations,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn validate_reference_return_expr(
+    expr: &Expr,
+    function: &TypedFunction,
+    ref_bindings: &BTreeMap<String, (Option<String>, bool)>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    return_lifetime: &Option<String>,
+    violations: &mut Vec<String>,
+) {
+    match expr {
+        Expr::Return(Some(value)) => {
+            let inferred = infer_reference_lifetime(value, ref_bindings, signatures);
+            if inferred.is_none() {
+                violations.push(format!(
+                    "function `{}` returns reference expression without a statically traced lifetime source",
+                    function.name
+                ));
+            } else if inferred != Some(return_lifetime.clone()) {
+                violations.push(format!(
+                    "function `{}` returns reference expression with mismatched lifetime (expected {:?}, got {:?})",
+                    function.name, return_lifetime, inferred
+                ));
+            }
+        }
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            validate_reference_return_expr(
+                then_expr,
+                function,
+                ref_bindings,
+                signatures,
+                return_lifetime,
+                violations,
+            );
+            validate_reference_return_expr(
+                else_expr,
+                function,
+                ref_bindings,
+                signatures,
+                return_lifetime,
+                violations,
+            );
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                validate_reference_return_expr(
+                    &arm.value,
+                    function,
+                    ref_bindings,
+                    signatures,
+                    return_lifetime,
+                    violations,
+                );
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => validate_reference_returns(
+            body,
+            function,
+            ref_bindings,
+            signatures,
+            return_lifetime,
+            violations,
+        ),
+        _ => {}
+    }
+}
+
+fn infer_reference_lifetime(
+    expr: &Expr,
+    ref_bindings: &BTreeMap<String, (Option<String>, bool)>,
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> Option<Option<String>> {
+    match expr {
+        Expr::Ident(name) => ref_bindings.get(name).map(|(lifetime, _)| lifetime.clone()),
+        Expr::Group(inner) | Expr::FieldAccess { base: inner, .. } => {
+            infer_reference_lifetime(inner, ref_bindings, signatures)
+        }
+        Expr::Call { callee, args } => signatures.get(callee).and_then(|function| {
+            let Type::Ref {
+                lifetime: Some(return_lifetime),
+                ..
+            } = &function.return_type
+            else {
+                return None;
+            };
+            let matching = function
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, param)| match &param.ty {
+                    Type::Ref {
+                        lifetime: Some(param_lifetime),
+                        ..
+                    } if param_lifetime == return_lifetime => args.get(index),
+                    _ => None,
+                })
+                .map(|arg| infer_reference_lifetime(arg, ref_bindings, signatures))
+                .collect::<Vec<_>>();
+            if matching.len() == 1 {
+                matching[0].clone()
+            } else if matching.windows(2).all(|window| window[0] == window[1]) {
+                matching.first().cloned().flatten()
+            } else {
+                None
+            }
+        }),
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_lifetime = infer_reference_lifetime(then_expr, ref_bindings, signatures);
+            let else_lifetime = infer_reference_lifetime(else_expr, ref_bindings, signatures);
+            if then_lifetime == else_lifetime {
+                then_lifetime
+            } else {
+                None
+            }
+        }
+        Expr::Match { arms, .. } => {
+            let lifetimes = arms
+                .iter()
+                .map(|arm| infer_reference_lifetime(&arm.value, ref_bindings, signatures))
+                .collect::<Vec<_>>();
+            if lifetimes.windows(2).all(|window| window[0] == window[1]) {
+                lifetimes.first().cloned().flatten()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn expr_contains_return(expr: &Expr) -> bool {
+    match expr {
+        Expr::Return(_) => true,
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => expr_contains_return(then_expr) || expr_contains_return(else_expr),
+        Expr::Match { arms, .. } => arms.iter().any(|arm| expr_contains_return(&arm.value)),
+        Expr::UnsafeBlock { body, .. } => body.iter().any(stmt_contains_return),
+        _ => false,
+    }
+}
+
+fn stmt_contains_return(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Return(_) => true,
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            then_body.iter().any(stmt_contains_return) || else_body.iter().any(stmt_contains_return)
+        }
+        Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::ForIn { body, .. } => {
+            body.iter().any(stmt_contains_return)
+        }
+        Stmt::For {
+            init, step, body, ..
+        } => {
+            init.as_deref().is_some_and(stmt_contains_return)
+                || step.as_deref().is_some_and(stmt_contains_return)
+                || body.iter().any(stmt_contains_return)
+        }
+        Stmt::Match { arms, .. } => arms.iter().any(|arm| expr_contains_return(&arm.value)),
+        Stmt::Expr(expr)
+        | Stmt::Defer(expr)
+        | Stmt::Requires(expr)
+        | Stmt::Ensures(expr)
+        | Stmt::Let { value: expr, .. }
+        | Stmt::LetPattern { value: expr, .. }
+        | Stmt::Assign { value: expr, .. }
+        | Stmt::CompoundAssign { value: expr, .. } => expr_contains_return(expr),
+        Stmt::Break(_) | Stmt::Continue => false,
+    }
 }
 
 fn ref_used_after_await(body: &[Stmt], name: &str, mutable: bool) -> bool {
@@ -2151,32 +2438,57 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
     for function in functions {
         let mut linear_owned = BTreeSet::<String>::new();
         let mut linear_freed = BTreeSet::<String>::new();
-        for stmt in &function.body {
-            match stmt {
-                Stmt::Let {
-                    name, ty: Some(ty), ..
-                } if is_linear_type(ty) => {
-                    linear_owned.insert(name.clone());
-                }
-                Stmt::LetPattern { .. } => {}
-                Stmt::Expr(Expr::Call { callee, args })
-                    if callee == "free"
-                        || callee.ends_with(".free")
-                        || callee == "close"
-                        || callee.ends_with(".close") =>
+        struct Collector<'a> {
+            function: &'a TypedFunction,
+            linear_owned: &'a mut BTreeSet<String>,
+            linear_freed: &'a mut BTreeSet<String>,
+            violations: &'a mut Vec<String>,
+        }
+        impl AstVisitor for Collector<'_> {
+            fn visit_stmt(&mut self, stmt: &Stmt) {
+                if let Stmt::Let {
+                    name, ty, value, ..
+                } = stmt
                 {
-                    if let Some(Expr::Ident(name)) = args.first() {
-                        if !linear_owned.contains(name) {
-                            violations.push(format!(
-                                "function `{}` frees non-linear value `{}` as linear resource",
-                                function.name, name
-                            ));
+                    if let Some(resource_ty) =
+                        binding_resource_type(self.function, name, ty.as_ref(), value)
+                    {
+                        if is_linear_type(resource_ty) {
+                            self.linear_owned.insert(name.clone());
                         }
-                        linear_freed.insert(name.clone());
                     }
                 }
-                _ => {}
+                ast::walk_stmt(self, stmt);
             }
+
+            fn visit_expr(&mut self, expr: &Expr) {
+                if let Expr::Call { callee, args } = expr {
+                    if (is_free_callee(callee) || is_close_callee(callee))
+                        && matches!(args.first(), Some(Expr::Ident(_)))
+                    {
+                        let Expr::Ident(name) = args.first().expect("checked Some ident") else {
+                            unreachable!()
+                        };
+                        if !self.linear_owned.contains(name) {
+                            self.violations.push(format!(
+                                "function `{}` frees non-linear value `{}` as linear resource",
+                                self.function.name, name
+                            ));
+                        }
+                        self.linear_freed.insert(name.clone());
+                    }
+                }
+                ast::walk_expr(self, expr);
+            }
+        }
+        let mut collector = Collector {
+            function,
+            linear_owned: &mut linear_owned,
+            linear_freed: &mut linear_freed,
+            violations: &mut violations,
+        };
+        for stmt in &function.body {
+            collector.visit_stmt(stmt);
         }
         for name in linear_owned {
             if !linear_freed.contains(&name) {
@@ -2200,6 +2512,31 @@ fn is_linear_type(ty: &Type) -> bool {
         }
         _ => false,
     }
+}
+
+fn binding_resource_type<'a>(
+    function: &'a TypedFunction,
+    name: &str,
+    explicit_ty: Option<&'a Type>,
+    value: &'a Expr,
+) -> Option<&'a Type> {
+    explicit_ty
+        .or_else(|| function.local_types.get(name))
+        .or_else(|| {
+            is_alloc_expr(value)
+                .then(|| function.local_types.get(name))
+                .flatten()
+        })
+}
+
+fn binding_creates_owned_resource(
+    function: &TypedFunction,
+    name: &str,
+    ty: Option<&Type>,
+    value: &Expr,
+) -> bool {
+    binding_resource_type(function, name, ty, value).is_some_and(is_linear_type)
+        || is_alloc_expr(value)
 }
 
 fn compute_function_capabilities(
@@ -2336,24 +2673,27 @@ fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)
     violations.extend(analyze_alias_and_provenance(functions));
     violations.extend(analyze_atomic_ordering_claims(functions));
     for function in functions {
-        let mut owners = BTreeMap::<String, usize>::new();
-        let mut moved = BTreeSet::<String>::new();
-        let mut owner_candidates = function
-            .params
-            .iter()
-            .map(|param| param.name.clone())
-            .collect::<BTreeSet<_>>();
+        let mut state = OwnershipState {
+            owner_candidates: function
+                .params
+                .iter()
+                .map(|param| param.name.clone())
+                .collect::<BTreeSet<_>>(),
+            ..OwnershipState::default()
+        };
         let mut next_alloc = 1usize;
         analyze_ownership_block(
+            function,
             &function.body,
-            &mut owners,
-            &mut moved,
-            &mut owner_candidates,
+            &mut state,
             &mut next_alloc,
             &mut violations,
             &function.name,
         );
-        for (name, alloc_id) in owners {
+        for (name, alloc_id) in state.owners {
+            if state.deferred.contains(&alloc_id) {
+                continue;
+            }
             violations.push(format!(
                 "function `{}` leaks allocation id={} owned by `{}`",
                 function.name, alloc_id, name
@@ -2403,6 +2743,22 @@ fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)
         }
     }
     violations
+}
+
+#[derive(Debug, Clone, Default)]
+struct OwnershipState {
+    owners: BTreeMap<String, usize>,
+    moved: BTreeSet<String>,
+    owner_candidates: BTreeSet<String>,
+    deferred: BTreeSet<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct CallShape {
+    params: Vec<ast::Param>,
+    return_type: Type,
+    is_extern: bool,
+    is_unsafe: bool,
 }
 
 fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String> {
@@ -2962,16 +3318,15 @@ fn resolve_unsafe_callee(unsafe_functions: &BTreeSet<String>, callee: &str) -> O
 }
 
 fn analyze_ownership_block(
+    function: &TypedFunction,
     body: &[Stmt],
-    owners: &mut BTreeMap<String, usize>,
-    moved: &mut BTreeSet<String>,
-    owner_candidates: &mut BTreeSet<String>,
+    state: &mut OwnershipState,
     next_alloc: &mut usize,
     violations: &mut Vec<String>,
     function_name: &str,
 ) {
     for stmt in body {
-        for name in moved.iter() {
+        for name in state.moved.iter() {
             if stmt_uses_ident(stmt, name) {
                 violations.push(format!(
                     "function `{}` uses moved value `{}` after move/consume",
@@ -2983,20 +3338,20 @@ fn analyze_ownership_block(
             Stmt::Let {
                 name, value, ty, ..
             } => {
-                owner_candidates.insert(name.clone());
-                if ty.as_ref().is_some_and(is_linear_type) || is_alloc_expr(value) {
-                    owners.insert(name.clone(), *next_alloc);
+                state.owner_candidates.insert(name.clone());
+                if binding_creates_owned_resource(function, name, ty.as_ref(), value) {
+                    state.owners.insert(name.clone(), *next_alloc);
                     *next_alloc += 1;
-                    moved.remove(name);
+                    state.moved.remove(name);
                 }
                 if let Expr::Ident(from) = value {
-                    if let Some(owner) = owners.remove(from) {
-                        owners.insert(name.clone(), owner);
-                        moved.insert(from.clone());
-                        moved.remove(name);
+                    if let Some(owner) = state.owners.remove(from) {
+                        state.owners.insert(name.clone(), owner);
+                        state.moved.insert(from.clone());
+                        state.moved.remove(name);
                     }
                 }
-                if is_partial_move_expr(value, owners) {
+                if is_partial_move_expr(value, &state.owners) {
                     violations.push(format!(
                         "function `{}` performs partial move from owned aggregate; partial moves are forbidden in v0",
                         function_name
@@ -3004,8 +3359,8 @@ fn analyze_ownership_block(
                 }
             }
             Stmt::LetPattern { pattern, value, .. } => {
-                collect_pattern_bindings(pattern, owner_candidates);
-                if is_partial_move_expr(value, owners) {
+                collect_pattern_bindings(pattern, &mut state.owner_candidates);
+                if is_partial_move_expr(value, &state.owners) {
                     violations.push(format!(
                         "function `{}` performs partial move from owned aggregate; partial moves are forbidden in v0",
                         function_name
@@ -3013,15 +3368,15 @@ fn analyze_ownership_block(
                 }
             }
             Stmt::Assign { target, value } => {
-                owner_candidates.insert(target.clone());
+                state.owner_candidates.insert(target.clone());
                 if let Expr::Ident(from) = value {
-                    if let Some(owner) = owners.remove(from) {
-                        owners.insert(target.clone(), owner);
-                        moved.insert(from.clone());
+                    if let Some(owner) = state.owners.remove(from) {
+                        state.owners.insert(target.clone(), owner);
+                        state.moved.insert(from.clone());
                     }
                 }
-                moved.remove(target);
-                if is_partial_move_expr(value, owners) {
+                state.moved.remove(target);
+                if is_partial_move_expr(value, &state.owners) {
                     violations.push(format!(
                         "function `{}` performs partial move assignment from owned aggregate; partial moves are forbidden in v0",
                         function_name
@@ -3029,14 +3384,14 @@ fn analyze_ownership_block(
                 }
             }
             Stmt::CompoundAssign { target, value, .. } => {
-                owner_candidates.insert(target.clone());
+                state.owner_candidates.insert(target.clone());
                 if let Expr::Ident(from) = value {
-                    if let Some(owner) = owners.remove(from) {
-                        owners.insert(target.clone(), owner);
-                        moved.insert(from.clone());
+                    if let Some(owner) = state.owners.remove(from) {
+                        state.owners.insert(target.clone(), owner);
+                        state.moved.insert(from.clone());
                     }
                 }
-                moved.remove(target);
+                state.moved.remove(target);
             }
             Stmt::Expr(Expr::Call { callee, args }) => {
                 if callee == "free"
@@ -3045,83 +3400,90 @@ fn analyze_ownership_block(
                     || callee.ends_with(".close")
                 {
                     if let Some(Expr::Ident(name)) = args.first() {
-                        if owners.remove(name).is_none() {
+                        if let Some(owner) = state.owners.remove(name) {
+                            if state.deferred.contains(&owner) {
+                                violations.push(format!(
+                                    "function `{}` consumes value `{}` after scheduling deferred cleanup for the same owner",
+                                    function_name, name
+                                ));
+                            }
+                            state.moved.insert(name.clone());
+                        } else {
                             violations.push(format!(
                                 "function `{}` consumes non-owned or already-consumed value `{}` via `{}`",
                                 function_name, name, callee
                             ));
-                        } else {
-                            moved.insert(name.clone());
                         }
                     }
                 }
             }
+            Stmt::Defer(expr) => {
+                register_deferred_cleanup(expr, state, violations, function_name);
+            }
             Stmt::Expr(Expr::UnsafeBlock { body, .. }) => {
                 analyze_ownership_block(
+                    function,
                     body,
-                    owners,
-                    moved,
-                    owner_candidates,
+                    state,
                     next_alloc,
                     violations,
                     function_name,
                 );
             }
             Stmt::Return(Some(Expr::Ident(name))) => {
-                owners.remove(name);
-                moved.insert(name.clone());
+                if state.owners.remove(name).is_some() {
+                    state.moved.insert(name.clone());
+                }
             }
             Stmt::If {
                 then_body,
                 else_body,
                 ..
             } => {
-                let mut then_owners = owners.clone();
-                let mut else_owners = owners.clone();
-                let mut then_moved = moved.clone();
-                let mut else_moved = moved.clone();
-                let mut then_owner_candidates = owner_candidates.clone();
-                let mut else_owner_candidates = owner_candidates.clone();
+                let entry_state = state.clone();
+                let mut then_state = state.clone();
+                let mut else_state = state.clone();
                 analyze_ownership_block(
+                    function,
                     then_body,
-                    &mut then_owners,
-                    &mut then_moved,
-                    &mut then_owner_candidates,
+                    &mut then_state,
                     next_alloc,
                     violations,
                     function_name,
                 );
                 analyze_ownership_block(
+                    function,
                     else_body,
-                    &mut else_owners,
-                    &mut else_moved,
-                    &mut else_owner_candidates,
+                    &mut else_state,
                     next_alloc,
                     violations,
                     function_name,
                 );
-                *owners = then_owners
-                    .into_iter()
-                    .filter(|(name, id)| else_owners.get(name).is_some_and(|other| other == id))
-                    .collect();
-                *moved = then_moved
-                    .intersection(&else_moved)
-                    .cloned()
-                    .collect::<BTreeSet<_>>();
-                *owner_candidates = then_owner_candidates
-                    .intersection(&else_owner_candidates)
-                    .cloned()
-                    .collect::<BTreeSet<_>>();
+                *state = merge_ownership_states(
+                    function_name,
+                    "conditional branches",
+                    &entry_state,
+                    &[then_state, else_state],
+                    violations,
+                );
             }
             Stmt::While { body, .. } => {
+                let entry_state = state.clone();
+                let mut body_state = state.clone();
                 analyze_ownership_block(
+                    function,
                     body,
-                    owners,
-                    moved,
-                    owner_candidates,
+                    &mut body_state,
                     next_alloc,
                     violations,
                     function_name,
+                );
+                *state = merge_ownership_states(
+                    function_name,
+                    "loop iterations",
+                    &entry_state,
+                    &[entry_state.clone(), body_state],
+                    violations,
                 );
             }
             Stmt::For {
@@ -3132,73 +3494,339 @@ fn analyze_ownership_block(
             } => {
                 if let Some(init) = init {
                     analyze_ownership_block(
+                        function,
                         std::slice::from_ref(init.as_ref()),
-                        owners,
-                        moved,
-                        owner_candidates,
+                        state,
                         next_alloc,
                         violations,
                         function_name,
                     );
                 }
+                let entry_state = state.clone();
+                let mut body_state = state.clone();
                 analyze_ownership_block(
+                    function,
                     body,
-                    owners,
-                    moved,
-                    owner_candidates,
+                    &mut body_state,
                     next_alloc,
                     violations,
                     function_name,
                 );
                 if let Some(step) = step {
                     analyze_ownership_block(
+                        function,
                         std::slice::from_ref(step.as_ref()),
-                        owners,
-                        moved,
-                        owner_candidates,
+                        &mut body_state,
                         next_alloc,
                         violations,
                         function_name,
                     );
                 }
+                *state = merge_ownership_states(
+                    function_name,
+                    "loop iterations",
+                    &entry_state,
+                    &[entry_state.clone(), body_state],
+                    violations,
+                );
             }
             Stmt::ForIn { binding, body, .. } => {
-                moved.remove(binding);
-                owner_candidates.insert(binding.clone());
+                state.moved.remove(binding);
+                state.owner_candidates.insert(binding.clone());
+                let entry_state = state.clone();
+                let mut body_state = state.clone();
                 analyze_ownership_block(
+                    function,
                     body,
-                    owners,
-                    moved,
-                    owner_candidates,
+                    &mut body_state,
                     next_alloc,
                     violations,
                     function_name,
                 );
+                *state = merge_ownership_states(
+                    function_name,
+                    "loop iterations",
+                    &entry_state,
+                    &[entry_state.clone(), body_state],
+                    violations,
+                );
             }
             Stmt::Loop { body } => {
+                let entry_state = state.clone();
+                let mut body_state = state.clone();
                 analyze_ownership_block(
+                    function,
                     body,
-                    owners,
-                    moved,
-                    owner_candidates,
+                    &mut body_state,
                     next_alloc,
                     violations,
                     function_name,
+                );
+                *state = merge_ownership_states(
+                    function_name,
+                    "loop iterations",
+                    &entry_state,
+                    &[entry_state.clone(), body_state],
+                    violations,
                 );
             }
             Stmt::Break(_) | Stmt::Continue => {}
             Stmt::Match { arms, .. } => {
+                let entry_state = state.clone();
+                let mut arm_states = Vec::new();
                 for arm in arms {
+                    let mut arm_state = state.clone();
                     if let Some(guard) = &arm.guard {
                         let _ = guard;
                     }
+                    analyze_expr_value_ownership(
+                        function,
+                        &arm.value,
+                        &mut arm_state,
+                        next_alloc,
+                        violations,
+                        function_name,
+                    );
+                    arm_states.push(arm_state);
+                }
+                if !arm_states.is_empty() {
+                    *state = merge_ownership_states(
+                        function_name,
+                        "match arms",
+                        &entry_state,
+                        &arm_states,
+                        violations,
+                    );
                 }
             }
-            Stmt::Defer(_)
-            | Stmt::Requires(_)
-            | Stmt::Ensures(_)
-            | Stmt::Expr(_)
-            | Stmt::Return(_) => {}
+            Stmt::Expr(expr) => {
+                analyze_expr_value_ownership(
+                    function,
+                    expr,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                );
+            }
+            Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Return(_) => {}
+        }
+    }
+}
+
+fn analyze_expr_value_ownership(
+    function: &TypedFunction,
+    expr: &Expr,
+    state: &mut OwnershipState,
+    next_alloc: &mut usize,
+    violations: &mut Vec<String>,
+    function_name: &str,
+) {
+    match expr {
+        Expr::Call { callee, args } if is_free_callee(callee) || is_close_callee(callee) => {
+            if let Some(Expr::Ident(name)) = args.first() {
+                if let Some(owner) = state.owners.remove(name) {
+                    if state.deferred.contains(&owner) {
+                        violations.push(format!(
+                            "function `{}` consumes value `{}` after scheduling deferred cleanup for the same owner",
+                            function_name, name
+                        ));
+                    }
+                    state.moved.insert(name.clone());
+                } else {
+                    violations.push(format!(
+                        "function `{}` consumes non-owned or already-consumed value `{}` via `{}`",
+                        function_name, name, callee
+                    ));
+                }
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            analyze_ownership_block(function, body, state, next_alloc, violations, function_name);
+        }
+        Expr::Group(inner)
+        | Expr::Await(inner)
+        | Expr::Discard(inner)
+        | Expr::Unary { expr: inner, .. } => {
+            analyze_expr_value_ownership(
+                function,
+                inner,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+            );
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            let entry_state = state.clone();
+            let mut try_state = state.clone();
+            let mut catch_state = state.clone();
+            analyze_expr_value_ownership(
+                function,
+                try_expr,
+                &mut try_state,
+                next_alloc,
+                violations,
+                function_name,
+            );
+            analyze_expr_value_ownership(
+                function,
+                catch_expr,
+                &mut catch_state,
+                next_alloc,
+                violations,
+                function_name,
+            );
+            *state = merge_ownership_states(
+                function_name,
+                "try/catch expressions",
+                &entry_state,
+                &[try_state, catch_state],
+                violations,
+            );
+        }
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let entry_state = state.clone();
+            let mut then_state = state.clone();
+            let mut else_state = state.clone();
+            analyze_expr_value_ownership(
+                function,
+                then_expr,
+                &mut then_state,
+                next_alloc,
+                violations,
+                function_name,
+            );
+            analyze_expr_value_ownership(
+                function,
+                else_expr,
+                &mut else_state,
+                next_alloc,
+                violations,
+                function_name,
+            );
+            *state = merge_ownership_states(
+                function_name,
+                "conditional expressions",
+                &entry_state,
+                &[then_state, else_state],
+                violations,
+            );
+        }
+        Expr::Match { arms, .. } => {
+            let entry_state = state.clone();
+            let mut arm_states = Vec::new();
+            for arm in arms {
+                let mut arm_state = state.clone();
+                analyze_expr_value_ownership(
+                    function,
+                    &arm.value,
+                    &mut arm_state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                );
+                arm_states.push(arm_state);
+            }
+            if !arm_states.is_empty() {
+                *state = merge_ownership_states(
+                    function_name,
+                    "match expressions",
+                    &entry_state,
+                    &arm_states,
+                    violations,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn merge_ownership_states(
+    function_name: &str,
+    control_kind: &str,
+    entry_state: &OwnershipState,
+    branches: &[OwnershipState],
+    violations: &mut Vec<String>,
+) -> OwnershipState {
+    let mut merged = OwnershipState::default();
+    merged.deferred.extend(entry_state.deferred.iter().copied());
+    let mut names = BTreeSet::<String>::new();
+    names.extend(entry_state.owners.keys().cloned());
+    names.extend(entry_state.owner_candidates.iter().cloned());
+    names.extend(entry_state.moved.iter().cloned());
+    for branch in branches {
+        merged.deferred.extend(branch.deferred.iter().copied());
+        names.extend(branch.owners.keys().cloned());
+        names.extend(branch.owner_candidates.iter().cloned());
+        names.extend(branch.moved.iter().cloned());
+    }
+    for name in names {
+        let owner_views = branches
+            .iter()
+            .map(|branch| branch.owners.get(&name).copied())
+            .collect::<Vec<_>>();
+        let moved_views = branches
+            .iter()
+            .map(|branch| branch.moved.contains(&name))
+            .collect::<Vec<_>>();
+        let owner_diverges = owner_views.windows(2).any(|window| window[0] != window[1]);
+        let moved_diverges = moved_views.windows(2).any(|window| window[0] != window[1]);
+        if owner_diverges || moved_diverges {
+            violations.push(format!(
+                "function `{}` has divergent ownership state for `{}` across {}; rewrite control flow so ownership is consistent on every path",
+                function_name, name, control_kind
+            ));
+        }
+        if moved_views.iter().any(|moved| *moved) {
+            merged.moved.insert(name.clone());
+        }
+        if let Some(Some(owner_id)) = owner_views.first() {
+            if owner_views.iter().all(|view| *view == Some(*owner_id))
+                && !moved_views.iter().any(|moved| *moved)
+            {
+                merged.owners.insert(name.clone(), *owner_id);
+            }
+        }
+        if entry_state.owner_candidates.contains(&name)
+            || branches
+                .iter()
+                .any(|branch| branch.owner_candidates.contains(&name))
+        {
+            merged.owner_candidates.insert(name);
+        }
+    }
+    merged
+}
+
+fn register_deferred_cleanup(
+    expr: &Expr,
+    state: &mut OwnershipState,
+    violations: &mut Vec<String>,
+    function_name: &str,
+) {
+    let mut resources = BTreeSet::new();
+    collect_cleanup_targets(expr, &mut resources);
+    for name in resources {
+        let Some(owner) = state.owners.get(&name).copied() else {
+            violations.push(format!(
+                "function `{}` schedules deferred cleanup for non-owned or already-consumed value `{}`",
+                function_name, name
+            ));
+            continue;
+        };
+        if !state.deferred.insert(owner) {
+            violations.push(format!(
+                "function `{}` schedules deferred cleanup more than once for `{}`",
+                function_name, name
+            ));
         }
     }
 }
@@ -3501,13 +4129,6 @@ fn is_alloc_expr(expr: &Expr) -> bool {
 }
 
 fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
-    #[derive(Debug, Clone)]
-    struct CallShape {
-        params: Vec<ast::Param>,
-        return_type: Type,
-        is_extern: bool,
-        is_unsafe: bool,
-    }
     let mut violations = Vec::new();
     let signatures = functions
         .iter()
@@ -3525,145 +4146,468 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
         .collect::<BTreeMap<_, _>>();
     for function in functions {
         let mut next_root = 1usize;
-        let mut roots = BTreeMap::<String, usize>::new();
-        let mut freed_roots = BTreeSet::<usize>::new();
+        let mut state = ProvenanceState::default();
         for param in &function.params {
             if param.ty.is_pointer_like() || matches!(param.ty, Type::Ref { .. }) {
-                roots.insert(param.name.clone(), next_root);
+                state.roots.insert(param.name.clone(), next_root);
                 next_root += 1;
             }
         }
-        for stmt in &function.body {
-            let used = collect_stmt_idents(stmt);
-            for used_name in used {
-                let Some(root) = roots.get(&used_name).copied() else {
-                    continue;
-                };
-                if freed_roots.contains(&root) && !stmt_is_direct_free_of(stmt, &used_name) {
+        analyze_provenance_block(
+            &function.body,
+            &mut state,
+            &mut next_root,
+            &mut violations,
+            &function.name,
+            &signatures,
+        );
+    }
+    violations
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProvenanceState {
+    roots: BTreeMap<String, usize>,
+    freed_roots: BTreeSet<usize>,
+}
+
+fn analyze_provenance_block(
+    body: &[Stmt],
+    state: &mut ProvenanceState,
+    next_root: &mut usize,
+    violations: &mut Vec<String>,
+    function_name: &str,
+    signatures: &BTreeMap<String, CallShape>,
+) {
+    for stmt in body {
+        analyze_provenance_stmt(
+            stmt,
+            state,
+            next_root,
+            violations,
+            function_name,
+            signatures,
+        );
+    }
+}
+
+fn analyze_provenance_stmt(
+    stmt: &Stmt,
+    state: &mut ProvenanceState,
+    next_root: &mut usize,
+    violations: &mut Vec<String>,
+    function_name: &str,
+    signatures: &BTreeMap<String, CallShape>,
+) {
+    let used = collect_stmt_idents(stmt);
+    for used_name in used {
+        let Some(root) = state.roots.get(&used_name).copied() else {
+            continue;
+        };
+        if state.freed_roots.contains(&root) && !stmt_is_direct_free_of(stmt, &used_name) {
+            violations.push(format!(
+                "function `{}` uses value `{}` after provenance root {} was freed",
+                function_name, used_name, root
+            ));
+        }
+    }
+    match stmt {
+        Stmt::Let { name, value, .. } => {
+            assign_provenance_value(name, value, state, next_root, signatures);
+        }
+        Stmt::Assign { target, value } => {
+            assign_provenance_value(target, value, state, next_root, signatures);
+        }
+        Stmt::Expr(Expr::Call { callee, args }) => {
+            analyze_provenance_call(callee, args, state, violations, function_name, signatures);
+        }
+        Stmt::Expr(Expr::UnsafeBlock { body, .. }) => {
+            analyze_provenance_block(
+                body,
+                state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+        }
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            let entry_state = state.clone();
+            let mut then_state = state.clone();
+            let mut else_state = state.clone();
+            analyze_provenance_block(
+                then_body,
+                &mut then_state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+            analyze_provenance_block(
+                else_body,
+                &mut else_state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+            *state = merge_provenance_states(
+                function_name,
+                "conditional branches",
+                &entry_state,
+                &[then_state, else_state],
+                violations,
+            );
+        }
+        Stmt::While { body, .. } | Stmt::Loop { body } => {
+            let entry_state = state.clone();
+            let mut body_state = state.clone();
+            analyze_provenance_block(
+                body,
+                &mut body_state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+            *state = merge_provenance_states(
+                function_name,
+                "loop iterations",
+                &entry_state,
+                &[entry_state.clone(), body_state],
+                violations,
+            );
+        }
+        Stmt::For {
+            init, step, body, ..
+        } => {
+            if let Some(init) = init {
+                analyze_provenance_stmt(
+                    init,
+                    state,
+                    next_root,
+                    violations,
+                    function_name,
+                    signatures,
+                );
+            }
+            let entry_state = state.clone();
+            let mut body_state = state.clone();
+            analyze_provenance_block(
+                body,
+                &mut body_state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+            if let Some(step) = step {
+                analyze_provenance_stmt(
+                    step,
+                    &mut body_state,
+                    next_root,
+                    violations,
+                    function_name,
+                    signatures,
+                );
+            }
+            *state = merge_provenance_states(
+                function_name,
+                "loop iterations",
+                &entry_state,
+                &[entry_state.clone(), body_state],
+                violations,
+            );
+        }
+        Stmt::ForIn { body, .. } => {
+            let entry_state = state.clone();
+            let mut body_state = state.clone();
+            analyze_provenance_block(
+                body,
+                &mut body_state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+            *state = merge_provenance_states(
+                function_name,
+                "loop iterations",
+                &entry_state,
+                &[entry_state.clone(), body_state],
+                violations,
+            );
+        }
+        Stmt::Match { arms, .. } => {
+            let entry_state = state.clone();
+            let mut arm_states = Vec::new();
+            for arm in arms {
+                let mut arm_state = state.clone();
+                analyze_provenance_expr(
+                    &arm.value,
+                    &mut arm_state,
+                    next_root,
+                    violations,
+                    function_name,
+                    signatures,
+                );
+                arm_states.push(arm_state);
+            }
+            if !arm_states.is_empty() {
+                *state = merge_provenance_states(
+                    function_name,
+                    "match arms",
+                    &entry_state,
+                    &arm_states,
+                    violations,
+                );
+            }
+        }
+        Stmt::Expr(expr) => {
+            analyze_provenance_expr(
+                expr,
+                state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+        }
+        Stmt::LetPattern { .. }
+        | Stmt::CompoundAssign { .. }
+        | Stmt::Return(_)
+        | Stmt::Defer(_)
+        | Stmt::Requires(_)
+        | Stmt::Ensures(_)
+        | Stmt::Break(_)
+        | Stmt::Continue => {}
+    }
+}
+
+fn assign_provenance_value(
+    target: &str,
+    value: &Expr,
+    state: &mut ProvenanceState,
+    next_root: &mut usize,
+    signatures: &BTreeMap<String, CallShape>,
+) {
+    if is_alloc_expr(value) {
+        state.roots.insert(target.to_string(), *next_root);
+        *next_root += 1;
+    } else if let Some(root) = infer_expr_provenance_root(value, state, signatures) {
+        state.roots.insert(target.to_string(), root);
+    }
+}
+
+fn infer_expr_provenance_root(
+    expr: &Expr,
+    state: &ProvenanceState,
+    signatures: &BTreeMap<String, CallShape>,
+) -> Option<usize> {
+    match expr {
+        Expr::Ident(from) => state.roots.get(from).copied(),
+        Expr::FieldAccess { base, .. } | Expr::Group(base) => {
+            infer_expr_provenance_root(base, state, signatures)
+        }
+        Expr::Call { callee, args } => signatures.get(callee).and_then(|shape| {
+            if matches!(shape.return_type, Type::Ref { .. } | Type::Ptr { .. }) {
+                args.iter()
+                    .find_map(|arg| infer_expr_provenance_root(arg, state, signatures))
+            } else {
+                None
+            }
+        }),
+        _ => None,
+    }
+}
+
+fn analyze_provenance_call(
+    callee: &str,
+    args: &[Expr],
+    state: &mut ProvenanceState,
+    violations: &mut Vec<String>,
+    function_name: &str,
+    signatures: &BTreeMap<String, CallShape>,
+) {
+    if is_free_callee(callee) {
+        if let Some(Expr::Ident(name)) = args.first() {
+            if let Some(root) = state.roots.get(name).copied() {
+                if !state.freed_roots.insert(root) {
                     violations.push(format!(
-                        "function `{}` uses value `{}` after provenance root {} was freed",
-                        function.name, used_name, root
+                        "function `{}` double-frees provenance root {} via `{}`",
+                        function_name, root, name
                     ));
                 }
             }
-            match stmt {
-                Stmt::Let { name, value, .. } => {
-                    if is_alloc_expr(value) {
-                        roots.insert(name.clone(), next_root);
-                        next_root += 1;
-                    } else if let Expr::Ident(from) = value {
-                        if let Some(root) = roots.get(from).copied() {
-                            roots.insert(name.clone(), root);
-                        }
-                    } else if let Expr::FieldAccess { base, .. } = value {
-                        if let Expr::Ident(from) = base.as_ref() {
-                            if let Some(root) = roots.get(from).copied() {
-                                roots.insert(name.clone(), root);
-                            }
-                        }
-                    } else if let Expr::Call { callee, args } = value {
-                        if let Some(shape) = signatures.get(callee) {
-                            if matches!(shape.return_type, Type::Ref { .. } | Type::Ptr { .. }) {
-                                let maybe_root = args.iter().find_map(|arg| match arg {
-                                    Expr::Ident(arg_name) => roots.get(arg_name).copied(),
-                                    _ => None,
-                                });
-                                if let Some(root) = maybe_root {
-                                    roots.insert(name.clone(), root);
-                                }
-                            }
-                        }
-                    }
+        }
+    }
+    if let Some(shape) = signatures.get(callee) {
+        let mut mut_ref_aliases = BTreeMap::<String, usize>::new();
+        let mut shared_ref_aliases = BTreeMap::<String, usize>::new();
+        for (index, param) in shape.params.iter().enumerate() {
+            let Some(Expr::Ident(arg_name)) = args.get(index) else {
+                continue;
+            };
+            match &param.ty {
+                Type::Ref { mutable: true, .. } => {
+                    *mut_ref_aliases.entry(arg_name.clone()).or_default() += 1;
                 }
-                Stmt::LetPattern { .. } => {}
-                Stmt::Assign {
-                    target,
-                    value: Expr::Ident(from),
-                } => {
-                    if let Some(root) = roots.get(from).copied() {
-                        roots.insert(target.clone(), root);
-                    }
-                }
-                Stmt::Assign {
-                    target,
-                    value: Expr::Call { callee, args },
-                } => {
-                    if let Some(shape) = signatures.get(callee) {
-                        if matches!(shape.return_type, Type::Ref { .. } | Type::Ptr { .. }) {
-                            let maybe_root = args.iter().find_map(|arg| match arg {
-                                Expr::Ident(arg_name) => roots.get(arg_name).copied(),
-                                _ => None,
-                            });
-                            if let Some(root) = maybe_root {
-                                roots.insert(target.clone(), root);
-                            }
-                        }
-                    }
-                }
-                Stmt::Assign { .. } => {}
-                Stmt::Expr(Expr::Call { callee, args }) => {
-                    if is_free_callee(callee) {
-                        if let Some(Expr::Ident(name)) = args.first() {
-                            if let Some(root) = roots.get(name).copied() {
-                                if !freed_roots.insert(root) {
-                                    violations.push(format!(
-                                        "function `{}` double-frees provenance root {} via `{}`",
-                                        function.name, root, name
-                                    ));
-                                }
-                            }
-                        }
-                    }
-                    if let Some(shape) = signatures.get(callee) {
-                        let mut mut_ref_aliases = BTreeMap::<String, usize>::new();
-                        let mut shared_ref_aliases = BTreeMap::<String, usize>::new();
-                        for (index, param) in shape.params.iter().enumerate() {
-                            let Some(Expr::Ident(arg_name)) = args.get(index) else {
-                                continue;
-                            };
-                            match &param.ty {
-                                Type::Ref { mutable: true, .. } => {
-                                    *mut_ref_aliases.entry(arg_name.clone()).or_default() += 1;
-                                }
-                                Type::Ref { mutable: false, .. } => {
-                                    *shared_ref_aliases.entry(arg_name.clone()).or_default() += 1;
-                                }
-                                _ => {}
-                            }
-                        }
-                        for (name, count) in &mut_ref_aliases {
-                            if *count > 1 {
-                                violations.push(format!(
-                                    "function `{}` call `{}` aliases mutable reference parameter `{}` {} times",
-                                    function.name, callee, name, count
-                                ));
-                            }
-                            if shared_ref_aliases.contains_key(name) {
-                                violations.push(format!(
-                                    "function `{}` call `{}` aliases mutable and shared borrows for `{}`",
-                                    function.name, callee, name
-                                ));
-                            }
-                        }
-                        if shape.is_extern && shape.is_unsafe {
-                            for (index, param) in shape.params.iter().enumerate() {
-                                let Some(Expr::Ident(arg_name)) = args.get(index) else {
-                                    continue;
-                                };
-                                if param.name.ends_with("_owned") {
-                                    if let Some(root) = roots.remove(arg_name) {
-                                        freed_roots.insert(root);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                Type::Ref { mutable: false, .. } => {
+                    *shared_ref_aliases.entry(arg_name.clone()).or_default() += 1;
                 }
                 _ => {}
             }
         }
+        for (name, count) in &mut_ref_aliases {
+            if *count > 1 {
+                violations.push(format!(
+                    "function `{}` call `{}` aliases mutable reference parameter `{}` {} times",
+                    function_name, callee, name, count
+                ));
+            }
+            if shared_ref_aliases.contains_key(name) {
+                violations.push(format!(
+                    "function `{}` call `{}` aliases mutable and shared borrows for `{}`",
+                    function_name, callee, name
+                ));
+            }
+        }
+        if shape.is_extern && shape.is_unsafe {
+            for (index, param) in shape.params.iter().enumerate() {
+                let Some(Expr::Ident(arg_name)) = args.get(index) else {
+                    continue;
+                };
+                if param.name.ends_with("_owned") {
+                    if let Some(root) = state.roots.remove(arg_name) {
+                        state.freed_roots.insert(root);
+                    }
+                }
+            }
+        }
     }
-    violations
+}
+
+fn analyze_provenance_expr(
+    expr: &Expr,
+    state: &mut ProvenanceState,
+    next_root: &mut usize,
+    violations: &mut Vec<String>,
+    function_name: &str,
+    signatures: &BTreeMap<String, CallShape>,
+) {
+    match expr {
+        Expr::UnsafeBlock { body, .. } => {
+            analyze_provenance_block(
+                body,
+                state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+        }
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let entry_state = state.clone();
+            let mut then_state = state.clone();
+            let mut else_state = state.clone();
+            analyze_provenance_expr(
+                then_expr,
+                &mut then_state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+            analyze_provenance_expr(
+                else_expr,
+                &mut else_state,
+                next_root,
+                violations,
+                function_name,
+                signatures,
+            );
+            *state = merge_provenance_states(
+                function_name,
+                "conditional expressions",
+                &entry_state,
+                &[then_state, else_state],
+                violations,
+            );
+        }
+        Expr::Match { arms, .. } => {
+            let entry_state = state.clone();
+            let mut arm_states = Vec::new();
+            for arm in arms {
+                let mut arm_state = state.clone();
+                analyze_provenance_expr(
+                    &arm.value,
+                    &mut arm_state,
+                    next_root,
+                    violations,
+                    function_name,
+                    signatures,
+                );
+                arm_states.push(arm_state);
+            }
+            if !arm_states.is_empty() {
+                *state = merge_provenance_states(
+                    function_name,
+                    "match expressions",
+                    &entry_state,
+                    &arm_states,
+                    violations,
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
+fn merge_provenance_states(
+    function_name: &str,
+    control_kind: &str,
+    entry_state: &ProvenanceState,
+    branches: &[ProvenanceState],
+    violations: &mut Vec<String>,
+) -> ProvenanceState {
+    let mut merged = ProvenanceState::default();
+    merged
+        .freed_roots
+        .extend(entry_state.freed_roots.iter().copied());
+    let mut names = BTreeSet::<String>::new();
+    names.extend(entry_state.roots.keys().cloned());
+    for branch in branches {
+        merged
+            .freed_roots
+            .extend(branch.freed_roots.iter().copied());
+        names.extend(branch.roots.keys().cloned());
+    }
+    for name in names {
+        let root_views = branches
+            .iter()
+            .map(|branch| branch.roots.get(&name).copied())
+            .collect::<Vec<_>>();
+        let root_diverges = root_views.windows(2).any(|window| window[0] != window[1]);
+        if root_diverges {
+            violations.push(format!(
+                "function `{}` has divergent provenance state for `{}` across {}; rewrite control flow so provenance is consistent on every path",
+                function_name, name, control_kind
+            ));
+            continue;
+        }
+        if let Some(Some(root)) = root_views.first() {
+            merged.roots.insert(name, *root);
+        }
+    }
+    merged
 }
 
 fn analyze_atomic_ordering_claims(functions: &[TypedFunction]) -> Vec<String> {
@@ -4299,114 +5243,81 @@ fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
 fn collect_semantic_hints(
     functions: &[TypedFunction],
 ) -> (Vec<String>, Vec<String>, usize, usize, usize) {
-    let mut linear_resources = Vec::new();
-    let mut deferred_resources = Vec::new();
+    let mut linear_resources = BTreeSet::new();
+    let mut deferred_resources = BTreeSet::new();
     let mut matches_without_wildcard = 0usize;
     let mut match_unreachable_arms = 0usize;
     let mut match_duplicate_catchall_arms = 0usize;
 
     for function in functions {
+        struct Collector<'a> {
+            function: &'a TypedFunction,
+            linear_resources: &'a mut BTreeSet<String>,
+            deferred_resources: &'a mut BTreeSet<String>,
+            matches_without_wildcard: &'a mut usize,
+            match_unreachable_arms: &'a mut usize,
+            match_duplicate_catchall_arms: &'a mut usize,
+        }
+        impl AstVisitor for Collector<'_> {
+            fn visit_stmt(&mut self, stmt: &Stmt) {
+                if let Stmt::Let {
+                    name, ty, value, ..
+                } = stmt
+                {
+                    if let Some(resource_ty) =
+                        binding_resource_type(self.function, name, ty.as_ref(), value)
+                    {
+                        if is_linear_type(resource_ty) {
+                            self.linear_resources.insert(name.clone());
+                        }
+                    }
+                }
+                if let Some(expr) = stmt_expr(stmt) {
+                    collect_cleanup_targets(expr, self.deferred_resources);
+                }
+                if let Stmt::Match { arms, .. } = stmt {
+                    if !arms
+                        .iter()
+                        .any(|arm| pattern_is_catchall(&arm.pattern) && arm.guard.is_none())
+                    {
+                        *self.matches_without_wildcard += 1;
+                    }
+                    let mut seen_catchall = false;
+                    for arm in arms {
+                        let is_catchall = pattern_is_catchall(&arm.pattern) && arm.guard.is_none();
+                        if seen_catchall {
+                            *self.match_unreachable_arms += 1;
+                            if is_catchall {
+                                *self.match_duplicate_catchall_arms += 1;
+                            }
+                        } else if is_catchall {
+                            seen_catchall = true;
+                        }
+                    }
+                }
+                ast::walk_stmt(self, stmt);
+            }
+        }
+        let mut collector = Collector {
+            function,
+            linear_resources: &mut linear_resources,
+            deferred_resources: &mut deferred_resources,
+            matches_without_wildcard: &mut matches_without_wildcard,
+            match_unreachable_arms: &mut match_unreachable_arms,
+            match_duplicate_catchall_arms: &mut match_duplicate_catchall_arms,
+        };
         for statement in &function.body {
-            collect_semantic_hints_from_stmt(
-                statement,
-                &mut linear_resources,
-                &mut deferred_resources,
-                &mut matches_without_wildcard,
-                &mut match_unreachable_arms,
-                &mut match_duplicate_catchall_arms,
-            );
+            collector.visit_stmt(statement);
         }
     }
 
     (
-        linear_resources,
-        deferred_resources,
+        linear_resources.into_iter().collect(),
+        deferred_resources.into_iter().collect(),
         matches_without_wildcard,
         match_unreachable_arms,
         match_duplicate_catchall_arms,
     )
-}
-
-fn collect_semantic_hints_from_stmt(
-    statement: &Stmt,
-    linear_resources: &mut Vec<String>,
-    deferred_resources: &mut Vec<String>,
-    matches_without_wildcard: &mut usize,
-    match_unreachable_arms: &mut usize,
-    match_duplicate_catchall_arms: &mut usize,
-) {
-    match statement {
-        Stmt::Let {
-            name, ty: Some(ty), ..
-        } if ty.is_pointer_like() => {
-            linear_resources.push(name.clone());
-        }
-        Stmt::LetPattern { .. } => {}
-        Stmt::Defer(expr) => {
-            if let Some(resource) = deferred_resource(expr) {
-                deferred_resources.push(resource);
-            }
-        }
-        Stmt::If {
-            then_body,
-            else_body,
-            ..
-        } => {
-            for nested in then_body {
-                collect_semantic_hints_from_stmt(
-                    nested,
-                    linear_resources,
-                    deferred_resources,
-                    matches_without_wildcard,
-                    match_unreachable_arms,
-                    match_duplicate_catchall_arms,
-                );
-            }
-            for nested in else_body {
-                collect_semantic_hints_from_stmt(
-                    nested,
-                    linear_resources,
-                    deferred_resources,
-                    matches_without_wildcard,
-                    match_unreachable_arms,
-                    match_duplicate_catchall_arms,
-                );
-            }
-        }
-        Stmt::While { body, .. } => {
-            for nested in body {
-                collect_semantic_hints_from_stmt(
-                    nested,
-                    linear_resources,
-                    deferred_resources,
-                    matches_without_wildcard,
-                    match_unreachable_arms,
-                    match_duplicate_catchall_arms,
-                );
-            }
-        }
-        Stmt::Match { arms, .. } => {
-            if !arms
-                .iter()
-                .any(|arm| pattern_is_catchall(&arm.pattern) && arm.guard.is_none())
-            {
-                *matches_without_wildcard += 1;
-            }
-            let mut seen_catchall = false;
-            for arm in arms {
-                let is_catchall = pattern_is_catchall(&arm.pattern) && arm.guard.is_none();
-                if seen_catchall {
-                    *match_unreachable_arms += 1;
-                    if is_catchall {
-                        *match_duplicate_catchall_arms += 1;
-                    }
-                } else if is_catchall {
-                    seen_catchall = true;
-                }
-            }
-        }
-        _ => {}
-    }
 }
 
 fn collect_effect_markers(
@@ -5264,94 +6175,140 @@ fn stable_unsafe_site_id(kind: &str, function_name: &str, snippet: &str) -> Stri
     format!("usite_{hash:016x}")
 }
 
-fn deferred_resource(expr: &ast::Expr) -> Option<String> {
+fn collect_cleanup_targets(expr: &ast::Expr, out: &mut BTreeSet<String>) {
     match expr {
-        ast::Expr::Ident(name) => Some(name.clone()),
-        ast::Expr::Call { args, .. } => args.first().and_then(|arg| match arg {
-            ast::Expr::Ident(name) => Some(name.clone()),
-            _ => None,
-        }),
-        ast::Expr::UnsafeBlock { meta, .. } => meta.as_ref().map(|m| m.owner.clone()),
+        ast::Expr::Call { callee, args } if is_free_callee(callee) || is_close_callee(callee) => {
+            if let Some(ast::Expr::Ident(name)) = args.first() {
+                out.insert(name.clone());
+            }
+            for arg in args {
+                collect_cleanup_targets(arg, out);
+            }
+        }
+        ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                if let Some(expr) = stmt_expr(stmt) {
+                    collect_cleanup_targets(expr, out);
+                }
+            }
+        }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
-        } => deferred_resource(try_expr).or_else(|| deferred_resource(catch_expr)),
+        } => {
+            collect_cleanup_targets(try_expr, out);
+            collect_cleanup_targets(catch_expr, out);
+        }
         ast::Expr::If {
             condition,
             then_expr,
             else_expr,
-        } => deferred_resource(condition)
-            .or_else(|| deferred_resource(then_expr))
-            .or_else(|| deferred_resource(else_expr)),
-        ast::Expr::Match { scrutinee, arms } => deferred_resource(scrutinee).or_else(|| {
-            arms.iter().find_map(|arm| {
-                arm.guard
-                    .as_ref()
-                    .and_then(deferred_resource)
-                    .or_else(|| deferred_resource(&arm.value))
-            })
-        }),
-        ast::Expr::While { condition, body } => deferred_resource(condition).or_else(|| {
-            body.iter()
-                .find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
-        }),
+        } => {
+            collect_cleanup_targets(condition, out);
+            collect_cleanup_targets(then_expr, out);
+            collect_cleanup_targets(else_expr, out);
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            collect_cleanup_targets(scrutinee, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_cleanup_targets(guard, out);
+                }
+                collect_cleanup_targets(&arm.value, out);
+            }
+        }
+        ast::Expr::While { condition, body } => {
+            collect_cleanup_targets(condition, out);
+            for stmt in body {
+                if let Some(expr) = stmt_expr(stmt) {
+                    collect_cleanup_targets(expr, out);
+                }
+            }
+        }
         ast::Expr::For {
             init,
             condition,
             step,
             body,
-        } => init
-            .as_ref()
-            .and_then(|stmt| stmt_expr(stmt).and_then(deferred_resource))
-            .or_else(|| {
-                condition
-                    .as_ref()
-                    .and_then(|expr| deferred_resource(expr.as_ref()))
-            })
-            .or_else(|| {
-                step.as_ref()
-                    .and_then(|stmt| stmt_expr(stmt).and_then(deferred_resource))
-            })
-            .or_else(|| {
-                body.iter()
-                    .find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
-            }),
-        ast::Expr::ForIn { iterable, body, .. } => deferred_resource(iterable).or_else(|| {
-            body.iter()
-                .find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource))
-        }),
-        ast::Expr::Loop { body } => body
-            .iter()
-            .find_map(|stmt| stmt_expr(stmt).and_then(deferred_resource)),
+        } => {
+            if let Some(stmt) = init {
+                if let Some(expr) = stmt_expr(stmt) {
+                    collect_cleanup_targets(expr, out);
+                }
+            }
+            if let Some(expr) = condition {
+                collect_cleanup_targets(expr, out);
+            }
+            if let Some(stmt) = step {
+                if let Some(expr) = stmt_expr(stmt) {
+                    collect_cleanup_targets(expr, out);
+                }
+            }
+            for stmt in body {
+                if let Some(expr) = stmt_expr(stmt) {
+                    collect_cleanup_targets(expr, out);
+                }
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            collect_cleanup_targets(iterable, out);
+            for stmt in body {
+                if let Some(expr) = stmt_expr(stmt) {
+                    collect_cleanup_targets(expr, out);
+                }
+            }
+        }
+        ast::Expr::Loop { body } => {
+            for stmt in body {
+                if let Some(expr) = stmt_expr(stmt) {
+                    collect_cleanup_targets(expr, out);
+                }
+            }
+        }
+        ast::Expr::Group(inner)
+        | ast::Expr::Await(inner)
+        | ast::Expr::Discard(inner)
+        | ast::Expr::Unary { expr: inner, .. }
+        | ast::Expr::FieldAccess { base: inner, .. } => collect_cleanup_targets(inner, out),
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_cleanup_targets(value, out);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. }
+        | ast::Expr::Tuple(payload)
+        | ast::Expr::ArrayLiteral(payload) => {
+            for value in payload {
+                collect_cleanup_targets(value, out);
+            }
+        }
+        ast::Expr::Closure { body, .. } => collect_cleanup_targets(body, out),
         ast::Expr::Return(value) | ast::Expr::Break(value) => {
-            value.as_ref().and_then(|expr| deferred_resource(expr))
+            if let Some(expr) = value {
+                collect_cleanup_targets(expr, out);
+            }
         }
-        ast::Expr::Continue => None,
-        ast::Expr::FieldAccess { base, .. } => deferred_resource(base),
-        ast::Expr::StructInit { fields, .. } => fields
-            .iter()
-            .find_map(|(_, value)| deferred_resource(value)),
-        ast::Expr::EnumInit { payload, .. } => payload.iter().find_map(deferred_resource),
-        ast::Expr::Tuple(items) => items.iter().find_map(deferred_resource),
-        ast::Expr::Closure { body, .. } => deferred_resource(body),
-        ast::Expr::Await(inner) => deferred_resource(inner),
-        ast::Expr::Discard(inner) => deferred_resource(inner),
-        ast::Expr::ArrayLiteral(items) => items.iter().find_map(deferred_resource),
-        ast::Expr::ObjectLiteral(fields) => fields
-            .iter()
-            .find_map(|(_, value)| deferred_resource(value)),
+        ast::Expr::Binary { left, right, .. }
+        | ast::Expr::Range {
+            start: left,
+            end: right,
+            ..
+        } => {
+            collect_cleanup_targets(left, out);
+            collect_cleanup_targets(right, out);
+        }
         ast::Expr::Index { base, index } => {
-            deferred_resource(base).or_else(|| deferred_resource(index))
+            collect_cleanup_targets(base, out);
+            collect_cleanup_targets(index, out);
         }
-        ast::Expr::Unary { expr, .. } => deferred_resource(expr),
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
         | ast::Expr::Char(_)
         | ast::Expr::Bool(_)
         | ast::Expr::Str(_)
-        | ast::Expr::Range { .. }
-        | ast::Expr::Binary { .. }
-        | ast::Expr::Group(_) => None,
+        | ast::Expr::Ident(_)
+        | ast::Expr::Continue
+        | ast::Expr::Call { .. } => {}
     }
 }
 
@@ -11822,6 +12779,149 @@ mod tests {
     }
 
     #[test]
+    fn detects_nested_use_after_free_via_control_flow() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                let q = p;
+                if true {
+                    free(p);
+                } else {
+                    return 0;
+                }
+                close(q);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `q` after provenance root")));
+    }
+
+    #[test]
+    fn detects_divergent_ownership_across_branches() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                if true {
+                    free(p);
+                } else {
+                }
+                close(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("divergent ownership state for `p`")
+                || detail.contains("uses moved value `p` after move/consume")
+        }));
+    }
+
+    #[test]
+    fn borrowed_references_are_not_collected_as_linear_resources() {
+        let source = r#"
+            fn borrow(v: &'a i32) -> &'a i32 {
+                return v;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let r = borrow(x);
+                discard r;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.linear_resources.iter().any(|name| name == "r"));
+    }
+
+    #[test]
+    fn inferred_alloc_local_is_treated_as_linear_resource() {
+        let source = r#"
+            fn main() -> i32 {
+                let n: usize = 32;
+                let p = alloc(n);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| detail.contains("frees non-linear value `p`")));
+    }
+
+    #[test]
+    fn deferred_cleanup_counts_as_real_release() {
+        let source = r#"
+            fn main() -> i32 {
+                let n: usize = 32;
+                let p = alloc(n);
+                defer free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.deferred_resources.iter().any(|name| name == "p"));
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`")));
+        assert!(!typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| detail.contains("linear value `p` was not consumed/freed")));
+    }
+
+    #[test]
+    fn inferred_pointer_return_without_cleanup_is_tracked() {
+        let source = r#"
+            ext unsafe c fn acquire_owned() -> *u8;
+            unsafe fn main() -> i32 {
+                let p = acquire_owned();
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`")));
+    }
+
+    #[test]
+    fn match_arm_cleanup_updates_ownership_state() {
+        let source = r#"
+            fn main() -> i32 {
+                let n: usize = 32;
+                let p = alloc(n);
+                match true {
+                    true => free(p),
+                    _ => 0,
+                }
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("divergent ownership state for `p`")
+                || detail.contains("uses moved value `p` after move/consume")
+                || detail.contains("consumes non-owned or already-consumed value `p`")
+        }));
+    }
+
+    #[test]
     fn detects_mutable_aliasing_across_ref_params() {
         let source = r#"
             fn touch(a: &'a mut i32, b: &'a mut i32) -> i32 {
@@ -11879,6 +12979,45 @@ mod tests {
         let typed = lower(&module);
         assert!(typed.ownership_violations.iter().any(|detail| {
             detail.contains("generic/trait-heavy with borrowed parameters across await")
+        }));
+    }
+
+    #[test]
+    fn detects_inferred_local_reference_used_across_await() {
+        let source = r#"
+            fn borrow(v: &'a i32) -> &'a i32 {
+                return v;
+            }
+            async fn worker(v: &'a i32) -> i32 {
+                let alias = borrow(v);
+                await recv();
+                discard alias;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.reference_lifetime_violations.iter().any(|detail| {
+            detail.contains(
+                "cannot use borrowed local reference `alias` across await suspension points",
+            )
+        }));
+    }
+
+    #[test]
+    fn detects_mismatched_reference_lifetime_through_returned_call() {
+        let source = r#"
+            fn borrow(v: &'b i32) -> &'b i32 {
+                return v;
+            }
+            fn relay(a: &'a i32, b: &'b i32) -> &'a i32 {
+                return borrow(b);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.reference_lifetime_violations.iter().any(|detail| {
+            detail.contains("returns reference expression with mismatched lifetime")
         }));
     }
 

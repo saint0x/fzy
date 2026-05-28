@@ -965,8 +965,41 @@ fn profile_checks_can_be_disabled() {
     .expect("source should be written");
 
     let artifact = compile_file(&root, BuildProfile::Dev).expect("build should run");
-    assert_eq!(artifact.status, "ok");
-    assert!(artifact.output.as_ref().is_some_and(|path| path.exists()));
+    assert_eq!(artifact.status, "error");
+    assert!(artifact.output.is_none());
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn profile_checks_false_does_not_suppress_verifier_errors() {
+    let project_name = format!(
+        "fozzylang-profile-verifier-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n\n[profiles.dev]\nchecks=false\noptimize=false\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "ext c fn c_read(buf_owned: *u8) -> i32;\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("build should run");
+    assert_eq!(artifact.status, "error");
+    assert!(artifact.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("must be declared `ext unsafe c fn`")
+    }));
 
     let _ = std::fs::remove_dir_all(root);
 }
