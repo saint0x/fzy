@@ -33,216 +33,67 @@ The biggest concerns today are:
 
 ## Completed Review Evidence
 
-✅ Performed a source-level review of the memory-safety compiler area, centered on `crates/hir`, `crates/verifier`, public safety docs, and verifier integration.
+✅ Completed a source-level review of the compiler memory-safety surface across `crates/hir`, `crates/verifier`, docs, and verifier integration.
 
-✅ Ran the prescribed Fozzy deterministic memory scenario flow:
+✅ Ran the prescribed deterministic Fozzy memory flow, including doctor, strict test, recorded trace, trace verification, replay, and CI, against `tests/memory_graph_diff_top.pass.fozzy.json`.
 
-- `fozzy doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 42 --json`
-- `fozzy test --det --strict tests/memory_graph_diff_top.pass.fozzy.json --json`
-- `fozzy run tests/memory_graph_diff_top.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/memory-sitrep-review.trace.fozzy --json`
-- `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/memory-sitrep-review.trace.fozzy --strict --json`
-- `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/memory-sitrep-review.trace.fozzy --json`
-- `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/memory-sitrep-review.trace.fozzy --json`
+✅ Confirmed the current memory scenario is deterministic and replay/CI-clean on the path it covers.
 
-✅ Confirmed the current memory scenario is deterministic and passes replay/CI with no reported leaks on the covered path.
+✅ Reproduced the borrowed-reference false positive where a local `&'a` binding was incorrectly treated as a linear resource requiring `defer close(...)`.
 
-✅ Reproduced a borrowed-reference false positive where a local `&'a` binding is treated as a linear resource requiring `defer close(...)`.
+✅ Reproduced the documented `defer free(...)` contradiction by showing that `let p = alloc(...); defer free(p)` still triggered leak and unreleased-linear diagnostics.
 
-✅ Reproduced the documented `defer free(...)` contradiction on this checkout:
+✅ Reproduced an active `hir` reference-lifetime compile failure where `crates/hir/src/lib.rs` compared `Option<Option<String>>` against `Option<String>`.
 
-- minimal `fz verify` probe using `let p = alloc(...)` plus `defer free(p)` still produced leak / unreleased-linear diagnostics instead of accepting the documented cleanup pattern
+✅ Ran targeted unsafe-FFI and trace-backed checks beyond the basic memory scenario to widen evidence coverage around pointer misuse, callback lifecycle, and host replay.
 
-✅ Reproduced an active `hir` compile failure in the reference-lifetime path:
+✅ Reproduced an inferred-owned-pointer escape hatch where `let p = unsafe { acquire_owned() }` with no cleanup produced warnings only and `errors: 0`.
 
-- `cargo test -p hir detects_ -- --nocapture`
-- compiler error at `crates/hir/src/lib.rs` comparing `Option<Option<String>>` against `Option<String>` in the return-lifetime checker
+✅ Reproduced the helper-call ownership-transfer mismatch where a callee that `free(...)`d its parameter was still treated as consuming a non-owned value while the caller leaked the original owner.
 
-✅ Ran targeted unsafe-FFI and trace-backed checks beyond the simple memory scenario:
+✅ Reproduced a control-flow asymmetry where direct cleanup inside `if` updated ownership state correctly but the equivalent `match`-arm cleanup did not.
 
-- `fozzy test --det --strict tests/memory_graph_diff_top.pass.fozzy.json tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json --json`
-- `fozzy run tests/memory_graph_diff_top.pass.fozzy.json --det --record /tmp/memory-sitrep.trace.fozzy --json`
-- `fozzy replay /tmp/memory-sitrep.trace.fozzy --json`
-- `fozzy ci /tmp/memory-sitrep.trace.fozzy --json`
+✅ Reproduced an inferred-`alloc(...)` false positive where `let p = alloc(n); free(p);` was misdiagnosed as freeing a non-linear value because enforcement still depended on explicit type spelling.
 
-✅ Reproduced the inferred-owned-pointer escape hatch on this checkout:
+✅ Ran the current compiler, verifier, and unsafe-accounting evidence flow with direct crate tests, workspace unsafe audit, and Rust unsafe inventory.
 
-- minimal `fz verify` probe using:
-  - `ext unsafe c fn acquire_owned() -> *u8;`
-  - `let p = unsafe { acquire_owned() }`
-  - no cleanup
-- returned warnings only and `errors: 0`
+✅ Confirmed the current checkout builds the compiler safety crates directly, with both `hir` and `verifier` test suites passing and the earlier return-lifetime compile failure no longer reproducing here.
 
-✅ Reproduced the ordinary helper-call ownership-transfer mismatch on this checkout:
+✅ Confirmed the current unsafe-accounting posture is clean on this checkout, with zero missing contracts, invalid proof refs, or unsafe-context violations and the Rust unsafe inventory still within the approved budget of `2`.
 
-- minimal `fz verify` probe using a helper that `free(...)`s its pointer parameter reported:
-  - callee consumed a non-owned value
-  - caller still leaked the original owner
+✅ Confirmed the approved Rust `unsafe` footprint remains limited to [crates/stdlib/src/security.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/security.rs:74) and [crates/stdlib/src/process.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/process.rs:198).
 
-✅ Reproduced a control-flow asymmetry between `if` and `match` for the same cleanup shape:
+✅ Confirmed the current host-backed memory scenario also passes on this checkout.
 
-- `if flag { free(p); } free(p);` produced the expected divergent-state / moved-value / double-free-style diagnostics
-- the analogous `match flag { true => free(p), false => 0, _ => 0 } free(p);` probe did not surface the same ownership/provenance failures
-- this matches the current implementation shape where `Stmt::Match` routes arm values through expression-only ownership/provenance helpers that do not model direct call expressions like `free(p)`
+✅ Re-ran the unsafe and FFI scenarios individually to remove ambiguity from multi-target invocation and confirm each target passes on its own.
 
-✅ Reproduced an inferred-`alloc(...)` linear-resource false positive on this checkout:
+✅ Added a second deterministic memory evidence pass with a fresh seed and an explicit recorded trace lifecycle.
 
-- minimal `fz verify` probe using:
-  - `let p = alloc(n);`
-  - `free(p);`
-- reported `function 'main' frees non-linear value 'p' as linear resource`
-- this indicates the current linear-resource pass is still relying too heavily on explicit local type annotations rather than inferred owned-resource semantics
+✅ Fixed and regression-covered the live cleanup-logic gaps so borrowed refs stop being treated as linear, inferred owned locals are tracked correctly, deferred cleanup counts as real release, `match` cleanup updates ownership state, and inferred unsafe pointer returns no longer bypass leak analysis.
 
-✅ Ran current compiler/verifier and unsafe-accounting evidence on this checkout:
+✅ Added focused `crates/hir` regressions for borrowed-reference linear-resource classification, inferred-allocation release handling, deferred cleanup, inferred unsafe pointer-return ownership, and `match`-arm cleanup state.
 
-- `cargo test -q -p hir`
-- `cargo test -q -p verifier`
-- `fz audit unsafe . --workspace --json`
-- `python3 scripts/rust_unsafe_inventory.py --root . --out /tmp/rust_unsafe_inventory_sitrep.json --budget 2 --policy policy/rust_unsafe_islands.json`
+✅ Re-ran the production Fozzy flow for the compiler safety surface, including validate, deterministic strict tests, recorded trace, trace verify, replay, CI, and host-backed execution.
 
-✅ Confirmed the current checkout does build the compiler safety crates directly:
+✅ Tightened same-statement async borrow checking so shared borrows used after `await` inside nested `if`, `match`, and loop bodies are now rejected and regression-covered.
 
-- `cargo test -q -p hir` passed (`75 passed; 0 failed`)
-- `cargo test -q -p verifier` passed (`26 passed; 0 failed`)
-- the previously noted `Option<Option<String>>` vs `Option<String>` `hir` lifetime-checker compile failure did not reproduce on this checkout and should be treated as stale or branch-local unless it reappears
+✅ Re-ran a fresh post-fix HIR Fozzy trace lifecycle to validate the async-borrow hardening under deterministic, replayable, and host-backed coverage.
 
-✅ Confirmed current unsafe-accounting posture on this checkout:
+✅ Fixed helper-boundary pointer/ref provenance attribution by switching to callee return-provenance summaries so first-arg and second-arg passthrough helpers no longer collapse to the same caller root.
 
-- workspace unsafe audit returned `entries: 0`
-- `missingContractCount: 0`
-- `invalidProofRefCount: 0`
-- `unsafeContextViolationCount: 0`
-- Rust unsafe inventory passed at the approved budget of `2`
+✅ Re-ran a fresh provenance-focused HIR Fozzy trace lifecycle to validate the helper-boundary provenance fix under deterministic, replayable evidence.
 
-✅ Confirmed the currently approved Rust `unsafe` footprint remains exactly these two documented sites:
+✅ Expanded aggregate alias/provenance coverage so tuple, struct, and variant destructuring preserve roots correctly and stale roots are cleared on reassignment.
 
-- [crates/stdlib/src/security.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/security.rs:74)
-- [crates/stdlib/src/process.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/process.rs:198)
+✅ Re-ran a fresh aggregate-provenance HIR Fozzy trace lifecycle and refreshed the recorded memory trace verification, replay, and CI evidence.
 
-✅ Confirmed the current host-backed memory scenario also passes on this checkout:
+✅ Confirmed additional runtime/compiler evidence by passing host-backed `c_ffi_matrix` coverage and sampled direct-memory backend consistency tests.
 
-- `fozzy run tests/memory_graph_diff_top.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+✅ Reproduced an inferred-handle cleanup escape hatch where `let listener = http.bind(); return 0` verified cleanly while the explicitly typed `HttpHandle` form correctly failed.
 
-✅ Re-ran the unsafe / FFI scenario checks individually on this checkout to avoid ambiguity from multi-target test invocation:
+✅ Reproduced a plain-pointer and `_borrowed` C-import escape hatch where pointer-shaped safe imports still passed with warnings instead of requiring `ext unsafe c fn`.
 
-- `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json --json`
-- `fozzy test --det --strict tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json --json`
-- `fozzy test --det --strict tests/unsafe_ffi.trace_host_replay.pass.fozzy.json --json`
-- `fozzy test --det --strict tests/c_ffi_matrix.pass.fozzy.json --json`
-
-✅ Added a second current-checkout memory evidence pass with a fresh deterministic seed and explicit trace lifecycle:
-
-- `fz doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 1337 --json`
-- `fz test tests/memory_graph_diff_top.pass.fozzy.json --det --strict-verify --seed 1337 --json`
-- `fz run tests/memory_graph_diff_top.pass.fozzy.json --det --seed 1337 --record artifacts/memory-sitrep.trace.fozzy --json`
-
-✅ Fixed and regression-covered the remaining live false-logic cleanup issues on the current checkout:
-
-- borrowed references are no longer collected as linear resources requiring cleanup
-- inferred `alloc(...)` locals now participate in linear-resource accounting the same way as explicitly typed pointer locals
-- deferred `free(...)` now counts as a real release for ownership/leak accounting
-- direct `free(...)` / `close(...)` and deferred cleanup now share verifier release accounting instead of “defer only” logic
-- direct cleanup in `match` arms now updates post-`match` ownership state and diagnoses divergent / already-consumed paths
-- inferred unsafe pointer-return locals are now tracked by ownership leak analysis
-
-✅ Added focused compiler regressions in `crates/hir` for:
-
-- borrowed-reference locals not appearing in `linear_resources`
-- inferred allocation locals not producing “frees non-linear value” false positives
-- deferred cleanup preventing leak / unreleased-linear false positives
-- inferred unsafe pointer-return locals being tracked as owned resources
-- `match`-arm cleanup updating ownership state
-
-✅ Re-ran the production Fozzy flow for the compiler safety surface on this checkout:
-
-- `fozzy validate tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --json`
-- `fozzy validate tests/pedantic.crates_verifier.lib.memory_graph_diff_top.pass.fozzy.json --json`
-- `fozzy doctor --deep --scenario tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 42 --json`
-- `fozzy test --det --strict tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json tests/pedantic.crates_verifier.lib.memory_graph_diff_top.pass.fozzy.json --json`
-- `fozzy run tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --record artifacts/compiler-hardening.trace.fozzy --json`
-- `fozzy trace verify artifacts/compiler-hardening.trace.fozzy --strict --json`
-- `fozzy replay artifacts/compiler-hardening.trace.fozzy --json`
-- `fozzy ci artifacts/compiler-hardening.trace.fozzy --json`
-- `fozzy run tests/pedantic.crates_hir.lib.host_backends_run.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
-
-✅ Tightened same-statement async borrow checking on the current checkout:
-
-- shared borrowed references are now rejected when used after `await` within the same nested `if`, `match`, or loop body
-- covered by focused HIR regressions for:
-  - same `if` body post-`await` shared borrow use
-  - same `match` statement post-`await` shared borrow use
-  - same loop body post-`await` shared borrow use
-
-✅ Re-ran a fresh post-fix HIR Fozzy trace lifecycle on this checkout:
-
-- `fozzy doctor --deep --scenario tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 99 --json`
-- `fozzy test --det --strict tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --json`
-- `fozzy run tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --record artifacts/await-hardening.trace.fozzy --json`
-- `fozzy trace verify artifacts/await-hardening.trace.fozzy --strict --json`
-- `fozzy replay artifacts/await-hardening.trace.fozzy --json`
-- `fozzy ci artifacts/await-hardening.trace.fozzy --json`
-- `fozzy run tests/pedantic.crates_hir.lib.host_backends_run.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
-
-✅ Fixed helper-boundary pointer/ref provenance attribution on the current checkout:
-
-- pointer/ref-returning helpers now carry a callee return-provenance summary instead of inheriting the first provenance-bearing argument by heuristic
-- helpers returning the first pointer arg and helpers returning the second pointer arg now produce different caller provenance when appropriate
-- covered by focused HIR regressions for:
-  - distinct first-arg versus second-arg helper return provenance
-  - second-arg passthrough not collapsing onto the first-arg root
-
-✅ Re-ran a fresh provenance-focused HIR Fozzy trace lifecycle on this checkout:
-
-- `fozzy doctor --deep --scenario tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 123 --json`
-- `fozzy test --det --strict tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --json`
-- `fozzy run tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --record artifacts/provenance-hardening.trace.fozzy --json`
-- `fozzy trace verify artifacts/provenance-hardening.trace.fozzy --strict --json`
-- `fozzy replay artifacts/provenance-hardening.trace.fozzy --json`
-- `fozzy ci artifacts/provenance-hardening.trace.fozzy --json`
-
-✅ Expanded aggregate alias/provenance coverage on the current checkout:
-
-- `let` pattern bindings now inherit provenance through tuple, struct, and variant destructuring instead of being ignored
-- overwriting a provenance-bearing local with a value whose provenance cannot be tied back now clears the stale root instead of preserving a false alias
-- covered by focused HIR regressions for:
-  - tuple destructuring preserving per-element provenance
-  - struct destructuring preserving per-field provenance
-  - reassignment clearing stale provenance before later cleanup
-
-✅ Re-ran a fresh aggregate-provenance HIR Fozzy trace lifecycle on this checkout:
-
-- `fozzy doctor --deep --scenario tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 777 --json`
-- `fozzy test --det --strict tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --json`
-- `fozzy run tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --record artifacts/aggregate-provenance.trace.fozzy --json`
-- `fozzy trace verify artifacts/aggregate-provenance.trace.fozzy --strict --json`
-- `fozzy replay artifacts/aggregate-provenance.trace.fozzy --json`
-- `fozzy ci artifacts/aggregate-provenance.trace.fozzy --json`
-- `fz trace verify artifacts/memory-sitrep.trace.fozzy --strict --json`
-- `fz replay artifacts/memory-sitrep.trace.fozzy --json`
-- `fz ci artifacts/memory-sitrep.trace.fozzy --json`
-
-✅ Confirmed additional current-checkout runtime/compiler evidence not previously listed here:
-
-- host-backed `fz run tests/c_ffi_matrix.pass.fozzy.json --host-backends --json` passed
-- sampled direct-memory backend consistency tests passed:
-  - `cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_bounds_probe_executes_consistently -- --exact`
-  - `cargo test -q -p driver pipeline::tests::cross_backend_direct_memory_contract_fixture_executes_consistently -- --exact`
-
-✅ Reproduced an inferred-handle cleanup escape hatch on this checkout:
-
-- `let listener = http.bind(); return 0` verified with `diagnostics: 0`
-- the equivalent explicitly typed `let listener: HttpHandle = http.bind(); return 0` correctly failed with leak / linear-resource diagnostics
-- this confirms cleanup enforcement still depends on explicit local type spelling for at least some handle-producing expressions
-
-✅ Reproduced a plain-pointer / `_borrowed` C-import escape hatch on this checkout:
-
-- `ext c fn c_read(buf: *u8) -> i32;` verified with warnings only
-- `ext c fn c_read(buf_borrowed: *u8) -> i32;` also verified with warnings only
-- this shows the current verifier only forces `ext unsafe c fn` for a narrower subset of pointer-shaped imports than the docs imply
-
-✅ Reproduced missing callback-context enforcement on this checkout:
-
-- `ext unsafe c fn register(cb_owned: *u8, cb: fn(i32) -> i32) -> i32;` verified with warnings only
-- no verifier error required a companion `*_ctx` / `*_context` lifetime anchor even though the production memory model documents that rule
+✅ Reproduced missing callback-context enforcement where a callback-bearing unsafe C import passed without the documented adjacent `*_ctx` or `*_context` lifetime anchor.
 
 ## Priority 0: Fix Real Safety Gaps
 
@@ -315,9 +166,7 @@ Required tests:
 
 Update:
 
-- direct `free(...)` / `close(...)` arm expressions now flow through ownership-state updates instead of being skipped as expression-shaped no-ops
-- post-`match` state now diagnoses divergent ownership and already-consumed follow-up uses on the same local
-- covered by a targeted HIR regression that reproduces `match`-arm cleanup followed by a second cleanup
+Direct `free(...)` and `close(...)` inside `match` arms now participate in ownership-state updates, produce correct post-`match` divergent/already-consumed diagnostics, and are locked in by a targeted HIR regression.
 
 Problem:
 
@@ -381,8 +230,7 @@ Required tests:
 
 Update:
 
-- inferred locals receiving pointer returns now seed ownership tracking through typed local information rather than explicit local annotations only
-- covered by a targeted HIR regression for `ext unsafe c fn acquire_owned() -> *u8` with missing cleanup
+Inferred locals receiving pointer returns now seed ownership tracking from typed expression results instead of explicit annotations only, with targeted HIR coverage for missing-cleanup extern pointer returns.
 
 Problem:
 
@@ -425,9 +273,7 @@ Required tests:
 
 Update:
 
-- semantic-hint collection no longer uses pointer-like syntax as a proxy for owned cleanup obligations
-- borrowed references stop flowing into `linear_resources`
-- covered by a targeted HIR regression over an inferred borrowed local returned from a helper
+Borrowed references no longer flow into `linear_resources` because semantic-hint collection now distinguishes borrowed values from owned cleanup obligations, and the fix is regression-covered in HIR.
 
 Problem:
 
@@ -467,8 +313,7 @@ Required tests:
 
 Update:
 
-- cleanup target collection now traverses control-flow and nested expression shapes structurally
-- direct cleanup and deferred cleanup share the same collected release accounting surface
+Cleanup accounting now traverses the AST structurally across control flow and nested expressions so direct and deferred `free(...)`/`close(...)` share one consistent release-recognition path.
 
 Problem:
 
@@ -498,8 +343,7 @@ Required tests:
 
 Update:
 
-- inferred allocation locals now enter linear-resource accounting through typed local information instead of explicit annotations only
-- covered by a targeted HIR regression that `free(...)`s an inferred allocation local without producing the old “frees non-linear value” diagnostic
+Inferred `alloc(...)` locals now enter linear-resource accounting through typed expression results rather than explicit annotations only, eliminating the old false-positive non-linear release diagnostic and locking it in with HIR regression coverage.
 
 Problem:
 
@@ -560,8 +404,7 @@ Required tests:
 
 Update:
 
-- semantic-hint collection now uses structural AST traversal instead of a hand-picked subset of statement forms
-- nested cleanup inside `if`, `match`, loops, `unsafe`, and other expression shapes feeds the same release accounting
+Semantic-hint collection now walks the AST structurally instead of relying on statement-shape special cases, so cleanup nested inside `if`, `match`, loops, and `unsafe` feeds the same release accounting.
 
 Problem:
 
@@ -593,9 +436,7 @@ Required tests:
 
 Update:
 
-- deferred cleanup now participates in ownership leak accounting
-- verifier release checks now accept both direct cleanup and deferred cleanup instead of a defer-only rule
-- covered by a targeted HIR regression plus refreshed CLI spot checks on the current checkout
+Deferred `free(...)` and `close(...)` now count as real cleanup in ownership and verifier release accounting, matching the documented model and backed by targeted HIR regression plus refreshed CLI checks.
 
 Problem:
 
@@ -664,9 +505,7 @@ Required tests:
 
 Update:
 
-- the borrow-after-`await` walker now carries post-suspension state through nested expressions and statement bodies instead of only flipping state after a whole statement finishes
-- shared references now get the same same-statement post-`await` checking that mutable references previously received
-- covered by focused HIR regressions for nested `if`, `match`, and loop-body shapes
+Borrow-after-`await` analysis now carries post-suspension state through nested expressions and control flow so same-statement shared-borrow misuse in `if`, `match`, and loop bodies is rejected and regression-covered.
 
 Problem:
 
@@ -698,9 +537,7 @@ Required tests:
 
 Update:
 
-- provenance roots now propagate through tuple and struct pattern destructuring instead of skipping `let` patterns entirely
-- reassignment now clears stale provenance when the new value does not preserve the previous alias root
-- helper-boundary return provenance and local destructuring coverage now align more closely across the major aggregate cases we can verify today
+Alias/provenance analysis now propagates roots through core destructuring and clears stale roots on reassignment, bringing aggregate locals and helper-boundary reasoning into closer semantic alignment.
 
 Problem:
 
@@ -730,13 +567,7 @@ Required tests:
 
 Update:
 
-- pointer/ref-returning helper calls now consult a callee return-provenance summary instead of binding silently to the first provenance-bearing argument
-- summary inference now distinguishes at least:
-  - returns parameter 0 provenance
-  - returns parameter N provenance
-  - returns fresh provenance
-  - unknown / unsupported provenance
-- covered by focused HIR regressions that distinguish first-arg and second-arg passthrough helpers
+Pointer/ref-returning helper calls now use callee return-provenance summaries instead of first-argument heuristics, distinguishing returned-arg roots, fresh roots, and unknown provenance with focused HIR regression coverage.
 
 Problem:
 
@@ -788,18 +619,9 @@ Why this matters:
 
 Verified progress on this checkout:
 
-- ✅ grouped-expression `_owned` FFI arguments now consume the same semantic provenance root as the ungrouped value instead of bypassing the transfer check
-- ✅ grouped mutable-reference aliasing now collapses onto the same alias key as the underlying value instead of evading the repeated-borrow check through syntax alone
-- `cargo test -q -p hir` now includes:
-  - `detects_mutable_aliasing_through_grouped_ref_argument`
-  - `grouped_owned_ffi_argument_marks_root_consumed`
-- refreshed FFI trace evidence passed on this checkout:
-  - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
-  - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-shape-hardening.trace.fozzy --json`
-  - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-shape-hardening.trace.fozzy --strict --json`
-  - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-shape-hardening.trace.fozzy --json`
-  - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-shape-hardening.trace.fozzy --json`
-  - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+Verified progress on this checkout:
+
+✅ Grouped-expression `_owned` FFI arguments and grouped mutable-reference aliases now collapse to the same semantic provenance/alias roots as their ungrouped forms, with targeted HIR regressions and refreshed deterministic, trace-backed, replay, CI, and host-backed Fozzy evidence.
 
 Required fixes:
 
@@ -818,74 +640,19 @@ Required tests:
 
 Verified closure:
 
-- the verifier no longer relies on `_owned` / `_out` / `_inout` suffixes for this boundary
-- any pointer-like C import shape now requires `ext unsafe c fn`, including:
-  - plain pointer parameters such as `ext c fn c_read(buf: *u8) -> i32;`
-  - borrowed-pointer naming shapes such as `ext c fn c_read(buf_borrowed: *u8) -> i32;`
-  - mixed pointer-parameter / pointer-return signatures
-- the diagnostic remains explicit about the unsafe-boundary requirement instead of leaving pointer-shaped safe imports in the nominally safe surface
-
-Verified tests:
-
-1. `cargo test -q -p verifier` now includes:
-   - `safe_extern_c_pointer_param_requires_unsafe_boundary`
-   - `safe_extern_c_borrowed_pointer_param_requires_unsafe_boundary`
-   - `safe_extern_c_mixed_pointer_signature_requires_unsafe_boundary`
-2. Fozzy production checks passed on this checkout:
-   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 735 --json`
-   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy --json`
-   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy --strict --json`
-   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy --json`
-   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+Any pointer-shaped `ext c fn` import now requires `ext unsafe c fn` regardless of `_owned`-style naming, with explicit verifier diagnostics, dedicated verifier tests, and deterministic trace-backed plus host-backed Fozzy validation.
 
 ### ✅ 7.35. Callback lifetime-anchor requirements are now enforced structurally
 
 Verified closure:
 
-- callback-shaped FFI parameters now trigger verifier enforcement for an adjacent `*_ctx` or `*_context` anchor
-- callback-bearing imports without that neighbor now fail with an explicit diagnostic instead of passing with warnings only
-- imports with an adjacent context anchor pass the structural verifier check, which aligns the compiler boundary with the documented callback lifetime model
-
-Verified tests:
-
-1. `cargo test -q -p verifier` now includes:
-   - `callback_extern_c_import_without_context_anchor_fails`
-   - `callback_extern_c_import_with_adjacent_context_anchor_passes_structural_check`
-2. the same Fozzy trace-backed FFI production pass above completed cleanly, with recorded evidence at `/Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy`
+Callback-bearing FFI imports now structurally require an adjacent `*_ctx` or `*_context` anchor, with explicit verifier failures for missing anchors, pass coverage for valid anchors, and shared trace-backed Fozzy validation.
 
 ### ✅ 7.5. Ownership transfer on argument passing now follows an explicit consume-summary rule
 
 Verified closure:
 
-- the shipped rule on this checkout is now explicit and enforced:
-  - assignment and identifier return still transfer ownership
-  - argument passing transfers ownership only when the callee contract/body proves consumption
-  - non-consuming helpers remain borrow/non-transfer call edges
-- local helper bodies now contribute conservative consumed-parameter summaries, so a helper that actually `free(...)`s an owned argument no longer reports:
-  - callee-side “consumes non-owned value”
-  - caller-side leak of the original owner
-- unsafe extern `_owned` parameters now participate in the same caller-side ownership-transfer rule instead of living as a disconnected one-off behavior
-- the public production memory model was narrowed to match the implemented rule in `/Users/deepsaint/Desktop/fozzylang/docs/production-memory-model-v1.md`
-
-Verified tests:
-
-1. `cargo test -q -p hir` now includes:
-   - `helper_freeing_owned_param_transfers_ownership_from_caller`
-   - `non_consuming_helper_preserves_caller_ownership`
-   - `unsafe_extern_owned_param_transfers_ownership_from_caller`
-2. compiler suites passed on this checkout:
-   - `cargo test -q -p hir`
-   - `cargo test -q -p verifier`
-3. Fozzy production checks passed on this checkout:
-   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 941 --json`
-   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/ownership-transfer-hardening.trace.fozzy --json`
-   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/ownership-transfer-hardening.trace.fozzy --strict --json`
-   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/ownership-transfer-hardening.trace.fozzy --json`
-   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/ownership-transfer-hardening.trace.fozzy --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+Ownership transfer on argument passing now follows an explicit consume-summary rule for local helpers and unsafe extern `_owned` parameters, the production memory model has been narrowed to match that behavior, and the change is covered by crate tests plus deterministic trace-backed and host-backed Fozzy validation.
 
 ### 7.75. Verifier release rules currently require local `defer` even where transfer-based cleanup should be legal
 
@@ -903,11 +670,7 @@ Why this matters:
 
 Verified progress on this checkout:
 
-- ✅ argument-transfer cleanup through consuming local helpers is now accepted without forcing a local `defer` at the original call site
-- ✅ argument-transfer cleanup through unsafe extern `_owned` parameters is now accepted under the same consume-summary rule
-- ✅ the production memory-model wording now reflects a proof-of-consumption rule instead of blanket argument-transfer wording
-- ✅ grouped `return` of an owned local now transfers ownership instead of leaking by falling off the identifier-only return path
-- ✅ `return` of a consuming helper call now applies the same consume-summary rule instead of still requiring local cleanup at the caller
+✅ Argument-transfer cleanup through consuming helpers and unsafe extern `_owned` parameters is now accepted without forced local `defer`, grouped returns and returns of consuming helper calls transfer ownership correctly, and the production memory model now states the narrower proof-of-consumption rule.
 
 Required fixes:
 
@@ -924,49 +687,13 @@ Required tests:
 
 Verified tests:
 
-1. `cargo test -q -p hir` now includes:
-   - `grouped_return_transfers_ownership_without_local_defer`
-   - `return_of_consuming_helper_call_does_not_require_local_defer`
-2. compiler suites passed on this checkout:
-   - `cargo test -q -p hir`
-   - `cargo test -q -p verifier`
-3. Fozzy production checks passed on this checkout:
-   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 1201 --json`
-   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/return-transfer-hardening.trace.fozzy --json`
-   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/return-transfer-hardening.trace.fozzy --strict --json`
-   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/return-transfer-hardening.trace.fozzy --json`
-   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/return-transfer-hardening.trace.fozzy --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+The return-transfer hardening is covered by targeted HIR tests, passing `hir` and `verifier` suites, and deterministic trace-backed, replay, CI, and host-backed Fozzy production checks.
 
 ### ✅ 8. Partial-move detection now covers the core aggregate extraction shapes in v1
 
 Verified closure:
 
-- partial-move detection no longer depends only on the simplest direct field-access shape
-- the ownership pass now rejects partial extraction from aggregates that structurally contain linear members across:
-  - tuple destructuring with holes
-  - nested struct field projection chains
-  - struct / variant-style pattern holes
-- this closes the main structural gap where aggregates containing owned pointers could evade the v1 “no partial move” baseline simply because the move happened through a richer extraction form
-
-Verified tests:
-
-1. `cargo test -q -p hir` now includes:
-   - `tuple_pattern_partial_move_is_rejected`
-   - `nested_struct_field_partial_move_is_rejected`
-   - `struct_pattern_partial_move_is_rejected`
-2. compiler suites passed on this checkout:
-   - `cargo test -q -p hir`
-   - `cargo test -q -p verifier`
-3. Fozzy production checks passed on this checkout:
-   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 1601 --json`
-   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/partial-move-hardening.trace.fozzy --json`
-   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/partial-move-hardening.trace.fozzy --strict --json`
-   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/partial-move-hardening.trace.fozzy --json`
-   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/partial-move-hardening.trace.fozzy --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+Partial-move detection now rejects the core aggregate extraction shapes in v1, including tuple holes, nested field projections, and pattern holes over linear members, with targeted HIR tests and deterministic trace-backed plus host-backed Fozzy validation.
 
 ## Priority 3: Make Unsafe Accounting Honest And Actionable
 
@@ -995,26 +722,7 @@ Why this matters:
 
 Verified progress on this checkout:
 
-- ✅ compiler-generated placeholder unsafe contracts no longer count toward `unsafe_reasoned_sites`
-- ✅ verifier production messaging now distinguishes:
-  - structural unsafe contract metadata present
-  - independently reasoned evidence still required
-- ✅ placeholder-generated contracts with `gate://compiler-generated/...` and `scope_root` ownership remain visible as audit records, but no longer trigger the over-claiming “compiler contract checks passed” wording
-- `cargo test -q -p hir` now includes:
-  - `compiler_generated_unsafe_sites_are_not_counted_as_reasoned`
-- `cargo test -q -p verifier` now includes:
-  - `production_mode_distinguishes_placeholder_unsafe_contracts_from_reasoned_evidence`
-- compiler suites passed on this checkout:
-  - `cargo test -q -p hir`
-  - `cargo test -q -p verifier`
-- Fozzy production checks passed on this checkout:
-  - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 1901 --json`
-  - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
-  - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/unsafe-accounting-hardening.trace.fozzy --json`
-  - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/unsafe-accounting-hardening.trace.fozzy --strict --json`
-  - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/unsafe-accounting-hardening.trace.fozzy --json`
-  - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/unsafe-accounting-hardening.trace.fozzy --json`
-  - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+✅ Compiler-generated placeholder unsafe contracts no longer count toward `unsafe_reasoned_sites`, verifier messaging now distinguishes structural metadata from independently reasoned evidence, and the change is covered by `hir`/`verifier` tests plus deterministic trace-backed and host-backed Fozzy validation.
 
 Required fixes:
 
@@ -1054,32 +762,11 @@ Why this matters:
 
 Verified closure on this checkout:
 
-- ✅ verifier proof-ref validation now mirrors the stricter artifact-backed semantics for:
-  - `trace://`
-  - `run://`
-  - `test://`
-  - `ci://`
-- ✅ nonexistent artifact-backed proof refs are now rejected directly in strict verifier mode instead of being accepted on URI shape alone
-- ✅ existing artifact-backed proof refs still pass strict verifier validation
-- ✅ `gate://` placeholders remain machine-linkable structural references, but they stay distinct from artifact-backed evidence
+✅ Verifier proof-ref validation now matches the stricter artifact-backed semantics for `trace://`, `run://`, `test://`, and `ci://`, rejects missing artifacts in strict mode, still accepts real evidence, and keeps `gate://` placeholders clearly separate.
 
 Verified tests:
 
-1. `cargo test -q -p verifier` now includes:
-   - `strict_unsafe_contracts_reject_missing_trace_artifact_proof_refs`
-   - `strict_unsafe_contracts_accept_existing_trace_artifact_proof_refs`
-   - `strict_unsafe_contracts_reject_malformed_proof_refs`
-2. compiler suites passed on this checkout:
-   - `cargo test -q -p hir`
-   - `cargo test -q -p verifier`
-3. Fozzy production checks passed on this checkout:
-   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 2201 --json`
-   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/proof-ref-hardening.trace.fozzy --json`
-   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/proof-ref-hardening.trace.fozzy --strict --json`
-   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/proof-ref-hardening.trace.fozzy --json`
-   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/proof-ref-hardening.trace.fozzy --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+This proof-ref hardening is covered by dedicated verifier tests, passing `hir` and `verifier` suites, and deterministic trace-backed, replay, CI, and host-backed Fozzy production checks.
 
 Required fixes:
 
@@ -1114,34 +801,11 @@ Why this matters:
 
 Verified closure on this checkout:
 
-- ✅ thread-boundary borrow/send-sync failures now flow through a dedicated `thread_boundary_violations` lane instead of `capability_token_violations`
-- ✅ verifier remediation now distinguishes:
-  - borrowed returns crossing thread-capable boundaries
-  - mutable pointer/reference parameters that need a Send/Sync-safe owned wrapper
-  - real delegated-capability token failures
-- ✅ capability-token diagnostics keep their capability-token-specific help text instead of absorbing thread-boundary borrow failures
-- ✅ grouped verifier output and summary state now preserve the distinction by carrying thread-boundary failures separately from capability-policy failures
+✅ Thread-boundary borrow/send-sync failures now flow through a dedicated `thread_boundary_violations` lane with boundary-specific remediation, while real capability-token failures keep their own guidance and summary bucket.
 
 Verified tests:
 
-1. `cargo test -q -p hir` now includes:
-   - `routes_borrowed_return_thread_boundary_failures_out_of_capability_bucket`
-   - `routes_mutable_reference_thread_boundary_failures_out_of_capability_bucket`
-2. `cargo test -q -p verifier` now includes:
-   - `thread_boundary_borrowed_return_uses_thread_boundary_remediation`
-   - `thread_boundary_mutable_param_uses_send_sync_wrapper_guidance`
-   - `capability_token_failures_keep_capability_specific_guidance`
-3. compiler suites passed on this checkout:
-   - `cargo test -q -p hir`
-   - `cargo test -q -p verifier`
-4. Fozzy production checks passed on this checkout:
-   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 2501 --json`
-   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/thread-boundary-diagnostics-hardening.trace.fozzy --json`
-   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/thread-boundary-diagnostics-hardening.trace.fozzy --strict --json`
-   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/thread-boundary-diagnostics-hardening.trace.fozzy --json`
-   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/thread-boundary-diagnostics-hardening.trace.fozzy --json`
-   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+This diagnostic-lane split is covered by targeted `hir` and `verifier` tests, passing compiler suites, and deterministic trace-backed, replay, CI, and host-backed Fozzy production checks.
 
 Required fixes:
 
@@ -1200,6 +864,10 @@ Goal:
 
 ### 12. Add verifier integration tests at the `fz verify` surface
 
+Verified progress on this checkout:
+
+✅ `fz verify` integration coverage now includes direct pipeline tests for borrowed-return thread-boundary failures, mutable-reference thread-boundary failures, and non-thread borrowed-reference pass paths that must not regress.
+
 Needed additions:
 
 1. minimal `.fzy` fixtures for each bug class
@@ -1211,6 +879,10 @@ Goal:
 - prove that user-visible diagnostics match the intended compiler semantics
 
 ### 13. Add Fozzy scenarios for compiler memory-safety regressions
+
+Verified progress on this checkout:
+
+✅ Added `tests/compiler_verify_thread_boundary.pass.fozzy.json` as a first-class `fz verify` scenario gate covering negative borrowed-return and mutable-reference thread-boundary failures plus a positive borrowed-reference pass path.
 
 Needed additions:
 
@@ -1240,6 +912,10 @@ Why this matters:
 
 - release gates should validate the actual bug classes we are relying on for production confidence
 - a narrow passing scenario can create false confidence even when compiler enforcement still has uncovered blind spots
+
+Verified progress on this checkout:
+
+✅ Strict deterministic Fozzy coverage now includes `tests/compiler_verify_thread_boundary.pass.fozzy.json`, with recorded trace evidence at `/Users/deepsaint/Desktop/fozzylang/artifacts/compiler-verify-thread-boundary.trace.fozzy` and full doctor, strict test, trace verify, replay, CI, and host-backed validation.
 
 Required fixes:
 
@@ -1451,44 +1127,15 @@ Recommended downstream builder scope:
 
 ## Additional Completed DX / Runtime Hardening
 
-✅ Closed the process-handle lifecycle contract gap on the current checkout.
+✅ Closed the split `fz init` product surface by removing the old scaffold path, centralizing bootstrap under the shipped `fz init` command, narrowing the generated tree to the canonical minimal layout, aligning generated guidance with real commands, and validating the result with crate tests plus deterministic, trace-backed, replay, CI, and host-backed Fozzy runs.
 
-- `proc.spawn*` handles now have an explicit typed cleanup path through `proc.close(handle)`
-- native runtime tables and shim support were updated to carry the process-close intrinsic end to end
-- focused regression added in `crates/hir` for wait/observe/close typing
-- wrapper helpers that consume linear handle parameters now pass the same verifier accounting as direct close sites
-- validated with:
-  - `cargo test -q -p hir process_close_typechecks_after_wait_and_observation`
-  - `cargo test -q -p hir process_close`
-  - `cargo run -q -p fz -- check /Users/deepsaint/Desktop/fzaudio --json`
-  - `cargo run -q -p fz -- build /Users/deepsaint/Desktop/fzaudio --backend cranelift --json`
+✅ Closed the process-handle lifecycle contract gap by giving `proc.spawn*` handles an explicit typed cleanup path through `proc.close(handle)`, wiring the intrinsic end to end, regression-covering the typing path in `crates/hir`, and validating it with compiler and real-project checks.
 
-✅ Closed the qualified module-path inconsistency for production code on the current checkout.
+✅ Closed the qualified module-path inconsistency so dot-qualified type paths parse in signatures and cross-module const/static value paths resolve consistently, with focused parser and driver regressions backing the fix.
 
-- dot-qualified type paths such as `-> model.types.ProjectKind` now parse in function signatures
-- cross-module const/static value paths such as `model.types.CONST_VALUE` now resolve consistently with sibling helper calls
-- focused regressions added in `crates/parser` and `crates/driver`
-- validated with:
-  - `cargo test -q -p parser parses_dot_qualified_return_types_in_function_signatures`
-  - `cargo test -q -p driver compile_project_resolves_cross_module_const_value_paths`
+✅ Closed the `core.log` stdlib/verifier import poison so logging helper setup no longer leaks linear map ownership during normal import/configuration flows, with driver regression coverage and doc alignment.
 
-✅ Closed the `core.log` stdlib/verifier import poison on the current checkout.
-
-- `core.log` helper construction no longer leaks linear map ownership during ordinary import/configuration flows
-- focused regression added in `crates/driver`
-- docs were updated so logging boot helpers remain a supported production pattern
-- validated with:
-  - `cargo test -q -p driver verify_file_accepts_log_import_without_stdlib_leak_diagnostics`
-
-✅ Re-ran the production Fozzy trace lifecycle after these DX/runtime fixes on the current checkout.
-
-- `cargo run -q -p fz -- doctor --deep --scenario tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 42 --json`
-- `cargo run -q -p fz -- test tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --strict-verify --json`
-- `cargo run -q -p fz -- run tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --record artifacts/process-dx-hardening.trace.fozzy --json`
-- `cargo run -q -p fz -- trace verify artifacts/process-dx-hardening.trace.fozzy --strict --json`
-- `cargo run -q -p fz -- replay artifacts/process-dx-hardening.trace.fozzy --json`
-- `cargo run -q -p fz -- ci artifacts/process-dx-hardening.trace.fozzy --json`
-- `cargo run -q -p fz -- run tests/pedantic.crates_hir.lib.host_backends_run.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+✅ Re-ran the production Fozzy trace lifecycle after the DX/runtime fixes through deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and host-backed execution.
 
 ## Production Blocker: Native Filesystem Surface Too Thin For Real Artifact Builders
 
