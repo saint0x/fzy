@@ -163,6 +163,59 @@ The biggest concerns today are:
 - `fozzy replay artifacts/compiler-hardening.trace.fozzy --json`
 - `fozzy ci artifacts/compiler-hardening.trace.fozzy --json`
 - `fozzy run tests/pedantic.crates_hir.lib.host_backends_run.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+
+✅ Tightened same-statement async borrow checking on the current checkout:
+
+- shared borrowed references are now rejected when used after `await` within the same nested `if`, `match`, or loop body
+- covered by focused HIR regressions for:
+  - same `if` body post-`await` shared borrow use
+  - same `match` statement post-`await` shared borrow use
+  - same loop body post-`await` shared borrow use
+
+✅ Re-ran a fresh post-fix HIR Fozzy trace lifecycle on this checkout:
+
+- `fozzy doctor --deep --scenario tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 99 --json`
+- `fozzy test --det --strict tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --json`
+- `fozzy run tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --record artifacts/await-hardening.trace.fozzy --json`
+- `fozzy trace verify artifacts/await-hardening.trace.fozzy --strict --json`
+- `fozzy replay artifacts/await-hardening.trace.fozzy --json`
+- `fozzy ci artifacts/await-hardening.trace.fozzy --json`
+- `fozzy run tests/pedantic.crates_hir.lib.host_backends_run.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+
+✅ Fixed helper-boundary pointer/ref provenance attribution on the current checkout:
+
+- pointer/ref-returning helpers now carry a callee return-provenance summary instead of inheriting the first provenance-bearing argument by heuristic
+- helpers returning the first pointer arg and helpers returning the second pointer arg now produce different caller provenance when appropriate
+- covered by focused HIR regressions for:
+  - distinct first-arg versus second-arg helper return provenance
+  - second-arg passthrough not collapsing onto the first-arg root
+
+✅ Re-ran a fresh provenance-focused HIR Fozzy trace lifecycle on this checkout:
+
+- `fozzy doctor --deep --scenario tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 123 --json`
+- `fozzy test --det --strict tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --json`
+- `fozzy run tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --record artifacts/provenance-hardening.trace.fozzy --json`
+- `fozzy trace verify artifacts/provenance-hardening.trace.fozzy --strict --json`
+- `fozzy replay artifacts/provenance-hardening.trace.fozzy --json`
+- `fozzy ci artifacts/provenance-hardening.trace.fozzy --json`
+
+✅ Expanded aggregate alias/provenance coverage on the current checkout:
+
+- `let` pattern bindings now inherit provenance through tuple, struct, and variant destructuring instead of being ignored
+- overwriting a provenance-bearing local with a value whose provenance cannot be tied back now clears the stale root instead of preserving a false alias
+- covered by focused HIR regressions for:
+  - tuple destructuring preserving per-element provenance
+  - struct destructuring preserving per-field provenance
+  - reassignment clearing stale provenance before later cleanup
+
+✅ Re-ran a fresh aggregate-provenance HIR Fozzy trace lifecycle on this checkout:
+
+- `fozzy doctor --deep --scenario tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --runs 5 --seed 777 --json`
+- `fozzy test --det --strict tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --json`
+- `fozzy run tests/pedantic.crates_hir.lib.memory_graph_diff_top.pass.fozzy.json --det --record artifacts/aggregate-provenance.trace.fozzy --json`
+- `fozzy trace verify artifacts/aggregate-provenance.trace.fozzy --strict --json`
+- `fozzy replay artifacts/aggregate-provenance.trace.fozzy --json`
+- `fozzy ci artifacts/aggregate-provenance.trace.fozzy --json`
 - `fz trace verify artifacts/memory-sitrep.trace.fozzy --strict --json`
 - `fz replay artifacts/memory-sitrep.trace.fozzy --json`
 - `fz ci artifacts/memory-sitrep.trace.fozzy --json`
@@ -607,7 +660,13 @@ Required tests:
 3. nested match/if return expressions involving refs must be covered
 4. async borrowed-reference misuse across suspension must remain rejected
 
-### 6.5. Borrow-across-`await` detection is too statement-shaped
+### ✅ 6.5. Borrow-across-`await` detection is now expression- and control-flow-aware for same-statement shared-borrow misuse
+
+Update:
+
+- the borrow-after-`await` walker now carries post-suspension state through nested expressions and statement bodies instead of only flipping state after a whole statement finishes
+- shared references now get the same same-statement post-`await` checking that mutable references previously received
+- covered by focused HIR regressions for nested `if`, `match`, and loop-body shapes
 
 Problem:
 
@@ -635,7 +694,13 @@ Required tests:
 3. shared borrowed reference used after `await` in loop bodies must fail
 4. valid pre-`await` shared-reference use in the same statement must still pass
 
-### 7. Alias/provenance analysis needs fuller assignment and pattern coverage
+### ✅ 7. Alias/provenance analysis now covers core destructuring and stale-root overwrite paths
+
+Update:
+
+- provenance roots now propagate through tuple and struct pattern destructuring instead of skipping `let` patterns entirely
+- reassignment now clears stale provenance when the new value does not preserve the previous alias root
+- helper-boundary return provenance and local destructuring coverage now align more closely across the major aggregate cases we can verify today
 
 Problem:
 
@@ -661,7 +726,17 @@ Required tests:
 3. reassignment after aliasing and cleanup
 4. extern unsafe ownership-transfer calls followed by local reuse
 
-### 7.1. Interprocedural pointer/ref-return provenance is currently misattributed
+### ✅ 7.1. Interprocedural pointer/ref-return provenance is no longer misattributed to the first matching argument
+
+Update:
+
+- pointer/ref-returning helper calls now consult a callee return-provenance summary instead of binding silently to the first provenance-bearing argument
+- summary inference now distinguishes at least:
+  - returns parameter 0 provenance
+  - returns parameter N provenance
+  - returns fresh provenance
+  - unknown / unsupported provenance
+- covered by focused HIR regressions that distinguish first-arg and second-arg passthrough helpers
 
 Problem:
 
@@ -711,6 +786,21 @@ Why this matters:
 - grouped expressions, projections, aliases, and helper-shaped call sites can evade checks that appear stronger at first glance
 - the current behavior makes FFI enforcement depend too heavily on surface syntax
 
+Verified progress on this checkout:
+
+- ✅ grouped-expression `_owned` FFI arguments now consume the same semantic provenance root as the ungrouped value instead of bypassing the transfer check
+- ✅ grouped mutable-reference aliasing now collapses onto the same alias key as the underlying value instead of evading the repeated-borrow check through syntax alone
+- `cargo test -q -p hir` now includes:
+  - `detects_mutable_aliasing_through_grouped_ref_argument`
+  - `grouped_owned_ffi_argument_marks_root_consumed`
+- refreshed FFI trace evidence passed on this checkout:
+  - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
+  - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-shape-hardening.trace.fozzy --json`
+  - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-shape-hardening.trace.fozzy --strict --json`
+  - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-shape-hardening.trace.fozzy --json`
+  - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-shape-hardening.trace.fozzy --json`
+  - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+
 Required fixes:
 
 1. generalize FFI ownership-transfer analysis beyond plain identifier arguments
@@ -724,96 +814,78 @@ Required tests:
 2. mutable/shared aliasing through equivalent non-identifier expressions must be rejected
 3. FFI helper wrappers must not erase alias and transfer checks
 
-### 7.3. Plain pointer-shaped `ext c fn` imports are still accepted as safe
+### ✅ 7.3. Plain pointer-shaped `ext c fn` imports now require `ext unsafe c fn`
 
-Problem:
+Verified closure:
 
-- the current verifier only forces `ext unsafe c fn` for a pointer-shaped import when the return type is pointer-like or when a pointer parameter name ends with `_owned`, `_out`, or `_inout`
-- directly reproduced probes using:
-  - `ext c fn c_read(buf: *u8) -> i32;`
-  - `ext c fn c_read(buf_borrowed: *u8) -> i32;`
-  verified with warnings only
-- this means plain raw-pointer imports and `_borrowed` pointer imports can still enter the nominally safe `ext c fn` surface
+- the verifier no longer relies on `_owned` / `_out` / `_inout` suffixes for this boundary
+- any pointer-like C import shape now requires `ext unsafe c fn`, including:
+  - plain pointer parameters such as `ext c fn c_read(buf: *u8) -> i32;`
+  - borrowed-pointer naming shapes such as `ext c fn c_read(buf_borrowed: *u8) -> i32;`
+  - mixed pointer-parameter / pointer-return signatures
+- the diagnostic remains explicit about the unsafe-boundary requirement instead of leaving pointer-shaped safe imports in the nominally safe surface
 
-Why this matters:
+Verified tests:
 
-- raw-pointer FFI is one of the highest-risk boundaries in the system
-- the current behavior is weaker than the public contract language around `ext c fn` versus `ext unsafe c fn`
-- this creates a documentation and enforcement mismatch at exactly the point where audited unsafe boundaries are supposed to be the clearest
+1. `cargo test -q -p verifier` now includes:
+   - `safe_extern_c_pointer_param_requires_unsafe_boundary`
+   - `safe_extern_c_borrowed_pointer_param_requires_unsafe_boundary`
+   - `safe_extern_c_mixed_pointer_signature_requires_unsafe_boundary`
+2. Fozzy production checks passed on this checkout:
+   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 735 --json`
+   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy --json`
+   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy --strict --json`
+   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy --json`
+   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
 
-Required fixes:
+### ✅ 7.35. Callback lifetime-anchor requirements are now enforced structurally
 
-1. decide whether any pointer-shaped `ext c fn` import is actually allowed in the safe surface
-2. if not, require `ext unsafe c fn` for all pointer-like C imports, including `_borrowed`
-3. if some borrowed-pointer import surface is intended to stay safe, document the narrower rule explicitly and enforce the required ownership suffix/nullability/view contract consistently
-4. align verifier diagnostics with the published C interop and memory-model docs so the import rule is not suffix-fragmented
+Verified closure:
 
-Required tests:
+- callback-shaped FFI parameters now trigger verifier enforcement for an adjacent `*_ctx` or `*_context` anchor
+- callback-bearing imports without that neighbor now fail with an explicit diagnostic instead of passing with warnings only
+- imports with an adjacent context anchor pass the structural verifier check, which aligns the compiler boundary with the documented callback lifetime model
 
-1. `ext c fn` with plain `*u8` parameter must either fail or be explicitly documented and validated under the chosen rule
-2. `ext c fn` with `_borrowed` pointer parameter must follow the same chosen rule consistently
-3. pointer-returning, pointer-parameter, and mixed pointer-signature imports must all produce coherent safe-versus-unsafe diagnostics
+Verified tests:
 
-### 7.35. Callback lifetime-anchor requirements are documented but not enforced
+1. `cargo test -q -p verifier` now includes:
+   - `callback_extern_c_import_without_context_anchor_fails`
+   - `callback_extern_c_import_with_adjacent_context_anchor_passes_structural_check`
+2. the same Fozzy trace-backed FFI production pass above completed cleanly, with recorded evidence at `/Users/deepsaint/Desktop/fozzylang/artifacts/ffi-boundary-hardening.trace.fozzy`
 
-Problem:
+### ✅ 7.5. Ownership transfer on argument passing now follows an explicit consume-summary rule
 
-- the production memory model says callback parameters require an explicit `*_ctx` or `*_context` lifetime anchor
-- current verifier review and direct repro did not find any enforcement for that rule
-- a probe such as `ext unsafe c fn register(cb_owned: *u8, cb: fn(i32) -> i32) -> i32;` verified with warnings only and no callback-context diagnostic
+Verified closure:
 
-Why this matters:
+- the shipped rule on this checkout is now explicit and enforced:
+  - assignment and identifier return still transfer ownership
+  - argument passing transfers ownership only when the callee contract/body proves consumption
+  - non-consuming helpers remain borrow/non-transfer call edges
+- local helper bodies now contribute conservative consumed-parameter summaries, so a helper that actually `free(...)`s an owned argument no longer reports:
+  - callee-side “consumes non-owned value”
+  - caller-side leak of the original owner
+- unsafe extern `_owned` parameters now participate in the same caller-side ownership-transfer rule instead of living as a disconnected one-off behavior
+- the public production memory model was narrowed to match the implemented rule in `/Users/deepsaint/Desktop/fozzylang/docs/production-memory-model-v1.md`
 
-- callback lifetime management is one of the easiest FFI areas to mis-specify while still looking superficially type-correct
-- if the docs claim lifetime anchoring but the compiler does not enforce it, users can believe a stronger boundary guarantee than the implementation provides
-- this leaves callback registration APIs under-constrained in a production-safety area
+Verified tests:
 
-Required fixes:
-
-1. add verifier-side detection for callback-shaped parameters at FFI boundaries
-2. require an adjacent context parameter (`*_ctx` or `*_context`) when the callback contract depends on external lifetime anchoring
-3. emit a limitation-accurate diagnostic when the compiler still cannot validate a callback lifetime contract fully
-4. align ABI/header generation and verifier policy so callback/context obligations appear in one coherent contract surface
-
-Required tests:
-
-1. callback-bearing FFI import without context anchor must fail with an explicit diagnostic
-2. callback-bearing FFI import with correctly named context anchor must pass the structural contract check
-3. callback/context obligations must appear consistently in verifier diagnostics and generated ABI/header metadata
-
-### 7.5. Ownership transfer on ordinary argument passing is not implemented as documented
-
-Problem:
-
-- public memory-model wording says ownership transfers on argument passing of owned values
-- the current ownership engine removes ownership on assignment, explicit return of an identifier, and direct `free(...)`/`close(...)`
-- ordinary call arguments are not modeled as ownership transfer, except for a narrow unsafe-extern `_owned` provenance case
-- this was directly reproduced with a helper that frees its pointer parameter:
-  - the callee was diagnosed as consuming a non-owned value
-  - the caller was still diagnosed as leaking the original owner
-
-Why this matters:
-
-- today this is primarily a correctness/documentation mismatch and a source of misleading diagnostics
-- the implementation is more conservative than the docs imply, which makes the public guarantee inaccurate
-- leaving the mismatch in place makes it harder to reason about whether ownership is linear across helper boundaries
-
-Required fixes:
-
-1. decide the actual shipped rule:
-   - argument passing transfers ownership for qualifying types
-   - or argument passing does not transfer ownership unless explicitly annotated/contracted
-2. align the ownership engine with that rule across caller and callee analysis
-3. if transfer is supported, model function summaries that describe consume/borrow/return behavior across call edges
-4. if transfer is not yet supported, narrow the public docs immediately and make diagnostics reflect that limitation clearly
-5. ensure unsafe extern `_owned` behavior is consistent with the general call model rather than a special one-off rule
-
-Required tests:
-
-1. helper function that consumes an owned pointer argument must produce the intended caller/callee result under the chosen rule
-2. non-consuming helper taking a borrowed/reference-style parameter must not erase caller ownership
-3. ownership-transfer behavior for local functions and unsafe externs must be consistent
-4. docs/examples asserting argument-transfer semantics must match the implemented rule
+1. `cargo test -q -p hir` now includes:
+   - `helper_freeing_owned_param_transfers_ownership_from_caller`
+   - `non_consuming_helper_preserves_caller_ownership`
+   - `unsafe_extern_owned_param_transfers_ownership_from_caller`
+2. compiler suites passed on this checkout:
+   - `cargo test -q -p hir`
+   - `cargo test -q -p verifier`
+3. Fozzy production checks passed on this checkout:
+   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 941 --json`
+   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/ownership-transfer-hardening.trace.fozzy --json`
+   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/ownership-transfer-hardening.trace.fozzy --strict --json`
+   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/ownership-transfer-hardening.trace.fozzy --json`
+   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/ownership-transfer-hardening.trace.fozzy --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
 
 ### 7.75. Verifier release rules currently require local `defer` even where transfer-based cleanup should be legal
 
@@ -828,6 +900,12 @@ Why this matters:
 - this over-constrains the implementation relative to the published model
 - it risks false positives for code that safely transfers ownership out of the local scope instead of closing/freeing locally
 - it makes the user-facing guarantee about ownership transfer inaccurate unless the docs are narrowed or the verifier grows transfer-aware summaries
+
+Verified progress on this checkout:
+
+- ✅ argument-transfer cleanup through consuming local helpers is now accepted without forcing a local `defer` at the original call site
+- ✅ argument-transfer cleanup through unsafe extern `_owned` parameters is now accepted under the same consume-summary rule
+- ✅ the production memory-model wording now reflects a proof-of-consumption rule instead of blanket argument-transfer wording
 
 Required fixes:
 

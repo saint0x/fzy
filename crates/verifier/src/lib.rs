@@ -1,5 +1,5 @@
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
-use fir::FirModule;
+use fir::{FirModule, TypedFunction};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default)]
@@ -156,17 +156,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
     }
 
     for function in &module.typed_functions {
-        if function.is_extern
-            && function.abi.as_deref() == Some("c")
-            && !function.is_unsafe
-            && (function.return_type.is_pointer_like()
-                || function.params.iter().any(|param| {
-                    param.ty.is_pointer_like()
-                        && (param.name.ends_with("_owned")
-                            || param.name.ends_with("_out")
-                            || param.name.ends_with("_inout"))
-                }))
-        {
+        if extern_c_import_requires_unsafe(function) {
             report.diagnostics.push(Diagnostic::new(
                 Severity::Error,
                 format!(
@@ -178,6 +168,22 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                         .to_string(),
                 ),
             ).with_catalog_key("verifier.extern_c_pointer_requires_unsafe"));
+        }
+        if let Some(callback_param) = callback_param_missing_adjacent_context_anchor(function) {
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "extern C import `{}` callback parameter `{}` requires an adjacent `*_ctx` or `*_context` anchor",
+                        function.name, callback_param
+                    ),
+                    Some(
+                        "add a neighboring context parameter such as `cb_ctx` or `cb_context` to make the callback lifetime contract explicit"
+                            .to_string(),
+                    ),
+                )
+                .with_catalog_key("verifier.extern_c_callback_requires_context_anchor"),
+            );
         }
     }
 
@@ -663,6 +669,53 @@ fn module_needs_explicit_capabilities(module: &FirModule) -> bool {
         || module.repr_c_layout_items > 0
 }
 
+fn extern_c_import_requires_unsafe(function: &TypedFunction) -> bool {
+    function.is_extern
+        && function.abi.as_deref() == Some("c")
+        && !function.is_unsafe
+        && (function.return_type.is_pointer_like()
+            || function
+                .params
+                .iter()
+                .any(|param| param.ty.is_pointer_like()))
+}
+
+fn callback_param_missing_adjacent_context_anchor(function: &TypedFunction) -> Option<&str> {
+    if !(function.is_extern && function.abi.as_deref() == Some("c")) {
+        return None;
+    }
+    for (index, param) in function.params.iter().enumerate() {
+        if !is_callback_param(&param.ty) {
+            continue;
+        }
+        let prev_is_anchor = if index > 0 {
+            function
+                .params
+                .get(index - 1)
+                .is_some_and(|neighbor| is_context_anchor_name(&neighbor.name))
+        } else {
+            false
+        };
+        let next_is_anchor = function
+            .params
+            .get(index + 1)
+            .is_some_and(|neighbor| is_context_anchor_name(&neighbor.name));
+        let has_adjacent_anchor = prev_is_anchor || next_is_anchor;
+        if !has_adjacent_anchor {
+            return Some(param.name.as_str());
+        }
+    }
+    None
+}
+
+fn is_callback_param(ty: &ast::Type) -> bool {
+    matches!(ty, ast::Type::Function { .. })
+}
+
+fn is_context_anchor_name(name: &str) -> bool {
+    name.ends_with("_ctx") || name.ends_with("_context")
+}
+
 fn unsafe_scope_matches(module_name: &str, pattern: &str) -> bool {
     let module_name = module_name.trim();
     let pattern = pattern.trim();
@@ -714,6 +767,7 @@ fn unsafe_proof_ref_valid(proof_ref: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use core::Capability;
+    use fir::TypedFunction;
 
     use super::{verify, verify_with_policy, VerifyPolicy};
 
@@ -762,6 +816,78 @@ mod tests {
             risk_class: None,
             proof_ref: None,
             async_context: false,
+        }
+    }
+
+    fn base_module() -> fir::FirModule {
+        fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: Vec::new(),
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 0,
+            unsafe_reasoned_sites: 0,
+            unsafe_contract_sites: Vec::new(),
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        }
+    }
+
+    fn extern_c_function(
+        name: &str,
+        params: Vec<ast::Param>,
+        return_type: ast::Type,
+        is_unsafe: bool,
+    ) -> TypedFunction {
+        TypedFunction {
+            name: name.to_string(),
+            link_name: None,
+            generics: Vec::new(),
+            params,
+            local_types: std::collections::BTreeMap::new(),
+            return_type,
+            body: Vec::new(),
+            is_unsafe,
+            is_async: false,
+            is_extern: true,
+            abi: Some("c".to_string()),
+            ffi_panic: None,
+            required_capabilities: Vec::new(),
         }
     }
 
@@ -1711,6 +1837,183 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.message.contains("ext c fn")));
+    }
+
+    #[test]
+    fn safe_extern_c_pointer_param_requires_unsafe_boundary() {
+        let mut module = base_module();
+        module.typed_functions.push(extern_c_function(
+            "c_read",
+            vec![ast::Param {
+                name: "buf".to_string(),
+                ty: ast::Type::Ptr {
+                    mutable: false,
+                    to: Box::new(ast::Type::Int {
+                        signed: false,
+                        bits: 8,
+                    }),
+                },
+            }],
+            ast::Type::Int {
+                signed: true,
+                bits: 32,
+            },
+            false,
+        ));
+
+        let report = verify(&module);
+        assert!(report.diagnostics.iter().any(|d| {
+            d.message
+                .contains("extern C import `c_read` exposes pointer-like contract")
+        }));
+    }
+
+    #[test]
+    fn safe_extern_c_borrowed_pointer_param_requires_unsafe_boundary() {
+        let mut module = base_module();
+        module.typed_functions.push(extern_c_function(
+            "c_read_borrowed",
+            vec![ast::Param {
+                name: "buf_borrowed".to_string(),
+                ty: ast::Type::Ptr {
+                    mutable: false,
+                    to: Box::new(ast::Type::Int {
+                        signed: false,
+                        bits: 8,
+                    }),
+                },
+            }],
+            ast::Type::Int {
+                signed: true,
+                bits: 32,
+            },
+            false,
+        ));
+
+        let report = verify(&module);
+        assert!(report.diagnostics.iter().any(|d| {
+            d.message
+                .contains("extern C import `c_read_borrowed` exposes pointer-like contract")
+        }));
+    }
+
+    #[test]
+    fn safe_extern_c_mixed_pointer_signature_requires_unsafe_boundary() {
+        let mut module = base_module();
+        module.typed_functions.push(extern_c_function(
+            "acquire_and_fill",
+            vec![ast::Param {
+                name: "out_ptr".to_string(),
+                ty: ast::Type::Ptr {
+                    mutable: true,
+                    to: Box::new(ast::Type::Int {
+                        signed: false,
+                        bits: 8,
+                    }),
+                },
+            }],
+            ast::Type::Ptr {
+                mutable: false,
+                to: Box::new(ast::Type::Int {
+                    signed: false,
+                    bits: 8,
+                }),
+            },
+            false,
+        ));
+
+        let report = verify(&module);
+        assert!(report.diagnostics.iter().any(|d| {
+            d.message
+                .contains("extern C import `acquire_and_fill` exposes pointer-like contract")
+        }));
+    }
+
+    #[test]
+    fn callback_extern_c_import_without_context_anchor_fails() {
+        let mut module = base_module();
+        module.typed_functions.push(extern_c_function(
+            "register",
+            vec![
+                ast::Param {
+                    name: "cb_owned".to_string(),
+                    ty: ast::Type::Ptr {
+                        mutable: false,
+                        to: Box::new(ast::Type::Int {
+                            signed: false,
+                            bits: 8,
+                        }),
+                    },
+                },
+                ast::Param {
+                    name: "cb".to_string(),
+                    ty: ast::Type::Function {
+                        params: vec![ast::Type::Int {
+                            signed: true,
+                            bits: 32,
+                        }],
+                        ret: Box::new(ast::Type::Int {
+                            signed: true,
+                            bits: 32,
+                        }),
+                    },
+                },
+            ],
+            ast::Type::Int {
+                signed: true,
+                bits: 32,
+            },
+            true,
+        ));
+
+        let report = verify(&module);
+        assert!(report.diagnostics.iter().any(|d| {
+            d.message.contains(
+                "callback parameter `cb` requires an adjacent `*_ctx` or `*_context` anchor",
+            )
+        }));
+    }
+
+    #[test]
+    fn callback_extern_c_import_with_adjacent_context_anchor_passes_structural_check() {
+        let mut module = base_module();
+        module.typed_functions.push(extern_c_function(
+            "register",
+            vec![
+                ast::Param {
+                    name: "cb_ctx".to_string(),
+                    ty: ast::Type::Ptr {
+                        mutable: false,
+                        to: Box::new(ast::Type::Void),
+                    },
+                },
+                ast::Param {
+                    name: "cb".to_string(),
+                    ty: ast::Type::Function {
+                        params: vec![ast::Type::Int {
+                            signed: true,
+                            bits: 32,
+                        }],
+                        ret: Box::new(ast::Type::Int {
+                            signed: true,
+                            bits: 32,
+                        }),
+                    },
+                },
+            ],
+            ast::Type::Int {
+                signed: true,
+                bits: 32,
+            },
+            true,
+        ));
+
+        let report = verify(&module);
+        assert!(!report.diagnostics.iter().any(|d| {
+            d.message.contains(
+                "callback parameter `cb` requires an adjacent `*_ctx` or `*_context` anchor",
+            )
+        }));
     }
 
     #[test]

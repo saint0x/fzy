@@ -10,7 +10,7 @@
 ## Ownership
 
 - Heap values are single-owner by default.
-- Ownership transfers on assignment, return, and argument passing of owned values.
+- Ownership transfers on assignment, return, and on argument passing only when the callee contract/body proves consumption of the owned value.
 - Ownership consumption APIs: `free(...)`, `close(...)`.
 - `alloc(...)` / `free(...)` remain part of safe code when the compiler can still track ownership, provenance, and cleanup.
 - Use-after-move and double-consume are verifier errors.

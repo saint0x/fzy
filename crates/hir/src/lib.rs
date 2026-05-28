@@ -2268,20 +2268,295 @@ fn stmt_contains_return(stmt: &Stmt) -> bool {
     }
 }
 
-fn ref_used_after_await(body: &[Stmt], name: &str, mutable: bool) -> bool {
+fn ref_used_after_await(body: &[Stmt], name: &str, _mutable: bool) -> bool {
     let mut seen_await = false;
+    body_uses_ident_after_await(body, name, &mut seen_await)
+}
+
+fn body_uses_ident_after_await(body: &[Stmt], name: &str, seen_await: &mut bool) -> bool {
     for stmt in body {
-        if seen_await && stmt_uses_ident(stmt, name) {
+        if *seen_await && stmt_uses_ident(stmt, name) {
             return true;
         }
-        if stmt_has_await(stmt) {
-            if mutable && stmt_uses_ident(stmt, name) {
-                return true;
-            }
-            seen_await = true;
+        if stmt_uses_ident_after_await(stmt, name, seen_await) {
+            return true;
         }
     }
     false
+}
+
+fn stmt_uses_ident_after_await(stmt: &Stmt, name: &str, seen_await: &mut bool) -> bool {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => expr_uses_ident_after_await(value, name, seen_await),
+        Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue => false,
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            if expr_uses_ident_after_await(condition, name, seen_await) {
+                return true;
+            }
+            let branch_entry = *seen_await;
+            let mut then_seen = branch_entry;
+            if body_uses_ident_after_await(then_body, name, &mut then_seen) {
+                return true;
+            }
+            let mut else_seen = branch_entry;
+            if body_uses_ident_after_await(else_body, name, &mut else_seen) {
+                return true;
+            }
+            *seen_await = then_seen || else_seen;
+            false
+        }
+        Stmt::While { condition, body } => {
+            if expr_uses_ident_after_await(condition, name, seen_await) {
+                return true;
+            }
+            let mut body_seen = *seen_await;
+            if body_uses_ident_after_await(body, name, &mut body_seen) {
+                return true;
+            }
+            *seen_await = body_seen;
+            false
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if init
+                .as_deref()
+                .is_some_and(|stmt| stmt_uses_ident_after_await(stmt, name, seen_await))
+            {
+                return true;
+            }
+            if condition
+                .as_ref()
+                .is_some_and(|expr| expr_uses_ident_after_await(expr, name, seen_await))
+            {
+                return true;
+            }
+            let mut body_seen = *seen_await;
+            if body_uses_ident_after_await(body, name, &mut body_seen) {
+                return true;
+            }
+            if step
+                .as_deref()
+                .is_some_and(|stmt| stmt_uses_ident_after_await(stmt, name, &mut body_seen))
+            {
+                return true;
+            }
+            *seen_await = body_seen;
+            false
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            if expr_uses_ident_after_await(iterable, name, seen_await) {
+                return true;
+            }
+            let mut body_seen = *seen_await;
+            if body_uses_ident_after_await(body, name, &mut body_seen) {
+                return true;
+            }
+            *seen_await = body_seen;
+            false
+        }
+        Stmt::Loop { body } => {
+            let mut body_seen = *seen_await;
+            if body_uses_ident_after_await(body, name, &mut body_seen) {
+                return true;
+            }
+            *seen_await = body_seen;
+            false
+        }
+        Stmt::Match { scrutinee, arms } => {
+            if expr_uses_ident_after_await(scrutinee, name, seen_await) {
+                return true;
+            }
+            let branch_entry = *seen_await;
+            let mut any_seen = branch_entry;
+            for arm in arms {
+                let mut arm_seen = branch_entry;
+                if arm
+                    .guard
+                    .as_ref()
+                    .is_some_and(|guard| expr_uses_ident_after_await(guard, name, &mut arm_seen))
+                {
+                    return true;
+                }
+                if expr_uses_ident_after_await(&arm.value, name, &mut arm_seen) {
+                    return true;
+                }
+                any_seen |= arm_seen;
+            }
+            *seen_await = any_seen;
+            false
+        }
+    }
+}
+
+fn expr_uses_ident_after_await(expr: &Expr, name: &str, seen_await: &mut bool) -> bool {
+    match expr {
+        Expr::Ident(ident) => *seen_await && ident == name,
+        Expr::Await(inner) => {
+            if expr_uses_ident_after_await(inner, name, seen_await) {
+                return true;
+            }
+            *seen_await = true;
+            false
+        }
+        Expr::Discard(inner)
+        | Expr::Group(inner)
+        | Expr::Unary { expr: inner, .. }
+        | Expr::FieldAccess { base: inner, .. } => {
+            expr_uses_ident_after_await(inner, name, seen_await)
+        }
+        Expr::Call { args, .. } => args
+            .iter()
+            .any(|arg| expr_uses_ident_after_await(arg, name, seen_await)),
+        Expr::UnsafeBlock { body, .. } => body_uses_ident_after_await(body, name, seen_await),
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => fields
+            .iter()
+            .any(|(_, value)| expr_uses_ident_after_await(value, name, seen_await)),
+        Expr::EnumInit { payload, .. } | Expr::Tuple(payload) | Expr::ArrayLiteral(payload) => {
+            payload
+                .iter()
+                .any(|value| expr_uses_ident_after_await(value, name, seen_await))
+        }
+        Expr::Closure { params, body, .. } => {
+            if params.iter().any(|param| param.name == name) {
+                false
+            } else {
+                let mut closure_seen = *seen_await;
+                let uses = expr_uses_ident_after_await(body, name, &mut closure_seen);
+                *seen_await |= closure_seen;
+                uses
+            }
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            let entry_seen = *seen_await;
+            let mut try_seen = entry_seen;
+            if expr_uses_ident_after_await(try_expr, name, &mut try_seen) {
+                return true;
+            }
+            let mut catch_seen = entry_seen;
+            if expr_uses_ident_after_await(catch_expr, name, &mut catch_seen) {
+                return true;
+            }
+            *seen_await = try_seen || catch_seen;
+            false
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            if expr_uses_ident_after_await(condition, name, seen_await) {
+                return true;
+            }
+            let branch_entry = *seen_await;
+            let mut then_seen = branch_entry;
+            if expr_uses_ident_after_await(then_expr, name, &mut then_seen) {
+                return true;
+            }
+            let mut else_seen = branch_entry;
+            if expr_uses_ident_after_await(else_expr, name, &mut else_seen) {
+                return true;
+            }
+            *seen_await = then_seen || else_seen;
+            false
+        }
+        Expr::Match { scrutinee, arms } => {
+            if expr_uses_ident_after_await(scrutinee, name, seen_await) {
+                return true;
+            }
+            let branch_entry = *seen_await;
+            let mut any_seen = branch_entry;
+            for arm in arms {
+                let mut arm_seen = branch_entry;
+                if arm
+                    .guard
+                    .as_ref()
+                    .is_some_and(|guard| expr_uses_ident_after_await(guard, name, &mut arm_seen))
+                {
+                    return true;
+                }
+                if expr_uses_ident_after_await(&arm.value, name, &mut arm_seen) {
+                    return true;
+                }
+                any_seen |= arm_seen;
+            }
+            *seen_await = any_seen;
+            false
+        }
+        Expr::While { condition, body } => {
+            if expr_uses_ident_after_await(condition, name, seen_await) {
+                return true;
+            }
+            body_uses_ident_after_await(body, name, seen_await)
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if init
+                .as_deref()
+                .is_some_and(|stmt| stmt_uses_ident_after_await(stmt, name, seen_await))
+            {
+                return true;
+            }
+            if condition
+                .as_ref()
+                .is_some_and(|expr| expr_uses_ident_after_await(expr, name, seen_await))
+            {
+                return true;
+            }
+            if body_uses_ident_after_await(body, name, seen_await) {
+                return true;
+            }
+            step.as_deref()
+                .is_some_and(|stmt| stmt_uses_ident_after_await(stmt, name, seen_await))
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            if expr_uses_ident_after_await(iterable, name, seen_await) {
+                return true;
+            }
+            body_uses_ident_after_await(body, name, seen_await)
+        }
+        Expr::Loop { body } => body_uses_ident_after_await(body, name, seen_await),
+        Expr::Return(value) | Expr::Break(value) => value
+            .as_ref()
+            .is_some_and(|expr| expr_uses_ident_after_await(expr, name, seen_await)),
+        Expr::Continue => false,
+        Expr::Binary { left, right, .. }
+        | Expr::Range {
+            start: left,
+            end: right,
+            ..
+        } => {
+            expr_uses_ident_after_await(left, name, seen_await)
+                || expr_uses_ident_after_await(right, name, seen_await)
+        }
+        Expr::Index { base, index } => {
+            expr_uses_ident_after_await(base, name, seen_await)
+                || expr_uses_ident_after_await(index, name, seen_await)
+        }
+        Expr::Int(_) | Expr::Float { .. } | Expr::Char(_) | Expr::Bool(_) | Expr::Str(_) => false,
+    }
 }
 
 fn analyze_send_sync_contracts(functions: &[TypedFunction]) -> Vec<String> {
@@ -2670,18 +2945,32 @@ fn collect_function_caps_and_calls(
 fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)]) -> Vec<String> {
     let mut violations = Vec::new();
     let summaries = build_function_memory_summaries(functions);
+    let ownership_summaries = build_function_ownership_summaries(functions);
     violations.extend(analyze_alias_and_provenance(functions));
     violations.extend(analyze_atomic_ordering_claims(functions));
     for function in functions {
+        let seeded_owners = if function.is_extern {
+            BTreeMap::new()
+        } else {
+            ownership_summaries
+                .get(&function.name)
+                .into_iter()
+                .flat_map(|consumed| consumed.iter().copied())
+                .filter_map(|index| function.params.get(index))
+                .enumerate()
+                .map(|(alloc_index, param)| (param.name.clone(), alloc_index + 1))
+                .collect::<BTreeMap<_, _>>()
+        };
         let mut state = OwnershipState {
             owner_candidates: function
                 .params
                 .iter()
                 .map(|param| param.name.clone())
                 .collect::<BTreeSet<_>>(),
+            owners: seeded_owners,
             ..OwnershipState::default()
         };
-        let mut next_alloc = 1usize;
+        let mut next_alloc = state.owners.len() + 1;
         analyze_ownership_block(
             function,
             &function.body,
@@ -2689,6 +2978,7 @@ fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)
             &mut next_alloc,
             &mut violations,
             &function.name,
+            &ownership_summaries,
         );
         for (name, alloc_id) in state.owners {
             if state.deferred.contains(&alloc_id) {
@@ -2753,12 +3043,261 @@ struct OwnershipState {
     deferred: BTreeSet<usize>,
 }
 
+fn build_function_ownership_summaries(
+    functions: &[TypedFunction],
+) -> BTreeMap<String, BTreeSet<usize>> {
+    let mut summaries = functions
+        .iter()
+        .map(|function| (function.name.clone(), BTreeSet::new()))
+        .collect::<BTreeMap<_, _>>();
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for function in functions {
+            let next = infer_consumed_param_indices(function, &summaries);
+            let entry = summaries.entry(function.name.clone()).or_default();
+            if *entry != next {
+                *entry = next;
+                changed = true;
+            }
+        }
+    }
+    summaries
+}
+
+fn infer_consumed_param_indices(
+    function: &TypedFunction,
+    summaries: &BTreeMap<String, BTreeSet<usize>>,
+) -> BTreeSet<usize> {
+    let mut consumed = function
+        .is_extern
+        .then(|| {
+            function
+                .params
+                .iter()
+                .enumerate()
+                .filter(|(_, param)| function.is_unsafe && param.name.ends_with("_owned"))
+                .map(|(index, _)| index)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let param_indexes = function
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| (param.name.as_str(), index))
+        .collect::<BTreeMap<_, _>>();
+    collect_consumed_params_from_stmts(&function.body, &param_indexes, summaries, &mut consumed);
+    consumed
+}
+
+fn collect_consumed_params_from_stmts(
+    body: &[Stmt],
+    param_indexes: &BTreeMap<&str, usize>,
+    summaries: &BTreeMap<String, BTreeSet<usize>>,
+    out: &mut BTreeSet<usize>,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::Let { value, .. }
+            | Stmt::LetPattern { value, .. }
+            | Stmt::Assign { value, .. }
+            | Stmt::CompoundAssign { value, .. }
+            | Stmt::Defer(value)
+            | Stmt::Requires(value)
+            | Stmt::Ensures(value)
+            | Stmt::Expr(value) => {
+                collect_consumed_params_from_expr(value, param_indexes, summaries, out);
+            }
+            Stmt::Return(Some(expr)) => {
+                collect_consumed_params_from_expr(expr, param_indexes, summaries, out);
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                collect_consumed_params_from_expr(condition, param_indexes, summaries, out);
+                collect_consumed_params_from_stmts(then_body, param_indexes, summaries, out);
+                collect_consumed_params_from_stmts(else_body, param_indexes, summaries, out);
+            }
+            Stmt::While { condition, body } => {
+                collect_consumed_params_from_expr(condition, param_indexes, summaries, out);
+                collect_consumed_params_from_stmts(body, param_indexes, summaries, out);
+            }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    collect_consumed_params_from_stmts(
+                        std::slice::from_ref(init.as_ref()),
+                        param_indexes,
+                        summaries,
+                        out,
+                    );
+                }
+                if let Some(condition) = condition {
+                    collect_consumed_params_from_expr(condition, param_indexes, summaries, out);
+                }
+                if let Some(step) = step {
+                    collect_consumed_params_from_stmts(
+                        std::slice::from_ref(step.as_ref()),
+                        param_indexes,
+                        summaries,
+                        out,
+                    );
+                }
+                collect_consumed_params_from_stmts(body, param_indexes, summaries, out);
+            }
+            Stmt::ForIn { iterable, body, .. } => {
+                collect_consumed_params_from_expr(iterable, param_indexes, summaries, out);
+                collect_consumed_params_from_stmts(body, param_indexes, summaries, out);
+            }
+            Stmt::Loop { body } => {
+                collect_consumed_params_from_stmts(body, param_indexes, summaries, out);
+            }
+            Stmt::Match { scrutinee, arms } => {
+                collect_consumed_params_from_expr(scrutinee, param_indexes, summaries, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_consumed_params_from_expr(guard, param_indexes, summaries, out);
+                    }
+                    collect_consumed_params_from_expr(&arm.value, param_indexes, summaries, out);
+                }
+            }
+            Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_consumed_params_from_expr(
+    expr: &Expr,
+    param_indexes: &BTreeMap<&str, usize>,
+    summaries: &BTreeMap<String, BTreeSet<usize>>,
+    out: &mut BTreeSet<usize>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            if is_free_callee(callee) || is_close_callee(callee) {
+                if let Some(index) = args
+                    .first()
+                    .and_then(expr_identity_name)
+                    .and_then(|name| param_indexes.get(name).copied())
+                {
+                    out.insert(index);
+                }
+            }
+            if let Some(consumed_params) = summaries.get(callee) {
+                for consumed_index in consumed_params {
+                    if let Some(index) = args
+                        .get(*consumed_index)
+                        .and_then(expr_identity_name)
+                        .and_then(|name| param_indexes.get(name).copied())
+                    {
+                        out.insert(index);
+                    }
+                }
+            }
+            for arg in args {
+                collect_consumed_params_from_expr(arg, param_indexes, summaries, out);
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            collect_consumed_params_from_stmts(body, param_indexes, summaries, out);
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_consumed_params_from_expr(condition, param_indexes, summaries, out);
+            collect_consumed_params_from_expr(then_expr, param_indexes, summaries, out);
+            collect_consumed_params_from_expr(else_expr, param_indexes, summaries, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_consumed_params_from_expr(scrutinee, param_indexes, summaries, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_consumed_params_from_expr(guard, param_indexes, summaries, out);
+                }
+                collect_consumed_params_from_expr(&arm.value, param_indexes, summaries, out);
+            }
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_consumed_params_from_expr(try_expr, param_indexes, summaries, out);
+            collect_consumed_params_from_expr(catch_expr, param_indexes, summaries, out);
+        }
+        Expr::Group(inner)
+        | Expr::Await(inner)
+        | Expr::Discard(inner)
+        | Expr::Unary { expr: inner, .. } => {
+            collect_consumed_params_from_expr(inner, param_indexes, summaries, out);
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_consumed_params_from_expr(left, param_indexes, summaries, out);
+            collect_consumed_params_from_expr(right, param_indexes, summaries, out);
+        }
+        Expr::FieldAccess { base, .. } => {
+            collect_consumed_params_from_expr(base, param_indexes, summaries, out);
+        }
+        Expr::Index { base, index } => {
+            collect_consumed_params_from_expr(base, param_indexes, summaries, out);
+            collect_consumed_params_from_expr(index, param_indexes, summaries, out);
+        }
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_consumed_params_from_expr(value, param_indexes, summaries, out);
+            }
+        }
+        Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for item in payload {
+                collect_consumed_params_from_expr(item, param_indexes, summaries, out);
+            }
+            for (_, value) in named_payload {
+                collect_consumed_params_from_expr(value, param_indexes, summaries, out);
+            }
+        }
+        Expr::Tuple(items) | Expr::ArrayLiteral(items) => {
+            for item in items {
+                collect_consumed_params_from_expr(item, param_indexes, summaries, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn expr_identity_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Ident(name) => Some(name.as_str()),
+        Expr::Group(inner) => expr_identity_name(inner),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReturnProvenanceSummary {
+    Param(usize),
+    Fresh,
+    Unknown,
+}
+
 #[derive(Debug, Clone)]
 struct CallShape {
     params: Vec<ast::Param>,
     return_type: Type,
     is_extern: bool,
     is_unsafe: bool,
+    return_provenance: ReturnProvenanceSummary,
 }
 
 fn analyze_unsafe_context_violations(functions: &[TypedFunction]) -> Vec<String> {
@@ -3324,6 +3863,7 @@ fn analyze_ownership_block(
     next_alloc: &mut usize,
     violations: &mut Vec<String>,
     function_name: &str,
+    ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
 ) {
     for stmt in body {
         for name in state.moved.iter() {
@@ -3416,6 +3956,7 @@ fn analyze_ownership_block(
                         }
                     }
                 }
+                apply_call_consumed_params(callee, args, state, ownership_summaries);
             }
             Stmt::Defer(expr) => {
                 register_deferred_cleanup(expr, state, violations, function_name);
@@ -3428,6 +3969,7 @@ fn analyze_ownership_block(
                     next_alloc,
                     violations,
                     function_name,
+                    ownership_summaries,
                 );
             }
             Stmt::Return(Some(Expr::Ident(name))) => {
@@ -3450,6 +3992,7 @@ fn analyze_ownership_block(
                     next_alloc,
                     violations,
                     function_name,
+                    ownership_summaries,
                 );
                 analyze_ownership_block(
                     function,
@@ -3458,6 +4001,7 @@ fn analyze_ownership_block(
                     next_alloc,
                     violations,
                     function_name,
+                    ownership_summaries,
                 );
                 *state = merge_ownership_states(
                     function_name,
@@ -3477,6 +4021,7 @@ fn analyze_ownership_block(
                     next_alloc,
                     violations,
                     function_name,
+                    ownership_summaries,
                 );
                 *state = merge_ownership_states(
                     function_name,
@@ -3500,6 +4045,7 @@ fn analyze_ownership_block(
                         next_alloc,
                         violations,
                         function_name,
+                        ownership_summaries,
                     );
                 }
                 let entry_state = state.clone();
@@ -3511,6 +4057,7 @@ fn analyze_ownership_block(
                     next_alloc,
                     violations,
                     function_name,
+                    ownership_summaries,
                 );
                 if let Some(step) = step {
                     analyze_ownership_block(
@@ -3520,6 +4067,7 @@ fn analyze_ownership_block(
                         next_alloc,
                         violations,
                         function_name,
+                        ownership_summaries,
                     );
                 }
                 *state = merge_ownership_states(
@@ -3542,6 +4090,7 @@ fn analyze_ownership_block(
                     next_alloc,
                     violations,
                     function_name,
+                    ownership_summaries,
                 );
                 *state = merge_ownership_states(
                     function_name,
@@ -3561,6 +4110,7 @@ fn analyze_ownership_block(
                     next_alloc,
                     violations,
                     function_name,
+                    ownership_summaries,
                 );
                 *state = merge_ownership_states(
                     function_name,
@@ -3586,6 +4136,7 @@ fn analyze_ownership_block(
                         next_alloc,
                         violations,
                         function_name,
+                        ownership_summaries,
                     );
                     arm_states.push(arm_state);
                 }
@@ -3607,6 +4158,7 @@ fn analyze_ownership_block(
                     next_alloc,
                     violations,
                     function_name,
+                    ownership_summaries,
                 );
             }
             Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Return(_) => {}
@@ -3621,6 +4173,7 @@ fn analyze_expr_value_ownership(
     next_alloc: &mut usize,
     violations: &mut Vec<String>,
     function_name: &str,
+    ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
 ) {
     match expr {
         Expr::Call { callee, args } if is_free_callee(callee) || is_close_callee(callee) => {
@@ -3641,8 +4194,19 @@ fn analyze_expr_value_ownership(
                 }
             }
         }
+        Expr::Call { callee, args } => {
+            apply_call_consumed_params(callee, args, state, ownership_summaries);
+        }
         Expr::UnsafeBlock { body, .. } => {
-            analyze_ownership_block(function, body, state, next_alloc, violations, function_name);
+            analyze_ownership_block(
+                function,
+                body,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+            );
         }
         Expr::Group(inner)
         | Expr::Await(inner)
@@ -3655,6 +4219,7 @@ fn analyze_expr_value_ownership(
                 next_alloc,
                 violations,
                 function_name,
+                ownership_summaries,
             );
         }
         Expr::TryCatch {
@@ -3671,6 +4236,7 @@ fn analyze_expr_value_ownership(
                 next_alloc,
                 violations,
                 function_name,
+                ownership_summaries,
             );
             analyze_expr_value_ownership(
                 function,
@@ -3679,6 +4245,7 @@ fn analyze_expr_value_ownership(
                 next_alloc,
                 violations,
                 function_name,
+                ownership_summaries,
             );
             *state = merge_ownership_states(
                 function_name,
@@ -3703,6 +4270,7 @@ fn analyze_expr_value_ownership(
                 next_alloc,
                 violations,
                 function_name,
+                ownership_summaries,
             );
             analyze_expr_value_ownership(
                 function,
@@ -3711,6 +4279,7 @@ fn analyze_expr_value_ownership(
                 next_alloc,
                 violations,
                 function_name,
+                ownership_summaries,
             );
             *state = merge_ownership_states(
                 function_name,
@@ -3732,6 +4301,7 @@ fn analyze_expr_value_ownership(
                     next_alloc,
                     violations,
                     function_name,
+                    ownership_summaries,
                 );
                 arm_states.push(arm_state);
             }
@@ -3746,6 +4316,26 @@ fn analyze_expr_value_ownership(
             }
         }
         _ => {}
+    }
+}
+
+fn apply_call_consumed_params(
+    callee: &str,
+    args: &[Expr],
+    state: &mut OwnershipState,
+    ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
+) {
+    let Some(consumed_params) = ownership_summaries.get(callee) else {
+        return;
+    };
+    for consumed_index in consumed_params {
+        let Some(arg_name) = args.get(*consumed_index).and_then(expr_identity_name) else {
+            continue;
+        };
+        if let Some(owner) = state.owners.remove(arg_name) {
+            state.moved.insert(arg_name.to_string());
+            state.deferred.remove(&owner);
+        }
     }
 }
 
@@ -4130,7 +4720,7 @@ fn is_alloc_expr(expr: &Expr) -> bool {
 
 fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
-    let signatures = functions
+    let mut signatures = functions
         .iter()
         .map(|function| {
             (
@@ -4140,10 +4730,12 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
                     return_type: function.return_type.clone(),
                     is_extern: function.is_extern,
                     is_unsafe: function.is_unsafe,
+                    return_provenance: ReturnProvenanceSummary::Unknown,
                 },
             )
         })
         .collect::<BTreeMap<_, _>>();
+    populate_return_provenance_summaries(functions, &mut signatures);
     for function in functions {
         let mut next_root = 1usize;
         let mut state = ProvenanceState::default();
@@ -4214,6 +4806,9 @@ fn analyze_provenance_stmt(
     match stmt {
         Stmt::Let { name, value, .. } => {
             assign_provenance_value(name, value, state, next_root, signatures);
+        }
+        Stmt::LetPattern { pattern, value, .. } => {
+            assign_pattern_provenance(pattern, value, state, next_root, signatures);
         }
         Stmt::Assign { target, value } => {
             assign_provenance_value(target, value, state, next_root, signatures);
@@ -4377,8 +4972,7 @@ fn analyze_provenance_stmt(
                 signatures,
             );
         }
-        Stmt::LetPattern { .. }
-        | Stmt::CompoundAssign { .. }
+        Stmt::CompoundAssign { .. }
         | Stmt::Return(_)
         | Stmt::Defer(_)
         | Stmt::Requires(_)
@@ -4395,33 +4989,477 @@ fn assign_provenance_value(
     next_root: &mut usize,
     signatures: &BTreeMap<String, CallShape>,
 ) {
-    if is_alloc_expr(value) {
-        state.roots.insert(target.to_string(), *next_root);
-        *next_root += 1;
-    } else if let Some(root) = infer_expr_provenance_root(value, state, signatures) {
-        state.roots.insert(target.to_string(), root);
+    match infer_expr_provenance_source(value, state, signatures) {
+        ExprProvenanceSource::Existing(root) => {
+            state.roots.insert(target.to_string(), root);
+        }
+        ExprProvenanceSource::Fresh => {
+            state.roots.insert(target.to_string(), *next_root);
+            *next_root += 1;
+        }
+        ExprProvenanceSource::Unknown => {
+            state.roots.remove(target);
+        }
     }
 }
 
-fn infer_expr_provenance_root(
+fn assign_pattern_provenance(
+    pattern: &ast::Pattern,
+    value: &Expr,
+    state: &mut ProvenanceState,
+    next_root: &mut usize,
+    signatures: &BTreeMap<String, CallShape>,
+) {
+    match pattern {
+        ast::Pattern::Ident(name) => {
+            assign_provenance_value(name, value, state, next_root, signatures);
+        }
+        ast::Pattern::Tuple(items) => {
+            if let Expr::Tuple(values) = value {
+                if items.len() == values.len() {
+                    for (item, value) in items.iter().zip(values.iter()) {
+                        assign_pattern_provenance(item, value, state, next_root, signatures);
+                    }
+                    return;
+                }
+            }
+            let source = infer_expr_provenance_source(value, state, signatures);
+            for item in items {
+                assign_pattern_binding_from_source(item, source, state, next_root);
+            }
+        }
+        ast::Pattern::Struct { fields, .. } => {
+            if let Expr::StructInit {
+                fields: value_fields,
+                ..
+            } = value
+            {
+                for (field_name, binding_name) in fields {
+                    if binding_name == "_" {
+                        continue;
+                    }
+                    if let Some((_, field_value)) = value_fields
+                        .iter()
+                        .find(|(candidate, _)| candidate == field_name)
+                    {
+                        assign_provenance_value(
+                            binding_name,
+                            field_value,
+                            state,
+                            next_root,
+                            signatures,
+                        );
+                    } else {
+                        state.roots.remove(binding_name);
+                    }
+                }
+                return;
+            }
+            let source = infer_expr_provenance_source(value, state, signatures);
+            for (_, binding_name) in fields {
+                if binding_name != "_" {
+                    assign_name_from_source(binding_name, source, state, next_root);
+                }
+            }
+        }
+        ast::Pattern::Variant {
+            bindings,
+            named_bindings,
+            ..
+        } => {
+            if let Expr::EnumInit {
+                payload,
+                named_payload,
+                ..
+            } = value
+            {
+                if bindings.len() == payload.len() {
+                    for (binding, value) in bindings.iter().zip(payload.iter()) {
+                        assign_name_from_expr(binding, value, state, next_root, signatures);
+                    }
+                } else {
+                    let source = infer_expr_provenance_source(value, state, signatures);
+                    for binding in bindings {
+                        assign_name_from_source(binding, source, state, next_root);
+                    }
+                }
+                for (field_name, binding_name) in named_bindings {
+                    if binding_name == "_" {
+                        continue;
+                    }
+                    if let Some((_, field_value)) = named_payload
+                        .iter()
+                        .find(|(candidate, _)| candidate == field_name)
+                    {
+                        assign_provenance_value(
+                            binding_name,
+                            field_value,
+                            state,
+                            next_root,
+                            signatures,
+                        );
+                    } else {
+                        state.roots.remove(binding_name);
+                    }
+                }
+                return;
+            }
+            let source = infer_expr_provenance_source(value, state, signatures);
+            for binding in bindings {
+                assign_name_from_source(binding, source, state, next_root);
+            }
+            for (_, binding_name) in named_bindings {
+                if binding_name != "_" {
+                    assign_name_from_source(binding_name, source, state, next_root);
+                }
+            }
+        }
+        ast::Pattern::Or(patterns) => {
+            for pattern in patterns {
+                assign_pattern_provenance(pattern, value, state, next_root, signatures);
+            }
+        }
+        ast::Pattern::Wildcard | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => {}
+    }
+}
+
+fn assign_pattern_binding_from_source(
+    pattern: &ast::Pattern,
+    source: ExprProvenanceSource,
+    state: &mut ProvenanceState,
+    next_root: &mut usize,
+) {
+    match pattern {
+        ast::Pattern::Ident(name) => assign_name_from_source(name, source, state, next_root),
+        ast::Pattern::Tuple(items) => {
+            for item in items {
+                assign_pattern_binding_from_source(item, source, state, next_root);
+            }
+        }
+        ast::Pattern::Struct { fields, .. } => {
+            for (_, binding_name) in fields {
+                if binding_name != "_" {
+                    assign_name_from_source(binding_name, source, state, next_root);
+                }
+            }
+        }
+        ast::Pattern::Variant {
+            bindings,
+            named_bindings,
+            ..
+        } => {
+            for binding in bindings {
+                assign_name_from_source(binding, source, state, next_root);
+            }
+            for (_, binding_name) in named_bindings {
+                if binding_name != "_" {
+                    assign_name_from_source(binding_name, source, state, next_root);
+                }
+            }
+        }
+        ast::Pattern::Or(patterns) => {
+            for pattern in patterns {
+                assign_pattern_binding_from_source(pattern, source, state, next_root);
+            }
+        }
+        ast::Pattern::Wildcard | ast::Pattern::Int(_) | ast::Pattern::Bool(_) => {}
+    }
+}
+
+fn assign_name_from_expr(
+    name: &str,
+    value: &Expr,
+    state: &mut ProvenanceState,
+    next_root: &mut usize,
+    signatures: &BTreeMap<String, CallShape>,
+) {
+    if name != "_" {
+        assign_provenance_value(name, value, state, next_root, signatures);
+    }
+}
+
+fn assign_name_from_source(
+    name: &str,
+    source: ExprProvenanceSource,
+    state: &mut ProvenanceState,
+    next_root: &mut usize,
+) {
+    if name == "_" {
+        return;
+    }
+    match source {
+        ExprProvenanceSource::Existing(root) => {
+            state.roots.insert(name.to_string(), root);
+        }
+        ExprProvenanceSource::Fresh => {
+            state.roots.insert(name.to_string(), *next_root);
+            *next_root += 1;
+        }
+        ExprProvenanceSource::Unknown => {
+            state.roots.remove(name);
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExprProvenanceSource {
+    Existing(usize),
+    Fresh,
+    Unknown,
+}
+
+fn infer_expr_provenance_source(
     expr: &Expr,
     state: &ProvenanceState,
     signatures: &BTreeMap<String, CallShape>,
-) -> Option<usize> {
+) -> ExprProvenanceSource {
     match expr {
-        Expr::Ident(from) => state.roots.get(from).copied(),
+        Expr::Ident(from) => state
+            .roots
+            .get(from)
+            .copied()
+            .map(ExprProvenanceSource::Existing)
+            .unwrap_or(ExprProvenanceSource::Unknown),
+        expr if is_alloc_expr(expr) => ExprProvenanceSource::Fresh,
         Expr::FieldAccess { base, .. } | Expr::Group(base) => {
-            infer_expr_provenance_root(base, state, signatures)
+            infer_expr_provenance_source(base, state, signatures)
         }
-        Expr::Call { callee, args } => signatures.get(callee).and_then(|shape| {
-            if matches!(shape.return_type, Type::Ref { .. } | Type::Ptr { .. }) {
-                args.iter()
-                    .find_map(|arg| infer_expr_provenance_root(arg, state, signatures))
-            } else {
-                None
+        Expr::Call { callee, args } => signatures
+            .get(callee)
+            .and_then(|shape| {
+                if matches!(shape.return_type, Type::Ref { .. } | Type::Ptr { .. }) {
+                    Some(match shape.return_provenance {
+                        ReturnProvenanceSummary::Param(index) => args
+                            .get(index)
+                            .map(|arg| infer_expr_provenance_source(arg, state, signatures))
+                            .unwrap_or(ExprProvenanceSource::Unknown),
+                        ReturnProvenanceSummary::Fresh => ExprProvenanceSource::Fresh,
+                        ReturnProvenanceSummary::Unknown => ExprProvenanceSource::Unknown,
+                    })
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(ExprProvenanceSource::Unknown),
+        _ => ExprProvenanceSource::Unknown,
+    }
+}
+
+fn populate_return_provenance_summaries(
+    functions: &[TypedFunction],
+    signatures: &mut BTreeMap<String, CallShape>,
+) {
+    for _ in 0..functions.len().max(1) {
+        let mut changed = false;
+        for function in functions {
+            let summary = infer_function_return_provenance(function, signatures);
+            if let Some(shape) = signatures.get_mut(&function.name) {
+                if shape.return_provenance != summary {
+                    shape.return_provenance = summary;
+                    changed = true;
+                }
             }
-        }),
-        _ => None,
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn infer_function_return_provenance(
+    function: &TypedFunction,
+    signatures: &BTreeMap<String, CallShape>,
+) -> ReturnProvenanceSummary {
+    if !matches!(function.return_type, Type::Ref { .. } | Type::Ptr { .. }) {
+        return ReturnProvenanceSummary::Unknown;
+    }
+    let param_indexes = function
+        .params
+        .iter()
+        .enumerate()
+        .map(|(index, param)| (param.name.as_str(), index))
+        .collect::<BTreeMap<_, _>>();
+    let mut summaries = Vec::new();
+    collect_return_provenance_from_stmts(
+        &function.body,
+        &param_indexes,
+        signatures,
+        &mut summaries,
+    );
+    if summaries.is_empty() {
+        ReturnProvenanceSummary::Unknown
+    } else if summaries.windows(2).all(|window| window[0] == window[1]) {
+        summaries[0]
+    } else {
+        ReturnProvenanceSummary::Unknown
+    }
+}
+
+fn collect_return_provenance_from_stmts(
+    body: &[Stmt],
+    param_indexes: &BTreeMap<&str, usize>,
+    signatures: &BTreeMap<String, CallShape>,
+    out: &mut Vec<ReturnProvenanceSummary>,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::Return(Some(expr)) => {
+                out.push(infer_return_expr_provenance(
+                    expr,
+                    param_indexes,
+                    signatures,
+                ));
+            }
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_return_provenance_from_stmts(then_body, param_indexes, signatures, out);
+                collect_return_provenance_from_stmts(else_body, param_indexes, signatures, out);
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::ForIn { body, .. } => {
+                collect_return_provenance_from_stmts(body, param_indexes, signatures, out);
+            }
+            Stmt::For {
+                init, step, body, ..
+            } => {
+                if let Some(init) = init {
+                    collect_return_provenance_from_stmts(
+                        std::slice::from_ref(init.as_ref()),
+                        param_indexes,
+                        signatures,
+                        out,
+                    );
+                }
+                collect_return_provenance_from_stmts(body, param_indexes, signatures, out);
+                if let Some(step) = step {
+                    collect_return_provenance_from_stmts(
+                        std::slice::from_ref(step.as_ref()),
+                        param_indexes,
+                        signatures,
+                        out,
+                    );
+                }
+            }
+            Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    collect_return_provenance_from_expr(&arm.value, param_indexes, signatures, out);
+                }
+            }
+            Stmt::Expr(expr)
+            | Stmt::Defer(expr)
+            | Stmt::Requires(expr)
+            | Stmt::Ensures(expr)
+            | Stmt::Let { value: expr, .. }
+            | Stmt::LetPattern { value: expr, .. }
+            | Stmt::Assign { value: expr, .. }
+            | Stmt::CompoundAssign { value: expr, .. } => {
+                collect_return_provenance_from_expr(expr, param_indexes, signatures, out);
+            }
+            Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_return_provenance_from_expr(
+    expr: &Expr,
+    param_indexes: &BTreeMap<&str, usize>,
+    signatures: &BTreeMap<String, CallShape>,
+    out: &mut Vec<ReturnProvenanceSummary>,
+) {
+    match expr {
+        Expr::Return(Some(value)) => {
+            out.push(infer_return_expr_provenance(
+                value,
+                param_indexes,
+                signatures,
+            ));
+        }
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            collect_return_provenance_from_expr(then_expr, param_indexes, signatures, out);
+            collect_return_provenance_from_expr(else_expr, param_indexes, signatures, out);
+        }
+        Expr::Match { arms, .. } => {
+            for arm in arms {
+                collect_return_provenance_from_expr(&arm.value, param_indexes, signatures, out);
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            collect_return_provenance_from_stmts(body, param_indexes, signatures, out);
+        }
+        _ => {}
+    }
+}
+
+fn infer_return_expr_provenance(
+    expr: &Expr,
+    param_indexes: &BTreeMap<&str, usize>,
+    signatures: &BTreeMap<String, CallShape>,
+) -> ReturnProvenanceSummary {
+    match expr {
+        Expr::Ident(name) => param_indexes
+            .get(name.as_str())
+            .copied()
+            .map(ReturnProvenanceSummary::Param)
+            .unwrap_or(ReturnProvenanceSummary::Unknown),
+        expr if is_alloc_expr(expr) => ReturnProvenanceSummary::Fresh,
+        Expr::FieldAccess { base, .. } | Expr::Group(base) => {
+            infer_return_expr_provenance(base, param_indexes, signatures)
+        }
+        Expr::Call { callee, args } => match signatures
+            .get(callee)
+            .map(|shape| shape.return_provenance)
+            .unwrap_or(ReturnProvenanceSummary::Unknown)
+        {
+            ReturnProvenanceSummary::Param(index) => args
+                .get(index)
+                .map(|arg| infer_return_expr_provenance(arg, param_indexes, signatures))
+                .unwrap_or(ReturnProvenanceSummary::Unknown),
+            summary => summary,
+        },
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_summary = infer_return_expr_provenance(then_expr, param_indexes, signatures);
+            let else_summary = infer_return_expr_provenance(else_expr, param_indexes, signatures);
+            if then_summary == else_summary {
+                then_summary
+            } else {
+                ReturnProvenanceSummary::Unknown
+            }
+        }
+        Expr::Match { arms, .. } => {
+            let summaries = arms
+                .iter()
+                .map(|arm| infer_return_expr_provenance(&arm.value, param_indexes, signatures))
+                .collect::<Vec<_>>();
+            if summaries.is_empty() {
+                ReturnProvenanceSummary::Unknown
+            } else if summaries.windows(2).all(|window| window[0] == window[1]) {
+                summaries[0]
+            } else {
+                ReturnProvenanceSummary::Unknown
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            let mut summaries = Vec::new();
+            collect_return_provenance_from_stmts(body, param_indexes, signatures, &mut summaries);
+            if summaries.is_empty() {
+                ReturnProvenanceSummary::Unknown
+            } else if summaries.windows(2).all(|window| window[0] == window[1]) {
+                summaries[0]
+            } else {
+                ReturnProvenanceSummary::Unknown
+            }
+        }
+        _ => ReturnProvenanceSummary::Unknown,
     }
 }
 
@@ -4434,42 +5472,55 @@ fn analyze_provenance_call(
     signatures: &BTreeMap<String, CallShape>,
 ) {
     if is_free_callee(callee) {
-        if let Some(Expr::Ident(name)) = args.first() {
-            if let Some(root) = state.roots.get(name).copied() {
+        if let Some(arg) = args.first() {
+            if let Some(root) = expr_provenance_root(arg, state, signatures) {
                 if !state.freed_roots.insert(root) {
                     violations.push(format!(
                         "function `{}` double-frees provenance root {} via `{}`",
-                        function_name, root, name
+                        function_name,
+                        root,
+                        provenance_expr_label(arg)
                     ));
                 }
             }
         }
     }
     if let Some(shape) = signatures.get(callee) {
-        let mut mut_ref_aliases = BTreeMap::<String, usize>::new();
-        let mut shared_ref_aliases = BTreeMap::<String, usize>::new();
+        let mut mut_ref_aliases = BTreeMap::<String, (String, usize)>::new();
+        let mut shared_ref_aliases = BTreeMap::<String, String>::new();
         for (index, param) in shape.params.iter().enumerate() {
-            let Some(Expr::Ident(arg_name)) = args.get(index) else {
+            let Some(arg) = args.get(index) else {
                 continue;
             };
+            let label = provenance_expr_label(arg);
+            let key = provenance_expr_alias_key(arg, state, signatures);
             match &param.ty {
                 Type::Ref { mutable: true, .. } => {
-                    *mut_ref_aliases.entry(arg_name.clone()).or_default() += 1;
+                    let entry = mut_ref_aliases.entry(key).or_insert((label, 0));
+                    entry.1 += 1;
                 }
                 Type::Ref { mutable: false, .. } => {
-                    *shared_ref_aliases.entry(arg_name.clone()).or_default() += 1;
+                    shared_ref_aliases.entry(key).or_insert(label);
                 }
                 _ => {}
             }
         }
-        for (name, count) in &mut_ref_aliases {
+        for (key, (name, count)) in &mut_ref_aliases {
             if *count > 1 {
-                violations.push(format!(
-                    "function `{}` call `{}` aliases mutable reference parameter `{}` {} times",
-                    function_name, callee, name, count
-                ));
+                let detail = if let Some(root) = key.strip_prefix("root:") {
+                    format!(
+                        "function `{}` call `{}` aliases mutable reference parameter `{}` {} times (provenance root {})",
+                        function_name, callee, name, count, root
+                    )
+                } else {
+                    format!(
+                        "function `{}` call `{}` aliases mutable reference parameter `{}` {} times",
+                        function_name, callee, name, count
+                    )
+                };
+                violations.push(detail);
             }
-            if shared_ref_aliases.contains_key(name) {
+            if shared_ref_aliases.contains_key(key) {
                 violations.push(format!(
                     "function `{}` call `{}` aliases mutable and shared borrows for `{}`",
                     function_name, callee, name
@@ -4478,16 +5529,47 @@ fn analyze_provenance_call(
         }
         if shape.is_extern && shape.is_unsafe {
             for (index, param) in shape.params.iter().enumerate() {
-                let Some(Expr::Ident(arg_name)) = args.get(index) else {
+                let Some(arg) = args.get(index) else {
                     continue;
                 };
                 if param.name.ends_with("_owned") {
-                    if let Some(root) = state.roots.remove(arg_name) {
+                    if let Some(root) = expr_provenance_root(arg, state, signatures) {
                         state.freed_roots.insert(root);
                     }
                 }
             }
         }
+    }
+}
+
+fn expr_provenance_root(
+    expr: &Expr,
+    state: &ProvenanceState,
+    signatures: &BTreeMap<String, CallShape>,
+) -> Option<usize> {
+    match infer_expr_provenance_source(expr, state, signatures) {
+        ExprProvenanceSource::Existing(root) => Some(root),
+        ExprProvenanceSource::Fresh | ExprProvenanceSource::Unknown => None,
+    }
+}
+
+fn provenance_expr_alias_key(
+    expr: &Expr,
+    state: &ProvenanceState,
+    signatures: &BTreeMap<String, CallShape>,
+) -> String {
+    expr_provenance_root(expr, state, signatures)
+        .map(|root| format!("root:{root}"))
+        .unwrap_or_else(|| format!("label:{}", provenance_expr_label(expr)))
+}
+
+fn provenance_expr_label(expr: &Expr) -> String {
+    match expr {
+        Expr::Ident(name) => name.clone(),
+        Expr::Group(inner) => provenance_expr_label(inner),
+        Expr::FieldAccess { base, field } => format!("{}.{}", provenance_expr_label(base), field),
+        Expr::Index { base, .. } => format!("{}[..]", provenance_expr_label(base)),
+        _ => "<expr>".to_string(),
     }
 }
 
@@ -12779,6 +13861,137 @@ mod tests {
     }
 
     #[test]
+    fn distinguishes_helper_returned_pointer_provenance_by_parameter_index() {
+        let source = r#"
+            fn first(a: *mut u8, b: *mut u8) -> *mut u8 {
+                return a;
+            }
+            fn second(a: *mut u8, b: *mut u8) -> *mut u8 {
+                return b;
+            }
+            fn main() -> i32 {
+                let a = alloc(32);
+                let b = alloc(32);
+                let from_first = first(a, b);
+                let from_second = second(a, b);
+                free(a);
+                close(from_first);
+                close(from_second);
+                free(b);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `from_first` after provenance root")));
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `from_second` after provenance root")));
+    }
+
+    #[test]
+    fn tuple_pattern_bindings_preserve_element_provenance() {
+        let source = r#"
+            fn main() -> i32 {
+                let a = alloc(32);
+                let b = alloc(32);
+                let (left, right) = (a, b);
+                free(a);
+                close(left);
+                close(right);
+                free(b);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `left` after provenance root")));
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `right` after provenance root")));
+    }
+
+    #[test]
+    fn struct_pattern_bindings_preserve_field_provenance() {
+        let source = r#"
+            struct Pair { left: *mut u8, right: *mut u8 }
+            fn main() -> i32 {
+                let a = alloc(32);
+                let b = alloc(32);
+                let Pair { left, right } = Pair { left: a, right: b };
+                free(a);
+                close(left);
+                close(right);
+                free(b);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `left` after provenance root")));
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `right` after provenance root")));
+    }
+
+    #[test]
+    fn reassignment_clears_stale_provenance_root() {
+        let source = r#"
+            ext unsafe c fn acquire_owned() -> *u8;
+            unsafe fn main() -> i32 {
+                let p = alloc(32);
+                let q = p;
+                q = acquire_owned();
+                free(p);
+                close(q);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `q` after provenance root")));
+    }
+
+    #[test]
+    fn returning_second_pointer_arg_is_not_collapsed_to_first_argument_root() {
+        let source = r#"
+            fn passthrough(a: *mut u8, b: *mut u8) -> *mut u8 {
+                return b;
+            }
+            fn main() -> i32 {
+                let a = alloc(32);
+                let b = alloc(32);
+                let ret = passthrough(a, b);
+                free(a);
+                close(ret);
+                free(b);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("uses value `ret` after provenance root")));
+    }
+
+    #[test]
     fn detects_nested_use_after_free_via_control_flow() {
         let source = r#"
             fn main() -> i32 {
@@ -12942,6 +14155,110 @@ mod tests {
     }
 
     #[test]
+    fn detects_mutable_aliasing_through_grouped_ref_argument() {
+        let source = r#"
+            fn touch(a: &'a mut i32, b: &'a mut i32) -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                touch((x), x);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("aliases mutable reference parameter `x`")));
+    }
+
+    #[test]
+    fn grouped_owned_ffi_argument_marks_root_consumed() {
+        let source = r#"
+            ext unsafe c fn take_owned(p_owned: *u8) -> i32;
+            unsafe fn main() -> i32 {
+                let p = alloc(32);
+                take_owned((p));
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("double-frees provenance root")));
+    }
+
+    #[test]
+    fn helper_freeing_owned_param_transfers_ownership_from_caller() {
+        let source = r#"
+            fn consume(p: *mut u8) -> i32 {
+                free(p);
+                return 0;
+            }
+            fn main() -> i32 {
+                let p = alloc(32);
+                consume(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("consumes non-owned or already-consumed value `p`")
+                || detail.contains("function `main` leaks allocation")
+        }));
+    }
+
+    #[test]
+    fn unsafe_extern_owned_param_transfers_ownership_from_caller() {
+        let source = r#"
+            ext unsafe c fn take_owned(p_owned: *u8) -> i32;
+            unsafe fn main() -> i32 {
+                let p = alloc(32);
+                take_owned(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("function `main` leaks allocation")));
+    }
+
+    #[test]
+    fn non_consuming_helper_preserves_caller_ownership() {
+        let source = r#"
+            fn inspect(p: *mut u8) -> i32 {
+                discard p;
+                return 0;
+            }
+            fn main() -> i32 {
+                let p = alloc(32);
+                inspect(p);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("function `main` leaks allocation")));
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| { detail.contains("consumes non-owned or already-consumed value `p`") }));
+    }
+
+    #[test]
     fn detects_invalid_atomic_ordering_claims() {
         let source = r#"
             fn main() -> i32 {
@@ -13001,6 +14318,60 @@ mod tests {
             detail.contains(
                 "cannot use borrowed local reference `alias` across await suspension points",
             )
+        }));
+    }
+
+    #[test]
+    fn detects_shared_reference_used_after_await_in_same_if_body() {
+        let source = r#"
+            async fn worker(v: &'a i32) -> i32 {
+                if true {
+                    await recv();
+                    discard v;
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.reference_lifetime_violations.iter().any(|detail| {
+            detail.contains("cannot use borrowed reference `v` across await suspension points")
+        }));
+    }
+
+    #[test]
+    fn detects_shared_reference_used_after_await_in_same_match_arm() {
+        let source = r#"
+            async fn worker(v: &'a i32) -> i32 {
+                match await recv() {
+                    0 => v,
+                    _ => 0,
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.reference_lifetime_violations.iter().any(|detail| {
+            detail.contains("cannot use borrowed reference `v` across await suspension points")
+        }));
+    }
+
+    #[test]
+    fn detects_shared_reference_used_after_await_in_loop_body() {
+        let source = r#"
+            async fn worker(v: &'a i32) -> i32 {
+                while false {
+                    await recv();
+                    discard v;
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.reference_lifetime_violations.iter().any(|detail| {
+            detail.contains("cannot use borrowed reference `v` across await suspension points")
         }));
     }
 

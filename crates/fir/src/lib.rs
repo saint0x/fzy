@@ -2,8 +2,9 @@ use std::collections::HashMap;
 
 use ast::Type;
 use core::CapabilitySet;
+pub use hir::TypedFunction;
 pub use hir::UnsafeContractSite;
-use hir::{FunctionCapabilityRequirement, TypedFunction, TypedModule};
+use hir::{FunctionCapabilityRequirement, TypedModule};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValueType {
