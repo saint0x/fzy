@@ -1331,6 +1331,95 @@ Required tests:
 2. backend-specific library build expectations must be covered in CLI-level regression tests
 3. release documentation must reflect the actual supported native-library backend matrix
 
+### 11. `fz init` is split, underpowered, and not yet a production one-shot bootstrap command
+
+Problem:
+
+- the shipped `fz` binary exposes a native `init <name>` command, but that path is a hardcoded starter-app generator rather than the intended full production bootstrap flow
+- the repo also contains a richer Fozzy scaffold implementation with template, test-selection, corpora, and init-guide support, but it is not wired into the shipped `fz init` parser path
+- the result is two divergent init implementations, neither of which is the canonical one-shot project bootstrap command we actually want to ship
+- current docs and usage text already imply a more robust `fz init` surface than the shipped parser supports
+- some folders and files emitted by the old scaffold appear likely to be legacy/demo structure rather than a justified canonical initialized project layout
+
+Current direct evidence:
+
+- shipped parser/help currently accepts only `init <name>`
+- driver-local init path writes a fixed `src/api`, `src/model`, `src/services`, `src/runtime`, `src/cli`, and `src/tests` tree plus `fozzy.toml`
+- richer scenario-side scaffold creates `.fozzy` runtime directories, scenario fixtures, corpus seeds, and `tests/INIT_GUIDE.md`, but is not the shipped source of truth for `fz init`
+- richer usage/init-guide content references `fz init --template ... --with ... --force` and post-init flows like `fz full` / `fz gate`, while the shipped parser does not currently expose that full contract
+- current checked-in/generated init guidance also shows naming drift between `fozzy` and `fz`
+
+Why this matters:
+
+- this is a top-of-funnel product command; if `fz init` is inconsistent, users start with the wrong project shape and the wrong expectations
+- the command currently behaves more like a hardcoded historical scaffold than a production bootstrap flow
+- the split implementation guarantees future drift between parser/help/docs/scaffold logic unless it is centralized
+- generating stale or placeholder folders bakes unsupported architecture into every new project and raises long-term cleanup cost
+- a one-shot init command is only credible if the scaffolded project, tests, artifacts, and first-run guidance all match the actual shipped CLI surface
+
+Required fixes:
+
+1. remove the old driver-local scaffold implementation in full and replace it with a single canonical `fz init` implementation
+2. centralize all init behavior behind the shipped `fz` command so parser/help/docs/scaffold logic share one source of truth
+3. upgrade `fz init` from `init <name>` only into the intended production surface, including robust template/scaffold-selection/force behavior where those features remain part of the supported contract
+4. make `fz init` a true one-shot bootstrap command that can create:
+   - project root / current-directory bootstrap as appropriate
+   - `fozzy.toml`
+   - canonical `src/main.fzy` and only the justified starter source layout
+   - `.fozzy/runs`
+   - `.fozzy/corpora`
+   - `tests/*.fozzy.json`
+   - `tests/INIT_GUIDE.md`
+   - README/template assets that are actually supported
+5. separate target path semantics from package/project naming so `fz init` can behave intentionally rather than treating raw path input as both directory and manifest package name
+6. implement explicit collision and overwrite policy for existing roots, manifests, source trees, tests, and `.fozzy` directories rather than relying on ad hoc filesystem behavior
+7. audit every generated folder/file from both the old native scaffold and the newer scenario scaffold and classify each as:
+   - required canonical scaffold output
+   - optional template-specific material
+   - stale/legacy output to remove
+8. remove any dead generator logic, dead template branches, placeholder architecture folders, speculative starter modules, or duplicated scaffold paths that are not part of the real supported production workflow
+9. do not preserve historical scaffold structure just because it exists today; the final initialized layout must be minimal, canonical, and fully justified
+10. reconcile CLI help, README, `USAGE.md`, generated init-guide content, and any machine-readable usage output so they all describe the same shipped `fz init` contract
+11. ensure post-init guidance references only commands that actually exist and work in the shipped CLI
+12. if the intended one-shot init flow depends on commands such as `fz full` or `fz gate`, either implement/expose them properly or remove them from generated guidance until they are real
+
+Required tests:
+
+1. direct CLI regression coverage for:
+   - named-directory init
+   - current-directory init
+   - collision behavior without `--force`
+   - overwrite behavior with `--force`
+   - template/scaffold selection behavior
+   - manifest naming/path resolution
+2. scaffold-content assertions proving the final initialized tree contains only the canonical supported files and excludes stale historical folders/modules
+3. end-to-end coverage that a freshly initialized project can run the advertised first-step commands successfully
+4. regression coverage that parser/help/docs/generated guide stay aligned on the same `fz init` contract
+5. negative coverage for unsupported template names, unsupported scaffold kinds, and unsafe overwrite cases
+
+Required Fozzy validation:
+
+1. always validate at least one strict deterministic init flow with:
+   - `fozzy doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json`
+   - `fozzy test --det --strict <scenarios...> --json`
+2. record and validate at least one real init-related trace with:
+   - `fozzy run ... --det --record <trace.fozzy> --json`
+   - `fozzy trace verify <trace.fozzy> --strict --json`
+   - `fozzy replay <trace.fozzy> --json`
+   - `fozzy ci <trace.fozzy> --json`
+3. include host-backed checks where feasible for filesystem-heavy init behavior:
+   - `fozzy run ... --proc-backend host --fs-backend host --http-backend host --json`
+4. ensure the active init goal is covered by real trace-backed evidence rather than docs-only or unit-test-only validation
+
+Release bar:
+
+1. `fz init` must have exactly one production implementation path
+2. the old scaffold code must be removed rather than left dormant
+3. the final scaffolded layout must be minimal and canonical, with no legacy placeholder structure
+4. the generated project must match the actual shipped CLI/runtime workflow end to end
+5. parser/help/docs/generated onboarding content must all agree
+6. Fozzy-first deterministic, trace, replay, CI, and host-backed evidence must exist for the new init flow before calling it production-ready
+
 ## Compiler-Owned Build Surface
 
 The following build responsibilities should remain native to the compiler / `fz` tool rather than being pushed into a separate ecosystem builder:
@@ -1401,6 +1490,63 @@ Recommended downstream builder scope:
 - `cargo run -q -p fz -- ci artifacts/process-dx-hardening.trace.fozzy --json`
 - `cargo run -q -p fz -- run tests/pedantic.crates_hir.lib.host_backends_run.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
 
+## Production Blocker: Native Filesystem Surface Too Thin For Real Artifact Builders
+
+While pushing `/Users/deepsaint/Desktop/fzaudio` from scaffold mode into real packaging and artifact validation, I hit a language/runtime boundary that should be treated as production signal rather than worked around in shell scripts.
+
+Current blocker:
+
+- the canonical `core.io` / `core.fs` surface is missing basic native-product filesystem operations needed for a real release tool:
+  - no directory metadata / file-type inspection
+  - no recursive directory removal
+  - no file copy primitive
+  - no directory copy / tree staging primitive
+  - `list_dir(...)` returns names only, with no typed entry metadata
+
+Why this blocks real production software:
+
+- a serious release builder must be able to:
+  - discover whether a discovered path is a file, directory, bundle root, or symlink-like entry
+  - stage built plugin bundles into deterministic `dist/` layouts
+  - clean generated build/package directories without shelling out
+  - validate artifact trees without guessing from string suffixes alone
+- using `/bin/sh`, `find`, `cp`, `rm`, or `ditto` for these core operations would hide a real stdlib/runtime gap instead of exercising the language as a production systems surface
+
+Concrete mismatch observed on the current checkout:
+
+- docs advertise a richer `io` contract:
+  - [docs/stdlib-v1.md] lists `metadata(path) -> Result<FileMetadata, IoError>` and `remove(path) -> Result<(), IoError>`
+- actual shipped `core.io` wrapper currently exposes only:
+  - `read_text`
+  - `write_text`
+  - `mkdir`
+  - `exists`
+  - `remove_file`
+  - `stat_size`
+  - `temp_file`
+  - `list_dir`
+- see:
+  - `docs/stdlib-v1.md:42-49`
+  - `docs/stdlib-v1.md:250-259`
+  - `corelib/src/io.fzy:3-33`
+
+Required fix direction:
+
+1. add a real typed filesystem metadata surface for production code, including at minimum:
+   - exists
+   - is_file
+   - is_dir
+   - size
+   - mtime or stable timestamp access
+2. add first-class copy/remove operations suitable for packaging workflows:
+   - file copy
+   - recursive directory copy or explicit tree staging API
+   - recursive directory removal
+3. enrich directory listing so callers can inspect entry kinds without shelling out
+4. reconcile the stdlib docs with the actual shipped surface and add focused regressions proving the documented APIs exist and work in native builds
+
+This is currently blocking further native-first implementation of `fzaudio package`, `fzaudio clean`, and robust bundle validation.
+
 ## Tracking Notes
 
 When work is completed, mark the relevant line or section with `✅` and briefly note:
@@ -1409,3 +1555,9 @@ When work is completed, mark the relevant line or section with `✅` and briefly
 - what tests were added
 - what commands were run
 - whether docs or release gates were updated
+
+Manual-memory enhancement note:
+
+- finish higher-priority compiler/runtime/doc correctness work first before expanding manual-memory functionality
+- keep the current production model centered on checked `alloc(...)` / `free(...)` rather than broadening raw memory primitives by default
+- before starting any new manual-memory enhancement work beyond the current model, explicitly ask the user for permission for that specific work item
