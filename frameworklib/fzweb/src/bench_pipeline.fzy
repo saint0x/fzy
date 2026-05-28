@@ -1,42 +1,22 @@
-use core.thread;
-mod webcore;
 mod middleware;
 mod support;
 
 const ITERATIONS: i32 = 8000000
 
-fn build_sig() -> i32 {
-    let mut sig = webcore.app_new()
-    sig = webcore.app_enable(sig, middleware.logger_flag())
-    sig = webcore.app_enable(sig, middleware.recover_flag())
-    sig = webcore.app_enable(sig, middleware.timeout_flag())
-    sig = webcore.app_enable(sig, middleware.validation_flag())
-    sig = webcore.app_get(sig, "/health", 1)
-    sig = webcore.app_post(sig, "/echo", 2)
-    sig = webcore.app_get(sig, "/json", 3)
-    sig = webcore.app_all(sig, "/", 10)
-    sig = webcore.app_default_handler(sig, 404)
-    return sig
-}
-
 fn workload() -> i32 {
+    let cfg = support.server_config()
+    let policy = support.policy_from_config(cfg)
+    let mut rate = middleware.rate_init(policy, 0)
+    let mut metrics = support.metrics_new()
     let mut i = 0
     let mut acc = 0
-    let mut sig = build_sig()
 
     while i < ITERATIONS {
-        let method = 1
-        let path = 1
-        let rid = "req"
-        let mask = sig % 1024
-
-        let v = middleware.validate_body(1, "POST", "{\"ok\":true}")
-        let c = support.context_score("GET", "/health", rid)
-        let h = webcore.route_select_id(method, path)
-        let s = support.openapi_summary(sig)
-        acc = (acc + v + c + h + s + (mask % 17)) % 251
-
-        sig = (sig + i + acc) % 2147483000
+        rate = middleware.rate_refill(policy, rate, i)
+        let valid = middleware.body_is_json_like("{\"ok\":true}")
+        let route = support.route_kernel_score("GET", "/healthz")
+        metrics = support.metrics_record(metrics, 200)
+        acc = (acc + valid + route + metrics.ok_responses + rate.tokens) % 251
         i += 1
     }
 

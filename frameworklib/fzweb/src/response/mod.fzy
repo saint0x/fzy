@@ -1,0 +1,126 @@
+use core.http;
+
+fn send_text(conn: HttpHandle, status: i32, body: str) -> i32 {
+    return http.write_response(conn, status, "text/plain; charset=utf-8", body, 1)
+}
+
+fn send_json(conn: HttpHandle, status: i32, body: str) -> i32 {
+    return http.write_response(conn, status, "application/json; charset=utf-8", body, 1)
+}
+
+fn send_bytes(conn: HttpHandle, status: i32, content_type: str, body: str) -> i32 {
+    return http.write_response(conn, status, content_type, body, 1)
+}
+
+fn no_content(conn: HttpHandle) -> i32 {
+    return http.write_response(conn, 204, "text/plain; charset=utf-8", "", 1)
+}
+
+fn error_json(code: str, message: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "error", json.str(code))
+    discard map.set(payload, "message", json.str(message))
+    discard map.set(payload, "framework", json.str("fzweb"))
+    return json.object(payload)
+}
+
+fn ok_json(event: str, request_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "status", json.str("ok"))
+    discard map.set(payload, "event", json.str(event))
+    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "framework", json.str("fzweb"))
+    return json.object(payload)
+}
+
+fn service_json(service_name: str, service_version: str, request_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "service", json.str(service_name))
+    discard map.set(payload, "version", json.str(service_version))
+    discard map.set(payload, "status", json.str("ok"))
+    discard map.set(payload, "request_id", json.str(request_id))
+    return json.object(payload)
+}
+
+fn version_json(service_name: str, service_version: str, request_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "service", json.str(service_name))
+    discard map.set(payload, "version", json.str(service_version))
+    discard map.set(payload, "framework", json.str("fzweb"))
+    discard map.set(payload, "request_id", json.str(request_id))
+    return json.object(payload)
+}
+
+fn inspect_json(
+    request_id: str,
+    method: str,
+    path: str,
+    remote: str,
+    accept: str,
+    content_type: str,
+    route_name: str,
+) -> str {
+    let payload = map.new()
+    discard map.set(payload, "request_id", json.str(request_id))
+    discard map.set(payload, "method", json.str(method))
+    discard map.set(payload, "path", json.str(path))
+    discard map.set(payload, "remote", json.str(remote))
+    discard map.set(payload, "accept", json.str(accept))
+    discard map.set(payload, "content_type", json.str(content_type))
+    discard map.set(payload, "route", json.str(route_name))
+    discard map.set(payload, "framework", json.str("fzweb"))
+    return json.object(payload)
+}
+
+fn search_json(query_text: str, limit: i32, request_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "query", json.str(query_text))
+    discard map.set(payload, "limit", json.raw(str.from_i32(limit)))
+    discard map.set(payload, "request_id", json.str(request_id))
+    return json.object(payload)
+}
+
+fn named_echo_json(name: str, request_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "name", json.str(name))
+    discard map.set(payload, "request_id", json.str(request_id))
+    return json.object(payload)
+}
+
+fn bind_json(user: str, active: i32, request_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "user", json.str(user))
+    discard map.set(payload, "active", if active == 1 { json.raw("true") } else { json.raw("false") })
+    discard map.set(payload, "request_id", json.str(request_id))
+    return json.object(payload)
+}
+
+fn item_json(action: str, item_id: str, version: i32, request_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "action", json.str(action))
+    discard map.set(payload, "item_id", json.str(item_id))
+    discard map.set(payload, "version", json.raw(str.from_i32(version)))
+    discard map.set(payload, "framework", json.str("fzweb"))
+    discard map.set(payload, "request_id", json.str(request_id))
+    return json.object(payload)
+}
+
+fn item_view_json(item_id: str, version: i32, exists: i32, request_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "item_id", json.str(item_id))
+    discard map.set(payload, "version", json.raw(str.from_i32(version)))
+    discard map.set(payload, "exists", if exists == 1 { json.raw("true") } else { json.raw("false") })
+    discard map.set(payload, "request_id", json.str(request_id))
+    return json.object(payload)
+}
+
+fn items_json(request_id: str) -> str {
+    let items = list.new()
+    discard list.push(items, json.raw("{\"item_id\":\"alpha\",\"version\":1}"))
+    discard list.push(items, json.raw("{\"item_id\":\"beta\",\"version\":2}"))
+    let payload = map.new()
+    discard map.set(payload, "count", json.raw("2"))
+    discard map.set(payload, "items", json.array(items))
+    discard map.set(payload, "request_id", json.str(request_id))
+    return json.object(payload)
+}

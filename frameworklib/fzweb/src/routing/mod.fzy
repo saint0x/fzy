@@ -1,0 +1,248 @@
+use core.http;
+
+struct RouteDecision {
+    route_id: i32,
+    method_allowed: i32,
+}
+
+fn route_root_id() -> i32 { return 1 }
+fn route_healthz_id() -> i32 { return 2 }
+fn route_readyz_id() -> i32 { return 3 }
+fn route_metrics_id() -> i32 { return 4 }
+fn route_inspect_id() -> i32 { return 5 }
+fn route_search_id() -> i32 { return 6 }
+fn route_echo_post_id() -> i32 { return 7 }
+fn route_echo_name_id() -> i32 { return 8 }
+fn route_bind_id() -> i32 { return 9 }
+fn route_openapi_id() -> i32 { return 10 }
+fn route_static_id() -> i32 { return 11 }
+fn route_items_list_id() -> i32 { return 12 }
+fn route_item_get_id() -> i32 { return 13 }
+fn route_item_put_id() -> i32 { return 14 }
+fn route_item_patch_id() -> i32 { return 15 }
+fn route_item_delete_id() -> i32 { return 16 }
+fn route_version_id() -> i32 { return 17 }
+fn route_not_found_id() -> i32 { return 404 }
+
+fn route_name(route_id: i32) -> str {
+    if route_id == route_root_id() { return "root" }
+    if route_id == route_healthz_id() { return "healthz" }
+    if route_id == route_readyz_id() { return "readyz" }
+    if route_id == route_metrics_id() { return "metrics" }
+    if route_id == route_inspect_id() { return "inspect" }
+    if route_id == route_search_id() { return "search" }
+    if route_id == route_echo_post_id() { return "echo_post" }
+    if route_id == route_echo_name_id() { return "echo_name" }
+    if route_id == route_bind_id() { return "bind" }
+    if route_id == route_openapi_id() { return "openapi" }
+    if route_id == route_static_id() { return "static" }
+    if route_id == route_items_list_id() { return "items_list" }
+    if route_id == route_item_get_id() { return "item_get" }
+    if route_id == route_item_put_id() { return "item_put" }
+    if route_id == route_item_patch_id() { return "item_patch" }
+    if route_id == route_item_delete_id() { return "item_delete" }
+    if route_id == route_version_id() { return "version" }
+    return "not_found"
+}
+
+fn route_get(conn: HttpHandle, pattern: str) -> i32 {
+    return route.match(conn, "GET", pattern)
+}
+
+fn route_post(conn: HttpHandle, pattern: str) -> i32 {
+    return route.match(conn, "POST", pattern)
+}
+
+fn route_put(conn: HttpHandle, pattern: str) -> i32 {
+    return route.match(conn, "PUT", pattern)
+}
+
+fn route_delete(conn: HttpHandle, pattern: str) -> i32 {
+    return route.match(conn, "DELETE", pattern)
+}
+
+fn route_patch(conn: HttpHandle, pattern: str) -> i32 {
+    return route.match(conn, "PATCH", pattern)
+}
+
+fn route_any(conn: HttpHandle, pattern: str) -> i32 {
+    return route.match(conn, "", pattern)
+}
+
+fn decision(route_id: i32, method_allowed: i32) -> RouteDecision {
+    return RouteDecision {
+        route_id: route_id,
+        method_allowed: method_allowed,
+    }
+}
+
+fn is_public_route(route_id: i32) -> i32 {
+    if route_id == route_root_id() { return 1 }
+    if route_id == route_healthz_id() { return 1 }
+    if route_id == route_readyz_id() { return 1 }
+    if route_id == route_metrics_id() { return 1 }
+    if route_id == route_openapi_id() { return 1 }
+    if route_id == route_version_id() { return 1 }
+    return 0
+}
+
+fn skips_rate_limit(route_id: i32) -> i32 {
+    if route_id == route_healthz_id() { return 1 }
+    if route_id == route_readyz_id() { return 1 }
+    if route_id == route_metrics_id() { return 1 }
+    if route_id == route_openapi_id() { return 1 }
+    if route_id == route_version_id() { return 1 }
+    return 0
+}
+
+fn requires_json_body(route_id: i32) -> i32 {
+    if route_id == route_echo_post_id() { return 1 }
+    if route_id == route_bind_id() { return 1 }
+    if route_id == route_item_put_id() { return 1 }
+    if route_id == route_item_patch_id() { return 1 }
+    return 0
+}
+
+fn select(conn: HttpHandle) -> RouteDecision {
+    if route_get(conn, "/") == 1 {
+        return decision(route_root_id(), 1)
+    }
+    if route_any(conn, "/") == 1 {
+        return decision(route_root_id(), 0)
+    }
+
+    if route_get(conn, "/healthz") == 1 {
+        return decision(route_healthz_id(), 1)
+    }
+    if route_any(conn, "/healthz") == 1 {
+        return decision(route_healthz_id(), 0)
+    }
+
+    if route_get(conn, "/readyz") == 1 {
+        return decision(route_readyz_id(), 1)
+    }
+    if route_any(conn, "/readyz") == 1 {
+        return decision(route_readyz_id(), 0)
+    }
+
+    if route_get(conn, "/metrics") == 1 {
+        return decision(route_metrics_id(), 1)
+    }
+    if route_any(conn, "/metrics") == 1 {
+        return decision(route_metrics_id(), 0)
+    }
+
+    if route_get(conn, "/inspect") == 1 {
+        return decision(route_inspect_id(), 1)
+    }
+    if route_any(conn, "/inspect") == 1 {
+        return decision(route_inspect_id(), 0)
+    }
+
+    if route_get(conn, "/search") == 1 {
+        return decision(route_search_id(), 1)
+    }
+    if route_any(conn, "/search") == 1 {
+        return decision(route_search_id(), 0)
+    }
+
+    if route_post(conn, "/echo") == 1 {
+        return decision(route_echo_post_id(), 1)
+    }
+    if route_any(conn, "/echo") == 1 {
+        return decision(route_echo_post_id(), 0)
+    }
+
+    if route_get(conn, "/v1/echo/:name") == 1 {
+        return decision(route_echo_name_id(), 1)
+    }
+    if route_any(conn, "/v1/echo/:name") == 1 {
+        return decision(route_echo_name_id(), 0)
+    }
+
+    if route_post(conn, "/bind") == 1 {
+        return decision(route_bind_id(), 1)
+    }
+    if route_any(conn, "/bind") == 1 {
+        return decision(route_bind_id(), 0)
+    }
+
+    if route_get(conn, "/openapi.json") == 1 {
+        return decision(route_openapi_id(), 1)
+    }
+    if route_any(conn, "/openapi.json") == 1 {
+        return decision(route_openapi_id(), 0)
+    }
+
+    if route_get(conn, "/version") == 1 {
+        return decision(route_version_id(), 1)
+    }
+    if route_any(conn, "/version") == 1 {
+        return decision(route_version_id(), 0)
+    }
+
+    if route_get(conn, "/static/:name") == 1 {
+        return decision(route_static_id(), 1)
+    }
+    if route_any(conn, "/static/:name") == 1 {
+        return decision(route_static_id(), 0)
+    }
+
+    if route_get(conn, "/v1/items") == 1 {
+        return decision(route_items_list_id(), 1)
+    }
+    if route_any(conn, "/v1/items") == 1 {
+        return decision(route_items_list_id(), 0)
+    }
+
+    if route_get(conn, "/v1/items/:id") == 1 {
+        return decision(route_item_get_id(), 1)
+    }
+    if route_put(conn, "/v1/items/:id") == 1 {
+        return decision(route_item_put_id(), 1)
+    }
+    if route_patch(conn, "/v1/items/:id") == 1 {
+        return decision(route_item_patch_id(), 1)
+    }
+    if route_delete(conn, "/v1/items/:id") == 1 {
+        return decision(route_item_delete_id(), 1)
+    }
+    if route_any(conn, "/v1/items/:id") == 1 {
+        return decision(route_item_get_id(), 0)
+    }
+
+    return decision(route_not_found_id(), 1)
+}
+
+fn openapi_json() -> str {
+    let routes = list.new()
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/\",\"public\":true}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/healthz\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/readyz\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/metrics\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/inspect\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/search\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"POST\",\"path\":\"/echo\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/v1/echo/:name\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"POST\",\"path\":\"/bind\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/openapi.json\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/version\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/static/:name\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/v1/items\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"GET\",\"path\":\"/v1/items/:id\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"PUT\",\"path\":\"/v1/items/:id\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"PATCH\",\"path\":\"/v1/items/:id\"}"))
+    discard list.push(routes, json.raw("{\"method\":\"DELETE\",\"path\":\"/v1/items/:id\"}"))
+
+    let info = map.new()
+    discard map.set(info, "title", json.str("fzweb"))
+    discard map.set(info, "version", json.str("v1"))
+    discard map.set(info, "style", json.str("production-core"))
+
+    let root = map.new()
+    discard map.set(root, "openapi", json.str("3.1.0"))
+    discard map.set(root, "info", json.object(info))
+    discard map.set(root, "framework", json.str("fzweb"))
+    discard map.set(root, "routes", json.array(routes))
+    return json.object(root)
+}

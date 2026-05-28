@@ -1,86 +1,84 @@
-use core.thread;
-use core.time;
 use core.log;
+use core.time;
+use core.thread;
 
-fn logger_flag() -> i32 { return 1 }
-fn cors_flag() -> i32 { return 2 }
-fn timeout_flag() -> i32 { return 4 }
-fn recover_flag() -> i32 { return 8 }
-fn rate_limit_flag() -> i32 { return 16 }
-fn auth_flag() -> i32 { return 32 }
-fn static_flag() -> i32 { return 64 }
-fn validation_flag() -> i32 { return 128 }
+use request;
+use routing;
 
-fn logger_enabled(mask: i32) -> i32 {
-    if (mask % 2) == 1 then return 1
-    return 0
+struct Policy {
+    timeout_ms: i32,
+    max_body_bytes: i32,
+    require_auth: i32,
+    auth_token: str,
+    enable_cors: i32,
+    enable_request_log: i32,
+    require_json_body: i32,
+    enable_rate_limit: i32,
+    rate_capacity: i32,
+    rate_refill_ms: i32,
 }
 
-fn cors_enabled(mask: i32) -> i32 {
-    if ((mask / 2) % 2) == 1 then return 1
-    return 0
+struct RateState {
+    tokens: i32,
+    last_refill_ms: i32,
 }
 
-fn timeout_enabled(mask: i32) -> i32 {
-    if ((mask / 4) % 2) == 1 then return 1
-    return 0
+struct GateResult {
+    handled: i32,
+    status: i32,
+    reason: str,
+    rate: RateState,
 }
 
-fn recover_enabled(mask: i32) -> i32 {
-    if ((mask / 8) % 2) == 1 then return 1
-    return 0
+fn policy(
+    timeout_ms: i32,
+    max_body_bytes: i32,
+    require_auth: i32,
+    auth_token: str,
+    enable_cors: i32,
+    enable_request_log: i32,
+    require_json_body: i32,
+    enable_rate_limit: i32,
+    rate_capacity: i32,
+    rate_refill_ms: i32,
+) -> Policy {
+    return Policy {
+        timeout_ms: timeout_ms,
+        max_body_bytes: max_body_bytes,
+        require_auth: require_auth,
+        auth_token: auth_token,
+        enable_cors: enable_cors,
+        enable_request_log: enable_request_log,
+        require_json_body: require_json_body,
+        enable_rate_limit: enable_rate_limit,
+        rate_capacity: rate_capacity,
+        rate_refill_ms: rate_refill_ms,
+    }
 }
 
-fn rate_limit_enabled(mask: i32) -> i32 {
-    if ((mask / 16) % 2) == 1 then return 1
-    return 0
+fn rate_state(tokens: i32, last_refill_ms: i32) -> RateState {
+    return RateState {
+        tokens: tokens,
+        last_refill_ms: last_refill_ms,
+    }
 }
 
-fn auth_enabled(mask: i32) -> i32 {
-    if ((mask / 32) % 2) == 1 then return 1
-    return 0
+fn gate_continue(rate: RateState) -> GateResult {
+    return GateResult {
+        handled: 0,
+        status: 0,
+        reason: "",
+        rate: rate,
+    }
 }
 
-fn static_enabled(mask: i32) -> i32 {
-    if ((mask / 64) % 2) == 1 then return 1
-    return 0
-}
-
-fn validation_enabled(mask: i32) -> i32 {
-    if ((mask / 128) % 2) == 1 then return 1
-    return 0
-}
-
-fn enabled(mask: i32, flag: i32) -> i32 {
-    if flag == 1 then return logger_enabled(mask)
-    if flag == 2 then return cors_enabled(mask)
-    if flag == 4 then return timeout_enabled(mask)
-    if flag == 8 then return recover_enabled(mask)
-    if flag == 16 then return rate_limit_enabled(mask)
-    if flag == 32 then return auth_enabled(mask)
-    if flag == 64 then return static_enabled(mask)
-    if flag == 128 then return validation_enabled(mask)
-    return 0
-}
-
-fn enable_flag(mask: i32, flag: i32) -> i32 {
-    if enabled(mask, flag) == 1 then return mask
-    return mask + flag
-}
-
-fn enable_logger(mask: i32) -> i32 {
-    if logger_enabled(mask) == 1 then return mask
-    return mask + 1
-}
-
-fn enable_validation(mask: i32) -> i32 {
-    if validation_enabled(mask) == 1 then return mask
-    return mask + 128
-}
-
-fn enable_rate_limit(mask: i32) -> i32 {
-    if rate_limit_enabled(mask) == 1 then return mask
-    return mask + 16
+fn gate_handled(status: i32, reason: str, rate: RateState) -> GateResult {
+    return GateResult {
+        handled: 1,
+        status: status,
+        reason: reason,
+        rate: rate,
+    }
 }
 
 fn fields4(
@@ -101,101 +99,176 @@ fn fields4(
     return log.fields(m)
 }
 
-fn apply_timeout(mask: i32, timeout_ms: i32) -> i32 {
-    if timeout_enabled(mask) == 0 then return 0
-    let mut safe = timeout_ms
-    if safe < 1 { safe = 1 }
-    if safe > 30000 { safe = 30000 }
+fn apply_timeout(policy: Policy) -> i32 {
+    let mut safe = policy.timeout_ms
+    if safe < 1 {
+        safe = 1
+    }
+    if safe > 30000 {
+        safe = 30000
+    }
     timeout(safe)
     return safe
 }
 
-fn log_event(method: str, path: str, request_id: str, remote: str) -> i32 {
+fn log_request(conn: HttpHandle, phase: str) -> i32 {
     discard log.info(
         "fzweb.request",
         fields4(
             "request_id",
-            request_id,
+            http.request_id(conn),
             "method",
-            method,
+            http.method(conn),
             "path",
-            path,
-            "remote",
-            remote,
+            http.path(conn),
+            "phase",
+            phase,
         ),
     )
-    let now = time.now()
-    let digest = (str.len(method) * 17)
-        + (str.len(path) * 13)
-        + (str.len(request_id) * 7)
-        + (str.len(remote) * 5)
-        + (now % 97)
-    return digest % 251
+    return 0
 }
 
-fn cors_short_circuit(method: str, path: str) -> i32 {
-    if method == "OPTIONS" {
-        if str.starts_with(path, "/") == 1 then return 1
+fn auth_header_valid(auth_header: str, expected_token: str) -> i32 {
+    if str.starts_with(auth_header, "Bearer ") != 1 {
+        return 0
+    }
+    if expected_token == "" {
+        return 1
+    }
+    let provided = str.slice(auth_header, str.len("Bearer "), str.len(auth_header))
+    if provided == expected_token {
+        return 1
     }
     return 0
 }
 
-fn auth_bearer(auth_header: str) -> i32 {
-    if str.starts_with(auth_header, "Bearer ") == 1 then return 1
-    return 0
-}
-
-fn validate_json_body(body: str) -> i32 {
-    if str.len(body) == 0 then return 1
-    if str.starts_with(body, "{") == 1 then return 1
-    if str.starts_with(body, "[") == 1 then return 1
-
-    let t = str.trim(body)
-    if str.starts_with(t, "{") == 1 then return 1
-    if str.starts_with(t, "[") == 1 then return 1
-    return 0
-}
-
-fn validate_body(strict_json: i32, method: str, body: str) -> i32 {
-    if strict_json == 0 then return 1
-    if method == "POST" then return validate_json_body(body)
-    if method == "GET" then return 1
-    if method == "DELETE" then return 1
-    return validate_json_body(body)
-}
-
-fn rate_init(max_tokens: i32, _refill_ms: i32) -> i32 {
-    let mut safe_max = max_tokens
-    if safe_max < 1 { safe_max = 1 }
-    if safe_max > 10000 { safe_max = 10000 }
-    return safe_max
-}
-
-fn rate_refill(bucket: i32, now_ms: i32) -> i32 {
-    discard now_ms
-    let mut tokens = bucket
-    if tokens < 10000 {
-        tokens += 1
+fn body_is_json_like(text: str) -> i32 {
+    let trimmed = str.trim(text)
+    if trimmed == "" {
+        return 1
     }
-    if tokens > 10000 { tokens = 10000 }
-    if tokens < 0 { tokens = 0 }
-    return tokens
+    if str.starts_with(trimmed, "{") == 1 {
+        return 1
+    }
+    if str.starts_with(trimmed, "[") == 1 {
+        return 1
+    }
+    return 0
 }
 
-fn rate_take(bucket: i32, cost: i32) -> i32 {
+fn rate_init(policy: Policy, now_ms: i32) -> RateState {
+    let mut capacity = policy.rate_capacity
+    if capacity < 1 {
+        capacity = 1
+    }
+    if capacity > 100000 {
+        capacity = 100000
+    }
+    return rate_state(capacity, now_ms)
+}
+
+fn rate_refill(policy: Policy, state: RateState, now_ms: i32) -> RateState {
+    if policy.enable_rate_limit == 0 {
+        return state
+    }
+    let mut refill_ms = policy.rate_refill_ms
+    if refill_ms < 1 {
+        refill_ms = 1
+    }
+    let elapsed = now_ms - state.last_refill_ms
+    if elapsed < refill_ms {
+        return state
+    }
+    let add = elapsed / refill_ms
+    let mut capacity = policy.rate_capacity
+    if capacity < 1 {
+        capacity = 1
+    }
+    let mut next_tokens = state.tokens + add
+    if next_tokens > capacity {
+        next_tokens = capacity
+    }
+    return rate_state(next_tokens, now_ms)
+}
+
+fn rate_allowed(state: RateState, cost: i32) -> i32 {
     let mut spend = cost
-    if spend < 1 { spend = 1 }
-    let mut tokens = bucket
-    if tokens >= spend {
-        tokens -= spend
+    if spend < 1 {
+        spend = 1
     }
-    if tokens < 0 { tokens = 0 }
-    return tokens
+    if state.tokens >= spend {
+        return 1
+    }
+    return 0
 }
 
-fn rate_allowed(bucket: i32, cost: i32) -> i32 {
+fn rate_take(state: RateState, cost: i32) -> RateState {
     let mut spend = cost
-    if spend < 1 { spend = 1 }
-    if bucket >= spend then return 1
+    if spend < 1 {
+        spend = 1
+    }
+    let mut next_tokens = state.tokens
+    if next_tokens >= spend {
+        next_tokens -= spend
+    } else {
+        next_tokens = 0
+    }
+    return rate_state(next_tokens, state.last_refill_ms)
+}
+
+fn maybe_handle_preflight(conn: HttpHandle, policy: Policy) -> i32 {
+    if policy.enable_cors == 0 {
+        return 0
+    }
+    if http.method(conn) == "OPTIONS" {
+        return 1
+    }
     return 0
+}
+
+fn before_dispatch(
+    conn: HttpHandle,
+    decision: routing.RouteDecision,
+    policy: Policy,
+    state: RateState,
+) -> GateResult {
+    discard apply_timeout(policy)
+
+    let mut next_state = rate_refill(policy, state, time.monotonic_ms())
+    if policy.enable_request_log == 1 {
+        discard log_request(conn, "received")
+    }
+
+    if maybe_handle_preflight(conn, policy) == 1 {
+        return gate_handled(204, "preflight", next_state)
+    }
+
+    if policy.require_auth == 1 && routing.is_public_route(decision.route_id) == 0 {
+        let auth = request.auth(conn)
+        if auth_header_valid(auth, policy.auth_token) == 0 {
+            return gate_handled(401, "unauthorized", next_state)
+        }
+    }
+
+    if request.body_len(conn) > policy.max_body_bytes {
+        return gate_handled(413, "body_too_large", next_state)
+    }
+
+    if policy.require_json_body == 1 && routing.requires_json_body(decision.route_id) == 1 {
+        if request.content_type_is_json(conn) == 0 {
+            return gate_handled(400, "invalid_content_type", next_state)
+        }
+        if body_is_json_like(request.body(conn)) == 0 {
+            return gate_handled(400, "invalid_json_body", next_state)
+        }
+    }
+
+    if policy.enable_rate_limit == 1 && routing.skips_rate_limit(decision.route_id) == 0 {
+        if rate_allowed(next_state, 1) == 0 {
+            return gate_handled(429, "rate_limited", next_state)
+        }
+        next_state = rate_take(next_state, 1)
+    }
+
+    return gate_continue(next_state)
 }

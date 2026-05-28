@@ -1,25 +1,19 @@
-use core.thread;
 mod middleware;
 
 const ITERATIONS: i32 = 10000000
 
 fn workload() -> i32 {
+    let policy = middleware.policy(2500, 1048576, 0, "", 1, 1, 1, 1, 120, 1000)
+    let mut rate = middleware.rate_init(policy, 0)
     let mut i = 0
-    let mut mask = 0
-    mask = middleware.enable_logger(mask)
-    mask = middleware.enable_validation(mask)
-    mask = middleware.enable_rate_limit(mask)
-
-    let mut bucket = middleware.rate_init(120, 1000)
     let mut acc = 0
 
     while i < ITERATIONS {
-        let valid = middleware.validate_json_body("{\"x\":1}")
-        let allow = middleware.rate_allowed(bucket, 1)
-        bucket = middleware.rate_take(bucket, 1)
-        bucket = middleware.rate_refill(bucket, i)
-
-        acc = (acc + valid + allow + (mask % 31)) % 251
+        let valid = middleware.body_is_json_like("{\"x\":1}")
+        let allow = middleware.rate_allowed(rate, 1)
+        rate = middleware.rate_take(rate, 1)
+        rate = middleware.rate_refill(policy, rate, i)
+        acc = (acc + valid + allow + rate.tokens) % 251
         i += 1
     }
 

@@ -8,14 +8,33 @@
 - Deterministic hot path.
 - Rust-backed `core.http` transport usage through `webcore` wrappers.
 - First-class `core.log` structured logging in live server path.
-- Concurrency hooks via `spawn`/`join`/`yield` for multithreaded execution support.
+- Request/response/routing modules with deterministic live-server contracts.
+- Host-backed readiness via `http.poll_register` + `http.poll_next` + `http.read`.
 
 ## Module Groups
 
 - `src/webcore/mod.fzy`
+- `src/request/mod.fzy`
+- `src/response/mod.fzy`
+- `src/routing/mod.fzy`
 - `src/middleware/mod.fzy`
 - `src/support/mod.fzy`
 - `src/main.fzy`
+
+## Built-In Production Routes
+
+- `GET /healthz`
+- `GET /readyz`
+- `GET /metrics`
+- `GET /inspect`
+- `GET /search`
+- `POST /echo`
+- `GET /v1/echo/:name`
+- `POST /bind`
+- `PUT /v1/items/:id`
+- `DELETE /v1/items/:id`
+- `GET /openapi.json`
+- `GET /static/:name`
 
 ## Validation Commands
 

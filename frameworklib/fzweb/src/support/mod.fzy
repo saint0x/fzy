@@ -1,40 +1,448 @@
-use core.text;
+use core.http;
+use core.log;
+use core.time;
+use core.thread;
 
-fn compress_should(content_type: str, body: str) -> i32 {
-    if text.len(body) < 512 then return 0
-    if text.starts_with(content_type, "text/") == 1 then return 1
-    if content_type == "application/json" then return 1
+use middleware;
+use request;
+use response;
+use routing;
+use webcore;
+
+struct ServerConfig {
+    timeout_ms: i32,
+    max_body_bytes: i32,
+    enable_cors: i32,
+    enable_request_log: i32,
+    require_auth: i32,
+    auth_token: str,
+    require_json_body: i32,
+    enable_rate_limit: i32,
+    rate_capacity: i32,
+    rate_refill_ms: i32,
+    max_requests: i32,
+}
+
+struct MetricsState {
+    total_requests: i32,
+    ok_responses: i32,
+    client_errors: i32,
+    server_errors: i32,
+    unauthorized: i32,
+    rate_limited: i32,
+}
+
+struct HandleOutcome {
+    status: i32,
+    rate: middleware.RateState,
+    metrics: MetricsState,
+}
+
+fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let m = map.new()
+    discard map.set(m, k1, v1)
+    discard map.set(m, k2, v2)
+    return log.fields(m)
+}
+
+fn bool_env(key: str, fallback: i32) -> i32 {
+    let raw = str.lower_ascii(str.trim(env.get(key)))
+    if raw == "" {
+        return fallback
+    }
+    if raw == "1" {
+        return 1
+    }
+    if raw == "true" {
+        return 1
+    }
+    if raw == "yes" {
+        return 1
+    }
+    if raw == "on" {
+        return 1
+    }
     return 0
 }
 
-fn session_valid(token: str) -> i32 {
-    if text.len(token) < 16 then return 0
-    return 1
+fn i32_env(key: str, fallback: i32, min_value: i32, max_value: i32) -> i32 {
+    let raw = str.trim(env.get(key))
+    if raw == "" {
+        return fallback
+    }
+    let mut value = request.parse_i32(raw)
+    if value < min_value {
+        value = min_value
+    }
+    if value > max_value {
+        value = max_value
+    }
+    return value
 }
 
-fn static_match(path: str) -> i32 {
-    if text.starts_with(path, "/static/") == 1 then return 1
+fn text_env(key: str, fallback: str) -> str {
+    let raw = env.get(key)
+    if raw == "" {
+        return fallback
+    }
+    return raw
+}
+
+fn server_config() -> ServerConfig {
+    return ServerConfig {
+        timeout_ms: i32_env("FZWEB_TIMEOUT_MS", 2500, 1, 30000),
+        max_body_bytes: i32_env("FZWEB_MAX_BODY_BYTES", 1048576, 64, 16777216),
+        enable_cors: bool_env("FZWEB_ENABLE_CORS", 1),
+        enable_request_log: bool_env("FZWEB_ENABLE_REQUEST_LOG", 1),
+        require_auth: bool_env("FZWEB_REQUIRE_AUTH", 0),
+        auth_token: text_env("FZWEB_AUTH_TOKEN", ""),
+        require_json_body: bool_env("FZWEB_REQUIRE_JSON_BODY", 1),
+        enable_rate_limit: bool_env("FZWEB_ENABLE_RATE_LIMIT", 1),
+        rate_capacity: i32_env("FZWEB_RATE_CAPACITY", 120, 1, 100000),
+        rate_refill_ms: i32_env("FZWEB_RATE_REFILL_MS", 1000, 1, 600000),
+        max_requests: i32_env("FZWEB_MAX_REQUESTS", 2000000000, 1, 2000000000),
+    }
+}
+
+fn policy_from_config(cfg: ServerConfig) -> middleware.Policy {
+    return middleware.policy(
+        cfg.timeout_ms,
+        cfg.max_body_bytes,
+        cfg.require_auth,
+        cfg.auth_token,
+        cfg.enable_cors,
+        cfg.enable_request_log,
+        cfg.require_json_body,
+        cfg.enable_rate_limit,
+        cfg.rate_capacity,
+        cfg.rate_refill_ms,
+    )
+}
+
+fn metrics_new() -> MetricsState {
+    return MetricsState {
+        total_requests: 0,
+        ok_responses: 0,
+        client_errors: 0,
+        server_errors: 0,
+        unauthorized: 0,
+        rate_limited: 0,
+    }
+}
+
+fn metrics_record(metrics: MetricsState, status: i32) -> MetricsState {
+    let mut ok = metrics.ok_responses
+    let mut client = metrics.client_errors
+    let mut server = metrics.server_errors
+    let mut unauthorized = metrics.unauthorized
+    let mut rate_limited = metrics.rate_limited
+
+    if status >= 200 && status < 300 {
+        ok += 1
+    }
+    if status >= 400 && status < 500 {
+        client += 1
+    }
+    if status >= 500 {
+        server += 1
+    }
+    if status == 401 {
+        unauthorized += 1
+    }
+    if status == 429 {
+        rate_limited += 1
+    }
+
+    return MetricsState {
+        total_requests: metrics.total_requests + 1,
+        ok_responses: ok,
+        client_errors: client,
+        server_errors: server,
+        unauthorized: unauthorized,
+        rate_limited: rate_limited,
+    }
+}
+
+fn gate_body(reason: str) -> str {
+    return response.error_json(reason, reason)
+}
+
+fn safe_static_name(name: str) -> str {
+    if name == "" {
+        return "index.txt"
+    }
+    if str.contains(name, "..") == 1 {
+        return "blocked.txt"
+    }
+    if str.contains(name, "/") == 1 {
+        return "blocked.txt"
+    }
+    return name
+}
+
+fn static_body(name: str) -> str {
+    return str.concat("static asset: ", safe_static_name(name))
+}
+
+fn metrics_text(metrics: MetricsState, started_ms: i32) -> str {
+    let uptime_ms = time.monotonic_ms() - started_ms
+    let line1 = str.concat("fzweb_requests_total ", str.from_i32(metrics.total_requests))
+    let line2 = str.concat("fzweb_responses_ok ", str.from_i32(metrics.ok_responses))
+    let line3 = str.concat("fzweb_responses_client_error ", str.from_i32(metrics.client_errors))
+    let line4 = str.concat("fzweb_responses_server_error ", str.from_i32(metrics.server_errors))
+    let line5 = str.concat("fzweb_unauthorized_total ", str.from_i32(metrics.unauthorized))
+    let line6 = str.concat("fzweb_rate_limited_total ", str.from_i32(metrics.rate_limited))
+    let line7 = str.concat("fzweb_uptime_ms ", str.from_i32(uptime_ms))
+    return str.concat(line1, "\n", line2, "\n", line3, "\n", line4, "\n", line5, "\n", line6, "\n", line7)
+}
+
+fn route_kernel_score(method: str, path: str) -> i32 {
+    let mut score = (str.len(method) * 17) + (str.len(path) * 19)
+    if method == "GET" {
+        score += 11
+    }
+    if method == "POST" {
+        score += 13
+    }
+    if path == "/healthz" {
+        score += 23
+    }
+    if str.starts_with(path, "/static/") == 1 {
+        score += 29
+    }
+    return score % 251
+}
+
+fn handle_route(
+    conn: HttpHandle,
+    decision: routing.RouteDecision,
+    metrics: MetricsState,
+    rate: middleware.RateState,
+    started_ms: i32,
+) -> HandleOutcome {
+    if decision.method_allowed == 0 {
+        discard webcore.response_method_not_allowed(conn)
+        return HandleOutcome {
+            status: 405,
+            rate: rate,
+            metrics: metrics_record(metrics, 405),
+        }
+    }
+
+    if decision.route_id == routing.route_healthz_id() {
+            discard response.send_text(conn, 200, "ok")
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_readyz_id() {
+            discard response.send_text(conn, 200, "ready")
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_metrics_id() {
+            discard response.send_bytes(
+                conn,
+                200,
+                "text/plain; version=0.0.4; charset=utf-8",
+                metrics_text(metrics, started_ms),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_inspect_id() {
+            discard response.send_json(
+                conn,
+                200,
+                response.inspect_json(
+                    request.request_id(conn),
+                    request.method(conn),
+                    request.path(conn),
+                    request.remote(conn),
+                    request.accept(conn),
+                    request.content_type(conn),
+                    routing.route_name(decision.route_id),
+                ),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_search_id() {
+            let q = request.query(conn, "q")
+            let limit = request.query_i32_default(conn, "limit", 10)
+            discard response.send_json(
+                conn,
+                200,
+                response.search_json(q, limit, request.request_id(conn)),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_echo_post_id() {
+            let body = request.body_max(conn, 1048576)
+            discard response.send_json(conn, 200, if body == "" { response.ok_json("echo", request.request_id(conn)) } else { body })
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_echo_name_id() {
+            let name = request.param(conn, "name")
+            discard response.send_json(
+                conn,
+                200,
+                response.named_echo_json(name, request.request_id(conn)),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_bind_id() {
+            let payload = request.body_json(conn)
+            discard response.send_json(
+                conn,
+                200,
+                response.bind_json(
+                    json.get_str(payload, "user"),
+                    json.get_str(payload, "active"),
+                    request.request_id(conn),
+                ),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_openapi_id() {
+            discard response.send_json(conn, 200, routing.openapi_json())
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_static_id() {
+            let name = request.param(conn, "name")
+            discard response.send_bytes(
+                conn,
+                200,
+                "text/plain; charset=utf-8",
+                static_body(name),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_item_put_id() {
+            let item_id = request.param(conn, "id")
+            let version = request.query_i32_default(conn, "version", 1)
+            discard response.send_json(
+                conn,
+                200,
+                response.item_json("updated", item_id, version, request.request_id(conn)),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.route_id == routing.route_item_delete_id() {
+            let item_id = request.param(conn, "id")
+            let version = request.query_i32_default(conn, "version", 1)
+            discard response.send_json(
+                conn,
+                202,
+                response.item_json("deleted", item_id, version, request.request_id(conn)),
+            )
+            return HandleOutcome {
+                status: 202,
+                rate: rate,
+                metrics: metrics_record(metrics, 202),
+            }
+    }
+
+    discard webcore.response_not_found(conn)
+    return HandleOutcome {
+        status: 404,
+        rate: rate,
+        metrics: metrics_record(metrics, 404),
+    }
+}
+
+fn run_live_server() -> i32 {
+    discard log.set_json(1)
+    let cfg = server_config()
+    let policy = policy_from_config(cfg)
+    let listener = http.bind()
+    if http.listen(listener) != 0 {
+        close(listener)
+        return 11
+    }
+
+    discard log.info("fzweb.server.start", fields2("component", "fzweb", "mode", "live"))
+
+    let started_ms = time.monotonic_ms()
+    let mut handled = 0
+    let mut rate = middleware.rate_init(policy, started_ms)
+    let mut metrics = metrics_new()
+
+    while handled < cfg.max_requests {
+        let conn = http.accept()
+        let read_status = webcore.request_read(conn)
+        if read_status != 0 {
+            discard webcore.response_service_unavailable(conn, "{\"error\":\"read_failed\"}")
+            metrics = metrics_record(metrics, 503)
+            handled += 1
+            continue
+        }
+
+        let gate = middleware.before_dispatch(conn, policy, rate)
+        rate = gate.rate
+        if gate.handled == 1 {
+            if gate.status == 204 {
+                discard webcore.response_no_content(conn)
+            } else {
+                discard webcore.response_json(conn, gate.status, gate_body(gate.reason))
+            }
+            metrics = metrics_record(metrics, gate.status)
+            handled += 1
+            if (handled % 256) == 0 {
+                yield()
+            }
+            continue
+        }
+
+        let decision = routing.select(conn)
+        let outcome = handle_route(conn, decision, metrics, rate, started_ms)
+        metrics = outcome.metrics
+        rate = outcome.rate
+        handled += 1
+        if (handled % 256) == 0 {
+            yield()
+        }
+    }
+
+    close(listener)
     return 0
-}
-
-fn openapi_summary(app_sig: i32) -> i32 {
-    return app_sig % 257
-}
-
-fn context_score(method: str, path: str, request_id: str) -> i32 {
-    return ((text.len(method) * 13) + (text.len(path) * 17) + (text.len(request_id) * 19)) % 251
-}
-
-fn default_max_body_bytes() -> i32 { return 1048576 }
-fn default_timeout_ms() -> i32 { return 2500 }
-fn default_rate_tokens() -> i32 { return 120 }
-fn default_rate_refill_ms() -> i32 { return 1000 }
-
-fn error_map(code: i32) -> i32 {
-    if code == 400 then return 400
-    if code == 401 then return 401
-    if code == 404 then return 404
-    if code == 429 then return 429
-    if code == 503 then return 503
-    return 500
 }

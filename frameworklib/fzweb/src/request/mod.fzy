@@ -1,0 +1,186 @@
+use core.http;
+
+fn method(conn: HttpHandle) -> str {
+    return http.method(conn)
+}
+
+fn path(conn: HttpHandle) -> str {
+    return http.path(conn)
+}
+
+fn body(conn: HttpHandle) -> str {
+    return http.body(conn)
+}
+
+fn body_json(conn: HttpHandle) -> JsonHandle {
+    return http.body_json(conn)
+}
+
+fn body_len(conn: HttpHandle) -> i32 {
+    return str.len(http.body(conn))
+}
+
+fn body_max(conn: HttpHandle, max_bytes: i32) -> str {
+    let raw = http.body(conn)
+    if str.len(raw) <= max_bytes {
+        return raw
+    }
+    return str.slice(raw, 0, max_bytes)
+}
+
+fn header(conn: HttpHandle, key: str) -> str {
+    return http.header(conn, key)
+}
+
+fn content_type(conn: HttpHandle) -> str {
+    return http.header(conn, "content-type")
+}
+
+fn accept(conn: HttpHandle) -> str {
+    return http.header(conn, "accept")
+}
+
+fn auth(conn: HttpHandle) -> str {
+    return http.header(conn, "authorization")
+}
+
+fn query(conn: HttpHandle, key: str) -> str {
+    return http.query(conn, key)
+}
+
+fn param(conn: HttpHandle, key: str) -> str {
+    return http.param(conn, key)
+}
+
+fn request_id(conn: HttpHandle) -> str {
+    return http.request_id(conn)
+}
+
+fn remote(conn: HttpHandle) -> str {
+    return http.remote_addr(conn)
+}
+
+fn digit_value(ch: str) -> i32 {
+    if ch == "0" { return 0 }
+    if ch == "1" { return 1 }
+    if ch == "2" { return 2 }
+    if ch == "3" { return 3 }
+    if ch == "4" { return 4 }
+    if ch == "5" { return 5 }
+    if ch == "6" { return 6 }
+    if ch == "7" { return 7 }
+    if ch == "8" { return 8 }
+    if ch == "9" { return 9 }
+    return 0
+}
+
+fn is_digit(ch: str) -> i32 {
+    if ch == "0" { return 1 }
+    if ch == "1" { return 1 }
+    if ch == "2" { return 1 }
+    if ch == "3" { return 1 }
+    if ch == "4" { return 1 }
+    if ch == "5" { return 1 }
+    if ch == "6" { return 1 }
+    if ch == "7" { return 1 }
+    if ch == "8" { return 1 }
+    if ch == "9" { return 1 }
+    return 0
+}
+
+fn parse_i32(text: str) -> i32 {
+    let trimmed = str.trim(text)
+    if trimmed == "" {
+        return 0
+    }
+    let mut idx = 0
+    let mut sign = 1
+    if str.slice(trimmed, 0, 1) == "-" {
+        sign = -1
+        idx = 1
+    }
+    if idx >= str.len(trimmed) {
+        return 0
+    }
+    let mut value = 0
+    while idx < str.len(trimmed) {
+        let ch = str.slice(trimmed, idx, idx + 1)
+        if is_digit(ch) == 0 {
+            return 0
+        }
+        value = (value * 10) + digit_value(ch)
+        idx += 1
+    }
+    return value * sign
+}
+
+fn query_i32_default(conn: HttpHandle, key: str, fallback: i32) -> i32 {
+    let value = query(conn, key)
+    if str.trim(value) == "" {
+        return fallback
+    }
+    let parsed = parse_i32(value)
+    if parsed == 0 && str.trim(value) != "0" {
+        return fallback
+    }
+    return parsed
+}
+
+fn parse_bool_text(text: str) -> i32 {
+    let lower = str.lower_ascii(str.trim(text))
+    if lower == "1" || lower == "true" || lower == "yes" || lower == "on" {
+        return 1
+    }
+    return 0
+}
+
+fn query_bool_default(conn: HttpHandle, key: str, fallback: i32) -> i32 {
+    let value = query(conn, key)
+    if str.trim(value) == "" {
+        return fallback
+    }
+    return parse_bool_text(value)
+}
+
+fn content_type_is_json(conn: HttpHandle) -> i32 {
+    let lower = str.lower_ascii(content_type(conn))
+    if lower == "" {
+        return 1
+    }
+    if str.contains(lower, "application/json") == 1 {
+        return 1
+    }
+    if str.contains(lower, "+json") == 1 {
+        return 1
+    }
+    return 0
+}
+
+fn body_is_json_like(conn: HttpHandle) -> i32 {
+    let trimmed = str.trim(body(conn))
+    if trimmed == "" {
+        return 1
+    }
+    if str.starts_with(trimmed, "{") == 1 {
+        return 1
+    }
+    if str.starts_with(trimmed, "[") == 1 {
+        return 1
+    }
+    return 0
+}
+
+fn has_body(conn: HttpHandle) -> i32 {
+    if body_len(conn) > 0 {
+        return 1
+    }
+    return 0
+}
+
+fn bearer_token(conn: HttpHandle) -> str {
+    let raw = auth(conn)
+    if str.starts_with(raw, "Bearer ") != 1 {
+        return ""
+    }
+    return str.slice(raw, str.len("Bearer "), str.len(raw))
+}
