@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "native-namespaced-const-resolution-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, shutil, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-namespaced-consts-')); (root / 'src/model').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text('[package]\\nname=\"demo\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"demo\"\\npath=\"src/main.fzy\"\\n', encoding='utf-8'); (root / 'src/model/mod.fzy').write_text('mod types;\\n', encoding='utf-8'); (root / 'src/model/types.fzy').write_text(textwrap.dedent('''\\\nconst PROJECT_KIND_UNKNOWN: i32 = 0\nconst PROJECT_KIND_JUCE: i32 = 1\nconst PROJECT_KIND_CMAKE: i32 = 2\n\nfn project_kind_label(kind: i32) -> str {\n    if kind == PROJECT_KIND_JUCE {\n        return \"juce\"\n    }\n    if kind == PROJECT_KIND_CMAKE {\n        return \"cmake\"\n    }\n    return \"unknown\"\n}\n'''), encoding='utf-8'); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\nmod model;\n\nfn main() -> i32 {\n    let label0 = model.types.project_kind_label(model.types.PROJECT_KIND_UNKNOWN)\n    let label1 = model.types.project_kind_label(model.types.PROJECT_KIND_JUCE)\n    let label2 = model.types.project_kind_label(model.types.PROJECT_KIND_CMAKE)\n    if label0 == \"unknown\" && label1 == \"juce\" && label2 == \"cmake\" {\n        return 0\n    }\n    return 41\n}\n'''), encoding='utf-8');\nfor backend in ('cranelift', 'llvm'):\n    proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(root), '--backend', backend, '--json'], cwd=str(repo), capture_output=True, text=True)\n    payload = json.loads(proc.stdout.strip())\n    assert proc.returncode == 0, (backend, proc.returncode, payload, proc.stderr)\n    assert payload.get('exitCode') == 0, (backend, payload)\nir = json.loads(subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'emit-ir', str(root), '--json'], cwd=str(repo), capture_output=True, text=True, check=True).stdout.strip())['backendIr']\nassert 'call i32 @model_types_project_kind_label(i32 1)' in ir, ir\nassert 'call i32 @model_types_project_kind_label(i32 2)' in ir, ir\nassert 'icmp eq i32 %v0, 1' in ir or 'icmp eq i32 %v2, 1' in ir, ir\nassert 'icmp eq i32 %v2, 2' in ir or 'icmp eq i32 %v0, 2' in ir, ir\nprint('native-namespaced-const-resolution-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "native-namespaced-const-resolution-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, shutil, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); root = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-namespaced-consts-')); (root / 'src/model').mkdir(parents=True, exist_ok=True); (root / 'fozzy.toml').write_text('[package]\\nname=\"demo\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"demo\"\\npath=\"src/main.fzy\"\\n', encoding='utf-8'); (root / 'src/model/mod.fzy').write_text('mod types;\\n', encoding='utf-8'); (root / 'src/model/types.fzy').write_text(textwrap.dedent('''\\\nconst PROJECT_KIND_UNKNOWN: i32 = 0\nconst PROJECT_KIND_JUCE: i32 = 1\nconst PROJECT_KIND_CMAKE: i32 = 2\n\nfn project_kind_label(kind: i32) -> str {\n    if kind == PROJECT_KIND_JUCE {\n        return \"juce\"\n    }\n    if kind == PROJECT_KIND_CMAKE {\n        return \"cmake\"\n    }\n    return \"unknown\"\n}\n'''), encoding='utf-8'); (root / 'src/main.fzy').write_text(textwrap.dedent('''\\\nmod model;\n\nfn main() -> i32 {\n    let label0 = model.types.project_kind_label(model.types.PROJECT_KIND_UNKNOWN)\n    let label1 = model.types.project_kind_label(model.types.PROJECT_KIND_JUCE)\n    let label2 = model.types.project_kind_label(model.types.PROJECT_KIND_CMAKE)\n    if label0 == \"unknown\" && label1 == \"juce\" && label2 == \"cmake\" {\n        return 0\n    }\n    return 41\n}\n'''), encoding='utf-8');\nfor backend in ('cranelift', 'llvm'):\n    proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', str(root), '--backend', backend, '--json'], cwd=str(repo), capture_output=True, text=True)\n    payload = json.loads(proc.stdout.strip())\n    assert proc.returncode == 0, (backend, proc.returncode, payload, proc.stderr)\n    assert payload.get('exitCode') == 0, (backend, payload)\nir = json.loads(subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'emit-ir', str(root), '--json'], cwd=str(repo), capture_output=True, text=True, check=True).stdout.strip())['backendIr']\nassert 'call i32 @model_types_project_kind_label(i32 1)' in ir, ir\nassert 'call i32 @model_types_project_kind_label(i32 2)' in ir, ir\nassert 'icmp eq i32 %v0, 1' in ir or 'icmp eq i32 %v2, 1' in ir, ir\nassert 'icmp eq i32 %v2, 2' in ir or 'icmp eq i32 %v0, 2' in ir, ir\nprint('native-namespaced-const-resolution-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "native-namespaced-const-resolution-ok\n"
+    }
+  ]
+}

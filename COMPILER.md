@@ -330,6 +330,8 @@ Recommended downstream builder scope:
 
 ✅ Closed the remaining compiler control-flow evidence gap by adding a dedicated `fz verify` / Fozzy scenario for conditional ownership joins, loop iteration merges, and returned-reference lifetime mismatches, alongside passing control-flow/lifetime counterparts.
 
+✅ Closed the native namespaced-constant lowering bug so same-module `const i32` references and dotted module constant paths no longer collapse to `0` under native codegen; `fzaudio inspect` and `build` now agree again, with driver cross-backend regression coverage plus a dedicated Fozzy scenario guarding the exact project-kind-label case.
+
 ✅ Re-ran the production Fozzy trace lifecycle after the DX/runtime fixes through deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and host-backed execution.
 
 ## ✅ Production Blocker: Native Filesystem Surface Is Closed On This Checkout

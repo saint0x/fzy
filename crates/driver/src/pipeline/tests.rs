@@ -1208,6 +1208,56 @@ fn emit_ir_includes_llvm_and_cranelift_forms() {
 }
 
 #[test]
+fn namespaced_module_consts_resolve_consistently_across_native_backends() {
+    let project_name = format!(
+        "fozzylang-namespaced-consts-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/model")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(root.join("src/model/mod.fzy"), "mod types;\n")
+        .expect("model mod should be written");
+    std::fs::write(
+        root.join("src/model/types.fzy"),
+        "const PROJECT_KIND_UNKNOWN: i32 = 0\nconst PROJECT_KIND_JUCE: i32 = 1\nconst PROJECT_KIND_CMAKE: i32 = 2\n\nfn project_kind_label(kind: i32) -> str {\n    if kind == PROJECT_KIND_JUCE {\n        return \"juce\"\n    }\n    if kind == PROJECT_KIND_CMAKE {\n        return \"cmake\"\n    }\n    return \"unknown\"\n}\n",
+    )
+    .expect("types module should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "mod model;\n\nfn main() -> i32 {\n    let label0 = model.types.project_kind_label(model.types.PROJECT_KIND_UNKNOWN)\n    let label1 = model.types.project_kind_label(model.types.PROJECT_KIND_JUCE)\n    let label2 = model.types.project_kind_label(model.types.PROJECT_KIND_CMAKE)\n    if label0 == \"unknown\" && label1 == \"juce\" && label2 == \"cmake\" {\n        return 0\n    }\n    return 41\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, 0);
+    assert_eq!(llvm_exit, 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn backend_override_rejects_removed_c_shim() {
     let file_name = format!(
         "fozzylang-backend-removed-{}.fzy",

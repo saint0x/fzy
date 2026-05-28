@@ -38,6 +38,7 @@ pub(super) struct ClifLoweringCtx<'a> {
     pub(super) array_bindings: HashMap<String, ClifArrayBinding>,
     pub(super) aggregate_bindings: HashMap<String, ClifAggregateBinding>,
     pub(super) const_strings: HashMap<String, String>,
+    pub(super) current_namespace: &'a str,
 }
 
 #[derive(Clone)]
@@ -171,6 +172,7 @@ pub(super) fn clif_emit_function_cfg(
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
     current_return_ty: Option<ClifType>,
+    current_function_name: &str,
     cfg: &ControlFlowCfg,
     entry_block: cranelift_codegen::ir::Block,
     locals: &mut HashMap<String, LocalBinding>,
@@ -194,6 +196,7 @@ pub(super) fn clif_emit_function_cfg(
         array_bindings: HashMap::new(),
         aggregate_bindings: HashMap::new(),
         const_strings: HashMap::new(),
+        current_namespace: native_current_namespace(current_function_name),
     };
     clif_emit_cfg(
         builder,
@@ -1638,6 +1641,13 @@ pub(super) fn clif_emit_expr(
                     value: builder.use_var(binding.var),
                     ty: binding.ty,
                 }
+            } else if let Some(value) =
+                resolve_native_global_const_i32_expr(expr, ctx.current_namespace, ctx.globals)
+            {
+                ClifValue {
+                    value: builder.ins().iconst(default_int_clif_type(), value as i64),
+                    ty: default_int_clif_type(),
+                }
             } else if let Some(data_id) = ctx.mutable_globals.get(name).copied() {
                 let gv = ctx.module.declare_data_in_func(data_id, builder.func);
                 let ptr = builder.ins().global_value(pointer_sized_clif_type(), gv);
@@ -1739,6 +1749,14 @@ pub(super) fn clif_emit_expr(
             }
         }
         ast::Expr::FieldAccess { base, field } => {
+            if let Some(value) =
+                resolve_native_global_const_i32_expr(expr, ctx.current_namespace, ctx.globals)
+            {
+                return Ok(ClifValue {
+                    value: builder.ins().iconst(default_int_clif_type(), value as i64),
+                    ty: default_int_clif_type(),
+                });
+            }
             if let Some(field_expr) = resolve_field_expr(base, field) {
                 return clif_emit_expr(builder, ctx, &field_expr, locals, next_var);
             }

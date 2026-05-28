@@ -5195,6 +5195,41 @@ fn resolve_field_expr(base: &ast::Expr, field: &str) -> Option<ast::Expr> {
     }
 }
 
+fn expr_symbol_name(expr: &ast::Expr) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(name) => Some(name.clone()),
+        ast::Expr::FieldAccess { base, field } => {
+            Some(format!("{}.{}", expr_symbol_name(base)?, field))
+        }
+        ast::Expr::Group(inner) => expr_symbol_name(inner),
+        _ => None,
+    }
+}
+
+fn native_current_namespace(function_name: &str) -> &str {
+    function_name
+        .rsplit_once('.')
+        .map(|(namespace, _)| namespace)
+        .unwrap_or("")
+}
+
+fn resolve_native_global_const_i32_expr(
+    expr: &ast::Expr,
+    current_namespace: &str,
+    globals: &HashMap<String, i32>,
+) -> Option<i32> {
+    let symbol = expr_symbol_name(expr)?;
+    globals.get(&symbol).copied().or_else(|| {
+        if symbol.contains('.') || current_namespace.is_empty() {
+            None
+        } else {
+            globals
+                .get(&qualify_name(current_namespace, &symbol))
+                .copied()
+        }
+    })
+}
+
 fn bindings_for_match_arm_pattern(
     pattern: &ast::Pattern,
     scrutinee: &ast::Expr,
@@ -7384,6 +7419,7 @@ fn emit_native_libraries_cranelift(
             &fir.struct_defs,
             &fir.enum_defs,
             signature.ret,
+            &function.name,
             cfg,
             entry,
             &mut locals,
@@ -7799,6 +7835,7 @@ fn emit_native_artifact_cranelift(
             &fir.struct_defs,
             &fir.enum_defs,
             signature.ret,
+            &function.name,
             cfg,
             entry,
             &mut locals,

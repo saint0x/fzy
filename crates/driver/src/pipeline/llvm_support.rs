@@ -67,6 +67,7 @@ pub(super) struct LlvmFuncCtx {
     pub(super) local_types: BTreeMap<String, ast::Type>,
     pub(super) struct_defs: HashMap<String, ast::Struct>,
     pub(super) enum_defs: HashMap<String, ast::Enum>,
+    pub(super) current_namespace: String,
     pub(super) function_return_ty: String,
     pub(super) alloca_prologue: String,
     pub(super) declared_allocas: HashSet<String>,
@@ -75,6 +76,7 @@ pub(super) struct LlvmFuncCtx {
 
 impl LlvmFuncCtx {
     pub(super) fn new(
+        current_function_name: &str,
         globals: HashMap<String, i32>,
         variant_tags: HashMap<String, i32>,
         mutable_globals: HashMap<String, String>,
@@ -105,6 +107,7 @@ impl LlvmFuncCtx {
             local_types,
             struct_defs,
             enum_defs,
+            current_namespace: native_current_namespace(current_function_name).to_string(),
             function_return_ty,
             alloca_prologue: String::new(),
             declared_allocas: HashSet::new(),
@@ -2053,6 +2056,13 @@ pub(super) fn llvm_emit_simple_expr(
     match expr {
         ast::Expr::Ident(name) => Some(Ok(if let Some(direct) = ctx.direct_values.get(name) {
             direct.clone()
+        } else if let Some(value) =
+            resolve_native_global_const_i32_expr(expr, &ctx.current_namespace, &ctx.globals)
+        {
+            LlvmValue {
+                value: value.to_string(),
+                ty: "i32".to_string(),
+            }
         } else if let Some(slot) = ctx.slots.get(name).cloned() {
             let ty = ctx
                 .slot_tys
@@ -2161,6 +2171,14 @@ pub(super) fn llvm_emit_simple_expr(
             })
         })()),
         ast::Expr::FieldAccess { base, field } => Some((|| {
+            if let Some(value) =
+                resolve_native_global_const_i32_expr(expr, &ctx.current_namespace, &ctx.globals)
+            {
+                return Ok(LlvmValue {
+                    value: value.to_string(),
+                    ty: "i32".to_string(),
+                });
+            }
             if let Some(field_expr) = resolve_field_expr(base, field) {
                 return llvm_emit_expr(&field_expr, ctx, string_literal_ids, task_ref_ids);
             }
@@ -2661,6 +2679,7 @@ pub(super) fn llvm_emit_function(
     let return_ty = llvm_ir_type_for_ast_type(&function.return_type);
     let wrapped_indices = collect_wrapped_index_candidates(&function.body);
     let mut ctx = LlvmFuncCtx::new(
+        &function.name,
         globals.clone(),
         variant_tags.clone(),
         mutable_globals.clone(),
