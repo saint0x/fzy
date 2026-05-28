@@ -421,6 +421,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     &item.value,
                     &global_scope,
                     &TypeCheckEnv {
+                        current_namespace: "",
                         fn_sigs: &fn_sigs,
                         fn_async: &fn_async,
                         fn_generics: &fn_generics,
@@ -479,6 +480,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     &item.value,
                     &global_scope,
                     &TypeCheckEnv {
+                        current_namespace: "",
                         fn_sigs: &fn_sigs,
                         fn_async: &fn_async,
                         fn_generics: &fn_generics,
@@ -697,7 +699,13 @@ pub fn lower(module: &Module) -> TypedModule {
         }
         let mut scopes = SymbolScopes::new();
         let mut local_types = BTreeMap::new();
+        let current_namespace = function
+            .name
+            .rsplit_once('.')
+            .map(|(prefix, _)| prefix)
+            .unwrap_or("");
         let env = TypeCheckEnv {
+            current_namespace,
             fn_sigs: &fn_sigs,
             fn_async: &fn_async,
             fn_generics: &fn_generics,
@@ -810,7 +818,8 @@ pub fn lower(module: &Module) -> TypedModule {
         .count();
     let generic_instantiations = collect_generic_instantiations(module);
     let call_graph = build_call_graph(module);
-    let ownership_violations = analyze_ownership(&typed_functions, &call_graph);
+    let ownership_violations =
+        analyze_ownership(&typed_functions, &call_graph, &struct_defs, &enum_defs);
     let unsafe_context_violations = analyze_unsafe_context_violations(&typed_functions);
     let mut capability_token_violations = if capability_token_mode_enabled(&typed_functions) {
         analyze_capability_token_contracts(&typed_functions, &function_capability_requirements)
@@ -2780,13 +2789,16 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
 fn is_linear_type(ty: &Type) -> bool {
     match ty {
         Type::Ptr { .. } => true,
-        Type::Named { name, .. }
-            if name == "Linear" || name == "Resource" || name.ends_with("Handle") =>
-        {
-            true
-        }
+        Type::Named { name, .. } if is_linear_runtime_handle(name) => true,
         _ => false,
     }
+}
+
+fn is_linear_runtime_handle(name: &str) -> bool {
+    matches!(
+        name,
+        "Linear" | "Resource" | "HttpHandle" | "HttpStreamHandle" | "ProcessHandle"
+    )
 }
 
 fn binding_resource_type<'a>(
@@ -2942,7 +2954,12 @@ fn collect_function_caps_and_calls(
     }
 }
 
-fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)]) -> Vec<String> {
+fn analyze_ownership(
+    functions: &[TypedFunction],
+    call_graph: &[(String, String)],
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> Vec<String> {
     let mut violations = Vec::new();
     let summaries = build_function_memory_summaries(functions);
     let ownership_summaries = build_function_ownership_summaries(functions);
@@ -2979,6 +2996,8 @@ fn analyze_ownership(functions: &[TypedFunction], call_graph: &[(String, String)
             &mut violations,
             &function.name,
             &ownership_summaries,
+            struct_defs,
+            enum_defs,
         );
         for (name, alloc_id) in state.owners {
             if state.deferred.contains(&alloc_id) {
@@ -3864,6 +3883,8 @@ fn analyze_ownership_block(
     violations: &mut Vec<String>,
     function_name: &str,
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
 ) {
     for stmt in body {
         for name in state.moved.iter() {
@@ -3891,7 +3912,7 @@ fn analyze_ownership_block(
                         state.moved.remove(name);
                     }
                 }
-                if is_partial_move_expr(value, &state.owners) {
+                if is_partial_move_expr(function, value, &state.owners, struct_defs, enum_defs) {
                     violations.push(format!(
                         "function `{}` performs partial move from owned aggregate; partial moves are forbidden in v0",
                         function_name
@@ -3900,7 +3921,15 @@ fn analyze_ownership_block(
             }
             Stmt::LetPattern { pattern, value, .. } => {
                 collect_pattern_bindings(pattern, &mut state.owner_candidates);
-                if is_partial_move_expr(value, &state.owners) {
+                if is_partial_move_expr(function, value, &state.owners, struct_defs, enum_defs)
+                    || pattern_performs_partial_move(
+                        pattern,
+                        function,
+                        value,
+                        struct_defs,
+                        enum_defs,
+                    )
+                {
                     violations.push(format!(
                         "function `{}` performs partial move from owned aggregate; partial moves are forbidden in v0",
                         function_name
@@ -3916,7 +3945,7 @@ fn analyze_ownership_block(
                     }
                 }
                 state.moved.remove(target);
-                if is_partial_move_expr(value, &state.owners) {
+                if is_partial_move_expr(function, value, &state.owners, struct_defs, enum_defs) {
                     violations.push(format!(
                         "function `{}` performs partial move assignment from owned aggregate; partial moves are forbidden in v0",
                         function_name
@@ -3970,6 +3999,8 @@ fn analyze_ownership_block(
                     violations,
                     function_name,
                     ownership_summaries,
+                    struct_defs,
+                    enum_defs,
                 );
             }
             Stmt::Return(Some(expr)) => {
@@ -3986,6 +4017,8 @@ fn analyze_ownership_block(
                         violations,
                         function_name,
                         ownership_summaries,
+                        struct_defs,
+                        enum_defs,
                     );
                 }
             }
@@ -4005,6 +4038,8 @@ fn analyze_ownership_block(
                     violations,
                     function_name,
                     ownership_summaries,
+                    struct_defs,
+                    enum_defs,
                 );
                 analyze_ownership_block(
                     function,
@@ -4014,6 +4049,8 @@ fn analyze_ownership_block(
                     violations,
                     function_name,
                     ownership_summaries,
+                    struct_defs,
+                    enum_defs,
                 );
                 *state = merge_ownership_states(
                     function_name,
@@ -4034,6 +4071,8 @@ fn analyze_ownership_block(
                     violations,
                     function_name,
                     ownership_summaries,
+                    struct_defs,
+                    enum_defs,
                 );
                 *state = merge_ownership_states(
                     function_name,
@@ -4058,6 +4097,8 @@ fn analyze_ownership_block(
                         violations,
                         function_name,
                         ownership_summaries,
+                        struct_defs,
+                        enum_defs,
                     );
                 }
                 let entry_state = state.clone();
@@ -4070,6 +4111,8 @@ fn analyze_ownership_block(
                     violations,
                     function_name,
                     ownership_summaries,
+                    struct_defs,
+                    enum_defs,
                 );
                 if let Some(step) = step {
                     analyze_ownership_block(
@@ -4080,6 +4123,8 @@ fn analyze_ownership_block(
                         violations,
                         function_name,
                         ownership_summaries,
+                        struct_defs,
+                        enum_defs,
                     );
                 }
                 *state = merge_ownership_states(
@@ -4103,6 +4148,8 @@ fn analyze_ownership_block(
                     violations,
                     function_name,
                     ownership_summaries,
+                    struct_defs,
+                    enum_defs,
                 );
                 *state = merge_ownership_states(
                     function_name,
@@ -4123,6 +4170,8 @@ fn analyze_ownership_block(
                     violations,
                     function_name,
                     ownership_summaries,
+                    struct_defs,
+                    enum_defs,
                 );
                 *state = merge_ownership_states(
                     function_name,
@@ -4149,6 +4198,8 @@ fn analyze_ownership_block(
                         violations,
                         function_name,
                         ownership_summaries,
+                        struct_defs,
+                        enum_defs,
                     );
                     arm_states.push(arm_state);
                 }
@@ -4171,6 +4222,8 @@ fn analyze_ownership_block(
                     violations,
                     function_name,
                     ownership_summaries,
+                    struct_defs,
+                    enum_defs,
                 );
             }
             Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Return(None) => {}
@@ -4186,6 +4239,8 @@ fn analyze_expr_value_ownership(
     violations: &mut Vec<String>,
     function_name: &str,
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
 ) {
     match expr {
         Expr::Call { callee, args } if is_free_callee(callee) || is_close_callee(callee) => {
@@ -4218,6 +4273,8 @@ fn analyze_expr_value_ownership(
                 violations,
                 function_name,
                 ownership_summaries,
+                struct_defs,
+                enum_defs,
             );
         }
         Expr::Group(inner)
@@ -4232,6 +4289,8 @@ fn analyze_expr_value_ownership(
                 violations,
                 function_name,
                 ownership_summaries,
+                struct_defs,
+                enum_defs,
             );
         }
         Expr::TryCatch {
@@ -4249,6 +4308,8 @@ fn analyze_expr_value_ownership(
                 violations,
                 function_name,
                 ownership_summaries,
+                struct_defs,
+                enum_defs,
             );
             analyze_expr_value_ownership(
                 function,
@@ -4258,6 +4319,8 @@ fn analyze_expr_value_ownership(
                 violations,
                 function_name,
                 ownership_summaries,
+                struct_defs,
+                enum_defs,
             );
             *state = merge_ownership_states(
                 function_name,
@@ -4283,6 +4346,8 @@ fn analyze_expr_value_ownership(
                 violations,
                 function_name,
                 ownership_summaries,
+                struct_defs,
+                enum_defs,
             );
             analyze_expr_value_ownership(
                 function,
@@ -4292,6 +4357,8 @@ fn analyze_expr_value_ownership(
                 violations,
                 function_name,
                 ownership_summaries,
+                struct_defs,
+                enum_defs,
             );
             *state = merge_ownership_states(
                 function_name,
@@ -4314,6 +4381,8 @@ fn analyze_expr_value_ownership(
                     violations,
                     function_name,
                     ownership_summaries,
+                    struct_defs,
+                    enum_defs,
                 );
                 arm_states.push(arm_state);
             }
@@ -4704,14 +4773,201 @@ fn expr_uses_ident(expr: &Expr, target: &str) -> bool {
     }
 }
 
-fn is_partial_move_expr(expr: &Expr, owners: &BTreeMap<String, usize>) -> bool {
-    matches!(
-        expr,
-        Expr::FieldAccess {
-            base,
+fn is_partial_move_expr(
+    function: &TypedFunction,
+    expr: &Expr,
+    owners: &BTreeMap<String, usize>,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> bool {
+    match expr {
+        Expr::Group(inner) => is_partial_move_expr(function, inner, owners, struct_defs, enum_defs),
+        Expr::FieldAccess { .. } | Expr::Index { .. } => expr_root_binding_name(expr)
+            .and_then(|name| binding_partial_move_root_type(function, name))
+            .is_some_and(|ty| type_contains_linear_members(ty, struct_defs, enum_defs)),
+        Expr::Tuple(items) | Expr::ArrayLiteral(items) => items
+            .iter()
+            .any(|item| is_partial_move_expr(function, item, owners, struct_defs, enum_defs)),
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
+            fields.iter().any(|(_, value)| {
+                is_partial_move_expr(function, value, owners, struct_defs, enum_defs)
+            })
+        }
+        Expr::EnumInit {
+            payload,
+            named_payload,
             ..
-        } if matches!(base.as_ref(), Expr::Ident(name) if owners.contains_key(name))
-    )
+        } => {
+            payload
+                .iter()
+                .any(|item| is_partial_move_expr(function, item, owners, struct_defs, enum_defs))
+                || named_payload.iter().any(|(_, value)| {
+                    is_partial_move_expr(function, value, owners, struct_defs, enum_defs)
+                })
+        }
+        _ => owners.is_empty() && false,
+    }
+}
+
+fn expr_root_binding_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Ident(name) => Some(name.as_str()),
+        Expr::Group(inner)
+        | Expr::FieldAccess { base: inner, .. }
+        | Expr::Index { base: inner, .. } => expr_root_binding_name(inner),
+        _ => None,
+    }
+}
+
+fn binding_partial_move_root_type<'a>(function: &'a TypedFunction, name: &str) -> Option<&'a Type> {
+    function.local_types.get(name).or_else(|| {
+        function
+            .params
+            .iter()
+            .find(|param| param.name == name)
+            .map(|param| &param.ty)
+    })
+}
+
+fn type_contains_linear_members(
+    ty: &Type,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> bool {
+    fn walk(
+        ty: &Type,
+        struct_defs: &HashMap<String, ast::Struct>,
+        enum_defs: &HashMap<String, ast::Enum>,
+        seen: &mut BTreeSet<String>,
+    ) -> bool {
+        if is_linear_type(ty) {
+            return true;
+        }
+        match ty {
+            Type::Tuple(items) => items
+                .iter()
+                .any(|item| walk(item, struct_defs, enum_defs, seen)),
+            Type::Array { elem, .. }
+            | Type::Slice(elem)
+            | Type::Option(elem)
+            | Type::Vec(elem)
+            | Type::Deque(elem)
+            | Type::Ring(elem)
+            | Type::Set(elem)
+            | Type::Future(elem) => walk(elem, struct_defs, enum_defs, seen),
+            Type::Result { ok, err } => {
+                walk(ok, struct_defs, enum_defs, seen) || walk(err, struct_defs, enum_defs, seen)
+            }
+            Type::Map { key, value } => {
+                walk(key, struct_defs, enum_defs, seen) || walk(value, struct_defs, enum_defs, seen)
+            }
+            Type::Named { name, .. } => {
+                if !seen.insert(name.clone()) {
+                    return false;
+                }
+                let result = struct_defs.get(name).is_some_and(|def| {
+                    def.fields
+                        .iter()
+                        .any(|field| walk(&field.ty, struct_defs, enum_defs, seen))
+                }) || enum_defs.get(name).is_some_and(|def| {
+                    def.variants.iter().any(|variant| {
+                        variant
+                            .payload
+                            .iter()
+                            .any(|payload| walk(payload, struct_defs, enum_defs, seen))
+                            || variant
+                                .named_payload
+                                .iter()
+                                .any(|field| walk(&field.ty, struct_defs, enum_defs, seen))
+                    })
+                });
+                seen.remove(name);
+                result
+            }
+            _ => false,
+        }
+    }
+
+    walk(ty, struct_defs, enum_defs, &mut BTreeSet::new())
+}
+
+fn pattern_performs_partial_move(
+    pattern: &ast::Pattern,
+    function: &TypedFunction,
+    value: &Expr,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> bool {
+    let Some(root_name) = expr_root_binding_name(value) else {
+        return false;
+    };
+    let Some(root_ty) = binding_partial_move_root_type(function, root_name) else {
+        return false;
+    };
+    if !type_contains_linear_members(root_ty, struct_defs, enum_defs) {
+        return false;
+    }
+    pattern_is_partial_move(pattern, root_ty, struct_defs, enum_defs)
+}
+
+fn pattern_is_partial_move(
+    pattern: &ast::Pattern,
+    scrutinee_ty: &Type,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> bool {
+    match (pattern, scrutinee_ty) {
+        (ast::Pattern::Tuple(items), Type::Tuple(scrutinee_items)) => {
+            if items.len() != scrutinee_items.len() {
+                return true;
+            }
+            items.iter().zip(scrutinee_items.iter()).any(|(item, ty)| {
+                matches!(item, ast::Pattern::Wildcard)
+                    || pattern_is_partial_move(item, ty, struct_defs, enum_defs)
+            })
+        }
+        (ast::Pattern::Struct { name, fields }, Type::Named { name: ty_name, .. })
+            if name == ty_name =>
+        {
+            let Some(def) = struct_defs.get(name) else {
+                return false;
+            };
+            if fields.len() != def.fields.len() {
+                return true;
+            }
+            fields.iter().any(|(_, binding)| binding == "_")
+        }
+        (
+            ast::Pattern::Variant {
+                enum_name,
+                variant,
+                bindings,
+                named_bindings,
+            },
+            Type::Named { name: ty_name, .. },
+        ) if enum_name == ty_name => {
+            let Some(def) = enum_defs.get(enum_name) else {
+                return false;
+            };
+            let Some(variant_def) = def
+                .variants
+                .iter()
+                .find(|candidate| candidate.name == *variant)
+            else {
+                return false;
+            };
+            if !named_bindings.is_empty() {
+                return named_bindings.len() != variant_def.named_payload.len()
+                    || named_bindings.iter().any(|(_, binding)| binding == "_");
+            }
+            bindings.len() != variant_def.payload.len()
+                || bindings.iter().any(|binding| binding == "_")
+        }
+        (ast::Pattern::Or(patterns), _) => patterns.iter().any(|candidate| {
+            pattern_is_partial_move(candidate, scrutinee_ty, struct_defs, enum_defs)
+        }),
+        _ => false,
+    }
 }
 
 fn is_alloc_callee(callee: &str) -> bool {
@@ -7507,6 +7763,7 @@ fn validate_async_semantics(
 }
 
 struct TypeCheckEnv<'a> {
+    current_namespace: &'a str,
     fn_sigs: &'a HashMap<String, (Vec<Type>, Type)>,
     fn_async: &'a HashMap<String, bool>,
     fn_generics: &'a HashMap<String, Vec<ast::GenericParam>>,
@@ -8155,6 +8412,12 @@ fn infer_expr_type(
             if let Some(found) = global_types.get(name) {
                 return Some(found.clone());
             }
+            if !env.current_namespace.is_empty() {
+                let qualified_name = format!("{}.{}", env.current_namespace, name);
+                if let Some(found) = global_types.get(&qualified_name) {
+                    return Some(found.clone());
+                }
+            }
             if let Some(fn_ty) = function_ref_type(fn_sigs, name) {
                 return Some(fn_ty);
             }
@@ -8545,6 +8808,12 @@ fn infer_expr_type(
         }
         Expr::FieldAccess { base, field } => {
             if let Some(function_ref) = expr_function_ref_name(expr) {
+                if let Some(found) = scopes.get(&function_ref) {
+                    return Some(found);
+                }
+                if let Some(found) = global_types.get(&function_ref) {
+                    return Some(found.clone());
+                }
                 if let Some(resolved_method_ref) =
                     resolve_method_call_target(fn_sigs, scopes, global_types, &function_ref)
                 {
@@ -10707,6 +10976,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "proc.argv_push",
         "proc.env_new",
         "proc.env_set",
+        "proc.close",
         "proc.spawn_cmd",
         "proc.run_cmd",
         "proc.exec_timeout",
@@ -11036,6 +11306,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             proc_handle.clone(),
         ),
         "proc.exec_timeout" => (vec![proc_handle.clone()], i32.clone()),
+        "proc.close" => (vec![proc_handle.clone()], i32.clone()),
         "proc.wait" => (vec![proc_handle.clone(), i32.clone()], i32.clone()),
         "proc.poll" | "proc.event" => (vec![proc_handle.clone()], i32.clone()),
         "proc.read_stdout" | "proc.read_stderr" => {
@@ -13276,6 +13547,27 @@ mod tests {
     }
 
     #[test]
+    fn process_close_typechecks_after_wait_and_observation() {
+        let source = r#"
+            use core.proc;
+            fn main() -> i32 {
+                let argv = proc.argv_new();
+                let env = proc.env_new();
+                let handle = proc.spawn_cmd("echo", argv, env, "");
+                discard proc.wait(handle, 1000);
+                discard proc.stdout(handle);
+                discard proc.stderr(handle);
+                discard proc.exit_code(handle);
+                discard proc.close(handle);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
+    }
+
+    #[test]
     fn current_process_cli_intrinsics_typecheck() {
         let source = r#"
             use core.proc;
@@ -14283,6 +14575,63 @@ mod tests {
             detail.contains("function `main` leaks allocation")
                 || detail.contains("consumes non-owned or already-consumed value `p`")
         }));
+    }
+
+    #[test]
+    fn tuple_pattern_partial_move_is_rejected() {
+        let source = r#"
+            fn main() -> i32 {
+                let pair: (*mut u8, *mut u8) = (alloc(32), alloc(32));
+                let (left, _) = pair;
+                close(left);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| { detail.contains("performs partial move from owned aggregate") }));
+    }
+
+    #[test]
+    fn nested_struct_field_partial_move_is_rejected() {
+        let source = r#"
+            struct Inner { ptr: *mut u8 }
+            struct Outer { inner: Inner, tag: i32 }
+            fn main() -> i32 {
+                let outer: Outer = Outer { inner: Inner { ptr: alloc(32) }, tag: 7 };
+                let ptr = outer.inner.ptr;
+                close(ptr);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| { detail.contains("performs partial move from owned aggregate") }));
+    }
+
+    #[test]
+    fn struct_pattern_partial_move_is_rejected() {
+        let source = r#"
+            struct Pair { left: *mut u8, right: *mut u8 }
+            fn main() -> i32 {
+                let pair: Pair = Pair { left: alloc(32), right: alloc(32) };
+                let Pair { left, right: _ } = pair;
+                close(left);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| { detail.contains("performs partial move from owned aggregate") }));
     }
 
     #[test]

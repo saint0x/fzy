@@ -939,24 +939,34 @@ Verified tests:
    - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/return-transfer-hardening.trace.fozzy --json`
    - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
 
-### 8. Partial-move detection is too narrow
+### ✅ 8. Partial-move detection now covers the core aggregate extraction shapes in v1
 
-Problem:
+Verified closure:
 
-- partial-move detection is currently mostly field-access based
-- more complex aggregate extraction shapes may not be caught
+- partial-move detection no longer depends only on the simplest direct field-access shape
+- the ownership pass now rejects partial extraction from aggregates that structurally contain linear members across:
+  - tuple destructuring with holes
+  - nested struct field projection chains
+  - struct / variant-style pattern holes
+- this closes the main structural gap where aggregates containing owned pointers could evade the v1 “no partial move” baseline simply because the move happened through a richer extraction form
 
-Required fixes:
+Verified tests:
 
-1. define the full set of partial-move-forbidden patterns in v1
-2. detect them structurally across destructuring, tuple extraction, nested field access, and pattern bindings
-3. align diagnostics with the documented baseline
-
-Required tests:
-
-1. tuple partial move
-2. nested struct field partial move
-3. pattern-based partial move
+1. `cargo test -q -p hir` now includes:
+   - `tuple_pattern_partial_move_is_rejected`
+   - `nested_struct_field_partial_move_is_rejected`
+   - `struct_pattern_partial_move_is_rejected`
+2. compiler suites passed on this checkout:
+   - `cargo test -q -p hir`
+   - `cargo test -q -p verifier`
+3. Fozzy production checks passed on this checkout:
+   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 1601 --json`
+   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/partial-move-hardening.trace.fozzy --json`
+   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/partial-move-hardening.trace.fozzy --strict --json`
+   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/partial-move-hardening.trace.fozzy --json`
+   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/partial-move-hardening.trace.fozzy --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
 
 ## Priority 3: Make Unsafe Accounting Honest And Actionable
 
