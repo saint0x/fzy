@@ -616,6 +616,26 @@ int32_t fz_native_proc_exec_timeout(int32_t timeout_ms) {
   return 0;
 }
 
+int32_t fz_native_proc_close(int32_t handle) {
+  int32_t waited = fz_native_proc_wait(handle, fz_proc_default_timeout_ms);
+  if (waited < 0) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_proc_lock);
+  fz_proc_state* state = fz_proc_state_get(handle);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_proc_lock);
+    fz_proc_set_last_error("proc_close: invalid handle");
+    return -1;
+  }
+  fz_bytes_buf_free(&state->stdout_buf);
+  fz_bytes_buf_free(&state->stderr_buf);
+  memset(state, 0, sizeof(*state));
+  pthread_mutex_unlock(&fz_proc_lock);
+  fz_proc_set_last_error("");
+  return 0;
+}
+
 int32_t fz_native_proc_exit_class(void) {
   return fz_last_exit_class;
 }

@@ -362,8 +362,28 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "fs.is_file",
+        symbol: "fz_native_fs_is_file",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.is_dir",
+        symbol: "fz_native_fs_is_dir",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.is_symlink",
+        symbol: "fz_native_fs_is_symlink",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "fs.stat_size",
         symbol: "fz_native_fs_stat_size",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.stat_mtime",
+        symbol: "fz_native_fs_stat_mtime",
         arity: 1,
     },
     NativeRuntimeImport {
@@ -377,9 +397,24 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "fs.remove",
+        symbol: "fz_native_fs_remove",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "fs.temp_file",
         symbol: "fz_native_fs_temp_file",
         arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "fs.copy_file",
+        symbol: "fz_native_fs_copy_file",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "fs.copy_tree",
+        symbol: "fz_native_fs_copy_tree",
+        arity: 2,
     },
     NativeRuntimeImport {
         callee: "path.join",
@@ -684,6 +719,11 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "proc.exec_timeout",
         symbol: "fz_native_proc_exec_timeout",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "proc.close",
+        symbol: "fz_native_proc_close",
         arity: 1,
     },
     NativeRuntimeImport {

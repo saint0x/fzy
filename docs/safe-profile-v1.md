@@ -21,7 +21,8 @@
 
 - `alloc(...)` / `free(...)` are not classified as unsafe by themselves.
 - They remain legal only when the verifier can still prove ownership, provenance, and cleanup behavior.
-- The recommended production pattern is `defer free(ptr)` or `defer close(handle)` in the same lexical scope as acquisition.
+- The recommended production pattern is `defer free(ptr)` or same-scope deferred handle cleanup in the same lexical scope as acquisition.
+- Use `defer proc.close(handle)` for process handles and `defer close(handle)` for other linear wrappers that expose bare `close(...)`.
 
 ## Out Of Scope In v1
 

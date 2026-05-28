@@ -2304,17 +2304,32 @@ impl Parser {
 
         let name = self.expect_ident("expected type")?;
         let mut path_segments = vec![name];
-        while self.at(&TokenKind::Colon)
-            && self
-                .peek_n(1)
-                .is_some_and(|token| matches!(token.kind, TokenKind::Colon))
-        {
-            let _ = self.consume(&TokenKind::Colon);
-            let _ = self.consume(&TokenKind::Colon);
-            let Some(segment) = self.expect_ident("expected type segment after `::`") else {
-                return None;
-            };
-            path_segments.push(segment);
+        let mut saw_dot_separator = false;
+        let mut saw_double_colon_separator = false;
+        loop {
+            if self.consume(&TokenKind::Dot) {
+                let Some(segment) = self.expect_ident("expected type segment after `.`") else {
+                    return None;
+                };
+                saw_dot_separator = true;
+                path_segments.push(segment);
+                continue;
+            }
+            if self.at(&TokenKind::Colon)
+                && self
+                    .peek_n(1)
+                    .is_some_and(|token| matches!(token.kind, TokenKind::Colon))
+            {
+                let _ = self.consume(&TokenKind::Colon);
+                let _ = self.consume(&TokenKind::Colon);
+                let Some(segment) = self.expect_ident("expected type segment after `::`") else {
+                    return None;
+                };
+                saw_double_colon_separator = true;
+                path_segments.push(segment);
+                continue;
+            }
+            break;
         }
         let mut args = Vec::new();
         if self.consume(&TokenKind::Lt) {
@@ -2328,7 +2343,16 @@ impl Parser {
             }
             let _ = self.consume(&TokenKind::Gt);
         }
-        let joined_name = path_segments.join("::");
+        let joined_name = if path_segments
+            .first()
+            .is_some_and(|segment| segment == "Self")
+            && saw_double_colon_separator
+            && !saw_dot_separator
+        {
+            path_segments.join("::")
+        } else {
+            path_segments.join(".")
+        };
         let scalar_name = path_segments
             .first()
             .map(String::as_str)
@@ -4504,6 +4528,20 @@ mod tests {
             .and_then(|method| method.params.get(1))
             .map(|param| param.ty.to_string());
         assert_eq!(key_ty.as_deref(), Some("Self::Key"));
+    }
+
+    #[test]
+    fn parses_dot_qualified_return_types_in_function_signatures() {
+        let source = r#"
+            fn kind() -> model.types.ProjectKind {
+                return model.types.ProjectKind::Unknown
+            }
+        "#;
+        let module = parse(source, "main").expect("dot-qualified return type should parse");
+        let ast::Item::Function(function) = &module.items[0] else {
+            panic!("expected function");
+        };
+        assert_eq!(function.return_type.to_string(), "model.types.ProjectKind");
     }
 
     #[test]

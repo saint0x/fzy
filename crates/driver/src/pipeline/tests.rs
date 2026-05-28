@@ -2,6 +2,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use diagnostics::Severity;
+
 use super::native_runtime_support::{render_native_runtime_shim, NativeAsyncExport};
 use super::{
     collect_async_c_exports, compile_file, compile_file_with_backend, compile_library_with_backend,
@@ -162,6 +164,31 @@ fn verify_file_resolves_same_module_helpers_inside_nested_object_literals() {
     );
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn verify_file_accepts_log_import_without_stdlib_leak_diagnostics() {
+    let file_name = format!(
+        "fozzylang-log-import-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(&path, "use core.log;\nfn main() -> i32 { return 0 }\n")
+        .expect("temp source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    assert!(
+        !output
+            .diagnostic_details
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("log.request_log")),
+        "stdlib log helper should not poison import-only programs"
+    );
+
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -694,7 +721,7 @@ fn compile_project_uses_capabilities_from_declared_modules() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "mod infra;\nfn main() -> i32 {\n    let listener = http.bind()\n    http.listen(listener)\n    return 0\n}\n",
+        "mod infra;\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    http.listen(listener)\n    return 0\n}\n",
     )
     .expect("main source should be written");
     std::fs::write(root.join("src/infra.fzy"), "use core.http;\n")
@@ -794,6 +821,94 @@ fn compile_project_resolves_pub_use_reexport_calls_across_module_boundary() {
     );
     assert_eq!(exit, 11);
 
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_project_resolves_cross_module_const_value_paths() {
+    let project_name = format!(
+        "fozzylang-cross-module-const-values-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/model")).expect("model dir should be created");
+    std::fs::create_dir_all(root.join("src/services")).expect("services dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "mod model;\nmod services;\nfn main() -> i32 {\n    return services.run()\n}\n",
+    )
+    .expect("main source should be written");
+    std::fs::write(root.join("src/model/mod.fzy"), "mod types;\n")
+        .expect("model mod should be written");
+    std::fs::write(
+        root.join("src/model/types.fzy"),
+        "pub const ANSWER: i32 = 7\npub fn label(v: i32) -> str {\n    if v == ANSWER {\n        return \"ok\"\n    }\n    return \"bad\"\n}\n",
+    )
+    .expect("model types should be written");
+    std::fs::write(
+        root.join("src/services/mod.fzy"),
+        "pub fn run() -> i32 {\n    let v = model.types.ANSWER\n    if model.types.label(v) == \"ok\" {\n        return 0\n    }\n    return 1\n}\n",
+    )
+    .expect("services mod should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+    assert_eq!(
+        run_native_exit(
+            artifact
+                .output
+                .as_ref()
+                .expect("native artifact should be produced")
+        ),
+        0
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_file_runs_typed_core_io_metadata_and_tree_ops() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("fozzylang-core-io-fs-{suffix}"));
+    let src_dir = root.join("src");
+    let nested_dir = src_dir.join("nested");
+    std::fs::create_dir_all(&nested_dir).expect("nested directory should be created");
+    std::fs::write(src_dir.join("a.txt"), "hello").expect("source file should be written");
+    std::fs::write(nested_dir.join("b.txt"), "world").expect("nested file should be written");
+    let source = std::env::temp_dir().join(format!("fozzylang-core-io-fs-{suffix}.fzy"));
+    let quoted_root = root.to_string_lossy().replace('\"', "\\\"");
+    std::fs::write(
+        &source,
+        format!(
+            "use core.io;\nuse core.path;\n\nfn main() -> i32 {{\n    let root = \"{quoted_root}\"\n    let src = path.join(root, \"src\")\n    let copied = path.join(root, \"copied.txt\")\n    let staged = path.join(root, \"staged\")\n    let dist = path.join(root, \"dist\")\n    let file_meta = io.metadata(path.join(src, \"a.txt\"))\n    if file_meta.exists != 1 {{ return 10 }}\n    if file_meta.is_file != 1 {{ return 11 }}\n    if file_meta.size != 5 {{ return 12 }}\n    let entries = io.list_dir_entries(src)\n    if io.dir_len(entries) != 2 {{ return 13 }}\n    if io.dir_name(entries, 0) != \"a.txt\" {{ return 14 }}\n    let nested = io.dir_entry(entries, 1)\n    if nested.name != \"nested\" {{ return 15 }}\n    if nested.is_dir != 1 {{ return 16 }}\n    if io.copy_file(path.join(src, \"a.txt\"), copied) != 0 {{ return 17 }}\n    if io.copy_tree(src, dist) != 0 {{ return 18 }}\n    if io.stage_tree(src, staged) != 0 {{ return 19 }}\n    let dist_nested = io.metadata(path.join(dist, \"nested\"))\n    let staged_nested = io.metadata(path.join(staged, \"nested\"))\n    if dist_nested.is_dir != 1 {{ return 20 }}\n    if staged_nested.is_dir != 1 {{ return 21 }}\n    if io.remove(dist) != 0 {{ return 22 }}\n    if io.exists(dist) != 0 {{ return 23 }}\n    if io.remove(staged) != 0 {{ return 24 }}\n    if io.exists(staged) != 0 {{ return 25 }}\n    return 0\n}}\n"
+        ),
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&source, BuildProfile::Dev).expect("pipeline should compile");
+    assert_eq!(artifact.status, "ok");
+    assert_eq!(
+        run_native_exit(
+            artifact
+                .output
+                .as_ref()
+                .expect("native artifact should be produced")
+        ),
+        0
+    );
+
+    let _ = std::fs::remove_file(source);
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -1258,6 +1373,14 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
         "int32_t fz_native_route_match(int32_t conn_fd, int32_t method_id, int32_t pattern_id)"
     ));
     assert!(shim.contains("int32_t fz_native_fs_read_file(int32_t path_id)"));
+    assert!(shim.contains("int32_t fz_native_fs_is_file(int32_t path_id)"));
+    assert!(shim.contains("int32_t fz_native_fs_is_dir(int32_t path_id)"));
+    assert!(shim.contains("int32_t fz_native_fs_is_symlink(int32_t path_id)"));
+    assert!(shim.contains("int32_t fz_native_fs_stat_mtime(int32_t path_id)"));
+    assert!(shim.contains("int32_t fz_native_fs_copy_file(int32_t src_id, int32_t dst_id)"));
+    assert!(shim.contains("int32_t fz_native_fs_copy_tree(int32_t src_id, int32_t dst_id)"));
+    assert!(shim.contains("int32_t fz_native_fs_remove(int32_t path_id)"));
+    assert!(shim.contains("qsort(list->items"));
     assert!(shim.contains("int32_t fz_native_time_tick(int32_t handle)"));
     assert!(shim.contains("int32_t fz_native_error_code(void)"));
     assert!(shim.contains("int32_t fz_native_log_info(int32_t message_id, int32_t fields_id)"));
@@ -3434,7 +3557,7 @@ fn cross_backend_defer_executes_inside_unsafe_block_before_return() {
     let path = std::env::temp_dir().join(file_name);
     std::fs::write(
         &path,
-        "static mut TRACE: i32 = 0;\nfn mark(v: i32) -> i32 {\n    TRACE = (TRACE * 10) + v;\n    return 0\n}\nfn run() -> i32 {\n    unsafe {\n        defer mark(1)\n        defer mark(2)\n        return 5\n    }\n}\nfn main() -> i32 {\n    return run() + TRACE\n}\n",
+        "static mut TRACE: i32 = 0;\nfn mark(v: i32) -> i32 {\n    TRACE = (TRACE * 10) + v;\n    return 0\n}\nfn main() -> i32 {\n    unsafe {\n        defer mark(1)\n        defer mark(2)\n    }\n    return 5 + TRACE\n}\n",
     )
     .expect("source should be written");
 
@@ -3519,6 +3642,103 @@ fn verify_process_namespace_migration_matches_verifier_guidance() {
     let help = diagnostic.help.as_deref().unwrap_or_default();
     assert!(help.contains("migrate to `proc.run`"));
     assert!(!help.contains("proc.stdout"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_thread_boundary_borrowed_return_reports_thread_specific_help() {
+    let file_name = format!(
+        "fozzylang-thread-boundary-borrowed-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "async fn worker(v: &'a i32) -> &'a i32 {\n    return v\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("returns borrowed reference across thread-capable boundary")
+        })
+        .expect("thread-boundary borrowed-return diagnostic should be present");
+    let help = diagnostic.help.as_deref().unwrap_or_default();
+    assert!(help.contains("return owned values or a Send/Sync-safe handle"));
+    assert!(!help.contains("capability token parameters"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_thread_boundary_mutable_param_reports_send_sync_wrapper_guidance() {
+    let file_name = format!(
+        "fozzylang-thread-boundary-mutable-param-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "async fn worker(v: &'a mut i32) -> i32 {\n    discard v\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("requires Send/Sync-safe wrapper before thread crossing")
+        })
+        .expect("thread-boundary mutable-param diagnostic should be present");
+    let help = diagnostic.help.as_deref().unwrap_or_default();
+    assert!(help.contains("wrap mutable references/pointers"));
+    assert!(!help.contains("capability token parameters"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_non_thread_borrowed_reference_does_not_report_thread_boundary_diagnostic() {
+    let file_name = format!(
+        "fozzylang-borrowed-reference-pass-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn borrow(v: &'a i32) -> &'a i32 {\n    return v\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diag| matches!(diag.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diag| {
+        diag.message.contains("thread-capable boundary")
+            || diag
+                .help
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Send/Sync-safe handle")
+    }));
 
     let _ = std::fs::remove_file(path);
 }

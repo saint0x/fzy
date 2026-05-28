@@ -40,6 +40,10 @@ fn has_flag(flag: str) -> i32 {
     return 0
 }
 
+fn close(handle: ProcessHandle) -> i32 {
+    return proc.close(handle)
+}
+
 struct ProcessLimits {
     timeout_ms: i32,
     max_output_bytes: i32,

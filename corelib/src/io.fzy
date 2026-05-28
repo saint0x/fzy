@@ -1,5 +1,32 @@
 use core.fs;
 
+struct FileMetadata {
+    path: str,
+    name: str,
+    exists: i32,
+    is_file: i32,
+    is_dir: i32,
+    is_symlink: i32,
+    size: i32,
+    modified_unix_secs: i32,
+}
+
+struct DirEntry {
+    path: str,
+    name: str,
+    exists: i32,
+    is_file: i32,
+    is_dir: i32,
+    is_symlink: i32,
+    size: i32,
+    modified_unix_secs: i32,
+}
+
+struct DirEntries {
+    root: str,
+    names: ListHandle,
+}
+
 fn read_text(path: str) -> str {
     return fs.read_file(path)
 }
@@ -16,12 +43,32 @@ fn exists(path: str) -> i32 {
     return fs.exists(path)
 }
 
+fn is_file(path: str) -> i32 {
+    return fs.is_file(path)
+}
+
+fn is_dir(path: str) -> i32 {
+    return fs.is_dir(path)
+}
+
+fn is_symlink(path: str) -> i32 {
+    return fs.is_symlink(path)
+}
+
 fn remove_file(path: str) -> i32 {
     return fs.remove_file(path)
 }
 
+fn remove(path: str) -> i32 {
+    return fs.remove(path)
+}
+
 fn stat_size(path: str) -> i32 {
     return fs.stat_size(path)
+}
+
+fn stat_mtime(path: str) -> i32 {
+    return fs.stat_mtime(path)
 }
 
 fn temp_file(prefix: str) -> str {
@@ -32,8 +79,90 @@ fn list_dir(path: str) -> ListHandle {
     return fs.listdir(path)
 }
 
+fn metadata(path: str) -> FileMetadata {
+    let name = path.basename(path)
+    let found = exists(path)
+    if found == 0 {
+        return FileMetadata {
+            path: path,
+            name: name,
+            exists: 0,
+            is_file: 0,
+            is_dir: 0,
+            is_symlink: 0,
+            size: -1,
+            modified_unix_secs: -1,
+        }
+    }
+    return FileMetadata {
+        path: path,
+        name: name,
+        exists: 1,
+        is_file: is_file(path),
+        is_dir: is_dir(path),
+        is_symlink: is_symlink(path),
+        size: stat_size(path),
+        modified_unix_secs: stat_mtime(path),
+    }
+}
+
+fn copy_file(src: str, dst: str) -> i32 {
+    return fs.copy_file(src, dst)
+}
+
+fn copy_tree(src: str, dst: str) -> i32 {
+    return fs.copy_tree(src, dst)
+}
+
+fn stage_tree(src: str, dst: str) -> i32 {
+    return copy_tree(src, dst)
+}
+
+fn list_dir_entries(path: str) -> DirEntries {
+    return DirEntries {
+        root: path,
+        names: list_dir(path),
+    }
+}
+
+fn dir_len(entries: DirEntries) -> i32 {
+    return list.len(entries.names)
+}
+
+fn dir_name(entries: DirEntries, index: i32) -> str {
+    return list.get(entries.names, index)
+}
+
+fn dir_path(entries: DirEntries, index: i32) -> str {
+    return path.join(entries.root, dir_name(entries, index))
+}
+
+fn dir_entry(entries: DirEntries, index: i32) -> DirEntry {
+    let name = dir_name(entries, index)
+    let full_path = path.join(entries.root, name)
+    let meta = metadata(full_path)
+    return DirEntry {
+        path: full_path,
+        name: name,
+        exists: meta.exists,
+        is_file: meta.is_file,
+        is_dir: meta.is_dir,
+        is_symlink: meta.is_symlink,
+        size: meta.size,
+        modified_unix_secs: meta.modified_unix_secs,
+    }
+}
+
 fn sample() -> i32 {
     let probe = temp_file("coreio")
-    let entries = list_dir(path.dirname(probe))
-    return list.len(entries) % 251
+    let root = path.dirname(probe)
+    let entries = list_dir_entries(root)
+    let mut score = dir_len(entries)
+    score += metadata(probe).exists
+    let copy = path.join(root, "coreio-sample-copy.txt")
+    discard write_text(probe, "sample")
+    score += copy_file(probe, copy)
+    discard remove(copy)
+    discard remove(probe)
+    return score % 251
 }

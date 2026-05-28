@@ -222,7 +222,7 @@ Semantics:
 - `core.process` exposes ergonomic wrappers like `process.argv_or`, `process.command_name`, and `process.has_flag`.
 - Structured process builders are first-class: `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`, `proc.run_cmd`.
 - `proc.run*` waits for completion and returns the child exit code.
-- `proc.spawn*` returns a process handle for `proc.wait`, `proc.stdout`, `proc.stderr`, and `proc.exit_code`.
+- `proc.spawn*` returns a process handle for `proc.wait`, `proc.stdout`, `proc.stderr`, `proc.exit_code`, and `proc.close`.
 - Small-value string conversion is first-class:
   - `str.from_i32(value)`
   - `str.from_bool(flag)`
@@ -273,10 +273,20 @@ Semantics:
   - `io.write_text(path, value)`
   - `io.mkdir(path)`
   - `io.exists(path)`
+  - `io.metadata(path)`
+  - `io.is_file(path)`
+  - `io.is_dir(path)`
+  - `io.is_symlink(path)`
+  - `io.copy_file(src, dst)`
+  - `io.copy_tree(src, dst)`
+  - `io.stage_tree(src, dst)`
+  - `io.remove(path)`
   - `io.remove_file(path)`
   - `io.stat_size(path)`
+  - `io.stat_mtime(path)`
   - `io.temp_file(prefix)`
   - `io.list_dir(path)`
+  - `io.list_dir_entries(path)`
 - `use core.path;` is the canonical path helper import marker:
   - `path.join(base, child)`
   - `path.normalize(path)`
@@ -362,6 +372,7 @@ fn handle(conn: HttpHandle) -> i32 {
   - `path.join(base, child)`
 - Directory discovery should prefer the stdlib IO facade:
   - `io.list_dir(path)`
+  - `io.list_dir_entries(path)`
 
 ## String Escape Sequences
 
@@ -497,6 +508,12 @@ let ext = path.extension(checkpoint)
 - `use path::{a, b};` is supported (including nested groups).
 - `pub use ...;` re-exports are supported with executable symbol resolution semantics.
 - Visibility support includes `pub fn`, `pub struct`, `pub enum`, `pub trait`, and `pub impl`.
+- Module-qualified value and type references use dot paths in ordinary code:
+  - `model.types.CONST_VALUE`
+  - `model.types.helper(...)`
+  - `-> model.types.ProjectKind`
+- Import declarations continue to use `::` path syntax.
+- Associated-item syntax such as `Self::Item` remains valid where the type system requires it.
 
 ## Test Block Semantics
 

@@ -904,6 +904,28 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
                     &module_aliases,
                 );
             }
+            ast::Item::Const(item) => {
+                item.name = qualify_name(namespace, &item.name);
+                qualify_type(&mut item.ty, namespace, &local_types, &module_aliases);
+                qualify_expr(
+                    &mut item.value,
+                    namespace,
+                    &local_functions,
+                    &local_types,
+                    &module_aliases,
+                );
+            }
+            ast::Item::Static(item) => {
+                item.name = qualify_name(namespace, &item.name);
+                qualify_type(&mut item.ty, namespace, &local_types, &module_aliases);
+                qualify_expr(
+                    &mut item.value,
+                    namespace,
+                    &local_functions,
+                    &local_types,
+                    &module_aliases,
+                );
+            }
             ast::Item::Test(test) => {
                 for stmt in &mut test.body {
                     qualify_stmt(
@@ -998,7 +1020,6 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
                     );
                 }
             }
-            _ => {}
         }
     }
 
@@ -2052,6 +2073,7 @@ fn qualify_name(namespace: &str, name: &str) -> String {
 
 fn canonicalize_call_targets(module: &mut ast::Module) {
     let known_functions = collect_defined_function_names(module);
+    let known_values = collect_defined_value_names(module);
     let reexported_functions = collect_reexported_function_aliases(module);
     for item in &mut module.items {
         if let ast::Item::Function(function) = item {
@@ -2061,7 +2083,13 @@ fn canonicalize_call_targets(module: &mut ast::Module) {
                 .map(|(prefix, _)| prefix)
                 .unwrap_or("");
             for stmt in &mut function.body {
-                canonicalize_stmt_calls(stmt, namespace, &known_functions, &reexported_functions);
+                canonicalize_stmt_calls(
+                    stmt,
+                    namespace,
+                    &known_functions,
+                    &known_values,
+                    &reexported_functions,
+                );
             }
         }
     }
@@ -2109,10 +2137,27 @@ fn collect_reexported_function_aliases(module: &ast::Module) -> HashMap<String, 
     out
 }
 
+fn collect_defined_value_names(module: &ast::Module) -> HashSet<String> {
+    let mut out = HashSet::<String>::new();
+    for item in &module.items {
+        match item {
+            ast::Item::Const(item) => {
+                out.insert(item.name.clone());
+            }
+            ast::Item::Static(item) => {
+                out.insert(item.name.clone());
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn canonicalize_stmt_calls(
     stmt: &mut ast::Stmt,
     namespace: &str,
     known_functions: &HashSet<String>,
+    known_values: &HashSet<String>,
     reexported_functions: &HashMap<String, String>,
 ) {
     match stmt {
@@ -2123,12 +2168,22 @@ fn canonicalize_stmt_calls(
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => {
-            canonicalize_expr_calls(value, namespace, known_functions, reexported_functions)
-        }
+        | ast::Stmt::Expr(value) => canonicalize_expr_calls(
+            value,
+            namespace,
+            known_functions,
+            known_values,
+            reexported_functions,
+        ),
         ast::Stmt::Return(value) => {
             if let Some(value) = value {
-                canonicalize_expr_calls(value, namespace, known_functions, reexported_functions);
+                canonicalize_expr_calls(
+                    value,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Stmt::If {
@@ -2136,18 +2191,48 @@ fn canonicalize_stmt_calls(
             then_body,
             else_body,
         } => {
-            canonicalize_expr_calls(condition, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                condition,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
             for nested in then_body {
-                canonicalize_stmt_calls(nested, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    nested,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
             for nested in else_body {
-                canonicalize_stmt_calls(nested, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    nested,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Stmt::While { condition, body } => {
-            canonicalize_expr_calls(condition, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                condition,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
             for nested in body {
-                canonicalize_stmt_calls(nested, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    nested,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Stmt::For {
@@ -2157,43 +2242,87 @@ fn canonicalize_stmt_calls(
             body,
         } => {
             if let Some(init) = init {
-                canonicalize_stmt_calls(init, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    init,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
             if let Some(condition) = condition {
                 canonicalize_expr_calls(
                     condition,
                     namespace,
                     known_functions,
+                    known_values,
                     reexported_functions,
                 );
             }
             if let Some(step) = step {
-                canonicalize_stmt_calls(step, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    step,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
             for nested in body {
-                canonicalize_stmt_calls(nested, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    nested,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Stmt::ForIn { iterable, body, .. } => {
-            canonicalize_expr_calls(iterable, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                iterable,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
             for nested in body {
-                canonicalize_stmt_calls(nested, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    nested,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Stmt::Loop { body } => {
             for nested in body {
-                canonicalize_stmt_calls(nested, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    nested,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Stmt::Break(_) | ast::Stmt::Continue => {}
         ast::Stmt::Match { scrutinee, arms } => {
-            canonicalize_expr_calls(scrutinee, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                scrutinee,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
             for arm in arms {
                 if let Some(guard) = &mut arm.guard {
                     canonicalize_expr_calls(
                         guard,
                         namespace,
                         known_functions,
+                        known_values,
                         reexported_functions,
                     );
                 }
@@ -2201,6 +2330,7 @@ fn canonicalize_stmt_calls(
                     &mut arm.value,
                     namespace,
                     known_functions,
+                    known_values,
                     reexported_functions,
                 );
             }
@@ -2212,6 +2342,7 @@ fn canonicalize_expr_calls(
     expr: &mut ast::Expr,
     namespace: &str,
     known_functions: &HashSet<String>,
+    known_values: &HashSet<String>,
     reexported_functions: &HashMap<String, String>,
 ) {
     match expr {
@@ -2231,65 +2362,162 @@ fn canonicalize_expr_calls(
                 }
             }
             for arg in args {
-                canonicalize_expr_calls(arg, namespace, known_functions, reexported_functions);
+                canonicalize_expr_calls(
+                    arg,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::UnsafeBlock { body, .. } => {
             for stmt in body {
-                canonicalize_stmt_calls(stmt, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    stmt,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::FieldAccess { base, .. } => {
-            canonicalize_expr_calls(base, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                base,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
+            if let Some(value_ref) = expr_path_name(expr) {
+                let canonical = canonicalize_value_ref(&value_ref, namespace, known_values);
+                if canonical != value_ref {
+                    *expr = ast::Expr::Ident(canonical);
+                }
+            }
         }
         ast::Expr::StructInit { fields, .. } => {
             for (_, value) in fields {
-                canonicalize_expr_calls(value, namespace, known_functions, reexported_functions);
+                canonicalize_expr_calls(
+                    value,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::EnumInit { payload, .. } => {
             for value in payload {
-                canonicalize_expr_calls(value, namespace, known_functions, reexported_functions);
+                canonicalize_expr_calls(
+                    value,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::Closure { body, .. } => {
-            canonicalize_expr_calls(body, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                body,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
         }
         ast::Expr::Group(inner) => {
-            canonicalize_expr_calls(inner, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                inner,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
         }
         ast::Expr::Tuple(items) => {
             for item in items {
-                canonicalize_expr_calls(item, namespace, known_functions, reexported_functions);
+                canonicalize_expr_calls(
+                    item,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
-            canonicalize_expr_calls(inner, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                inner,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
         }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
         } => {
-            canonicalize_expr_calls(try_expr, namespace, known_functions, reexported_functions);
-            canonicalize_expr_calls(catch_expr, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                try_expr,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
+            canonicalize_expr_calls(
+                catch_expr,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
         }
         ast::Expr::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            canonicalize_expr_calls(condition, namespace, known_functions, reexported_functions);
-            canonicalize_expr_calls(then_expr, namespace, known_functions, reexported_functions);
-            canonicalize_expr_calls(else_expr, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                condition,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
+            canonicalize_expr_calls(
+                then_expr,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
+            canonicalize_expr_calls(
+                else_expr,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
         }
         ast::Expr::Match { scrutinee, arms } => {
-            canonicalize_expr_calls(scrutinee, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                scrutinee,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
             for arm in arms {
                 if let Some(guard) = &mut arm.guard {
                     canonicalize_expr_calls(
                         guard,
                         namespace,
                         known_functions,
+                        known_values,
                         reexported_functions,
                     );
                 }
@@ -2297,14 +2525,27 @@ fn canonicalize_expr_calls(
                     &mut arm.value,
                     namespace,
                     known_functions,
+                    known_values,
                     reexported_functions,
                 );
             }
         }
         ast::Expr::While { condition, body } => {
-            canonicalize_expr_calls(condition, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                condition,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
             for stmt in body {
-                canonicalize_stmt_calls(stmt, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    stmt,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::For {
@@ -2314,64 +2555,161 @@ fn canonicalize_expr_calls(
             body,
         } => {
             if let Some(init) = init {
-                canonicalize_stmt_calls(init, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    init,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
             if let Some(condition) = condition {
                 canonicalize_expr_calls(
                     condition,
                     namespace,
                     known_functions,
+                    known_values,
                     reexported_functions,
                 );
             }
             if let Some(step) = step {
-                canonicalize_stmt_calls(step, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    step,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
             for stmt in body {
-                canonicalize_stmt_calls(stmt, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    stmt,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::ForIn { iterable, body, .. } => {
-            canonicalize_expr_calls(iterable, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                iterable,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
             for stmt in body {
-                canonicalize_stmt_calls(stmt, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    stmt,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::Loop { body } => {
             for stmt in body {
-                canonicalize_stmt_calls(stmt, namespace, known_functions, reexported_functions);
+                canonicalize_stmt_calls(
+                    stmt,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::Break(value) | ast::Expr::Return(value) => {
             if let Some(value) = value {
-                canonicalize_expr_calls(value, namespace, known_functions, reexported_functions);
+                canonicalize_expr_calls(
+                    value,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::Continue => {}
         ast::Expr::Range { start, end, .. } => {
-            canonicalize_expr_calls(start, namespace, known_functions, reexported_functions);
-            canonicalize_expr_calls(end, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                start,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
+            canonicalize_expr_calls(
+                end,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
         }
         ast::Expr::ArrayLiteral(items) => {
             for item in items {
-                canonicalize_expr_calls(item, namespace, known_functions, reexported_functions);
+                canonicalize_expr_calls(
+                    item,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::ObjectLiteral(fields) => {
             for (_, value) in fields {
-                canonicalize_expr_calls(value, namespace, known_functions, reexported_functions);
+                canonicalize_expr_calls(
+                    value,
+                    namespace,
+                    known_functions,
+                    known_values,
+                    reexported_functions,
+                );
             }
         }
         ast::Expr::Index { base, index } => {
-            canonicalize_expr_calls(base, namespace, known_functions, reexported_functions);
-            canonicalize_expr_calls(index, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                base,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
+            canonicalize_expr_calls(
+                index,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
         }
         ast::Expr::Unary { expr, .. } => {
-            canonicalize_expr_calls(expr, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                expr,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
         }
         ast::Expr::Binary { left, right, .. } => {
-            canonicalize_expr_calls(left, namespace, known_functions, reexported_functions);
-            canonicalize_expr_calls(right, namespace, known_functions, reexported_functions);
+            canonicalize_expr_calls(
+                left,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
+            canonicalize_expr_calls(
+                right,
+                namespace,
+                known_functions,
+                known_values,
+                reexported_functions,
+            );
         }
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
@@ -2380,6 +2718,48 @@ fn canonicalize_expr_calls(
         | ast::Expr::Str(_)
         | ast::Expr::Ident(_) => {}
     }
+}
+
+fn expr_path_name(expr: &ast::Expr) -> Option<String> {
+    match expr {
+        ast::Expr::Ident(name) => Some(name.clone()),
+        ast::Expr::Group(inner) => expr_path_name(inner),
+        ast::Expr::FieldAccess { base, field } => {
+            let mut base_name = expr_path_name(base)?;
+            base_name.push('.');
+            base_name.push_str(field);
+            Some(base_name)
+        }
+        _ => None,
+    }
+}
+
+fn canonicalize_value_ref(
+    value_ref: &str,
+    namespace: &str,
+    known_values: &HashSet<String>,
+) -> String {
+    if known_values.contains(value_ref) {
+        return value_ref.to_string();
+    }
+    if value_ref.contains('.') {
+        let mut scope = Some(namespace);
+        while let Some(current) = scope {
+            if !current.is_empty() {
+                let candidate = format!("{current}.{value_ref}");
+                if known_values.contains(&candidate) {
+                    return candidate;
+                }
+            }
+            scope = current.rsplit_once('.').map(|(parent, _)| parent);
+        }
+    } else {
+        let candidate = qualify_name(namespace, value_ref);
+        if known_values.contains(&candidate) {
+            return candidate;
+        }
+    }
+    value_ref.to_string()
 }
 
 fn canonicalize_callee(

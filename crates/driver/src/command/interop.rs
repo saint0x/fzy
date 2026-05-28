@@ -4,6 +4,13 @@ use super::source::{
 use super::*;
 
 #[derive(Debug, Clone)]
+pub(super) struct CallbackTypeDef {
+    pub(super) signature_key: String,
+    pub(super) typedef_name: String,
+    pub(super) ty: ast::Type,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct HeaderArtifact {
     pub(super) path: PathBuf,
     pub(super) exports: usize,
@@ -78,31 +85,34 @@ pub(super) fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<H
         .file_stem()
         .and_then(|v| v.to_str())
         .ok_or_else(|| anyhow!("invalid module filename"))?;
-    let exports: Vec<&ast::Function> = parsed
+    let exports = parsed
         .module
         .items
         .iter()
         .filter_map(|item| match item {
-            ast::Item::Function(function)
-                if function.is_pub
-                    && function.is_extern
-                    && function
-                        .abi
-                        .as_deref()
-                        .is_some_and(|abi| abi.eq_ignore_ascii_case("c")) =>
-            {
-                Some(function)
-            }
+            ast::Item::Function(function) if is_c_export(function) => Some(function),
             _ => None,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    let imports = parsed
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Function(function) if is_c_import(function) => Some(function),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     let repr_c_layouts = collect_repr_c_layouts(&parsed.module)?;
     let repr_c_names = repr_c_layouts
         .iter()
         .map(|layout| layout.name.clone())
         .collect::<BTreeSet<_>>();
-    validate_ffi_contract(
+    let repr_c_aliases = build_repr_c_aliases(&repr_c_layouts)?;
+    let callback_types = collect_callback_types(&imports, &exports);
+    validate_ffi_contracts(
         &parsed.module,
+        &imports,
         &exports,
         &repr_c_names,
         resolved.manifest.as_ref(),
@@ -125,7 +135,13 @@ pub(super) fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<H
         .as_ref()
         .map(|manifest| manifest.package.name.as_str())
         .unwrap_or(module_name);
-    let header = render_c_header(package_name, &parsed.module, &exports);
+    let header = render_c_header(
+        package_name,
+        &parsed.module,
+        &exports,
+        &repr_c_aliases,
+        &callback_types,
+    );
     std::fs::write(&header_path, header)
         .with_context(|| format!("failed writing header: {}", header_path.display()))?;
     let abi_manifest = header_path.with_extension("abi.json");
@@ -153,9 +169,11 @@ pub(super) fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<H
         },
         "symbolVersioning": "strict-name-signature-v1",
         "contractSchema": "fozzylang.ffi_contracts.v1",
+        "callbackAbi": "signature-typed-v1",
         "reprCLayouts": repr_c_layouts.iter().map(|layout| {
             serde_json::json!({
                 "name": layout.name,
+                "cName": repr_c_aliases.get(&layout.name).cloned().unwrap_or_else(|| layout.name.clone()),
                 "kind": layout.kind,
                 "size": layout.size,
                 "align": layout.align,
@@ -168,23 +186,46 @@ pub(super) fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<H
                 "async": function.is_async,
                 "symbolVersion": 1u64,
                 "params": function.params.iter().map(|param| {
-                    let contract = ffi_param_contract(function, param);
+                    let contract = ffi_param_contract(function, param, &callback_types);
                     serde_json::json!({
                         "name": param.name.as_str(),
                         "fzy": param.ty.to_string(),
-                        "c": to_c_type(&param.ty),
+                        "c": render_c_surface_type(&param.ty, &repr_c_aliases, &callback_types),
                         "contract": contract,
                     })
                 }).collect::<Vec<_>>(),
                 "return": {
                     "fzy": function.return_type.to_string(),
-                    "c": to_c_type(&function.return_type),
+                    "c": render_c_surface_type(&function.return_type, &repr_c_aliases, &callback_types),
                     "contract": ffi_return_contract(&function.return_type),
                 },
                 "contract": {
-                    "execution": if function.is_async { "async-handle-v1" } else { "sync" },
-                    "callbackBindings": ffi_callback_bindings(function),
+                    "execution": if function.is_async { "async-handle-sync-start-v1" } else { "sync" },
+                    "callbackBindings": ffi_callback_bindings(function, &callback_types),
                     "asyncBoundary": ffi_async_contract(function),
+                },
+            })
+        }).collect::<Vec<_>>(),
+        "imports": imports.iter().map(|function| {
+            serde_json::json!({
+                "name": ffi_symbol_name(function),
+                "unsafe": function.is_unsafe,
+                "params": function.params.iter().map(|param| {
+                    serde_json::json!({
+                        "name": param.name.as_str(),
+                        "fzy": param.ty.to_string(),
+                        "c": render_c_surface_type(&param.ty, &repr_c_aliases, &callback_types),
+                        "contract": ffi_param_contract(function, param, &callback_types),
+                    })
+                }).collect::<Vec<_>>(),
+                "return": {
+                    "fzy": function.return_type.to_string(),
+                    "c": render_c_surface_type(&function.return_type, &repr_c_aliases, &callback_types),
+                    "contract": ffi_return_contract(&function.return_type),
+                },
+                "contract": {
+                    "execution": "sync",
+                    "callbackBindings": ffi_callback_bindings(function, &callback_types),
                 },
             })
         }).collect::<Vec<_>>(),
@@ -201,6 +242,59 @@ pub(super) fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<H
         exports: exports.len(),
         abi_manifest,
     })
+}
+
+fn is_c_export(function: &ast::Function) -> bool {
+    function.is_pub
+        && function.is_extern
+        && function
+            .abi
+            .as_deref()
+            .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+}
+
+fn is_c_import(function: &ast::Function) -> bool {
+    function.is_extern
+        && !function.is_pub
+        && function
+            .abi
+            .as_deref()
+            .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+}
+
+fn build_repr_c_aliases(layouts: &[ReprCLayout]) -> Result<BTreeMap<String, String>> {
+    let mut aliases = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    for layout in layouts {
+        let alias = sanitize_c_identifier(&layout.name);
+        if !seen.insert(alias.clone()) {
+            bail!("repr(C) type name collision after C normalization: `{}`", alias);
+        }
+        aliases.insert(layout.name.clone(), alias);
+    }
+    Ok(aliases)
+}
+
+fn collect_callback_types(
+    imports: &[&ast::Function],
+    exports: &[&ast::Function],
+) -> Vec<CallbackTypeDef> {
+    let mut seen = BTreeMap::<String, ast::Type>::new();
+    for function in imports.iter().chain(exports.iter()) {
+        for param in &function.params {
+            if let ast::Type::Function { .. } = &param.ty {
+                seen.entry(param.ty.to_string()).or_insert_with(|| param.ty.clone());
+            }
+        }
+    }
+    seen.into_iter()
+        .enumerate()
+        .map(|(index, (signature_key, ty))| CallbackTypeDef {
+            signature_key,
+            typedef_name: format!("fz_callback_sig{}_v0", index),
+            ty,
+        })
+        .collect()
 }
 
 pub(super) fn generate_rpc_artifacts(path: &Path, out_dir: Option<&Path>) -> Result<RpcArtifacts> {

@@ -2713,11 +2713,14 @@ fn expr_has_await(expr: &Expr) -> bool {
 }
 
 fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
+    let ownership_summaries = build_function_ownership_summaries(functions);
     let mut violations = Vec::new();
     for function in functions {
-        let mut linear_owned = function
-            .params
-            .iter()
+        let mut linear_owned = ownership_summaries
+            .get(&function.name)
+            .into_iter()
+            .flat_map(|consumed| consumed.iter().copied())
+            .filter_map(|index| function.params.get(index))
             .filter(|param| is_linear_type(&param.ty))
             .map(|param| param.name.clone())
             .collect::<BTreeSet<_>>();
@@ -2727,6 +2730,7 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
             linear_owned: &'a mut BTreeSet<String>,
             linear_freed: &'a mut BTreeSet<String>,
             violations: &'a mut Vec<String>,
+            ownership_summaries: &'a BTreeMap<String, BTreeSet<usize>>,
         }
         impl AstVisitor for Collector<'_> {
             fn visit_stmt(&mut self, stmt: &Stmt) {
@@ -2747,19 +2751,14 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
 
             fn visit_expr(&mut self, expr: &Expr) {
                 if let Expr::Call { callee, args } = expr {
-                    if (is_free_callee(callee) || is_close_callee(callee))
-                        && matches!(args.first(), Some(Expr::Ident(_)))
-                    {
-                        let Expr::Ident(name) = args.first().expect("checked Some ident") else {
-                            unreachable!()
-                        };
+                    for name in consumed_arg_identity_names(callee, args, self.ownership_summaries) {
                         if !self.linear_owned.contains(name) {
                             self.violations.push(format!(
                                 "function `{}` frees non-linear value `{}` as linear resource",
                                 self.function.name, name
                             ));
                         }
-                        self.linear_freed.insert(name.clone());
+                        self.linear_freed.insert(name.to_string());
                     }
                 }
                 ast::walk_expr(self, expr);
@@ -2770,6 +2769,7 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
             linear_owned: &mut linear_owned,
             linear_freed: &mut linear_freed,
             violations: &mut violations,
+            ownership_summaries: &ownership_summaries,
         };
         for stmt in &function.body {
             collector.visit_stmt(stmt);
@@ -2988,7 +2988,7 @@ fn analyze_ownership(
             ..OwnershipState::default()
         };
         let mut next_alloc = state.owners.len() + 1;
-        analyze_ownership_block(
+        let _ = analyze_ownership_block(
             function,
             &function.body,
             &mut state,
@@ -3200,24 +3200,9 @@ fn collect_consumed_params_from_expr(
 ) {
     match expr {
         Expr::Call { callee, args } => {
-            if is_free_callee(callee) || is_close_callee(callee) {
-                if let Some(index) = args
-                    .first()
-                    .and_then(expr_identity_name)
-                    .and_then(|name| param_indexes.get(name).copied())
-                {
+            for name in consumed_arg_identity_names(callee, args, summaries) {
+                if let Some(index) = param_indexes.get(name).copied() {
                     out.insert(index);
-                }
-            }
-            if let Some(consumed_params) = summaries.get(callee) {
-                for consumed_index in consumed_params {
-                    if let Some(index) = args
-                        .get(*consumed_index)
-                        .and_then(expr_identity_name)
-                        .and_then(|name| param_indexes.get(name).copied())
-                    {
-                        out.insert(index);
-                    }
                 }
             }
             for arg in args {
@@ -3301,6 +3286,37 @@ fn expr_identity_name(expr: &Expr) -> Option<&str> {
         Expr::Group(inner) => expr_identity_name(inner),
         _ => None,
     }
+}
+
+fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
+    match callee {
+        "http.write" | "http.write_json" | "http.write_response" | "route.write_404"
+        | "route.write_405" | "http.stream_close" => &[0],
+        _ if is_free_callee(callee) || is_close_callee(callee) => &[0],
+        _ => &[],
+    }
+}
+
+fn consumed_arg_identity_names<'a>(
+    callee: &str,
+    args: &'a [Expr],
+    summaries: &BTreeMap<String, BTreeSet<usize>>,
+) -> Vec<&'a str> {
+    let mut names = runtime_consumed_param_indices(callee)
+        .iter()
+        .filter_map(|index| args.get(*index))
+        .filter_map(expr_identity_name)
+        .collect::<Vec<_>>();
+    if let Some(consumed_params) = summaries.get(callee) {
+        for consumed_index in consumed_params {
+            if let Some(name) = args.get(*consumed_index).and_then(expr_identity_name) {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    names
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3885,7 +3901,7 @@ fn analyze_ownership_block(
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
-) {
+) -> bool {
     for stmt in body {
         for name in state.moved.iter() {
             if stmt_uses_ident(stmt, name) {
@@ -3991,7 +4007,7 @@ fn analyze_ownership_block(
                 register_deferred_cleanup(expr, state, violations, function_name);
             }
             Stmt::Expr(Expr::UnsafeBlock { body, .. }) => {
-                analyze_ownership_block(
+                if !analyze_ownership_block(
                     function,
                     body,
                     state,
@@ -4001,7 +4017,9 @@ fn analyze_ownership_block(
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
-                );
+                ) {
+                    return false;
+                }
             }
             Stmt::Return(Some(expr)) => {
                 if let Some(name) = expr_identity_name(expr) {
@@ -4021,6 +4039,7 @@ fn analyze_ownership_block(
                         enum_defs,
                     );
                 }
+                return false;
             }
             Stmt::If {
                 then_body,
@@ -4030,7 +4049,7 @@ fn analyze_ownership_block(
                 let entry_state = state.clone();
                 let mut then_state = state.clone();
                 let mut else_state = state.clone();
-                analyze_ownership_block(
+                let then_fallthrough = analyze_ownership_block(
                     function,
                     then_body,
                     &mut then_state,
@@ -4041,7 +4060,7 @@ fn analyze_ownership_block(
                     struct_defs,
                     enum_defs,
                 );
-                analyze_ownership_block(
+                let else_fallthrough = analyze_ownership_block(
                     function,
                     else_body,
                     &mut else_state,
@@ -4052,18 +4071,23 @@ fn analyze_ownership_block(
                     struct_defs,
                     enum_defs,
                 );
-                *state = merge_ownership_states(
-                    function_name,
-                    "conditional branches",
-                    &entry_state,
-                    &[then_state, else_state],
-                    violations,
-                );
+                *state = match (then_fallthrough, else_fallthrough) {
+                    (true, true) => merge_ownership_states(
+                        function_name,
+                        "conditional branches",
+                        &entry_state,
+                        &[then_state, else_state],
+                        violations,
+                    ),
+                    (true, false) => then_state,
+                    (false, true) => else_state,
+                    (false, false) => return false,
+                };
             }
             Stmt::While { body, .. } => {
                 let entry_state = state.clone();
                 let mut body_state = state.clone();
-                analyze_ownership_block(
+                let _ = analyze_ownership_block(
                     function,
                     body,
                     &mut body_state,
@@ -4089,7 +4113,7 @@ fn analyze_ownership_block(
                 body,
             } => {
                 if let Some(init) = init {
-                    analyze_ownership_block(
+                    let _ = analyze_ownership_block(
                         function,
                         std::slice::from_ref(init.as_ref()),
                         state,
@@ -4103,7 +4127,7 @@ fn analyze_ownership_block(
                 }
                 let entry_state = state.clone();
                 let mut body_state = state.clone();
-                analyze_ownership_block(
+                let _ = analyze_ownership_block(
                     function,
                     body,
                     &mut body_state,
@@ -4115,7 +4139,7 @@ fn analyze_ownership_block(
                     enum_defs,
                 );
                 if let Some(step) = step {
-                    analyze_ownership_block(
+                    let _ = analyze_ownership_block(
                         function,
                         std::slice::from_ref(step.as_ref()),
                         &mut body_state,
@@ -4140,7 +4164,7 @@ fn analyze_ownership_block(
                 state.owner_candidates.insert(binding.clone());
                 let entry_state = state.clone();
                 let mut body_state = state.clone();
-                analyze_ownership_block(
+                let _ = analyze_ownership_block(
                     function,
                     body,
                     &mut body_state,
@@ -4162,7 +4186,7 @@ fn analyze_ownership_block(
             Stmt::Loop { body } => {
                 let entry_state = state.clone();
                 let mut body_state = state.clone();
-                analyze_ownership_block(
+                let _ = analyze_ownership_block(
                     function,
                     body,
                     &mut body_state,
@@ -4226,9 +4250,11 @@ fn analyze_ownership_block(
                     enum_defs,
                 );
             }
-            Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Return(None) => {}
+            Stmt::Return(None) => return false,
+            Stmt::Requires(_) | Stmt::Ensures(_) => {}
         }
     }
+    true
 }
 
 fn analyze_expr_value_ownership(
@@ -4265,7 +4291,7 @@ fn analyze_expr_value_ownership(
             apply_call_consumed_params(callee, args, state, ownership_summaries);
         }
         Expr::UnsafeBlock { body, .. } => {
-            analyze_ownership_block(
+            let _ = analyze_ownership_block(
                 function,
                 body,
                 state,
@@ -4406,13 +4432,7 @@ fn apply_call_consumed_params(
     state: &mut OwnershipState,
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
 ) {
-    let Some(consumed_params) = ownership_summaries.get(callee) else {
-        return;
-    };
-    for consumed_index in consumed_params {
-        let Some(arg_name) = args.get(*consumed_index).and_then(expr_identity_name) else {
-            continue;
-        };
+    for arg_name in consumed_arg_identity_names(callee, args, ownership_summaries) {
         if let Some(owner) = state.owners.remove(arg_name) {
             state.moved.insert(arg_name.to_string());
             state.deferred.remove(&owner);
@@ -4435,9 +4455,6 @@ fn merge_ownership_states(
     names.extend(entry_state.moved.iter().cloned());
     for branch in branches {
         merged.deferred.extend(branch.deferred.iter().copied());
-        names.extend(branch.owners.keys().cloned());
-        names.extend(branch.owner_candidates.iter().cloned());
-        names.extend(branch.moved.iter().cloned());
     }
     for name in names {
         let owner_views = branches
@@ -10965,10 +10982,17 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "fs.write_file",
         "fs.mkdir",
         "fs.exists",
+        "fs.is_file",
+        "fs.is_dir",
+        "fs.is_symlink",
         "fs.remove_file",
+        "fs.remove",
         "fs.stat_size",
+        "fs.stat_mtime",
         "fs.listdir",
         "fs.temp_file",
+        "fs.copy_file",
+        "fs.copy_tree",
         "path.join",
         "path.basename",
         "path.dirname",
@@ -11278,10 +11302,13 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         | "fs.fsync" | "fs.lock" | "fs.read" => (vec![], i32.clone()),
         "fs.read_file" => (vec![str_ty.clone()], str_ty.clone()),
         "fs.write_file" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
-        "fs.mkdir" | "fs.exists" | "fs.remove_file" => (vec![str_ty.clone()], i32.clone()),
+        "fs.mkdir" | "fs.exists" | "fs.is_file" | "fs.is_dir" | "fs.is_symlink"
+        | "fs.remove_file" | "fs.remove" => (vec![str_ty.clone()], i32.clone()),
         "fs.stat_size" => (vec![str_ty.clone()], i32.clone()),
+        "fs.stat_mtime" => (vec![str_ty.clone()], i32.clone()),
         "fs.listdir" => (vec![str_ty.clone()], list_handle.clone()),
         "fs.temp_file" => (vec![str_ty.clone()], str_ty.clone()),
+        "fs.copy_file" | "fs.copy_tree" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "path.join" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "path.basename" | "path.dirname" | "path.stem" | "path.extension" | "path.normalize" => {
             (vec![str_ty.clone()], str_ty.clone())
@@ -13837,6 +13864,29 @@ mod tests {
     }
 
     #[test]
+    fn fs_metadata_and_copy_tree_intrinsics_typecheck() {
+        let source = r#"
+            use core.fs;
+            fn main() -> i32 {
+                let path = "/tmp/demo"
+                let mut score = fs.exists(path)
+                score += fs.is_file(path)
+                score += fs.is_dir(path)
+                score += fs.is_symlink(path)
+                score += fs.stat_size(path)
+                score += fs.stat_mtime(path)
+                score += fs.copy_file("/tmp/a", "/tmp/b")
+                score += fs.copy_tree("/tmp/src", "/tmp/out")
+                score += fs.remove(path)
+                return score % 251
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
+    }
+
+    #[test]
     fn string_addition_reports_actionable_concat_guidance() {
         let source = r#"
             fn main() -> i32 {
@@ -14720,6 +14770,69 @@ mod tests {
             .ownership_violations
             .iter()
             .any(|detail| { detail.contains("consumes non-owned or already-consumed value `p`") }));
+    }
+
+    #[test]
+    fn non_consuming_linear_param_is_not_treated_as_locally_owned() {
+        let source = r#"
+            fn inspect(stream: HttpStreamHandle) -> i32 {
+                if http.stream_eof(stream) == 1 {
+                    return 1;
+                }
+                discard http.stream_status(stream);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| detail.contains("function `inspect` linear value `stream` was not consumed/freed")));
+    }
+
+    #[test]
+    fn http_write_json_marks_connection_param_consumed() {
+        let source = r#"
+            fn respond(conn: HttpHandle) -> i32 {
+                return http.write_json(conn, 200, "{\"ok\":true}");
+            }
+            fn main() -> i32 {
+                let conn = http.accept();
+                discard respond(conn);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `respond` linear value `conn` was not consumed/freed")
+        }));
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("function `main` leaks allocation") && detail.contains("`conn`")));
+    }
+
+    #[test]
+    fn loop_local_consumed_resource_does_not_escape_iteration_merge() {
+        let source = r#"
+            fn main() -> i32 {
+                let mut served = 0;
+                while served < 2 {
+                    let conn = http.accept();
+                    discard http.write_json(conn, 200, "{\"ok\":true}");
+                    served = served + 1;
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("divergent ownership state for `conn`")
+                || detail.contains("uses moved value `conn` after move/consume")
+        }));
     }
 
     #[test]

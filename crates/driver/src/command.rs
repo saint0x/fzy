@@ -8254,6 +8254,18 @@ fn sanitize_file_component(raw: &str) -> String {
     }
 }
 
+fn sanitize_c_identifier(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
 fn parse_scheduler(input: &str) -> Result<Scheduler> {
     match input {
         "fifo" | "default" | "host" => Ok(Scheduler::Fifo),
@@ -8336,7 +8348,13 @@ fn is_native_trace_or_manifest(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn render_c_header(package_name: &str, module: &ast::Module, exports: &[&ast::Function]) -> String {
+fn render_c_header(
+    package_name: &str,
+    module: &ast::Module,
+    exports: &[&ast::Function],
+    repr_c_aliases: &BTreeMap<String, String>,
+    callback_types: &[interop::CallbackTypeDef],
+) -> String {
     let guard = format!("FOZZY_{}_H", package_name.to_ascii_uppercase());
     let mut header = String::new();
     header.push_str("#ifndef ");
@@ -8354,19 +8372,27 @@ fn render_c_header(package_name: &str, module: &ast::Module, exports: &[&ast::Fu
     if exports.iter().any(|function| function.is_async) {
         header.push_str("typedef uint64_t fz_async_handle_t;\n\n");
     }
-    header.push_str(&render_repr_c_type_defs(module));
+    header.push_str(&render_callback_type_defs(
+        callback_types,
+        repr_c_aliases,
+    ));
+    header.push_str(&render_repr_c_type_defs(module, repr_c_aliases));
     if !header.ends_with("\n\n") {
         header.push('\n');
     }
     for function in exports {
         let symbol = ffi_symbol_name(function);
         if function.is_async {
-            let params = render_c_params(function);
+            let params = render_c_params(function, repr_c_aliases, callback_types);
             let start_params = if params == "void" {
                 "fz_async_handle_t* handle_out".to_string()
             } else {
                 format!("{params}, fz_async_handle_t* handle_out")
             };
+            header.push_str(&format!(
+                "/* {} uses an eager synchronous start shim and stores the result in an async handle. */\n",
+                symbol
+            ));
             header.push_str(&format!(
                 "int32_t {}_async_start({});\n",
                 symbol, start_params
@@ -8386,9 +8412,9 @@ fn render_c_header(package_name: &str, module: &ast::Module, exports: &[&ast::Fu
         } else {
             header.push_str(&format!(
                 "{} {}({});\n",
-                to_c_type(&function.return_type),
+                render_c_surface_type(&function.return_type, repr_c_aliases, callback_types),
                 symbol,
-                render_c_params(function)
+                render_c_params(function, repr_c_aliases, callback_types)
             ));
         }
     }
@@ -8399,23 +8425,35 @@ fn render_c_header(package_name: &str, module: &ast::Module, exports: &[&ast::Fu
     header
 }
 
-fn render_repr_c_type_defs(module: &ast::Module) -> String {
+fn render_repr_c_type_defs(module: &ast::Module, repr_c_aliases: &BTreeMap<String, String>) -> String {
     let mut out = String::new();
     for item in &module.items {
         match item {
             ast::Item::Struct(item) if is_repr_c(item.repr.as_deref()) => {
-                out.push_str(&format!("typedef struct {} {{\n", item.name));
+                let c_name = repr_c_aliases
+                    .get(&item.name)
+                    .cloned()
+                    .unwrap_or_else(|| sanitize_c_identifier(&item.name));
+                out.push_str(&format!("typedef struct {} {{\n", c_name));
                 for field in &item.fields {
-                    out.push_str(&format!("    {} {};\n", to_c_type(&field.ty), field.name));
+                    out.push_str(&format!(
+                        "    {} {};\n",
+                        render_c_surface_type(&field.ty, repr_c_aliases, &[]),
+                        field.name
+                    ));
                 }
-                out.push_str(&format!("}} {};\n\n", item.name));
+                out.push_str(&format!("}} {};\n\n", c_name));
             }
             ast::Item::Enum(item) if is_repr_c(item.repr.as_deref()) => {
-                out.push_str(&format!("typedef enum {} {{\n", item.name));
+                let c_name = repr_c_aliases
+                    .get(&item.name)
+                    .cloned()
+                    .unwrap_or_else(|| sanitize_c_identifier(&item.name));
+                out.push_str(&format!("typedef enum {} {{\n", c_name));
                 for (idx, variant) in item.variants.iter().enumerate() {
-                    out.push_str(&format!("    {}_{} = {},\n", item.name, variant.name, idx));
+                    out.push_str(&format!("    {}_{} = {},\n", c_name, variant.name, idx));
                 }
-                out.push_str(&format!("}} {};\n\n", item.name));
+                out.push_str(&format!("}} {};\n\n", c_name));
             }
             _ => {}
         }
@@ -8423,8 +8461,9 @@ fn render_repr_c_type_defs(module: &ast::Module) -> String {
     out
 }
 
-fn validate_ffi_contract(
+fn validate_ffi_contracts(
     module: &ast::Module,
+    imports: &[&ast::Function],
     exports: &[&ast::Function],
     repr_c_names: &BTreeSet<String>,
     manifest: Option<&manifest::Manifest>,
@@ -8447,9 +8486,6 @@ fn validate_ffi_contract(
         bail!(
             "project defines C interop symbols but fozzy.toml is missing [ffi] panic_boundary = \"abort\"|\"error\""
         );
-    }
-    if exports.is_empty() {
-        return Ok(());
     }
     let mut panic_mode: Option<&str> = None;
     for function in exports {
@@ -8480,9 +8516,13 @@ fn validate_ffi_contract(
             panic_mode = Some(mode);
         }
     }
-    for function in exports {
+    for (function, kind) in imports
+        .iter()
+        .map(|function| (*function, "import"))
+        .chain(exports.iter().map(|function| (*function, "export")))
+    {
         let symbol = ffi_symbol_name(function);
-        if function.is_async {
+        if function.is_async && kind == "export" {
             if function.body.is_empty() {
                 bail!(
                     "extern async export `{}` must define a body; declaration-only async exports are not allowed",
@@ -8496,19 +8536,23 @@ fn validate_ffi_contract(
                 );
             }
         }
+        if function.is_async && kind == "import" {
+            bail!(
+                "extern C import `{}` cannot be async; async-handle ABI is export-only in native ship v0",
+                symbol
+            );
+        }
         if !is_ffi_stable_type(&function.return_type, repr_c_names) {
             bail!(
-                "extern export `{}` uses unstable return type `{}`",
+                "extern {kind} `{}` uses unstable return type `{}`",
                 symbol,
                 function.return_type
             );
         }
-        let mut has_callback_param = false;
-        let mut has_callback_context = false;
         for param in &function.params {
             if !is_ffi_stable_type(&param.ty, repr_c_names) {
                 bail!(
-                    "extern export `{}` param `{}` uses unstable type `{}`",
+                    "extern {kind} `{}` param `{}` uses unstable type `{}`",
                     symbol,
                     param.name,
                     param.ty
@@ -8519,36 +8563,49 @@ fn validate_ffi_contract(
                     || param.name.ends_with("_borrowed")
                     || param.name.ends_with("_out")
                     || param.name.ends_with("_inout");
-                if !tagged {
+                let ctx_param = param.name.ends_with("_ctx") || param.name.ends_with("_context");
+                if !tagged && !ctx_param {
                     bail!(
-                        "extern export `{}` pointer param `{}` must declare ownership transfer tag suffix (`_owned`, `_borrowed`, `_out`, `_inout`)",
+                        "extern {kind} `{}` pointer param `{}` must declare ownership transfer tag suffix (`_owned`, `_borrowed`, `_out`, `_inout`)",
                         symbol,
                         param.name
                     );
                 }
-                let ctx_param = param.name.ends_with("_ctx") || param.name.ends_with("_context");
                 if !ctx_param && !has_len_pair(function, &param.name) {
                     bail!(
-                        "extern export `{}` pointer param `{}` must declare paired length parameter (`{}_len` or `len`)",
+                        "extern {kind} `{}` pointer param `{}` must declare paired length parameter (`{}_len` or `len`)",
                         symbol,
                         param.name,
                         pointer_base_name(&param.name),
                     );
                 }
             }
-            let name_lc = param.name.to_ascii_lowercase();
-            if name_lc.contains("callback") || name_lc.starts_with("cb") {
-                has_callback_param = true;
+            if matches!(param.ty, ast::Type::Function { .. }) {
+                let prev_is_anchor = function
+                    .params
+                    .iter()
+                    .position(|candidate| candidate.name == param.name)
+                    .and_then(|index| index.checked_sub(1))
+                    .and_then(|index| function.params.get(index))
+                    .is_some_and(|candidate| {
+                        candidate.name.ends_with("_ctx") || candidate.name.ends_with("_context")
+                    });
+                let next_is_anchor = function
+                    .params
+                    .iter()
+                    .position(|candidate| candidate.name == param.name)
+                    .and_then(|index| function.params.get(index + 1))
+                    .is_some_and(|candidate| {
+                        candidate.name.ends_with("_ctx") || candidate.name.ends_with("_context")
+                    });
+                if !(prev_is_anchor || next_is_anchor) {
+                    bail!(
+                        "extern {kind} `{}` callback param `{}` requires adjacent `*_ctx` or `*_context` anchor",
+                        symbol,
+                        param.name
+                    );
+                }
             }
-            if name_lc.ends_with("_ctx") || name_lc.ends_with("_context") {
-                has_callback_context = true;
-            }
-        }
-        if has_callback_param && !has_callback_context {
-            bail!(
-                "extern export `{}` defines callback param but missing lifetime context param (`*_ctx` or `*_context`)",
-                symbol
-            );
         }
     }
     Ok(())
@@ -8748,11 +8805,95 @@ fn is_i32_type(ty: &ast::Type) -> bool {
     )
 }
 
-fn render_c_params(function: &ast::Function) -> String {
+fn callback_typedef_for<'a>(
+    ty: &ast::Type,
+    callback_types: &'a [interop::CallbackTypeDef],
+) -> Option<&'a str> {
+    let key = ty.to_string();
+    callback_types
+        .iter()
+        .find(|candidate| candidate.signature_key == key)
+        .map(|candidate| candidate.typedef_name.as_str())
+}
+
+fn render_callback_type_defs(
+    callback_types: &[interop::CallbackTypeDef],
+    repr_c_aliases: &BTreeMap<String, String>,
+) -> String {
+    let mut out = String::new();
+    for callback in callback_types {
+        let ast::Type::Function { params, ret } = &callback.ty else {
+            continue;
+        };
+        let rendered_params = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params
+                .iter()
+                .enumerate()
+                .map(|(index, param)| {
+                    format!(
+                        "{} arg{}",
+                        render_c_surface_type(param, repr_c_aliases, callback_types),
+                        index
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        out.push_str(&format!(
+            "typedef {} (*{})({});\n",
+            render_c_surface_type(ret.as_ref(), repr_c_aliases, callback_types),
+            callback.typedef_name,
+            rendered_params
+        ));
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
+}
+
+fn render_c_surface_type(
+    ty: &ast::Type,
+    repr_c_aliases: &BTreeMap<String, String>,
+    callback_types: &[interop::CallbackTypeDef],
+) -> String {
+    match ty {
+        ast::Type::Function { .. } => callback_typedef_for(ty, callback_types)
+            .map(str::to_string)
+            .unwrap_or_else(|| "void*".to_string()),
+        ast::Type::Named { name, .. } => repr_c_aliases
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| sanitize_c_identifier(name)),
+        ast::Type::Ptr { mutable, to } => {
+            let rendered = render_c_surface_type(to, repr_c_aliases, callback_types);
+            if *mutable {
+                format!("{rendered}*")
+            } else {
+                format!("const {rendered}*")
+            }
+        }
+        _ => to_c_type(ty),
+    }
+}
+
+fn render_c_params(
+    function: &ast::Function,
+    repr_c_aliases: &BTreeMap<String, String>,
+    callback_types: &[interop::CallbackTypeDef],
+) -> String {
     let params = function
         .params
         .iter()
-        .map(|param| format!("{} {}", to_c_type(&param.ty), param.name))
+        .map(|param| {
+            format!(
+                "{} {}",
+                render_c_surface_type(&param.ty, repr_c_aliases, callback_types),
+                param.name
+            )
+        })
         .collect::<Vec<_>>()
         .join(", ");
     if params.is_empty() {
@@ -8774,12 +8915,17 @@ fn ffi_ownership_kind(name: &str) -> &'static str {
     }
 }
 
-fn ffi_param_contract(function: &ast::Function, param: &ast::Param) -> serde_json::Value {
+fn ffi_param_contract(
+    function: &ast::Function,
+    param: &ast::Param,
+    callback_types: &[interop::CallbackTypeDef],
+) -> serde_json::Value {
     let mut lifetime_anchor = serde_json::Value::Null;
     let mut ownership = "value";
     let mut nullability = "n/a";
     let mut mutability = "const";
     let mut view = serde_json::Value::Null;
+    let mut callback = serde_json::Value::Null;
     if let ast::Type::Ptr { mutable, .. } = &param.ty {
         ownership = ffi_ownership_kind(&param.name);
         nullability = if param.name.contains("_nullable") {
@@ -8802,6 +8948,13 @@ fn ffi_param_contract(function: &ast::Function, param: &ast::Param) -> serde_jso
                 "lengthParam": "len",
             });
         }
+    } else if matches!(param.ty, ast::Type::Function { .. }) {
+        ownership = "callback";
+        nullability = "non_null";
+        callback = serde_json::json!({
+            "typedef": callback_typedef_for(&param.ty, callback_types).unwrap_or("unsupported_callback"),
+            "signature": param.ty.to_string(),
+        });
     }
     serde_json::json!({
         "ownership": ownership,
@@ -8809,6 +8962,7 @@ fn ffi_param_contract(function: &ast::Function, param: &ast::Param) -> serde_jso
         "mutability": mutability,
         "lifetimeAnchor": lifetime_anchor,
         "view": view,
+        "callback": callback,
     })
 }
 
@@ -8826,17 +8980,21 @@ fn ffi_return_contract(ty: &ast::Type) -> serde_json::Value {
     })
 }
 
-fn ffi_callback_bindings(function: &ast::Function) -> Vec<serde_json::Value> {
+fn ffi_callback_bindings(
+    function: &ast::Function,
+    callback_types: &[interop::CallbackTypeDef],
+) -> Vec<serde_json::Value> {
     let mut out = Vec::new();
     for param in &function.params {
-        let name_lc = param.name.to_ascii_lowercase();
-        if !(name_lc.contains("callback") || name_lc.starts_with("cb")) {
+        if !matches!(param.ty, ast::Type::Function { .. }) {
             continue;
         }
         let base = param
             .name
             .trim_end_matches("_callback")
-            .trim_end_matches("_cb");
+            .trim_end_matches("_cb")
+            .trim_end_matches("_handler")
+            .trim_end_matches("_fn");
         let context_name = function
             .params
             .iter()
@@ -8852,6 +9010,8 @@ fn ffi_callback_bindings(function: &ast::Function) -> Vec<serde_json::Value> {
             "callbackParam": param.name,
             "contextParam": context_name,
             "bindingId": format!("cbctx:{base}"),
+            "typedef": callback_typedef_for(&param.ty, callback_types).unwrap_or("unsupported_callback"),
+            "signature": param.ty.to_string(),
             "obligation": "context_outlives_callback_registration",
         }));
     }
@@ -8864,12 +9024,13 @@ fn ffi_async_contract(function: &ast::Function) -> serde_json::Value {
     }
     let symbol = ffi_symbol_name(function);
     serde_json::json!({
-        "model": "async-handle-v1",
+        "model": "async-handle-sync-start-v1",
         "startSymbol": format!("{}_async_start", symbol),
         "pollSymbol": format!("{}_async_poll", symbol),
         "awaitSymbol": format!("{}_async_await", symbol),
         "dropSymbol": format!("{}_async_drop", symbol),
         "resultType": to_c_type(&function.return_type),
+        "startMode": "synchronous-execute-then-store",
     })
 }
 
@@ -8892,6 +9053,10 @@ fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
         | ast::Type::Int { .. } => true,
         ast::Type::Ptr { to, .. } => is_ffi_stable_type(to, repr_c_names),
         ast::Type::Named { name, args } => args.is_empty() && repr_c_names.contains(name),
+        ast::Type::Function { params, ret } => {
+            params.iter().all(|param| is_ffi_stable_type(param, repr_c_names))
+                && is_ffi_stable_type(ret, repr_c_names)
+        }
         ast::Type::BigInt
         | ast::Type::BigUint
         | ast::Type::Decimal128
@@ -8920,7 +9085,6 @@ fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
         | ast::Type::Tuple(_)
         | ast::Type::Ref { .. }
         | ast::Type::Array { .. }
-        | ast::Type::Function { .. }
         | ast::Type::TypeVar(_) => false,
     }
 }
@@ -10490,8 +10654,9 @@ mod tests {
         let abi_path = header.with_extension("abi.json");
         let abi_text = std::fs::read_to_string(&abi_path).expect("abi manifest should be created");
         assert!(abi_text.contains("\"async\": true"));
-        assert!(abi_text.contains("\"execution\": \"async-handle-v1\""));
+        assert!(abi_text.contains("\"execution\": \"async-handle-sync-start-v1\""));
         assert!(abi_text.contains("\"startSymbol\": \"flush_async_start\""));
+        assert!(abi_text.contains("\"startMode\": \"synchronous-execute-then-store\""));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(header);
@@ -10582,6 +10747,68 @@ mod tests {
         )
         .expect_err("headers command should reject pointer without len");
         assert!(error.to_string().contains("paired length parameter"));
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn headers_command_emits_typed_callback_typedefs_and_import_contracts() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-headers-callback-{suffix}.fzy"));
+        let header = std::env::temp_dir().join(format!("fozzylang-headers-callback-{suffix}.h"));
+        std::fs::write(
+            &source,
+            "ext unsafe c fn host_apply(cb: fn(i32) -> i32, cb_ctx: *mut u8, buf_borrowed: *u8, buf_len: usize) -> i32;\n#[ffi_panic(abort)]\npubext c fn run(cb: fn(i32) -> i32, cb_ctx: *mut u8, value: i32) -> i32;\n",
+        )
+        .expect("source should be written");
+
+        run(
+            Command::Headers {
+                path: source.clone(),
+                output: Some(header.clone()),
+            },
+            Format::Text,
+        )
+        .expect("headers command should succeed");
+        let header_text = std::fs::read_to_string(&header).expect("header should be created");
+        assert!(header_text.contains("typedef int32_t (*fz_callback_sig0_v0)(int32_t arg0);"));
+        assert!(header_text.contains("int32_t run(fz_callback_sig0_v0 cb,"));
+        let abi_path = header.with_extension("abi.json");
+        let abi_text = std::fs::read_to_string(&abi_path).expect("abi manifest should be created");
+        assert!(abi_text.contains("\"imports\""));
+        assert!(abi_text.contains("\"callbackAbi\": \"signature-typed-v1\""));
+        assert!(abi_text.contains("\"signature\": \"fn(i32) -> i32\""));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(header);
+        let _ = std::fs::remove_file(abi_path);
+    }
+
+    #[test]
+    fn check_rejects_pointer_like_extern_c_import_without_pointer_contract_suffix() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-extern-c-contract-missing-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "ext unsafe c fn c_read(buf: *u8, len: usize) -> i32;\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Check {
+                path: source.clone(),
+            },
+            Format::Text,
+        )
+        .expect("check command should return diagnostics");
+        assert!(output.contains("must declare ownership suffix and paired length/context contract"));
+
         let _ = std::fs::remove_file(source);
     }
 
@@ -11582,7 +11809,7 @@ mod tests {
         std::fs::write(
             &source,
             format!(
-                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn worker() -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"printf ok\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    discard proc.wait(handle, 1000)\n    let payload = map.new()\n    discard map.set(payload, \"exit\", json.str(\"0\"))\n    discard map.set(payload, \"stdout\", json.str(proc.stdout(handle)))\n    discard map.set(payload, \"stderr\", json.str(proc.stderr(handle)))\n    fs.write_file(\"{quoted_out}\", json.object(payload))\n    return 0\n}}\n\nfn main() -> i32 {{\n    let handle = spawn(worker)\n    return join(handle)\n}}\n"
+                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn worker() -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"printf ok\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    discard proc.wait(handle, 1000)\n    let stdout = proc.stdout(handle)\n    let stderr = proc.stderr(handle)\n    discard proc.close(handle)\n    let payload = map.new()\n    discard map.set(payload, \"exit\", json.str(\"0\"))\n    discard map.set(payload, \"stdout\", json.str(stdout))\n    discard map.set(payload, \"stderr\", json.str(stderr))\n    fs.write_file(\"{quoted_out}\", json.object(payload))\n    return 0\n}}\n\nfn main() -> i32 {{\n    let handle = spawn(worker)\n    return join(handle)\n}}\n"
             ),
         )
         .expect("source should be written");
@@ -11849,7 +12076,7 @@ mod tests {
         std::fs::write(
             &source,
             format!(
-                "use core.http;\nuse core.proc;\nuse core.thread;\n\nfn probe_worker() -> i32 {{\n    return 7\n}}\n\nfn left_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn right_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn write_response(conn: HttpHandle) -> i32 {{\n    let probe = spawn(probe_worker)\n    let left = spawn(left_worker)\n    let right = spawn(right_worker)\n    let probe_result = join(probe)\n    let left_result = join(left)\n    let right_result = join(right)\n    if probe_result == 7 && left_result == 0 && right_result == 0 {{\n        let payload = map.new()\n        discard map.set(payload, \"probe_result\", json.str(\"7\"))\n        discard map.set(payload, \"left_result\", json.str(\"0\"))\n        discard map.set(payload, \"right_result\", json.str(\"0\"))\n        http.write_json(conn, 200, json.object(payload))\n        return 0\n    }}\n    let err = map.new()\n    discard map.set(err, \"probe_result\", json.str(\"bad\"))\n    discard map.set(err, \"left_result\", json.str(\"bad\"))\n    discard map.set(err, \"right_result\", json.str(\"bad\"))\n    http.write_json(conn, 500, json.object(err))\n    return 13\n}}\n\nfn main() -> i32 {{\n    let listener = http.bind()\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    http.read(conn)\n    let method = http.method(conn)\n    let path = http.path(conn)\n    if method == \"POST\" && path == \"/tools/parallel_bash/run\" {{\n        return write_response(conn)\n    }}\n    http.write_json(conn, 404, \"{{}}\")\n    return 0\n}}\n",
+                "use core.http;\nuse core.proc;\nuse core.thread;\n\nfn probe_worker() -> i32 {{\n    return 7\n}}\n\nfn left_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn right_worker() -> i32 {{\n    return proc.run(\"/bin/sh -lc 'exit 0'\")\n}}\n\nfn write_response(conn: HttpHandle) -> i32 {{\n    let probe = spawn(probe_worker)\n    let left = spawn(left_worker)\n    let right = spawn(right_worker)\n    let probe_result = join(probe)\n    let left_result = join(left)\n    let right_result = join(right)\n    if probe_result == 7 && left_result == 0 && right_result == 0 {{\n        let payload = map.new()\n        discard map.set(payload, \"probe_result\", json.str(\"7\"))\n        discard map.set(payload, \"left_result\", json.str(\"0\"))\n        discard map.set(payload, \"right_result\", json.str(\"0\"))\n        http.write_json(conn, 200, json.object(payload))\n        return 0\n    }}\n    let err = map.new()\n    discard map.set(err, \"probe_result\", json.str(\"bad\"))\n    discard map.set(err, \"left_result\", json.str(\"bad\"))\n    discard map.set(err, \"right_result\", json.str(\"bad\"))\n    http.write_json(conn, 500, json.object(err))\n    return 13\n}}\n\nfn main() -> i32 {{\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {{\n        return 21\n    }}\n    let conn = http.accept()\n    http.read(conn)\n    let method = http.method(conn)\n    let path = http.path(conn)\n    if method == \"POST\" && path == \"/tools/parallel_bash/run\" {{\n        return write_response(conn)\n    }}\n    http.write_json(conn, 404, \"{{}}\")\n    return 0\n}}\n",
             ),
         )
         .expect("source should be written");
@@ -11951,7 +12178,7 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             &source,
-            "use core.http;\n\nfn write_echo(conn: HttpHandle, body: JsonHandle) -> i32 {\n    let message = json.get_str(body, \"message\")\n    let tag = json.get_str(body, \"tag\")\n    let meta = map.new()\n    discard map.set(meta, \"message\", json.str(message))\n    discard map.set(meta, \"tag\", json.str(tag))\n    discard map.set(meta, \"kind\", json.str(\"body_json\"))\n    let items = list.new()\n    discard list.push(items, json.str(message))\n    discard list.push(items, json.str(tag))\n    discard list.push(items, json.object(meta))\n    let payload = map.new()\n    discard map.set(payload, \"ok\", json.raw(\"true\"))\n    discard map.set(payload, \"message\", json.str(message))\n    discard map.set(payload, \"tag\", json.str(tag))\n    discard map.set(payload, \"echo\", json.object(meta))\n    discard map.set(payload, \"items\", json.array(items))\n    return http.write_json(conn, 200, json.object(payload))\n}\n\nfn main() -> i32 {\n    let listener = http.bind()\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let mut served = 0\n    while served < 12 {\n        let conn = http.accept()\n        http.read(conn)\n        let method = http.method(conn)\n        let path = http.path(conn)\n        if method == \"POST\" && path == \"/echo\" {\n            let body = http.body_json(conn)\n            discard write_echo(conn, body)\n        } else {\n            http.write_json(conn, 404, \"{}\")\n        }\n        served = served + 1\n    }\n    return 0\n}\n",
+            "use core.http;\n\nfn write_echo(conn: HttpHandle, body: JsonHandle) -> i32 {\n    let message = json.get_str(body, \"message\")\n    let tag = json.get_str(body, \"tag\")\n    let meta = map.new()\n    discard map.set(meta, \"message\", json.str(message))\n    discard map.set(meta, \"tag\", json.str(tag))\n    discard map.set(meta, \"kind\", json.str(\"body_json\"))\n    let items = list.new()\n    discard list.push(items, json.str(message))\n    discard list.push(items, json.str(tag))\n    discard list.push(items, json.object(meta))\n    let payload = map.new()\n    discard map.set(payload, \"ok\", json.raw(\"true\"))\n    discard map.set(payload, \"message\", json.str(message))\n    discard map.set(payload, \"tag\", json.str(tag))\n    discard map.set(payload, \"echo\", json.object(meta))\n    discard map.set(payload, \"items\", json.array(items))\n    return http.write_json(conn, 200, json.object(payload))\n}\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let mut served = 0\n    while served < 12 {\n        let conn = http.accept()\n        http.read(conn)\n        let method = http.method(conn)\n        let path = http.path(conn)\n        if method == \"POST\" && path == \"/echo\" {\n            let body = http.body_json(conn)\n            discard write_echo(conn, body)\n        } else {\n            http.write_json(conn, 404, \"{}\")\n        }\n        served = served + 1\n    }\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -13162,7 +13389,7 @@ mod tests {
         std::fs::write(
             root.join("src/services/tools.fzy"),
             format!(
-                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn shell_payload(command: str, out_path: str) -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, command)\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    discard proc.wait(handle, 1000)\n    let payload = map.new()\n    discard map.set(payload, \"status\", json.str(\"ok\"))\n    discard map.set(payload, \"stdout\", json.str(proc.stdout(handle)))\n    discard map.set(payload, \"stderr\", json.str(proc.stderr(handle)))\n    fs.write_file(out_path, json.object(payload))\n    return 0\n}}\n\nfn worker_left() -> i32 {{\n    return shell_payload(\"printf left\", \"{quoted_left}\")\n}}\n\nfn worker_right() -> i32 {{\n    return shell_payload(\"printf right\", \"{quoted_right}\")\n}}\n\nfn probe_worker() -> i32 {{\n    return 7\n}}\n\nfn run_probe() -> i32 {{\n    let probe = spawn(probe_worker)\n    let probe_result = join(probe)\n    let left = spawn(worker_left)\n    let right = spawn(worker_right)\n    let left_result = join(left)\n    let right_result = join(right)\n    if probe_result == 7 && left_result == 0 && right_result == 0 && fs.exists(\"{quoted_left}\") == 1 && fs.exists(\"{quoted_right}\") == 1 {{\n        return 0\n    }}\n    return 13\n}}\n"
+                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn shell_payload(command: str, out_path: str) -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, command)\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    discard proc.wait(handle, 1000)\n    let stdout = proc.stdout(handle)\n    let stderr = proc.stderr(handle)\n    discard proc.close(handle)\n    let payload = map.new()\n    discard map.set(payload, \"status\", json.str(\"ok\"))\n    discard map.set(payload, \"stdout\", json.str(stdout))\n    discard map.set(payload, \"stderr\", json.str(stderr))\n    fs.write_file(out_path, json.object(payload))\n    return 0\n}}\n\nfn worker_left() -> i32 {{\n    return shell_payload(\"printf left\", \"{quoted_left}\")\n}}\n\nfn worker_right() -> i32 {{\n    return shell_payload(\"printf right\", \"{quoted_right}\")\n}}\n\nfn probe_worker() -> i32 {{\n    return 7\n}}\n\nfn run_probe() -> i32 {{\n    let probe = spawn(probe_worker)\n    let probe_result = join(probe)\n    let left = spawn(worker_left)\n    let right = spawn(worker_right)\n    let left_result = join(left)\n    let right_result = join(right)\n    if probe_result == 7 && left_result == 0 && right_result == 0 && fs.exists(\"{quoted_left}\") == 1 && fs.exists(\"{quoted_right}\") == 1 {{\n        return 0\n    }}\n    return 13\n}}\n"
             ),
         )
         .expect("tools source should be written");

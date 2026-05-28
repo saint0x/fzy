@@ -46,6 +46,13 @@ The v1 stdlib provides production baseline primitives for:
 - `list_dir(path) -> Result<Vec<String>, IoError>`
 - `metadata(path) -> Result<FileMetadata, IoError>`
 - `remove(path) -> Result<(), IoError>`
+- Language-facing `core.io` wrappers expose typed metadata plus native copy/remove staging helpers:
+  - `io.metadata(path)` with `exists`, `is_file`, `is_dir`, `is_symlink`, `size`, `modified_unix_secs`
+  - `io.copy_file(src, dst)`
+  - `io.copy_tree(src, dst)`
+  - `io.stage_tree(src, dst)`
+  - `io.remove(path)` for recursive file-or-directory cleanup
+  - `io.list_dir_entries(path)` plus `io.dir_len/io.dir_name/io.dir_path/io.dir_entry`
 - `read_stream` / `write_stream` APIs are bounded and deterministic-backend compatible.
 - Errors:
   - Backend errors are mapped to structured `IoError` variants with path context.
@@ -117,7 +124,7 @@ The v1 stdlib provides production baseline primitives for:
   - `proc.env_new/set`
   - `proc.spawn_cmd` / `proc.run_cmd`
 - `proc.run*` waits for completion and returns the child exit code.
-- `proc.spawn*` returns a process handle for later wait/stdout/stderr/exit inspection.
+- `proc.spawn*` returns a process handle for later wait/stdout/stderr/exit inspection and explicit `proc.close(handle)` cleanup.
 - Canonical structured process pattern:
 
 ```fzy
@@ -127,6 +134,7 @@ discard proc.argv_push(argv, "json")
 let env_map = proc.env_new()
 discard proc.env_set(env_map, "MODE", "prod")
 let handle = proc.spawn_cmd("/usr/bin/tool", argv, env_map, "")
+defer proc.close(handle)
 discard proc.wait(handle, 1000)
 let exit = proc.exit_code(handle)
 let out = proc.stdout(handle)
@@ -136,7 +144,7 @@ let err = proc.stderr(handle)
 ## Resource-Management Guidance
 
 - Pair owned resources with same-scope `defer` cleanup whenever possible.
-- Canonical safe patterns include `defer free(ptr)` for heap memory and `defer close(handle)` for linear handles.
+- Canonical safe patterns include `defer free(ptr)` for heap memory, `defer proc.close(handle)` for process handles, and `defer close(handle)` for other linear stdlib/runtime wrappers that expose bare `close(...)`.
 - `alloc(...)` / `free(...)` remain part of the safe subset when verifier tracking succeeds; they do not require `unsafe` unless combined with unchecked raw-memory operations.
 
 ### `term`
@@ -206,6 +214,7 @@ Transcript guidance:
   - `log.verbose()`
   - `log.default_config()`
   - `log.request_log(...)`
+- Importing `core.log` and calling its configuration helpers is ordinary supported production usage; it must not introduce verifier-only ownership diagnostics by itself.
 
 ### `text`
 
@@ -251,10 +260,20 @@ Transcript guidance:
   - `io.write_text(path, value)`
   - `io.mkdir(path)`
   - `io.exists(path)`
+  - `io.metadata(path)`
+  - `io.is_file(path)`
+  - `io.is_dir(path)`
+  - `io.is_symlink(path)`
+  - `io.copy_file(src, dst)`
+  - `io.copy_tree(src, dst)`
+  - `io.stage_tree(src, dst)`
+  - `io.remove(path)`
   - `io.remove_file(path)`
   - `io.stat_size(path)`
+  - `io.stat_mtime(path)`
   - `io.temp_file(prefix)`
   - `io.list_dir(path)`
+  - `io.list_dir_entries(path)`
 
 ### `collections` + JSON
 

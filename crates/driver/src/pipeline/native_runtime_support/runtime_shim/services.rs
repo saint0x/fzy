@@ -461,6 +461,272 @@ int32_t fz_native_storage_kv_put(int32_t kv_handle, int32_t key_id, int32_t valu
   return fz_storage_write_atomic_path(path, content) == 0 ? 0 : -1;
 }
 
+static int fz_fs_read_lstat(const char* path, struct stat* st, const char* context) {
+  if (path == NULL || path[0] == '\0' || st == NULL) {
+    errno = EINVAL;
+    fz_set_last_error(EINVAL, 3, context);
+    return -1;
+  }
+  if (lstat(path, st) == 0) {
+    return 0;
+  }
+  fz_set_last_error(errno, 3, context);
+  return -1;
+}
+
+static char* fz_fs_join_owned(const char* left, const char* right) {
+  if (left == NULL) left = "";
+  if (right == NULL) right = "";
+  size_t left_len = strlen(left);
+  size_t right_len = strlen(right);
+  int need_sep = left_len > 0 && left[left_len - 1] != '/';
+  char* out = (char*)malloc(left_len + right_len + (need_sep ? 2 : 1));
+  if (out == NULL) {
+    errno = ENOMEM;
+    return NULL;
+  }
+  strcpy(out, left);
+  if (need_sep) strcat(out, "/");
+  strcat(out, right);
+  return out;
+}
+
+static int fz_fs_mkdirs_owned(char* path) {
+  if (path == NULL || path[0] == '\0') {
+    errno = EINVAL;
+    return -1;
+  }
+  size_t len = strlen(path);
+  if (len == 0) {
+    errno = EINVAL;
+    return -1;
+  }
+  for (size_t i = 1; i < len; i++) {
+    if (path[i] != '/') continue;
+    path[i] = '\0';
+    if (path[0] != '\0' && mkdir(path, 0755) != 0 && errno != EEXIST) {
+      path[i] = '/';
+      return -1;
+    }
+    path[i] = '/';
+  }
+  if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+    return -1;
+  }
+  return 0;
+}
+
+static int fz_fs_ensure_parent_dirs(const char* path, const char* context) {
+  if (path == NULL || path[0] == '\0') {
+    fz_set_last_error(EINVAL, 3, context);
+    return -1;
+  }
+  const char* slash = strrchr(path, '/');
+  if (slash == NULL) {
+    return 0;
+  }
+  size_t len = (size_t)(slash - path);
+  if (len == 0) {
+    return 0;
+  }
+  char* parent = (char*)malloc(len + 1);
+  if (parent == NULL) {
+    fz_set_last_error(ENOMEM, 3, context);
+    return -1;
+  }
+  memcpy(parent, path, len);
+  parent[len] = '\0';
+  int rc = fz_fs_mkdirs_owned(parent);
+  if (rc != 0) {
+    fz_set_last_error(errno, 3, context);
+  }
+  free(parent);
+  return rc;
+}
+
+static int fz_fs_copy_file_path(const char* src, const char* dst, const char* context) {
+  struct stat st;
+  if (fz_fs_read_lstat(src, &st, context) != 0) {
+    return -1;
+  }
+  if (!S_ISREG(st.st_mode)) {
+    fz_set_last_error(EINVAL, 3, context);
+    return -1;
+  }
+  if (fz_fs_ensure_parent_dirs(dst, context) != 0) {
+    return -1;
+  }
+  int in_fd = open(src, O_RDONLY);
+  if (in_fd < 0) {
+    fz_set_last_error(errno, 3, context);
+    return -1;
+  }
+  int out_fd = open(dst, O_CREAT | O_TRUNC | O_WRONLY, st.st_mode & 0777 ? st.st_mode & 0777 : 0644);
+  if (out_fd < 0) {
+    close(in_fd);
+    fz_set_last_error(errno, 3, context);
+    return -1;
+  }
+  char buf[8192];
+  int rc = 0;
+  for (;;) {
+    ssize_t got = read(in_fd, buf, sizeof(buf));
+    if (got == 0) {
+      break;
+    }
+    if (got < 0) {
+      if (errno == EINTR) continue;
+      rc = -1;
+      break;
+    }
+    char* p = buf;
+    ssize_t left = got;
+    while (left > 0) {
+      ssize_t wrote = write(out_fd, p, (size_t)left);
+      if (wrote < 0) {
+        if (errno == EINTR) continue;
+        rc = -1;
+        left = 0;
+        break;
+      }
+      p += wrote;
+      left -= wrote;
+    }
+    if (rc != 0) {
+      break;
+    }
+  }
+  if (rc == 0 && fsync(out_fd) != 0) {
+    rc = -1;
+  }
+  int saved_errno = errno;
+  close(in_fd);
+  close(out_fd);
+  if (rc != 0) {
+    errno = saved_errno;
+    fz_set_last_error(errno, 3, context);
+    return -1;
+  }
+  return 0;
+}
+
+static int fz_fs_remove_path(const char* path, const char* context) {
+  struct stat st;
+  if (fz_fs_read_lstat(path, &st, context) != 0) {
+    return -1;
+  }
+  if (S_ISDIR(st.st_mode) && !S_ISLNK(st.st_mode)) {
+    DIR* dir = opendir(path);
+    if (dir == NULL) {
+      fz_set_last_error(errno, 3, context);
+      return -1;
+    }
+    int rc = 0;
+    struct dirent* ent = NULL;
+    while ((ent = readdir(dir)) != NULL) {
+      if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+      char* child = fz_fs_join_owned(path, ent->d_name);
+      if (child == NULL) {
+        rc = -1;
+        break;
+      }
+      if (fz_fs_remove_path(child, context) != 0) {
+        free(child);
+        rc = -1;
+        break;
+      }
+      free(child);
+    }
+    int saved_errno = errno;
+    closedir(dir);
+    if (rc != 0) {
+      errno = saved_errno;
+      return -1;
+    }
+    if (rmdir(path) != 0) {
+      fz_set_last_error(errno, 3, context);
+      return -1;
+    }
+    return 0;
+  }
+  if (unlink(path) != 0) {
+    fz_set_last_error(errno, 3, context);
+    return -1;
+  }
+  return 0;
+}
+
+static int fz_fs_copy_tree_path(const char* src, const char* dst, const char* context) {
+  struct stat st;
+  if (fz_fs_read_lstat(src, &st, context) != 0) {
+    return -1;
+  }
+  if (S_ISLNK(st.st_mode)) {
+    fz_set_last_error(EINVAL, 3, context);
+    return -1;
+  }
+  if (S_ISREG(st.st_mode)) {
+    return fz_fs_copy_file_path(src, dst, context);
+  }
+  if (!S_ISDIR(st.st_mode)) {
+    fz_set_last_error(EINVAL, 3, context);
+    return -1;
+  }
+  char* dst_owned = strdup(dst);
+  if (dst_owned == NULL) {
+    fz_set_last_error(ENOMEM, 3, context);
+    return -1;
+  }
+  if (fz_fs_mkdirs_owned(dst_owned) != 0) {
+    free(dst_owned);
+    fz_set_last_error(errno, 3, context);
+    return -1;
+  }
+  free(dst_owned);
+  DIR* dir = opendir(src);
+  if (dir == NULL) {
+    fz_set_last_error(errno, 3, context);
+    return -1;
+  }
+  int rc = 0;
+  struct dirent* ent = NULL;
+  while ((ent = readdir(dir)) != NULL) {
+    if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+    char* src_child = fz_fs_join_owned(src, ent->d_name);
+    char* dst_child = fz_fs_join_owned(dst, ent->d_name);
+    if (src_child == NULL || dst_child == NULL) {
+      free(src_child);
+      free(dst_child);
+      errno = ENOMEM;
+      rc = -1;
+      break;
+    }
+    if (fz_fs_copy_tree_path(src_child, dst_child, context) != 0) {
+      free(src_child);
+      free(dst_child);
+      rc = -1;
+      break;
+    }
+    free(src_child);
+    free(dst_child);
+  }
+  int saved_errno = errno;
+  closedir(dir);
+  if (rc != 0) {
+    errno = saved_errno;
+    return -1;
+  }
+  return 0;
+}
+
+static int fz_compare_cstr_ptrs(const void* left, const void* right) {
+  const char* const* a = (const char* const*)left;
+  const char* const* b = (const char* const*)right;
+  const char* av = (a != NULL && *a != NULL) ? *a : "";
+  const char* bv = (b != NULL && *b != NULL) ? *b : "";
+  return strcmp(av, bv);
+}
+
 int32_t fz_native_fs_mkdir(int32_t path_id) {
   const char* path = fz_lookup_string(path_id);
   if (path == NULL || path[0] == '\0') return -1;
@@ -472,22 +738,52 @@ int32_t fz_native_fs_exists(int32_t path_id) {
   const char* path = fz_lookup_string(path_id);
   if (path == NULL || path[0] == '\0') return 0;
   struct stat st;
-  return stat(path, &st) == 0 ? 1 : 0;
+  return lstat(path, &st) == 0 ? 1 : 0;
+}
+
+int32_t fz_native_fs_is_file(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  struct stat st;
+  if (fz_fs_read_lstat(path, &st, "fs.is_file failed") != 0) return 0;
+  return S_ISREG(st.st_mode) ? 1 : 0;
+}
+
+int32_t fz_native_fs_is_dir(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  struct stat st;
+  if (fz_fs_read_lstat(path, &st, "fs.is_dir failed") != 0) return 0;
+  return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+int32_t fz_native_fs_is_symlink(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  struct stat st;
+  if (fz_fs_read_lstat(path, &st, "fs.is_symlink failed") != 0) return 0;
+  return S_ISLNK(st.st_mode) ? 1 : 0;
 }
 
 int32_t fz_native_fs_stat_size(int32_t path_id) {
   const char* path = fz_lookup_string(path_id);
-  if (path == NULL || path[0] == '\0') return -1;
   struct stat st;
-  if (stat(path, &st) != 0) return -1;
+  if (fz_fs_read_lstat(path, &st, "fs.stat_size failed") != 0) return -1;
   return (int32_t)st.st_size;
+}
+
+int32_t fz_native_fs_stat_mtime(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  struct stat st;
+  if (fz_fs_read_lstat(path, &st, "fs.stat_mtime failed") != 0) return -1;
+  return (int32_t)st.st_mtime;
 }
 
 int32_t fz_native_fs_listdir(int32_t path_id) {
   const char* path = fz_lookup_string(path_id);
   if (path == NULL || path[0] == '\0') return -1;
   DIR* dir = opendir(path);
-  if (dir == NULL) return -1;
+  if (dir == NULL) {
+    fz_set_last_error(errno, 3, "fs.listdir failed");
+    return -1;
+  }
   pthread_mutex_lock(&fz_collections_lock);
   int32_t list_handle = fz_list_alloc();
   fz_list_state* list = fz_list_get(list_handle);
@@ -496,6 +792,9 @@ int32_t fz_native_fs_listdir(int32_t path_id) {
     while ((ent = readdir(dir)) != NULL) {
       if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
       (void)fz_list_push_cstr(list, ent->d_name);
+    }
+    if (list->count > 1) {
+      qsort(list->items, (size_t)list->count, sizeof(char*), fz_compare_cstr_ptrs);
     }
   }
   pthread_mutex_unlock(&fz_collections_lock);
@@ -509,6 +808,11 @@ int32_t fz_native_fs_remove_file(int32_t path_id) {
   return unlink(path) == 0 ? 0 : -1;
 }
 
+int32_t fz_native_fs_remove(int32_t path_id) {
+  const char* path = fz_lookup_string(path_id);
+  return fz_fs_remove_path(path, "fs.remove failed");
+}
+
 int32_t fz_native_fs_temp_file(int32_t prefix_id) {
   const char* prefix = fz_lookup_string(prefix_id);
   if (prefix == NULL || prefix[0] == '\0') prefix = "fz";
@@ -518,6 +822,18 @@ int32_t fz_native_fs_temp_file(int32_t prefix_id) {
   if (fd < 0) return fz_intern_slice("", 0);
   close(fd);
   return fz_intern_slice(tmpl, strlen(tmpl));
+}
+
+int32_t fz_native_fs_copy_file(int32_t src_id, int32_t dst_id) {
+  const char* src = fz_lookup_string(src_id);
+  const char* dst = fz_lookup_string(dst_id);
+  return fz_fs_copy_file_path(src, dst, "fs.copy_file failed");
+}
+
+int32_t fz_native_fs_copy_tree(int32_t src_id, int32_t dst_id) {
+  const char* src = fz_lookup_string(src_id);
+  const char* dst = fz_lookup_string(dst_id);
+  return fz_fs_copy_tree_path(src, dst, "fs.copy_tree failed");
 }
 
 int32_t fz_native_path_join(int32_t left_id, int32_t right_id) {

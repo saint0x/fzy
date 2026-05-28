@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "compiler-verify-thread-boundary-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile; repo = pathlib.Path.cwd();\n\ndef write_project(name, source):\n    root = pathlib.Path(tempfile.mkdtemp(prefix=f'fozzylang-{name}-'))\n    (root / 'src').mkdir(parents=True, exist_ok=True)\n    (root / 'fozzy.toml').write_text(f'[package]\\nname=\"{name}\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"{name}\"\\npath=\"src/main.fzy\"\\n')\n    (root / 'src/main.fzy').write_text(source)\n    return root\n\ndef verify(root, expect):\n    proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'verify', str(root), '--json'], cwd=str(repo), capture_output=True, text=True)\n    payload = json.loads(proc.stdout.strip())\n    assert proc.returncode == expect, (proc.returncode, payload)\n    return payload\n\nborrow_fail = write_project('thread_borrow_fail', \"async fn worker(v: &'a i32) -> &'a i32 {\\n    return v\\n}\\nfn main() -> i32 {\\n    return 0\\n}\\n\")\nmutable_fail = write_project('thread_mutable_fail', \"async fn worker(v: &'a mut i32) -> i32 {\\n    discard v\\n    return 0\\n}\\nfn main() -> i32 {\\n    return 0\\n}\\n\")\nborrow_pass = write_project('borrow_pass', \"fn borrow(v: &'a i32) -> &'a i32 {\\n    return v\\n}\\nfn main() -> i32 {\\n    return 0\\n}\\n\")\n\nborrow_payload = verify(borrow_fail, 1)\nmutable_payload = verify(mutable_fail, 1)\npass_payload = verify(borrow_pass, 0)\n\nborrow_diag = next(item for item in borrow_payload['items'] if 'thread-capable boundary' in item['message'])\nassert 'Send/Sync-safe handle' in (borrow_diag.get('help') or ''), borrow_diag\nassert 'capability token parameters' not in (borrow_diag.get('help') or ''), borrow_diag\n\nmutable_diag = next(item for item in mutable_payload['items'] if 'Send/Sync-safe wrapper before thread crossing' in item['message'])\nassert 'wrap mutable references/pointers' in (mutable_diag.get('help') or ''), mutable_diag\nassert 'capability token parameters' not in (mutable_diag.get('help') or ''), mutable_diag\n\nassert pass_payload['errors'] == 0, pass_payload\nassert not any('thread-capable boundary' in item['message'] for item in pass_payload['items']), pass_payload\nprint('compiler-verify-thread-boundary-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-verify-thread-boundary-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile; repo = pathlib.Path.cwd();\n\ndef write_project(name, source):\n    root = pathlib.Path(tempfile.mkdtemp(prefix=f'fozzylang-{name}-'))\n    (root / 'src').mkdir(parents=True, exist_ok=True)\n    (root / 'fozzy.toml').write_text(f'[package]\\nname=\"{name}\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"{name}\"\\npath=\"src/main.fzy\"\\n')\n    (root / 'src/main.fzy').write_text(source)\n    return root\n\ndef verify(root, expect):\n    proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'verify', str(root), '--json'], cwd=str(repo), capture_output=True, text=True)\n    payload = json.loads(proc.stdout.strip())\n    assert proc.returncode == expect, (proc.returncode, payload)\n    return payload\n\nborrow_fail = write_project('thread_borrow_fail', \"async fn worker(v: &'a i32) -> &'a i32 {\\n    return v\\n}\\nfn main() -> i32 {\\n    return 0\\n}\\n\")\nmutable_fail = write_project('thread_mutable_fail', \"async fn worker(v: &'a mut i32) -> i32 {\\n    discard v\\n    return 0\\n}\\nfn main() -> i32 {\\n    return 0\\n}\\n\")\nborrow_pass = write_project('borrow_pass', \"fn borrow(v: &'a i32) -> &'a i32 {\\n    return v\\n}\\nfn main() -> i32 {\\n    return 0\\n}\\n\")\n\nborrow_payload = verify(borrow_fail, 1)\nmutable_payload = verify(mutable_fail, 1)\npass_payload = verify(borrow_pass, 0)\n\nborrow_diag = next(item for item in borrow_payload['items'] if 'thread-capable boundary' in item['message'])\nassert 'Send/Sync-safe handle' in (borrow_diag.get('help') or ''), borrow_diag\nassert 'capability token parameters' not in (borrow_diag.get('help') or ''), borrow_diag\n\nmutable_diag = next(item for item in mutable_payload['items'] if 'Send/Sync-safe wrapper before thread crossing' in item['message'])\nassert 'wrap mutable references/pointers' in (mutable_diag.get('help') or ''), mutable_diag\nassert 'capability token parameters' not in (mutable_diag.get('help') or ''), mutable_diag\n\nassert pass_payload['errors'] == 0, pass_payload\nassert not any('thread-capable boundary' in item['message'] for item in pass_payload['items']), pass_payload\nprint('compiler-verify-thread-boundary-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "compiler-verify-thread-boundary-ok\n"
+    }
+  ]
+}

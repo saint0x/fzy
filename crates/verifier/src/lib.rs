@@ -1,6 +1,6 @@
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
 use fir::{FirModule, TypedFunction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Default)]
 pub struct VerifyPolicy {
@@ -169,6 +169,21 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 ),
             ).with_catalog_key("verifier.extern_c_pointer_requires_unsafe"));
         }
+        if let Some(param_name) = extern_c_import_pointer_param_missing_contract(function) {
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "extern C import `{}` pointer parameter `{}` must declare ownership suffix and paired length/context contract",
+                        function.name, param_name
+                    ),
+                    Some(
+                        "use `_owned`, `_borrowed`, `_out`, or `_inout`, and pair raw pointers with `*_len`/`len` or an adjacent `*_ctx` anchor".to_string(),
+                    ),
+                )
+                .with_catalog_key("verifier.extern_c_pointer_requires_contract"),
+            );
+        }
         if let Some(callback_param) = callback_param_missing_adjacent_context_anchor(function) {
             report.diagnostics.push(
                 Diagnostic::new(
@@ -183,6 +198,34 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                     ),
                 )
                 .with_catalog_key("verifier.extern_c_callback_requires_context_anchor"),
+            );
+        }
+        let repr_c_names = collect_repr_c_names(module);
+        if let Some(detail) = extern_c_import_unstable_ffi_type(function, &repr_c_names) {
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    detail,
+                    Some(
+                        "use only FFI-stable scalars, raw pointers, function pointers, or #[repr(C)] named types in extern C imports".to_string(),
+                    ),
+                )
+                .with_catalog_key("verifier.extern_c_unstable_type"),
+            );
+        }
+        if is_extern_c_import(function) && function.is_async {
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "extern C import `{}` cannot be async; async-handle ABI is export-only in native ship v0",
+                        function.name
+                    ),
+                    Some(
+                        "model this boundary as sync import or wrap it in an explicit exported async-handle facade".to_string(),
+                    ),
+                )
+                .with_catalog_key("verifier.extern_c_import_async_unsupported"),
             );
         }
     }
@@ -534,22 +577,6 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         ));
     }
 
-    for resource in &module.linear_resources {
-        let released = module
-            .deferred_resources
-            .iter()
-            .any(|deferred| deferred == resource);
-        if !released {
-            report.diagnostics.push(Diagnostic::new(
-                Severity::Error,
-                format!("linear resource `{resource}` is not released by `free(...)`, `close(...)`, or `defer` cleanup"),
-                Some(format!(
-                    "release `{resource}` exactly once with direct cleanup or `defer` cleanup in scope"
-                )),
-            ));
-        }
-    }
-
     if module.matches_without_wildcard > 0 {
         report.diagnostics.push(Diagnostic::new(
             if policy.safe_profile {
@@ -702,8 +729,7 @@ fn module_needs_explicit_capabilities(module: &FirModule) -> bool {
 }
 
 fn extern_c_import_requires_unsafe(function: &TypedFunction) -> bool {
-    function.is_extern
-        && function.abi.as_deref() == Some("c")
+    is_extern_c_import(function)
         && !function.is_unsafe
         && (function.return_type.is_pointer_like()
             || function
@@ -712,8 +738,28 @@ fn extern_c_import_requires_unsafe(function: &TypedFunction) -> bool {
                 .any(|param| param.ty.is_pointer_like()))
 }
 
+fn extern_c_import_pointer_param_missing_contract(function: &TypedFunction) -> Option<&str> {
+    if !is_extern_c_import(function) {
+        return None;
+    }
+    for param in &function.params {
+        if !matches!(param.ty, ast::Type::Ptr { .. }) {
+            continue;
+        }
+        let tagged = param.name.ends_with("_owned")
+            || param.name.ends_with("_borrowed")
+            || param.name.ends_with("_out")
+            || param.name.ends_with("_inout");
+        let ctx_param = param.name.ends_with("_ctx") || param.name.ends_with("_context");
+        if (!tagged && !ctx_param) || (!ctx_param && !has_len_pair(function, &param.name)) {
+            return Some(param.name.as_str());
+        }
+    }
+    None
+}
+
 fn callback_param_missing_adjacent_context_anchor(function: &TypedFunction) -> Option<&str> {
-    if !(function.is_extern && function.abi.as_deref() == Some("c")) {
+    if !is_extern_c_import(function) {
         return None;
     }
     for (index, param) in function.params.iter().enumerate() {
@@ -742,6 +788,97 @@ fn callback_param_missing_adjacent_context_anchor(function: &TypedFunction) -> O
 
 fn is_callback_param(ty: &ast::Type) -> bool {
     matches!(ty, ast::Type::Function { .. })
+}
+
+fn collect_repr_c_names(module: &FirModule) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    for (name, item) in &module.struct_defs {
+        if item
+            .repr
+            .as_deref()
+            .is_some_and(|repr| repr.to_ascii_lowercase().contains('c'))
+        {
+            names.insert(name.clone());
+        }
+    }
+    for (name, item) in &module.enum_defs {
+        if item
+            .repr
+            .as_deref()
+            .is_some_and(|repr| repr.to_ascii_lowercase().contains('c'))
+        {
+            names.insert(name.clone());
+        }
+    }
+    names
+}
+
+fn extern_c_import_unstable_ffi_type(
+    function: &TypedFunction,
+    repr_c_names: &BTreeSet<String>,
+) -> Option<String> {
+    if !is_extern_c_import(function) {
+        return None;
+    }
+    if !ffi_stable_type(&function.return_type, repr_c_names) {
+        return Some(format!(
+            "extern C import `{}` uses unstable return type `{}`",
+            function.name, function.return_type
+        ));
+    }
+    for param in &function.params {
+        if !ffi_stable_type(&param.ty, repr_c_names) {
+            return Some(format!(
+                "extern C import `{}` parameter `{}` uses unstable type `{}`",
+                function.name, param.name, param.ty
+            ));
+        }
+    }
+    None
+}
+
+fn is_extern_c_import(function: &TypedFunction) -> bool {
+    function.is_extern && function.abi.as_deref() == Some("c") && function.body.is_empty()
+}
+
+fn ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
+    match ty {
+        ast::Type::Never
+        | ast::Type::Void
+        | ast::Type::Bool
+        | ast::Type::Char
+        | ast::Type::Float { .. }
+        | ast::Type::ISize
+        | ast::Type::USize
+        | ast::Type::Int { .. } => true,
+        ast::Type::Ptr { to, .. } => ffi_stable_type(to, repr_c_names),
+        ast::Type::Named { name, args } => args.is_empty() && repr_c_names.contains(name),
+        ast::Type::Function { params, ret } => {
+            params.iter().all(|param| ffi_stable_type(param, repr_c_names))
+                && ffi_stable_type(ret, repr_c_names)
+        }
+        _ => false,
+    }
+}
+
+fn pointer_base_name(name: &str) -> String {
+    for suffix in ["_borrowed", "_owned", "_out", "_inout"] {
+        if let Some(stripped) = name.strip_suffix(suffix) {
+            return stripped.to_string();
+        }
+    }
+    name.to_string()
+}
+
+fn has_len_pair(function: &TypedFunction, pointer_param_name: &str) -> bool {
+    let base = pointer_base_name(pointer_param_name);
+    let expected = format!("{base}_len");
+    function.params.iter().any(|candidate| {
+        matches!(candidate.ty, ast::Type::USize)
+            && (candidate.name == "len"
+                || candidate.name == expected
+                || candidate.name == format!("{base}_bytes"))
+    })
 }
 
 fn is_context_anchor_name(name: &str) -> bool {
@@ -1563,7 +1700,7 @@ mod tests {
     }
 
     #[test]
-    fn errors_for_unreleased_linear_resource() {
+    fn errors_for_linear_type_violations() {
         let module = fir::FirModule {
             name: "m".to_string(),
             effects: core::CapabilitySet::default(),
@@ -1609,12 +1746,14 @@ mod tests {
             thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
-            linear_type_violations: Vec::new(),
+            linear_type_violations: vec![
+                "function `main` linear value `socket_res` was not consumed/freed".to_string(),
+            ],
         };
         let report = verify(&module);
         assert!(report.diagnostics.iter().any(|d| d
             .message
-            .contains("is not released by `free(...)`, `close(...)`, or `defer` cleanup")));
+            .contains("function `main` linear value `socket_res` was not consumed/freed")));
     }
 
     #[test]

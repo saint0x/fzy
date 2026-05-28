@@ -624,6 +624,16 @@ Verified closure:
 
 Callback-bearing FFI imports now structurally require an adjacent `*_ctx` or `*_context` anchor, with explicit verifier failures for missing anchors, pass coverage for valid anchors, and shared trace-backed Fozzy validation.
 
+### ✅ 7.4. Native ship C contracts now validate imports and exports through one symmetric rule set
+
+Verified closure:
+
+Native ship contract validation now applies the same FFI-stable type, pointer-contract, and callback-anchor rules to both C imports and C exports instead of only hardening the export side. Signature-typed callback typedefs now flow through generated headers and ABI manifests, async exports are described honestly as `async-handle-sync-start-v1` with synchronous-start result packaging, and repr(C) ABI metadata now carries sanitized consumer-facing `cName` aliases.
+
+Verified tests:
+
+The symmetric native-ship hardening is covered by dedicated driver header/contract tests, a passing full `driver` suite, `hir` and `verifier` suites, and deterministic plus host-backed Fozzy validation across `tests/compiler_verify_memory_surface.pass.fozzy.json`, `tests/compiler_verify_thread_boundary.pass.fozzy.json`, and `tests/c_ffi_matrix.pass.fozzy.json`.
+
 ### ✅ 7.5. Ownership transfer on argument passing now follows an explicit consume-summary rule
 
 Verified closure:
@@ -842,7 +852,7 @@ Goal:
 
 Verified progress on this checkout:
 
-✅ `fz verify` integration coverage now includes direct pipeline tests for borrowed-return thread-boundary failures, mutable-reference thread-boundary failures, and non-thread borrowed-reference pass paths that must not regress.
+✅ `fz verify` integration coverage now includes direct pipeline tests for borrowed-return thread-boundary failures, mutable-reference thread-boundary failures, non-thread borrowed-reference pass paths, and native-library async export build coverage that must not regress.
 
 Needed additions:
 
@@ -859,6 +869,7 @@ Goal:
 Verified progress on this checkout:
 
 ✅ Added `tests/compiler_verify_thread_boundary.pass.fozzy.json` as a first-class `fz verify` scenario gate covering negative borrowed-return and mutable-reference thread-boundary failures plus a positive borrowed-reference pass path.
+✅ Added `tests/compiler_verify_memory_surface.pass.fozzy.json` as a first-class `fz verify` scenario gate covering owned-handle cleanup pass/fail cases, match-arm ownership divergence, pointer-import unsafe enforcement, and callback context-anchor enforcement.
 
 Needed additions:
 
@@ -892,6 +903,7 @@ Why this matters:
 Verified progress on this checkout:
 
 ✅ Strict deterministic Fozzy coverage now includes `tests/compiler_verify_thread_boundary.pass.fozzy.json`, with recorded trace evidence at `/Users/deepsaint/Desktop/fozzylang/artifacts/compiler-verify-thread-boundary.trace.fozzy` and full doctor, strict test, trace verify, replay, CI, and host-backed validation.
+✅ Strict deterministic Fozzy coverage now also includes `tests/compiler_verify_memory_surface.pass.fozzy.json`, with recorded trace evidence at `/Users/deepsaint/Desktop/fozzylang/artifacts/native-ship-hardening.trace.fozzy` and full validate, doctor, strict test, trace verify, replay, CI, and host-backed validation.
 
 Required fixes:
 
