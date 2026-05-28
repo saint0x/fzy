@@ -1052,6 +1052,35 @@ Why this matters:
 - the verifier currently communicates a stronger unsafe-evidence posture than it has actually established
 - users can get a clean strict-verifier result while the stricter audit path would reject the same proof reference as unbacked
 
+Verified closure on this checkout:
+
+- ✅ verifier proof-ref validation now mirrors the stricter artifact-backed semantics for:
+  - `trace://`
+  - `run://`
+  - `test://`
+  - `ci://`
+- ✅ nonexistent artifact-backed proof refs are now rejected directly in strict verifier mode instead of being accepted on URI shape alone
+- ✅ existing artifact-backed proof refs still pass strict verifier validation
+- ✅ `gate://` placeholders remain machine-linkable structural references, but they stay distinct from artifact-backed evidence
+
+Verified tests:
+
+1. `cargo test -q -p verifier` now includes:
+   - `strict_unsafe_contracts_reject_missing_trace_artifact_proof_refs`
+   - `strict_unsafe_contracts_accept_existing_trace_artifact_proof_refs`
+   - `strict_unsafe_contracts_reject_malformed_proof_refs`
+2. compiler suites passed on this checkout:
+   - `cargo test -q -p hir`
+   - `cargo test -q -p verifier`
+3. Fozzy production checks passed on this checkout:
+   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 2201 --json`
+   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/proof-ref-hardening.trace.fozzy --json`
+   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/proof-ref-hardening.trace.fozzy --strict --json`
+   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/proof-ref-hardening.trace.fozzy --json`
+   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/proof-ref-hardening.trace.fozzy --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
+
 Required fixes:
 
 1. unify verifier proof-ref validation with the stricter audit semantics or factor both call sites through one shared validator

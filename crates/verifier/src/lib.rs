@@ -775,7 +775,17 @@ fn unsafe_proof_ref_valid(proof_ref: &str) -> bool {
     if rest.trim().is_empty() {
         return false;
     }
-    matches!(scheme, "gate" | "trace" | "run" | "test" | "ci")
+    if matches!(scheme, "gate" | "rfc") {
+        return true;
+    }
+    if !matches!(scheme, "trace" | "run" | "test" | "ci") {
+        return false;
+    }
+    let path_part = rest.split('#').next().unwrap_or_default().trim();
+    if path_part.is_empty() {
+        return false;
+    }
+    std::path::Path::new(path_part).exists()
 }
 
 fn unsafe_contract_is_placeholder_generated(site: &fir::UnsafeContractSite) -> bool {
@@ -816,6 +826,27 @@ mod tests {
     fn unsafe_site_bad_proof_ref() -> fir::UnsafeContractSite {
         fir::UnsafeContractSite {
             proof_ref: Some("bogus://missing".to_string()),
+            ..unsafe_site_complete()
+        }
+    }
+
+    fn unsafe_site_missing_trace_proof_ref() -> fir::UnsafeContractSite {
+        fir::UnsafeContractSite {
+            proof_ref: Some("trace:///definitely/missing/path.fozzy#site=usite_test".to_string()),
+            ..unsafe_site_complete()
+        }
+    }
+
+    fn unsafe_site_existing_trace_proof_ref() -> fir::UnsafeContractSite {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("fozzylang-verifier-proof-ref-{suffix}.fozzy"));
+        std::fs::write(&path, "{}").expect("trace file should be written");
+        fir::UnsafeContractSite {
+            proof_ref: Some(format!("trace://{}#site=usite_test", path.display())),
             ..unsafe_site_complete()
         }
     }
@@ -2546,6 +2577,138 @@ mod tests {
             .iter()
             .any(|d| d.message.contains("malformed proof references")));
         assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn strict_unsafe_contracts_reject_missing_trace_artifact_proof_refs() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 1,
+            unsafe_contract_sites: vec![unsafe_site_missing_trace_proof_ref()],
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                strict_unsafe_contracts: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("malformed proof references")));
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn strict_unsafe_contracts_accept_existing_trace_artifact_proof_refs() {
+        let module = fir::FirModule {
+            name: "m".to_string(),
+            effects: core::CapabilitySet::default(),
+            required_effects: core::CapabilitySet::default(),
+            unknown_effects: vec![],
+            nodes: 1,
+            entry_return_type: Some(ast::Type::Int {
+                signed: true,
+                bits: 32,
+            }),
+            entry_return_const_i32: Some(0),
+            entry_has_return_expr: true,
+            linear_resources: Vec::new(),
+            deferred_resources: Vec::new(),
+            matches_without_wildcard: 0,
+            match_unreachable_arms: 0,
+            match_duplicate_catchall_arms: 0,
+            entry_requires: Vec::new(),
+            entry_ensures: Vec::new(),
+            host_syscall_sites: 0,
+            unsafe_sites: 1,
+            unsafe_reasoned_sites: 1,
+            unsafe_contract_sites: vec![unsafe_site_existing_trace_proof_ref()],
+            reference_sites: 0,
+            alloc_sites: 0,
+            free_sites: 0,
+            extern_c_abi_functions: 0,
+            repr_c_layout_items: 0,
+            generic_instantiations: Vec::new(),
+            generic_specializations: Vec::new(),
+            call_graph: Vec::new(),
+            functions: Vec::new(),
+            typed_functions: Vec::new(),
+            typed_globals: Vec::new(),
+            struct_defs: std::collections::HashMap::new(),
+            enum_defs: std::collections::HashMap::new(),
+            type_errors: 0,
+            type_error_details: Vec::new(),
+            function_capability_requirements: Vec::new(),
+            ownership_violations: Vec::new(),
+            unsafe_context_violations: Vec::new(),
+            capability_token_violations: Vec::new(),
+            trait_violations: Vec::new(),
+            reference_lifetime_violations: Vec::new(),
+            linear_type_violations: Vec::new(),
+        };
+        let report = verify_with_policy(
+            &module,
+            VerifyPolicy {
+                strict_unsafe_contracts: true,
+                ..VerifyPolicy::default()
+            },
+        );
+        assert!(!report
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("malformed proof references")));
+        assert!(report.is_clean());
+        if let Some(path) = module.unsafe_contract_sites[0]
+            .proof_ref
+            .as_deref()
+            .and_then(|proof_ref| proof_ref.strip_prefix("trace://"))
+            .and_then(|rest| rest.split('#').next())
+        {
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]
