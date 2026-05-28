@@ -1098,7 +1098,7 @@ Required tests:
    - machine-linkable evidence present
    - independently validated evidence present
 
-### 9.5. Thread-boundary borrow/send-sync failures are emitted through the wrong diagnostic path
+### ✅ 9.5. Thread-boundary borrow/send-sync failures are emitted through the wrong diagnostic path
 
 Problem:
 
@@ -1111,6 +1111,37 @@ Why this matters:
 - this is a real compiler diagnostics bug even if the underlying rejection is correct
 - it makes production triage harder because the reported fix points at the wrong subsystem
 - it weakens trust in the memory-safety story when the compiler correctly rejects a program but explains the failure inaccurately
+
+Verified closure on this checkout:
+
+- ✅ thread-boundary borrow/send-sync failures now flow through a dedicated `thread_boundary_violations` lane instead of `capability_token_violations`
+- ✅ verifier remediation now distinguishes:
+  - borrowed returns crossing thread-capable boundaries
+  - mutable pointer/reference parameters that need a Send/Sync-safe owned wrapper
+  - real delegated-capability token failures
+- ✅ capability-token diagnostics keep their capability-token-specific help text instead of absorbing thread-boundary borrow failures
+- ✅ grouped verifier output and summary state now preserve the distinction by carrying thread-boundary failures separately from capability-policy failures
+
+Verified tests:
+
+1. `cargo test -q -p hir` now includes:
+   - `routes_borrowed_return_thread_boundary_failures_out_of_capability_bucket`
+   - `routes_mutable_reference_thread_boundary_failures_out_of_capability_bucket`
+2. `cargo test -q -p verifier` now includes:
+   - `thread_boundary_borrowed_return_uses_thread_boundary_remediation`
+   - `thread_boundary_mutable_param_uses_send_sync_wrapper_guidance`
+   - `capability_token_failures_keep_capability_specific_guidance`
+3. compiler suites passed on this checkout:
+   - `cargo test -q -p hir`
+   - `cargo test -q -p verifier`
+4. Fozzy production checks passed on this checkout:
+   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 2501 --json`
+   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/thread-boundary-diagnostics-hardening.trace.fozzy --json`
+   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/thread-boundary-diagnostics-hardening.trace.fozzy --strict --json`
+   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/thread-boundary-diagnostics-hardening.trace.fozzy --json`
+   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/thread-boundary-diagnostics-hardening.trace.fozzy --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
 
 Required fixes:
 

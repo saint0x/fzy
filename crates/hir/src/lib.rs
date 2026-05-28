@@ -58,6 +58,7 @@ pub struct TypedModule {
     pub ownership_violations: Vec<String>,
     pub unsafe_context_violations: Vec<String>,
     pub capability_token_violations: Vec<String>,
+    pub thread_boundary_violations: Vec<String>,
     pub trait_violations: Vec<String>,
     pub reference_lifetime_violations: Vec<String>,
     pub linear_type_violations: Vec<String>,
@@ -814,12 +815,12 @@ pub fn lower(module: &Module) -> TypedModule {
     let ownership_violations =
         analyze_ownership(&typed_functions, &call_graph, &struct_defs, &enum_defs);
     let unsafe_context_violations = analyze_unsafe_context_violations(&typed_functions);
-    let mut capability_token_violations = if capability_token_mode_enabled(&typed_functions) {
+    let capability_token_violations = if capability_token_mode_enabled(&typed_functions) {
         analyze_capability_token_contracts(&typed_functions, &function_capability_requirements)
     } else {
         Vec::new()
     };
-    capability_token_violations.extend(analyze_send_sync_contracts(&typed_functions));
+    let thread_boundary_violations = analyze_send_sync_contracts(&typed_functions);
     let reference_lifetime_violations = analyze_reference_lifetimes(&typed_functions);
     let linear_type_violations = analyze_linear_types(&typed_functions);
     monomorphize_typed_functions(
@@ -866,6 +867,7 @@ pub fn lower(module: &Module) -> TypedModule {
         ownership_violations,
         unsafe_context_violations,
         capability_token_violations,
+        thread_boundary_violations,
         trait_violations,
         reference_lifetime_violations,
         linear_type_violations,
@@ -14835,6 +14837,39 @@ mod tests {
         assert!(typed.reference_lifetime_violations.iter().any(|detail| {
             detail.contains("cannot use borrowed reference `v` across await suspension points")
         }));
+    }
+
+    #[test]
+    fn routes_borrowed_return_thread_boundary_failures_out_of_capability_bucket() {
+        let source = r#"
+            async fn worker(v: &'a i32) -> &'a i32 {
+                return v;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains(
+                "returns borrowed reference across thread-capable boundary; return owned/Send-safe handle instead",
+            )
+        }));
+        assert!(typed.capability_token_violations.is_empty());
+    }
+
+    #[test]
+    fn routes_mutable_reference_thread_boundary_failures_out_of_capability_bucket() {
+        let source = r#"
+            async fn worker(v: &'a mut i32) -> i32 {
+                discard v;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains("parameter `v` requires Send/Sync-safe wrapper before thread crossing")
+        }));
+        assert!(typed.capability_token_violations.is_empty());
     }
 
     #[test]

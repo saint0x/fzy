@@ -491,6 +491,23 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             ),
         ));
     }
+    for violation in &module.thread_boundary_violations {
+        let help = if violation
+            .contains("returns borrowed reference across thread-capable boundary")
+        {
+            "return owned values or a Send/Sync-safe handle across thread boundaries".to_string()
+        } else if violation.contains("requires Send/Sync-safe wrapper before thread crossing") {
+            "wrap mutable references/pointers in a Send/Sync-safe owned boundary type before crossing threads"
+                .to_string()
+        } else {
+            "change the borrowed thread boundary to an owned or Send/Sync-safe handoff".to_string()
+        };
+        report.diagnostics.push(Diagnostic::new(
+            Severity::Error,
+            violation.clone(),
+            Some(help),
+        ));
+    }
     for violation in &module.trait_violations {
         report.diagnostics.push(Diagnostic::new(
             Severity::Error,
@@ -679,6 +696,7 @@ fn module_needs_explicit_capabilities(module: &FirModule) -> bool {
         || module.unsafe_reasoned_sites > 0
         || !module.required_effects.is_empty()
         || !module.capability_token_violations.is_empty()
+        || !module.thread_boundary_violations.is_empty()
         || module.extern_c_abi_functions > 0
         || module.repr_c_layout_items > 0
 }
@@ -918,6 +936,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -988,6 +1007,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1039,6 +1059,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1049,6 +1070,71 @@ mod tests {
                 .message
                 .contains("module has declarations but no explicit capabilities")
         }));
+    }
+
+    #[test]
+    fn thread_boundary_borrowed_return_uses_thread_boundary_remediation() {
+        let mut module = base_module();
+        module.thread_boundary_violations.push(
+            "function `worker` returns borrowed reference across thread-capable boundary; return owned/Send-safe handle instead"
+                .to_string(),
+        );
+
+        let report = verify(&module);
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.message
+                    .contains("returns borrowed reference across thread-capable boundary")
+            })
+            .expect("thread-boundary diagnostic");
+        let help = diagnostic.help.as_deref().unwrap_or_default();
+        assert!(help.contains("return owned values or a Send/Sync-safe handle"));
+        assert!(!help.contains("capability token parameters"));
+    }
+
+    #[test]
+    fn thread_boundary_mutable_param_uses_send_sync_wrapper_guidance() {
+        let mut module = base_module();
+        module.thread_boundary_violations.push(
+            "function `worker` parameter `buf` requires Send/Sync-safe wrapper before thread crossing"
+                .to_string(),
+        );
+
+        let report = verify(&module);
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.message
+                    .contains("requires Send/Sync-safe wrapper before thread crossing")
+            })
+            .expect("thread-boundary diagnostic");
+        let help = diagnostic.help.as_deref().unwrap_or_default();
+        assert!(help.contains("wrap mutable references/pointers"));
+        assert!(!help.contains("capability token parameters"));
+    }
+
+    #[test]
+    fn capability_token_failures_keep_capability_specific_guidance() {
+        let mut module = base_module();
+        module
+            .capability_token_violations
+            .push("function `worker` delegates `fs` without explicit token handoff".to_string());
+
+        let report = verify(&module);
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.message
+                    .contains("delegates `fs` without explicit token handoff")
+            })
+            .expect("capability-token diagnostic");
+        let help = diagnostic.help.as_deref().unwrap_or_default();
+        assert!(help.contains("capability token parameters"));
+        assert!(!help.contains("Send/Sync-safe handle"));
     }
 
     #[test]
@@ -1094,6 +1180,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1150,6 +1237,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1219,6 +1307,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1280,6 +1369,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1340,6 +1430,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1403,6 +1494,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1458,6 +1550,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1513,6 +1606,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1567,6 +1661,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1622,6 +1717,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1684,6 +1780,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1761,6 +1858,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1825,6 +1923,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -1884,6 +1983,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2116,6 +2216,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2177,6 +2278,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2240,6 +2342,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2301,6 +2404,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2366,6 +2470,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2436,6 +2541,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2498,6 +2604,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2561,6 +2668,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2623,6 +2731,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2685,6 +2794,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2755,6 +2865,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2817,6 +2928,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
@@ -2878,6 +2990,7 @@ mod tests {
             ownership_violations: Vec::new(),
             unsafe_context_violations: Vec::new(),
             capability_token_violations: Vec::new(),
+            thread_boundary_violations: Vec::new(),
             trait_violations: Vec::new(),
             reference_lifetime_violations: Vec::new(),
             linear_type_violations: Vec::new(),
