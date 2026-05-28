@@ -1,9 +1,5 @@
 # Why Choose fzy
 
-If you are evaluating systems languages, the question is not whether fzy has one interesting feature. The question is whether you want a language built around shipping production systems with stronger safety defaults, better runtime evidence, and a validation story that does not depend on stitching together a half-dozen external tools.
-
-That is the real case for fzy. It is a modern systems language for teams that care not only about writing low-level software, but also about reproducing failures, auditing unsafe code, validating behavior deterministically, and operating software under real pressure.
-
 ## The Short Answer
 
 Choose fzy over other systems languages if you want:
@@ -19,16 +15,16 @@ Choose fzy over other systems languages if you want:
 - a compiler/toolchain that produces operational evidence, not just binaries
 - a developer experience aimed at production systems work, not only greenfield demos
 
-## Why Teams Pick fzy
+## Why It Stands Out
 
 ### Integrated validation instead of bolted-on tooling
 
 Most systems languages give you a compiler, maybe a package manager, and maybe a test runner. After that, deterministic replay, scenario validation, fuzzing workflows, and incident evidence are usually somebody else's problem.
 
-fzy is different because it is designed to pair directly with Fozzy. That makes validation part of the language's operating model instead of an afterthought. In practice, that means teams can:
+fzy is different because it is designed to pair directly with Fozzy. That makes validation part of the language's operating model instead of an afterthought. In practice, that means you can:
 
 - run strict deterministic tests first
-- record a real trace for the behavior they care about
+- record a real trace for the behavior you care about
 - verify the trace, replay it, and feed it into CI-oriented validation
 - keep host-backed checks separate from deterministic checks instead of mixing confidence levels together
 
@@ -36,9 +32,9 @@ Compared with most systems languages, this is one of the clearest reasons to cho
 
 ### Safe by default without giving up low-level control
 
-fzy is aimed at teams that want a stronger safety posture than C, C++, or other ambiently unsafe environments, but who still need practical escape hatches for systems work.
+fzy is aimed at people who want a stronger safety posture than C, C++, or other ambiently unsafe environments, but who still need practical escape hatches for systems work.
 
-It is also aimed at teams that like what Rust is trying to guarantee, but want a more sane mental model for everyday systems programming. Part of the reason fzy exists is that we wanted the same safety guarantees without making the language feel harder than the problem.
+It is also aimed at people who like what Rust is trying to guarantee, but want a more sane mental model for everyday systems programming. Part of the reason fzy exists is that we wanted the same safety guarantees without making the language feel harder than the problem.
 
 Unsafe behavior in fzy is meant to be:
 
@@ -72,7 +68,7 @@ The result is a more coherent workflow than adding framework conventions on top 
 
 ### Modern language ergonomics for real systems code
 
-Some systems languages lean hard into minimalism and expect teams to rebuild higher-level structure themselves. fzy makes a different bet: large systems codebases benefit from modern language features.
+Some systems languages lean hard into minimalism and expect you to rebuild higher-level structure yourself. fzy makes a different bet: large systems codebases benefit from modern language features.
 
 That includes:
 
@@ -104,7 +100,7 @@ That makes fzy more compelling than "pure ecosystem only" languages when your so
 
 ### A compiler and CLI that help you operate software
 
-Another reason to choose fzy is that the toolchain is not only focused on turning source into binaries. It is also trying to help teams produce software that is inspectable, explainable, and shippable.
+Another reason to choose fzy is that the toolchain is not only focused on turning source into binaries. It is also trying to help produce software that is inspectable, explainable, and shippable.
 
 The CLI surface includes more than `build` and `test`. It also covers:
 
@@ -131,7 +127,7 @@ Its workflow emphasizes:
 - traces, reports, manifests, and replay flows as normal artifacts
 - runtime defaults and CLI behavior documented as operational contracts
 
-That is a narrower value proposition than "best beginner experience" or "largest package ecosystem," but it is a strong one for teams that optimize for trust under pressure.
+That is a narrower value proposition than "best beginner experience" or "largest package ecosystem," but it is a strong one if you optimize for trust under pressure.
 
 ## Compared With Other Systems Languages
 
@@ -143,7 +139,7 @@ Choose fzy over C or C++ when you want stronger default safety, a better unsafe 
 
 Rust has a much larger ecosystem and a far more established footprint. fzy is not trying to win on ecosystem scale. Its center of gravity is different: safe-by-default systems programming with deterministic validation, replay, RPC, and Fozzy-backed evidence integrated much more deeply into the normal workflow.
 
-The more direct distinction is mental model. fzy is for teams that want the same safety guarantees, but a more sane model for writing and reasoning about systems code day to day.
+The more direct distinction is mental model. fzy is for people who want the same safety guarantees, but a more sane model for writing and reasoning about systems code day to day.
 
 It also puts more emphasis on native async, protocol, and RPC support, a stronger bidirectional C interop surface, and a better-bounded unsafe story.
 
@@ -157,9 +153,9 @@ Go favors simplicity and a narrower language model. Choose fzy when you want a r
 
 Zig is compelling when you want explicitness, control, and very little abstraction overhead. Choose fzy when you want stronger safe-by-default semantics, a better unsafe paradigm, richer high-level language constructs, stronger native async and RPC support, and tighter integration between the language and deterministic validation tooling.
 
-## Who fzy Is For
+## Where fzy Fits
 
-fzy is especially attractive for teams building:
+fzy is especially attractive if you are building:
 
 - services and control-plane software
 - native CLIs and operational tooling
@@ -183,7 +179,7 @@ The strongest argument for choosing fzy is that it treats systems programming as
 Plenty of languages offer async. Plenty offer traits, generics, or C interop. Plenty make safety claims. What stands out about fzy is the combination:
 
 - safe-by-default systems programming
-- a more sane mental model with the same safety guarantees teams want from modern safe systems languages
+- a more sane mental model with the same safety guarantees people want from modern safe systems languages
 - explicit manual memory control when needed
 - modern language ergonomics
 - native async, protocol, and RPC support
