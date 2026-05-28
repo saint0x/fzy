@@ -906,6 +906,8 @@ Verified progress on this checkout:
 - ✅ argument-transfer cleanup through consuming local helpers is now accepted without forcing a local `defer` at the original call site
 - ✅ argument-transfer cleanup through unsafe extern `_owned` parameters is now accepted under the same consume-summary rule
 - ✅ the production memory-model wording now reflects a proof-of-consumption rule instead of blanket argument-transfer wording
+- ✅ grouped `return` of an owned local now transfers ownership instead of leaking by falling off the identifier-only return path
+- ✅ `return` of a consuming helper call now applies the same consume-summary rule instead of still requiring local cleanup at the caller
 
 Required fixes:
 
@@ -919,6 +921,23 @@ Required tests:
 1. return/argument-transfer cases that are intended to be legal must not be rejected solely for missing local `defer`
 2. transfer cases that are not yet supported must fail with limitation-accurate diagnostics
 3. local cleanup via `defer` must remain accepted for canonical safe manual resource management
+
+Verified tests:
+
+1. `cargo test -q -p hir` now includes:
+   - `grouped_return_transfers_ownership_without_local_defer`
+   - `return_of_consuming_helper_call_does_not_require_local_defer`
+2. compiler suites passed on this checkout:
+   - `cargo test -q -p hir`
+   - `cargo test -q -p verifier`
+3. Fozzy production checks passed on this checkout:
+   - `fozzy doctor --deep --scenario tests/c_ffi_matrix.pass.fozzy.json --runs 5 --seed 1201 --json`
+   - `fozzy test --det --strict tests/unsafe_ffi.pointer_misuse.pass.fozzy.json tests/unsafe_ffi.callback_lifecycle.pass.fozzy.json tests/unsafe_ffi.trace_host_replay.pass.fozzy.json tests/c_ffi_matrix.pass.fozzy.json --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --record /Users/deepsaint/Desktop/fozzylang/artifacts/return-transfer-hardening.trace.fozzy --json`
+   - `fozzy trace verify /Users/deepsaint/Desktop/fozzylang/artifacts/return-transfer-hardening.trace.fozzy --strict --json`
+   - `fozzy replay /Users/deepsaint/Desktop/fozzylang/artifacts/return-transfer-hardening.trace.fozzy --json`
+   - `fozzy ci /Users/deepsaint/Desktop/fozzylang/artifacts/return-transfer-hardening.trace.fozzy --json`
+   - `fozzy run tests/c_ffi_matrix.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
 
 ### 8. Partial-move detection is too narrow
 

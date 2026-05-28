@@ -3972,9 +3972,21 @@ fn analyze_ownership_block(
                     ownership_summaries,
                 );
             }
-            Stmt::Return(Some(Expr::Ident(name))) => {
-                if state.owners.remove(name).is_some() {
-                    state.moved.insert(name.clone());
+            Stmt::Return(Some(expr)) => {
+                if let Some(name) = expr_identity_name(expr) {
+                    if state.owners.remove(name).is_some() {
+                        state.moved.insert(name.to_string());
+                    }
+                } else {
+                    analyze_expr_value_ownership(
+                        function,
+                        expr,
+                        state,
+                        next_alloc,
+                        violations,
+                        function_name,
+                        ownership_summaries,
+                    );
                 }
             }
             Stmt::If {
@@ -4161,7 +4173,7 @@ fn analyze_ownership_block(
                     ownership_summaries,
                 );
             }
-            Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Return(_) => {}
+            Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Return(None) => {}
         }
     }
 }
@@ -14230,6 +14242,47 @@ mod tests {
             .ownership_violations
             .iter()
             .any(|detail| detail.contains("function `main` leaks allocation")));
+    }
+
+    #[test]
+    fn grouped_return_transfers_ownership_without_local_defer() {
+        let source = r#"
+            fn produce() -> *mut u8 {
+                let p = alloc(32);
+                return (p);
+            }
+            fn main() -> i32 {
+                let p = produce();
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("function `produce` leaks allocation")));
+    }
+
+    #[test]
+    fn return_of_consuming_helper_call_does_not_require_local_defer() {
+        let source = r#"
+            fn consume(p: *mut u8) -> i32 {
+                free(p);
+                return 0;
+            }
+            fn main() -> i32 {
+                let p = alloc(32);
+                return consume(p);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("function `main` leaks allocation")
+                || detail.contains("consumes non-owned or already-consumed value `p`")
+        }));
     }
 
     #[test]
