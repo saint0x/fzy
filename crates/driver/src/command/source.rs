@@ -46,7 +46,7 @@ pub(super) fn resolve_source(path: &Path) -> Result<ResolvedSource> {
             let suggestions = discover_nested_project_roots(path);
             let guidance = if suggestions.is_empty() {
                 format!(
-                    "directory `{}` is not a Fozzy project root (missing {}). initialize a project here with `fz init <name>` or run the command against a project directory/file explicitly",
+                    "directory `{}` is not a Fozzy project root (missing {}). initialize a project here with `fz init [path]` or run the command against a project directory/file explicitly",
                     path.display(),
                     manifest_path.display()
                 )

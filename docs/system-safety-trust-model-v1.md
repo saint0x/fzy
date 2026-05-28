@@ -4,11 +4,12 @@ This document defines what can be claimed publicly today, what is intentionally 
 
 ## Enforced Guarantees Today
 
-- Memory-safe-by-default production posture for the shipped safe-language surface.
+- Memory-safe-by-default production posture for the shipped safe-language surface within documented verifier/compiler rule scope.
 - Verifier-enforced ownership/borrow constraints in shipped rule scope (including documented async suspension constraints).
 - Runtime fail-closed defaults for capability-sensitive and limit-sensitive paths.
 - Native-lowering fail-fast diagnostics for unsupported or partial language shapes (no silent partial semantics on documented guardrails).
 - Unsafe budget enforcement with missing/invalid structured-contract rejection.
+- Compiler-generated unsafe contracts count as structural audit records unless paired with validated proof artifacts.
 - FFI boundary policy enforcement for panic contracts and boundary-shape diagnostics.
 - Deterministic replay/trace verification gate coverage for reproducibility and incident triage.
 
@@ -24,7 +25,7 @@ This document defines what can be claimed publicly today, what is intentionally 
 Public-facing language should follow this shape:
 
 - acceptable:
-  - "memory-safe by default"
+  - "memory-safe by default within the shipped safe-language surface and documented rule scope"
   - "safe code is the default and unsafe behavior is explicit"
   - "verifiable correctness and deterministic replay are first-class"
 - not acceptable:

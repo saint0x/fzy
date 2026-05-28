@@ -13,8 +13,8 @@ It intentionally avoids deep internal compiler/runtime implementation details.
 
 Current production summary:
 
-- the language is memory-safe by default
-- unsafe behavior is explicit and auditable
+- the shipped safe-language surface is memory-safe by default within the documented verifier/compiler rule scope
+- unsafe behavior is explicit, auditable, and tracked through structural unsafe-contract artifacts plus optional stronger evidence links
 - deterministic verification, replay, and artifacts are normal delivery requirements
 - the native runtime surface now covers serious modern systems work: async/tasks, RPC, ADTs, traits/generics, process/terminal/logging, filesystem/path, JSON control-plane workflows, and outbound HTTP streaming
 
@@ -114,7 +114,7 @@ A complete change is not done when it only compiles. It is done when:
 
 The production stance is:
 
-- safe-by-default code is the norm
+- safe-by-default code is the norm within the shipped safe-language surface and documented rule set
 - unsafe usage is explicit and reviewable
 - reproducibility is expected, not optional
 - the compiler/runtime/docs story should match the executable surface exactly
@@ -124,7 +124,7 @@ The production stance is:
 ## 5.1 Create and scaffold
 
 ```bash
-fz init <name>
+fz init [path] [--name package] [--template minimal|rust|ts] [--with run,fuzz,explore,memory,host|all] [--force]
 ```
 
 Use for new projects.
@@ -142,6 +142,7 @@ Use cases:
 - `build`: compile only
 - native project builds emit a runnable executable at `.fz/build/<target-name>`
 - `build --lib`: emit `.a` + shared library (`.so`/`.dylib`) plus C header + ABI manifest
+  - current backend contract is Cranelift-only for library builds; `fz build --lib --backend llvm` fails fast with guidance to switch to Cranelift
 - `run`: execute a project or scenario once
   - text mode streams child stdout/stderr live
   - `--max-seconds` enforces bounded runtime (returns timeout exit code on limit)
@@ -251,6 +252,7 @@ Unsafe island details (`unsafe fn`, `unsafe { ... }`, optional metadata, strict 
 - `.fz/unsafe-docs.workspace.md`
 - `.fz/unsafe-docs.workspace.html`
 Default production policy keeps missing metadata non-blocking; strict CI/release policy can make missing/invalid metadata blocking.
+Compiler-generated unsafe contracts are structural accountability records by default; treat them as independently validated evidence only when the linked proof artifacts are present and pass strict verification.
 Hardened codebases can scope unsafe usage in `fozzy.toml`:
 - `[unsafe].deny_unsafe_in = ["tests::*"]`
 - `[unsafe].allow_unsafe_in = ["runtime::*"]`

@@ -1967,10 +1967,11 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
             _ => None,
         };
         if return_lifetime.is_some() {
+            let mut current_bindings = ref_bindings.clone();
             validate_reference_returns(
                 &function.body,
                 function,
-                &ref_bindings,
+                &mut current_bindings,
                 &signatures,
                 &return_lifetime,
                 &mut violations,
@@ -1983,11 +1984,11 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
 fn validate_reference_returns(
     body: &[Stmt],
     function: &TypedFunction,
-    ref_bindings: &BTreeMap<String, (Option<String>, bool)>,
+    ref_bindings: &mut BTreeMap<String, (Option<String>, bool)>,
     signatures: &BTreeMap<String, TypedFunction>,
     return_lifetime: &Option<String>,
     violations: &mut Vec<String>,
-) {
+) -> bool {
     for stmt in body {
         match stmt {
             Stmt::Return(Some(expr)) => {
@@ -2005,44 +2006,56 @@ fn validate_reference_returns(
                         function.name, return_lifetime, inferred
                     ));
                 }
+                return false;
             }
             Stmt::If {
                 then_body,
                 else_body,
                 ..
             } => {
-                validate_reference_returns(
+                let entry_bindings = ref_bindings.clone();
+                let mut then_bindings = ref_bindings.clone();
+                let mut else_bindings = ref_bindings.clone();
+                let then_fallthrough = validate_reference_returns(
                     then_body,
                     function,
-                    ref_bindings,
+                    &mut then_bindings,
                     signatures,
                     return_lifetime,
                     violations,
                 );
-                validate_reference_returns(
+                let else_fallthrough = validate_reference_returns(
                     else_body,
                     function,
-                    ref_bindings,
+                    &mut else_bindings,
                     signatures,
                     return_lifetime,
                     violations,
                 );
+                *ref_bindings = match (then_fallthrough, else_fallthrough) {
+                    (true, true) => merge_reference_bindings(&entry_bindings, &[then_bindings, else_bindings]),
+                    (true, false) => then_bindings,
+                    (false, true) => else_bindings,
+                    (false, false) => return false,
+                };
             }
             Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::ForIn { body, .. } => {
-                validate_reference_returns(
+                let mut nested = ref_bindings.clone();
+                let _ = validate_reference_returns(
                     body,
                     function,
-                    ref_bindings,
+                    &mut nested,
                     signatures,
                     return_lifetime,
                     violations,
                 );
+                *ref_bindings = merge_reference_bindings(ref_bindings, &[nested]);
             }
             Stmt::For {
                 init, step, body, ..
             } => {
                 if let Some(init) = init {
-                    validate_reference_returns(
+                    let _ = validate_reference_returns(
                         std::slice::from_ref(init.as_ref()),
                         function,
                         ref_bindings,
@@ -2051,16 +2064,18 @@ fn validate_reference_returns(
                         violations,
                     );
                 }
-                validate_reference_returns(
+                let mut body_bindings = ref_bindings.clone();
+                let _ = validate_reference_returns(
                     body,
                     function,
-                    ref_bindings,
+                    &mut body_bindings,
                     signatures,
                     return_lifetime,
                     violations,
                 );
+                *ref_bindings = merge_reference_bindings(ref_bindings, &[body_bindings]);
                 if let Some(step) = step {
-                    validate_reference_returns(
+                    let _ = validate_reference_returns(
                         std::slice::from_ref(step.as_ref()),
                         function,
                         ref_bindings,
@@ -2071,32 +2086,55 @@ fn validate_reference_returns(
                 }
             }
             Stmt::Match { arms, .. } => {
+                let entry_bindings = ref_bindings.clone();
+                let mut arm_bindings = Vec::new();
+                let mut any_fallthrough = false;
                 for arm in arms {
-                    if expr_contains_return(&arm.value) {
-                        validate_reference_return_expr(
+                    let mut branch_bindings = ref_bindings.clone();
+                    let fallthrough = validate_reference_return_expr(
                             &arm.value,
                             function,
-                            ref_bindings,
+                            &mut branch_bindings,
                             signatures,
                             return_lifetime,
                             violations,
                         );
+                    if fallthrough {
+                        any_fallthrough = true;
+                        arm_bindings.push(branch_bindings);
                     }
                 }
+                if any_fallthrough {
+                    *ref_bindings = merge_reference_bindings(&entry_bindings, &arm_bindings);
+                } else {
+                    return false;
+                }
             }
-            _ => {}
+            Stmt::Let { name, value, .. } | Stmt::Assign { target: name, value } => {
+                update_reference_binding(name, value, ref_bindings, signatures);
+            }
+            Stmt::LetPattern { .. }
+            | Stmt::CompoundAssign { .. }
+            | Stmt::Expr(_)
+            | Stmt::Defer(_)
+            | Stmt::Requires(_)
+            | Stmt::Ensures(_)
+            | Stmt::Break(_)
+            | Stmt::Continue => {}
+            Stmt::Return(None) => return false,
         }
     }
+    true
 }
 
 fn validate_reference_return_expr(
     expr: &Expr,
     function: &TypedFunction,
-    ref_bindings: &BTreeMap<String, (Option<String>, bool)>,
+    ref_bindings: &mut BTreeMap<String, (Option<String>, bool)>,
     signatures: &BTreeMap<String, TypedFunction>,
     return_lifetime: &Option<String>,
     violations: &mut Vec<String>,
-) {
+) -> bool {
     match expr {
         Expr::Return(Some(value)) => {
             let inferred = infer_reference_lifetime(value, ref_bindings, signatures);
@@ -2111,39 +2149,61 @@ fn validate_reference_return_expr(
                     function.name, return_lifetime, inferred
                 ));
             }
+            false
         }
         Expr::If {
             then_expr,
             else_expr,
             ..
         } => {
-            validate_reference_return_expr(
+            let entry_bindings = ref_bindings.clone();
+            let mut then_bindings = ref_bindings.clone();
+            let mut else_bindings = ref_bindings.clone();
+            let then_fallthrough = validate_reference_return_expr(
                 then_expr,
                 function,
-                ref_bindings,
+                &mut then_bindings,
                 signatures,
                 return_lifetime,
                 violations,
             );
-            validate_reference_return_expr(
+            let else_fallthrough = validate_reference_return_expr(
                 else_expr,
                 function,
-                ref_bindings,
+                &mut else_bindings,
                 signatures,
                 return_lifetime,
                 violations,
             );
+            *ref_bindings = match (then_fallthrough, else_fallthrough) {
+                (true, true) => merge_reference_bindings(&entry_bindings, &[then_bindings, else_bindings]),
+                (true, false) => then_bindings,
+                (false, true) => else_bindings,
+                (false, false) => return false,
+            };
+            true
         }
         Expr::Match { arms, .. } => {
+            let entry_bindings = ref_bindings.clone();
+            let mut branches = Vec::new();
             for arm in arms {
-                validate_reference_return_expr(
+                let mut branch_bindings = ref_bindings.clone();
+                if validate_reference_return_expr(
                     &arm.value,
                     function,
-                    ref_bindings,
+                    &mut branch_bindings,
                     signatures,
                     return_lifetime,
                     violations,
-                );
+                ) {
+                    branches.push(branch_bindings);
+                }
+            }
+            if branches.is_empty() {
+                false
+            } else {
+                *ref_bindings = merge_reference_bindings(&entry_bindings, &branches);
+                true
             }
         }
         Expr::UnsafeBlock { body, .. } => validate_reference_returns(
@@ -2154,8 +2214,44 @@ fn validate_reference_return_expr(
             return_lifetime,
             violations,
         ),
-        _ => {}
+        _ => true,
     }
+}
+
+fn merge_reference_bindings(
+    entry: &BTreeMap<String, (Option<String>, bool)>,
+    branches: &[BTreeMap<String, (Option<String>, bool)>],
+) -> BTreeMap<String, (Option<String>, bool)> {
+    let mut merged = entry.clone();
+    for name in entry.keys() {
+        let mut current = branches
+            .first()
+            .and_then(|branch| branch.get(name))
+            .cloned();
+        for branch in branches.iter().skip(1) {
+            if branch.get(name).cloned() != current {
+                current = current.map(|(_, mutable)| (None, mutable));
+                break;
+            }
+        }
+        if let Some(value) = current {
+            merged.insert(name.clone(), value);
+        }
+    }
+    merged
+}
+
+fn update_reference_binding(
+    name: &str,
+    value: &Expr,
+    ref_bindings: &mut BTreeMap<String, (Option<String>, bool)>,
+    signatures: &BTreeMap<String, TypedFunction>,
+) {
+    let Some((_, mutable)) = ref_bindings.get(name).cloned() else {
+        return;
+    };
+    let next_lifetime = infer_reference_lifetime(value, ref_bindings, signatures).flatten();
+    ref_bindings.insert(name.to_string(), (next_lifetime, mutable));
 }
 
 fn infer_reference_lifetime(
@@ -2166,6 +2262,9 @@ fn infer_reference_lifetime(
     match expr {
         Expr::Ident(name) => ref_bindings.get(name).map(|(lifetime, _)| lifetime.clone()),
         Expr::Group(inner) | Expr::FieldAccess { base: inner, .. } => {
+            infer_reference_lifetime(inner, ref_bindings, signatures)
+        }
+        Expr::Await(inner) | Expr::Discard(inner) | Expr::Unary { expr: inner, .. } => {
             infer_reference_lifetime(inner, ref_bindings, signatures)
         }
         Expr::Call { callee, args } => signatures.get(callee).and_then(|function| {
@@ -2221,54 +2320,8 @@ fn infer_reference_lifetime(
                 None
             }
         }
+        Expr::UnsafeBlock { .. } => None,
         _ => None,
-    }
-}
-
-fn expr_contains_return(expr: &Expr) -> bool {
-    match expr {
-        Expr::Return(_) => true,
-        Expr::If {
-            then_expr,
-            else_expr,
-            ..
-        } => expr_contains_return(then_expr) || expr_contains_return(else_expr),
-        Expr::Match { arms, .. } => arms.iter().any(|arm| expr_contains_return(&arm.value)),
-        Expr::UnsafeBlock { body, .. } => body.iter().any(stmt_contains_return),
-        _ => false,
-    }
-}
-
-fn stmt_contains_return(stmt: &Stmt) -> bool {
-    match stmt {
-        Stmt::Return(_) => true,
-        Stmt::If {
-            then_body,
-            else_body,
-            ..
-        } => {
-            then_body.iter().any(stmt_contains_return) || else_body.iter().any(stmt_contains_return)
-        }
-        Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::ForIn { body, .. } => {
-            body.iter().any(stmt_contains_return)
-        }
-        Stmt::For {
-            init, step, body, ..
-        } => {
-            init.as_deref().is_some_and(stmt_contains_return)
-                || step.as_deref().is_some_and(stmt_contains_return)
-                || body.iter().any(stmt_contains_return)
-        }
-        Stmt::Match { arms, .. } => arms.iter().any(|arm| expr_contains_return(&arm.value)),
-        Stmt::Expr(expr)
-        | Stmt::Defer(expr)
-        | Stmt::Requires(expr)
-        | Stmt::Ensures(expr)
-        | Stmt::Let { value: expr, .. }
-        | Stmt::LetPattern { value: expr, .. }
-        | Stmt::Assign { value: expr, .. }
-        | Stmt::CompoundAssign { value: expr, .. } => expr_contains_return(expr),
-        Stmt::Break(_) | Stmt::Continue => false,
     }
 }
 
@@ -2998,6 +3051,7 @@ fn analyze_ownership(
             &ownership_summaries,
             struct_defs,
             enum_defs,
+            None,
         );
         for (name, alloc_id) in state.owners {
             if state.deferred.contains(&alloc_id) {
@@ -3054,12 +3108,19 @@ fn analyze_ownership(
     violations
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct OwnershipState {
     owners: BTreeMap<String, usize>,
     moved: BTreeSet<String>,
+    maybe_moved: BTreeSet<String>,
     owner_candidates: BTreeSet<String>,
     deferred: BTreeSet<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LoopExitStates {
+    breaks: Vec<OwnershipState>,
+    continues: Vec<OwnershipState>,
 }
 
 fn build_function_ownership_summaries(
@@ -3288,6 +3349,16 @@ fn expr_identity_name(expr: &Expr) -> Option<&str> {
     }
 }
 
+fn expr_consumed_binding_name(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Ident(name) => Some(name.as_str()),
+        Expr::Group(inner)
+        | Expr::FieldAccess { base: inner, .. }
+        | Expr::Index { base: inner, .. } => expr_consumed_binding_name(inner),
+        _ => None,
+    }
+}
+
 fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
     match callee {
         "http.write" | "http.write_json" | "http.write_response" | "route.write_404"
@@ -3305,11 +3376,14 @@ fn consumed_arg_identity_names<'a>(
     let mut names = runtime_consumed_param_indices(callee)
         .iter()
         .filter_map(|index| args.get(*index))
-        .filter_map(expr_identity_name)
+        .filter_map(expr_consumed_binding_name)
         .collect::<Vec<_>>();
     if let Some(consumed_params) = summaries.get(callee) {
         for consumed_index in consumed_params {
-            if let Some(name) = args.get(*consumed_index).and_then(expr_identity_name) {
+            if let Some(name) = args
+                .get(*consumed_index)
+                .and_then(expr_consumed_binding_name)
+            {
                 if !names.contains(&name) {
                     names.push(name);
                 }
@@ -3901,12 +3975,21 @@ fn analyze_ownership_block(
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
+    mut loop_exits: Option<&mut LoopExitStates>,
 ) -> bool {
     for stmt in body {
         for name in state.moved.iter() {
             if stmt_uses_ident(stmt, name) {
                 violations.push(format!(
                     "function `{}` uses moved value `{}` after move/consume",
+                    function_name, name
+                ));
+            }
+        }
+        for name in state.maybe_moved.iter() {
+            if stmt_uses_ident(stmt, name) {
+                violations.push(format!(
+                    "function `{}` uses conditionally consumed value `{}` after path-sensitive ownership merge",
                     function_name, name
                 ));
             }
@@ -3920,12 +4003,14 @@ fn analyze_ownership_block(
                     state.owners.insert(name.clone(), *next_alloc);
                     *next_alloc += 1;
                     state.moved.remove(name);
+                    state.maybe_moved.remove(name);
                 }
                 if let Expr::Ident(from) = value {
                     if let Some(owner) = state.owners.remove(from) {
                         state.owners.insert(name.clone(), owner);
                         state.moved.insert(from.clone());
                         state.moved.remove(name);
+                        state.maybe_moved.remove(name);
                     }
                 }
                 if is_partial_move_expr(function, value, &state.owners, struct_defs, enum_defs) {
@@ -3961,6 +4046,7 @@ fn analyze_ownership_block(
                     }
                 }
                 state.moved.remove(target);
+                state.maybe_moved.remove(target);
                 if is_partial_move_expr(function, value, &state.owners, struct_defs, enum_defs) {
                     violations.push(format!(
                         "function `{}` performs partial move assignment from owned aggregate; partial moves are forbidden in v0",
@@ -3977,6 +4063,7 @@ fn analyze_ownership_block(
                     }
                 }
                 state.moved.remove(target);
+                state.maybe_moved.remove(target);
             }
             Stmt::Expr(Expr::Call { callee, args }) => {
                 if callee == "free"
@@ -3984,7 +4071,7 @@ fn analyze_ownership_block(
                     || callee == "close"
                     || callee.ends_with(".close")
                 {
-                    if let Some(Expr::Ident(name)) = args.first() {
+                    if let Some(name) = args.first().and_then(expr_consumed_binding_name) {
                         if let Some(owner) = state.owners.remove(name) {
                             if state.deferred.contains(&owner) {
                                 violations.push(format!(
@@ -3992,7 +4079,8 @@ fn analyze_ownership_block(
                                     function_name, name
                                 ));
                             }
-                            state.moved.insert(name.clone());
+                            state.moved.insert(name.to_string());
+                            state.maybe_moved.remove(name);
                         } else {
                             violations.push(format!(
                                 "function `{}` consumes non-owned or already-consumed value `{}` via `{}`",
@@ -4017,6 +4105,7 @@ fn analyze_ownership_block(
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
+                    None,
                 ) {
                     return false;
                 }
@@ -4037,6 +4126,7 @@ fn analyze_ownership_block(
                         ownership_summaries,
                         struct_defs,
                         enum_defs,
+                        None,
                     );
                 }
                 return false;
@@ -4059,6 +4149,7 @@ fn analyze_ownership_block(
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
+                    None,
                 );
                 let else_fallthrough = analyze_ownership_block(
                     function,
@@ -4070,6 +4161,7 @@ fn analyze_ownership_block(
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
+                    None,
                 );
                 *state = match (then_fallthrough, else_fallthrough) {
                     (true, true) => merge_ownership_states(
@@ -4084,27 +4176,21 @@ fn analyze_ownership_block(
                     (false, false) => return false,
                 };
             }
-            Stmt::While { body, .. } => {
-                let entry_state = state.clone();
-                let mut body_state = state.clone();
-                let _ = analyze_ownership_block(
+            Stmt::While { condition, body } => {
+                if !analyze_loop_ownership(
                     function,
                     body,
-                    &mut body_state,
+                    state,
                     next_alloc,
                     violations,
                     function_name,
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
-                );
-                *state = merge_ownership_states(
-                    function_name,
-                    "loop iterations",
-                    &entry_state,
-                    &[entry_state.clone(), body_state],
-                    violations,
-                );
+                    !matches!(condition, Expr::Bool(true)),
+                ) {
+                    return false;
+                }
             }
             Stmt::For {
                 init,
@@ -4123,89 +4209,75 @@ fn analyze_ownership_block(
                         ownership_summaries,
                         struct_defs,
                         enum_defs,
+                        None,
                     );
                 }
-                let entry_state = state.clone();
-                let mut body_state = state.clone();
-                let _ = analyze_ownership_block(
+                let mut loop_body = body.to_vec();
+                if let Some(step) = step {
+                    loop_body.push((**step).clone());
+                }
+                if !analyze_loop_ownership(
                     function,
-                    body,
-                    &mut body_state,
+                    &loop_body,
+                    state,
                     next_alloc,
                     violations,
                     function_name,
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
-                );
-                if let Some(step) = step {
-                    let _ = analyze_ownership_block(
-                        function,
-                        std::slice::from_ref(step.as_ref()),
-                        &mut body_state,
-                        next_alloc,
-                        violations,
-                        function_name,
-                        ownership_summaries,
-                        struct_defs,
-                        enum_defs,
-                    );
+                    true,
+                ) {
+                    return false;
                 }
-                *state = merge_ownership_states(
-                    function_name,
-                    "loop iterations",
-                    &entry_state,
-                    &[entry_state.clone(), body_state],
-                    violations,
-                );
             }
             Stmt::ForIn { binding, body, .. } => {
                 state.moved.remove(binding);
+                state.maybe_moved.remove(binding);
                 state.owner_candidates.insert(binding.clone());
-                let entry_state = state.clone();
-                let mut body_state = state.clone();
-                let _ = analyze_ownership_block(
+                if !analyze_loop_ownership(
                     function,
                     body,
-                    &mut body_state,
+                    state,
                     next_alloc,
                     violations,
                     function_name,
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
-                );
-                *state = merge_ownership_states(
-                    function_name,
-                    "loop iterations",
-                    &entry_state,
-                    &[entry_state.clone(), body_state],
-                    violations,
-                );
+                    true,
+                ) {
+                    return false;
+                }
             }
             Stmt::Loop { body } => {
-                let entry_state = state.clone();
-                let mut body_state = state.clone();
-                let _ = analyze_ownership_block(
+                if !analyze_loop_ownership(
                     function,
                     body,
-                    &mut body_state,
+                    state,
                     next_alloc,
                     violations,
                     function_name,
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
-                );
-                *state = merge_ownership_states(
-                    function_name,
-                    "loop iterations",
-                    &entry_state,
-                    &[entry_state.clone(), body_state],
-                    violations,
-                );
+                    false,
+                ) {
+                    return false;
+                }
             }
-            Stmt::Break(_) | Stmt::Continue => {}
+            Stmt::Break(_) => {
+                if let Some(loop_exits) = loop_exits.as_deref_mut() {
+                    loop_exits.breaks.push(state.clone());
+                }
+                return false;
+            }
+            Stmt::Continue => {
+                if let Some(loop_exits) = loop_exits.as_deref_mut() {
+                    loop_exits.continues.push(state.clone());
+                }
+                return false;
+            }
             Stmt::Match { arms, .. } => {
                 let entry_state = state.clone();
                 let mut arm_states = Vec::new();
@@ -4224,6 +4296,7 @@ fn analyze_ownership_block(
                         ownership_summaries,
                         struct_defs,
                         enum_defs,
+                        None,
                     );
                     arm_states.push(arm_state);
                 }
@@ -4248,6 +4321,7 @@ fn analyze_ownership_block(
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
+                    None,
                 );
             }
             Stmt::Return(None) => return false,
@@ -4267,10 +4341,11 @@ fn analyze_expr_value_ownership(
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
+    mut loop_exits: Option<&mut LoopExitStates>,
 ) {
     match expr {
         Expr::Call { callee, args } if is_free_callee(callee) || is_close_callee(callee) => {
-            if let Some(Expr::Ident(name)) = args.first() {
+            if let Some(name) = args.first().and_then(expr_consumed_binding_name) {
                 if let Some(owner) = state.owners.remove(name) {
                     if state.deferred.contains(&owner) {
                         violations.push(format!(
@@ -4278,7 +4353,8 @@ fn analyze_expr_value_ownership(
                             function_name, name
                         ));
                     }
-                    state.moved.insert(name.clone());
+                    state.moved.insert(name.to_string());
+                    state.maybe_moved.remove(name);
                 } else {
                     violations.push(format!(
                         "function `{}` consumes non-owned or already-consumed value `{}` via `{}`",
@@ -4301,6 +4377,7 @@ fn analyze_expr_value_ownership(
                 ownership_summaries,
                 struct_defs,
                 enum_defs,
+                None,
             );
         }
         Expr::Group(inner)
@@ -4317,6 +4394,7 @@ fn analyze_expr_value_ownership(
                 ownership_summaries,
                 struct_defs,
                 enum_defs,
+                loop_exits.as_deref_mut(),
             );
         }
         Expr::TryCatch {
@@ -4336,6 +4414,7 @@ fn analyze_expr_value_ownership(
                 ownership_summaries,
                 struct_defs,
                 enum_defs,
+                None,
             );
             analyze_expr_value_ownership(
                 function,
@@ -4347,6 +4426,7 @@ fn analyze_expr_value_ownership(
                 ownership_summaries,
                 struct_defs,
                 enum_defs,
+                None,
             );
             *state = merge_ownership_states(
                 function_name,
@@ -4374,6 +4454,7 @@ fn analyze_expr_value_ownership(
                 ownership_summaries,
                 struct_defs,
                 enum_defs,
+                None,
             );
             analyze_expr_value_ownership(
                 function,
@@ -4385,6 +4466,7 @@ fn analyze_expr_value_ownership(
                 ownership_summaries,
                 struct_defs,
                 enum_defs,
+                None,
             );
             *state = merge_ownership_states(
                 function_name,
@@ -4409,6 +4491,7 @@ fn analyze_expr_value_ownership(
                     ownership_summaries,
                     struct_defs,
                     enum_defs,
+                    None,
                 );
                 arm_states.push(arm_state);
             }
@@ -4426,6 +4509,77 @@ fn analyze_expr_value_ownership(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn analyze_loop_ownership(
+    function: &TypedFunction,
+    body: &[Stmt],
+    state: &mut OwnershipState,
+    next_alloc: &mut usize,
+    violations: &mut Vec<String>,
+    function_name: &str,
+    ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+    can_skip_loop: bool,
+) -> bool {
+    let entry_state = state.clone();
+    let mut header_state = entry_state.clone();
+    let mut break_states = Vec::<OwnershipState>::new();
+
+    for _ in 0..8 {
+        let mut iteration_state = header_state.clone();
+        let mut exits = LoopExitStates::default();
+        let falls_through = analyze_ownership_block(
+            function,
+            body,
+            &mut iteration_state,
+            next_alloc,
+            violations,
+            function_name,
+            ownership_summaries,
+            struct_defs,
+            enum_defs,
+            Some(&mut exits),
+        );
+
+        let mut backedge_states = vec![entry_state.clone()];
+        if falls_through {
+            backedge_states.push(iteration_state);
+        }
+        backedge_states.extend(exits.continues.into_iter());
+        let next_header = merge_ownership_states(
+            function_name,
+            "loop iterations",
+            &entry_state,
+            &backedge_states,
+            violations,
+        );
+        let next_breaks = exits.breaks;
+        if next_header == header_state && next_breaks == break_states {
+            break;
+        }
+        header_state = next_header;
+        break_states = next_breaks;
+    }
+
+    let mut post_loop_states = Vec::new();
+    if can_skip_loop {
+        post_loop_states.push(header_state);
+    }
+    post_loop_states.extend(break_states);
+    if post_loop_states.is_empty() {
+        return false;
+    }
+    *state = merge_ownership_states(
+        function_name,
+        "loop exits",
+        &entry_state,
+        &post_loop_states,
+        violations,
+    );
+    true
+}
+
 fn apply_call_consumed_params(
     callee: &str,
     args: &[Expr],
@@ -4435,6 +4589,7 @@ fn apply_call_consumed_params(
     for arg_name in consumed_arg_identity_names(callee, args, ownership_summaries) {
         if let Some(owner) = state.owners.remove(arg_name) {
             state.moved.insert(arg_name.to_string());
+            state.maybe_moved.remove(arg_name);
             state.deferred.remove(&owner);
         }
     }
@@ -4453,34 +4608,53 @@ fn merge_ownership_states(
     names.extend(entry_state.owners.keys().cloned());
     names.extend(entry_state.owner_candidates.iter().cloned());
     names.extend(entry_state.moved.iter().cloned());
+    names.extend(entry_state.maybe_moved.iter().cloned());
     for branch in branches {
         merged.deferred.extend(branch.deferred.iter().copied());
     }
     for name in names {
-        let owner_views = branches
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum MergeClass {
+            Owned(usize),
+            Moved,
+            MaybeMoved,
+            Clear,
+        }
+
+        let classes = branches
             .iter()
-            .map(|branch| branch.owners.get(&name).copied())
+            .map(|branch| {
+                if let Some(owner) = branch.owners.get(&name).copied() {
+                    MergeClass::Owned(owner)
+                } else if branch.moved.contains(&name) {
+                    MergeClass::Moved
+                } else if branch.maybe_moved.contains(&name) {
+                    MergeClass::MaybeMoved
+                } else {
+                    MergeClass::Clear
+                }
+            })
             .collect::<Vec<_>>();
-        let moved_views = branches
-            .iter()
-            .map(|branch| branch.moved.contains(&name))
-            .collect::<Vec<_>>();
-        let owner_diverges = owner_views.windows(2).any(|window| window[0] != window[1]);
-        let moved_diverges = moved_views.windows(2).any(|window| window[0] != window[1]);
-        if owner_diverges || moved_diverges {
+        if classes.windows(2).any(|window| window[0] != window[1]) {
             violations.push(format!(
                 "function `{}` has divergent ownership state for `{}` across {}; rewrite control flow so ownership is consistent on every path",
                 function_name, name, control_kind
             ));
         }
-        if moved_views.iter().any(|moved| *moved) {
-            merged.moved.insert(name.clone());
-        }
-        if let Some(Some(owner_id)) = owner_views.first() {
-            if owner_views.iter().all(|view| *view == Some(*owner_id))
-                && !moved_views.iter().any(|moved| *moved)
+        match classes.first().copied().unwrap_or(MergeClass::Clear) {
+            MergeClass::Owned(owner_id)
+                if classes.iter().all(|class| *class == MergeClass::Owned(owner_id)) =>
             {
-                merged.owners.insert(name.clone(), *owner_id);
+                merged.owners.insert(name.clone(), owner_id);
+            }
+            MergeClass::Moved if classes.iter().all(|class| *class == MergeClass::Moved) => {
+                merged.moved.insert(name.clone());
+            }
+            MergeClass::Clear if classes.iter().all(|class| *class == MergeClass::Clear) => {}
+            _ => {
+                if classes.iter().any(|class| *class != MergeClass::Clear) {
+                    merged.maybe_moved.insert(name.clone());
+                }
             }
         }
         if entry_state.owner_candidates.contains(&name)
@@ -14433,6 +14607,28 @@ mod tests {
     }
 
     #[test]
+    fn detects_conditional_move_before_reuse() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                if true {
+                    let q = p;
+                    discard q;
+                }
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("conditionally consumed value `p`")
+                || detail.contains("divergent ownership state for `p`")
+                || detail.contains("uses moved value `p` after move/consume")
+        }));
+    }
+
+    #[test]
     fn borrowed_references_are_not_collected_as_linear_resources() {
         let source = r#"
             fn borrow(v: &'a i32) -> &'a i32 {
@@ -14506,6 +14702,40 @@ mod tests {
             .ownership_violations
             .iter()
             .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`")));
+    }
+
+    #[test]
+    fn inferred_handle_local_without_cleanup_matches_typed_handle_failure() {
+        let inferred = r#"
+            fn main() -> i32 {
+                let listener = http.accept();
+                return 0;
+            }
+        "#;
+        let typed_src = r#"
+            fn main() -> i32 {
+                let listener: HttpHandle = http.accept();
+                return 0;
+            }
+        "#;
+        let inferred_typed = lower(&parser::parse(inferred, "main").expect("parse"));
+        let explicit_typed = lower(&parser::parse(typed_src, "main").expect("parse"));
+        assert!(inferred_typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`listener`")));
+        assert!(explicit_typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`listener`")));
+        assert!(inferred_typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| detail.contains("linear value `listener` was not consumed/freed")));
+        assert!(explicit_typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| detail.contains("linear value `listener` was not consumed/freed")));
     }
 
     #[test]
@@ -14588,6 +14818,27 @@ mod tests {
             .ownership_violations
             .iter()
             .any(|detail| detail.contains("double-frees provenance root")));
+    }
+
+    #[test]
+    fn projected_owned_ffi_argument_marks_root_consumed() {
+        let source = r#"
+            struct Holder { ptr: *mut u8 }
+            ext unsafe c fn take_owned(p_owned: *u8) -> i32;
+            unsafe fn main() -> i32 {
+                let holder: Holder = Holder { ptr: alloc(32) };
+                take_owned(holder.ptr);
+                free(holder.ptr);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("consumes non-owned or already-consumed value `holder`")
+                || detail.contains("divergent ownership state for `holder`")
+                || detail.contains("double-frees provenance root")
+        }));
     }
 
     #[test]
@@ -14836,6 +15087,57 @@ mod tests {
     }
 
     #[test]
+    fn continue_after_free_marks_later_iteration_reuse_invalid() {
+        let source = r#"
+            fn main() -> i32 {
+                let i: i32 = 0;
+                let p = alloc(32);
+                while i < 2 {
+                    if i == 0 {
+                        free(p);
+                        i = i + 1;
+                        continue;
+                    }
+                    close(p);
+                    i = i + 1;
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("conditionally consumed value `p`")
+                || detail.contains("uses moved value `p` after move/consume")
+                || detail.contains("consumes non-owned or already-consumed value `p`")
+        }));
+    }
+
+    #[test]
+    fn break_after_free_does_not_restore_pre_loop_ownership() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                while true {
+                    free(p);
+                    break;
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`")));
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("divergent ownership state for `p`")
+                || detail.contains("conditionally consumed value `p`")
+        }));
+    }
+
+    #[test]
     fn detects_invalid_atomic_ordering_claims() {
         let source = r#"
             fn main() -> i32 {
@@ -14999,6 +15301,31 @@ mod tests {
         let typed = lower(&module);
         assert!(typed.reference_lifetime_violations.iter().any(|detail| {
             detail.contains("returns reference expression with mismatched lifetime")
+        }));
+    }
+
+    #[test]
+    fn assignment_shaped_reference_flow_still_validates_return_lifetimes() {
+        let source = r#"
+            fn borrow_a(v: &'a i32) -> &'a i32 {
+                return v;
+            }
+            fn borrow_b(v: &'b i32) -> &'b i32 {
+                return v;
+            }
+            fn relay(a: &'a i32, b: &'b i32) -> &'a i32 {
+                let out = borrow_a(a);
+                if true {
+                    out = borrow_b(b);
+                }
+                return out;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.reference_lifetime_violations.iter().any(|detail| {
+            detail.contains("returns reference expression with mismatched lifetime")
+                || detail.contains("returns reference expression without a statically traced lifetime source")
         }));
     }
 

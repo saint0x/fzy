@@ -56,6 +56,7 @@ fn write(ptr: *u8, len: usize) -> i32 {
 Default policy:
 - Generated contracts are enforced by profile policy from `fozzy.toml`.
 - Production verify/check output still emits a warning when unsafe exists.
+- Compiler-generated contracts are structural audit artifacts by default, not independently validated safety proofs.
 - When compiler-generated contracts and policy checks pass, that warning is informational:
   unsafe is present, review-worthy, and explicitly acknowledged, but it is not failing current policy.
 - When contract fields, invariants, async constraints, or unsafe-context rules do not check out,

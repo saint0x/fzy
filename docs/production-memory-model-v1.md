@@ -2,7 +2,7 @@
 
 ## Safety Target
 
-- Safe-by-default semantics are mandatory for production run/test/build pipelines.
+- Safe-by-default semantics are mandatory for production run/test/build pipelines within the shipped safe-language surface and documented verifier rule scope.
 - Unsafe behavior is allowed only through first-class unsafe islands/functions.
 - Production policy target is enforceable high-assurance default safety with no unsound default fallback path.
 - The implementation intentionally does not claim full theorem-proved equivalence to Rust’s borrow checker.
@@ -68,6 +68,7 @@
   - `unsafe { ... }`
   - compiler-generated unsafe contracts/docs:
     - `reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`
+- Compiler-generated unsafe contracts/docs are structural audit artifacts by default; stronger safety assurance requires linked proof artifacts that survive strict validation.
 - `unsafe` is reserved for operations the compiler cannot fully justify, not for every explicit heap allocation.
 - Raw pointer dereference, pointer arithmetic, aliasing hazards, and unsafe FFI mutation stay inside `unsafe`.
 - Calls to unsafe functions/imports must be inside unsafe context.
@@ -77,11 +78,12 @@
 
 Mandatory for memory safety releases:
 
-- `fz doctor --deep --scenario tests/memory_graph_diff_top.pass.fozzy.json --runs 5 --seed <seed> --json`
-- `fz test --det --strict-verify tests/memory_graph_diff_top.pass.fozzy.json --json`
-- `fz run tests/memory_graph_diff_top.pass.fozzy.json --det --record <trace.fozzy> --json`
+- `fz doctor --deep --scenario tests/compiler_verify_thread_boundary.pass.fozzy.json --runs 5 --seed <seed> --json`
+- `fz doctor --deep --scenario tests/compiler_verify_memory_surface.pass.fozzy.json --runs 5 --seed <seed> --json`
+- `fz test --det --strict-verify tests/compiler_verify_thread_boundary.pass.fozzy.json tests/compiler_verify_memory_surface.pass.fozzy.json --json`
+- `fz run tests/compiler_verify_memory_surface.pass.fozzy.json --det --record <trace.fozzy> --json`
 - `fz trace verify <trace.fozzy> --strict --json`
 - `fz replay <trace.fozzy> --json`
 - `fz ci <trace.fozzy> --json`
-- host-backed parity run for memory scenario
+- host-backed parity run for the compiler memory-surface scenario
 - unsafe budget gate (strict mode enforces missing/invalid metadata = 0 and unsafe-context violations = 0)

@@ -15,7 +15,7 @@ Use this flow for every production change:
 
 This workflow assumes the current production posture:
 
-- memory-safe by default
+- the shipped safe-language surface is memory-safe by default within the documented verifier/compiler rule scope
 - explicit unsafe islands instead of ambient unsafety
 - deterministic validation and replay as release evidence
 - native and host-backed execution both matter for confidence

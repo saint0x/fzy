@@ -148,11 +148,18 @@ fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
 fn parse_command(args: &[String]) -> Result<Command> {
     match args.first().map(String::as_str) {
         Some("init") => {
-            let name = args
-                .get(1)
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("missing <name>"))?;
-            Ok(Command::Init { name })
+            let path = command_path_or_cwd(args, 1, &["--template", "--with", "--name"])?;
+            let package_name = parse_string_flag(args, "--name")?;
+            let template = parse_string_flag(args, "--template")?;
+            let with = parse_csv_flag(args, "--with")?;
+            let force = has_flag(args, "--force");
+            Ok(Command::Init {
+                path,
+                package_name,
+                template,
+                with,
+                force,
+            })
         }
         Some("build") => {
             let path = arg_path_or_cwd(args, 1)?;
@@ -557,8 +564,8 @@ fn print_help() {
     eprintln!(
         "fz <command> [options]\n\
 commands:\n\
-  init <name>\n\
-  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
+  init [path] [--name package] [--template minimal|rust|ts] [--with run,fuzz,explore,memory,host|all] [--force]\n\
+  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]  (`--lib` currently requires Cranelift)\n\
   run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>]\n\
   test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
   fmt [path ...] [--check]\n\
@@ -725,6 +732,18 @@ fn parse_repeated_value_flags(args: &[String], flags: &[&str]) -> Result<Vec<Str
     Ok(values)
 }
 
+fn parse_csv_flag(args: &[String], flag: &str) -> Result<Vec<String>> {
+    let Some(raw) = parse_string_flag(args, flag)? else {
+        return Ok(Vec::new());
+    };
+    Ok(raw
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_command;
@@ -742,6 +761,60 @@ mod tests {
         let args = vec!["version".to_string()];
         let command = parse_command(&args).expect("`version` should parse");
         assert!(matches!(command, Command::Version));
+    }
+
+    #[test]
+    fn parse_init_defaults_to_current_directory() {
+        let cwd = std::env::current_dir().expect("cwd should resolve");
+        let command = parse_command(&["init".to_string()]).expect("init should parse");
+        match command {
+            Command::Init {
+                path,
+                package_name,
+                template,
+                with,
+                force,
+            } => {
+                assert_eq!(path, cwd);
+                assert_eq!(package_name, None);
+                assert_eq!(template, None);
+                assert!(with.is_empty());
+                assert!(!force);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_init_accepts_path_template_name_and_with_flags() {
+        let command = parse_command(&[
+            "init".to_string(),
+            "demo-app".to_string(),
+            "--name".to_string(),
+            "demo_pkg".to_string(),
+            "--template".to_string(),
+            "rust".to_string(),
+            "--with".to_string(),
+            "run,memory,host".to_string(),
+            "--force".to_string(),
+        ])
+        .expect("init flags should parse");
+        match command {
+            Command::Init {
+                path,
+                package_name,
+                template,
+                with,
+                force,
+            } => {
+                assert_eq!(path, PathBuf::from("demo-app"));
+                assert_eq!(package_name.as_deref(), Some("demo_pkg"));
+                assert_eq!(template.as_deref(), Some("rust"));
+                assert_eq!(with, vec!["run", "memory", "host"]);
+                assert!(force);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]

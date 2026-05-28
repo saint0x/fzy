@@ -65,7 +65,11 @@ impl StdError for CommandFailure {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Init {
-        name: String,
+        path: PathBuf,
+        package_name: Option<String>,
+        template: Option<String>,
+        with: Vec<String>,
+        force: bool,
     },
     Build {
         path: PathBuf,
@@ -256,9 +260,20 @@ pub enum Command {
 
 pub fn run(command: Command, format: Format) -> Result<String> {
     match command {
-        Command::Init { name } => {
-            init_project(&name).map(|_| render(format, "initialized project"))
-        }
+        Command::Init {
+            path,
+            package_name,
+            template,
+            with,
+            force,
+        } => init_project(
+            &path,
+            package_name.as_deref(),
+            template.as_deref(),
+            &with,
+            force,
+        )
+        .map(|_| render(format, "initialized project")),
         Command::Build {
             path,
             release,
@@ -1506,108 +1521,175 @@ fn scenario_run_routing(deterministic_requested: bool, host_backends: bool) -> S
     }
 }
 
-fn init_project(name: &str) -> Result<()> {
-    if name.trim().is_empty() {
+fn init_project(
+    path: &Path,
+    package_name: Option<&str>,
+    template: Option<&str>,
+    with: &[String],
+    force: bool,
+) -> Result<()> {
+    let root = if path.as_os_str().is_empty() {
+        std::env::current_dir().context("failed to resolve current working directory")?
+    } else {
+        path.to_path_buf()
+    };
+    let root = if root.is_absolute() {
+        root
+    } else {
+        std::env::current_dir()
+            .context("failed to resolve current working directory")?
+            .join(root)
+    };
+    let root_name = root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("app");
+    let package = normalize_init_package_name(package_name.unwrap_or(root_name));
+    if package.is_empty() {
         bail!("project name cannot be empty");
     }
 
-    let root = PathBuf::from(name);
+    let template = parse_init_template(template)?;
+    let test_types = parse_init_test_types(with)?;
+    ensure_init_target_ready(&root, &template, force)?;
+
+    std::fs::create_dir_all(&root)
+        .with_context(|| format!("failed creating project root {}", root.display()))?;
     let src = root.join("src");
-    std::fs::create_dir_all(&src).context("failed to create project directories")?;
-    for dir in ["api", "model", "services", "runtime", "cli", "tests"] {
-        std::fs::create_dir_all(src.join(dir))
-            .with_context(|| format!("failed creating src/{dir} directory"))?;
-    }
+    std::fs::create_dir_all(&src).context("failed to create src directory")?;
 
-    let manifest = format!(
-        "[package]\nname = \"{}\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"{}\"\npath = \"src/main.fzy\"\n\n[unsafe]\ncontracts = \"compiler\"\nenforce_dev = false\nenforce_verify = true\nenforce_release = true\ndeny_unsafe_in = []\nallow_unsafe_in = []\n",
-        name, name
-    );
-
-    std::fs::write(root.join("fozzy.toml"), &manifest).context("failed to write fozzy.toml")?;
-    std::fs::write(
-        src.join("main.fzy"),
-        "use core.time;\nuse core.fs;\nuse core.http;\nuse core.thread;\n\nmod api;\nmod model;\nmod services;\nmod runtime;\nmod cli;\nmod tests;\n\nfn main() -> i32 {\n    requires true\n\n    model.preflight()\n    cli.boot()\n    services.boot_all()\n    runtime.start()\n    api.touch()\n\n    ensures true\n    return 0\n}\n",
+    let config_path = root.join("fozzy.toml");
+    let manifest = render_init_manifest(&package);
+    write_init_file(&config_path, manifest.as_bytes(), force)
+        .context("failed to write fozzy.toml")?;
+    write_init_file(
+        &src.join("main.fzy"),
+        render_init_main(&package).as_bytes(),
+        force,
     )
     .context("failed to write src/main.fzy")?;
-    std::fs::write(
-        src.join("api/mod.fzy"),
-        "mod ffi;\nmod rpc;\n\nfn touch() -> i32 {\n    ffi.touch()\n    rpc.touch()\n    return 0\n}\n",
-    )
-    .context("failed to write src/api/mod.fzy")?;
-    std::fs::write(
-        src.join("api/ffi.fzy"),
-        "fn touch() -> i32 {\n    return 0\n}\n",
-    )
-    .context("failed to write src/api/ffi.fzy")?;
-    std::fs::write(
-        src.join("api/rpc.fzy"),
-        "rpc Ping(req: PingReq) -> PingRes;\n\nfn touch() -> i32 {\n    return 0\n}\n",
-    )
-    .context("failed to write src/api/rpc.fzy")?;
-    std::fs::write(
-        src.join("model/mod.fzy"),
-        "mod types;\nmod contracts;\n\nfn preflight() -> i32 {\n    contracts.preflight()\n    types.schema_version()\n    return 0\n}\n",
-    )
-    .context("failed to write src/model/mod.fzy")?;
-    std::fs::write(
-        src.join("model/types.fzy"),
-        "#[repr(C)]\nstruct Row {}\n\nfn schema_version() -> i32 {\n    return 1\n}\n",
-    )
-    .context("failed to write src/model/types.fzy")?;
-    std::fs::write(
-        src.join("model/contracts.fzy"),
-        "fn preflight() -> i32 {\n    requires true\n    ensures true\n    return 0\n}\n",
-    )
-    .context("failed to write src/model/contracts.fzy")?;
-    std::fs::write(
-        src.join("services/mod.fzy"),
-        "mod store;\nmod http;\n\nfn boot_all() -> i32 {\n    store.init()\n    http.start()\n    return 0\n}\n",
-    )
-    .context("failed to write src/services/mod.fzy")?;
-    std::fs::write(
-        src.join("services/store.fzy"),
-        "use core.fs;\n\nfn init() -> i32 {\n    let handle = fs.open()\n    defer close(handle)\n    return 0\n}\n",
-    )
-    .context("failed to write src/services/store.fzy")?;
-    std::fs::write(
-        src.join("services/http.fzy"),
-        "use core.http;\n\nfn start() -> i32 {\n    let conn = http.connect()\n    defer close(conn)\n    return 0\n}\n",
-    )
-    .context("failed to write src/services/http.fzy")?;
-    std::fs::write(
-        src.join("runtime/mod.fzy"),
-        "mod scheduler;\nmod worker;\n\nfn start() -> i32 {\n    spawn(worker.run)\n    spawn(scheduler.tick)\n    return 0\n}\n",
-    )
-    .context("failed to write src/runtime/mod.fzy")?;
-    std::fs::write(
-        src.join("runtime/scheduler.fzy"),
-        "use core.thread;\n\nfn tick() -> i32 {\n    checkpoint()\n    return 0\n}\n",
-    )
-    .context("failed to write src/runtime/scheduler.fzy")?;
-    std::fs::write(
-        src.join("runtime/worker.fzy"),
-        "use core.thread;\n\nfn run() -> i32 {\n    yield()\n    return 0\n}\n",
-    )
-    .context("failed to write src/runtime/worker.fzy")?;
-    std::fs::write(
-        src.join("cli/mod.fzy"),
-        "mod commands;\n\nfn boot() -> i32 {\n    commands.boot()\n    return 0\n}\n",
-    )
-    .context("failed to write src/cli/mod.fzy")?;
-    std::fs::write(
-        src.join("cli/commands.fzy"),
-        "fn boot() -> i32 {\n    return 0\n}\n",
-    )
-    .context("failed to write src/cli/commands.fzy")?;
-    std::fs::write(src.join("tests/mod.fzy"), "mod smoke;\n")
-        .context("failed to write src/tests/mod.fzy")?;
-    std::fs::write(
-        src.join("tests/smoke.fzy"),
-        "test \"det_boot\" {}\ntest \"det_flow\" {}\n",
-    )
-    .context("failed to write src/tests/smoke.fzy")?;
 
+    let config = fzscenario::Config::default();
+    fzscenario::init_project_with_options(
+        &config,
+        &config_path,
+        &template,
+        force,
+        &test_types,
+        fzscenario::InitProjectOptions {
+            write_config: false,
+        },
+    )
+    .map_err(|error| anyhow!(error.to_string()))?;
+
+    Ok(())
+}
+
+fn parse_init_template(template: Option<&str>) -> Result<fzscenario::InitTemplate> {
+    match template
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase())
+        .as_deref()
+    {
+        None => Ok(fzscenario::InitTemplate::Minimal),
+        Some("minimal") => Ok(fzscenario::InitTemplate::Minimal),
+        Some("rust") => Ok(fzscenario::InitTemplate::Rust),
+        Some("ts") => Ok(fzscenario::InitTemplate::Ts),
+        Some(other) => bail!("unsupported init template `{other}`; expected minimal, rust, or ts"),
+    }
+}
+
+fn parse_init_test_types(values: &[String]) -> Result<Vec<fzscenario::InitTestType>> {
+    let mut parsed = Vec::new();
+    for value in values {
+        let normalized = value.trim().to_ascii_lowercase();
+        let kind = match normalized.as_str() {
+            "run" => fzscenario::InitTestType::Run,
+            "fuzz" => fzscenario::InitTestType::Fuzz,
+            "explore" => fzscenario::InitTestType::Explore,
+            "memory" => fzscenario::InitTestType::Memory,
+            "host" => fzscenario::InitTestType::Host,
+            "all" => fzscenario::InitTestType::All,
+            _ => bail!(
+                "unsupported init scaffold kind `{}`; expected run, fuzz, explore, memory, host, or all",
+                value
+            ),
+        };
+        parsed.push(kind);
+    }
+    Ok(parsed)
+}
+
+fn normalize_init_package_name(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.trim().chars() {
+        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with('_') {
+            out.push('_');
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+fn ensure_init_target_ready(
+    root: &Path,
+    template: &fzscenario::InitTemplate,
+    force: bool,
+) -> Result<()> {
+    let collisions = init_collision_paths(root, template)
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
+    if !force && !collisions.is_empty() {
+        bail!(
+            "init target {} already contains scaffold-managed paths: {} (use --force to overwrite)",
+            root.display(),
+            collisions
+                .iter()
+                .map(|path| path.strip_prefix(root).unwrap_or(path).display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn init_collision_paths(root: &Path, template: &fzscenario::InitTemplate) -> Vec<PathBuf> {
+    let mut paths = vec![
+        root.join("fozzy.toml"),
+        root.join("src"),
+        root.join("tests"),
+        root.join(".fozzy"),
+    ];
+    if matches!(template, fzscenario::InitTemplate::Rust) {
+        paths.push(root.join("README.md"));
+    }
+    paths
+}
+
+fn render_init_manifest(package: &str) -> String {
+    format!(
+        "base_dir = \".fozzy\"\n\n[package]\nname = \"{package}\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"{package}\"\npath = \"src/main.fzy\"\n\n[unsafe]\ncontracts = \"compiler\"\nenforce_dev = false\nenforce_verify = true\nenforce_release = true\ndeny_unsafe_in = []\nallow_unsafe_in = []\n"
+    )
+}
+
+fn render_init_main(package: &str) -> String {
+    format!(
+        "fn main() -> i32 {{\n    let _app = \"{package}\"\n    return 0\n}}\n"
+    )
+}
+
+fn write_init_file(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
+    if path.exists() && !force {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed creating {}", parent.display()))?;
+    }
+    std::fs::write(path, bytes).with_context(|| format!("failed writing {}", path.display()))?;
     Ok(())
 }
 
@@ -2173,7 +2255,7 @@ fn attach_project_root_guidance(path: &Path, error: anyhow::Error) -> anyhow::Er
     let nested = discover_nested_project_roots(path);
     if nested.is_empty() {
         anyhow!(
-            "directory `{}` is not a Fozzy project root (missing {}). initialize a project here with `fz init <name>` or run against a project directory/file explicitly",
+            "directory `{}` is not a Fozzy project root (missing {}). initialize a project here with `fz init [path]` or run against a project directory/file explicitly",
             path.display(),
             manifest_path.display()
         )
@@ -3052,7 +3134,7 @@ fn doctor_project_command(path: &Path, strict: bool, format: Format) -> Result<S
                 name: "manifest".to_string(),
                 status: "error".to_string(),
                 detail: format!("missing {}", manifest_path.display()),
-                fix: "add fozzy.toml or run `fz init <name>`".to_string(),
+                fix: "add fozzy.toml or run `fz init [path]`".to_string(),
             });
             errors += 1;
             String::new()
@@ -14734,5 +14816,97 @@ mod tests {
         .expect("lint should succeed");
         assert!(output.contains("\"mode\":\"lint\""));
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn init_command_scaffolds_buildable_project_with_runtime_artifacts() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-init-e2e-{suffix}"));
+        let output = run(
+            Command::Init {
+                path: root.clone(),
+                package_name: Some("demo_init".to_string()),
+                template: Some("rust".to_string()),
+                with: vec!["run".to_string(), "memory".to_string(), "host".to_string()],
+                force: false,
+            },
+            Format::Json,
+        )
+        .expect("init should succeed");
+        assert!(output.contains("\"initialized project\""));
+        assert!(root.join("fozzy.toml").exists());
+        assert!(root.join("src/main.fzy").exists());
+        assert!(root.join("tests/run.pass.fozzy.json").exists());
+        assert!(root.join("tests/memory.pass.fozzy.json").exists());
+        assert!(root.join("tests/host.pass.fozzy.json").exists());
+        assert!(root.join("tests/INIT_GUIDE.md").exists());
+        assert!(root.join(".fozzy/runs").exists());
+        assert!(root.join(".fozzy/corpora").exists());
+
+        let artifact = compile_file_with_backend_with_root_guidance(&root, BuildProfile::Dev, None)
+            .expect("scaffolded project should compile");
+        assert_eq!(artifact.status, "ok");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn init_command_supports_current_directory_bootstrap() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-init-cwd-{suffix}"));
+        std::fs::create_dir_all(&root).expect("root should be created");
+        let prev = std::env::current_dir().expect("cwd should resolve");
+        std::env::set_current_dir(&root).expect("cwd should switch");
+        let result = run(
+            Command::Init {
+                path: root.clone(),
+                package_name: None,
+                template: Some("minimal".to_string()),
+                with: vec!["all".to_string()],
+                force: false,
+            },
+            Format::Text,
+        );
+        std::env::set_current_dir(prev).expect("cwd should restore");
+        result.expect("init in current directory should succeed");
+        assert!(root.join("fozzy.toml").exists());
+        assert!(root.join("src/main.fzy").exists());
+        assert!(root.join("tests/example.fozzy.json").exists());
+        assert!(root.join(".fozzy/corpora").exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn init_command_requires_force_when_scaffold_paths_exist() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-init-collision-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("src should be created");
+        std::fs::write(root.join("src/main.fzy"), "fn main() -> i32 { return 7 }\n")
+            .expect("main should be written");
+
+        let err = run(
+            Command::Init {
+                path: root.clone(),
+                package_name: Some("collision".to_string()),
+                template: None,
+                with: Vec::new(),
+                force: false,
+            },
+            Format::Text,
+        )
+        .expect_err("init should reject existing scaffold paths");
+        assert!(err.to_string().contains("scaffold-managed paths"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }

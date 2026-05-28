@@ -4,6 +4,17 @@ use crate::engine::{InitTemplate, InitTestType};
 use crate::{Config, FozzyError, FozzyResult, Scenario};
 use std::path::{Path, PathBuf};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InitProjectOptions {
+    pub write_config: bool,
+}
+
+impl Default for InitProjectOptions {
+    fn default() -> Self {
+        Self { write_config: true }
+    }
+}
+
 pub fn init_project(
     config: &Config,
     config_path: &Path,
@@ -11,7 +22,29 @@ pub fn init_project(
     force: bool,
     test_types: &[InitTestType],
 ) -> FozzyResult<()> {
-    let base = &config.base_dir;
+    init_project_with_options(
+        config,
+        config_path,
+        template,
+        force,
+        test_types,
+        InitProjectOptions::default(),
+    )
+}
+
+pub fn init_project_with_options(
+    config: &Config,
+    config_path: &Path,
+    template: &InitTemplate,
+    force: bool,
+    test_types: &[InitTestType],
+    options: InitProjectOptions,
+) -> FozzyResult<()> {
+    let project_root = config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let base = project_path(&project_root, &config.base_dir);
     if base.exists() && !force {
         return Err(FozzyError::InvalidArgument(format!(
             "{} already exists (use --force to overwrite)",
@@ -19,26 +52,26 @@ pub fn init_project(
         )));
     }
 
-    std::fs::create_dir_all(config.runs_dir())?;
-    std::fs::create_dir_all(config.corpora_dir())?;
+    std::fs::create_dir_all(project_path(&project_root, &config.runs_dir()))?;
+    std::fs::create_dir_all(project_path(&project_root, &config.corpora_dir()))?;
 
-    // Write a minimal config if it doesn't exist.
-    if force || !config_path.exists() {
+    // Write a minimal config if requested and it doesn't exist.
+    if options.write_config && (force || !config_path.exists()) {
         let cfg = toml::to_string_pretty(config).map_err(|e| FozzyError::Config(e.to_string()))?;
         std::fs::write(config_path, cfg)?;
     }
 
-    std::fs::create_dir_all("tests")?;
+    std::fs::create_dir_all(project_root.join("tests"))?;
 
     let selected = normalize_init_test_types(test_types);
     if selected.contains(&InitTestType::Run) {
         write_if_allowed(
-            Path::new("tests/example.fozzy.json"),
+            &project_root.join("tests/example.fozzy.json"),
             &serde_json::to_vec_pretty(&Scenario::example())?,
             force,
         )?;
         write_if_allowed(
-            Path::new("tests/run.pass.fozzy.json"),
+            &project_root.join("tests/run.pass.fozzy.json"),
             br#"{
   "version": 1,
   "name": "run-pass",
@@ -52,7 +85,7 @@ pub fn init_project(
     }
     if selected.contains(&InitTestType::Memory) {
         write_if_allowed(
-            Path::new("tests/memory.pass.fozzy.json"),
+            &project_root.join("tests/memory.pass.fozzy.json"),
             br#"{
   "version": 1,
   "name": "memory-pass",
@@ -68,7 +101,7 @@ pub fn init_project(
     }
     if selected.contains(&InitTestType::Explore) {
         write_if_allowed(
-            Path::new("tests/distributed.pass.fozzy.json"),
+            &project_root.join("tests/distributed.pass.fozzy.json"),
             br#"{
   "version": 1,
   "name": "distributed-pass",
@@ -91,7 +124,7 @@ pub fn init_project(
     }
     if selected.contains(&InitTestType::Host) {
         write_if_allowed(
-            Path::new("tests/host.pass.fozzy.json"),
+            &project_root.join("tests/host.pass.fozzy.json"),
             br#"{
   "version": 1,
   "name": "host-pass",
@@ -105,13 +138,13 @@ pub fn init_project(
         )?;
     }
     if selected.contains(&InitTestType::Fuzz) {
-        let corpus_dir = config.corpora_dir().join("fn-kv");
+        let corpus_dir = project_path(&project_root, &config.corpora_dir()).join("fn-kv");
         std::fs::create_dir_all(&corpus_dir)?;
         write_if_allowed(&corpus_dir.join("seed.bin"), b"fozzy-seed\n", force)?;
     }
 
     write_if_allowed(
-        Path::new("tests/INIT_GUIDE.md"),
+        &project_root.join("tests/INIT_GUIDE.md"),
         init_guide_markdown(&selected).as_bytes(),
         force,
     )?;
@@ -119,7 +152,7 @@ pub fn init_project(
     match template {
         InitTemplate::Minimal => {}
         InitTemplate::Rust => {
-            let readme = PathBuf::from("README.md");
+            let readme = project_root.join("README.md");
             if force || !readme.exists() {
                 std::fs::write(
                     &readme,
@@ -133,6 +166,14 @@ pub fn init_project(
     }
 
     Ok(())
+}
+
+fn project_path(project_root: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    }
 }
 
 fn write_if_allowed(path: &Path, bytes: &[u8], force: bool) -> FozzyResult<()> {

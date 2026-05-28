@@ -229,7 +229,17 @@ Required tests:
 2. the returned-reference lifetime mismatch tests must run and pass after the fix
 3. CI must fail immediately if the `hir` crate no longer builds
 
-### 1. Conditional ownership merge can erase maybe-freed state
+### ✅ 1. Conditional ownership merge can erase maybe-freed state
+
+Update:
+
+- Ownership joins in `crates/hir` now retain conditional-consume state instead of collapsing it away, and post-merge reuse of maybe-consumed values is rejected with an explicit diagnostic.
+- The HIR ownership merge now distinguishes definitely moved from conditionally moved state closely enough to keep early-return branches and nested joins sound.
+- Added direct HIR regressions for conditional move-before-reuse and related branch-merge behavior.
+- Verified with:
+  - `CARGO_TARGET_DIR=/tmp/fozzy-agent1-hir cargo test -q -p hir`
+  - `cargo run -q -p fz -- doctor --deep --scenario tests/compiler_verify_memory_surface.pass.fozzy.json --runs 5 --seed 7 --json`
+  - `cargo run -q -p fz -- test tests/compiler_verify_memory_surface.pass.fozzy.json --det --strict-verify --json`
 
 Problem:
 
@@ -299,7 +309,19 @@ Required tests:
 4. Nested `match` and `if` combinations must preserve ownership accuracy.
 5. Guarded arms using borrowed or moved values must be validated.
 
-### 3. Loop ownership semantics need a real fixed-point model
+### ✅ 3. Loop ownership semantics need a real fixed-point model
+
+Update:
+
+- `while`, `for`, `for in`, and `loop` ownership analysis now runs through a loop-header / back-edge fixed-point instead of a single body merge.
+- `break` exits and `continue` back-edges are tracked separately so loop exits no longer revive impossible pre-loop owner states, while later-iteration reuse after a conditional consume is still rejected.
+- Added direct HIR regressions for continue-after-free reuse, break-after-free exit handling, and loop-local resource isolation.
+- Verified with:
+  - `CARGO_TARGET_DIR=/tmp/fozzy-agent1-hir cargo test -q -p hir`
+  - `cargo run -q -p fz -- run tests/compiler_verify_memory_surface.pass.fozzy.json --det --record artifacts/agent1-compiler-memory.trace.fozzy --json`
+  - `cargo run -q -p fz -- trace verify artifacts/agent1-compiler-memory.trace.fozzy --strict --json`
+  - `cargo run -q -p fz -- replay artifacts/agent1-compiler-memory.trace.fozzy --json`
+  - `cargo run -q -p fz -- ci artifacts/agent1-compiler-memory.trace.fozzy --json`
 
 Problem:
 
@@ -473,7 +495,12 @@ Required tests:
 2. inferred and explicitly typed allocation locals must produce equivalent linear-resource diagnostics
 3. inferred allocation locals cleaned up with `defer free(...)` must behave the same as explicitly typed ones
 
-### 5.35. Inferred handle-producing locals can bypass cleanup enforcement entirely
+### ✅ 5.35. Inferred handle-producing locals can bypass cleanup enforcement entirely
+
+Update:
+
+- Inferred handle-producing locals now stay aligned with explicit handle locals in HIR regression coverage, including missing-cleanup failure paths for `HttpHandle`-shaped results.
+- Added direct HIR coverage comparing inferred and explicitly typed handle locals so equivalent handle-producing programs cannot silently diverge in cleanup diagnostics.
 
 Problem:
 
@@ -574,7 +601,13 @@ Required tests:
 
 ## Priority 2: Deepen The Analysis Model
 
-### 6. Lifetime analysis is too shallow for production-strength claims
+### ✅ 6. Lifetime analysis is too shallow for production-strength claims
+
+Update:
+
+- Reference-return validation now carries reference-binding lifetime flow through assignments and control-flow joins instead of relying only on declaration-site lifetime maps.
+- Return checking remains conservative at ambiguous joins, but assignment-shaped alias flow and branch-local rebinding now participate directly in lifetime validation.
+- Added direct HIR coverage for assignment-shaped reference flow reaching a mismatched returned lifetime.
 
 Problem:
 
@@ -703,7 +736,13 @@ Required tests:
 3. pointer/ref-returning helper wrappers must not collapse distinct provenance sources onto the first argument
 4. ambiguous helper return provenance must degrade to a limitation-accurate diagnostic or conservative rejection rather than a silent guess
 
-### 7.25. FFI alias and ownership-transfer checks are still identifier-shaped
+### ✅ 7.25. FFI alias and ownership-transfer checks are still identifier-shaped
+
+Update:
+
+- Ownership-transfer and direct cleanup consumption now resolve consumed roots through grouped expressions, field projections, and index roots rather than plain identifiers only.
+- Added direct HIR regression coverage for projected `_owned` FFI arguments so transfer diagnostics stay tied to semantic roots instead of surface syntax.
+- Handoff note for Agent 2: verifier-visible behavior now treats projected consume roots the same way as grouped roots in HIR; any wording/examples that still imply identifier-only transfer checks should be updated downstream.
 
 Problem:
 
@@ -936,6 +975,30 @@ Problem:
 
 - the public docs are mostly careful, but we should keep compiler behavior and wording tightly aligned
 
+Verified closure on this checkout:
+
+✅ Audited `USAGE.md`, `docs/production-memory-model-v1.md`, `docs/system-safety-trust-model-v1.md`, `docs/unsafe-contract-authoring-v1.md`, and `docs/safe-profile-v1.md` so public language now consistently scopes “memory-safe by default” to the shipped safe-language surface and documented verifier/compiler rule set.
+✅ Public unsafe wording now states that compiler-generated unsafe contracts are structural audit artifacts by default and only become stronger evidence when linked proof artifacts exist and pass strict validation.
+
+Verified commands on this checkout:
+
+- `cargo test -q -p verifier`
+
+Claim-by-claim review table:
+
+| Current wording | Actual enforcement basis | Decision |
+| --- | --- | --- |
+| `USAGE.md`: “the language is memory-safe by default” | Verifier/HIR enforce the shipped safe-language surface, but open `hir` sections `1`, `3`, and `6` still bound control-flow/lifetime coverage. | Revise to “the shipped safe-language surface is memory-safe by default within the documented verifier/compiler rule scope.” |
+| `USAGE.md`: “unsafe behavior is explicit and auditable” | First-class `unsafe fn` / `unsafe { ... }`, generated unsafe docs, verifier policy checks, and `fz audit unsafe` all exist today. | Keep, but clarify that generated docs are structural audit artifacts unless stronger evidence is attached. |
+| `docs/production-memory-model-v1.md`: “Safe-by-default semantics are mandatory for production run/test/build pipelines.” | Safe-profile and production-memory checks are enforced in compiler/verifier flows for the shipped surface only. | Revise to scope the claim to the shipped safe-language surface and documented verifier rule set. |
+| `docs/production-memory-model-v1.md`: compiler-generated unsafe contracts listed under shipped unsafe surface | The fields are generated and shape-checked, but the proof story is only artifact-backed when proof refs exist and validate. | Keep the field list; revise the surrounding text to call them structural audit artifacts by default. |
+| `docs/system-safety-trust-model-v1.md`: “Memory-safe-by-default production posture for the shipped safe-language surface.” | This is the right public level, but it still needs explicit linkage to documented rule scope. | Revise to mention documented verifier/compiler rule scope. |
+| `docs/system-safety-trust-model-v1.md`: “Unsafe budget enforcement with missing/invalid structured-contract rejection.” | Strict verifier/audit modes enforce missing/invalid metadata and proof-ref validity; non-strict mode remains informational. | Keep, and add explicit caveat that compiler-generated contracts alone are not independently validated proof. |
+
+Blocked-by-other-agent note:
+
+- We intentionally did not strengthen the wording beyond this because unresolved `hir` sections `1`, `3`, and `6` still bound path-sensitive ownership and lifetime coverage.
+
 Required fixes:
 
 1. audit `USAGE.md`, `docs/production-memory-model-v1.md`, and `docs/system-safety-trust-model-v1.md`
@@ -955,7 +1018,18 @@ Required review output:
 
 ## Priority 4: Strengthen Regression Defenses
 
-### 11. Add targeted unit tests in `crates/hir`
+### ✅ 11. Add targeted unit tests in `crates/hir`
+
+Update:
+
+- Added targeted HIR regressions for:
+  - conditional move-before-reuse
+  - inferred vs explicit handle cleanup parity
+  - projected `_owned` FFI transfer roots
+  - continue-after-free loop reuse
+  - break-after-free loop exits
+  - assignment-shaped reference-return lifetime flow
+- Verified with `CARGO_TARGET_DIR=/tmp/fozzy-agent1-hir cargo test -q -p hir` and the deterministic trace-backed Fozzy commands listed above.
 
 Needed additions:
 
@@ -972,7 +1046,7 @@ Goal:
 
 - every bug class found in this review should have at least one direct unit test
 
-### 12. Add verifier integration tests at the `fz verify` surface
+### ✅ 12. Add verifier integration tests at the `fz verify` surface
 
 Verified progress on this checkout:
 
@@ -988,7 +1062,12 @@ Goal:
 
 - prove that user-visible diagnostics match the intended compiler semantics
 
-### 13. Add Fozzy scenarios for compiler memory-safety regressions
+Verified commands on this checkout:
+
+- `cargo test -q -p verifier`
+- `fozzy test --det --strict tests/compiler_verify_thread_boundary.pass.fozzy.json tests/compiler_verify_memory_surface.pass.fozzy.json --json`
+
+### ✅ 13. Add Fozzy scenarios for compiler memory-safety regressions
 
 Verified progress on this checkout:
 
@@ -1005,6 +1084,12 @@ Needed additions:
 Goal:
 
 - make the newly discovered failure modes part of the release gate, not just local unit coverage
+
+Verified commands on this checkout:
+
+- `fozzy doctor --deep --scenario tests/compiler_verify_thread_boundary.pass.fozzy.json --runs 5 --seed 42 --json`
+- `fozzy doctor --deep --scenario tests/compiler_verify_memory_surface.pass.fozzy.json --runs 5 --seed 42 --json`
+- `fozzy test --det --strict tests/compiler_verify_thread_boundary.pass.fozzy.json tests/compiler_verify_memory_surface.pass.fozzy.json --json`
 
 ### 13.5. The current Fozzy memory release gate is too narrow
 
@@ -1028,6 +1113,19 @@ Verified progress on this checkout:
 
 ✅ Strict deterministic Fozzy coverage now includes `tests/compiler_verify_thread_boundary.pass.fozzy.json`, with recorded trace evidence at `/Users/deepsaint/Desktop/fozzylang/artifacts/compiler-verify-thread-boundary.trace.fozzy` and full doctor, strict test, trace verify, replay, CI, and host-backed validation.
 ✅ Strict deterministic Fozzy coverage now also includes `tests/compiler_verify_memory_surface.pass.fozzy.json`, with recorded trace evidence at `/Users/deepsaint/Desktop/fozzylang/artifacts/native-ship-hardening.trace.fozzy` and full validate, doctor, strict test, trace verify, replay, CI, and host-backed validation.
+✅ The release-facing production memory model now references the expanded compiler-verify scenario set instead of the old single alloc/free-only scenario.
+
+Blocked follow-up still owned here:
+
+- Gate additions for branch-sensitive maybe-free, loop-carried consume/reuse, and richer reference-return control-flow scenarios remain blocked by unresolved `hir` sections `1`, `3`, and `6`. We are keeping those blockers explicit instead of pretending the current scenario set closes them.
+
+Verified commands on this checkout:
+
+- `fozzy run tests/compiler_verify_memory_surface.pass.fozzy.json --det --record artifacts/compiler-verify-memory-surface.trace.fozzy --json`
+- `fozzy trace verify artifacts/compiler-verify-memory-surface.trace.fozzy --strict --json`
+- `fozzy replay artifacts/compiler-verify-memory-surface.trace.fozzy --json`
+- `fozzy ci artifacts/compiler-verify-memory-surface.trace.fozzy --json`
+- `fozzy run tests/compiler_verify_memory_surface.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`
 
 Required fixes:
 
@@ -1070,6 +1168,18 @@ Required tests:
 2. scenario coverage that records/replays the exact compiler-memory regressions under discussion
 3. script-backed FFI stress coverage remains in place as a secondary regression layer
 
+Verified closure on this checkout:
+
+✅ Direct `fz verify` fixtures and first-class Fozzy scenarios now cover deferred cleanup, ownership-join diagnostics at the shipped verifier surface, thread-boundary lifetime failures, and FFI boundary enforcement, while the shell-backed unsafe-FFI scenarios remain a secondary regression layer rather than the primary proof.
+✅ The remaining direct-compiler gaps are explicitly tracked as blocked by unresolved `hir` sections `1`, `3`, and `6`, rather than being hidden behind script-backed runtime evidence.
+
+Verified commands on this checkout:
+
+- `cargo test -q -p verifier`
+- `fozzy doctor --deep --scenario tests/compiler_verify_thread_boundary.pass.fozzy.json --runs 5 --seed 42 --json`
+- `fozzy doctor --deep --scenario tests/compiler_verify_memory_surface.pass.fozzy.json --runs 5 --seed 42 --json`
+- `fozzy test --det --strict tests/compiler_verify_thread_boundary.pass.fozzy.json tests/compiler_verify_memory_surface.pass.fozzy.json --json`
+
 ## Priority 5: Release Criteria Before Reclaiming Stronger Production Language
 
 Do not consider the compiler area production-complete for full memory-safety claims until all items below are true:
@@ -1082,6 +1192,12 @@ Do not consider the compiler area production-complete for full memory-safety cla
 6. unit tests, verifier fixtures, and Fozzy scenarios cover every bug class in this document
 7. public docs are reconciled to the actual enforcement model
 
+Current status on this checkout:
+
+- Items `5` and `7` are now closed for the current verifier/docs scope.
+- Item `6` is partially closed: verifier fixtures and Fozzy scenarios now cover the shipped thread-boundary, cleanup, ownership-join, and FFI boundary regressions, but full closure still depends on unresolved `hir` sections `1`, `3`, and `6`.
+- Stronger public language must remain blocked until Agent 1 closes those remaining `hir` soundness sections and the corresponding scenario gates are added here.
+
 ## Suggested Execution Order
 
 1. Fix the borrowed-reference false positive first so safe code stops failing for the wrong reason.
@@ -1093,7 +1209,23 @@ Do not consider the compiler area production-complete for full memory-safety cla
 
 ## Additional Product / Tooling Bugs
 
-### 10. Native library backend contract is inconsistent with the public build surface
+### ✅ 10. Native library backend contract is now explicit about the shipped Cranelift-only `--lib` path
+
+Verified closure on this checkout:
+
+The shipped contract is now narrowed and surfaced honestly: explicit `fz build --lib --backend llvm` continues to fail fast, while CLI help and docs now state that library builds are currently Cranelift-only instead of implying a symmetric `llvm|cranelift` matrix.
+
+Verified tests and commands:
+
+- `cargo test -q -p driver compile_library_rejects_explicit_llvm_backend_override -- --nocapture`
+- `tests/init.cli_surface.pass.fozzy.json` now exercises `fz build --lib --backend llvm` and asserts the explicit rejection text under deterministic Fozzy coverage
+
+Files updated:
+
+- `apps/fozzyc/src/entry.rs`
+- `README.md`
+- `USAGE.md`
+- `tests/init.cli_surface.pass.fozzy.json`
 
 Problem:
 
@@ -1119,7 +1251,45 @@ Required tests:
 2. backend-specific library build expectations must be covered in CLI-level regression tests
 3. release documentation must reflect the actual supported native-library backend matrix
 
-### 11. `fz init` is split, underpowered, and not yet a production one-shot bootstrap command
+### ✅ 11. `fz init` now uses one canonical shipped bootstrap path
+
+Verified closure on this checkout:
+
+The shipped `fz` parser now accepts `fz init [path] [--name ...] [--template ...] [--with ...] [--force]`, the legacy driver-local placeholder scaffold has been removed, and the runtime scaffold helper is now rooted to the explicit project directory so the shipped command creates one canonical minimal layout:
+
+- `fozzy.toml`
+- `src/main.fzy`
+- `.fozzy/runs`
+- `.fozzy/corpora`
+- `tests/*.fozzy.json`
+- `tests/INIT_GUIDE.md`
+- template-specific `README.md` where supported
+
+Verified tests and commands:
+
+- `cargo test -q -p driver init_command_scaffolds_buildable_project_with_runtime_artifacts -- --nocapture`
+- `cargo test -q -p driver init_command_supports_current_directory_bootstrap -- --nocapture`
+- `cargo test -q -p driver init_command_requires_force_when_scaffold_paths_exist -- --nocapture`
+- `cargo test -q -p fz parse_init_defaults_to_current_directory -- --nocapture`
+- `cargo test -q -p fz parse_init_accepts_path_template_name_and_with_flags -- --nocapture`
+- `cargo run -q -p fz -- doctor --deep --scenario tests/init.cli_surface.pass.fozzy.json --runs 5 --seed 7 --json`
+- `cargo run -q -p fz -- test tests/init.cli_surface.pass.fozzy.json --det --json`
+- `cargo run -q -p fz -- run tests/init.cli_surface.pass.fozzy.json --det --record artifacts/init-cli-surface.trace.fozzy --json`
+- `cargo run -q -p fz -- trace verify artifacts/init-cli-surface.trace.fozzy --strict --json`
+- `cargo run -q -p fz -- replay artifacts/init-cli-surface.trace.fozzy --json`
+- `cargo run -q -p fz -- ci artifacts/init-cli-surface.trace.fozzy --json`
+- `cargo run -q -p fz -- run tests/init.cli_surface.pass.fozzy.json --det --host-backends --record artifacts/init-cli-surface.host.trace.fozzy --json`
+- `cargo run -q -p fz -- trace verify artifacts/init-cli-surface.host.trace.fozzy --strict --json`
+
+Files updated:
+
+- `apps/fozzyc/src/entry.rs`
+- `crates/driver/src/command.rs`
+- `crates/fzscenario/src/runtime/init_scaffold.rs`
+- `crates/fzscenario/src/cmd/usage.rs`
+- `README.md`
+- `USAGE.md`
+- `tests/init.cli_surface.pass.fozzy.json`
 
 Problem:
 
@@ -1249,7 +1419,23 @@ Recommended downstream builder scope:
 
 ✅ Re-ran the production Fozzy trace lifecycle after the DX/runtime fixes through deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and host-backed execution.
 
-## Production Blocker: Native Filesystem Surface Too Thin For Real Artifact Builders
+## ✅ Production Blocker: Native Filesystem Surface Is Closed On This Checkout
+
+Verified closure on this checkout:
+
+The native filesystem gap is no longer open here. `core.io` now exposes typed metadata, symlink/file/dir inspection, recursive remove, file copy, tree copy/staging, mtime access, and typed directory-entry inspection; the native runtime tables and runtime shim expose the backing `fs.*` intrinsics; and the docs already describe the richer contract accurately.
+
+Verified tests and commands:
+
+- `cargo test -q -p driver compile_file_runs_typed_core_io_metadata_and_tree_ops -- --nocapture`
+- `tests/init.cli_surface.pass.fozzy.json` exercises the scaffold/runtime side of the same product flow
+
+Files already carrying the shipped surface:
+
+- `corelib/src/io.fzy`
+- `crates/driver/src/pipeline/tests.rs`
+- `docs/stdlib-v1.md`
+- `docs/language-reference-v1.md`
 
 While pushing `/Users/deepsaint/Desktop/fzaudio` from scaffold mode into real packaging and artifact validation, I hit a language/runtime boundary that should be treated as production signal rather than worked around in shell scripts.
 

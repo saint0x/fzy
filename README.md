@@ -1,6 +1,6 @@
 # fzy (fozzylang)
 
-Memory-safe-by-default general-purpose systems language and production toolchain with verifiable correctness, deterministic execution, and replay-first debugging built in.
+General-purpose systems language and production toolchain with a memory-safe-by-default shipped safe-language surface, verifiable correctness, deterministic execution, and replay-first debugging built in.
 
 fzy pairs the language/compiler (`fz`) with Fozzy runtime validation so correctness, determinism, replay, incident artifacts, and production evidence are part of the normal workflow rather than an afterthought. For a quick visual tour of the language, open the shipped [FZL showcase](./fzl-showcase.html) in your browser with `open fzl-showcase.html`. For the short argument for why you might pick it, see [WHYFZY.md](./WHYFZY.md).
 
@@ -130,7 +130,7 @@ Implemented and validated today:
 
 fzy is set up to support these production claims today:
 
-- memory-safe by default, with explicit audited unsafe boundaries and opt-in ownership-tracked manual memory management
+- the shipped safe-language surface is memory-safe by default within the documented verifier/compiler rule scope, with explicit audited unsafe boundaries and opt-in ownership-tracked manual memory management
 - `alloc(...)` / `free(...)` stay in safe code when the compiler can still verify ownership, provenance, and cleanup execution
 - verifiable correctness through the verifier, diagnostics, deterministic testing, replay, and CI artifacts
 - deterministic execution through recorded traces, replay, and scheduler control
@@ -152,6 +152,9 @@ cargo test --workspace
 ## Core CLI
 
 ```bash
+# Scaffold a project in the current directory or a target path
+fz init [path] [--name package] [--template minimal|rust|ts] [--with run,fuzz,explore,memory,host|all] [--force]
+
 # Build source/project
 fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
 
@@ -284,6 +287,7 @@ Additive exports are allowed.
 - every exported `pubext c fn` requires `#[ffi_panic(abort|error)]`
 - prefer `ext unsafe c fn` for unsafe C imports and call them only inside `unsafe { ... }`
 - `fz build --lib` emits static/shared libraries plus an installable header and ABI manifest
+  - current backend contract is Cranelift-only for library builds; explicit `--backend llvm` is rejected with a migration hint
 
 ## Unsafe Docs Artifacts
 

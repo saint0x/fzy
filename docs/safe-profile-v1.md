@@ -9,6 +9,7 @@
 - Alloc/free lifecycle imbalance is rejected in safe profile.
 - `defer`-backed cleanup is treated as real cleanup because runtime semantics guarantee execution.
 - Unsafe metadata is policy-controlled; strict mode rejects missing/invalid metadata.
+- Compiler-generated unsafe metadata counts as structural audit coverage by default; stronger assurance requires validated proof artifacts.
 
 ## Rejected Patterns
 

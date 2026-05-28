@@ -51,7 +51,7 @@ pub fn usage_doc() -> UsageDoc {
             UsageItem {
                 command: "fz init".to_string(),
                 when: "Start a new project or bootstrap config/artifact directories.".to_string(),
-                how: "fz init --template rust --with run,memory,explore,fuzz,host --force (or just `fz init` for all scaffold types by default). Then edit tests/*.fozzy.json inputs/assertions and run `fz full --scenario-root tests --seed 7`.".to_string(),
+                how: "fz init . --template rust --with run,memory,explore,fuzz,host --force (or just `fz init` to bootstrap the current directory with all scaffold types by default). Then edit tests/*.fozzy.json inputs/assertions and run `fz full --scenario-root tests --seed 7`.".to_string(),
             },
             UsageItem {
                 command: "fz test".to_string(),
