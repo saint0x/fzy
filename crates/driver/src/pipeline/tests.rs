@@ -185,7 +185,8 @@ fn compile_project_accepts_cross_module_qualified_enum_values_in_calls() {
         "mod model;\nfn main() -> i32 {\n    let ok_status = model.types.control_status_label(model.types.ControlStatus::ControlOk)\n    let boot_phase = model.types.queue_phase_label(model.types.QueuePhase::QueueBoot)\n    if ok_status == \"ok\" && boot_phase == \"boot\" {\n        return 0\n    }\n    return 17\n}\n",
     )
     .expect("main should be written");
-    std::fs::write(root.join("src/model/mod.fzy"), "mod types;\n").expect("model mod should be written");
+    std::fs::write(root.join("src/model/mod.fzy"), "mod types;\n")
+        .expect("model mod should be written");
     std::fs::write(
         root.join("src/model/types.fzy"),
         "pub enum ControlStatus { ControlOk, ControlFail }\npub enum QueuePhase { QueueBoot, QueueDrain }\n\npub fn control_status_label(value: ControlStatus) -> str {\n    match value {\n        ControlStatus::ControlOk => return \"ok\",\n        ControlStatus::ControlFail => return \"fail\",\n        _ => return \"unknown\",\n    }\n}\n\npub fn queue_phase_label(value: QueuePhase) -> str {\n    match value {\n        QueuePhase::QueueBoot => return \"boot\",\n        QueuePhase::QueueDrain => return \"drain\",\n        _ => return \"unknown\",\n    }\n}\n",
@@ -1180,9 +1181,8 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains(
         "int32_t fz_native_http_post_json_capture(int32_t endpoint_id, int32_t body_id)"
     ));
-    assert!(shim.contains(
-        "int32_t fz_native_http_post_json_stream(int32_t endpoint_id, int32_t body_id)"
-    ));
+    assert!(shim
+        .contains("int32_t fz_native_http_post_json_stream(int32_t endpoint_id, int32_t body_id)"));
     assert!(shim.contains(
         "int32_t fz_native_http_request_stream(int32_t method_id, int32_t endpoint_id, int32_t body_id)"
     ));
@@ -1776,7 +1776,10 @@ fn live_server_main_check_path_terminates_without_const_eval_hang() {
     let fir = fir::build_owned(typed);
     assert!(fir.nodes > 0, "live_server_main should lower to FIR");
     let report = verify_file(&source).expect("live_server_main verify should return");
-    assert_eq!(report.diagnostics, 0, "expected clean diagnostics for live_server_main");
+    assert_eq!(
+        report.diagnostics, 0,
+        "expected clean diagnostics for live_server_main"
+    );
 }
 
 #[test]
@@ -3348,6 +3351,74 @@ fn cross_backend_unsafe_local_function_calls_execute_consistently() {
     let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
     assert_eq!(cranelift_exit, 7);
     assert_eq!(llvm_exit, 7);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn cross_backend_defer_executes_on_safe_scope_return_in_lifo_order() {
+    let file_name = format!(
+        "fozzylang-defer-safe-scope-lifo-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "static mut TRACE: i32 = 0;\nfn mark(v: i32) -> i32 {\n    TRACE = (TRACE * 10) + v;\n    return 0\n}\nfn scoped() -> i32 {\n    defer mark(1)\n    if true {\n        defer mark(2)\n        return 5\n    }\n    return 0\n}\nfn main() -> i32 {\n    return scoped() + TRACE\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&path, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift should compile safe-scope defer fixture");
+    let llvm = compile_file_with_backend(&path, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm should compile safe-scope defer fixture");
+
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_ref()
+            .expect("cranelift output should exist"),
+    );
+    let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
+    assert_eq!(cranelift_exit, 26);
+    assert_eq!(llvm_exit, 26);
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn cross_backend_defer_executes_inside_unsafe_block_before_return() {
+    let file_name = format!(
+        "fozzylang-defer-unsafe-block-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "static mut TRACE: i32 = 0;\nfn mark(v: i32) -> i32 {\n    TRACE = (TRACE * 10) + v;\n    return 0\n}\nfn run() -> i32 {\n    unsafe {\n        defer mark(1)\n        defer mark(2)\n        return 5\n    }\n}\nfn main() -> i32 {\n    return run() + TRACE\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&path, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift should compile unsafe-block defer fixture");
+    let llvm = compile_file_with_backend(&path, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm should compile unsafe-block defer fixture");
+
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_ref()
+            .expect("cranelift output should exist"),
+    );
+    let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
+    assert_eq!(cranelift_exit, 26);
+    assert_eq!(llvm_exit, 26);
 
     let _ = std::fs::remove_file(path);
 }

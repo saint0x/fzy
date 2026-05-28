@@ -12,6 +12,7 @@ This document defines the v1 observable semantics contract used by the toolchain
 - `let _ = ...` is removed.
 - Function call arguments evaluate left-to-right.
 - `defer` registers cleanup in lexical order and executes in reverse registration order at scope exit.
+- Scope exit for `defer` includes normal fallthrough, `return`, `break`, `continue`, cancellation paths, and `unsafe { ... }` bodies.
 - `match` evaluates the scrutinee first, then evaluates only the selected arm expression.
 
 ## Ranges And Branch Shortcuts
@@ -166,11 +167,13 @@ fn run_tagged() -> i32 {
 
 - Precondition required before continuing function execution.
 - Verifier rejects statically false preconditions.
+- `fz check`, `fz build`, and `fz verify` surface statically false entrypoint contracts as compiler diagnostics.
 
 ### `ensures <expr>`
 
 - Postcondition expected at function completion.
 - Verifier rejects statically false postconditions.
+- `fz check`, `fz build`, and `fz verify` surface statically false entrypoint contracts as compiler diagnostics.
 
 ## RPC Declarations
 
@@ -194,6 +197,8 @@ Semantics:
 - `alloc(size)` creates owned heap memory in current scope.
 - `free(ptr)` consumes ownership and invalidates the pointer for further use.
 - `defer free(ptr)` is the preferred cleanup pattern.
+- `alloc(...)` / `free(...)` are legal in safe code when ownership, provenance, and cleanup remain compiler-verifiable.
+- `unsafe` is not required for ordinary owned allocation/release; it is reserved for unchecked raw-memory behavior such as dereference, pointer arithmetic, aliasing hazards, and unsafe FFI mutation boundaries.
 - Safe-profile verification flags unmatched allocations/frees and flow paths where allocated memory escapes without release.
 
 ## Capability Semantics

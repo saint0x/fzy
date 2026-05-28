@@ -67,6 +67,7 @@ pub(super) struct LlvmFuncCtx {
     pub(super) local_types: BTreeMap<String, ast::Type>,
     pub(super) struct_defs: HashMap<String, ast::Struct>,
     pub(super) enum_defs: HashMap<String, ast::Enum>,
+    pub(super) function_return_ty: String,
     pub(super) alloca_prologue: String,
     pub(super) declared_allocas: HashSet<String>,
     pub(super) code: String,
@@ -80,6 +81,7 @@ impl LlvmFuncCtx {
         local_types: BTreeMap<String, ast::Type>,
         struct_defs: HashMap<String, ast::Struct>,
         enum_defs: HashMap<String, ast::Enum>,
+        function_return_ty: String,
         wrapped_indices: HashMap<String, HashSet<usize>>,
         extern_link_symbols: HashMap<String, String>,
         function_sigs: HashMap<String, LlvmFunctionSig>,
@@ -103,6 +105,7 @@ impl LlvmFuncCtx {
             local_types,
             struct_defs,
             enum_defs,
+            function_return_ty,
             alloca_prologue: String::new(),
             declared_allocas: HashSet::new(),
             code: String::new(),
@@ -933,7 +936,8 @@ pub(super) fn llvm_emit_linear_stmts(
     ctx: &mut LlvmFuncCtx,
     string_literal_ids: &HashMap<String, i32>,
     task_ref_ids: &HashMap<String, i32>,
-) -> Result<()> {
+) -> Result<bool> {
+    let mut deferred = Vec::<ast::Expr>::new();
     for stmt in body {
         match stmt {
             ast::Stmt::Let {
@@ -1388,14 +1392,39 @@ pub(super) fn llvm_emit_linear_stmts(
                 ctx.const_strings.remove(target);
                 ctx.closures.remove(target);
             }
-            ast::Stmt::Expr(expr)
-            | ast::Stmt::Requires(expr)
-            | ast::Stmt::Ensures(expr)
-            | ast::Stmt::Defer(expr) => {
+            ast::Stmt::Defer(expr) => {
+                deferred.push(expr.clone());
+            }
+            ast::Stmt::Expr(expr) | ast::Stmt::Requires(expr) | ast::Stmt::Ensures(expr) => {
                 let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
             }
-            ast::Stmt::Return(_)
-            | ast::Stmt::If { .. }
+            ast::Stmt::Return(value) => {
+                for expr in deferred.iter().rev() {
+                    let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
+                }
+                match value {
+                    Some(expr) => {
+                        let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
+                        let function_return_ty = ctx.function_return_ty.clone();
+                        let value = llvm_cast_value(ctx, value, &function_return_ty)?;
+                        ctx.code
+                            .push_str(&format!("  ret {} {}\n", value.ty, value.value));
+                    }
+                    None => {
+                        if ctx.function_return_ty == "void" {
+                            ctx.code.push_str("  ret void\n");
+                        } else {
+                            let fallback = llvm_zero_literal(&ctx.function_return_ty, 0);
+                            ctx.code.push_str(&format!(
+                                "  ret {} {}\n",
+                                ctx.function_return_ty, fallback
+                            ));
+                        }
+                    }
+                }
+                return Ok(true);
+            }
+            ast::Stmt::If { .. }
             | ast::Stmt::While { .. }
             | ast::Stmt::For { .. }
             | ast::Stmt::ForIn { .. }
@@ -1407,7 +1436,10 @@ pub(super) fn llvm_emit_linear_stmts(
             }
         }
     }
-    Ok(())
+    for expr in deferred.iter().rev() {
+        let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
+    }
+    Ok(false)
 }
 
 pub(super) fn llvm_emit_condition_value(
@@ -1998,7 +2030,11 @@ pub(super) fn llvm_emit_complex_expr(
             }
         })()),
         ast::Expr::UnsafeBlock { body, .. } => Some((|| {
-            let _ = llvm_emit_linear_stmts(body, ctx, string_literal_ids, task_ref_ids);
+            let terminated = llvm_emit_linear_stmts(body, ctx, string_literal_ids, task_ref_ids)?;
+            if terminated {
+                let continuation = ctx.label("unsafe.cont");
+                ctx.code.push_str(&format!("{continuation}:\n"));
+            }
             Ok(LlvmValue {
                 value: "0".to_string(),
                 ty: "i32".to_string(),
@@ -2622,6 +2658,7 @@ pub(super) fn llvm_emit_function(
         .map(|(i, param)| format!("{} %arg{i}", llvm_ir_type_for_ast_type(&param.ty)))
         .collect::<Vec<_>>()
         .join(", ");
+    let return_ty = llvm_ir_type_for_ast_type(&function.return_type);
     let wrapped_indices = collect_wrapped_index_candidates(&function.body);
     let mut ctx = LlvmFuncCtx::new(
         globals.clone(),
@@ -2630,11 +2667,11 @@ pub(super) fn llvm_emit_function(
         function.local_types.clone(),
         struct_defs.clone(),
         enum_defs.clone(),
+        return_ty.clone(),
         wrapped_indices,
         extern_link_symbols.clone(),
         function_sigs.clone(),
     );
-    let return_ty = llvm_ir_type_for_ast_type(&function.return_type);
     let mut out = format!(
         "define {return_ty} @{}({params}) {{\nentry:\n",
         native_link_symbol_for_function(function),
@@ -2668,7 +2705,11 @@ pub(super) fn llvm_emit_function(
         if !(block_id == cfg.entry && cfg.entry == 0) {
             ctx.code.push_str(&format!("{label}:\n"));
         }
-        llvm_emit_linear_stmts(&block.stmts, &mut ctx, string_literal_ids, task_ref_ids)?;
+        let linear_terminated =
+            llvm_emit_linear_stmts(&block.stmts, &mut ctx, string_literal_ids, task_ref_ids)?;
+        if linear_terminated {
+            continue;
+        }
         match &block.terminator {
             ControlFlowTerminator::Return(Some(expr)) => {
                 let value = llvm_emit_expr(expr, &mut ctx, string_literal_ids, task_ref_ids)?;

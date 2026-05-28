@@ -98,7 +98,8 @@
 // - `core.c` ownership/view helpers
 // - canonical enum variant syntax (`Type::Variant`)
 // - async + spawn/join + deterministic scheduler hooks
-// - direct-memory native lowering contract + gate-backed parity
+// - real `defer` runtime semantics across return/loop/unsafe paths
+// - safe-code `alloc(...)` / `free(...)` with verifier-tracked ownership/provenance
 // - first-class tuple/struct/enum aggregate handles in both native backends
 // - destructuring parity across locals, parameters, calls, returns, helpers, and control-flow values
 // - current-process CLI surface via `core.process` + `core.term`
@@ -410,13 +411,29 @@ fn context_demo() -> i32 {
     return join(handle);
 }
 
+fn defer_memory_demo(flag: i32) -> i32 {
+    let ptr = mem.alloc(32);
+    defer mem.free(ptr);
+    let mut score = 0;
+    while score < 4 {
+        score = score + 1;
+        if flag == 1 && score == 2 {
+            continue;
+        }
+        if flag == 2 && score == 3 {
+            return score;
+        }
+    }
+    return score;
+}
+
 fn c_view_demo() -> i32 {
     let ptr = mem.alloc(16);
+    defer mem.free(ptr);
     let _owned_label = c.ownership_label("owned");
     let _borrowed = c.borrowed_view(ptr, 16);
     let _out = c.out_view(ptr, 16);
     let _cb = c.bind_callback(0, 99);
-    mem.free(ptr);
     return 0;
 }
 
@@ -459,6 +476,7 @@ fn host_and_io_showcase() -> i32 {
     discard term.transcript_kv("env_key", env_key, 10);
 
     let listener = http.bind();
+    defer close(listener);
     if listener >= 0 {
         http.listen(listener);
         let fields_listen = map.new();
@@ -510,7 +528,8 @@ fn full_pipeline(seed: i32) -> i32 {
     let lam = closure_demo(seed);
     let io = host_and_io_showcase();
     let cv = c_view_demo();
-    let out = ops + mixed + em + idx + ho + lam + io + cv + tg + ts;
+    let dm = defer_memory_demo(seed % 3);
+    let out = ops + mixed + em + idx + ho + lam + io + cv + dm + tg + ts;
     if out > 0 {
         return out;
     }

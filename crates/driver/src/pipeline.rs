@@ -255,6 +255,7 @@ pub fn compile_file_with_backend(
         .as_ref()
         .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
         .unwrap_or(true);
+    let contract_diagnostics = compile_time_contract_diagnostics(&fir, checks_enabled);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -266,9 +267,11 @@ pub fn compile_file_with_backend(
     let has_backend_risks = backend_risks
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_contract_errors = !contract_diagnostics.is_empty();
     let status = if has_experimental_errors
         || has_native_lowerability_errors
         || has_backend_risks
+        || has_contract_errors
         || (checks_enabled && has_verifier_errors)
     {
         "error"
@@ -279,6 +282,7 @@ pub fn compile_file_with_backend(
     diagnostic_details.extend(native_lowerability_errors);
     diagnostic_details.extend(backend_risks);
     diagnostic_details.extend(report.diagnostics);
+    diagnostic_details.extend(contract_diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let output = if status == "ok" {
         Some(emit_native_artifact(
@@ -352,6 +356,7 @@ pub fn compile_library_with_backend(
         .as_ref()
         .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
         .unwrap_or(true);
+    let contract_diagnostics = compile_time_contract_diagnostics(&fir, checks_enabled);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -363,9 +368,11 @@ pub fn compile_library_with_backend(
     let has_backend_risks = backend_risks
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_contract_errors = !contract_diagnostics.is_empty();
     let status = if has_experimental_errors
         || has_native_lowerability_errors
         || has_backend_risks
+        || has_contract_errors
         || (checks_enabled && has_verifier_errors)
     {
         "error"
@@ -376,6 +383,7 @@ pub fn compile_library_with_backend(
     diagnostic_details.extend(native_lowerability_errors);
     diagnostic_details.extend(backend_risks);
     diagnostic_details.extend(report.diagnostics);
+    diagnostic_details.extend(contract_diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let (static_lib, shared_lib) = if status == "ok" {
         emit_native_libraries(
@@ -471,6 +479,7 @@ pub fn verify_file_with_root_source(
         },
     );
     diagnostics.extend(report.diagnostics);
+    diagnostics.extend(compile_time_contract_diagnostics(&fir, true));
     for diagnostic in &mut diagnostics {
         if diagnostic.path.is_none() {
             diagnostic.path = Some(resolved.source_path.display().to_string());
@@ -946,7 +955,12 @@ fn qualify_module_symbols(module: &mut ast::Module, namespace: &str) {
                     for param in &mut method.params {
                         qualify_type(&mut param.ty, namespace, &local_types, &module_aliases);
                     }
-                    qualify_type(&mut method.return_type, namespace, &local_types, &module_aliases);
+                    qualify_type(
+                        &mut method.return_type,
+                        namespace,
+                        &local_types,
+                        &module_aliases,
+                    );
                 }
             }
             ast::Item::Impl(item) => {
@@ -1055,7 +1069,13 @@ fn qualify_function(
     function.name = qualify_name(namespace, &function.name);
     qualify_function_signature(function, namespace, local_types, module_aliases);
     for stmt in &mut function.body {
-        qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
+        qualify_stmt(
+            stmt,
+            namespace,
+            local_functions,
+            local_types,
+            module_aliases,
+        );
     }
 }
 
@@ -1068,7 +1088,13 @@ fn qualify_method(
 ) {
     qualify_function_signature(function, namespace, local_types, module_aliases);
     for stmt in &mut function.body {
-        qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
+        qualify_stmt(
+            stmt,
+            namespace,
+            local_functions,
+            local_types,
+            module_aliases,
+        );
     }
 }
 
@@ -1107,7 +1133,13 @@ fn qualify_stmt(
             if let Some(ty) = ty {
                 qualify_type(ty, namespace, local_types, module_aliases);
             }
-            qualify_expr(value, namespace, local_functions, local_types, module_aliases)
+            qualify_expr(
+                value,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            )
         }
         ast::Stmt::LetPattern {
             pattern, ty, value, ..
@@ -1116,7 +1148,13 @@ fn qualify_stmt(
             if let Some(ty) = ty {
                 qualify_type(ty, namespace, local_types, module_aliases);
             }
-            qualify_expr(value, namespace, local_functions, local_types, module_aliases)
+            qualify_expr(
+                value,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            )
         }
         ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
@@ -1132,7 +1170,13 @@ fn qualify_stmt(
         ),
         ast::Stmt::Return(value) => {
             if let Some(value) = value {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Stmt::If {
@@ -1148,10 +1192,22 @@ fn qualify_stmt(
                 module_aliases,
             );
             for nested in then_body {
-                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    nested,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             for nested in else_body {
-                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    nested,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Stmt::While { condition, body } => {
@@ -1163,7 +1219,13 @@ fn qualify_stmt(
                 module_aliases,
             );
             for nested in body {
-                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    nested,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Stmt::For {
@@ -1173,7 +1235,13 @@ fn qualify_stmt(
             body,
         } => {
             if let Some(init) = init {
-                qualify_stmt(init, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    init,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             if let Some(condition) = condition {
                 qualify_expr(
@@ -1185,10 +1253,22 @@ fn qualify_stmt(
                 );
             }
             if let Some(step) = step {
-                qualify_stmt(step, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    step,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             for nested in body {
-                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    nested,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Stmt::ForIn { iterable, body, .. } => {
@@ -1200,12 +1280,24 @@ fn qualify_stmt(
                 module_aliases,
             );
             for nested in body {
-                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    nested,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Stmt::Loop { body } => {
             for nested in body {
-                qualify_stmt(nested, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    nested,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Stmt::Break(_) | ast::Stmt::Continue => {}
@@ -1220,7 +1312,13 @@ fn qualify_stmt(
             for arm in arms {
                 qualify_pattern(&mut arm.pattern, namespace, local_types, module_aliases);
                 if let Some(guard) = &mut arm.guard {
-                    qualify_expr(guard, namespace, local_functions, local_types, module_aliases);
+                    qualify_expr(
+                        guard,
+                        namespace,
+                        local_functions,
+                        local_types,
+                        module_aliases,
+                    );
                 }
                 qualify_expr(
                     &mut arm.value,
@@ -1256,16 +1354,34 @@ fn qualify_expr(
         }
         ast::Expr::UnsafeBlock { body, .. } => {
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    stmt,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::FieldAccess { base, .. } => {
-            qualify_expr(base, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                base,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::StructInit { name, fields } => {
             *name = qualify_type_name(name, namespace, local_types, module_aliases);
             for (_, value) in fields {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::EnumInit {
@@ -1276,48 +1392,126 @@ fn qualify_expr(
         } => {
             *enum_name = qualify_type_name(enum_name, namespace, local_types, module_aliases);
             for value in payload {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             for (_, value) in named_payload {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::Closure { body, .. } => {
-            qualify_expr(body, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                body,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Group(inner) => {
-            qualify_expr(inner, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                inner,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Tuple(items) => {
             for item in items {
-                qualify_expr(item, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    item,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
-            qualify_expr(inner, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                inner,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
         } => {
-            qualify_expr(try_expr, namespace, local_functions, local_types, module_aliases);
-            qualify_expr(catch_expr, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                try_expr,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
+            qualify_expr(
+                catch_expr,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            qualify_expr(condition, namespace, local_functions, local_types, module_aliases);
-            qualify_expr(then_expr, namespace, local_functions, local_types, module_aliases);
-            qualify_expr(else_expr, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                condition,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
+            qualify_expr(
+                then_expr,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
+            qualify_expr(
+                else_expr,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Match { scrutinee, arms } => {
-            qualify_expr(scrutinee, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                scrutinee,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             for arm in arms {
                 qualify_pattern(&mut arm.pattern, namespace, local_types, module_aliases);
                 if let Some(guard) = &mut arm.guard {
-                    qualify_expr(guard, namespace, local_functions, local_types, module_aliases);
+                    qualify_expr(
+                        guard,
+                        namespace,
+                        local_functions,
+                        local_types,
+                        module_aliases,
+                    );
                 }
                 qualify_expr(
                     &mut arm.value,
@@ -1329,9 +1523,21 @@ fn qualify_expr(
             }
         }
         ast::Expr::While { condition, body } => {
-            qualify_expr(condition, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                condition,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    stmt,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::For {
@@ -1341,59 +1547,155 @@ fn qualify_expr(
             body,
         } => {
             if let Some(init) = init {
-                qualify_stmt(init, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    init,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             if let Some(condition) = condition {
-                qualify_expr(condition, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    condition,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             if let Some(step) = step {
-                qualify_stmt(step, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    step,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    stmt,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::ForIn { iterable, body, .. } => {
-            qualify_expr(iterable, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                iterable,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    stmt,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::Loop { body } => {
             for stmt in body {
-                qualify_stmt(stmt, namespace, local_functions, local_types, module_aliases);
+                qualify_stmt(
+                    stmt,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::Break(value) | ast::Expr::Return(value) => {
             if let Some(value) = value {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::Continue => {}
         ast::Expr::Range { start, end, .. } => {
-            qualify_expr(start, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                start,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
             qualify_expr(end, namespace, local_functions, local_types, module_aliases);
         }
         ast::Expr::ArrayLiteral(items) => {
             for item in items {
-                qualify_expr(item, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    item,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::ObjectLiteral(fields) => {
             for (_, value) in fields {
-                qualify_expr(value, namespace, local_functions, local_types, module_aliases);
+                qualify_expr(
+                    value,
+                    namespace,
+                    local_functions,
+                    local_types,
+                    module_aliases,
+                );
             }
         }
         ast::Expr::Index { base, index } => {
-            qualify_expr(base, namespace, local_functions, local_types, module_aliases);
-            qualify_expr(index, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                base,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
+            qualify_expr(
+                index,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Unary { expr, .. } => {
-            qualify_expr(expr, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                expr,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Binary { left, right, .. } => {
-            qualify_expr(left, namespace, local_functions, local_types, module_aliases);
-            qualify_expr(right, namespace, local_functions, local_types, module_aliases);
+            qualify_expr(
+                left,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
+            qualify_expr(
+                right,
+                namespace,
+                local_functions,
+                local_types,
+                module_aliases,
+            );
         }
         ast::Expr::Int(_)
         | ast::Expr::Float { .. }
@@ -1459,9 +1761,7 @@ fn qualify_type(
         | ast::Type::Option(inner)
         | ast::Type::Vec(inner)
         | ast::Type::Future(inner) => qualify_type(inner, namespace, local_types, module_aliases),
-        ast::Type::Array { elem, .. } => {
-            qualify_type(elem, namespace, local_types, module_aliases)
-        }
+        ast::Type::Array { elem, .. } => qualify_type(elem, namespace, local_types, module_aliases),
         ast::Type::Result { ok, err } => {
             qualify_type(ok, namespace, local_types, module_aliases);
             qualify_type(err, namespace, local_types, module_aliases);
@@ -1583,7 +1883,10 @@ fn qualify_generic_suffix(
     if suffix.is_empty() {
         return String::new();
     }
-    let Some(inner) = suffix.strip_prefix('<').and_then(|rest| rest.strip_suffix('>')) else {
+    let Some(inner) = suffix
+        .strip_prefix('<')
+        .and_then(|rest| rest.strip_suffix('>'))
+    else {
         return suffix.to_string();
     };
     let Some(parts) = split_top_level_segments(inner) else {
@@ -1617,7 +1920,10 @@ fn qualify_type_expr_text(
             return format!("{prefix}{inner}");
         }
     }
-    if let Some(inner) = text.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
+    if let Some(inner) = text
+        .strip_prefix('(')
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
         if let Some(parts) = split_top_level_segments(inner) {
             let qualified = parts
                 .into_iter()
@@ -1627,7 +1933,10 @@ fn qualify_type_expr_text(
             return format!("({qualified})");
         }
     }
-    if let Some(inner) = text.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')) {
+    if let Some(inner) = text
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    {
         if let Some((elem, len)) = split_array_type_expr(inner) {
             let elem = qualify_type_expr_text(elem, namespace, local_types, module_aliases);
             return format!("[{elem}; {}]", len.trim());
@@ -1642,7 +1951,9 @@ fn qualify_type_expr_text(
                     qualify_type_name(name, namespace, local_types, module_aliases);
                 let qualified_args = parts
                     .into_iter()
-                    .map(|part| qualify_type_expr_text(part, namespace, local_types, module_aliases))
+                    .map(|part| {
+                        qualify_type_expr_text(part, namespace, local_types, module_aliases)
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 return format!("{qualified_name}<{qualified_args}>");
@@ -2576,6 +2887,7 @@ struct ActiveLoop {
     id: usize,
     break_target: CfgBlockId,
     continue_target: CfgBlockId,
+    defer_base: usize,
 }
 
 #[derive(Clone)]
@@ -2588,6 +2900,7 @@ struct ControlFlowBuilder {
     blocks: Vec<CfgBuildBlock>,
     loops: Vec<ControlFlowLoop>,
     active_loops: Vec<ActiveLoop>,
+    active_defers: Vec<ast::Expr>,
     next_loop_id: usize,
     next_temp: usize,
     variant_tags: HashMap<String, i32>,
@@ -2607,6 +2920,7 @@ impl ControlFlowBuilder {
             }],
             loops: Vec::new(),
             active_loops: Vec::new(),
+            active_defers: Vec::new(),
             next_loop_id: 0,
             next_temp: 0,
             variant_tags,
@@ -2654,11 +2968,27 @@ impl ControlFlowBuilder {
         name
     }
 
+    fn append_deferred_cleanup_from(&mut self, block: CfgBlockId, start: usize) -> Result<()> {
+        if start > self.active_defers.len() {
+            bail!(
+                "control-flow builder requested defer cleanup from invalid index {} > {}",
+                start,
+                self.active_defers.len()
+            );
+        }
+        let pending = self.active_defers[start..].to_vec();
+        for expr in pending.into_iter().rev() {
+            self.append_stmt(block, ast::Stmt::Expr(expr))?;
+        }
+        Ok(())
+    }
+
     fn lower_stmt_seq(
         &mut self,
         mut current: CfgBlockId,
         body: &[ast::Stmt],
     ) -> Result<Option<CfgBlockId>> {
+        let scope_defer_base = self.active_defers.len();
         for stmt in body {
             match stmt {
                 ast::Stmt::Let {
@@ -2740,13 +3070,15 @@ impl ControlFlowBuilder {
                         },
                     )?;
                 }
-                ast::Stmt::Defer(_)
-                | ast::Stmt::Requires(_)
-                | ast::Stmt::Ensures(_)
-                | ast::Stmt::Expr(_) => {
+                ast::Stmt::Defer(expr) => {
+                    self.active_defers.push(expr.clone());
+                }
+                ast::Stmt::Requires(_) | ast::Stmt::Ensures(_) | ast::Stmt::Expr(_) => {
                     self.append_stmt(current, stmt.clone())?;
                 }
                 ast::Stmt::Return(expr) => {
+                    self.append_deferred_cleanup_from(current, 0)?;
+                    self.active_defers.truncate(scope_defer_base);
                     self.terminate(current, ControlFlowTerminator::Return(expr.clone()))?;
                     return Ok(None);
                 }
@@ -2754,6 +3086,8 @@ impl ControlFlowBuilder {
                     let active = self.active_loops.last().copied().ok_or_else(|| {
                         anyhow!("control-flow lowering encountered `break` outside loop scope")
                     })?;
+                    self.append_deferred_cleanup_from(current, active.defer_base)?;
+                    self.active_defers.truncate(scope_defer_base);
                     self.terminate(
                         current,
                         ControlFlowTerminator::Jump {
@@ -2767,6 +3101,8 @@ impl ControlFlowBuilder {
                     let active = self.active_loops.last().copied().ok_or_else(|| {
                         anyhow!("control-flow lowering encountered `continue` outside loop scope")
                     })?;
+                    self.append_deferred_cleanup_from(current, active.defer_base)?;
+                    self.active_defers.truncate(scope_defer_base);
                     self.terminate(
                         current,
                         ControlFlowTerminator::Jump {
@@ -2851,6 +3187,7 @@ impl ControlFlowBuilder {
                         id: loop_id,
                         break_target: exit,
                         continue_target: head,
+                        defer_base: self.active_defers.len(),
                     });
                     let body_tail = self.lower_stmt_seq(loop_body, body)?;
                     let _ = self.active_loops.pop();
@@ -2920,6 +3257,7 @@ impl ControlFlowBuilder {
                         id: loop_id,
                         break_target: exit,
                         continue_target: step_block,
+                        defer_base: self.active_defers.len(),
                     });
                     let body_tail = self.lower_stmt_seq(loop_body, body)?;
                     let _ = self.active_loops.pop();
@@ -3018,6 +3356,7 @@ impl ControlFlowBuilder {
                             id: loop_id,
                             break_target: exit,
                             continue_target: step_block,
+                            defer_base: self.active_defers.len(),
                         });
                         let body_tail = self.lower_stmt_seq(loop_body, body)?;
                         let _ = self.active_loops.pop();
@@ -3065,6 +3404,7 @@ impl ControlFlowBuilder {
                             id: loop_id,
                             break_target: exit,
                             continue_target: exit,
+                            defer_base: self.active_defers.len(),
                         });
                         let body_tail = self.lower_stmt_seq(body_block, body)?;
                         let _ = self.active_loops.pop();
@@ -3107,6 +3447,7 @@ impl ControlFlowBuilder {
                         id: loop_id,
                         break_target: exit.unwrap_or(head),
                         continue_target: head,
+                        defer_base: self.active_defers.len(),
                     });
                     let body_tail = self.lower_stmt_seq(head, body)?;
                     let _ = self.active_loops.pop();
@@ -3220,6 +3561,7 @@ impl ControlFlowBuilder {
                                 self.append_stmt(arm_block, stmt)?;
                             }
                             if arm.returns {
+                                self.append_deferred_cleanup_from(arm_block, 0)?;
                                 self.terminate(
                                     arm_block,
                                     ControlFlowTerminator::Return(Some(arm.value.clone())),
@@ -3292,6 +3634,7 @@ impl ControlFlowBuilder {
                                 arm_block
                             };
                             if arm.returns {
+                                self.append_deferred_cleanup_from(value_block, 0)?;
                                 self.terminate(
                                     value_block,
                                     ControlFlowTerminator::Return(Some(arm.value.clone())),
@@ -3320,6 +3663,8 @@ impl ControlFlowBuilder {
                 }
             }
         }
+        self.append_deferred_cleanup_from(current, scope_defer_base)?;
+        self.active_defers.truncate(scope_defer_base);
         Ok(Some(current))
     }
 
@@ -5065,20 +5410,158 @@ fn compute_forced_main_return(fir: &fir::FirModule, enforce_contract_checks: boo
     if !enforce_contract_checks {
         return None;
     }
-    if fir
-        .entry_requires
+    let (fallback_requires, fallback_ensures) =
+        collect_main_contract_conditions(&fir.typed_functions);
+    let requires = merge_contract_conditions(&fir.entry_requires, &fallback_requires);
+    let ensures = merge_contract_conditions(&fir.entry_ensures, &fallback_ensures);
+    if requires
         .iter()
         .any(|condition| matches!(condition, Some(false)))
     {
         Some(120)
-    } else if fir
-        .entry_ensures
+    } else if ensures
         .iter()
         .any(|condition| matches!(condition, Some(false)))
     {
         Some(121)
     } else {
         None
+    }
+}
+
+fn merge_contract_conditions(
+    primary: &[Option<bool>],
+    fallback: &[Option<bool>],
+) -> Vec<Option<bool>> {
+    let len = primary.len().max(fallback.len());
+    (0..len)
+        .map(|index| {
+            primary
+                .get(index)
+                .copied()
+                .flatten()
+                .map(Some)
+                .unwrap_or_else(|| {
+                    fallback
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .map(Some)
+                        .unwrap_or(None)
+                })
+        })
+        .collect()
+}
+
+fn compile_time_contract_diagnostics(
+    fir: &fir::FirModule,
+    enforce_contract_checks: bool,
+) -> Vec<diagnostics::Diagnostic> {
+    match compute_forced_main_return(fir, enforce_contract_checks) {
+        Some(120) => vec![diagnostics::Diagnostic::new(
+            diagnostics::Severity::Error,
+            "entry `requires` contract is statically false",
+            Some(
+                "Make the `requires` condition provably true, or remove the contradictory contract."
+                    .to_string(),
+            ),
+        )],
+        Some(121) => vec![diagnostics::Diagnostic::new(
+            diagnostics::Severity::Error,
+            "entry `ensures` contract is statically false",
+            Some(
+                "Make the `ensures` condition provably true, or remove the contradictory contract."
+                    .to_string(),
+            ),
+        )],
+        Some(code) => vec![diagnostics::Diagnostic::new(
+            diagnostics::Severity::Error,
+            format!("entry contract forcing would terminate with status {code}"),
+            None,
+        )],
+        None => Vec::new(),
+    }
+}
+
+fn collect_main_contract_conditions(
+    functions: &[hir::TypedFunction],
+) -> (Vec<Option<bool>>, Vec<Option<bool>>) {
+    let mut requires = Vec::new();
+    let mut ensures = Vec::new();
+    for function in functions {
+        if function.name != "main"
+            && function
+                .name
+                .rsplit('.')
+                .next()
+                .is_none_or(|segment| segment != "main")
+        {
+            continue;
+        }
+        for statement in &function.body {
+            match statement {
+                ast::Stmt::Requires(expr) => requires.push(eval_contract_const_bool(expr)),
+                ast::Stmt::Ensures(expr) => ensures.push(eval_contract_const_bool(expr)),
+                _ => {}
+            }
+        }
+    }
+    (requires, ensures)
+}
+
+fn eval_contract_const_bool(expr: &ast::Expr) -> Option<bool> {
+    let empty_const_strings = HashMap::new();
+    match expr {
+        ast::Expr::Bool(value) => Some(*value),
+        ast::Expr::Int(value) => Some(*value != 0),
+        ast::Expr::Str(value) => Some(!value.is_empty()),
+        ast::Expr::Group(inner) => eval_contract_const_bool(inner),
+        ast::Expr::Unary { op, expr } => match op {
+            ast::UnaryOp::Not => eval_contract_const_bool(expr).map(|value| !value),
+            ast::UnaryOp::Plus => {
+                eval_const_i32_expr(expr, &empty_const_strings).map(|value| value != 0)
+            }
+            ast::UnaryOp::Neg => {
+                eval_const_i32_expr(expr, &empty_const_strings).map(|value| -value != 0)
+            }
+            ast::UnaryOp::BitNot => {
+                eval_const_i32_expr(expr, &empty_const_strings).map(|value| !value != 0)
+            }
+        },
+        ast::Expr::Binary { op, left, right } => match op {
+            ast::BinaryOp::And => {
+                Some(eval_contract_const_bool(left)? && eval_contract_const_bool(right)?)
+            }
+            ast::BinaryOp::Or => {
+                Some(eval_contract_const_bool(left)? || eval_contract_const_bool(right)?)
+            }
+            ast::BinaryOp::Eq => Some(
+                eval_const_i32_expr(left, &empty_const_strings)?
+                    == eval_const_i32_expr(right, &empty_const_strings)?,
+            ),
+            ast::BinaryOp::Neq => Some(
+                eval_const_i32_expr(left, &empty_const_strings)?
+                    != eval_const_i32_expr(right, &empty_const_strings)?,
+            ),
+            ast::BinaryOp::Lt => Some(
+                eval_const_i32_expr(left, &empty_const_strings)?
+                    < eval_const_i32_expr(right, &empty_const_strings)?,
+            ),
+            ast::BinaryOp::Lte => Some(
+                eval_const_i32_expr(left, &empty_const_strings)?
+                    <= eval_const_i32_expr(right, &empty_const_strings)?,
+            ),
+            ast::BinaryOp::Gt => Some(
+                eval_const_i32_expr(left, &empty_const_strings)?
+                    > eval_const_i32_expr(right, &empty_const_strings)?,
+            ),
+            ast::BinaryOp::Gte => Some(
+                eval_const_i32_expr(left, &empty_const_strings)?
+                    >= eval_const_i32_expr(right, &empty_const_strings)?,
+            ),
+            _ => eval_const_i32_expr(expr, &empty_const_strings).map(|value| value != 0),
+        },
+        _ => eval_const_i32_expr(expr, &empty_const_strings).map(|value| value != 0),
     }
 }
 

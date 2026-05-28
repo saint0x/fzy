@@ -7,6 +7,7 @@
 - Explicit unsafe islands/functions are rejected in safe profile.
 - Reference-region sites without proof are rejected in safe profile.
 - Alloc/free lifecycle imbalance is rejected in safe profile.
+- `defer`-backed cleanup is treated as real cleanup because runtime semantics guarantee execution.
 - Unsafe metadata is policy-controlled; strict mode rejects missing/invalid metadata.
 
 ## Rejected Patterns
@@ -15,6 +16,12 @@
 - Host syscall markers (`syscall.*`) without strict boundary policy.
 - Capability usage not permitted by safe-profile rules.
 - Memory lifecycle imbalance (`alloc` without matching `free`).
+
+## Safe Manual Resource Management
+
+- `alloc(...)` / `free(...)` are not classified as unsafe by themselves.
+- They remain legal only when the verifier can still prove ownership, provenance, and cleanup behavior.
+- The recommended production pattern is `defer free(ptr)` or `defer close(handle)` in the same lexical scope as acquisition.
 
 ## Out Of Scope In v1
 

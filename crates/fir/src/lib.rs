@@ -30,6 +30,7 @@ pub enum Instruction {
         name: String,
     },
     Expr,
+    Defer,
     Return,
     Branch {
         then_block: usize,
@@ -287,10 +288,10 @@ fn lower_stmts_into_block(
                     name: target.clone(),
                 });
             }
-            ast::Stmt::Expr(_)
-            | ast::Stmt::Requires(_)
-            | ast::Stmt::Ensures(_)
-            | ast::Stmt::Defer(_) => current.instructions.push(Instruction::Expr),
+            ast::Stmt::Expr(_) | ast::Stmt::Requires(_) | ast::Stmt::Ensures(_) => {
+                current.instructions.push(Instruction::Expr)
+            }
+            ast::Stmt::Defer(_) => current.instructions.push(Instruction::Defer),
             ast::Stmt::Return(_) => current.instructions.push(Instruction::Return),
             ast::Stmt::Match { arms, .. } => {
                 current.instructions.push(Instruction::Match {
@@ -451,6 +452,7 @@ fn compute_def_use(blocks: &[BasicBlock]) -> Vec<DefUseBlock> {
                     defs.push(name.clone());
                 }
                 Instruction::Expr
+                | Instruction::Defer
                 | Instruction::Return
                 | Instruction::Branch { .. }
                 | Instruction::Jump { .. }

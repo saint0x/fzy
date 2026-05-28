@@ -81,6 +81,7 @@ For native runtime surface changes, prefer evidence that covers:
 - host-backed behavior where real process/fs/http integration matters
 - trace record/verify/replay lifecycle
 - docs/showcase alignment with the executable surface
+- cleanup semantics for `defer`, especially on early return and loop exits when resource-management behavior changed
 
 For trait/generic language slices, include the dedicated scenario lifecycle:
 

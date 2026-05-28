@@ -2,35 +2,31 @@
 
 Memory-safe-by-default general-purpose systems language and production toolchain with verifiable correctness, deterministic execution, and replay-first debugging built in.
 
-fzy pairs the language/compiler (`fz`) with Fozzy runtime validation so correctness, determinism, replay, incident artifacts, and production evidence are first-class parts of the workflow instead of afterthoughts.
-
-The current production posture is:
-
-- general-purpose systems language scope, not a niche single-domain language
-- safe by default, with explicit unsafe islands instead of ambient unsafety
-- deterministic verification and replay as normal delivery gates
-- memory-safety, capability, FFI, and lowerability enforcement in the verifier
-- modern native language/runtime features across async, tasks, RPC, ADTs, traits/generics, JSON, process, terminal, logging, filesystem/path, and streaming HTTP
-- LLVM and Cranelift native backends with parity-oriented validation
+fzy pairs the language/compiler (`fz`) with Fozzy runtime validation so correctness, determinism, replay, incident artifacts, and production evidence are part of the normal workflow rather than an afterthought. For a quick visual tour of the language, open the shipped [FZL showcase](./fzl-showcase.html) in your browser with `open fzl-showcase.html`. For the short argument for why you might pick it, see [WHYFZY.md](./WHYFZY.md).
 
 ## Start Here
 
-- Full user manual: `USAGE.md`
-- Canonical production workflow: `docs/production-workflow-v1.md`
-- System safety/trust model: `docs/system-safety-trust-model-v1.md`
-- Unsafe islands/metadata authoring: `docs/unsafe-contract-authoring-v1.md`
-- Language stability tiers: `docs/language-stability-v1.md`
+- Full manual: `USAGE.md`
+- Why fzy: `WHYFZY.md`
+- Syntax and command examples: `CODE.md`
+- Production workflow: `docs/production-workflow-v1.md`
+- Safety and trust model: `docs/system-safety-trust-model-v1.md`
+- Unsafe authoring: `docs/unsafe-contract-authoring-v1.md`
+- Stability tiers: `docs/language-stability-v1.md`
 - Workspace policy inheritance: `docs/workspace-policy-v1.md`
-- Operational insights (`lint`/`perf`/dashboard): `docs/operational-insights-v1.md`
-- `fozzy`: [ariacomputecompany/fozzy](https://github.com/ariacomputecompany/fozzy)
+- Operational insights: `docs/operational-insights-v1.md`
+- Fozzy: [ariacomputecompany/fozzy](https://github.com/ariacomputecompany/fozzy)
 - `fzyllm`: [saint0x/fzyllm](https://github.com/saint0x/fzyllm)
 
-## Code Syntax (Quick Exhibit)
+## Quick Look
+
+Want the fastest overview? Open [fzl-showcase.html](./fzl-showcase.html) with `open fzl-showcase.html`, skim [WHYFZY.md](./WHYFZY.md) for the product argument, then use the sample below as a compact executable sketch.
 
 ```fzy
-use core.time;
-use core.path;
 use core.log;
+use core.path;
+use core.process;
+use core.time;
 
 enum Mode {
     Fast,
@@ -38,26 +34,17 @@ enum Mode {
 }
 
 trait Scorer {
-    type Endpoint;
-    const BASE: i32;
     fn score(endpoint: Url) -> i32;
 }
 
 struct HttpScorer {}
 
 impl Scorer for HttpScorer {
-    type Endpoint = Url;
-    const BASE: i32 = 2;
     fn score(endpoint: Url) -> i32 {
         discard endpoint;
         return 7;
     }
 }
-
-type UserId = Uuid;
-newtype TenantId(Uuid);
-#[repr(transparent)]
-newtype JobId(i64);
 
 struct Config<TEndpoint> {
     retries: i32,
@@ -73,181 +60,84 @@ fn weight(mode: Mode) -> i32 {
     }
 }
 
-fn banner(mode: Mode) -> str {
-    if mode == Mode::Fast then return "fast"
-    return "safe"
-}
-
-fn is_ready(cfg: Config<Url>) -> bool {
-    return cfg.retries > 0
-}
-
-fn marker() -> char {
-    return 'F'
-}
-
-fn ratio(v: i32) -> f64 {
-    return v / 2.0
-}
-
-fn wire_payload() -> bytes {
-    return "wire"
-}
-
-fn score_parts(v: i32) -> (i32, str) {
-    return (v, "ok")
-}
-
 async fn boost(v: i32) -> i32 {
     checkpoint()
     return v + 1
 }
 
 fn normalize<T: Scorer>(cfg: Config<Url>) -> i32 {
-    let identity: (UserId, TenantId, JobId) = (uuid.v4(), TenantId(uuid.v4()), JobId(7))
-    let tags: Set<str> = set.new()
-    let lookup: Map<Uuid, Decimal128> = map.new()
-    discard identity
-    discard tags
-    discard lookup
     return weight(cfg.mode) + T.score(cfg.endpoint)
 }
 
 async fn run_once(cfg: Config<Url>) -> i32 {
     let base = normalize<HttpScorer>(cfg)
-    let task: Future<i32> = boost(base)
-    return await task
-}
-
-fn worker(cfg: Config<Url>) -> i32 {
-    let mut attempt: i32 = 0
-    let mut total: i32 = 0
-    let parts = ["alpha", "beta", "gamma"]
-    let label: str = "fozzy"
-    let ready: bool = true
-    let marker: char = 'F'
-    let ratio: f64 = 1.25
-    let raw_bytes: bytes = "wire"
-    let sample: (str, i32) = (label, 1)
-    discard ready
-    discard marker
-    discard ratio
-    discard raw_bytes
-    discard sample
-
-    while attempt < cfg.retries {
-        let raw = "  alpha,beta,gamma  "
-        let trimmed = str.trim(raw)
-        let text = str.replace(trimmed, ",", "|")
-
-        if str.contains(text, parts[1]) == 1 {
-            total += 2
-        }
-        total += weight(cfg.mode)
-
-        attempt += 1
-    }
-
-    return total
+    return await boost(base)
 }
 
 fn main() -> i32 {
     let cfg = Config { retries: 4, endpoint: url.parse("https://example.test"), mode: Mode::Fast }
-    let score = worker(cfg)
     let now = time.now()
     let out_path = path.join("tmp", "score.log")
+    let mode = process.argv_or(1, "showcase")
+    let score = normalize<HttpScorer>(cfg)
     log.info("snippet.run", out_path)
-    let tag = banner(Mode::Fast)
-    let ready = is_ready(Config { retries: 1, endpoint: url.parse("https://example.test"), mode: Mode::Safe })
-    let ch = marker()
-    let r = ratio(score)
-    let b = wire_payload()
-    let p = score_parts(score)
-    discard tag
-    discard ready
-    discard ch
-    discard r
-    discard b
-    discard p
+    discard mode
     discard run_once
     if score + now > 0 then return score
     return score
 }
 ```
 
-For the complete syntax and workflow coverage:
-- language and command examples: `CODE.md`
-- production-style projects: `examples/`
+For broader language coverage, use `CODE.md`, `examples/`, and the browser-friendly [FZL showcase](./fzl-showcase.html).
 
 ## What fzy Contains
 
-- compiler CLI (binary: `fz`) (build/run/test/verify/emit-ir/rpc gen/headers)
-- formatting and docs generation are built into `fz` (`fz fmt`, `fz doc gen`)
-- `crates/parser`, `crates/ast`, `crates/hir`, `crates/fir`: front-end + IR pipeline
-- `crates/verifier`: correctness/safety/capability checks
-- `crates/runtime`: deterministic scheduler/executor primitives
-- `crates/driver`: command orchestration + artifact emission
-- `tests/*.fozzy.json`: executable Fozzy scenarios
+- `fz`: compiler CLI for build, run, test, verify, docs, IR, RPC, headers, ABI checks, and more
+- built-in formatting and docs generation: `fz fmt`, `fz doc gen`
+- front-end and IR pipeline: `crates/parser`, `crates/ast`, `crates/hir`, `crates/fir`
+- verifier and safety enforcement: `crates/verifier`
+- deterministic runtime primitives: `crates/runtime`
+- driver and artifact orchestration: `crates/driver`
+- executable Fozzy scenarios: `tests/*.fozzy.json`
 
-## Current State (Practical)
+## Current State
 
-Implemented and verified today:
+Implemented and validated today:
 
-- Production safety/correctness model:
-  - general-purpose systems-language posture with application, service, runtime, CLI, control-plane, and integration workloads in scope
-  - safe-by-default language/runtime posture with explicit unsafe islands and compiler-generated unsafe inventory/docs
-  - verifier-enforced ownership/borrow rules, capability rules, FFI boundary rules, and native lowerability rules
-  - deterministic trace/replay lifecycle as a normal production gate, not a lab-only feature
-  - host-backed confidence path for real filesystem/process/HTTP validation
-- Deterministic scheduler modes (`fifo`, `random`, `coverage_guided`) for non-scenario tests
-- Thread/async/RPC decision artifacts in `fz test --det --record ...`
-- RPC frame model events: `rpc_send`, `rpc_recv`, `rpc_deadline`, `rpc_cancel`
-- Explore + shrink metadata artifacts for replay/shrink prioritization
-- Language-native scenario generation from parsed `test` blocks (combined + per-test)
-- Recursive multi-file module loading from `mod` declarations (`foo.fzy`, `foo/mod.fzy`, `foo::bar`)
+- general-purpose systems-language scope, not a niche single-domain tool
+- safe by default, with explicit unsafe islands, compiler-generated unsafe inventory/docs, and opt-in manual memory management via `alloc(...)` / `free(...)`
+- real runtime `defer` semantics across normal code and `unsafe { ... }` islands, so deterministic cleanup is enforced rather than merely documented
+- verifier-enforced ownership, borrow, capability, FFI, and native-lowerability rules
+- explicit manual memory management is supported inside that model, with ownership-aware `alloc(...)` / `free(...)` flows and verifier-visible lifecycle checks
+- deterministic trace, replay, and scheduler validation as normal production gates
+- host-backed confidence paths for filesystem, process, and HTTP behavior
+- deterministic scheduler modes: `fifo`, `random`, `coverage_guided`
+- decision artifacts for async, thread, and RPC execution
+- RPC frame events: `rpc_send`, `rpc_recv`, `rpc_deadline`, `rpc_cancel`
+- explore and shrink metadata for replay/minimization workflows
+- language-native scenario generation from parsed `test` blocks
+- recursive multi-file module loading from `mod` declarations
 - C header generation from exported `pubext c fn` signatures
-- RPC schema/client/server stub generation (`fz rpc gen`)
-- Modern language/runtime surface:
-  - production-supported ADTs and pattern matching across tuple/struct/enum values, locals, parameters, returns, helper values, and control-flow values
-  - production-supported trait/generic surface for the v1 contract, including concrete impls, associated items, generic bounds, and nested-module qualification
-  - current-process CLI/runtime surface through `core.process`, `core.term`, `core.log`, `core.text`, `core.thread`, `core.io`, `core.path`, `core.http`
-  - parsed JSON object-key iteration and JSON bridge helpers
-  - end-exclusive string slicing, ASCII case helpers, production string escapes, and mutable string accumulation parity in native backends
-- `fz run` executes compiled native output:
-  - text mode streams child stdout/stderr live (server-friendly)
-  - json mode captures `exitCode/stdout/stderr` payloads
-  - project builds emit a runnable native binary at `.fz/build/<target-name>`
-- Native HTTP runtime hardening:
-  - transport failures preserve diagnostics through `http.last_error`
-  - deterministic fallback failure status when HTTP status cannot be parsed
-  - curl execution fallback paths (`curl`, `/usr/bin/curl`, `/opt/homebrew/bin/curl`)
-  - outbound streaming requests are first-class through `http.request_stream` / `http.post_json_stream` plus `http.stream_read_line`, `http.stream_eof`, `http.stream_status`, `http.stream_error`, and `http.stream_close`
-- Language/native completeness:
-  - closure/lambda lexical capture lowering parity in LLVM + Cranelift for supported forms
-  - array/index expression family lowers natively in LLVM + Cranelift with execute-and-compare parity fixtures
-  - ADT/pattern-matching native completeness: tuple/struct/enum values lower as first-class aggregate handles, and destructuring works across locals, parameters, calls, returns, helpers, and control-flow values in both LLVM and Cranelift
-  - module import surface includes executable `use ... as alias` and `pub use ...` re-export semantics
-  - native runtime surface includes current-process CLI, task-local context ids for `spawn_ctx(...)`, parsed JSON key iteration, outbound HTTP/SSE streaming, and core stdlib facades that line up with executable native behavior
-  - direct-memory architecture/perf release gates:
-    - `python3 scripts/direct_memory_architecture_gate.py`
-    - `python3 scripts/direct_memory_perf_gate.py`
+- RPC schema, client, and server stub generation via `fz rpc gen`
+- modern language/runtime surface across ADTs, pattern matching, traits, generics, JSON, process, terminal, logging, filesystem/path, and outbound streaming HTTP
+- `fz run` executes native output directly with live text streaming or JSON capture
+- LLVM and Cranelift native backends with parity-oriented validation
+- direct-memory release gates:
+  - `python3 scripts/direct_memory_architecture_gate.py`
+  - `python3 scripts/direct_memory_perf_gate.py`
 
 ## Production Claims
 
-These are the production claims fzy is set up to support today:
+fzy is set up to support these production claims today:
 
-- Memory-safe by default:
-  - safe code is the baseline
-  - unsafe behavior is isolated behind explicit unsafe islands and audited artifacts
-  - production policy does not rely on silent unsound fallback paths
-- Verifiable correctness:
-  - verifier, diagnostics, deterministic runtime testing, trace verification, replay, and CI artifacts are part of the normal shipping workflow
-- Deterministic execution:
-  - recorded traces, replay, and deterministic scheduler modes are first-class and production-facing
-- General-purpose systems surface:
-  - async/tasks, RPC, ADTs/pattern matching, traits/generics, process control, terminal I/O, structured logging, filesystem/path helpers, JSON control-plane work, and outbound streaming HTTP are all part of the shipped language/runtime story
+- memory-safe by default, with explicit audited unsafe boundaries and opt-in ownership-tracked manual memory management
+- `alloc(...)` / `free(...)` stay in safe code when the compiler can still verify ownership, provenance, and cleanup execution
+- verifiable correctness through the verifier, diagnostics, deterministic testing, replay, and CI artifacts
+- deterministic execution through recorded traces, replay, and scheduler control
+- general-purpose systems coverage across async/tasks, RPC, ADTs, traits/generics, process control, terminal I/O, logging, filesystem/path, JSON work, and streaming HTTP
 
 See also:
+
 - `docs/system-safety-trust-model-v1.md`
 - `docs/production-memory-model-v1.md`
 - `docs/production-workflow-v1.md`
@@ -262,16 +152,16 @@ cargo test --workspace
 ## Core CLI
 
 ```bash
-# Build source/project (path defaults to current working directory)
+# Build source/project
 fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
 
-# Run source/project or .fozzy scenario (path defaults to current working directory)
+# Run source/project or .fozzy scenario
 fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [--json]
 
-# Test source/project or .fozzy scenario (path defaults to current working directory)
+# Test source/project or .fozzy scenario
 fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--filter substring] [--json]
 
-# Verify/check/IR/docs
+# Verify/check/docs/tooling
 fz fmt [path ...] [--check] [--json]
 fz check [path] [--json]
 fz verify [path] [--json]
@@ -294,67 +184,45 @@ fz lsp rename <path> <from> <to> [--json]
 fz lsp smoke [path] [--json]
 fz lsp serve [--path <workspace>] [--json]
 
-# FFI / RPC outputs
+# FFI / RPC / docs outputs
 fz headers [path] [--out path] [--json]
 fz rpc gen [path] [--out-dir dir] [--json]
 fz doc gen [path] [--format json|html|markdown] [--out path] [--reference path] [--json]
 ```
 
-VS Code editor integration is available under `tooling/vscode` (language config, TextMate grammar, LSP client bootstrap to `fz lsp serve`).
+VS Code integration lives in `tooling/vscode` and targets `fz lsp serve`.
 
-Runtime defaults for native host-backed HTTP:
-- bind host default: `127.0.0.1` (`FZ_HOST` > `AGENT_HOST` > default)
-- bind port default: `8787` (`FZ_PORT` > `AGENT_PORT` > `PORT` > default)
-- startup visibility: runtime prints effective bind target on successful `listen`
-- env bootstrap: runtime loads `.env` (or `FZ_DOTENV_PATH`) once before env/http operations
+Runtime defaults and surfaced behavior:
 
-Runtime logging defaults:
-- default log format is human-readable text (`[ts] level message`)
-- structured fields are appended as `| fields={...}`
-- JSON log mode is opt-in via `log.set_json(1)`
-- `use core.log;` now does both:
-  - satisfies the `log` capability contract
-  - imports the standard-library logging facade
-- `use core.text;` is now a real standard-library module for terminal/text composition helpers
-- `use core.io;` is now the standard-library filesystem-discovery facade
-- `use core.path;` is now the canonical import marker for path helpers
-- current-process CLI surface is first-class:
-  - raw runtime intrinsics: `proc.argv_count/get`, `term.read_line/stdin_eof/write/write_err/stdin_is_tty/stdout_is_tty`
-  - canonical standard-library wrappers: `use core.process; use core.term; use core.thread; use core.log; use core.text; use core.io; use core.path;`
-  - common helpers: `process.argv_or`, `process.command_name`, `process.has_flag`, `term.print_line`, `term.eprint_line`, `term.prompt_line`, `term.is_interactive`, `thread.context_id`, `log.set_level_name`, `log.set_sink_name`, `log.quiet`, `log.verbose`, `text.pad_left`, `text.pad_right`, `text.indent`, `text.visible_len_ansi`, `text.upper_ascii`, `text.lower_ascii`, `io.list_dir`, `path.join`
-- production string escapes now include terminal-safe forms: `\xNN`, `\uNNNN`, `\u{NN...}`, and explicit octal `\NNN`
-- canonical structured log fields use `log.fields(map_handle)`
-- canonical dynamic JSON builders use `json.array(list_handle)` and `json.object(map_handle)`
-- parsed JSON iteration is first-class with `json.keys(json_handle)`
-- parsed JSON bridge helpers stay explicit:
-  - `json.to_map(json_handle)` for string-valued object shapes
-  - `json.to_list(json_handle)` for string-array shapes
-- first-class object literal syntax is available for map-backed payloads: `#{ "k": json.str("v") }`
-- canonical process builders use `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`/`proc.run_cmd`
-- `proc.run*` returns exit codes; `proc.spawn*` returns handles for wait/stdout/stderr/exit inspection
-- shared helper surface is available under `core.util` for common JSON/log/http/concurrency helpers
+- host bind default: `127.0.0.1`
+- port default: `8787`
+- effective bind target is printed on successful `listen`
+- `.env` or `FZ_DOTENV_PATH` is loaded once before env/HTTP operations
+- text logs are the default; JSON logs are opt-in via `log.set_json(1)`
+- standard library surface includes `core.process`, `core.term`, `core.thread`, `core.log`, `core.text`, `core.io`, `core.path`, and `core.util`
+- terminal-safe string escapes, structured log fields, JSON builders, JSON key iteration, and map-backed object literals are first-class
+- process helpers support argv/env builders plus spawn/run flows with wait/stdout/stderr/exit inspection
 
 ## Deterministic Artifacts
 
 With `fz test <file.fzy> --det --record artifacts/name.trace.json --json`, the driver emits:
 
-- `*.trace.json`: deterministic execution trace (thread + async + RPC frame events)
-- `*.timeline.json`: schedule decisions (`thread.schedule`, `async.schedule`, `rpc.frame`)
-- `*.report.json`: summary + findings + failure-class grouping
-- `*.explore.json`: schedule candidates + RPC frame permutations + scenario priorities
-- `*.shrink.json`: deterministic shrink hints for minimization workflows
-- `*.scenarios/`: generated language-native `.fozzy.json` scenarios
-- `*.scenarios.json`: index for generated scenarios
-- `*.manifest.json`: artifact map including primary scenario path
+- `*.trace.json`: deterministic execution trace
+- `*.timeline.json`: schedule decisions
+- `*.report.json`: summary, findings, and failure grouping
+- `*.explore.json`: schedule candidates and scenario priorities
+- `*.shrink.json`: deterministic shrink hints
+- `*.scenarios/` and `*.scenarios.json`: generated language-native scenarios
+- `*.manifest.json`: artifact map including the primary scenario path
 
 ## Native CLI Surface
 
-Canonical production authoring split:
+Canonical authoring split:
 
-- current-process argv + terminal UX: `core.process`, `core.term`, `core.text`
-- logging policy + structured operator output: `core.log`
-- filesystem discovery + path-safe assembly: `core.io`, `core.path`
-- child-process execution: `proc.*`
+- `core.process`, `core.term`, `core.text`: argv and terminal UX
+- `core.log`: logging policy and structured output
+- `core.io`, `core.path`: filesystem discovery and path assembly
+- `proc.*`: child-process execution
 
 Example:
 
@@ -377,80 +245,57 @@ fn main() -> i32 {
 }
 ```
 
-EOF semantics are explicit:
+EOF is explicit:
 
-- empty line: `term.read_line()` returns `""` and `term.stdin_eof() == 0`
-- EOF: `term.read_line()` returns `""` and `term.stdin_eof() == 1`
+- empty line: `term.read_line() == ""` and `term.stdin_eof() == 0`
+- EOF: `term.read_line() == ""` and `term.stdin_eof() == 1`
 
-Production validation split for native CLI apps:
-
-- `fz run ...` is the canonical compiler-integrated launcher. Use it first for policy-aware validation, backend selection, and JSON output capture.
-- direct built-binary execution is the strongest final confidence signal for interactive CLI behavior such as exact terminal ordering, shell piping, and launch-environment expectations.
-- for serious CLI/runtime work, use both:
-  - `fz run <module>.fzy --backend cranelift --json`
-  - then execute the built artifact directly when stream ordering or terminal UX matters
+For serious CLI/runtime work, use both the compiler-integrated launcher and the built binary when exact terminal behavior matters.
 
 ## Native Backend Policy
 
-- Only two native compiler paths are supported:
-  - `cranelift` (dev-default)
-  - `llvm` (release-default)
-- Backend selection order:
-  - explicit `--backend`
-  - `FZ_NATIVE_BACKEND`
-  - profile default (`dev -> cranelift`, `release -> llvm`)
+- supported backends: `cranelift` and `llvm`
+- selection order: explicit `--backend`, then `FZ_NATIVE_BACKEND`, then profile default
+- profile defaults: `dev -> cranelift`, `release -> llvm`
 
 ## Dependency Locking + Vendor
 
-- Project builds enforce `fozzy.lock` drift checks for path dependencies.
-- Lock drift fails builds until refreshed.
-- Refresh lock + snapshot dependencies:
-
-```bash
-fz vendor [project] --json
-```
-
-- Vendor command writes:
-  - `fozzy.lock` (updated dependency graph hash)
-  - `vendor/fozzy-vendor.json` (lock hash + per-dependency source/vendor hashes)
-
-Spec: `docs/dependency-locking-v1.md`
+- project builds enforce `fozzy.lock` drift checks for path dependencies
+- refresh lock state with `fz vendor [project] --json`
+- vendor output includes `fozzy.lock` and `vendor/fozzy-vendor.json`
+- spec: `docs/dependency-locking-v1.md`
 
 ## ABI Compatibility Gate
 
-- `fz abi-check` now enforces policy-level compatibility:
-  - schema validity
-  - package identity
-  - panic boundary compatibility
-  - baseline export presence + signature immutability
-  - baseline contract immutability (contract weakening is breaking)
-  - symbol version non-regression
-- Additive exports are allowed.
+`fz abi-check` enforces:
+
+- schema validity
+- package identity
+- panic boundary compatibility
+- baseline export presence and signature immutability
+- baseline contract immutability
+- symbol version non-regression
+
+Additive exports are allowed.
 
 ## C Interop
 
-- Production guide: `docs/c-interop-production-v1.md`
-- `#[ffi_panic(abort|error)]` is required on every exported `pubext c fn`.
-- Prefer `ext unsafe c fn` for unsafe C imports and call them only inside `unsafe { ... }`.
-- `fz build --lib` emits static/shared libraries plus installable header + ABI manifest.
+- guide: `docs/c-interop-production-v1.md`
+- every exported `pubext c fn` requires `#[ffi_panic(abort|error)]`
+- prefer `ext unsafe c fn` for unsafe C imports and call them only inside `unsafe { ... }`
+- `fz build --lib` emits static/shared libraries plus an installable header and ABI manifest
 
 ## Unsafe Docs Artifacts
 
-- Unsafe is first-class via `unsafe fn` and `unsafe { ... }`.
-- `fz audit unsafe --workspace --json` emits compiler-generated unsafe inventory/docs:
-  - `.fz/unsafe-map.workspace.json`
-  - `.fz/unsafe-docs.workspace.json`
-  - `.fz/unsafe-docs.workspace.md`
-  - `.fz/unsafe-docs.workspace.html`
-- Metadata fields (`reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`) are compiler-generated and policy-driven.
-- Default production flow is non-blocking for missing metadata unless strict unsafe policy is enabled in CI/release.
-- Optional hardened scope controls in `fozzy.toml`:
-  - `[unsafe].deny_unsafe_in = ["tests::*"]`
-  - `[unsafe].allow_unsafe_in = ["runtime::*"]`
+- unsafe is first-class via `unsafe fn` and `unsafe { ... }`
+- `fz audit unsafe --workspace --json` emits `.fz/unsafe-map.workspace.json`, `.fz/unsafe-docs.workspace.json`, `.fz/unsafe-docs.workspace.md`, and `.fz/unsafe-docs.workspace.html`
+- metadata fields such as `reason`, `invariant`, `owner`, `scope`, `risk_class`, and `proof_ref` are compiler-generated and policy-driven
+- the default production flow is non-blocking for missing metadata unless strict unsafe policy is enabled
+- optional hardened scope controls live in `fozzy.toml`
 
 ## Fozzy-First Validation Contract
 
-Use this exact sequence for strict confidence:
+Use this sequence for strict confidence:
 
 ```bash
 # 1) Determinism audit first
@@ -471,7 +316,7 @@ fz ci artifacts/trace.fozzy --json
 fz run tests/host.pass.fozzy.json --host-backends --json
 ```
 
-Ship release gate (strict, no compatibility fallback):
+Strict release gate:
 
 ```bash
 ./scripts/ship_release_gate.sh
@@ -510,10 +355,9 @@ Inspect:
 
 All shipped examples follow the v1 narrative DX convention:
 
-- `src/main.fzy` is orchestration-only and the `fn main` declaration is last.
-- tests live under `src/tests/*` (no test declarations in `main.fzy`).
-- domain module roots use `mod.fzy`:
-  - `api`, `model`, `services`, `runtime`, `cli`, `tests`
+- `src/main.fzy` is orchestration-only and places `fn main` last
+- tests live under `src/tests/*`
+- domain module roots use `mod.fzy`
 
 Available projects:
 
@@ -523,15 +367,11 @@ Available projects:
 - `examples/robust_cli`
 - `examples/live_server`
 
-Validate a project:
+Validation and project flows:
 
 ```bash
 cargo run -q -p fz -- dx-check examples/fullstack --strict --json
-```
 
-Run fullstack flow:
-
-```bash
 cargo run -q -p fz -- check examples/fullstack --json
 cargo run -q -p fz -- build examples/fullstack --backend cranelift --json
 cargo run -q -p fz -- build examples/fullstack --release --backend llvm --json
@@ -539,42 +379,23 @@ cargo run -q -p fz -- run examples/fullstack --backend cranelift --json
 cargo run -q -p fz -- test examples/fullstack --det --seed 41 --backend llvm --json
 cargo run -q -p fz -- headers examples/fullstack --json
 cargo run -q -p fz -- abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json
-```
 
-Run robust CLI app:
-
-```bash
 cargo run -q -p fz -- dx-check examples/robust_cli --strict --json
 cargo run -q -p fz -- build examples/robust_cli --backend cranelift --json
 cargo run -q -p fz -- run examples/robust_cli --backend llvm --json
 cargo run -q -p fz -- test examples/robust_cli --det --seed 55 --backend cranelift --json
-```
 
-Run live server runtime + verified runtime stats:
-
-```bash
 cargo run -q -p fz -- dx-check examples/live_server --strict --json
 cargo run -q -p fz -- build examples/live_server --backend cranelift --json
 cargo run -q -p fz -- run examples/live_server --backend llvm --json
 cargo run -q -p fz -- test examples/live_server --det --seed 77 --backend cranelift --record artifacts/live_server.stats.trace.json --rich-artifacts --json
 
-# inspect runtime stats artifacts
-cat artifacts/live_server.stats.trace.report.json
-cat artifacts/live_server.stats.trace.timeline.json
-cat artifacts/live_server.stats.trace.explore.json
-```
-
-Host-backed internet probe scenario:
-
-```bash
 fz run tests/live.server.interhttp.fozzy.json --host-backends --json
 ```
 
 ## Plan Tracking
 
-Execution planning docs are tracked alongside the source and versioned:
+Keep these versioned delivery documents updated during implementation:
 
 - `PLAN.md`
 - `FEATURES-TO-SHIP.md`
-
-Keep these updated during implementation as release and delivery source-of-truth documents.

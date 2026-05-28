@@ -1097,6 +1097,7 @@ pub(super) fn clif_emit_linear_stmts(
     locals: &mut HashMap<String, LocalBinding>,
     next_var: &mut usize,
 ) -> Result<bool> {
+    let mut deferred = Vec::<ast::Expr>::new();
     for stmt in body {
         match stmt {
             ast::Stmt::Let {
@@ -1536,13 +1537,16 @@ pub(super) fn clif_emit_linear_stmts(
                 ctx.closures.remove(target);
                 ctx.aggregate_bindings.remove(target);
             }
-            ast::Stmt::Expr(expr)
-            | ast::Stmt::Requires(expr)
-            | ast::Stmt::Ensures(expr)
-            | ast::Stmt::Defer(expr) => {
+            ast::Stmt::Defer(expr) => {
+                deferred.push(expr.clone());
+            }
+            ast::Stmt::Expr(expr) | ast::Stmt::Requires(expr) | ast::Stmt::Ensures(expr) => {
                 let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
             }
             ast::Stmt::Return(value) => {
+                for expr in deferred.iter().rev() {
+                    let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
+                }
                 match (value, ctx.current_return_ty) {
                     (Some(expr), Some(ret_ty)) => {
                         let lowered = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
@@ -1574,6 +1578,9 @@ pub(super) fn clif_emit_linear_stmts(
                 bail!("cranelift linear emission received non-linear control-flow statement");
             }
         }
+    }
+    for expr in deferred.iter().rev() {
+        let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
     }
     Ok(false)
 }

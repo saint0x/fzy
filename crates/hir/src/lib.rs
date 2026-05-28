@@ -8899,7 +8899,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "str.upper_ascii" | "str.lower_ascii" => (vec![str_ty.clone()], str_ty.clone()),
         "http.post_json" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "http.post_json_capture" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
-        "http.post_json_stream" => (vec![str_ty.clone(), str_ty.clone()], http_stream_handle.clone()),
+        "http.post_json_stream" => (
+            vec![str_ty.clone(), str_ty.clone()],
+            http_stream_handle.clone(),
+        ),
         "http.last_status" => (vec![], i32.clone()),
         "http.last_error" => (vec![], str_ty.clone()),
         "json.escape" => (vec![str_ty.clone()], str_ty.clone()),
@@ -9870,8 +9873,12 @@ fn eval_block_control<'a>(
     env: &mut BTreeMap<String, Value>,
     functions: &HashMap<&'a str, &'a TypedFunction>,
 ) -> EvalOutcome {
+    let mut deferred = Vec::<Expr>::new();
     for stmt in body {
         if !const_eval_allow_step() {
+            for expr in deferred.iter().rev() {
+                let _ = eval_expr(expr, env, functions);
+            }
             return EvalOutcome::Continue;
         }
         match stmt {
@@ -9920,9 +9927,24 @@ fn eval_block_control<'a>(
                 };
                 let branch = if truthy(&cond) { then_body } else { else_body };
                 match eval_block_control(branch, env, functions) {
-                    EvalOutcome::Return(v) => return EvalOutcome::Return(v),
-                    EvalOutcome::Break => return EvalOutcome::Break,
-                    EvalOutcome::ContinueLoop => return EvalOutcome::ContinueLoop,
+                    EvalOutcome::Return(v) => {
+                        for expr in deferred.iter().rev() {
+                            let _ = eval_expr(expr, env, functions);
+                        }
+                        return EvalOutcome::Return(v);
+                    }
+                    EvalOutcome::Break => {
+                        for expr in deferred.iter().rev() {
+                            let _ = eval_expr(expr, env, functions);
+                        }
+                        return EvalOutcome::Break;
+                    }
+                    EvalOutcome::ContinueLoop => {
+                        for expr in deferred.iter().rev() {
+                            let _ = eval_expr(expr, env, functions);
+                        }
+                        return EvalOutcome::ContinueLoop;
+                    }
                     EvalOutcome::Continue => {}
                 }
             }
@@ -9930,15 +9952,28 @@ fn eval_block_control<'a>(
                 let mut guard = 0usize;
                 while truthy(&match eval_expr(condition, env, functions) {
                     Some(value) => value,
-                    None => return EvalOutcome::Continue,
+                    None => {
+                        for expr in deferred.iter().rev() {
+                            let _ = eval_expr(expr, env, functions);
+                        }
+                        return EvalOutcome::Continue;
+                    }
                 }) {
                     match eval_block_control(body, env, functions) {
-                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Return(v) => {
+                            for expr in deferred.iter().rev() {
+                                let _ = eval_expr(expr, env, functions);
+                            }
+                            return EvalOutcome::Return(v);
+                        }
                         EvalOutcome::Break => break,
                         EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
                     }
                     guard += 1;
                     if guard > 1_000_000 {
+                        for expr in deferred.iter().rev() {
+                            let _ = eval_expr(expr, env, functions);
+                        }
                         return EvalOutcome::Continue;
                     }
                 }
@@ -9951,7 +9986,12 @@ fn eval_block_control<'a>(
             } => {
                 if let Some(init) = init {
                     match eval_block_control(std::slice::from_ref(init.as_ref()), env, functions) {
-                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Return(v) => {
+                            for expr in deferred.iter().rev() {
+                                let _ = eval_expr(expr, env, functions);
+                            }
+                            return EvalOutcome::Return(v);
+                        }
                         EvalOutcome::Break | EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
                     }
                 }
@@ -9959,6 +9999,9 @@ fn eval_block_control<'a>(
                 loop {
                     if let Some(condition) = condition {
                         let Some(value) = eval_expr(condition, env, functions) else {
+                            for expr in deferred.iter().rev() {
+                                let _ = eval_expr(expr, env, functions);
+                            }
                             return EvalOutcome::Continue;
                         };
                         if !truthy(&value) {
@@ -9966,7 +10009,12 @@ fn eval_block_control<'a>(
                         }
                     }
                     match eval_block_control(body, env, functions) {
-                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Return(v) => {
+                            for expr in deferred.iter().rev() {
+                                let _ = eval_expr(expr, env, functions);
+                            }
+                            return EvalOutcome::Return(v);
+                        }
                         EvalOutcome::Break => break,
                         EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
                     }
@@ -9976,7 +10024,12 @@ fn eval_block_control<'a>(
                             env,
                             functions,
                         ) {
-                            EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                            EvalOutcome::Return(v) => {
+                                for expr in deferred.iter().rev() {
+                                    let _ = eval_expr(expr, env, functions);
+                                }
+                                return EvalOutcome::Return(v);
+                            }
                             EvalOutcome::Break
                             | EvalOutcome::ContinueLoop
                             | EvalOutcome::Continue => {}
@@ -9984,6 +10037,9 @@ fn eval_block_control<'a>(
                     }
                     guard += 1;
                     if guard > 1_000_000 {
+                        for expr in deferred.iter().rev() {
+                            let _ = eval_expr(expr, env, functions);
+                        }
                         return EvalOutcome::Continue;
                     }
                 }
@@ -9994,6 +10050,9 @@ fn eval_block_control<'a>(
                 body,
             } => {
                 let Some(range) = eval_expr(iterable, env, functions) else {
+                    for expr in deferred.iter().rev() {
+                        let _ = eval_expr(expr, env, functions);
+                    }
                     return EvalOutcome::Continue;
                 };
                 let Value::Struct { fields, .. } = range else {
@@ -10014,13 +10073,21 @@ fn eval_block_control<'a>(
                 } {
                     env.insert(binding.clone(), Value::I32(current));
                     match eval_block_control(body, env, functions) {
-                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Return(v) => {
+                            for expr in deferred.iter().rev() {
+                                let _ = eval_expr(expr, env, functions);
+                            }
+                            return EvalOutcome::Return(v);
+                        }
                         EvalOutcome::Break => break,
                         EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
                     }
                     current += 1;
                     guard += 1;
                     if guard > 1_000_000 {
+                        for expr in deferred.iter().rev() {
+                            let _ = eval_expr(expr, env, functions);
+                        }
                         return EvalOutcome::Continue;
                     }
                 }
@@ -10029,32 +10096,65 @@ fn eval_block_control<'a>(
                 let mut guard = 0usize;
                 loop {
                     match eval_block_control(body, env, functions) {
-                        EvalOutcome::Return(v) => return EvalOutcome::Return(v),
+                        EvalOutcome::Return(v) => {
+                            for expr in deferred.iter().rev() {
+                                let _ = eval_expr(expr, env, functions);
+                            }
+                            return EvalOutcome::Return(v);
+                        }
                         EvalOutcome::Break => break,
                         EvalOutcome::ContinueLoop | EvalOutcome::Continue => {}
                     }
                     guard += 1;
                     if guard > 1_000_000 {
+                        for expr in deferred.iter().rev() {
+                            let _ = eval_expr(expr, env, functions);
+                        }
                         return EvalOutcome::Continue;
                     }
                 }
+            }
+            Stmt::Defer(expr) => {
+                deferred.push(expr.clone());
             }
             Stmt::Break(value) => {
                 if let Some(value) = value {
                     let _ = eval_expr(value, env, functions);
                 }
+                for expr in deferred.iter().rev() {
+                    let _ = eval_expr(expr, env, functions);
+                }
                 return EvalOutcome::Break;
             }
-            Stmt::Continue => return EvalOutcome::ContinueLoop,
+            Stmt::Continue => {
+                for expr in deferred.iter().rev() {
+                    let _ = eval_expr(expr, env, functions);
+                }
+                return EvalOutcome::ContinueLoop;
+            }
             Stmt::Return(Some(expr)) => {
                 let Some(val) = eval_expr(expr, env, functions) else {
+                    for expr in deferred.iter().rev() {
+                        let _ = eval_expr(expr, env, functions);
+                    }
                     return EvalOutcome::Continue;
                 };
+                for expr in deferred.iter().rev() {
+                    let _ = eval_expr(expr, env, functions);
+                }
                 return EvalOutcome::Return(val);
             }
-            Stmt::Return(None) => return EvalOutcome::Return(Value::I32(0)),
+            Stmt::Return(None) => {
+                for expr in deferred.iter().rev() {
+                    let _ = eval_expr(expr, env, functions);
+                }
+                return EvalOutcome::Return(Value::I32(0));
+            }
             Stmt::Match { scrutinee, arms } => {
                 let Some(value) = eval_expr(scrutinee, env, functions) else {
+                    for expr in deferred.iter().rev() {
+                        let _ = eval_expr(expr, env, functions);
+                    }
                     return EvalOutcome::Continue;
                 };
                 for arm in arms {
@@ -10069,6 +10169,9 @@ fn eval_block_control<'a>(
                     let guard_ok = match &arm.guard {
                         Some(guard) => {
                             let Some(guard_val) = eval_expr(guard, &arm_env, functions) else {
+                                for expr in deferred.iter().rev() {
+                                    let _ = eval_expr(expr, env, functions);
+                                }
                                 return EvalOutcome::Continue;
                             };
                             truthy(&guard_val)
@@ -10078,8 +10181,14 @@ fn eval_block_control<'a>(
                     if guard_ok {
                         if arm.returns {
                             let Some(out) = eval_expr(&arm.value, &arm_env, functions) else {
+                                for expr in deferred.iter().rev() {
+                                    let _ = eval_expr(expr, env, functions);
+                                }
                                 return EvalOutcome::Continue;
                             };
+                            for expr in deferred.iter().rev() {
+                                let _ = eval_expr(expr, env, functions);
+                            }
                             return EvalOutcome::Return(out);
                         }
                         let _ = eval_expr(&arm.value, &arm_env, functions);
@@ -10087,8 +10196,11 @@ fn eval_block_control<'a>(
                     }
                 }
             }
-            Stmt::Defer(_) | Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Expr(_) => {}
+            Stmt::Requires(_) | Stmt::Ensures(_) | Stmt::Expr(_) => {}
         }
+    }
+    for expr in deferred.iter().rev() {
+        let _ = eval_expr(expr, env, functions);
     }
     EvalOutcome::Continue
 }

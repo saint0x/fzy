@@ -133,6 +133,12 @@ let out = proc.stdout(handle)
 let err = proc.stderr(handle)
 ```
 
+## Resource-Management Guidance
+
+- Pair owned resources with same-scope `defer` cleanup whenever possible.
+- Canonical safe patterns include `defer free(ptr)` for heap memory and `defer close(handle)` for linear handles.
+- `alloc(...)` / `free(...)` remain part of the safe subset when verifier tracking succeeds; they do not require `unsafe` unless combined with unchecked raw-memory operations.
+
 ### `term`
 
 - Current-process terminal I/O is first-class:

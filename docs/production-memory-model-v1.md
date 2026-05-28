@@ -12,6 +12,7 @@
 - Heap values are single-owner by default.
 - Ownership transfers on assignment, return, and argument passing of owned values.
 - Ownership consumption APIs: `free(...)`, `close(...)`.
+- `alloc(...)` / `free(...)` remain part of safe code when the compiler can still track ownership, provenance, and cleanup.
 - Use-after-move and double-consume are verifier errors.
 
 ## Borrowing And Aliasing
@@ -34,6 +35,8 @@
 ## Drop And Cleanup
 
 - Deterministic drop model is LIFO via lexical `defer` registration.
+- `defer` is a runtime semantic guarantee, not just a verifier hint.
+- `defer` runs on lexical scope fallthrough, `return`, `break`, `continue`, and inside `unsafe { ... }` bodies.
 - Linear/resource values must be consumed exactly once.
 - Missing cleanup is a verifier error under production memory safety.
 
@@ -65,6 +68,8 @@
   - `unsafe { ... }`
   - compiler-generated unsafe contracts/docs:
     - `reason`, `invariant`, `owner`, `scope`, `risk_class`, `proof_ref`
+- `unsafe` is reserved for operations the compiler cannot fully justify, not for every explicit heap allocation.
+- Raw pointer dereference, pointer arithmetic, aliasing hazards, and unsafe FFI mutation stay inside `unsafe`.
 - Calls to unsafe functions/imports must be inside unsafe context.
 - Contract enforcement is profile-driven through `[unsafe]` policy in `fozzy.toml`.
 
