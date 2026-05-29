@@ -8,6 +8,7 @@ mod cli;
 mod tests;
 
 fn main() -> i32 {
+    discard term.is_interactive()
     discard runtime.boot()
     discard cli.boot()
     return runtime.surface_score()
