@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, bail};
-use driver::{Command, CommandFailure, Format, cli_output, run as driver_run};
+use anyhow::{bail, Context, Result};
+use driver::{cli_output, run as driver_run, Command, CommandFailure, Format};
 
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -105,7 +105,11 @@ fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
                             .and_then(serde_json::Value::as_bool)
                             .is_some_and(|ok| !ok)
                     });
-                if has_error { Some(1) } else { None }
+                if has_error {
+                    Some(1)
+                } else {
+                    None
+                }
             }
             _ => None,
         };
@@ -867,10 +871,9 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(
-            err.to_string()
-                .contains("production memory safety is always enabled")
-        );
+        assert!(err
+            .to_string()
+            .contains("production memory safety is always enabled"));
     }
 
     #[test]
@@ -881,10 +884,9 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(
-            err.to_string()
-                .contains("production memory safety is always enabled")
-        );
+        assert!(err
+            .to_string()
+            .contains("production memory safety is always enabled"));
     }
 
     #[test]
@@ -1187,11 +1189,9 @@ mod tests {
             "artifacts/default.profdata".to_string(),
         ];
         let error = parse_command(&args).expect_err("combined pgo flags should fail");
-        assert!(
-            error
-                .to_string()
-                .contains("--pgo-generate and --pgo-use are mutually exclusive")
-        );
+        assert!(error
+            .to_string()
+            .contains("--pgo-generate and --pgo-use are mutually exclusive"));
     }
 
     #[test]

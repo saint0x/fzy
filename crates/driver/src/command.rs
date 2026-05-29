@@ -8,18 +8,18 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use formatter::{format_source, is_fzy_source_path};
-use runtime::{DeterministicExecutor, Scheduler, TaskEvent, plan_async_checkpoints};
+use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEvent};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
-    BuildArtifact, BuildProfile, LibraryArtifact, Output, compile_file_with_backend,
-    compile_library_with_backend, emit_ir, lower_fir_cached, parse_program, refresh_lockfile,
-    verify_file,
+    compile_file_with_backend, compile_library_with_backend, emit_ir, lower_fir_cached,
+    parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact,
+    Output,
 };
 
 mod interop;
@@ -27,12 +27,12 @@ mod source;
 mod trace_native;
 
 use self::interop::{
-    HeaderArtifact, generate_c_headers, generate_rpc_artifacts, render_headers,
-    render_rpc_artifacts,
+    generate_c_headers, generate_rpc_artifacts, render_headers, render_rpc_artifacts,
+    HeaderArtifact,
 };
 use self::source::{
-    ResolvedModuleSource, discover_nested_project_roots, discover_project_roots,
-    load_resolved_module_set, resolve_source,
+    discover_nested_project_roots, discover_project_roots, load_resolved_module_set,
+    resolve_source, ResolvedModuleSource,
 };
 use self::trace_native::{
     convert_fozzy_trace_to_native, ensure_goal_trace_from_scenario, native_explore,
@@ -40,7 +40,7 @@ use self::trace_native::{
 };
 
 #[cfg(test)]
-use self::trace_native::{FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION, build_live_http_probe_steps};
+use self::trace_native::{build_live_http_probe_steps, FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -2362,7 +2362,8 @@ fn run_non_scenario_test_plan_with_root_guidance(
 fn attach_project_root_guidance(path: &Path, error: anyhow::Error) -> anyhow::Error {
     let text = error.to_string();
     if !(text.contains("no valid compiler manifest found")
-        || text.contains("path is neither a source file nor a project directory"))
+        || text.contains("path is neither a source file nor a project directory")
+        || text.contains("expected a `.fzy` source file or a project directory"))
     {
         return error;
     }
@@ -11267,20 +11268,12 @@ mod tests {
         .expect("headers command should succeed");
         let header_text = std::fs::read_to_string(&header).expect("header should be created");
         assert!(header_text.contains("typedef uint64_t fz_async_handle_t;"));
-        assert!(
-            header_text.contains(
-                "int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out);"
-            )
-        );
-        assert!(
-            header_text
-                .contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out);")
-        );
-        assert!(
-            header_text.contains(
-                "int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out);"
-            )
-        );
+        assert!(header_text
+            .contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out);"));
+        assert!(header_text
+            .contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out);"));
+        assert!(header_text
+            .contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out);"));
         assert!(header_text.contains("int32_t flush_async_drop(fz_async_handle_t handle);"));
         assert!(!header_text.contains("int32_t flush(int32_t code);"));
 
@@ -11440,9 +11433,7 @@ mod tests {
             Format::Text,
         )
         .expect("check command should return diagnostics");
-        assert!(
-            output.contains("must declare ownership suffix and paired length/context contract")
-        );
+        assert!(output.contains("must declare ownership suffix and paired length/context contract"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -11789,11 +11780,9 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for signature changes");
-        assert!(
-            error
-                .to_string()
-                .contains("signature changed for export `add`")
-        );
+        assert!(error
+            .to_string()
+            .contains("signature changed for export `add`"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -11847,11 +11836,9 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for weakened contracts");
-        assert!(
-            error
-                .to_string()
-                .contains("contract weakened/changed for export `consume`")
-        );
+        assert!(error
+            .to_string()
+            .contains("contract weakened/changed for export `consume`"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -11912,11 +11899,9 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for async mode changes");
-        assert!(
-            error
-                .to_string()
-                .contains("signature changed for export `flush`")
-        );
+        assert!(error
+            .to_string()
+            .contains("signature changed for export `flush`"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -12211,30 +12196,22 @@ mod tests {
             interop.get("buildMode").and_then(|value| value.as_str()),
             Some("lib")
         );
-        assert!(
-            interop
-                .get("staticLib")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
-        assert!(
-            interop
-                .get("sharedLib")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
-        assert!(
-            interop
-                .get("header")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
-        assert!(
-            interop
-                .get("abiManifest")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
+        assert!(interop
+            .get("staticLib")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(interop
+            .get("sharedLib")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(interop
+            .get("header")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(interop
+            .get("abiManifest")
+            .and_then(|value| value.as_str())
+            .is_some());
         assert_eq!(
             interop
                 .get("hostLifecycle")
@@ -12799,7 +12776,8 @@ mod tests {
                 Some(0),
                 "C probe should observe borrowed payload bytes for backend {backend}"
             );
-            let echoed = std::fs::read_to_string(&echoed_path).expect("echoed payload should exist");
+            let echoed =
+                std::fs::read_to_string(&echoed_path).expect("echoed payload should exist");
             assert_eq!(echoed, payload);
             let _ = std::fs::remove_file(&probe_source);
             let _ = std::fs::remove_file(&probe_binary);
@@ -13662,11 +13640,9 @@ fn main() -> i32 {
             .output()
             .expect("direct binary should run");
         assert_eq!(direct.status.code(), Some(0));
-        assert!(
-            std::fs::read_to_string(&report_path)
-                .expect("report should exist after direct run")
-                .contains("\"status\":\"0\"")
-        );
+        assert!(std::fs::read_to_string(&report_path)
+            .expect("report should exist after direct run")
+            .contains("\"status\":\"0\""));
 
         let _ = std::fs::remove_file(&report_path);
         let wrapped = run(
@@ -13697,11 +13673,9 @@ fn main() -> i32 {
             wrapped.contains("\"exitCode\":0"),
             "unexpected wrapped output: {wrapped}"
         );
-        assert!(
-            std::fs::read_to_string(&report_path)
-                .expect("report should exist after wrapped run")
-                .contains("\"status\":\"0\"")
-        );
+        assert!(std::fs::read_to_string(&report_path)
+            .expect("report should exist after wrapped run")
+            .contains("\"status\":\"0\""));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -16210,6 +16184,32 @@ fn main() -> i32 {
         assert!(diagnostics.contains("additional grouped root cause: unresolved call target"));
         assert!(!diagnostics.contains("type_error_count="));
         assert!(diagnostics.contains("explain: fz explain verifier.grouped_type_error"));
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn lsp_commands_reject_non_fzy_files() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-lsp-foreign-{suffix}.rs"));
+        std::fs::write(&source, "fn main() {}\n").expect("source should be written");
+
+        let error = run(
+            Command::LspDiagnostics {
+                path: source.clone(),
+            },
+            Format::Json,
+        )
+        .expect_err("non-fzy diagnostics input should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("expected a `.fzy` source file or a project directory"),
+            "unexpected error: {error}"
+        );
+
         let _ = std::fs::remove_file(source);
     }
 

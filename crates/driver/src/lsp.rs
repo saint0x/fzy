@@ -1421,6 +1421,11 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
                 .unwrap_or_default();
             let version = text_doc.get("version").and_then(Value::as_i64).unwrap_or(0);
             if let Some(path) = uri_to_path(uri) {
+                if !is_supported_lsp_path(&path) {
+                    ws.docs.remove(uri);
+                    publish_empty_diagnostics(uri, writer)?;
+                    return Ok(());
+                }
                 ws.docs.insert(
                     uri.to_string(),
                     Document {
@@ -1440,6 +1445,13 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
                 .get("uri")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow!("didChange missing uri"))?;
+            if let Some(path) = uri_to_path(uri) {
+                if !is_supported_lsp_path(&path) {
+                    ws.docs.remove(uri);
+                    publish_empty_diagnostics(uri, writer)?;
+                    return Ok(());
+                }
+            }
             let version = text_doc.get("version").and_then(Value::as_i64).unwrap_or(0);
             let Some(doc) = ws.docs.get_mut(uri) else {
                 return Ok(());
@@ -1460,6 +1472,7 @@ fn handle_lsp_message(ws: &mut WorkspaceState, msg: &Value, writer: &mut dyn Wri
                 .and_then(Value::as_str)
             {
                 ws.docs.remove(uri);
+                publish_empty_diagnostics(uri, writer)?;
             }
         }
         "textDocument/hover" => {
@@ -2194,6 +2207,20 @@ fn publish_diagnostics(ws: &WorkspaceState, uri: &str, writer: &mut dyn Write) -
     )
 }
 
+fn publish_empty_diagnostics(uri: &str, writer: &mut dyn Write) -> Result<()> {
+    write_lsp_message(
+        writer,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": uri,
+                "diagnostics": [],
+            }
+        }),
+    )
+}
+
 fn index_semantic_symbols_from_paths(paths: &[PathBuf]) -> Result<Vec<LspSymbol>> {
     let mut symbols = Vec::new();
     for module_path in paths {
@@ -2720,7 +2747,12 @@ fn workspace_doc<'a>(ws: &'a WorkspaceState, uri: &str) -> Result<&'a Document> 
 
 fn all_workspace_docs(ws: &WorkspaceState) -> Result<Vec<Document>> {
     if !ws.docs.is_empty() {
-        return Ok(ws.docs.values().cloned().collect::<Vec<_>>());
+        return Ok(ws
+            .docs
+            .values()
+            .filter(|doc| is_supported_lsp_path(&doc.path))
+            .cloned()
+            .collect::<Vec<_>>());
     }
     let root = ws
         .root
@@ -2768,6 +2800,10 @@ fn collect_docs_recursive(dir: &Path, out: &mut Vec<Document>) -> Result<()> {
         });
     }
     Ok(())
+}
+
+fn is_supported_lsp_path(path: &Path) -> bool {
+    path.extension().and_then(|value| value.to_str()) == Some("fzy")
 }
 
 fn read_lsp_message(reader: &mut dyn BufRead) -> Result<Option<Value>> {
@@ -2893,6 +2929,12 @@ fn line_char_to_byte_index(text: &str, line: usize, character: usize) -> Result<
 
 fn resolve_source(path: &Path) -> Result<ResolvedSource> {
     if path.is_file() {
+        if !is_supported_lsp_path(path) {
+            bail!(
+                "expected a `.fzy` source file or a project directory, got file: {}",
+                path.display()
+            );
+        }
         return Ok(ResolvedSource {
             source_path: path.to_path_buf(),
         });
@@ -3250,6 +3292,73 @@ mod tests {
             Some("verifier.grouped_type_error")
         );
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn did_open_non_fzy_document_clears_diagnostics_without_tracking_doc() {
+        let uri = "file:///tmp/foreign.rs";
+        let mut ws = WorkspaceState::default();
+        let mut out = Vec::<u8>::new();
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "rust",
+                    "version": 1,
+                    "text": "fn main() {}\n"
+                }
+            }
+        });
+
+        handle_lsp_message(&mut ws, &msg, &mut out).expect("non-fzy open should succeed");
+        assert!(!ws.docs.contains_key(uri));
+        let framed = decode_lsp_frame(&out).expect("frame should decode");
+        assert_eq!(
+            framed.get("method").and_then(Value::as_str),
+            Some("textDocument/publishDiagnostics")
+        );
+        assert_eq!(
+            framed
+                .get("params")
+                .and_then(|params| params.get("diagnostics"))
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn did_close_publishes_empty_diagnostics() {
+        let uri = "file:///tmp/close-clear.fzy";
+        let mut ws = WorkspaceState::default();
+        ws.docs.insert(
+            uri.to_string(),
+            Document {
+                path: PathBuf::from("/tmp/close-clear.fzy"),
+                version: 1,
+                text: "fn main() -> i32 { return 0 }\n".to_string(),
+            },
+        );
+        let mut out = Vec::<u8>::new();
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didClose",
+            "params": {"textDocument": {"uri": uri}}
+        });
+
+        handle_lsp_message(&mut ws, &msg, &mut out).expect("close should succeed");
+        assert!(!ws.docs.contains_key(uri));
+        let framed = decode_lsp_frame(&out).expect("frame should decode");
+        assert_eq!(
+            framed
+                .get("params")
+                .and_then(|params| params.get("diagnostics"))
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
     }
 
     #[test]

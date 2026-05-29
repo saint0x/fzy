@@ -284,7 +284,10 @@ fn build_repr_c_aliases(layouts: &[ReprCLayout]) -> Result<BTreeMap<String, Stri
     for layout in layouts {
         let alias = sanitize_c_identifier(&layout.name);
         if !seen.insert(alias.clone()) {
-            bail!("repr(C) type name collision after C normalization: `{}`", alias);
+            bail!(
+                "repr(C) type name collision after C normalization: `{}`",
+                alias
+            );
         }
         aliases.insert(layout.name.clone(), alias);
     }
@@ -299,7 +302,8 @@ fn collect_callback_types(
     for function in imports.iter().chain(exports.iter()) {
         for param in &function.params {
             if let ast::Type::Function { .. } = &param.ty {
-                seen.entry(param.ty.to_string()).or_insert_with(|| param.ty.clone());
+                seen.entry(param.ty.to_string())
+                    .or_insert_with(|| param.ty.clone());
             }
         }
     }

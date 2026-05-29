@@ -13,12 +13,12 @@ use crate::finalize::{
     build_run_summary, write_reporter_artifacts, write_single_scenario_trace, write_summary_report,
 };
 use crate::{
-    Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind,
-    FsBackend, HttpBackend, MemoryRunReport, MemoryState, ProcBackend, ProfileCaptureLevel,
+    Config, DistributedInvariant, DistributedStep, ExitStatus, Finding, FindingKind, FsBackend,
+    HttpBackend, MemoryRunReport, MemoryState, ProcBackend, ProfileCaptureLevel,
     RecordCollisionPolicy, Reporter, RunIdentity, RunMode, RunSummary, ScenarioFile, ScenarioPath,
-    ScenarioV1Distributed, ScenarioV1Steps, TraceEvent, TraceFile,
-    should_emit_profile_artifacts, wall_time_iso_utc,
-    write_memory_artifacts, write_profile_artifacts_from_trace, write_trace_with_policy,
+    ScenarioV1Distributed, ScenarioV1Steps, TraceEvent, TraceFile, should_emit_profile_artifacts,
+    wall_time_iso_utc, write_memory_artifacts, write_profile_artifacts_from_trace,
+    write_trace_with_policy,
 };
 
 use crate::{FozzyError, FozzyResult};

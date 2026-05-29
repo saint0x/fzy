@@ -173,7 +173,10 @@ pub(super) fn backend_capability_diagnostics(
             continue;
         };
         let crosses_abi = function.is_pubext || function.is_extern || function.abi.is_some();
-        let signature_has_simd = function.params.iter().any(|param| type_contains_simd(&param.ty))
+        let signature_has_simd = function
+            .params
+            .iter()
+            .any(|param| type_contains_simd(&param.ty))
             || type_contains_simd(&function.return_type);
         if crosses_abi && signature_has_simd {
             diagnostics.push(
@@ -250,8 +253,7 @@ pub(super) fn backend_capability_diagnostics(
 fn type_contains_simd(ty: &ast::Type) -> bool {
     match ty {
         ast::Type::SimdVector(_) | ast::Type::SimdMask(_) => true,
-        ast::Type::Ptr { to, .. }
-        | ast::Type::Ref { to, .. } => type_contains_simd(to),
+        ast::Type::Ptr { to, .. } | ast::Type::Ref { to, .. } => type_contains_simd(to),
         ast::Type::Slice(inner)
         | ast::Type::Set(inner)
         | ast::Type::Deque(inner)

@@ -417,6 +417,10 @@ pub fn verify_file(path: &Path) -> Result<Output> {
     verify_file_with_root_source(path, None)
 }
 
+fn is_supported_source_file(path: &Path) -> bool {
+    path.extension().and_then(|value| value.to_str()) == Some("fzy")
+}
+
 pub fn verify_file_with_root_source(
     path: &Path,
     root_source_override: Option<&str>,
@@ -6745,6 +6749,12 @@ fn resolve_source_path_with_target(
     prefer_lib_target: bool,
 ) -> Result<ResolvedSource> {
     if input.is_file() {
+        if !is_supported_source_file(input) {
+            bail!(
+                "expected a `.fzy` source file or a project directory, got file: {}",
+                input.display()
+            );
+        }
         let root = input
             .parent()
             .map(Path::to_path_buf)
@@ -7373,8 +7383,7 @@ fn emit_native_libraries_cranelift(
             Linkage::Import
         } else if task_symbol_set.contains(&function.name) {
             Linkage::Export
-        } else if is_extern_c_abi_function(function) && !function.body.is_empty()
-        {
+        } else if is_extern_c_abi_function(function) && !function.body.is_empty() {
             Linkage::Export
         } else {
             Linkage::Local
@@ -7395,7 +7404,11 @@ fn emit_native_libraries_cranelift(
                 params: param_tys,
                 ret: ret_ty,
                 sret,
-                param_names: function.params.iter().map(|param| param.name.clone()).collect(),
+                param_names: function
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
                 is_extern_c_import: is_extern_c_import_decl(function),
             },
         );
@@ -7831,7 +7844,11 @@ fn emit_native_artifact_cranelift(
                 params: param_tys,
                 ret: ret_ty,
                 sret,
-                param_names: function.params.iter().map(|param| param.name.clone()).collect(),
+                param_names: function
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
                 is_extern_c_import: is_extern_c_import_decl(function),
             },
         );

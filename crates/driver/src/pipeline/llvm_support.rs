@@ -253,7 +253,8 @@ fn llvm_emit_simd_ptr_alignment_check(
         align - 1
     ));
     ctx.code.push_str(&format!("{trap_label}:\n"));
-    ctx.code.push_str("  call void @llvm.trap()\n  unreachable\n");
+    ctx.code
+        .push_str("  call void @llvm.trap()\n  unreachable\n");
     ctx.code.push_str(&format!("{ok_label}:\n"));
 }
 
@@ -283,7 +284,11 @@ fn llvm_emit_simd_ptr_memory(
     };
     let is_aligned = op.contains("_aligned_");
     let align = if is_aligned {
-        if kind == "mask32x4" { 4 } else { 16 }
+        if kind == "mask32x4" {
+            4
+        } else {
+            16
+        }
     } else {
         1
     };
@@ -381,16 +386,14 @@ fn llvm_emit_simd_lane_value(
         let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
         Ok(llvm_emit_truthy_pred(ctx, &value))
     } else {
-        Ok(
-            llvm_emit_expr_as(
-                arg,
-                ctx,
-                string_literal_ids,
-                task_ref_ids,
-                llvm_simd_scalar_type(kind),
-            )?
-            .value,
-        )
+        Ok(llvm_emit_expr_as(
+            arg,
+            ctx,
+            string_literal_ids,
+            task_ref_ids,
+            llvm_simd_scalar_type(kind),
+        )?
+        .value)
     }
 }
 
@@ -457,13 +460,8 @@ fn llvm_emit_simd_load_from_array(
             base: Box::new(arg.clone()),
             index: Box::new(ast::Expr::Int(index as i128)),
         };
-        let lane = llvm_emit_simd_lane_value(
-            &lane_expr,
-            kind,
-            ctx,
-            string_literal_ids,
-            task_ref_ids,
-        )?;
+        let lane =
+            llvm_emit_simd_lane_value(&lane_expr, kind, ctx, string_literal_ids, task_ref_ids)?;
         let next = ctx.value();
         ctx.code.push_str(&format!(
             "  {next} = insertelement {vec_ty} {current}, {lane_ty} {lane}, i32 {index}\n"
@@ -543,7 +541,8 @@ pub(super) fn llvm_emit_array_literal_value(
     let storage = format!("%slot_array_literal_{}", ctx.next_value);
     ctx.declare_alloca(&storage, &array_ty);
     for (idx, item) in items.iter().enumerate() {
-        let item_value = llvm_emit_expr_as(item, ctx, string_literal_ids, task_ref_ids, &element_ty)?;
+        let item_value =
+            llvm_emit_expr_as(item, ctx, string_literal_ids, task_ref_ids, &element_ty)?;
         let element_ptr = ctx.value();
         ctx.code.push_str(&format!(
             "  {element_ptr} = getelementptr inbounds {array_ty}, ptr {storage}, i32 0, i64 {idx}\n  store {element_ty} {}, ptr {element_ptr}\n",
@@ -623,8 +622,9 @@ fn llvm_emit_array_index_from_binding(
         "  {ok} = icmp ult i32 {index_value}, {}\n",
         binding.len
     ));
-    ctx.code
-        .push_str(&format!("  br i1 {ok}, label %{in_label}, label %{out_label}\n"));
+    ctx.code.push_str(&format!(
+        "  br i1 {ok}, label %{in_label}, label %{out_label}\n"
+    ));
     ctx.code.push_str(&format!("{in_label}:\n"));
     let idx64 = ctx.value();
     let elem_ptr = ctx.value();
@@ -697,15 +697,17 @@ fn llvm_emit_simd_saturating_int_binop(
                 .push_str(&format!("  {lhs_i64} = sext i32 {lhs_lane} to i64\n"));
             ctx.code
                 .push_str(&format!("  {rhs_i64} = sext i32 {rhs_lane} to i64\n"));
-            let wide_op = if op == "_saturating_add" { "add" } else { "sub" };
+            let wide_op = if op == "_saturating_add" {
+                "add"
+            } else {
+                "sub"
+            };
             ctx.code
                 .push_str(&format!("  {wide} = {wide_op} i64 {lhs_i64}, {rhs_i64}\n"));
-            ctx.code.push_str(&format!(
-                "  {below} = icmp slt i64 {wide}, -2147483648\n"
-            ));
-            ctx.code.push_str(&format!(
-                "  {above} = icmp sgt i64 {wide}, 2147483647\n"
-            ));
+            ctx.code
+                .push_str(&format!("  {below} = icmp slt i64 {wide}, -2147483648\n"));
+            ctx.code
+                .push_str(&format!("  {above} = icmp sgt i64 {wide}, 2147483647\n"));
             ctx.code.push_str(&format!(
                 "  {lower_sel} = select i1 {below}, i64 -2147483648, i64 {wide}\n"
             ));
@@ -729,9 +731,8 @@ fn llvm_emit_simd_saturating_int_binop(
                 let clamped = ctx.value();
                 ctx.code
                     .push_str(&format!("  {wide} = add i64 {lhs_i64}, {rhs_i64}\n"));
-                ctx.code.push_str(&format!(
-                    "  {overflow} = icmp ugt i64 {wide}, 4294967295\n"
-                ));
+                ctx.code
+                    .push_str(&format!("  {overflow} = icmp ugt i64 {wide}, 4294967295\n"));
                 ctx.code.push_str(&format!(
                     "  {clamped_i64} = select i1 {overflow}, i64 4294967295, i64 {wide}\n"
                 ));
@@ -743,8 +744,9 @@ fn llvm_emit_simd_saturating_int_binop(
                 let wide = ctx.value();
                 let clamped_i64 = ctx.value();
                 let clamped = ctx.value();
-                ctx.code
-                    .push_str(&format!("  {underflow} = icmp ult i64 {lhs_i64}, {rhs_i64}\n"));
+                ctx.code.push_str(&format!(
+                    "  {underflow} = icmp ult i64 {lhs_i64}, {rhs_i64}\n"
+                ));
                 ctx.code
                     .push_str(&format!("  {wide} = sub i64 {lhs_i64}, {rhs_i64}\n"));
                 ctx.code.push_str(&format!(
@@ -903,13 +905,8 @@ fn llvm_emit_simd_intrinsic_call(
         }
         "_shl" | "_shr" => {
             let lhs = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
-            let rhs = llvm_emit_simd_splat(
-                "i32x4",
-                &args[1],
-                ctx,
-                string_literal_ids,
-                task_ref_ids,
-            )?;
+            let rhs =
+                llvm_emit_simd_splat("i32x4", &args[1], ctx, string_literal_ids, task_ref_ids)?;
             let out = ctx.value();
             let op_name = match (kind, op) {
                 ("u32x4", "_shr") => "lshr",
@@ -958,7 +955,8 @@ fn llvm_emit_simd_intrinsic_call(
             }
         }
         "_not" => {
-            let input = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
+            let input =
+                llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
             let out = ctx.value();
             let literal = if kind == "mask32x4" {
                 llvm_simd_bool_splat_literal()
@@ -1145,8 +1143,10 @@ fn llvm_emit_simd_intrinsic_call(
             let fold1 = ctx.value();
             let fold2 = ctx.value();
             let bit_op = if op == "_all" { "and" } else { "or" };
-            ctx.code
-                .push_str(&format!("  {fold0} = {bit_op} i1 {}, {}\n", lanes[0], lanes[1]));
+            ctx.code.push_str(&format!(
+                "  {fold0} = {bit_op} i1 {}, {}\n",
+                lanes[0], lanes[1]
+            ));
             ctx.code
                 .push_str(&format!("  {fold1} = {bit_op} i1 {fold0}, {}\n", lanes[2]));
             ctx.code
@@ -1195,7 +1195,8 @@ fn llvm_emit_simd_intrinsic_call(
                 "_lane3" => 3,
                 _ => unreachable!(),
             };
-            let input = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
+            let input =
+                llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
             let lane = ctx.value();
             ctx.code.push_str(&format!(
                 "  {lane} = extractelement {vec_ty} {}, i32 {index}\n",
@@ -2932,8 +2933,7 @@ pub(super) fn llvm_emit_complex_expr(
             let base_value = llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?;
             let temp_array_slot = format!("%slot_array_index_{}", ctx.next_value);
             ctx.next_value += 1;
-            if let Some(binding) =
-                llvm_array_binding_from_ir_type(&temp_array_slot, &base_value.ty)
+            if let Some(binding) = llvm_array_binding_from_ir_type(&temp_array_slot, &base_value.ty)
             {
                 ctx.declare_alloca(&binding.storage, &base_value.ty);
                 ctx.code.push_str(&format!(
@@ -2959,13 +2959,9 @@ pub(super) fn llvm_emit_complex_expr(
                     });
                 }
             }
-            if let Some(value) = llvm_emit_simd_intrinsic_call(
-                callee,
-                args,
-                ctx,
-                string_literal_ids,
-                task_ref_ids,
-            )? {
+            if let Some(value) =
+                llvm_emit_simd_intrinsic_call(callee, args, ctx, string_literal_ids, task_ref_ids)?
+            {
                 return Ok(value);
             }
             if callee == "str.concat" && args.len() >= 2 {
@@ -3613,7 +3609,11 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                     .collect(),
                 ret: (!matches!(function.return_type, ast::Type::Void | ast::Type::Never))
                     .then(|| llvm_ir_type_for_ast_type(&function.return_type)),
-                param_names: function.params.iter().map(|param| param.name.clone()).collect(),
+                param_names: function
+                    .params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect(),
                 is_extern_c_import: is_extern_c_import_decl(function),
             },
         );

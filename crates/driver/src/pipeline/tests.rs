@@ -127,6 +127,28 @@ fn verify_file_with_root_source_uses_project_graph_for_unsaved_buffers() {
 }
 
 #[test]
+fn verify_file_rejects_non_fzy_source_files() {
+    let path = std::env::temp_dir().join(format!(
+        "fozzylang-non-fzy-{}.rs",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::write(&path, "fn main() {}\n").expect("foreign source should be written");
+
+    let error = verify_file(&path).expect_err("non-fzy file should be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("expected a `.fzy` source file or a project directory"),
+        "unexpected error: {error}"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_file_resolves_same_module_helpers_inside_nested_object_literals() {
     let project_name = format!(
         "fozzylang-helper-object-{}",
@@ -530,8 +552,12 @@ fn cross_backend_array_return_values_survive_following_calls() {
     assert_eq!(cranelift.status, "ok");
     assert_eq!(llvm.status, "ok");
 
-    let cranelift_exit =
-        run_native_exit(cranelift.output.as_ref().expect("cranelift output should exist"));
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_ref()
+            .expect("cranelift output should exist"),
+    );
     let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
     assert_eq!(cranelift_exit, 0);
     assert_eq!(llvm_exit, 0);
@@ -608,7 +634,12 @@ fn portable_simd_raw_pointer_memory_executes_on_native_backends() {
         0
     );
     assert_eq!(
-        run_native_exit(cranelift.output.as_ref().expect("cranelift output should exist")),
+        run_native_exit(
+            cranelift
+                .output
+                .as_ref()
+                .expect("cranelift output should exist")
+        ),
         0
     );
 
@@ -632,10 +663,9 @@ fn portable_simd_types_are_rejected_across_abi_boundaries() {
     .expect("temp source should be written");
 
     let output = verify_file(&path).expect("verify should run");
-    assert!(output
-        .diagnostic_details
-        .iter()
-        .any(|diagnostic| diagnostic.message.contains("SIMD type appears across ABI boundary")));
+    assert!(output.diagnostic_details.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("SIMD type appears across ABI boundary")));
 
     let _ = std::fs::remove_file(path);
 }
@@ -1698,8 +1728,12 @@ fn embedded_core_security_module_merges_qualified_helpers() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert!(function_names.iter().any(|name| name == "security.verify_value"));
-    assert!(function_names.iter().any(|name| name == "security.sign_value"));
+    assert!(function_names
+        .iter()
+        .any(|name| name == "security.verify_value"));
+    assert!(function_names
+        .iter()
+        .any(|name| name == "security.sign_value"));
 
     let _ = std::fs::remove_file(path);
 }

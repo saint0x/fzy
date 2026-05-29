@@ -854,7 +854,9 @@ fn ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
         ast::Type::Ptr { to, .. } => ffi_stable_type(to, repr_c_names),
         ast::Type::Named { name, args } => args.is_empty() && repr_c_names.contains(name),
         ast::Type::Function { params, ret } => {
-            params.iter().all(|param| ffi_stable_type(param, repr_c_names))
+            params
+                .iter()
+                .all(|param| ffi_stable_type(param, repr_c_names))
                 && ffi_stable_type(ret, repr_c_names)
         }
         _ => false,

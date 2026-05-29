@@ -560,11 +560,12 @@ fn clif_emit_borrowed_str_ptr_arg(
         .function_ids
         .get(NATIVE_STR_PTR)
         .copied()
-        .ok_or_else(|| anyhow!("missing native helper signature metadata for `{NATIVE_STR_PTR}`"))?;
-    let signature = ctx
-        .function_signatures
-        .get(NATIVE_STR_PTR)
-        .ok_or_else(|| anyhow!("missing native helper signature metadata for `{NATIVE_STR_PTR}`"))?;
+        .ok_or_else(|| {
+            anyhow!("missing native helper signature metadata for `{NATIVE_STR_PTR}`")
+        })?;
+    let signature = ctx.function_signatures.get(NATIVE_STR_PTR).ok_or_else(|| {
+        anyhow!("missing native helper signature metadata for `{NATIVE_STR_PTR}`")
+    })?;
     let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
     let call = builder.ins().call(func_ref, &[string_id.value]);
     let value = builder.inst_results(call)[0];
@@ -628,12 +629,7 @@ fn clif_emit_simd_ptr_memory(
     next_var: &mut usize,
 ) -> Result<ClifValue> {
     let base_ptr_expr = clif_emit_expr(builder, ctx, &args[0], locals, next_var)?;
-    let base_ptr = cast_clif_value(
-        builder,
-        base_ptr_expr,
-        pointer_sized_clif_type(),
-    )?
-    .value;
+    let base_ptr = cast_clif_value(builder, base_ptr_expr, pointer_sized_clif_type())?.value;
     if let Some(align) = clif_simd_ptr_alignment(kind, op) {
         clif_emit_simd_ptr_alignment_check(builder, base_ptr, align);
     }
@@ -1126,7 +1122,9 @@ fn clif_emit_simd_intrinsic(
             }
             bail!("cranelift simd load currently requires fixed-array-backed values")
         }
-        "_load_aligned_ptr" | "_load_unaligned_ptr" | "_store_aligned_ptr"
+        "_load_aligned_ptr"
+        | "_load_unaligned_ptr"
+        | "_store_aligned_ptr"
         | "_store_unaligned_ptr" => {
             return clif_emit_simd_ptr_memory(builder, ctx, kind, op, args, locals, next_var);
         }
@@ -1746,9 +1744,10 @@ fn clif_emit_array_expr_to_ptr(
     match expr {
         ast::Expr::Ident(name) => {
             if let Some(binding) = ctx.array_bindings.get(name) {
-                let src_ptr = builder
-                    .ins()
-                    .stack_addr(pointer_sized_clif_type(), binding.stack_slot, 0);
+                let src_ptr =
+                    builder
+                        .ins()
+                        .stack_addr(pointer_sized_clif_type(), binding.stack_slot, 0);
                 clif_copy_array_memory(builder, src_ptr, dest_ptr, abi);
                 return Ok(());
             }
@@ -3917,9 +3916,10 @@ pub(super) fn clif_emit_expr(
                 })?;
                 if let Some(sret) = signature.sret {
                     let stack_slot = clif_create_stack_slot_for_array_abi(builder, sret);
-                    let result_ptr = builder
-                        .ins()
-                        .stack_addr(pointer_sized_clif_type(), stack_slot, 0);
+                    let result_ptr =
+                        builder
+                            .ins()
+                            .stack_addr(pointer_sized_clif_type(), stack_slot, 0);
                     values.push(result_ptr);
                     for (index, arg) in args.iter().enumerate() {
                         let target = signature.params.get(index + 1).copied();
@@ -3928,9 +3928,9 @@ pub(super) fn clif_emit_expr(
                         {
                             clif_emit_borrowed_str_ptr_arg(builder, ctx, arg, locals, next_var)?
                         } else if target == Some(pointer_sized_clif_type()) {
-                            if let Some(array_ptr) =
-                                clif_emit_array_argument_pointer(builder, ctx, arg, locals, next_var)?
-                            {
+                            if let Some(array_ptr) = clif_emit_array_argument_pointer(
+                                builder, ctx, arg, locals, next_var,
+                            )? {
                                 array_ptr
                             } else {
                                 clif_emit_expr(builder, ctx, arg, locals, next_var)?
