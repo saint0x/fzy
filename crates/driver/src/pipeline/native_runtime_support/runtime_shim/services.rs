@@ -534,6 +534,18 @@ int32_t fz_native_storage_kv_open(int32_t path_id) {
   if (path == NULL || path[0] == '\0') {
     return -1;
   }
+  pthread_mutex_lock(&fz_collections_lock);
+  for (int i = 0; i < FZ_MAX_STORAGE_KV; i++) {
+    if (!fz_storage_kv[i].in_use) {
+      continue;
+    }
+    const char* existing_path = fz_lookup_string(fz_storage_kv[i].path_id);
+    if (existing_path != NULL && strcmp(existing_path, path) == 0) {
+      pthread_mutex_unlock(&fz_collections_lock);
+      return i + 1;
+    }
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
   int32_t map_handle = fz_runtime_map_new();
   int32_t file_json_id = fz_native_fs_read_file(path_id);
   const char* raw = fz_lookup_string(file_json_id);
@@ -1414,6 +1426,11 @@ int32_t fz_native_net_read(int32_t conn_fd) {
   }
   fz_bytes_buf body;
   fz_bytes_buf_init(&body);
+  size_t prefetched = state->request_body_buf_len - state->request_body_buf_pos;
+  if (state->request_body_mode == 1 && prefetched > 0 && state->request_body_remaining <= 0) {
+    state->request_body_remaining = (int64_t)prefetched;
+    state->request_body_eof = 0;
+  }
   while (!state->request_body_eof) {
     char* chunk = NULL;
     size_t chunk_len = 0;
@@ -1535,6 +1552,11 @@ int32_t fz_native_net_body_read(int32_t conn_fd, int32_t max_bytes) {
   if (state == NULL) {
     pthread_mutex_unlock(&fz_conn_lock);
     return fz_intern_slice("", 0);
+  }
+  size_t prefetched = state->request_body_buf_len - state->request_body_buf_pos;
+  if (state->request_body_mode == 1 && prefetched > 0 && state->request_body_remaining <= 0) {
+    state->request_body_remaining = (int64_t)prefetched;
+    state->request_body_eof = 0;
   }
   if (state->request_body_fully_buffered) {
     const char* body = fz_lookup_string(state->body_id);

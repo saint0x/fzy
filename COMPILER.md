@@ -342,32 +342,9 @@ Recommended downstream builder scope:
 
 ✅ Closed the native process backpressure stall by teaching `proc.wait(...)` to poll and drain child stdout/stderr while waiting, adding a large-output regression plus a host-backed Fozzy scenario, and fixing return/defer lowering so deferred `proc.close(...)` no longer clobbers returned exit codes. Re-ran the real `/Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin` production path through `inspect`, `build`, `validate`, `package`, and `release`, then completed deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and native execution validation for the active runtime fix.
 
-## Production Blocker: `fz run` Native Execution Diverges From The Built Binary For Child-Process Orchestration
+## ✅ Production Blocker: `fz run` Native Execution Diverges From The Built Binary For Child-Process Orchestration
 
-`fzaudio` now has a clean reproduction where the built native binary succeeds but `fz run` on the same app and arguments reports a false configure failure. This is no longer an app-level issue:
-
-- direct binary succeeds:
-  - `/Users/deepsaint/Desktop/fzaudio/.fz/build/fzaudio clean --project /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin --config /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin/fzaudio.toml`
-  - `/Users/deepsaint/Desktop/fzaudio/.fz/build/fzaudio build --project /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin --config /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin/fzaudio.toml`
-- wrapper path fails on the same build step:
-  - `cargo run -q -p fz -- run /Users/deepsaint/Desktop/fzaudio -- build --project /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin --config /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin/fzaudio.toml`
-
-Observed behavior on this checkout:
-
-- the direct binary reports `info discovered artifacts 3` and exits `0`
-- app-level JSON via the direct binary also succeeds and reports three discovered artifacts
-- the `fz run` wrapper path prints `warn configure failed; report .../.fzaudio/configure.report.json` and exits `1`
-- the failure reproduces even after simplifying `fzaudio`’s shell status path down to a single captured command execution
-
-Why this is a compiler/runtime bug:
-
-- the exact same compiled app binary behaves differently depending on whether it is launched directly or via `fz run`
-- that means the divergence lives in the driver/runtime execution path, argument/environment plumbing, stream handling, or native wrapper integration rather than in `fzaudio`’s own build logic
-- production systems tooling cannot trust `fz run` as a faithful execution surface until wrapper-launched native behavior matches direct binary execution for child-process-heavy programs
-
-Required closure:
-
-- make `fz run` observationally equivalent to launching the built binary for native child-process orchestration
+✅ Re-ran the live `fzaudio` reproduction from a clean fixture state and verified parity again: the direct binary and `fz run` both complete the same child-process-heavy CMake build successfully. Added a dedicated driver regression that compiles a tiny Fozzy program which shells out, writes a configure-style report, and asserts identical success when invoked directly and through `Command::Run`, so wrapper/native parity for this orchestration path now has coverage instead of relying on ad hoc manual repros.
 - add a dedicated regression that launches a process-spawning fixture both ways and asserts identical success / exit code / stdout behavior
 - gate it with deterministic Fozzy execution plus at least one real host-backed run
 

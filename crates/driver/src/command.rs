@@ -12565,6 +12565,299 @@ mod tests {
     }
 
     #[test]
+    fn host_backed_http_read_preserves_prefetched_content_length_body() {
+        let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
+        let port = probe
+            .local_addr()
+            .expect("probe addr should resolve")
+            .port();
+        drop(probe);
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-http-prefetched-body-{suffix}"));
+        let source = root.join("src/main.fzy");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"http_prefetched_body\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"http_prefetched_body\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read(conn) != 0 {\n        return 23\n    }\n    let body = http.body(conn)\n    discard http.write_response(conn, 200, \"application/json; charset=utf-8\", body, 1)\n    if body == \"{\\\"ok\\\":true}\" {\n        return 0\n    }\n    return 25\n}\n",
+        )
+        .expect("source should be written");
+
+        let artifact = compile_file_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            Some("cranelift"),
+        )
+        .expect("build should succeed");
+        assert_eq!(artifact.status, "ok");
+        let binary = artifact
+            .output
+            .expect("build artifact should include output path");
+
+        let mut child = std::process::Command::new(&binary)
+            .env("AGENT_HOST", "127.0.0.1")
+            .env("AGENT_PORT", port.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("server child should spawn");
+
+        use std::io::{Read as _, Write as _};
+        let start = std::time::Instant::now();
+        let mut stream = loop {
+            match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => break stream,
+                Err(_) if start.elapsed() <= std::time::Duration::from_secs(5) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    panic!("server did not become reachable: {error}");
+                }
+            }
+        };
+        let body = "{\"ok\":true}";
+        let request = format!(
+            "POST /echo HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(request.as_bytes())
+            .expect("request should write");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response should read");
+
+        let status = child.wait().expect("server child should exit");
+        assert_eq!(status.code(), Some(0));
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response was: {response}"
+        );
+        assert!(
+            response.contains("{\"ok\":true}"),
+            "prefetched request body should survive http.read buffering: {response}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn storage_kv_open_reuses_existing_path_backing_state() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-storage-roundtrip-{suffix}"));
+        let source = root.join("src/main.fzy");
+        let out_path = root.join("out.txt");
+        let store_path = root.join("store.kv");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"storage_roundtrip\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"storage_roundtrip\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\nuse core.storage;\n\nfn main() -> i32 {{\n    let left = storage.kv_open(\"{}\")\n    discard storage.kv_put(left, \"session:key\", \"value\")\n    let right = storage.kv_open(\"{}\")\n    fs.write_file(\"{}\", storage.kv_get(right, \"session:key\"))\n    return 0\n}}\n",
+                store_path.display(),
+                store_path.display(),
+                out_path.display(),
+            ),
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("storage roundtrip should succeed");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+        let persisted = std::fs::read_to_string(&out_path).expect("roundtrip output should exist");
+        assert_eq!(persisted, "value");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn fz_run_matches_direct_binary_for_child_process_build_orchestration() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-run-parity-{suffix}"));
+        let source = root.join("src/main.fzy");
+        let fixture_root = root.join("fixture-project");
+        let report_path = fixture_root.join("configure.report.json");
+        let config_path = fixture_root.join("demo.toml");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::create_dir_all(&fixture_root).expect("fixture root should be created");
+        std::fs::write(&config_path, "name = \"demo\"\n").expect("config should be written");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"run_parity\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"run_parity\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            r#"use core.fs;
+use core.proc;
+use core.process;
+
+fn find_flag(args: ListHandle, name: str) -> str {
+    let mut idx = 0
+    while idx < list.len(args) {
+        if list.get(args, idx) == name {
+            if idx + 1 < list.len(args) {
+                return list.get(args, idx + 1)
+            }
+            return ""
+        }
+        idx += 1
+    }
+    return ""
+}
+
+fn argv_list() -> ListHandle {
+    let out = list.new()
+    let mut idx = 0
+    while idx < process.argv_count() {
+        discard list.push(out, process.argv_or(idx, ""))
+        idx += 1
+    }
+    return out
+}
+
+fn run_build(project_root: str) -> i32 {
+    let env_map = proc.env_new()
+    let argv = proc.argv_new()
+    let report = str.concat(project_root, "/configure.report.json")
+    let command = str.concat("printf '{\"status\":\"0\",\"stdout\":\"configured\",\"stderr\":\"\"}' > ", report)
+    discard proc.argv_push(argv, "-lc")
+    discard proc.argv_push(argv, command)
+    let handle = proc.spawn_cmd("/bin/sh", argv, env_map, "")
+    discard proc.wait(handle, 5000)
+    let exit_code = proc.exit_code(handle)
+    discard proc.stdout(handle)
+    discard proc.stderr(handle)
+    discard proc.close(handle)
+    let payload = fs.read_file(report)
+    if exit_code == 0 && str.contains(payload, "\"status\":\"0\"") == 1 {
+        return 0
+    }
+    return 1
+}
+
+fn main() -> i32 {
+    let args = argv_list()
+    let command = process.argv_or(1, "")
+    let project_root = find_flag(args, "--project")
+    discard find_flag(args, "--config")
+    if command == "build" && project_root != "" {
+        return run_build(project_root)
+    }
+    return 64
+}
+"#,
+        )
+        .expect("source should be written");
+
+        let artifact = compile_file_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            Some("cranelift"),
+        )
+        .expect("build should succeed");
+        assert_eq!(artifact.status, "ok");
+        let binary = artifact
+            .output
+            .clone()
+            .expect("build artifact should include output path");
+
+        let direct = std::process::Command::new(&binary)
+            .args([
+                "build",
+                "--project",
+                fixture_root.to_string_lossy().as_ref(),
+                "--config",
+                config_path.to_string_lossy().as_ref(),
+            ])
+            .output()
+            .expect("direct binary should run");
+        assert_eq!(direct.status.code(), Some(0));
+        assert!(
+            std::fs::read_to_string(&report_path)
+                .expect("report should exist after direct run")
+                .contains("\"status\":\"0\"")
+        );
+
+        let _ = std::fs::remove_file(&report_path);
+        let wrapped = run(
+            Command::Run {
+                path: root.clone(),
+                args: vec![
+                    "build".to_string(),
+                    "--project".to_string(),
+                    fixture_root.display().to_string(),
+                    "--config".to_string(),
+                    config_path.display().to_string(),
+                ],
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("wrapped run should succeed");
+        assert!(
+            wrapped.contains("\"exitCode\":0"),
+            "unexpected wrapped output: {wrapped}"
+        );
+        assert!(
+            std::fs::read_to_string(&report_path)
+                .expect("report should exist after wrapped run")
+                .contains("\"status\":\"0\"")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn response_headers_support_custom_and_repeated_set_cookie_values() {
         let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
         let port = probe
