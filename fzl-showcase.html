@@ -103,6 +103,8 @@
 // - first-class tuple/struct/enum aggregate handles in both native backends
 // - destructuring parity across locals, parameters, calls, returns, helpers, and control-flow values
 // - current-process CLI surface via `core.process` + `core.term`
+// - production crypto/security helpers via `core.crypto` + `core.security`
+// - production `fzweb` app/cookie/session/upload/streaming modules
 // - outbound streaming HTTP via `http.request_stream` / `http.post_json_stream`
 
 // ------------------------------------------------------------
@@ -111,6 +113,7 @@
 use core.time;
 use core.fs;
 use core.http;
+use core.crypto;
 use core.proc;
 use core.process;
 use core.term;
@@ -123,6 +126,13 @@ use core.error;
 use core.path;
 use core.collections;
 use core.c;
+use core.security;
+
+use app;
+use cookies;
+use sessions;
+use multipart;
+use streaming;
 
 mod api;
 mod model;
@@ -438,7 +448,37 @@ fn c_view_demo() -> i32 {
 }
 
 // ------------------------------------------------------------
-// SECTION G: IO/process/http + explicit unsafe island metadata
+// SECTION G: crypto/security + fzweb production framework surface
+// ------------------------------------------------------------
+fn crypto_security_demo() -> i32 {
+    let digest = crypto.sha256("abc");
+    let mac = crypto.hmac_sha256("key", "value");
+    let url_token = security.random_base64_url(24);
+    let signed = security.sign_value("secret", "session:saint");
+    let verified = security.verify_value("secret", "session:saint", signed);
+    if security.secure_eq(digest, digest) == 1 && verified == 1 {
+        return str.len(digest) + str.len(mac) + str.len(url_token);
+    }
+    return 0;
+}
+
+fn fzweb_surface_demo() -> i32 {
+    let web = app.make("showcase", "2026.05", "tmp/showcase.db", "dev-secret");
+    let web = app.add_route(web, "GET", "/healthz", "health", 1, 1, 0);
+    let web = app.add_route(web, "POST", "/session/login", "session_login", 1, 1, 1);
+    let web = app.add_route(web, "POST", "/upload", "upload", 0, 0, 0);
+    let openapi = app.openapi_json(web);
+    let cfg = sessions.config("tmp/showcase.db", "dev-secret", "showcase_session", 3600);
+    let rec = sessions.create(cfg, "saint");
+    let signed_cookie = cookies.sign_cookie_value("dev-secret", "showcase_session", rec.id);
+    let upload = multipart.summary(2, 1, 512);
+    let upload_json = multipart.json_summary(upload, "req-showcase");
+    let sse = streaming.sse_boot_payload("req-showcase");
+    return str.len(openapi) + str.len(signed_cookie) + str.len(upload_json) + str.len(sse);
+}
+
+// ------------------------------------------------------------
+// SECTION H: IO/process/http + explicit unsafe island metadata
 // ------------------------------------------------------------
 fn host_and_io_showcase() -> i32 {
     let root = path.join("tmp", "showcase");
@@ -515,7 +555,7 @@ fn host_and_io_showcase() -> i32 {
 }
 
 // ------------------------------------------------------------
-// SECTION H: composed pipeline
+// SECTION I: composed pipeline
 // ------------------------------------------------------------
 fn full_pipeline(seed: i32) -> i32 {
     let tg = trait_generic_addendum(seed);
@@ -526,10 +566,12 @@ fn full_pipeline(seed: i32) -> i32 {
     let idx = arrays_and_indexing();
     let ho = higher_order(id, seed);
     let lam = closure_demo(seed);
+    let sec = crypto_security_demo();
+    let web = fzweb_surface_demo();
     let io = host_and_io_showcase();
     let cv = c_view_demo();
     let dm = defer_memory_demo(seed % 3);
-    let out = ops + mixed + em + idx + ho + lam + io + cv + dm + tg + ts;
+    let out = ops + mixed + em + idx + ho + lam + sec + web + io + cv + dm + tg + ts;
     if out > 0 {
         return out;
     }

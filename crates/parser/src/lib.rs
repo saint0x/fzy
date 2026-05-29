@@ -2437,13 +2437,20 @@ impl Parser {
             ("DateTimeTz", []) | ("datetime_tz", []) => Type::DateTimeTz,
             ("ExitStatus", []) | ("exit_status", []) => Type::ExitStatus,
             _ => {
-                if path_segments.len() == 1
-                    && args.is_empty()
-                    && joined_name
+                if path_segments.len() == 1 && args.is_empty() {
+                    if let Some(simd_ty) = Type::parse_builtin_simd_alias(&joined_name) {
+                        simd_ty
+                    } else if joined_name
                         .chars()
                         .all(|c| c.is_ascii_uppercase() || c == '_')
-                {
-                    Type::TypeVar(joined_name)
+                    {
+                        Type::TypeVar(joined_name)
+                    } else {
+                        Type::Named {
+                            name: joined_name,
+                            args,
+                        }
+                    }
                 } else {
                     Type::Named {
                         name: joined_name,
@@ -2821,7 +2828,16 @@ impl Parser {
 fn is_core_stdlib_module(name: &str) -> bool {
     matches!(
         name,
-        "process" | "term" | "thread" | "log" | "security" | "text" | "io" | "path" | "http"
+        "process"
+            | "term"
+            | "thread"
+            | "log"
+            | "security"
+            | "simd"
+            | "text"
+            | "io"
+            | "path"
+            | "http"
     )
 }
 

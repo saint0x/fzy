@@ -409,6 +409,103 @@ fn backend_capability_diagnostics_keep_native_domain_codes() {
 }
 
 #[test]
+fn portable_simd_surface_executes_on_llvm_backend() {
+    let project_name = format!(
+        "fozzylang-simd-llvm-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.simd;\n\nfn main() -> i32 {\n    let ints = simd.i32x4_add(simd.i32x4_new(1, 2, 3, 4), simd.i32x4_splat(2))\n    let mask = simd.i32x4_gt(ints, simd.i32x4_splat(4))\n    let picked = simd.i32x4_select(mask, ints, simd.i32x4_splat(0))\n    let sum = simd.i32x4_reduce_add(picked)\n    let uints_ok = simd.mask32x4_all(simd.u32x4_eq(simd.u32x4_mul(simd.u32x4_new(1, 2, 3, 4), simd.u32x4_splat(2)), simd.u32x4_new(2, 4, 6, 8)))\n    let floats = simd.f32x4_mul(simd.f32x4_splat(1.5), simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let floats_ok = simd.mask32x4_all(simd.f32x4_eq(floats, simd.f32x4_new(1.5, 3.0, 4.5, 6.0)))\n    if simd.mask32x4_any(mask) == false { return 11 }\n    if simd.mask32x4_none(mask) == true { return 13 }\n    if uints_ok == false { return 17 }\n    if floats_ok == false { return 19 }\n    if simd.i32x4_lane2(ints) != 5 { return 23 }\n    return sum\n}\n",
+    )
+    .expect("source should be written");
+
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
+    assert_eq!(llvm_exit, 11);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn portable_simd_surface_rejects_cranelift_with_clear_diagnostic() {
+    let project_name = format!(
+        "fozzylang-simd-cranelift-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n[build]\nbackend=\"cranelift\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.simd;\nfn main() -> i32 {\n    let ints = simd.i32x4_add(simd.i32x4_new(1, 2, 3, 4), simd.i32x4_splat(1))\n    return simd.i32x4_lane0(ints)\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Verify, Some("cranelift"))
+        .expect("compile should surface diagnostics");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("backend `cranelift` does not yet support `core.simd` lowering")
+        })
+        .expect("cranelift SIMD diagnostic should be present");
+    assert!(diagnostic
+        .code
+        .as_deref()
+        .is_some_and(|code| code.starts_with("E-NAT-")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn portable_simd_types_are_rejected_across_abi_boundaries() {
+    let file_name = format!(
+        "fozzylang-simd-abi-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "pubext c fn expose(v: i32x4) -> i32x4 { return v }\nfn main() -> i32 { return 0 }\n",
+    )
+    .expect("temp source should be written");
+
+    let output = verify_file(&path).expect("verify should run");
+    assert!(output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| diagnostic.message.contains("SIMD type appears across ABI boundary")));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn compile_project_directory_uses_manifest_target() {
     let project_name = format!(
         "fozzylang-project-{}",

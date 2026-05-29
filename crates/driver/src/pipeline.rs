@@ -1834,6 +1834,8 @@ fn qualify_type(
         | ast::Type::Decimal
         | ast::Type::DateTimeTz
         | ast::Type::ExitStatus
+        | ast::Type::SimdVector(_)
+        | ast::Type::SimdMask(_)
         | ast::Type::TypeVar(_) => {}
     }
 }
@@ -3188,6 +3190,7 @@ fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str>
         "thread" => Some(include_str!("../../../corelib/src/thread.fzy")),
         "log" => Some(include_str!("../../../corelib/src/log.fzy")),
         "security" => Some(include_str!("../../../corelib/src/security.fzy")),
+        "simd" => Some(include_str!("../../../corelib/src/simd.fzy")),
         "text" => Some(include_str!("../../../corelib/src/text.fzy")),
         "io" => Some(include_str!("../../../corelib/src/io.fzy")),
         "http" => Some(include_str!("../../../corelib/src/http.fzy")),

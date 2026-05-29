@@ -1,0 +1,39 @@
+use core.security;
+
+fn tool_record_json(tool_id: str, kind: str, mode: str, description: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "id", json.str(tool_id))
+    discard map.set(payload, "kind", json.str(kind))
+    discard map.set(payload, "mode", json.str(mode))
+    discard map.set(payload, "description", json.str(description))
+    return json.object(payload)
+}
+
+fn tool_catalog_json() -> str {
+    let tools = list.new()
+    discard list.push(tools, json.raw(tool_record_json("bash", "process", "single", "Run one bounded shell command")))
+    discard list.push(tools, json.raw(tool_record_json("repo_inspect", "read", "single", "Inspect local files and cite exact paths")))
+    discard list.push(tools, json.raw(tool_record_json("parallel_plan", "orchestrator", "batch", "Break a task into bounded parallel work")))
+    return json.array(tools)
+}
+
+fn task_mode(request: str) -> str {
+    if str.contains(request, "repo") == 1 || str.contains(request, "path") == 1 || str.contains(request, "file") == 1 {
+        return "local_inspect"
+    }
+    if str.contains(request, "patch") == 1 || str.contains(request, "write") == 1 || str.contains(request, "edit") == 1 {
+        return "mutation"
+    }
+    return "answer"
+}
+
+fn session_json(workspace_id: str, user: str) -> str {
+    let session_id = security.random_base64_url(18)
+    let signed = security.sign_value("agent-runtime-secret", str.concat(workspace_id, str.concat(":", session_id)))
+    let payload = map.new()
+    discard map.set(payload, "session_id", json.str(session_id))
+    discard map.set(payload, "workspace_id", json.str(workspace_id))
+    discard map.set(payload, "user", json.str(user))
+    discard map.set(payload, "auth_mac", json.str(signed))
+    return json.object(payload)
+}

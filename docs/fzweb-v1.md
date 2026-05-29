@@ -11,7 +11,8 @@
 - Request/response/routing modules with deterministic live-server contracts.
 - Host-backed readiness via `http.poll_register` + `http.poll_next` + `http.read`.
 - Route-aware auth/rate behavior for public endpoints and stricter request-body policy.
-- Production modules for cookies, opaque sessions, multipart uploads, persistence, event streaming, websockets, and declarative app routing.
+- Production modules for declarative app routing, cookies, opaque sessions, multipart uploads, persistence, event streaming, websockets, and OpenAPI export.
+- Session and cookie flows are built on the shipped `core.security` helpers rather than ad hoc app-local crypto.
 
 ## Module Groups
 
@@ -55,6 +56,19 @@
 - `GET /openapi.json`
 - `GET /static/:name`
 
+## Validation Focus
+
+- Deterministic framework surface:
+  - request selection and middleware ordering
+  - route-aware public/auth/rate policy behavior
+  - response envelope and OpenAPI generation
+- Host-backed framework surface:
+  - cookies and signed session issuance
+  - multipart upload parsing
+  - SSE/event-stream responses
+  - websocket echo behavior
+  - static asset path sanitization
+
 ## Validation Commands
 
 - `python3 scripts/verify_fzweb_framework.py`
@@ -64,4 +78,4 @@
 - `fz trace verify artifacts/fzweb.framework.trace.fozzy --strict --json`
 - `fz replay artifacts/fzweb.framework.trace.fozzy --json`
 - `fz ci artifacts/fzweb.framework.trace.fozzy --json`
-- `fz run tests/fzweb.framework.pass.fozzy.json --proc-backend host --fs-backend host --http-backend host --json`
+- `fz run tests/fzweb.framework.pass.fozzy.json --host-backends --json`

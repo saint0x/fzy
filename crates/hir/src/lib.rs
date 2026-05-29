@@ -6832,7 +6832,9 @@ fn collect_type_instantiation(ty: &Type, out: &mut Vec<String>) {
         | Type::Instant
         | Type::Decimal
         | Type::DateTimeTz
-        | Type::ExitStatus => {}
+        | Type::ExitStatus
+        | Type::SimdVector(_)
+        | Type::SimdMask(_) => {}
     }
 }
 
@@ -9963,6 +9965,9 @@ fn parse_simple_type(token: &str) -> Option<Type> {
     if token.is_empty() {
         return None;
     }
+    if let Some(simd_ty) = Type::parse_builtin_simd_alias(token) {
+        return Some(simd_ty);
+    }
     Some(match token {
         "never" => Type::Never,
         "bool" => Type::Bool,
@@ -11151,6 +11156,78 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "crypto.constant_time_eq",
         "crypto.base64_encode",
         "crypto.base64_decode",
+        "simd.__i32x4",
+        "simd.__u32x4",
+        "simd.__f32x4",
+        "simd.__mask32x4",
+        "simd.__i32x4_splat",
+        "simd.__u32x4_splat",
+        "simd.__f32x4_splat",
+        "simd.__mask32x4_splat",
+        "simd.__i32x4_add",
+        "simd.__i32x4_sub",
+        "simd.__i32x4_mul",
+        "simd.__u32x4_add",
+        "simd.__u32x4_sub",
+        "simd.__u32x4_mul",
+        "simd.__f32x4_add",
+        "simd.__f32x4_sub",
+        "simd.__f32x4_mul",
+        "simd.__i32x4_and",
+        "simd.__i32x4_or",
+        "simd.__i32x4_xor",
+        "simd.__i32x4_not",
+        "simd.__u32x4_and",
+        "simd.__u32x4_or",
+        "simd.__u32x4_xor",
+        "simd.__u32x4_not",
+        "simd.__mask32x4_and",
+        "simd.__mask32x4_or",
+        "simd.__mask32x4_xor",
+        "simd.__mask32x4_not",
+        "simd.__i32x4_eq",
+        "simd.__i32x4_ne",
+        "simd.__i32x4_lt",
+        "simd.__i32x4_le",
+        "simd.__i32x4_gt",
+        "simd.__i32x4_ge",
+        "simd.__u32x4_eq",
+        "simd.__u32x4_ne",
+        "simd.__u32x4_lt",
+        "simd.__u32x4_le",
+        "simd.__u32x4_gt",
+        "simd.__u32x4_ge",
+        "simd.__f32x4_eq",
+        "simd.__f32x4_ne",
+        "simd.__f32x4_lt",
+        "simd.__f32x4_le",
+        "simd.__f32x4_gt",
+        "simd.__f32x4_ge",
+        "simd.__i32x4_select",
+        "simd.__u32x4_select",
+        "simd.__f32x4_select",
+        "simd.__i32x4_reduce_add",
+        "simd.__u32x4_reduce_add",
+        "simd.__f32x4_reduce_add",
+        "simd.__mask32x4_any",
+        "simd.__mask32x4_all",
+        "simd.__mask32x4_none",
+        "simd.__i32x4_lane0",
+        "simd.__i32x4_lane1",
+        "simd.__i32x4_lane2",
+        "simd.__i32x4_lane3",
+        "simd.__u32x4_lane0",
+        "simd.__u32x4_lane1",
+        "simd.__u32x4_lane2",
+        "simd.__u32x4_lane3",
+        "simd.__f32x4_lane0",
+        "simd.__f32x4_lane1",
+        "simd.__f32x4_lane2",
+        "simd.__f32x4_lane3",
+        "simd.__mask32x4_lane0",
+        "simd.__mask32x4_lane1",
+        "simd.__mask32x4_lane2",
+        "simd.__mask32x4_lane3",
         "env.get",
         "proc.argv_count",
         "proc.argv_get",
@@ -11392,6 +11469,28 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         to: Box::new(u8_ty),
     };
     let str_ty = Type::Str;
+    let i32x4 = Type::SimdVector(ast::SimdVectorType {
+        element: ast::SimdElement::I32,
+        lanes: 4,
+    });
+    let u32x4 = Type::SimdVector(ast::SimdVectorType {
+        element: ast::SimdElement::U32,
+        lanes: 4,
+    });
+    let f32x4 = Type::SimdVector(ast::SimdVectorType {
+        element: ast::SimdElement::F32,
+        lanes: 4,
+    });
+    let mask32x4 = Type::SimdMask(ast::SimdMaskType {
+        lane_bits: 32,
+        lanes: 4,
+    });
+    let bool_ty = Type::Bool;
+    let u32_ty = Type::Int {
+        signed: false,
+        bits: 32,
+    };
+    let f32_ty = Type::Float { bits: 32 };
     Some(match name {
         "spawn" | "thread.spawn" => (vec![task_fn.clone()], task_handle.clone()),
         "spawn_ctx" => (vec![task_fn.clone(), i32.clone()], task_handle.clone()),
@@ -11486,6 +11585,99 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         }
         "crypto.hmac_sha256" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
         "crypto.constant_time_eq" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "simd.__i32x4" => (
+            vec![i32.clone(), i32.clone(), i32.clone(), i32.clone()],
+            i32x4.clone(),
+        ),
+        "simd.__u32x4" => (
+            vec![u32_ty.clone(), u32_ty.clone(), u32_ty.clone(), u32_ty.clone()],
+            u32x4.clone(),
+        ),
+        "simd.__f32x4" => (
+            vec![f32_ty.clone(), f32_ty.clone(), f32_ty.clone(), f32_ty.clone()],
+            f32x4.clone(),
+        ),
+        "simd.__mask32x4" => (
+            vec![i32.clone(), i32.clone(), i32.clone(), i32.clone()],
+            mask32x4.clone(),
+        ),
+        "simd.__i32x4_splat" => (vec![i32.clone()], i32x4.clone()),
+        "simd.__u32x4_splat" => (vec![u32_ty.clone()], u32x4.clone()),
+        "simd.__f32x4_splat" => (vec![f32_ty.clone()], f32x4.clone()),
+        "simd.__mask32x4_splat" => (vec![i32.clone()], mask32x4.clone()),
+        "simd.__i32x4_add"
+        | "simd.__i32x4_sub"
+        | "simd.__i32x4_mul"
+        | "simd.__i32x4_and"
+        | "simd.__i32x4_or"
+        | "simd.__i32x4_xor" => (vec![i32x4.clone(), i32x4.clone()], i32x4.clone()),
+        "simd.__u32x4_add"
+        | "simd.__u32x4_sub"
+        | "simd.__u32x4_mul"
+        | "simd.__u32x4_and"
+        | "simd.__u32x4_or"
+        | "simd.__u32x4_xor" => (vec![u32x4.clone(), u32x4.clone()], u32x4.clone()),
+        "simd.__f32x4_add" | "simd.__f32x4_sub" | "simd.__f32x4_mul" => {
+            (vec![f32x4.clone(), f32x4.clone()], f32x4.clone())
+        }
+        "simd.__mask32x4_and" | "simd.__mask32x4_or" | "simd.__mask32x4_xor" => {
+            (vec![mask32x4.clone(), mask32x4.clone()], mask32x4.clone())
+        }
+        "simd.__i32x4_not" => (vec![i32x4.clone()], i32x4.clone()),
+        "simd.__u32x4_not" => (vec![u32x4.clone()], u32x4.clone()),
+        "simd.__mask32x4_not" => (vec![mask32x4.clone()], mask32x4.clone()),
+        "simd.__i32x4_eq"
+        | "simd.__i32x4_ne"
+        | "simd.__i32x4_lt"
+        | "simd.__i32x4_le"
+        | "simd.__i32x4_gt"
+        | "simd.__i32x4_ge" => (vec![i32x4.clone(), i32x4.clone()], mask32x4.clone()),
+        "simd.__u32x4_eq"
+        | "simd.__u32x4_ne"
+        | "simd.__u32x4_lt"
+        | "simd.__u32x4_le"
+        | "simd.__u32x4_gt"
+        | "simd.__u32x4_ge" => (vec![u32x4.clone(), u32x4.clone()], mask32x4.clone()),
+        "simd.__f32x4_eq"
+        | "simd.__f32x4_ne"
+        | "simd.__f32x4_lt"
+        | "simd.__f32x4_le"
+        | "simd.__f32x4_gt"
+        | "simd.__f32x4_ge" => (vec![f32x4.clone(), f32x4.clone()], mask32x4.clone()),
+        "simd.__i32x4_select" => (
+            vec![mask32x4.clone(), i32x4.clone(), i32x4.clone()],
+            i32x4.clone(),
+        ),
+        "simd.__u32x4_select" => (
+            vec![mask32x4.clone(), u32x4.clone(), u32x4.clone()],
+            u32x4.clone(),
+        ),
+        "simd.__f32x4_select" => (
+            vec![mask32x4.clone(), f32x4.clone(), f32x4.clone()],
+            f32x4.clone(),
+        ),
+        "simd.__i32x4_reduce_add" => (vec![i32x4.clone()], i32.clone()),
+        "simd.__u32x4_reduce_add" => (vec![u32x4.clone()], u32_ty.clone()),
+        "simd.__f32x4_reduce_add" => (vec![f32x4.clone()], f32_ty.clone()),
+        "simd.__mask32x4_any" | "simd.__mask32x4_all" | "simd.__mask32x4_none" => {
+            (vec![mask32x4.clone()], bool_ty.clone())
+        }
+        "simd.__i32x4_lane0"
+        | "simd.__i32x4_lane1"
+        | "simd.__i32x4_lane2"
+        | "simd.__i32x4_lane3" => (vec![i32x4.clone()], i32.clone()),
+        "simd.__u32x4_lane0"
+        | "simd.__u32x4_lane1"
+        | "simd.__u32x4_lane2"
+        | "simd.__u32x4_lane3" => (vec![u32x4.clone()], u32_ty.clone()),
+        "simd.__f32x4_lane0"
+        | "simd.__f32x4_lane1"
+        | "simd.__f32x4_lane2"
+        | "simd.__f32x4_lane3" => (vec![f32x4.clone()], f32_ty.clone()),
+        "simd.__mask32x4_lane0"
+        | "simd.__mask32x4_lane1"
+        | "simd.__mask32x4_lane2"
+        | "simd.__mask32x4_lane3" => (vec![mask32x4.clone()], bool_ty.clone()),
         "env.get" => (vec![str_ty.clone()], str_ty.clone()),
         "proc.argv_count" => (vec![], i32.clone()),
         "proc.argv_get" => (vec![i32.clone()], str_ty.clone()),

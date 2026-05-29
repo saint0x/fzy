@@ -1,0 +1,73 @@
+fn memory_json(id: str, scope: str, kind: str, content: str, importance: i32, confidence: i32, pinned: i32, workspace_id: str, session_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "id", json.str(id))
+    discard map.set(payload, "scope", json.str(scope))
+    discard map.set(payload, "kind", json.str(kind))
+    discard map.set(payload, "content", json.str(content))
+    discard map.set(payload, "importance", json.str(str.from_i32(importance)))
+    discard map.set(payload, "confidence", json.str(str.from_i32(confidence)))
+    discard map.set(payload, "pinned", json.str(if pinned == 1 { "true" } else { "false" }))
+    discard map.set(payload, "workspace_id", json.str(workspace_id))
+    discard map.set(payload, "session_id", json.str(session_id))
+    return json.object(payload)
+}
+
+fn parse_i32(value: str) -> i32 {
+    if value == "" {
+        return 0
+    }
+    let mut sign = 1
+    let mut idx = 0
+    let mut out = 0
+    if str.slice(value, 0, 1) == "-" {
+        sign = -1
+        idx = 1
+    }
+    while idx < str.len(value) {
+        let ch = str.slice(value, idx, idx + 1)
+        out = out * 10
+        if ch == "0" { out += 0 }
+        if ch == "1" { out += 1 }
+        if ch == "2" { out += 2 }
+        if ch == "3" { out += 3 }
+        if ch == "4" { out += 4 }
+        if ch == "5" { out += 5 }
+        if ch == "6" { out += 6 }
+        if ch == "7" { out += 7 }
+        if ch == "8" { out += 8 }
+        if ch == "9" { out += 9 }
+        idx += 1
+    }
+    return out * sign
+}
+
+fn score_memory(parsed: JsonHandle, request: str, workspace_id: str, session_id: str) -> i32 {
+    let mut score = parse_i32(json.get_str(parsed, "importance")) * 10
+    score += parse_i32(json.get_str(parsed, "confidence")) * 5
+    if json.get_str(parsed, "pinned") == "true" {
+        score += 50
+    }
+    if json.get_str(parsed, "workspace_id") == workspace_id {
+        score += 20
+    }
+    if json.get_str(parsed, "session_id") == session_id {
+        score += 10
+    }
+    if str.contains(json.get_str(parsed, "content"), request) == 1 {
+        score += 25
+    }
+    if str.contains(request, json.get_str(parsed, "kind")) == 1 {
+        score += 10
+    }
+    return score
+}
+
+fn task_mode(request: str) -> str {
+    if str.contains(request, "repo") == 1 || str.contains(request, "path") == 1 || str.contains(request, "file") == 1 {
+        return "local_inspect"
+    }
+    if str.contains(request, "exact") == 1 || str.contains(request, "numeric") == 1 {
+        return "exact_answer"
+    }
+    return "synthesis"
+}

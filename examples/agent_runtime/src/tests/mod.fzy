@@ -1,0 +1,34 @@
+use core.security;
+
+test "det_signed_session" {
+    let session = model.session_json("workspace-main", "operator")
+    let parsed = json.parse(session)
+    let session_id = json.get_str(parsed, "session_id")
+    let auth_mac = json.get_str(parsed, "auth_mac")
+    if security.verify_value("agent-runtime-secret", str.concat("workspace-main", str.concat(":", session_id)), auth_mac) != 1 {
+        checkpoint()
+    }
+}
+
+test "det_tool_catalog" {
+    let catalog = model.tool_catalog_json()
+    if str.contains(catalog, "\"parallel_plan\"") == 0 || str.contains(catalog, "\"repo_inspect\"") == 0 {
+        checkpoint()
+    }
+}
+
+test "det_parallel_budget" {
+    if runtime.parallel_budget() != 20 {
+        checkpoint()
+    }
+}
+
+test "det_plan_local_inspect" {
+    let payload = services.plan_json("workspace-main", "operator", "inspect repo files and cite exact paths")
+    if str.contains(payload, "\"mode\":\"local_inspect\"") == 0 {
+        checkpoint()
+    }
+    if str.contains(payload, "\"auth_ok\":true") == 0 {
+        checkpoint()
+    }
+}

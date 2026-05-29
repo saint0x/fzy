@@ -10,6 +10,7 @@
 - Middleware and policy gates for auth, JSON validation, rate limiting, timeouts, and CORS preflight.
 - Route-aware public endpoint policy so health/docs/version stay reachable under auth and rate-limit modes.
 - First-class structured logging via `core.log` in live-server paths.
+- Session/cookie signing rides on the shipped `core.security` helpers, so the framework stays inside the supported production crypto surface.
 
 ## Layout (Grouped by Concern)
 
@@ -35,6 +36,17 @@
 - `cookies.*`, `sessions.*`, `multipart.*`, `persistence.*`, `streaming.*` for production web concerns.
 - `middleware.before_dispatch` and policy/rate helpers.
 - `support.run_live_server` for the packaged production server entry.
+
+## Production Checks
+
+- `python3 scripts/verify_fzweb_framework.py`
+- `cargo run -q -p fz -- doctor --deep --scenario tests/fzweb.framework.pass.fozzy.json --runs 5 --seed 20260227 --json`
+- `cargo run -q -p fz -- test tests/fzweb.framework.pass.fozzy.json --det --strict-verify --json`
+- `cargo run -q -p fz -- run tests/fzweb.framework.pass.fozzy.json --det --record artifacts/fzweb.framework.trace.fozzy --json`
+- `cargo run -q -p fz -- trace verify artifacts/fzweb.framework.trace.fozzy --strict --json`
+- `cargo run -q -p fz -- replay artifacts/fzweb.framework.trace.fozzy --json`
+- `cargo run -q -p fz -- ci artifacts/fzweb.framework.trace.fozzy --json`
+- `cargo run -q -p fz -- run tests/fzweb.framework.pass.fozzy.json --host-backends --json`
 
 ## Built-In Routes
 

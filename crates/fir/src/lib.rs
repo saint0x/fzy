@@ -435,6 +435,8 @@ fn to_value_type(ty: &Type) -> ValueType {
         | Type::Decimal
         | Type::DateTimeTz
         | Type::ExitStatus
+        | Type::SimdVector(_)
+        | Type::SimdMask(_)
         | Type::Tuple(_)
         | Type::Function { .. }
         | Type::Char

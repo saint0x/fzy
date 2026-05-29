@@ -136,6 +136,8 @@ Implemented and validated today:
 - C header generation from exported `pubext c fn` signatures
 - RPC schema, client, and server stub generation via `fz rpc gen`
 - modern language/runtime surface across ADTs, pattern matching, traits, generics, JSON, process, terminal, logging, filesystem/path, and outbound streaming HTTP
+- production crypto/security surface via `core.crypto` and `core.security`, including secure random, hashing, HMAC, constant-time compare, and URL-safe encodings
+- `fzweb` production web framework modules for app routing, cookies, sessions, multipart uploads, persistence, SSE, websockets, and OpenAPI export
 - `fz run` executes native output directly with live text streaming or JSON capture
 - LLVM and Cranelift native backends with parity-oriented validation
 - direct-memory release gates:
@@ -151,6 +153,7 @@ fzy is set up to support these production claims today:
 - verifiable correctness through the verifier, diagnostics, deterministic testing, replay, and CI artifacts
 - deterministic execution through recorded traces, replay, and scheduler control
 - general-purpose systems coverage across async/tasks, RPC, ADTs, traits/generics, process control, terminal I/O, logging, filesystem/path, JSON work, and streaming HTTP
+- production web/service coverage through `fzweb` plus security primitives that keep session/cookie/auth flows inside the supported runtime surface
 
 See also:
 
@@ -172,10 +175,10 @@ cargo test --workspace
 fz init [path] [--name package] [--template minimal|rust|ts] [--with run,fuzz,explore,memory,host|all] [--force]
 
 # Build source/project
-fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [-l lib] [-L path] [-framework name] [--json]
+fz build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name] [--json]
 
 # Run source/project or .fozzy scenario
-fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [--json]
+fz run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>] [--json]
 
 # Test source/project or .fozzy scenario
 fz test [path] [--det] [--strict-verify] [--sched fifo|random|coverage_guided] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--filter substring] [--json]
@@ -196,12 +199,25 @@ fz audit unsafe [path] [--workspace] [--json]
 fz vendor [project] [--json]
 fz abi-check <current.abi.json> --baseline <baseline.abi.json> [--json]
 fz debug-check [path] [--json]
+fz pgo merge [path] [--out file] [--json]
 fz lsp diagnostics [path] [--json]
 fz lsp definition <path> <symbol> [--json]
 fz lsp hover <path> <symbol> [--json]
 fz lsp rename <path> <from> <to> [--json]
 fz lsp smoke [path] [--json]
 fz lsp serve [--path <workspace>] [--json]
+fz map suites [--root dir] [--scenario-root dir] [--profile pedantic|production|compat] [--json]
+fz artifacts ls latest [--json]
+fz report show latest [--format json|text] [--json]
+fz usage [--json]
+fz env [--json]
+fz schema [--json]
+fz validate <scenario> [--json]
+fz trace verify <trace> [--strict] [--json]
+fz replay <trace> [--json]
+fz shrink <trace> [--json]
+fz ci <trace> [--json]
+fz trace-native <trace.fozzy> [--out path] [--json]
 
 # FFI / RPC / docs outputs
 fz headers [path] [--out path] [--json]
@@ -221,6 +237,8 @@ Runtime defaults and surfaced behavior:
 - standard library surface includes `core.process`, `core.term`, `core.thread`, `core.log`, `core.text`, `core.io`, `core.path`, and `core.util`
 - terminal-safe string escapes, structured log fields, JSON builders, JSON key iteration, and map-backed object literals are first-class
 - process helpers support argv/env builders plus spawn/run flows with wait/stdout/stderr/exit inspection
+- `core.crypto` and `core.security` cover secure random, digests, HMAC, URL-safe encodings, and constant-time comparisons for production auth/session flows
+- `fzweb` ships concern-grouped framework modules plus built-in routes for health, readiness, metrics, inspect, search, cookies, sessions, uploads, events, websockets, item CRUD, OpenAPI, and static assets
 
 ## Deterministic Artifacts
 
@@ -381,6 +399,8 @@ All shipped examples follow the v1 narrative DX convention:
 
 Available projects:
 
+- `examples/agent_runtime`
+- `examples/context_runtime`
 - `examples/minimal_runtime`
 - `examples/service_app`
 - `examples/fullstack`

@@ -1,0 +1,15 @@
+use core.process;
+
+mod api;
+mod model;
+mod services;
+mod runtime;
+mod cli;
+mod tests;
+
+fn main() -> i32 {
+    let command = process.argv_or(1, "help")
+    discard api.touch()
+    discard runtime.boot()
+    return cli.run(command)
+}

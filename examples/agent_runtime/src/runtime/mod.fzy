@@ -1,0 +1,15 @@
+use core.thread;
+
+fn boot() -> i32 {
+    return 0
+}
+
+fn worker_budget() -> i32 {
+    return thread.context_id() + 1
+}
+
+fn parallel_budget() -> i32 {
+    let fast = spawn_ctx(worker_budget, 7)
+    let safe = spawn_ctx(worker_budget, 11)
+    return join(fast) + join(safe)
+}

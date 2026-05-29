@@ -168,7 +168,45 @@ pub(super) fn backend_capability_diagnostics(
 ) -> Vec<diagnostics::Diagnostic> {
     let mut diagnostics = Vec::new();
     let backend = backend.trim().to_ascii_lowercase();
+    for item in &module.items {
+        let ast::Item::Function(function) = item else {
+            continue;
+        };
+        let crosses_abi = function.is_pubext || function.is_extern || function.abi.is_some();
+        let signature_has_simd = function.params.iter().any(|param| type_contains_simd(&param.ty))
+            || type_contains_simd(&function.return_type);
+        if crosses_abi && signature_has_simd {
+            diagnostics.push(
+                diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Error,
+                    format!(
+                        "SIMD type appears across ABI boundary in function `{}`",
+                        function.name
+                    ),
+                    Some(
+                        "portable SIMD is not ABI-stable in phase 1; keep SIMD values inside native fzy functions"
+                            .to_string(),
+                    ),
+                )
+                .with_catalog_key("native.simd_abi_crossing_unsupported"),
+            );
+        }
+    }
     if backend == "cranelift" {
+        if module_uses_simd(module) {
+            diagnostics.push(
+                diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Error,
+                    "backend `cranelift` does not yet support `core.simd` lowering".to_string(),
+                    Some(
+                        "compile with `--backend llvm`; phase-1 portable SIMD is currently LLVM-backed only"
+                            .to_string(),
+                    ),
+                )
+                .with_catalog_key("native.cranelift_simd_unsupported")
+                .with_fix("switch backend: `fz build <path> --backend llvm`"),
+            );
+        }
         for item in &module.items {
             let ast::Item::Function(function) = item else {
                 continue;
@@ -221,6 +259,241 @@ pub(super) fn backend_capability_diagnostics(
         diagnostics::DiagnosticDomain::NativeLowering,
     );
     diagnostics
+}
+
+fn module_uses_simd(module: &ast::Module) -> bool {
+    module.items.iter().any(item_uses_simd)
+}
+
+fn item_uses_simd(item: &ast::Item) -> bool {
+    match item {
+        ast::Item::Function(function) => {
+            function.params.iter().any(|param| type_contains_simd(&param.ty))
+                || type_contains_simd(&function.return_type)
+                || function.body.iter().any(stmt_uses_simd)
+        }
+        ast::Item::Const(item) => type_contains_simd(&item.ty) || expr_uses_simd(&item.value),
+        ast::Item::Static(item) => type_contains_simd(&item.ty) || expr_uses_simd(&item.value),
+        ast::Item::TypeAlias(item) => type_contains_simd(&item.ty),
+        ast::Item::NewType(item) => type_contains_simd(&item.inner),
+        ast::Item::Struct(item) => item.fields.iter().any(|field| type_contains_simd(&field.ty)),
+        ast::Item::Enum(item) => item.variants.iter().any(|variant| {
+            variant.payload.iter().any(type_contains_simd)
+                || variant
+                    .named_payload
+                    .iter()
+                    .any(|field| type_contains_simd(&field.ty))
+        }),
+        ast::Item::Trait(item) => {
+            item.associated_consts
+                .iter()
+                .any(|assoc| type_contains_simd(&assoc.ty))
+                || item.methods.iter().any(|method| {
+                    method.params.iter().any(|param| type_contains_simd(&param.ty))
+                        || type_contains_simd(&method.return_type)
+                })
+        }
+        ast::Item::Impl(item) => {
+            type_contains_simd(&item.for_type)
+                || item
+                    .associated_types
+                    .iter()
+                    .any(|(_, assoc_ty)| type_contains_simd(assoc_ty))
+                || item
+                    .associated_consts
+                    .iter()
+                    .any(|assoc| type_contains_simd(&assoc.ty) || expr_uses_simd(&assoc.value))
+                || item.methods.iter().any(|method| {
+                    method.params.iter().any(|param| type_contains_simd(&param.ty))
+                        || type_contains_simd(&method.return_type)
+                        || method.body.iter().any(stmt_uses_simd)
+                })
+        }
+        ast::Item::Test(item) => item.body.iter().any(stmt_uses_simd),
+    }
+}
+
+fn stmt_uses_simd(stmt: &ast::Stmt) -> bool {
+    match stmt {
+        ast::Stmt::Let { ty, value, .. } | ast::Stmt::LetPattern { ty, value, .. } => {
+            ty.as_ref().is_some_and(type_contains_simd) || expr_uses_simd(value)
+        }
+        ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => expr_uses_simd(value),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_uses_simd(condition)
+                || then_body.iter().any(stmt_uses_simd)
+                || else_body.iter().any(stmt_uses_simd)
+        }
+        ast::Stmt::While { condition, body } => {
+            expr_uses_simd(condition) || body.iter().any(stmt_uses_simd)
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().is_some_and(stmt_uses_simd)
+                || condition.as_ref().is_some_and(expr_uses_simd)
+                || step.as_deref().is_some_and(stmt_uses_simd)
+                || body.iter().any(stmt_uses_simd)
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            expr_uses_simd(iterable) || body.iter().any(stmt_uses_simd)
+        }
+        ast::Stmt::Loop { body } => body.iter().any(stmt_uses_simd),
+        ast::Stmt::Break(value) | ast::Stmt::Return(value) => {
+            value.as_ref().is_some_and(expr_uses_simd)
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            expr_uses_simd(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_uses_simd) || expr_uses_simd(&arm.value)
+                })
+        }
+        ast::Stmt::Continue => false,
+    }
+}
+
+fn expr_uses_simd(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            callee.starts_with("simd.") || args.iter().any(expr_uses_simd)
+        }
+        ast::Expr::UnsafeBlock { body, .. } => body.iter().any(stmt_uses_simd),
+        ast::Expr::FieldAccess { base, .. }
+        | ast::Expr::Group(base)
+        | ast::Expr::Await(base)
+        | ast::Expr::Discard(base)
+        | ast::Expr::Unary { expr: base, .. } => expr_uses_simd(base),
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            fields.iter().any(|(_, value)| expr_uses_simd(value))
+        }
+        ast::Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            payload.iter().any(expr_uses_simd)
+                || named_payload.iter().any(|(_, value)| expr_uses_simd(value))
+        }
+        ast::Expr::Closure {
+            params,
+            return_type,
+            body,
+        } => {
+            params.iter().any(|param| type_contains_simd(&param.ty))
+                || return_type.as_ref().is_some_and(type_contains_simd)
+                || expr_uses_simd(body)
+        }
+        ast::Expr::Tuple(items) | ast::Expr::ArrayLiteral(items) => items.iter().any(expr_uses_simd),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => expr_uses_simd(try_expr) || expr_uses_simd(catch_expr),
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_uses_simd(condition) || expr_uses_simd(then_expr) || expr_uses_simd(else_expr)
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            expr_uses_simd(scrutinee)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(expr_uses_simd) || expr_uses_simd(&arm.value)
+                })
+        }
+        ast::Expr::While { condition, body } => {
+            expr_uses_simd(condition) || body.iter().any(stmt_uses_simd)
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().is_some_and(stmt_uses_simd)
+                || condition.as_deref().is_some_and(expr_uses_simd)
+                || step.as_deref().is_some_and(stmt_uses_simd)
+                || body.iter().any(stmt_uses_simd)
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            expr_uses_simd(iterable) || body.iter().any(stmt_uses_simd)
+        }
+        ast::Expr::Loop { body } => body.iter().any(stmt_uses_simd),
+        ast::Expr::Break(value) | ast::Expr::Return(value) => {
+            value.as_deref().is_some_and(expr_uses_simd)
+        }
+        ast::Expr::Range { start, end, .. } => expr_uses_simd(start) || expr_uses_simd(end),
+        ast::Expr::Index { base, index } | ast::Expr::Binary { left: base, right: index, .. } => {
+            expr_uses_simd(base) || expr_uses_simd(index)
+        }
+        ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_)
+        | ast::Expr::Continue => false,
+    }
+}
+
+fn type_contains_simd(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::SimdVector(_) | ast::Type::SimdMask(_) => true,
+        ast::Type::Ptr { to, .. }
+        | ast::Type::Ref { to, .. } => type_contains_simd(to),
+        ast::Type::Slice(inner)
+        | ast::Type::Set(inner)
+        | ast::Type::Deque(inner)
+        | ast::Type::Ring(inner)
+        | ast::Type::Option(inner)
+        | ast::Type::Vec(inner)
+        | ast::Type::Future(inner) => type_contains_simd(inner),
+        ast::Type::Array { elem, .. } => type_contains_simd(elem),
+        ast::Type::Result { ok, err } => type_contains_simd(ok) || type_contains_simd(err),
+        ast::Type::Map { key, value } => type_contains_simd(key) || type_contains_simd(value),
+        ast::Type::Function { params, ret } => {
+            params.iter().any(type_contains_simd) || type_contains_simd(ret)
+        }
+        ast::Type::Tuple(items) => items.iter().any(type_contains_simd),
+        ast::Type::Named { args, .. } => args.iter().any(type_contains_simd),
+        ast::Type::Never
+        | ast::Type::Void
+        | ast::Type::Bool
+        | ast::Type::ISize
+        | ast::Type::USize
+        | ast::Type::Int { .. }
+        | ast::Type::BigInt
+        | ast::Type::BigUint
+        | ast::Type::Float { .. }
+        | ast::Type::Decimal128
+        | ast::Type::Char
+        | ast::Type::Str
+        | ast::Type::Bytes
+        | ast::Type::Uuid
+        | ast::Type::Path
+        | ast::Type::PathBuf
+        | ast::Type::Url
+        | ast::Type::SocketAddr
+        | ast::Type::Duration
+        | ast::Type::Instant
+        | ast::Type::Decimal
+        | ast::Type::DateTimeTz
+        | ast::Type::ExitStatus
+        | ast::Type::DynTrait(_)
+        | ast::Type::TypeVar(_) => false,
+    }
 }
 
 pub(super) fn native_backend_supports_signature_type(ty: &ast::Type) -> bool {

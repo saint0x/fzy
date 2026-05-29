@@ -1,0 +1,26 @@
+test "det_frame_protocol" {
+    let frame = services.frame_json("workspace-main", "session-a", "inspect repo paths and cite exact files")
+    if str.contains(frame, "\"task_mode\":\"local_inspect\"") == 0 {
+        checkpoint()
+    }
+    if str.contains(frame, "\"must_cite_paths\":\"true\"") == 0 {
+        checkpoint()
+    }
+}
+
+test "det_selected_memory" {
+    let selected = services.selected_memory_json("repo paths", "workspace-main", "session-a")
+    if str.contains(selected, "\"mem-1\"") == 0 || str.contains(selected, "\"mem-2\"") == 0 {
+        checkpoint()
+    }
+}
+
+test "det_compaction" {
+    let compacted = services.compact_json("workspace-main", "session-a", "inspect repo paths")
+    if str.contains(compacted, "\"status\":\"ok\"") == 0 {
+        checkpoint()
+    }
+    if str.contains(compacted, "\"workspace_id\":\"workspace-main\"") == 0 {
+        checkpoint()
+    }
+}

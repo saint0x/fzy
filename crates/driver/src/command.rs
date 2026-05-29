@@ -9169,6 +9169,8 @@ fn is_ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
         | ast::Type::Decimal
         | ast::Type::DateTimeTz
         | ast::Type::ExitStatus
+        | ast::Type::SimdVector(_)
+        | ast::Type::SimdMask(_)
         | ast::Type::Tuple(_)
         | ast::Type::Ref { .. }
         | ast::Type::Array { .. }

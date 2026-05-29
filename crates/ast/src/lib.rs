@@ -169,6 +169,35 @@ pub struct TestBlock {
     pub body: Vec<Stmt>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SimdElement {
+    I32,
+    U32,
+    F32,
+}
+
+impl SimdElement {
+    pub fn alias_name(self) -> &'static str {
+        match self {
+            SimdElement::I32 => "i32",
+            SimdElement::U32 => "u32",
+            SimdElement::F32 => "f32",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SimdVectorType {
+    pub element: SimdElement,
+    pub lanes: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SimdMaskType {
+    pub lane_bits: u16,
+    pub lanes: u16,
+}
+
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Let {
@@ -488,6 +517,8 @@ pub enum Type {
     Decimal,
     DateTimeTz,
     ExitStatus,
+    SimdVector(SimdVectorType),
+    SimdMask(SimdMaskType),
     Function {
         params: Vec<Type>,
         ret: Box<Type>,
@@ -504,6 +535,32 @@ pub enum Type {
 impl Type {
     pub fn is_pointer_like(&self) -> bool {
         matches!(self, Type::Ptr { .. } | Type::Ref { .. } | Type::Slice(_))
+    }
+
+    pub fn parse_builtin_simd_alias(name: &str) -> Option<Self> {
+        match name {
+            "i32x4" => Some(Type::SimdVector(SimdVectorType {
+                element: SimdElement::I32,
+                lanes: 4,
+            })),
+            "u32x4" => Some(Type::SimdVector(SimdVectorType {
+                element: SimdElement::U32,
+                lanes: 4,
+            })),
+            "f32x4" => Some(Type::SimdVector(SimdVectorType {
+                element: SimdElement::F32,
+                lanes: 4,
+            })),
+            "mask32x4" => Some(Type::SimdMask(SimdMaskType {
+                lane_bits: 32,
+                lanes: 4,
+            })),
+            _ => None,
+        }
+    }
+
+    pub fn is_simd(&self) -> bool {
+        matches!(self, Type::SimdVector(_) | Type::SimdMask(_))
     }
 }
 
@@ -571,6 +628,8 @@ impl std::fmt::Display for Type {
             Type::Decimal => write!(f, "Decimal"),
             Type::DateTimeTz => write!(f, "DateTimeTz"),
             Type::ExitStatus => write!(f, "ExitStatus"),
+            Type::SimdVector(shape) => write!(f, "{}x{}", shape.element.alias_name(), shape.lanes),
+            Type::SimdMask(shape) => write!(f, "mask{}x{}", shape.lane_bits, shape.lanes),
             Type::Function { params, ret } => {
                 write!(
                     f,

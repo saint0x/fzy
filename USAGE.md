@@ -17,6 +17,8 @@ Current production summary:
 - unsafe behavior is explicit, auditable, and tracked through structural unsafe-contract artifacts plus optional stronger evidence links
 - deterministic verification, replay, and artifacts are normal delivery requirements
 - the native runtime surface now covers serious modern systems work: async/tasks, RPC, ADTs, traits/generics, process/terminal/logging, filesystem/path, JSON control-plane workflows, and outbound HTTP streaming
+- the production standard library now includes first-class crypto/security helpers for random, hashing, HMAC, constant-time compare, and URL-safe encodings
+- the in-tree `fzweb` framework now covers app routing, cookies, sessions, multipart uploads, persistence, SSE, websockets, and OpenAPI export
 
 Canonical production workflow: `docs/production-workflow-v1.md`  
 Failure triage playbook: `docs/production-failure-triage-v1.md`
@@ -166,6 +168,7 @@ Language completeness note:
 - production trait/generic support includes common generic structs/enums/functions/methods, trait impls, associated items, concrete bounds, and cross-module qualification
 - production stdlib/runtime facade support includes:
   - `core.process`, `core.term`, `core.thread`, `core.log`, `core.text`, `core.io`, `core.path`, `core.http`
+  - `core.crypto`, `core.security`
   - parsed JSON key iteration through `json.keys(...)`
   - outbound streaming HTTP plus SSE-style line consumption
 
@@ -202,6 +205,7 @@ Runtime logging defaults:
 - `proc.run*` returns exit codes; `proc.spawn*` returns handles for wait/stdout/stderr/exit inspection
 - canonical persistence helpers use `storage.append`, `storage.atomic_append`, `storage.kv_open/get/put`
 - shared helper surface is available under `core.util` for common JSON/log/http/concurrency patterns
+- the production web framework package `frameworklib/fzweb` provides concern-grouped app/request/response/middleware/cookies/sessions/multipart/persistence/streaming support over the same runtime surface
 
 Canonical native product posture:
 
@@ -450,6 +454,25 @@ Behavioral contract:
 - raw terminal intrinsics remain `term.read_line()`, `term.stdin_eof()`, `term.write()`, `term.write_err()`, `term.stdin_is_tty()`, `term.stdout_is_tty()`
 - `term.read_line()` strips trailing newline / `\r`
 - empty line and EOF are distinguished via `term.stdin_eof()`
+
+## 7.4 Example Projects
+
+Use the in-repo examples as production-shaped references, not just syntax demos.
+
+Available projects:
+
+- `examples/agent_runtime`
+- `examples/context_runtime`
+- `examples/minimal_runtime`
+- `examples/service_app`
+- `examples/fullstack`
+- `examples/robust_cli`
+- `examples/live_server`
+
+The strongest modern examples for real application patterns are:
+
+- `examples/agent_runtime`: signed sessions, tool catalogs, audit trails, and bounded parallel orchestration
+- `examples/context_runtime`: scoped memory scoring, planner/protocol assembly, and deterministic context framing
 
 ## 8. Repository Conventions You Must Follow
 

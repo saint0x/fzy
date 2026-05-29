@@ -1,0 +1,243 @@
+fn i32x4_new(x0: i32, x1: i32, x2: i32, x3: i32) -> i32x4 {
+    return simd.__i32x4(x0, x1, x2, x3)
+}
+
+fn u32x4_new(x0: u32, x1: u32, x2: u32, x3: u32) -> u32x4 {
+    return simd.__u32x4(x0, x1, x2, x3)
+}
+
+fn f32x4_new(x0: f32, x1: f32, x2: f32, x3: f32) -> f32x4 {
+    return simd.__f32x4(x0, x1, x2, x3)
+}
+
+fn mask32x4_new(x0: i32, x1: i32, x2: i32, x3: i32) -> mask32x4 {
+    return simd.__mask32x4(x0, x1, x2, x3)
+}
+
+fn i32x4_splat(value: i32) -> i32x4 {
+    return simd.__i32x4_splat(value)
+}
+
+fn u32x4_splat(value: u32) -> u32x4 {
+    return simd.__u32x4_splat(value)
+}
+
+fn f32x4_splat(value: f32) -> f32x4 {
+    return simd.__f32x4_splat(value)
+}
+
+fn mask32x4_splat(value: i32) -> mask32x4 {
+    return simd.__mask32x4_splat(value)
+}
+
+fn i32x4_add(left: i32x4, right: i32x4) -> i32x4 {
+    return simd.__i32x4_add(left, right)
+}
+
+fn i32x4_sub(left: i32x4, right: i32x4) -> i32x4 {
+    return simd.__i32x4_sub(left, right)
+}
+
+fn i32x4_mul(left: i32x4, right: i32x4) -> i32x4 {
+    return simd.__i32x4_mul(left, right)
+}
+
+fn u32x4_add(left: u32x4, right: u32x4) -> u32x4 {
+    return simd.__u32x4_add(left, right)
+}
+
+fn u32x4_sub(left: u32x4, right: u32x4) -> u32x4 {
+    return simd.__u32x4_sub(left, right)
+}
+
+fn u32x4_mul(left: u32x4, right: u32x4) -> u32x4 {
+    return simd.__u32x4_mul(left, right)
+}
+
+fn f32x4_add(left: f32x4, right: f32x4) -> f32x4 {
+    return simd.__f32x4_add(left, right)
+}
+
+fn f32x4_sub(left: f32x4, right: f32x4) -> f32x4 {
+    return simd.__f32x4_sub(left, right)
+}
+
+fn f32x4_mul(left: f32x4, right: f32x4) -> f32x4 {
+    return simd.__f32x4_mul(left, right)
+}
+
+fn i32x4_and(left: i32x4, right: i32x4) -> i32x4 {
+    return simd.__i32x4_and(left, right)
+}
+
+fn i32x4_or(left: i32x4, right: i32x4) -> i32x4 {
+    return simd.__i32x4_or(left, right)
+}
+
+fn i32x4_xor(left: i32x4, right: i32x4) -> i32x4 {
+    return simd.__i32x4_xor(left, right)
+}
+
+fn i32x4_not(value: i32x4) -> i32x4 {
+    return simd.__i32x4_not(value)
+}
+
+fn u32x4_and(left: u32x4, right: u32x4) -> u32x4 {
+    return simd.__u32x4_and(left, right)
+}
+
+fn u32x4_or(left: u32x4, right: u32x4) -> u32x4 {
+    return simd.__u32x4_or(left, right)
+}
+
+fn u32x4_xor(left: u32x4, right: u32x4) -> u32x4 {
+    return simd.__u32x4_xor(left, right)
+}
+
+fn u32x4_not(value: u32x4) -> u32x4 {
+    return simd.__u32x4_not(value)
+}
+
+fn mask32x4_and(left: mask32x4, right: mask32x4) -> mask32x4 {
+    return simd.__mask32x4_and(left, right)
+}
+
+fn mask32x4_or(left: mask32x4, right: mask32x4) -> mask32x4 {
+    return simd.__mask32x4_or(left, right)
+}
+
+fn mask32x4_xor(left: mask32x4, right: mask32x4) -> mask32x4 {
+    return simd.__mask32x4_xor(left, right)
+}
+
+fn mask32x4_not(value: mask32x4) -> mask32x4 {
+    return simd.__mask32x4_not(value)
+}
+
+fn i32x4_eq(left: i32x4, right: i32x4) -> mask32x4 {
+    return simd.__i32x4_eq(left, right)
+}
+
+fn i32x4_ne(left: i32x4, right: i32x4) -> mask32x4 {
+    return simd.__i32x4_ne(left, right)
+}
+
+fn i32x4_lt(left: i32x4, right: i32x4) -> mask32x4 {
+    return simd.__i32x4_lt(left, right)
+}
+
+fn i32x4_le(left: i32x4, right: i32x4) -> mask32x4 {
+    return simd.__i32x4_le(left, right)
+}
+
+fn i32x4_gt(left: i32x4, right: i32x4) -> mask32x4 {
+    return simd.__i32x4_gt(left, right)
+}
+
+fn i32x4_ge(left: i32x4, right: i32x4) -> mask32x4 {
+    return simd.__i32x4_ge(left, right)
+}
+
+fn u32x4_eq(left: u32x4, right: u32x4) -> mask32x4 {
+    return simd.__u32x4_eq(left, right)
+}
+
+fn u32x4_ne(left: u32x4, right: u32x4) -> mask32x4 {
+    return simd.__u32x4_ne(left, right)
+}
+
+fn u32x4_lt(left: u32x4, right: u32x4) -> mask32x4 {
+    return simd.__u32x4_lt(left, right)
+}
+
+fn u32x4_le(left: u32x4, right: u32x4) -> mask32x4 {
+    return simd.__u32x4_le(left, right)
+}
+
+fn u32x4_gt(left: u32x4, right: u32x4) -> mask32x4 {
+    return simd.__u32x4_gt(left, right)
+}
+
+fn u32x4_ge(left: u32x4, right: u32x4) -> mask32x4 {
+    return simd.__u32x4_ge(left, right)
+}
+
+fn f32x4_eq(left: f32x4, right: f32x4) -> mask32x4 {
+    return simd.__f32x4_eq(left, right)
+}
+
+fn f32x4_ne(left: f32x4, right: f32x4) -> mask32x4 {
+    return simd.__f32x4_ne(left, right)
+}
+
+fn f32x4_lt(left: f32x4, right: f32x4) -> mask32x4 {
+    return simd.__f32x4_lt(left, right)
+}
+
+fn f32x4_le(left: f32x4, right: f32x4) -> mask32x4 {
+    return simd.__f32x4_le(left, right)
+}
+
+fn f32x4_gt(left: f32x4, right: f32x4) -> mask32x4 {
+    return simd.__f32x4_gt(left, right)
+}
+
+fn f32x4_ge(left: f32x4, right: f32x4) -> mask32x4 {
+    return simd.__f32x4_ge(left, right)
+}
+
+fn i32x4_select(mask: mask32x4, then_vec: i32x4, else_vec: i32x4) -> i32x4 {
+    return simd.__i32x4_select(mask, then_vec, else_vec)
+}
+
+fn u32x4_select(mask: mask32x4, then_vec: u32x4, else_vec: u32x4) -> u32x4 {
+    return simd.__u32x4_select(mask, then_vec, else_vec)
+}
+
+fn f32x4_select(mask: mask32x4, then_vec: f32x4, else_vec: f32x4) -> f32x4 {
+    return simd.__f32x4_select(mask, then_vec, else_vec)
+}
+
+fn i32x4_reduce_add(value: i32x4) -> i32 {
+    return simd.__i32x4_reduce_add(value)
+}
+
+fn u32x4_reduce_add(value: u32x4) -> u32 {
+    return simd.__u32x4_reduce_add(value)
+}
+
+fn f32x4_reduce_add(value: f32x4) -> f32 {
+    return simd.__f32x4_reduce_add(value)
+}
+
+fn mask32x4_any(value: mask32x4) -> bool {
+    return simd.__mask32x4_any(value)
+}
+
+fn mask32x4_all(value: mask32x4) -> bool {
+    return simd.__mask32x4_all(value)
+}
+
+fn mask32x4_none(value: mask32x4) -> bool {
+    return simd.__mask32x4_none(value)
+}
+
+fn i32x4_lane0(value: i32x4) -> i32 { return simd.__i32x4_lane0(value) }
+fn i32x4_lane1(value: i32x4) -> i32 { return simd.__i32x4_lane1(value) }
+fn i32x4_lane2(value: i32x4) -> i32 { return simd.__i32x4_lane2(value) }
+fn i32x4_lane3(value: i32x4) -> i32 { return simd.__i32x4_lane3(value) }
+
+fn u32x4_lane0(value: u32x4) -> u32 { return simd.__u32x4_lane0(value) }
+fn u32x4_lane1(value: u32x4) -> u32 { return simd.__u32x4_lane1(value) }
+fn u32x4_lane2(value: u32x4) -> u32 { return simd.__u32x4_lane2(value) }
+fn u32x4_lane3(value: u32x4) -> u32 { return simd.__u32x4_lane3(value) }
+
+fn f32x4_lane0(value: f32x4) -> f32 { return simd.__f32x4_lane0(value) }
+fn f32x4_lane1(value: f32x4) -> f32 { return simd.__f32x4_lane1(value) }
+fn f32x4_lane2(value: f32x4) -> f32 { return simd.__f32x4_lane2(value) }
+fn f32x4_lane3(value: f32x4) -> f32 { return simd.__f32x4_lane3(value) }
+
+fn mask32x4_lane0(value: mask32x4) -> bool { return simd.__mask32x4_lane0(value) }
+fn mask32x4_lane1(value: mask32x4) -> bool { return simd.__mask32x4_lane1(value) }
+fn mask32x4_lane2(value: mask32x4) -> bool { return simd.__mask32x4_lane2(value) }
+fn mask32x4_lane3(value: mask32x4) -> bool { return simd.__mask32x4_lane3(value) }

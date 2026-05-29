@@ -1,0 +1,94 @@
+use model;
+
+fn json_obj2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let obj = map.new()
+    discard map.set(obj, k1, v1)
+    discard map.set(obj, k2, v2)
+    return json.object(obj)
+}
+
+fn count_occurrences(text_value: str, needle: str) -> i32 {
+    if text_value == "" || needle == "" {
+        return 0
+    }
+    let mut count = 0
+    let mut idx = 0
+    while idx + str.len(needle) <= str.len(text_value) {
+        if str.slice(text_value, idx, idx + str.len(needle)) == needle {
+            count += 1
+            idx += str.len(needle)
+        } else {
+            idx += 1
+        }
+    }
+    return count
+}
+
+fn selected_memory_json(request: str, workspace_id: str, session_id: str) -> str {
+    let selected = list.new()
+    let m1 = model.memory_json("mem-1", "workspace", "fact", "planner uses scoped memory and exact repo paths", 8, 9, 1, workspace_id, session_id)
+    let m2 = model.memory_json("mem-2", "workspace", "policy", "answers must cite exact file paths for repo inspection", 7, 9, 1, workspace_id, "")
+    let m3 = model.memory_json("mem-3", "global", "fact", "prefer deterministic traces and strict replay evidence", 8, 8, 0, "", "")
+    let m4 = model.memory_json("mem-4", "session", "note", "follow-up should stay concise unless asked for depth", 5, 7, 0, workspace_id, session_id)
+    let items = list.new()
+    discard list.push(items, m1)
+    discard list.push(items, m2)
+    discard list.push(items, m3)
+    discard list.push(items, m4)
+    let mut idx = 0
+    while idx < list.len(items) {
+        let raw = list.get(items, idx)
+        let parsed = json.parse(raw)
+        if model.score_memory(parsed, request, workspace_id, session_id) >= 90 {
+            discard list.push(selected, json.raw(raw))
+        }
+        idx += 1
+    }
+    return json.array(selected)
+}
+
+fn planner_json(selected_json: str, request: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "selected_count", json.str(str.from_i32(count_occurrences(selected_json, "\"id\""))))
+    discard map.set(payload, "pinned_count", json.str(str.from_i32(count_occurrences(selected_json, "\"pinned\":\"true\""))))
+    discard map.set(payload, "mode_reason", json.str(str.concat("derived from request mode ", model.task_mode(request))))
+    discard map.set(payload, "evidence_plan", json.str("cite selected memory first, then inspect tools if evidence is incomplete"))
+    return json.object(payload)
+}
+
+fn protocol_json(request: str) -> str {
+    let mode = model.task_mode(request)
+    let payload = map.new()
+    discard map.set(payload, "task_mode", json.str(mode))
+    discard map.set(payload, "answer_contract", json.str(if mode == "exact_answer" { "exact" } else { "grounded" }))
+    discard map.set(payload, "must_cite_paths", json.str(if mode == "local_inspect" { "true" } else { "false" }))
+    discard map.set(payload, "must_obey_tool_outputs", json.str("true"))
+    discard map.set(payload, "max_tool_roundtrips", json.str(if mode == "local_inspect" { "4" } else { "2" }))
+    return json.object(payload)
+}
+
+fn frame_json(workspace_id: str, session_id: str, request: str) -> str {
+    let selected = selected_memory_json(request, workspace_id, session_id)
+    let payload = map.new()
+    discard map.set(payload, "system_instructions", json.str("Assemble answers from selected memory before expanding tool work"))
+    discard map.set(payload, "selected_memory", json.raw(selected))
+    discard map.set(payload, "planner", json.raw(planner_json(selected, request)))
+    discard map.set(payload, "protocol", json.raw(protocol_json(request)))
+    discard map.set(payload, "user_request", json.str(request))
+    return json.object(payload)
+}
+
+fn compact_json(workspace_id: str, session_id: str, request: str) -> str {
+    let frame = frame_json(workspace_id, session_id, request)
+    let payload = map.new()
+    discard map.set(payload, "status", json.str("ok"))
+    discard map.set(payload, "workspace_id", json.str(workspace_id))
+    discard map.set(payload, "session_id", json.str(session_id))
+    discard map.set(payload, "selected_count", json.str(str.from_i32(count_occurrences(frame, "\"id\""))))
+    discard map.set(payload, "summary", json.str(str.concat("Compacted context for request: ", request)))
+    return json.object(payload)
+}
+
+fn doctor_json(request: str) -> str {
+    return json_obj2("mode", json.str(model.task_mode(request)), "selected_count", json.str(str.from_i32(count_occurrences(frame_json("workspace-main", "session-a", request), "\"id\""))))
+}

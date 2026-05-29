@@ -1,0 +1,28 @@
+use core.log;
+use core.process;
+use core.term;
+use core.text;
+
+use services;
+
+fn print_help() -> i32 {
+    discard term.print_line("agent_runtime")
+    discard term.print_line("  once <request>      plan one signed runtime request")
+    discard term.print_line("  doctor              print catalog and audit location")
+    return 0
+}
+
+fn run(command: str) -> i32 {
+    if command == "help" || command == "--help" {
+        log.quiet()
+        return print_help()
+    }
+    if command == "doctor" {
+        discard term.print_line(text.indent(services.doctor_json(), "  "))
+        return 0
+    }
+    let request = process.argv_or(2, "inspect the repo and cite exact file paths")
+    let payload = services.run_once("workspace-main", "operator", request)
+    discard term.print_line(text.indent(payload, "  "))
+    return 0
+}

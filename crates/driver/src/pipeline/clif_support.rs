@@ -2310,6 +2310,11 @@ pub(super) fn clif_emit_expr(
                     });
                 }
             }
+            if callee.starts_with("simd.__") {
+                bail!(
+                    "cranelift lowering does not support `{callee}`; compile with `--backend llvm`"
+                );
+            }
             if callee == "str.concat" && args.len() >= 2 {
                 let function_id = ctx
                     .function_ids
@@ -2457,6 +2462,8 @@ pub(super) fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType
         | ast::Type::Decimal
         | ast::Type::DateTimeTz
         | ast::Type::ExitStatus
+        | ast::Type::SimdVector(_)
+        | ast::Type::SimdMask(_)
         | ast::Type::Tuple(_)
         | ast::Type::Function { .. }
         | ast::Type::Named { .. }

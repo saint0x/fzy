@@ -1,0 +1,89 @@
+use core.fs;
+use core.log;
+use core.path;
+use core.security;
+use core.storage;
+
+use model;
+use runtime;
+
+fn log_fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let fields = map.new()
+    discard map.set(fields, k1, v1)
+    discard map.set(fields, k2, v2)
+    return log.fields(fields)
+}
+
+fn count_occurrences(text_value: str, needle: str) -> i32 {
+    if text_value == "" || needle == "" {
+        return 0
+    }
+    let mut count = 0
+    let mut idx = 0
+    while idx + str.len(needle) <= str.len(text_value) {
+        if str.slice(text_value, idx, idx + str.len(needle)) == needle {
+            count += 1
+            idx += str.len(needle)
+        } else {
+            idx += 1
+        }
+    }
+    return count
+}
+
+fn audit_path() -> str {
+    return path.join("tmp", "agent_runtime.audit.jsonl")
+}
+
+fn json_obj3(k1: str, v1: str, k2: str, v2: str, k3: str, v3: str) -> str {
+    let obj = map.new()
+    discard map.set(obj, k1, v1)
+    discard map.set(obj, k2, v2)
+    discard map.set(obj, k3, v3)
+    return json.object(obj)
+}
+
+fn plan_json(workspace_id: str, user: str, request: str) -> str {
+    let session = model.session_json(workspace_id, user)
+    let parsed = json.parse(session)
+    let session_id = json.get_str(parsed, "session_id")
+    let auth_mac = json.get_str(parsed, "auth_mac")
+    let auth_ok = security.verify_value(
+        "agent-runtime-secret",
+        str.concat(workspace_id, str.concat(":", session_id)),
+        auth_mac,
+    )
+    let payload = map.new()
+    discard map.set(payload, "request", json.str(request))
+    discard map.set(payload, "mode", json.str(model.task_mode(request)))
+    discard map.set(payload, "session", json.raw(session))
+    discard map.set(payload, "tools", json.raw(model.tool_catalog_json()))
+    discard map.set(payload, "parallel_budget", json.raw(str.from_i32(runtime.parallel_budget())))
+    discard map.set(payload, "auth_ok", json.raw(if auth_ok == 1 { "true" } else { "false" }))
+    return json.object(payload)
+}
+
+fn append_audit(event: str, payload_json: str) -> i32 {
+    fs.mkdir("tmp")
+    let line = str.concat(
+        json_obj3("event", json.str(event), "status", json.str("ok"), "payload", json.raw(payload_json)),
+        "\n",
+    )
+    discard storage.atomic_append(audit_path(), line)
+    return 0
+}
+
+fn run_once(workspace_id: str, user: str, request: str) -> str {
+    let payload = plan_json(workspace_id, user, request)
+    discard append_audit("plan_once", payload)
+    log.info("agent_runtime.plan", log_fields2("mode", model.task_mode(request), "workspace", workspace_id))
+    return payload
+}
+
+fn doctor_json() -> str {
+    let payload = map.new()
+    discard map.set(payload, "tool_count", json.str(str.from_i32(count_occurrences(model.tool_catalog_json(), "\"id\""))))
+    discard map.set(payload, "audit_path", json.str(audit_path()))
+    discard map.set(payload, "parallel_budget", json.str(str.from_i32(runtime.parallel_budget())))
+    return json.object(payload)
+}
