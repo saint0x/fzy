@@ -440,6 +440,37 @@ fn portable_simd_surface_executes_on_llvm_backend() {
 }
 
 #[test]
+fn portable_simd_text_block_workloads_execute_on_llvm_backend() {
+    let project_name = format!(
+        "fozzylang-simd-text-block-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.simd;\n\nfn alpha_mask(block: [u32; 4]) -> mask32x4 {\n    let value = simd.u32x4_load(block)\n    let lower = simd.mask32x4_and(simd.u32x4_ge(value, simd.u32x4_new(97, 97, 97, 97)), simd.u32x4_le(value, simd.u32x4_new(122, 122, 122, 122)))\n    let upper = simd.mask32x4_and(simd.u32x4_ge(value, simd.u32x4_new(65, 65, 65, 65)), simd.u32x4_le(value, simd.u32x4_new(90, 90, 90, 90)))\n    return simd.mask32x4_or(lower, upper)\n}\n\nfn delimiter_bitmask(block: [u32; 4]) -> i32 {\n    let value = simd.u32x4_load(block)\n    let is_space = simd.u32x4_eq(value, simd.u32x4_new(32, 32, 32, 32))\n    let is_comma = simd.u32x4_eq(value, simd.u32x4_new(44, 44, 44, 44))\n    let is_colon = simd.u32x4_eq(value, simd.u32x4_new(58, 58, 58, 58))\n    let is_tab = simd.u32x4_eq(value, simd.u32x4_new(9, 9, 9, 9))\n    let delimiter_mask = simd.mask32x4_or(simd.mask32x4_or(is_space, is_comma), simd.mask32x4_or(is_colon, is_tab))\n    return simd.mask32x4_bitmask(delimiter_mask)\n}\n\nfn equality_bitmask(left: [u32; 4], right: [u32; 4]) -> i32 {\n    return simd.mask32x4_bitmask(simd.u32x4_eq(simd.u32x4_load(left), simd.u32x4_load(right)))\n}\n\nfn main() -> i32 {\n    let block = simd.u32x4_store(simd.u32x4_new(65, 122, 44, 57))\n    let alpha = alpha_mask(block)\n    if simd.mask32x4_bitmask(alpha) != 3 { return 11 }\n    if delimiter_bitmask(block) != 4 { return 13 }\n    let left = simd.u32x4_store(simd.u32x4_new(58, 44, 120, 32))\n    let right = simd.u32x4_store(simd.u32x4_new(58, 10, 120, 95))\n    if equality_bitmask(left, right) != 5 { return 15 }\n    let merged = simd.u32x4_max(simd.u32x4_load(left), simd.u32x4_load(right))\n    if simd.u32x4_reduce_max(merged) != simd.u32x4_lane2(merged) { return 17 }\n    if simd.u32x4_reduce_min(merged) != simd.u32x4_lane1(merged) { return 19 }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
+    assert_eq!(llvm_exit, 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn llvm_array_literal_return_values_round_trip_through_named_locals() {
     let project_name = format!(
         "fozzylang-array-return-{}",

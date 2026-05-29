@@ -63,6 +63,7 @@ This now includes the first safe memory-interop slice:
 - generic LLVM array-value lowering needed to make those wrappers real compiler features rather than surface-only helpers
 - deterministic Fozzy coverage plus a host-backed native confidence pass for the shipped slice
 - realistic reference example coverage in `examples/simd_kernels`
+- representative workload coverage for ASCII classification, delimiter masks, and equality-mask scans in `tests/fixtures/simd_text_block`
 
 ## Track 1: Auto-Vectorization-Friendly Lowering
 
@@ -300,7 +301,7 @@ This track adds an explicit author-facing SIMD model.
 - [ ] Add perf regression gates.
 - [x] Add docs/examples/showcase updates.
 - [x] Add Fozzy scenarios for SIMD-oriented runtime/compiler parity where meaningful.
-- [ ] Add release-gate coverage for SIMD representative workloads.
+- [x] Add release-gate coverage for SIMD representative workloads.
 
 ### Phase 4: Advanced portable SIMD
 
