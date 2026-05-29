@@ -11161,9 +11161,13 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "simd.__f32x4",
         "simd.__mask32x4",
         "simd.__i32x4_splat",
+        "simd.__i32x4_load",
         "simd.__u32x4_splat",
+        "simd.__u32x4_load",
         "simd.__f32x4_splat",
+        "simd.__f32x4_load",
         "simd.__mask32x4_splat",
+        "simd.__mask32x4_load",
         "simd.__i32x4_add",
         "simd.__i32x4_sub",
         "simd.__i32x4_mul",
@@ -11628,9 +11632,37 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             mask32x4.clone(),
         ),
         "simd.__i32x4_splat" => (vec![i32.clone()], i32x4.clone()),
+        "simd.__i32x4_load" => (
+            vec![Type::Array {
+                elem: Box::new(i32.clone()),
+                len: 4,
+            }],
+            i32x4.clone(),
+        ),
         "simd.__u32x4_splat" => (vec![i32.clone()], u32x4.clone()),
+        "simd.__u32x4_load" => (
+            vec![Type::Array {
+                elem: Box::new(u32_ty.clone()),
+                len: 4,
+            }],
+            u32x4.clone(),
+        ),
         "simd.__f32x4_splat" => (vec![Type::Float { bits: 64 }], f32x4.clone()),
+        "simd.__f32x4_load" => (
+            vec![Type::Array {
+                elem: Box::new(f32_ty.clone()),
+                len: 4,
+            }],
+            f32x4.clone(),
+        ),
         "simd.__mask32x4_splat" => (vec![i32.clone()], mask32x4.clone()),
+        "simd.__mask32x4_load" => (
+            vec![Type::Array {
+                elem: Box::new(bool_ty.clone()),
+                len: 4,
+            }],
+            mask32x4.clone(),
+        ),
         "simd.__i32x4_add"
         | "simd.__i32x4_sub"
         | "simd.__i32x4_mul"

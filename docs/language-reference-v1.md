@@ -231,6 +231,7 @@ Semantics:
 - SIMD values must not cross ABI/FFI boundaries in v1.
 - Current public operations include:
   - constructors and `splat`
+  - safe fixed-array `load`/`store`
   - arithmetic, min/max, shifts, bitwise ops
   - comparisons producing `mask32x4`
   - `select(mask, then, else)`
@@ -242,6 +243,7 @@ Semantics:
 - Backend posture:
   - LLVM lowers the current phase-1 surface
   - Cranelift rejects `core.simd` explicitly until native SIMD lowering is implemented
+- Current safe memory interop is fixed-size array based; raw-buffer and alignment-sensitive SIMD APIs are not part of the shipped v1 surface yet.
 - Canonical standard-library wrapper import is `use core.process;`.
 - `core.process` exposes ergonomic wrappers like `process.argv_or`, `process.command_name`, and `process.has_flag`.
 - Structured process builders are first-class: `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`, `proc.run_cmd`.

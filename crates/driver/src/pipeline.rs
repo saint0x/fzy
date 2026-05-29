@@ -33,8 +33,8 @@ use self::linker_support::{
     linker_candidates, profile_config, unsafe_contracts_enforced, unsafe_scope_policy,
 };
 use self::llvm_support::{
-    llvm_emit_binary_expr, llvm_emit_complex_expr, llvm_emit_simple_expr, llvm_float_literal,
-    lower_llvm_ir, LlvmFuncCtx, LlvmValue,
+    llvm_emit_array_literal_value, llvm_emit_binary_expr, llvm_emit_complex_expr,
+    llvm_emit_simple_expr, llvm_float_literal, lower_llvm_ir, LlvmFuncCtx, LlvmValue,
 };
 use self::native_backend_support::{
     backend_capability_diagnostics, declare_native_data_plane_imports,
@@ -6134,15 +6134,7 @@ fn llvm_emit_expr(
             llvm_emit_expr(start, ctx, string_literal_ids, task_ref_ids)?
         }
         ast::Expr::ArrayLiteral(items) => {
-            // Array literals are materialized by statement lowering into element slots.
-            // Expression-position array literals are unsupported in direct-memory mode.
-            for item in items {
-                let _ = llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids)?;
-            }
-            LlvmValue {
-                value: "0".to_string(),
-                ty: "i32".to_string(),
-            }
+            llvm_emit_array_literal_value(items, ctx, string_literal_ids, task_ref_ids)?
         }
         ast::Expr::ObjectLiteral(_) => unreachable!("complex expressions are handled above"),
         ast::Expr::Index { .. } => unreachable!("complex expressions are handled above"),

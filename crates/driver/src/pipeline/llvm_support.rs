@@ -260,6 +260,224 @@ fn llvm_emit_simd_splat(
     })
 }
 
+fn llvm_emit_simd_load_from_array(
+    kind: &str,
+    arg: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<LlvmValue> {
+    let vec_ty = llvm_simd_vector_type(kind).to_string();
+    let lane_ty = llvm_simd_scalar_type(kind);
+    let mut current = "undef".to_string();
+    for index in 0..4 {
+        let lane_expr = ast::Expr::Index {
+            base: Box::new(arg.clone()),
+            index: Box::new(ast::Expr::Int(index as i128)),
+        };
+        let lane = llvm_emit_simd_lane_value(
+            &lane_expr,
+            kind,
+            ctx,
+            string_literal_ids,
+            task_ref_ids,
+        )?;
+        let next = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {next} = insertelement {vec_ty} {current}, {lane_ty} {lane}, i32 {index}\n"
+        ));
+        current = next;
+    }
+    Ok(LlvmValue {
+        value: current,
+        ty: vec_ty,
+    })
+}
+
+fn llvm_array_layout_for_element_ty(element_ty: &str) -> (u16, u8, u8) {
+    match element_ty {
+        "i8" => (8, 1, 1),
+        "i32" | "float" => (32, 4, 4),
+        "i64" | "double" => (64, 8, 8),
+        _ => (32, 4, 4),
+    }
+}
+
+fn llvm_array_binding_from_type(slot: &str, ty: &ast::Type) -> Option<LlvmArrayBinding> {
+    let ast::Type::Array { elem, len } = ty else {
+        return None;
+    };
+    let element_ty = llvm_ir_type_for_ast_type(elem);
+    let (element_bits, element_align, element_stride) =
+        llvm_array_layout_for_element_ty(&element_ty);
+    Some(LlvmArrayBinding {
+        storage: slot.to_string(),
+        len: *len,
+        element_ty,
+        element_bits,
+        element_align,
+        element_stride,
+    })
+}
+
+fn llvm_parse_array_ir_type(ty: &str) -> Option<(usize, String)> {
+    let ty = ty.trim();
+    let inner = ty.strip_prefix('[')?.strip_suffix(']')?;
+    let (len, element_ty) = inner.split_once(" x ")?;
+    let len = len.parse::<usize>().ok()?;
+    Some((len, element_ty.trim().to_string()))
+}
+
+fn llvm_array_binding_from_ir_type(slot: &str, ty: &str) -> Option<LlvmArrayBinding> {
+    let (len, element_ty) = llvm_parse_array_ir_type(ty)?;
+    let (element_bits, element_align, element_stride) =
+        llvm_array_layout_for_element_ty(&element_ty);
+    Some(LlvmArrayBinding {
+        storage: slot.to_string(),
+        len,
+        element_ty,
+        element_bits,
+        element_align,
+        element_stride,
+    })
+}
+
+pub(super) fn llvm_emit_array_literal_value(
+    items: &[ast::Expr],
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<LlvmValue> {
+    let len = items.len();
+    let lowered_items = items
+        .iter()
+        .map(|item| llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids))
+        .collect::<Result<Vec<_>>>()?;
+    let element_ty = lowered_items
+        .first()
+        .map(|value| value.ty.clone())
+        .unwrap_or_else(|| "i32".to_string());
+    let array_ty = format!("[{len} x {element_ty}]");
+    let storage = format!("%slot_array_literal_{}", ctx.next_value);
+    ctx.declare_alloca(&storage, &array_ty);
+    for (idx, item) in items.iter().enumerate() {
+        let item_value = llvm_emit_expr_as(item, ctx, string_literal_ids, task_ref_ids, &element_ty)?;
+        let element_ptr = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {element_ptr} = getelementptr inbounds {array_ty}, ptr {storage}, i32 0, i64 {idx}\n  store {element_ty} {}, ptr {element_ptr}\n",
+            item_value.value
+        ));
+    }
+    let loaded = ctx.value();
+    ctx.code
+        .push_str(&format!("  {loaded} = load {array_ty}, ptr {storage}\n"));
+    Ok(LlvmValue {
+        value: loaded,
+        ty: array_ty,
+    })
+}
+
+fn llvm_emit_array_index_from_binding(
+    binding: LlvmArrayBinding,
+    index: &ast::Expr,
+    index_value: &str,
+    ctx: &mut LlvmFuncCtx,
+) -> Result<LlvmValue> {
+    if binding.len == 0 {
+        return Ok(LlvmValue {
+            value: llvm_zero_literal(&binding.element_ty, 0),
+            ty: binding.element_ty,
+        });
+    }
+    if let ast::Expr::Ident(index_name) = index {
+        if ctx
+            .wrapped_indices
+            .get(index_name)
+            .map(|limits| limits.contains(&binding.len))
+            .unwrap_or(false)
+        {
+            let idx64 = ctx.value();
+            let elem_ptr = ctx.value();
+            let loaded = ctx.value();
+            ctx.code
+                .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
+            ctx.code.push_str(&format!(
+                "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
+                binding.len, binding.element_ty, binding.storage
+            ));
+            ctx.code.push_str(&format!(
+                "  {loaded} = load {}, ptr {elem_ptr}\n",
+                binding.element_ty
+            ));
+            return Ok(LlvmValue {
+                value: loaded,
+                ty: binding.element_ty,
+            });
+        }
+    }
+    if let Some(const_idx) = eval_const_i32_expr(index, &ctx.const_strings) {
+        if const_idx >= 0 && (const_idx as usize) < binding.len {
+            let elem_ptr = ctx.value();
+            let loaded = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {}\n",
+                binding.len, binding.element_ty, binding.storage, const_idx
+            ));
+            ctx.code.push_str(&format!(
+                "  {loaded} = load {}, ptr {elem_ptr}\n",
+                binding.element_ty
+            ));
+            return Ok(LlvmValue {
+                value: loaded,
+                ty: binding.element_ty,
+            });
+        }
+    }
+    let in_label = ctx.label("idx.in");
+    let out_label = ctx.label("idx.oob");
+    let merge_label = ctx.label("idx.merge");
+    let ok = ctx.value();
+    ctx.code.push_str(&format!(
+        "  {ok} = icmp ult i32 {index_value}, {}\n",
+        binding.len
+    ));
+    ctx.code
+        .push_str(&format!("  br i1 {ok}, label %{in_label}, label %{out_label}\n"));
+    ctx.code.push_str(&format!("{in_label}:\n"));
+    let idx64 = ctx.value();
+    let elem_ptr = ctx.value();
+    let loaded = ctx.value();
+    ctx.code
+        .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
+    ctx.code.push_str(&format!(
+        "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
+        binding.len, binding.element_ty, binding.storage
+    ));
+    ctx.code.push_str(&format!(
+        "  {loaded} = load {}, ptr {elem_ptr}\n",
+        binding.element_ty
+    ));
+    ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+    ctx.code.push_str(&format!("{out_label}:\n"));
+    ctx.code.push_str(&format!("  br label %{merge_label}\n"));
+    ctx.code.push_str(&format!("{merge_label}:\n"));
+    let selected = ctx.value();
+    ctx.code.push_str(&format!(
+        "  {selected} = phi {} [ {loaded}, %{in_label} ], [ {}, %{out_label} ]\n",
+        binding.element_ty,
+        llvm_zero_literal(&binding.element_ty, 0)
+    ));
+    let _ = (
+        binding.element_bits,
+        binding.element_align,
+        binding.element_stride,
+    );
+    Ok(LlvmValue {
+        value: selected,
+        ty: binding.element_ty,
+    })
+}
+
 fn llvm_emit_simd_intrinsic_call(
     callee: &str,
     args: &[ast::Expr],
@@ -276,6 +494,9 @@ fn llvm_emit_simd_intrinsic_call(
     let value = match op {
         "" => llvm_emit_simd_ctor_from_lanes(kind, args, ctx, string_literal_ids, task_ref_ids)?,
         "_splat" => llvm_emit_simd_splat(kind, &args[0], ctx, string_literal_ids, task_ref_ids)?,
+        "_load" => {
+            llvm_emit_simd_load_from_array(kind, &args[0], ctx, string_literal_ids, task_ref_ids)?
+        }
         "_add" | "_sub" | "_mul" | "_and" | "_or" | "_xor" => {
             let lhs = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
             let rhs = llvm_emit_expr_as(&args[1], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
@@ -1472,7 +1693,7 @@ pub(super) fn llvm_emit_linear_stmts(
                     ctx.array_slots.insert(
                         name.clone(),
                         LlvmArrayBinding {
-                            storage,
+                            storage: storage.clone(),
                             len,
                             element_ty: element_ty.clone(),
                             element_bits: 32,
@@ -1480,6 +1701,9 @@ pub(super) fn llvm_emit_linear_stmts(
                             element_stride: 4,
                         },
                     );
+                    ctx.slots.insert(name.clone(), storage);
+                    ctx.slot_tys
+                        .insert(name.clone(), format!("[{len} x {element_ty}]"));
                     ctx.direct_values.remove(name);
                     continue;
                 }
@@ -1522,12 +1746,17 @@ pub(super) fn llvm_emit_linear_stmts(
                     "  store {} {}, ptr {slot}\n",
                     rendered.ty, rendered.value
                 ));
-                ctx.slots.insert(name.clone(), slot);
+                ctx.slots.insert(name.clone(), slot.clone());
                 ctx.slot_tys.insert(name.clone(), rendered.ty.clone());
                 if !*mutable {
                     ctx.direct_values.insert(name.clone(), rendered.clone());
                 } else {
                     ctx.direct_values.remove(name);
+                }
+                if let Some(local_ty) = ctx.local_types.get(name) {
+                    if let Some(binding) = llvm_array_binding_from_type(&slot, local_ty) {
+                        ctx.array_slots.insert(name.clone(), binding);
+                    }
                 }
                 let _ = llvm_record_aggregate_binding(
                     name,
@@ -1636,7 +1865,9 @@ pub(super) fn llvm_emit_linear_stmts(
                             .insert(format!("{name}.{field}"), rendered.ty.clone());
                     }
                 }
-                ctx.array_slots.remove(name);
+                if !matches!(ctx.local_types.get(name), Some(ast::Type::Array { .. })) {
+                    ctx.array_slots.remove(name);
+                }
                 ctx.const_strings.remove(name);
             }
             ast::Stmt::LetPattern { pattern, value, .. } => {
@@ -1677,7 +1908,7 @@ pub(super) fn llvm_emit_linear_stmts(
                     ctx.array_slots.insert(
                         target.clone(),
                         LlvmArrayBinding {
-                            storage,
+                            storage: storage.clone(),
                             len,
                             element_ty: element_ty.clone(),
                             element_bits: 32,
@@ -1685,6 +1916,10 @@ pub(super) fn llvm_emit_linear_stmts(
                             element_stride: 4,
                         },
                     );
+                    ctx.slots.insert(target.clone(), storage);
+                    ctx.slot_tys
+                        .insert(target.clone(), format!("[{len} x {element_ty}]"));
+                    ctx.direct_values.remove(target);
                     continue;
                 }
                 if let ast::Expr::Ident(source) = value {
@@ -1737,6 +1972,11 @@ pub(super) fn llvm_emit_linear_stmts(
                 ));
                 ctx.slot_tys
                     .insert(target.clone(), rendered_value.ty.clone());
+                if let Some(local_ty) = ctx.local_types.get(target) {
+                    if let Some(binding) = llvm_array_binding_from_type(&slot, local_ty) {
+                        ctx.array_slots.insert(target.clone(), binding);
+                    }
+                }
                 ctx.direct_values.remove(target);
                 let _ = llvm_record_aggregate_binding(
                     target,
@@ -2329,103 +2569,23 @@ pub(super) fn llvm_emit_complex_expr(
             };
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_slots.get(name).cloned() {
-                    if binding.len == 0 {
-                        return Ok(LlvmValue {
-                            value: llvm_zero_literal(&binding.element_ty, 0),
-                            ty: binding.element_ty,
-                        });
-                    }
-                    if let ast::Expr::Ident(index_name) = index.as_ref() {
-                        if ctx
-                            .wrapped_indices
-                            .get(index_name)
-                            .map(|limits| limits.contains(&binding.len))
-                            .unwrap_or(false)
-                        {
-                            let idx64 = ctx.value();
-                            let elem_ptr = ctx.value();
-                            let loaded = ctx.value();
-                            ctx.code
-                                .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
-                            ctx.code.push_str(&format!(
-                                    "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
-                                    binding.len, binding.element_ty, binding.storage
-                                ));
-                            ctx.code.push_str(&format!(
-                                "  {loaded} = load {}, ptr {elem_ptr}\n",
-                                binding.element_ty
-                            ));
-                            return Ok(LlvmValue {
-                                value: loaded,
-                                ty: binding.element_ty,
-                            });
-                        }
-                    }
-                    if let Some(const_idx) = eval_const_i32_expr(index, &ctx.const_strings) {
-                        if const_idx >= 0 && (const_idx as usize) < binding.len {
-                            let elem_ptr = ctx.value();
-                            let loaded = ctx.value();
-                            ctx.code.push_str(&format!(
-                                    "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {}\n",
-                                    binding.len, binding.element_ty, binding.storage, const_idx
-                                ));
-                            ctx.code.push_str(&format!(
-                                "  {loaded} = load {}, ptr {elem_ptr}\n",
-                                binding.element_ty
-                            ));
-                            return Ok(LlvmValue {
-                                value: loaded,
-                                ty: binding.element_ty,
-                            });
-                        }
-                    }
-                    let in_label = ctx.label("idx.in");
-                    let out_label = ctx.label("idx.oob");
-                    let merge_label = ctx.label("idx.merge");
-                    let ok = ctx.value();
-                    ctx.code.push_str(&format!(
-                        "  {ok} = icmp ult i32 {index_value}, {}\n",
-                        binding.len
-                    ));
-                    ctx.code.push_str(&format!(
-                        "  br i1 {ok}, label %{in_label}, label %{out_label}\n"
-                    ));
-                    ctx.code.push_str(&format!("{in_label}:\n"));
-                    let idx64 = ctx.value();
-                    let elem_ptr = ctx.value();
-                    let loaded = ctx.value();
-                    ctx.code
-                        .push_str(&format!("  {idx64} = sext i32 {index_value} to i64\n"));
-                    ctx.code.push_str(&format!(
-                            "  {elem_ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 {idx64}\n",
-                            binding.len, binding.element_ty, binding.storage
-                        ));
-                    ctx.code.push_str(&format!(
-                        "  {loaded} = load {}, ptr {elem_ptr}\n",
-                        binding.element_ty
-                    ));
-                    ctx.code.push_str(&format!("  br label %{merge_label}\n"));
-                    ctx.code.push_str(&format!("{out_label}:\n"));
-                    ctx.code.push_str(&format!("  br label %{merge_label}\n"));
-                    ctx.code.push_str(&format!("{merge_label}:\n"));
-                    let selected = ctx.value();
-                    ctx.code.push_str(&format!(
-                        "  {selected} = phi {} [ {loaded}, %{in_label} ], [ {}, %{out_label} ]\n",
-                        binding.element_ty,
-                        llvm_zero_literal(&binding.element_ty, 0)
-                    ));
-                    let _ = (
-                        binding.element_bits,
-                        binding.element_align,
-                        binding.element_stride,
-                    );
-                    return Ok(LlvmValue {
-                        value: selected,
-                        ty: binding.element_ty,
-                    });
+                    return llvm_emit_array_index_from_binding(binding, index, &index_value, ctx);
                 }
             }
-            llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)
+            let base_value = llvm_emit_expr(base, ctx, string_literal_ids, task_ref_ids)?;
+            let temp_array_slot = format!("%slot_array_index_{}", ctx.next_value);
+            ctx.next_value += 1;
+            if let Some(binding) =
+                llvm_array_binding_from_ir_type(&temp_array_slot, &base_value.ty)
+            {
+                ctx.declare_alloca(&binding.storage, &base_value.ty);
+                ctx.code.push_str(&format!(
+                    "  store {} {}, ptr {}\n",
+                    base_value.ty, base_value.value, binding.storage
+                ));
+                return llvm_emit_array_index_from_binding(binding, index, &index_value, ctx);
+            }
+            Ok(base_value)
         })()),
         ast::Expr::Call { callee, args } => Some((|| {
             if let Some(value) = eval_const_i32_call(callee, args, &ctx.const_strings) {
@@ -2731,6 +2891,12 @@ pub(super) fn llvm_emit_simple_expr(
             }
             Ok(llvm_emit_aggregate_handle(0, &rendered, ctx))
         })()),
+        ast::Expr::ArrayLiteral(items) => Some(llvm_emit_array_literal_value(
+            items,
+            ctx,
+            string_literal_ids,
+            task_ref_ids,
+        )),
         ast::Expr::StructInit { fields, .. } => Some((|| {
             let mut rendered = Vec::with_capacity(fields.len());
             for (_, value) in fields {
@@ -2793,6 +2959,9 @@ pub(super) fn llvm_ir_type_for_ast_type(ty: &ast::Type) -> String {
         ast::Type::Int { bits, .. } => format!("i{bits}"),
         ast::Type::Float { bits: 32 } => "float".to_string(),
         ast::Type::Float { bits: 64 } => "double".to_string(),
+        ast::Type::Array { elem, len } => {
+            format!("[{len} x {}]", llvm_ir_type_for_ast_type(elem))
+        }
         ast::Type::SimdVector(shape) => match shape.element {
             ast::SimdElement::I32 | ast::SimdElement::U32 => format!("<{} x i32>", shape.lanes),
             ast::SimdElement::F32 => format!("<{} x float>", shape.lanes),
@@ -3206,8 +3375,11 @@ pub(super) fn llvm_emit_function(
         ctx.declare_alloca(&slot, &param_ty);
         ctx.code
             .push_str(&format!("  store {param_ty} %arg{index}, ptr {slot}\n"));
-        ctx.slots.insert(param.name.clone(), slot);
+        ctx.slots.insert(param.name.clone(), slot.clone());
         ctx.slot_tys.insert(param.name.clone(), param_ty);
+        if let Some(binding) = llvm_array_binding_from_type(&slot, &param.ty) {
+            ctx.array_slots.insert(param.name.clone(), binding);
+        }
     }
     let labels = cfg
         .blocks

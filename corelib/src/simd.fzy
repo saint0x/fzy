@@ -18,16 +18,68 @@ fn i32x4_splat(value: i32) -> i32x4 {
     return simd.__i32x4_splat(value)
 }
 
+fn i32x4_load(values: [i32; 4]) -> i32x4 {
+    return simd.__i32x4_load(values)
+}
+
+fn i32x4_store(value: i32x4) -> [i32; 4] {
+    return [
+        i32x4_lane0(value),
+        i32x4_lane1(value),
+        i32x4_lane2(value),
+        i32x4_lane3(value),
+    ]
+}
+
 fn u32x4_splat(value: i32) -> u32x4 {
     return simd.__u32x4_splat(value)
+}
+
+fn u32x4_load(values: [u32; 4]) -> u32x4 {
+    return simd.__u32x4_load(values)
+}
+
+fn u32x4_store(value: u32x4) -> [u32; 4] {
+    return [
+        u32x4_lane0(value),
+        u32x4_lane1(value),
+        u32x4_lane2(value),
+        u32x4_lane3(value),
+    ]
 }
 
 fn f32x4_splat(value: f64) -> f32x4 {
     return simd.__f32x4_splat(value)
 }
 
+fn f32x4_load(values: [f32; 4]) -> f32x4 {
+    return simd.__f32x4_load(values)
+}
+
+fn f32x4_store(value: f32x4) -> [f32; 4] {
+    return [
+        f32x4_lane0(value),
+        f32x4_lane1(value),
+        f32x4_lane2(value),
+        f32x4_lane3(value),
+    ]
+}
+
 fn mask32x4_splat(value: i32) -> mask32x4 {
     return simd.__mask32x4_splat(value)
+}
+
+fn mask32x4_load(values: [bool; 4]) -> mask32x4 {
+    return simd.__mask32x4_load(values)
+}
+
+fn mask32x4_store(value: mask32x4) -> [bool; 4] {
+    return [
+        mask32x4_lane0(value),
+        mask32x4_lane1(value),
+        mask32x4_lane2(value),
+        mask32x4_lane3(value),
+    ]
 }
 
 fn i32x4_add(left: i32x4, right: i32x4) -> i32x4 {

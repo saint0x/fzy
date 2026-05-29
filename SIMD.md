@@ -56,6 +56,12 @@ Phase 1 portable SIMD is now shipped with an LLVM-backed surface:
 
 The broader roadmap below remains the long-term plan. Only the checked items should be treated as production-complete today.
 
+This now includes the first safe memory-interop slice:
+
+- fixed-size array load/store for `i32x4`, `u32x4`, `f32x4`, and `mask32x4`
+- generic LLVM array-value lowering needed to make those wrappers real compiler features rather than surface-only helpers
+- deterministic Fozzy coverage plus a host-backed native confidence pass for the shipped slice
+
 ## Track 1: Auto-Vectorization-Friendly Lowering
 
 This track improves ordinary code generation so users get SIMD wins without writing explicit SIMD code.
@@ -190,16 +196,18 @@ This track adds an explicit author-facing SIMD model.
 
 ### C. Memory operations
 
-- [ ] Safe contiguous load/store operations.
+- [x] Safe contiguous load/store operations for fixed-size array values.
 - [ ] Explicit aligned vs unaligned load/store policy.
 - [ ] Partial/tail handling policy:
   - masked loads/stores later
   - scalar tail loops initially if simpler
 - [ ] Gather/scatter:
   - probably defer from phase 1 unless there is a strong use case
-- [ ] Slice/array interop:
-  - loading from `bytes`, arrays, or typed contiguous buffers
-  - storing back into typed contiguous buffers
+- [x] Slice/array interop:
+  - [x] loading from fixed-size typed arrays
+  - [x] storing back into fixed-size typed arrays
+  - [ ] loading from `bytes` or other typed contiguous buffers
+  - [ ] storing back into non-array contiguous buffers
 
 ### D. Masks
 
@@ -245,7 +253,7 @@ This track adds an explicit author-facing SIMD model.
   - [x] aliases
   - [x] constructors
   - [x] reductions
-  - safe load/store wrappers
+  - [x] safe fixed-array load/store wrappers
 - [x] Keep naming consistent with `core.process`, `core.term`, `core.http`, etc.
 
 ### H. Feature detection and target policy
@@ -278,7 +286,7 @@ This track adds an explicit author-facing SIMD model.
 
 - [x] Land `core.simd` import + type surface.
 - [x] Land core integer + float vector types.
-- [ ] Land splat/load/store/basic arithmetic/bitwise/compare/select/reduction operations.
+- [x] Land splat/load/store/basic arithmetic/bitwise/compare/select/reduction operations for the current fixed-array-safe surface.
 - [x] Land basic arithmetic/bitwise/compare/select/reduction operations for the no-memory phase-1 surface.
 - [x] Land LLVM lowering for the minimal surface.
 - [ ] Land Cranelift lowering for the supported subset.
@@ -325,6 +333,7 @@ This track adds an explicit author-facing SIMD model.
 - [x] `fozzy trace verify <trace.fozzy> --strict --json`
 - [x] `fozzy replay <trace.fozzy> --json`
 - [x] `fozzy ci <trace.fozzy> --json`
+- [x] host-backed native confidence pass for the shipped fixed-array SIMD slice
 - [ ] host-backed confidence pass where SIMD functionality interacts with real file/process/network workloads
 
 ### Benchmarking

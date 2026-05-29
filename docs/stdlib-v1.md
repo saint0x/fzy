@@ -228,6 +228,7 @@ Transcript guidance:
   - `mask32x4`
 - Shipped operation families:
   - constructors and `splat`
+  - safe fixed-array `load`/`store` for the four shipped vector/mask aliases
   - add/sub/mul
   - min/max
   - shifts and bitwise ops
@@ -244,6 +245,7 @@ Transcript guidance:
   - SIMD values are rejected across ABI/FFI boundaries in phase 1
   - `shuffle` traps on lane selectors outside `0..7`
   - masks remain distinct from integer vectors in the public API
+  - current safe memory interop is fixed-size array based; raw-buffer, alignment-policy, and masked-memory APIs remain future work
 
 - `use core.text;` is the standard-library text helper module for native CLI/service rendering.
 - Common helpers:
