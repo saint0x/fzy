@@ -4159,13 +4159,13 @@ fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str>
     match module_name {
         "process" => Some(include_str!("../../../corelib/src/process.fzy")),
         "term" => Some(include_str!("../../../corelib/src/term.fzy")),
-        "thread" => Some(include_str!("../../../corelib/src/thread.fzy")),
-        "log" => Some(include_str!("../../../corelib/src/log.fzy")),
+        "thread" => Some(include_str!("../../../corelib/src/threadkit.fzy")),
+        "log" => Some(include_str!("../../../corelib/src/logkit.fzy")),
         "security" => Some(include_str!("../../../corelib/src/security.fzy")),
         "simd" => Some(include_str!("../../../corelib/src/simd.fzy")),
         "text" => Some(include_str!("../../../corelib/src/text.fzy")),
         "io" => Some(include_str!("../../../corelib/src/io.fzy")),
-        "http" => Some(include_str!("../../../corelib/src/http.fzy")),
+        "http" => Some(include_str!("../../../corelib/src/httpkit.fzy")),
         _ => None,
     }
 }
@@ -6424,6 +6424,8 @@ fn verify_control_flow_cfg(cfg: &ControlFlowCfg) -> Result<()> {
 }
 
 fn lower_backend_ir(fir: &fir::FirModule, backend: BackendKind) -> Result<String> {
+    let plan = build_native_canonical_plan(fir, true);
+    drop(plan);
     match backend {
         BackendKind::Llvm => lower_llvm_ir(fir, true),
         BackendKind::Cranelift => lower_cranelift_ir(fir, true),

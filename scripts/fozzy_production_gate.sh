@@ -131,7 +131,7 @@ RUSTFLAGS="-D warnings" cargo check -p driver --all-targets >/dev/null
 "${FZ_CMD[@]}" fmt examples/fullstack/src examples/robust_cli/src --check >/dev/null
 "${FZ_CMD[@]}" doc gen examples/fullstack/src --format markdown --out "$ARTIFACT_DIR/fullstack.api.md" >/dev/null
 test -s "$ARTIFACT_DIR/fullstack.api.md"
-grep -q 'pubext c fn fs_open' "$ARTIFACT_DIR/fullstack.api.md"
+grep -q 'ext unsafe c fn fs_open' "$ARTIFACT_DIR/fullstack.api.md"
 grep -q 'rpc GetUser(req: GetUserReq) -> GetUserRes;' "$ARTIFACT_DIR/fullstack.api.md"
 "${FZ_CMD[@]}" rpc gen examples/fullstack --out-dir "$ARTIFACT_DIR/fullstack-rpc" --json >/dev/null
 test -s "$ARTIFACT_DIR/fullstack-rpc/rpc.schema.json"

@@ -21,7 +21,10 @@ fn json_object2(k1: str, v1_json: str, k2: str, v2_json: str) -> str {
 }
 
 fn json_array2(v1_json: str, v2_json: str) -> str {
-    return json.array([v1_json, v2_json])
+    let items = list.new()
+    discard list.push(items, v1_json)
+    discard list.push(items, v2_json)
+    return json.array(items)
 }
 
 fn http_write_json_map(conn: HttpHandle, status: i32, map_handle: MapHandle) -> i32 {

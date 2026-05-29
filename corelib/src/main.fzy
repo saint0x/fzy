@@ -1,6 +1,7 @@
 use core.http;
 use core.log;
 use core.proc;
+use core.thread;
 use core.error;
 
 mod resultx;
@@ -11,15 +12,15 @@ mod bytes;
 mod duration;
 mod abi;
 mod cinterop;
-mod http;
+mod httpkit;
 mod network;
 mod concurrency;
 mod process;
 mod term;
-mod thread;
+mod threadkit;
 mod security;
-mod log;
-mod error;
+mod logkit;
+mod errorkit;
 mod util;
 
 fn http_kernel_sample() -> i32 {
@@ -41,15 +42,15 @@ fn sanity() -> i32 {
     acc = (acc + abi.sample()) % 251
     acc = (acc + cinterop.sample()) % 251
     acc = (acc + http_kernel_sample()) % 251
-    acc = (acc + http.sample()) % 251
+    acc = (acc + httpkit.sample()) % 251
     acc = (acc + network.sample()) % 251
     acc = (acc + concurrency.sample()) % 251
     acc = (acc + process.sample()) % 251
     acc = (acc + term.sample()) % 251
-    acc = (acc + thread.sample()) % 251
+    acc = (acc + threadkit.sample()) % 251
     acc = (acc + security.sample()) % 251
-    acc = (acc + log.sample()) % 251
-    acc = (acc + error.sample()) % 251
+    acc = (acc + logkit.sample()) % 251
+    acc = (acc + errorkit.sample()) % 251
     acc = (acc + util.sample()) % 251
     return acc
 }
