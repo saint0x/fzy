@@ -350,6 +350,8 @@ Compressed completion:
 
 ✅ Closed the native namespaced-constant lowering bug so same-module `const i32` references and dotted module constant paths no longer collapse to `0` under native codegen; `fzaudio inspect` and `build` now agree again, with driver cross-backend regression coverage plus a dedicated Fozzy scenario guarding the exact project-kind-label case.
 
+✅ Closed the Cranelift linear-emission crash triggered by statement-position `unsafe { ... }` blocks that contained nested branches and returns around `ext unsafe c fn` calls inside exported control-plane code. Unsafe block bodies are now flattened into the surrounding CFG before backend linearization, the exported-FFI dispatch shape is regression-covered across LLVM and Cranelift, and the `megaserver` control-plane build now fails only on ordinary verifier/frontend diagnostics instead of aborting in backend codegen.
+
 ✅ Re-ran the production Fozzy trace lifecycle after the DX/runtime fixes through deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and host-backed execution.
 
 ## ✅ Production Blocker: Native Filesystem Surface Is Closed On This Checkout
@@ -374,6 +376,10 @@ Compressed completion: runtime shim now drains child pipes during wait, native b
 ## ✅ Production DX Blocker: Safe FFI Wrapper Layers Did Not Count As Documented ABI Facades
 
 ✅ Closed the narrow strict-verification wrapper gap by distinguishing call-edge coverage from independently proven unsafe evidence: documented `ext unsafe c fn` imports and their immediate safe Fzy facades now satisfy caller-edge ownership verification without pretending compiler-generated unsafe metadata is a full proof artifact. Added HIR and `fz verify` regressions plus a Fozzy scenario for the exact two-layer host-ABI wrapper pattern.
+
+## ✅ Production Blocker: `unsafe { ext_call(...) }` Expression Wrappers Collapsed To `void` On Strict Verify
+
+✅ Closed the remaining FFI wrapper verifier gap by treating `unsafe { ... }` as a real expression block in type inference and by honoring the shipped borrowed pointer-length FFI contract during signature resolution and post-check validation. This fixes production-safe wrappers of the form `let code = unsafe { host_touch(s, str.len(s)) }` and moved the Megaserver control-plane path from a grouped type-check failure to an ordinary host-link stage. Added HIR and driver regressions for both the direct-return and let-bound wrapper forms.
 
 ## Tracking Notes
 

@@ -413,6 +413,8 @@ pub fn lower(module: &Module) -> TypedModule {
         .collect::<HashMap<_, _>>();
     let mut generic_specializations = BTreeSet::new();
     let mut trait_violations = validate_trait_impls(module, &trait_defs);
+    let mut fn_param_names = HashMap::<String, Vec<String>>::new();
+    let mut fn_is_extern_unsafe_c = BTreeSet::<String>::new();
 
     for item in &module.items {
         match item {
@@ -426,6 +428,8 @@ pub fn lower(module: &Module) -> TypedModule {
                         fn_sigs: &fn_sigs,
                         fn_async: &fn_async,
                         fn_generics: &fn_generics,
+                        fn_param_names: &fn_param_names,
+                        fn_is_extern_unsafe_c: &fn_is_extern_unsafe_c,
                         struct_defs: &struct_defs,
                         enum_defs: &enum_defs,
                         trait_impls: &trait_impls,
@@ -485,6 +489,8 @@ pub fn lower(module: &Module) -> TypedModule {
                         fn_sigs: &fn_sigs,
                         fn_async: &fn_async,
                         fn_generics: &fn_generics,
+                        fn_param_names: &fn_param_names,
+                        fn_is_extern_unsafe_c: &fn_is_extern_unsafe_c,
                         struct_defs: &struct_defs,
                         enum_defs: &enum_defs,
                         trait_impls: &trait_impls,
@@ -557,6 +563,18 @@ pub fn lower(module: &Module) -> TypedModule {
                         return_type.clone(),
                     ),
                 );
+                fn_param_names.insert(
+                    function.name.clone(),
+                    function
+                        .params
+                        .iter()
+                        .map(|param| param.name.clone())
+                        .collect(),
+                );
+                if function.is_extern && function.is_unsafe && function.abi.as_deref() == Some("c")
+                {
+                    fn_is_extern_unsafe_c.insert(function.name.clone());
+                }
                 fn_async.insert(function.name.clone(), function.is_async);
                 fn_generics.insert(function.name.clone(), function.generics.clone());
                 typed_functions.push(TypedFunction {
@@ -710,6 +728,8 @@ pub fn lower(module: &Module) -> TypedModule {
             fn_sigs: &fn_sigs,
             fn_async: &fn_async,
             fn_generics: &fn_generics,
+            fn_param_names: &fn_param_names,
+            fn_is_extern_unsafe_c: &fn_is_extern_unsafe_c,
             struct_defs: &struct_defs,
             enum_defs: &enum_defs,
             trait_impls: &trait_impls,
@@ -8011,6 +8031,8 @@ struct TypeCheckEnv<'a> {
     fn_sigs: &'a HashMap<String, (Vec<Type>, Type)>,
     fn_async: &'a HashMap<String, bool>,
     fn_generics: &'a HashMap<String, Vec<ast::GenericParam>>,
+    fn_param_names: &'a HashMap<String, Vec<String>>,
+    fn_is_extern_unsafe_c: &'a BTreeSet<String>,
     struct_defs: &'a HashMap<String, ast::Struct>,
     enum_defs: &'a HashMap<String, ast::Enum>,
     trait_impls: &'a HashMap<String, Vec<Type>>,
@@ -8556,6 +8578,166 @@ fn check_match_exhaustiveness(
     }
 }
 
+fn infer_unsafe_block_type(
+    body: &[Stmt],
+    scopes: &SymbolScopes,
+    env: &TypeCheckEnv<'_>,
+    state: &mut TypeCheckState<'_>,
+) -> Option<Type> {
+    let mut block_scopes = scopes.clone();
+    block_scopes.push();
+    let mut local_types = BTreeMap::new();
+    let mut tail_ty = Some(Type::Void);
+    for stmt in body {
+        match stmt {
+            Stmt::Expr(expr) => {
+                tail_ty = infer_expr_type(expr, &block_scopes, env, state);
+            }
+            Stmt::Return(Some(expr)) => {
+                let _ = infer_expr_type(expr, &block_scopes, env, state);
+                tail_ty = Some(Type::Never);
+            }
+            Stmt::Return(None) => {
+                tail_ty = Some(Type::Never);
+            }
+            Stmt::Break(value) => {
+                if let Some(value) = value {
+                    let _ = infer_expr_type(value, &block_scopes, env, state);
+                }
+                tail_ty = Some(Type::Never);
+            }
+            Stmt::Continue => {
+                tail_ty = Some(Type::Never);
+            }
+            _ => {
+                type_check_stmt(
+                    stmt,
+                    &mut block_scopes,
+                    &mut local_types,
+                    env,
+                    0,
+                    &Type::Void,
+                    state,
+                );
+                tail_ty = Some(Type::Void);
+            }
+        }
+    }
+    block_scopes.pop();
+    tail_ty
+}
+
+fn ffi_borrowed_str_arg_compatible(
+    env: &TypeCheckEnv<'_>,
+    callee: &str,
+    index: usize,
+    expected: &Type,
+    actual: &Type,
+    arg: &Expr,
+) -> bool {
+    let resolved_callee = if env.fn_is_extern_unsafe_c.contains(callee) {
+        callee.to_string()
+    } else if !env.current_namespace.is_empty() {
+        let qualified = format!("{}.{}", env.current_namespace, callee);
+        if env.fn_is_extern_unsafe_c.contains(&qualified) {
+            qualified
+        } else {
+            return false;
+        }
+    } else {
+        return false;
+    };
+    let Some(name) = env
+        .fn_param_names
+        .get(&resolved_callee)
+        .and_then(|params| params.get(index))
+    else {
+        return false;
+    };
+    match expected {
+        Type::Ptr { to, .. }
+            if name.contains("_borrowed")
+                && matches!(actual, Type::Str)
+                && matches!(to.as_ref(), Type::Int { signed: false, bits: 8 }) =>
+        {
+            true
+        }
+        Type::USize
+            if name.ends_with("len")
+                && matches!(actual, Type::Int { signed: true, bits: 32 })
+                && matches!(arg, Expr::Call { callee, .. } if callee == "str.len") =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+fn coerce_ffi_borrowed_str_arg_types(
+    env: &TypeCheckEnv<'_>,
+    callee: &str,
+    params: &[Type],
+    args: &[Expr],
+    arg_types: &[Option<Type>],
+) -> Vec<Option<Type>> {
+    let resolved_callee = if env.fn_is_extern_unsafe_c.contains(callee) {
+        callee.to_string()
+    } else if !env.current_namespace.is_empty() {
+        let qualified = format!("{}.{}", env.current_namespace, callee);
+        if env.fn_is_extern_unsafe_c.contains(&qualified) {
+            qualified
+        } else {
+            return arg_types.to_vec();
+        }
+    } else {
+        return arg_types.to_vec();
+    };
+    let Some(param_names) = env.fn_param_names.get(&resolved_callee) else {
+        return arg_types.to_vec();
+    };
+    arg_types
+        .iter()
+        .enumerate()
+        .map(|(index, actual)| {
+            let Some(actual) = actual else {
+                return None;
+            };
+            let Some(expected) = params.get(index) else {
+                return Some(actual.clone());
+            };
+            let Some(arg) = args.get(index) else {
+                return Some(actual.clone());
+            };
+            let Some(name) = param_names.get(index) else {
+                return Some(actual.clone());
+            };
+            match expected {
+                Type::Ptr { to, .. }
+                    if name.contains("_borrowed")
+                        && matches!(actual, Type::Str)
+                        && matches!(
+                            to.as_ref(),
+                            Type::Int {
+                                signed: false,
+                                bits: 8
+                            }
+                        ) =>
+                {
+                    Some(expected.clone())
+                }
+                Type::USize
+                    if name.ends_with("len")
+                        && matches!(actual, Type::Int { signed: true, bits: 32 })
+                        && matches!(arg, Expr::Call { callee, .. } if callee == "str.len") =>
+                {
+                    Some(Type::USize)
+                }
+                _ => Some(actual.clone()),
+            }
+        })
+        .collect()
+}
+
 fn infer_expr_type(
     expr: &Expr,
     scopes: &SymbolScopes,
@@ -8672,7 +8854,7 @@ fn infer_expr_type(
             record_type_error(state.errors, state.type_error_details, detail);
             None
         }
-        Expr::UnsafeBlock { .. } => Some(Type::Void),
+        Expr::UnsafeBlock { body, .. } => infer_unsafe_block_type(body, scopes, env, state),
         Expr::Closure {
             params,
             return_type,
@@ -8790,7 +8972,16 @@ fn infer_expr_type(
                 }
                 for (index, expected) in params.iter().enumerate() {
                     if let Some(Some(actual)) = arg_types.get(index) {
-                        if !expr_type_compatible(expected, actual, &args[index]) {
+                        if !expr_type_compatible(expected, actual, &args[index])
+                            && !ffi_borrowed_str_arg_compatible(
+                                env,
+                                base_callee,
+                                index,
+                                expected,
+                                actual,
+                                &args[index],
+                            )
+                        {
                             record_type_error(
                                 state.errors,
                                 state.type_error_details,
@@ -8911,14 +9102,16 @@ fn infer_expr_type(
             for arg in args {
                 arg_types.push(infer_expr_type(arg, scopes, env, state));
             }
-            let (resolved_params, resolved_ret, bindings, skip_post_call_validation) = if fn_sigs
+            let signature_arg_types =
+                coerce_ffi_borrowed_str_arg_types(env, base_callee, &params, args, &arg_types);
+            let (resolved_params, resolved_ret, bindings, skip_post_call_validation, post_check_arg_types) = if fn_sigs
                 .contains_key(base_callee)
             {
                 let Some((resolved_params, resolved_ret, bindings)) = resolve_call_signature(
                     &params,
                     &ret,
                     &generics,
-                    &arg_types,
+                    &signature_arg_types,
                     explicit_types.as_deref(),
                 ) else {
                     record_type_error(
@@ -8943,7 +9136,13 @@ fn infer_expr_type(
                 } else {
                     resolved_ret
                 };
-                (resolved_params, resolved_ret, bindings, false)
+                (
+                    resolved_params,
+                    resolved_ret,
+                    bindings,
+                    false,
+                    signature_arg_types,
+                )
             } else {
                 if params.len() != args.len() {
                     let detail = if matches!(base_callee, "http.write" | "http.write_json")
@@ -8975,7 +9174,16 @@ fn infer_expr_type(
                     let Some(actual) = actual else {
                         continue;
                     };
-                    if !expr_type_compatible(expected, actual, &args[index]) {
+                    if !expr_type_compatible(expected, actual, &args[index])
+                        && !ffi_borrowed_str_arg_compatible(
+                            env,
+                            base_callee,
+                            index,
+                            expected,
+                            actual,
+                            &args[index],
+                        )
+                    {
                         record_type_error(
                             state.errors,
                             state.type_error_details,
@@ -8986,7 +9194,7 @@ fn infer_expr_type(
                         );
                     }
                 }
-                (params.clone(), ret.clone(), Vec::new(), true)
+                (params.clone(), ret.clone(), Vec::new(), true, arg_types.clone())
             };
             if !bindings.is_empty() {
                 let rendered = bindings
@@ -9035,7 +9243,7 @@ fn infer_expr_type(
                         ),
                     );
                 }
-                for (index, arg_ty) in arg_types.into_iter().enumerate() {
+                for (index, arg_ty) in post_check_arg_types.into_iter().enumerate() {
                     if let (Some(expected), Some(actual)) = (resolved_params.get(index), arg_ty) {
                         if !type_compatible(expected, &actual) {
                             record_type_error(
@@ -15635,6 +15843,27 @@ mod tests {
             detail.contains("call edge `abi_touch -> host_touch` reaches unsafe code")
                 || detail.contains("call edge `safe_touch -> abi_touch` reaches unsafe code")
         }));
+    }
+
+    #[test]
+    fn ffi_wrapper_let_bound_unsafe_call_infers_value_type() {
+        let source = r#"
+            ext unsafe c fn host_touch(buf_borrowed: *u8, len: usize) -> i32;
+
+            fn abi_touch(s: str) -> i32 {
+                let code = unsafe {
+                    host_touch(s, str.len(s))
+                }
+                return code
+            }
+
+            fn main() -> i32 {
+                return abi_touch("ok")
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
     }
 
     #[test]

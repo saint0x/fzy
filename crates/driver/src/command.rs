@@ -16374,6 +16374,34 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn verify_accepts_unsafe_import_wrapper_bound_through_let() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-ffi-wrapper-let-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"ffi_wrapper_let\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"ffi_wrapper_let\"\npath=\"src/main.fzy\"\n\n[unsafe]\ncontracts=\"compiler\"\nenforce_verify=true\nenforce_release=true\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "ext unsafe c fn host_touch(buf_borrowed: *u8, len: usize) -> i32;\n\nfn abi_touch(s: str) -> i32 {\n    let code = unsafe {\n        host_touch(s, str.len(s))\n    }\n    return code\n}\n\nfn safe_touch(s: str) -> i32 {\n    return abi_touch(s)\n}\n\nfn main() -> i32 {\n    return safe_touch(\"ok\")\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(Command::Verify { path: root.clone() }, Format::Json)
+            .expect("verify should return diagnostics");
+        assert!(output.contains("\"errors\":0"));
+        assert!(!output.contains("return type mismatch: expected `i32`, got `void`"));
+        assert!(output.contains("structural unsafe contract metadata is present"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn explain_catalog_returns_entries() {
         let output = run(
             Command::Explain {
