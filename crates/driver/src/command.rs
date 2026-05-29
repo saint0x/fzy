@@ -62,6 +62,12 @@ impl fmt::Display for CommandFailure {
 
 impl StdError for CommandFailure {}
 
+#[derive(Debug, Clone)]
+struct BuildInteropArtifacts {
+    library: LibraryArtifact,
+    headers: HeaderArtifact,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Init {
@@ -312,7 +318,13 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     profile,
                     backend.as_deref(),
                 )?;
-                let rendered = render_artifact(format, artifact, threads, runtime_config);
+                let interop = if artifact.status == "ok" {
+                    maybe_generate_build_interop_artifacts(&path, profile, backend.as_deref())?
+                } else {
+                    None
+                };
+                let rendered =
+                    render_artifact(format, artifact, threads, runtime_config, interop.as_ref());
                 let unsafe_docs = maybe_generate_unsafe_docs(&path);
                 Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
             }
@@ -1760,6 +1772,7 @@ fn render_artifact(
     artifact: BuildArtifact,
     threads: Option<u16>,
     runtime_config: Option<PathBuf>,
+    interop: Option<&BuildInteropArtifacts>,
 ) -> String {
     match format {
         Format::Text => {
@@ -1810,6 +1823,35 @@ fn render_artifact(
                     ),
                 ),
             ]);
+            if let Some(interop) = interop {
+                rendered.push('\n');
+                rendered.push_str(&render_text_fields(&[
+                    (
+                        "interop_static_lib",
+                        interop
+                            .library
+                            .static_lib
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<none>".to_string()),
+                    ),
+                    (
+                        "interop_shared_lib",
+                        interop
+                            .library
+                            .shared_lib
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "<none>".to_string()),
+                    ),
+                    ("interop_header", interop.headers.path.display().to_string()),
+                    (
+                        "interop_abi_manifest",
+                        interop.headers.abi_manifest.display().to_string(),
+                    ),
+                    ("interop_exports", interop.headers.exports.to_string()),
+                ]));
+            }
             let details = render_diagnostics_text(&artifact.diagnostic_details);
             if !details.is_empty() {
                 rendered.push('\n');
@@ -1817,32 +1859,60 @@ fn render_artifact(
             }
             rendered
         }
-        Format::Json => serde_json::json!({
-            "module": artifact.module,
-            "profile": format!("{:?}", artifact.profile),
-            "status": artifact.status,
-            "diagnostics": artifact.diagnostics,
-            "items": artifact.diagnostic_details,
-            "dependencyGraphHash": artifact.dependency_graph_hash,
-            "policy": {
-                "profile": match artifact.profile {
-                    BuildProfile::Dev => "dev",
-                    BuildProfile::Release => "release",
-                    BuildProfile::Verify => "verify",
+        Format::Json => {
+            let mut payload = serde_json::json!({
+                "module": artifact.module,
+                "profile": format!("{:?}", artifact.profile),
+                "status": artifact.status,
+                "diagnostics": artifact.diagnostics,
+                "items": artifact.diagnostic_details,
+                "dependencyGraphHash": artifact.dependency_graph_hash,
+                "policy": {
+                    "profile": match artifact.profile {
+                        BuildProfile::Dev => "dev",
+                        BuildProfile::Release => "release",
+                        BuildProfile::Verify => "verify",
+                    },
+                    "unsafeEnforcement": "profile-driven",
+                    "memorySafetyMode": "production",
+                    "backend": "compiler",
+                    "lockfileState": if artifact.dependency_graph_hash.is_some() { "present" } else { "n/a" },
                 },
-                "unsafeEnforcement": "profile-driven",
-                "memorySafetyMode": "production",
-                "backend": "compiler",
-                "lockfileState": if artifact.dependency_graph_hash.is_some() { "present" } else { "n/a" },
-            },
-            "threads": threads,
-            "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
-            "output": artifact
-                .output
-                .as_ref()
-                .map(|path| path.display().to_string()),
-        })
-        .to_string(),
+                "threads": threads,
+                "runtimeConfig": runtime_config.map(|path| path.display().to_string()),
+                "output": artifact
+                    .output
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            });
+            if let Some(interop) = interop {
+                payload["interop"] = serde_json::json!({
+                    "buildMode": "lib",
+                    "exports": interop.headers.exports,
+                    "staticLib": interop
+                        .library
+                        .static_lib
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    "sharedLib": interop
+                        .library
+                        .shared_lib
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                    "header": interop.headers.path.display().to_string(),
+                    "abiManifest": interop.headers.abi_manifest.display().to_string(),
+                    "hostLifecycle": {
+                        "init": "fz_host_init",
+                        "shutdown": "fz_host_shutdown",
+                        "cleanup": "fz_host_cleanup",
+                        "lastErrorCode": "fz_host_last_error_code",
+                        "lastErrorClass": "fz_host_last_error_class",
+                        "lastErrorMessage": "fz_host_last_error_message",
+                    },
+                });
+            }
+            payload.to_string()
+        }
     }
 }
 
@@ -2017,7 +2087,13 @@ fn render_run_compile_abort(format: Format, artifact: &BuildArtifact) -> String 
         Format::Text => {
             let mut rendered =
                 String::from("run aborted before execution due to compile-time diagnostics\n");
-            rendered.push_str(&render_artifact(Format::Text, artifact.clone(), None, None));
+            rendered.push_str(&render_artifact(
+                Format::Text,
+                artifact.clone(),
+                None,
+                None,
+                None,
+            ));
             rendered
         }
         Format::Json => serde_json::json!({
@@ -2274,6 +2350,36 @@ fn attach_project_root_guidance(path: &Path, error: anyhow::Error) -> anyhow::Er
                 .join(", ")
         )
     }
+}
+
+fn maybe_generate_build_interop_artifacts(
+    path: &Path,
+    profile: BuildProfile,
+    backend_override: Option<&str>,
+) -> Result<Option<BuildInteropArtifacts>> {
+    if !project_has_c_exports(path)? {
+        return Ok(None);
+    }
+    let library =
+        compile_library_with_backend_with_root_guidance(path, profile, backend_override)?;
+    let headers = generate_c_headers(path, None)?;
+    Ok(Some(BuildInteropArtifacts { library, headers }))
+}
+
+fn project_has_c_exports(path: &Path) -> Result<bool> {
+    let resolved = resolve_source(path)?;
+    let parsed = parse_program(&resolved.source_path)?;
+    Ok(parsed.module.items.iter().any(|item| match item {
+        ast::Item::Function(function) => {
+            function.is_pub
+                && function.is_extern
+                && function
+                    .abi
+                    .as_deref()
+                    .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+        }
+        _ => false,
+    }))
 }
 
 fn maybe_generate_unsafe_docs(path: &Path) -> Option<PathBuf> {
@@ -5807,7 +5913,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn debug_check_command(path: &Path, format: Format) -> Result<String> {
     let artifact = compile_file_with_backend(path, BuildProfile::Dev, None)?;
     if artifact.status != "ok" {
-        let rendered = render_artifact(Format::Text, artifact, None, None);
+        let rendered = render_artifact(Format::Text, artifact, None, None, None);
         bail!("debug-check failed to build module\n{rendered}");
     }
     let binary = artifact
@@ -8451,6 +8557,9 @@ fn render_c_header(
     header.push_str("int32_t fz_host_init(void);\n");
     header.push_str("int32_t fz_host_shutdown(void);\n");
     header.push_str("int32_t fz_host_cleanup(void);\n");
+    header.push_str("int32_t fz_host_last_error_code(void);\n");
+    header.push_str("int32_t fz_host_last_error_class(void);\n");
+    header.push_str("const char* fz_host_last_error_message(void);\n");
     header
         .push_str("int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb);\n");
     header.push_str("int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg);\n\n");
@@ -10698,6 +10807,8 @@ mod tests {
         let header_text = std::fs::read_to_string(&header).expect("header should be created");
         assert!(header_text.contains("int32_t add(int32_t left, int32_t right);"));
         assert!(header_text.contains("int32_t fz_host_init(void);"));
+        assert!(header_text.contains("int32_t fz_host_last_error_code(void);"));
+        assert!(header_text.contains("const char* fz_host_last_error_message(void);"));
         assert!(header_text.contains("fz_host_register_callback_i32"));
         let abi_path = header.with_extension("abi.json");
         assert!(abi_path.exists());
@@ -11613,6 +11724,56 @@ mod tests {
         assert!(output.contains("\"sharedLib\""));
         assert!(output.contains("\"header\""));
         assert!(output.contains("\"abiManifest\""));
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn build_binary_with_c_exports_also_reports_interop_artifacts() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-build-interop-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n\nfn main() -> i32 {\n    return add(2, 5)\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Build {
+                path: source.clone(),
+                release: false,
+                lib: false,
+                threads: None,
+                backend: None,
+                pgo_generate: false,
+                pgo_use: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
+            },
+            Format::Json,
+        )
+        .expect("build should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("build output should be valid json");
+        let interop = payload
+            .get("interop")
+            .expect("interop metadata should be present for c exports");
+        assert_eq!(interop.get("buildMode").and_then(|value| value.as_str()), Some("lib"));
+        assert!(interop.get("staticLib").and_then(|value| value.as_str()).is_some());
+        assert!(interop.get("sharedLib").and_then(|value| value.as_str()).is_some());
+        assert!(interop.get("header").and_then(|value| value.as_str()).is_some());
+        assert!(interop.get("abiManifest").and_then(|value| value.as_str()).is_some());
+        assert_eq!(
+            interop
+                .get("hostLifecycle")
+                .and_then(|value| value.get("lastErrorMessage"))
+                .and_then(|value| value.as_str()),
+            Some("fz_host_last_error_message")
+        );
 
         let _ = std::fs::remove_file(source);
     }

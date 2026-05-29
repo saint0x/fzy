@@ -51,6 +51,8 @@ fz build path/to/module.fzy --lib --release --json
 - `header`: installable C header
 - `abiManifest`: ABI manifest JSON
 
+Default `fz build ... --json` now also reports an `interop` block for projects that define C exports, so embedders can discover the supported `.a`/`.so`/`.dylib`, header, and ABI manifest without scraping `.fz/build` internals.
+
 For async exports, generated headers expose:
 - `typedef uint64_t fz_async_handle_t;`
 - `int32_t <name>_async_start(..., fz_async_handle_t* handle_out);`
@@ -99,10 +101,19 @@ Generated headers expose lifecycle and callback ABI:
 - `int32_t fz_host_init(void);`
 - `int32_t fz_host_shutdown(void);`
 - `int32_t fz_host_cleanup(void);`
+- `int32_t fz_host_last_error_code(void);`
+- `int32_t fz_host_last_error_class(void);`
+- `const char* fz_host_last_error_message(void);`
 - `int32_t fz_host_register_callback_i32(int32_t slot, fz_callback_i32_v0 cb);`
 - `int32_t fz_host_invoke_callback_i32(int32_t slot, int32_t arg);`
 
 Callback signature is validated by C type contract (`fz_callback_i32_v0`).
+
+Embedding contract:
+- Call `fz_host_init()` before invoking exported Fozzy functions from an in-process host.
+- Call `fz_host_shutdown()` when the host is done issuing calls.
+- Call `fz_host_cleanup()` during teardown to clear registered callbacks and transient host state.
+- When an exported call returns an error status or fails to produce an expected side effect, read `fz_host_last_error_code()`, `fz_host_last_error_class()`, and `fz_host_last_error_message()` immediately after the call.
 
 ## `repr(C)` Layout Validation
 `repr(C)` layout entries are emitted in ABI manifests for validated structs/enums.

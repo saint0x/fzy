@@ -317,17 +317,7 @@ pub fn compile_library_with_backend(
     let parsed = parse_program(&resolved.source_path)?;
     let experimental_diagnostics =
         experimental_feature_diagnostics(&parsed.module, resolved.manifest.as_ref());
-    let requested_backend = resolve_native_backend(profile, backend_override)?;
-    let backend = if requested_backend == "llvm" {
-        if backend_override.is_some_and(|value| value.trim().eq_ignore_ascii_case("llvm")) {
-            bail!(
-                "backend `llvm` is not supported for `fz build --lib`; use `--backend cranelift`"
-            );
-        }
-        "cranelift".to_string()
-    } else {
-        requested_backend
-    };
+    let backend = resolve_native_backend(profile, backend_override)?;
     let pgo = configured_pgo();
     if (pgo.generate_dir.is_some() || pgo.use_profile.is_some()) && backend != "llvm" {
         bail!(

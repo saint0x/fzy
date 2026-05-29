@@ -167,6 +167,22 @@ pub(super) fn generate_c_headers(path: &Path, output: Option<&Path>) -> Result<H
             "reprCStableOnly": true,
             "nonReprCUnstable": true,
         },
+        "hostApi": {
+            "lifecycle": {
+                "init": "fz_host_init",
+                "shutdown": "fz_host_shutdown",
+                "cleanup": "fz_host_cleanup",
+            },
+            "callbacks": {
+                "registerI32": "fz_host_register_callback_i32",
+                "invokeI32": "fz_host_invoke_callback_i32",
+            },
+            "lastError": {
+                "code": "fz_host_last_error_code",
+                "class": "fz_host_last_error_class",
+                "message": "fz_host_last_error_message",
+            },
+        },
         "symbolVersioning": "strict-name-signature-v1",
         "contractSchema": "fozzylang.ffi_contracts.v1",
         "callbackAbi": "signature-typed-v1",

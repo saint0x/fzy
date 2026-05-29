@@ -671,7 +671,7 @@ fn compile_library_uses_lib_target_when_present() {
 }
 
 #[test]
-fn compile_library_rejects_explicit_llvm_backend_override() {
+fn compile_library_allows_explicit_llvm_backend_override() {
     let project_name = format!(
         "fozzylang-project-lib-llvm-{}",
         SystemTime::now()
@@ -692,11 +692,17 @@ fn compile_library_rejects_explicit_llvm_backend_override() {
     )
     .expect("source should be written");
 
-    let error = compile_library_with_backend(&root, BuildProfile::Release, Some("llvm"))
-        .expect_err("llvm backend override should be rejected for --lib");
-    assert!(error
-        .to_string()
-        .contains("not supported for `fz build --lib`"));
+    let artifact = compile_library_with_backend(&root, BuildProfile::Release, Some("llvm"))
+        .expect("llvm backend override should compile for --lib");
+    assert_eq!(artifact.status, "ok");
+    assert!(artifact
+        .static_lib
+        .as_ref()
+        .is_some_and(|path| path.exists()));
+    assert!(artifact
+        .shared_lib
+        .as_ref()
+        .is_some_and(|path| path.exists()));
 
     let _ = std::fs::remove_dir_all(root);
 }

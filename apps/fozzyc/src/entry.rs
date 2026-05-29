@@ -21,6 +21,10 @@ pub fn run() -> Result<()> {
         );
         return Ok(());
     }
+    if args.len() >= 2 && matches!(args[1].as_str(), "--help" | "-h") {
+        print_help();
+        return Ok(());
+    }
 
     let json = args.iter().any(|a| a == "--json");
     let format = if json { Format::Json } else { Format::Text };
@@ -565,7 +569,7 @@ fn print_help() {
         "fz <command> [options]\n\
 commands:\n\
   init [path] [--name package] [--template minimal|rust|ts] [--with run,fuzz,explore,memory,host|all] [--force]\n\
-  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]  (`--lib` currently requires Cranelift)\n\
+  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
   run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>]\n\
   test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
   fmt [path ...] [--check]\n\
