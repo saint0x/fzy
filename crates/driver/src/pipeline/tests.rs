@@ -502,6 +502,44 @@ fn llvm_array_literal_return_values_round_trip_through_named_locals() {
 }
 
 #[test]
+fn cross_backend_array_return_values_survive_following_calls() {
+    let project_name = format!(
+        "fozzylang-array-return-ownership-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn seed() -> [i32; 4] {\n    return [9, 8, 7, 6]\n}\n\nfn id(v: i32) -> i32 {\n    return v\n}\n\nfn main() -> i32 {\n    let values = seed()\n    discard id(41)\n    if values[0] != 9 || values[1] != 8 || values[2] != 7 || values[3] != 6 {\n        return 77\n    }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    assert_eq!(llvm.status, "ok");
+
+    let cranelift_exit =
+        run_native_exit(cranelift.output.as_ref().expect("cranelift output should exist"));
+    let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
+    assert_eq!(cranelift_exit, 0);
+    assert_eq!(llvm_exit, 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn portable_simd_surface_executes_on_cranelift_backend() {
     let project_name = format!(
         "fozzylang-simd-cranelift-{}",

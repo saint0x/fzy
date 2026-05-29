@@ -51,6 +51,7 @@ Phase 1 portable SIMD is now shipped as a cross-backend native surface for the s
 - first-class `i32x4`, `u32x4`, `f32x4`, and `mask32x4` types
 - `core.simd` constructors, splats, arithmetic, min/max, scalar shifts, bitwise ops, comparisons, `select`, public shuffle, paired zip/unzip helpers, explicit numeric bitcasts, lane extraction, mask bitmask extraction, and reductions
 - integer saturating add/sub plus scalar `reduce_min`/`reduce_max` on the shipped vector aliases
+- fixed-array masked loads, prefix/tail loads, fixed-array gather, and vector-space masked/prefix merges before the final plain `store(...)`
 - explicit verifier/backend rejection for SIMD ABI crossings
 - real native lowering in both LLVM and Cranelift for the shipped fixed-array-safe subset
 - deterministic Fozzy scenario + trace coverage for the shipped surface
@@ -60,7 +61,9 @@ The broader roadmap below remains the long-term plan. Only the checked items sho
 This now includes the first safe memory-interop slice:
 
 - fixed-size array load/store for `i32x4`, `u32x4`, `f32x4`, and `mask32x4`
+- fixed-array masked/prefix memory helpers and deterministic gather/scatter over four-lane arrays
 - generic LLVM array-value lowering needed to make those wrappers real compiler features rather than surface-only helpers
+- caller-owned fixed-array return storage on Cranelift so array-valued helper results survive subsequent calls instead of aliasing callee-local stack memory
 - deterministic Fozzy coverage plus a host-backed native confidence pass for the shipped slice
 - realistic reference example coverage in `examples/simd_kernels`
 - representative workload coverage for ASCII classification, delimiter masks, and equality-mask scans in `tests/fixtures/simd_text_block`
@@ -200,12 +203,9 @@ This track adds an explicit author-facing SIMD model.
 ### C. Memory operations
 
 - [x] Safe contiguous load/store operations for fixed-size array values.
+- [x] Partial/tail handling policy for the shipped fixed-array surface.
 - [ ] Explicit aligned vs unaligned load/store policy.
-- [ ] Partial/tail handling policy:
-  - masked loads/stores later
-  - scalar tail loops initially if simpler
-- [ ] Gather/scatter:
-  - probably defer from phase 1 unless there is a strong use case
+- [x] Gather/scatter for the shipped fixed-array four-lane surface.
 - [x] Slice/array interop:
   - [x] loading from fixed-size typed arrays
   - [x] storing back into fixed-size typed arrays

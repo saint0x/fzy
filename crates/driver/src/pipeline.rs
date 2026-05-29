@@ -24,8 +24,8 @@ mod native_runtime_support;
 mod native_runtime_tables;
 
 use self::clif_support::{
-    ast_signature_type_to_clif_type, clif_emit_function_cfg, lower_cranelift_ir,
-    variant_tag_for_key,
+    ast_signature_type_to_clif_type, clif_array_abi_from_type, clif_emit_function_cfg,
+    lower_cranelift_ir, pointer_sized_clif_type, variant_tag_for_key,
 };
 use self::linker_support::{
     apply_extra_linker_args, apply_manifest_link_args, apply_pgo_flags,
@@ -75,6 +75,15 @@ struct ClifValue {
 struct ClifFunctionSignature {
     params: Vec<ClifType>,
     ret: Option<ClifType>,
+    sret: Option<ClifArrayAbi>,
+}
+
+#[derive(Clone, Copy)]
+struct ClifArrayAbi {
+    len: usize,
+    element_ty: ClifType,
+    element_align: u8,
+    element_stride: u8,
 }
 
 #[derive(Clone)]
@@ -7323,13 +7332,22 @@ fn emit_native_libraries_cranelift(
     for function in &fir.typed_functions {
         let mut sig = module.make_signature();
         let mut param_tys = Vec::new();
+        let sret = clif_array_abi_from_type(&function.return_type);
+        if sret.is_some() {
+            sig.params.push(AbiParam::new(pointer_sized_clif_type()));
+            param_tys.push(pointer_sized_clif_type());
+        }
         for param in &function.params {
             let ty = ast_signature_type_to_clif_type(&param.ty)
                 .ok_or_else(|| anyhow!("unsupported native parameter type `{}`", param.ty))?;
             sig.params.push(AbiParam::new(ty));
             param_tys.push(ty);
         }
-        let ret_ty = ast_signature_type_to_clif_type(&function.return_type);
+        let ret_ty = if sret.is_some() {
+            None
+        } else {
+            ast_signature_type_to_clif_type(&function.return_type)
+        };
         if let Some(ret_ty) = ret_ty {
             sig.returns.push(AbiParam::new(ret_ty));
         }
@@ -7358,6 +7376,7 @@ fn emit_native_libraries_cranelift(
             ClifFunctionSignature {
                 params: param_tys,
                 ret: ret_ty,
+                sret,
             },
         );
     }
@@ -7390,18 +7409,33 @@ fn emit_native_libraries_cranelift(
         builder.switch_to_block(entry);
 
         let mut locals = HashMap::<String, LocalBinding>::new();
+        let mut next_var = 0usize;
+        let mut current_return_ptr = None;
+        let mut param_offset = 0usize;
+        if signature.sret.is_some() {
+            let var = Variable::from_u32(next_var as u32);
+            next_var += 1;
+            builder.declare_var(var, pointer_sized_clif_type());
+            let value = builder.block_params(entry)[0];
+            builder.def_var(var, value);
+            current_return_ptr = Some(LocalBinding {
+                var,
+                ty: pointer_sized_clif_type(),
+            });
+            param_offset = 1;
+        }
         for (index, param) in function.params.iter().enumerate() {
-            let var = Variable::from_u32(index as u32);
-            let param_ty =
-                signature.params.get(index).copied().ok_or_else(|| {
-                    anyhow!("missing param {} type for `{}`", index, function.name)
-                })?;
+            let var = Variable::from_u32(next_var as u32);
+            next_var += 1;
+            let sig_index = index + param_offset;
+            let param_ty = signature.params.get(sig_index).copied().ok_or_else(|| {
+                anyhow!("missing param {} type for `{}`", sig_index, function.name)
+            })?;
             builder.declare_var(var, param_ty);
-            let value = builder.block_params(entry)[index];
+            let value = builder.block_params(entry)[sig_index];
             builder.def_var(var, value);
             locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
-        let mut next_var = function.params.len();
         let cfg = match plan.cfg_by_function.get(&function.name) {
             Some(Ok(cfg)) => cfg,
             Some(Err(error)) => {
@@ -7432,6 +7466,8 @@ fn emit_native_libraries_cranelift(
             &fir.struct_defs,
             &fir.enum_defs,
             signature.ret,
+            signature.sret,
+            current_return_ptr,
             &function.name,
             cfg,
             entry,
@@ -7735,13 +7771,22 @@ fn emit_native_artifact_cranelift(
     for function in &fir.typed_functions {
         let mut sig = module.make_signature();
         let mut param_tys = Vec::new();
+        let sret = clif_array_abi_from_type(&function.return_type);
+        if sret.is_some() {
+            sig.params.push(AbiParam::new(pointer_sized_clif_type()));
+            param_tys.push(pointer_sized_clif_type());
+        }
         for param in &function.params {
             let ty = ast_signature_type_to_clif_type(&param.ty)
                 .ok_or_else(|| anyhow!("unsupported native parameter type `{}`", param.ty))?;
             sig.params.push(AbiParam::new(ty));
             param_tys.push(ty);
         }
-        let ret_ty = ast_signature_type_to_clif_type(&function.return_type);
+        let ret_ty = if sret.is_some() {
+            None
+        } else {
+            ast_signature_type_to_clif_type(&function.return_type)
+        };
         if let Some(ret_ty) = ret_ty {
             sig.returns.push(AbiParam::new(ret_ty));
         }
@@ -7765,6 +7810,7 @@ fn emit_native_artifact_cranelift(
             ClifFunctionSignature {
                 params: param_tys,
                 ret: ret_ty,
+                sret,
             },
         );
     }
@@ -7806,18 +7852,33 @@ fn emit_native_artifact_cranelift(
         builder.switch_to_block(entry);
 
         let mut locals = HashMap::<String, LocalBinding>::new();
+        let mut next_var = 0usize;
+        let mut current_return_ptr = None;
+        let mut param_offset = 0usize;
+        if signature.sret.is_some() {
+            let var = Variable::from_u32(next_var as u32);
+            next_var += 1;
+            builder.declare_var(var, pointer_sized_clif_type());
+            let value = builder.block_params(entry)[0];
+            builder.def_var(var, value);
+            current_return_ptr = Some(LocalBinding {
+                var,
+                ty: pointer_sized_clif_type(),
+            });
+            param_offset = 1;
+        }
         for (index, param) in function.params.iter().enumerate() {
-            let var = Variable::from_u32(index as u32);
-            let param_ty =
-                signature.params.get(index).copied().ok_or_else(|| {
-                    anyhow!("missing param {} type for `{}`", index, function.name)
-                })?;
+            let var = Variable::from_u32(next_var as u32);
+            next_var += 1;
+            let sig_index = index + param_offset;
+            let param_ty = signature.params.get(sig_index).copied().ok_or_else(|| {
+                anyhow!("missing param {} type for `{}`", sig_index, function.name)
+            })?;
             builder.declare_var(var, param_ty);
-            let value = builder.block_params(entry)[index];
+            let value = builder.block_params(entry)[sig_index];
             builder.def_var(var, value);
             locals.insert(param.name.clone(), LocalBinding { var, ty: param_ty });
         }
-        let mut next_var = function.params.len();
         let cfg = match plan.cfg_by_function.get(&function.name) {
             Some(Ok(cfg)) => cfg,
             Some(Err(error)) => {
@@ -7848,6 +7909,8 @@ fn emit_native_artifact_cranelift(
             &fir.struct_defs,
             &fir.enum_defs,
             signature.ret,
+            signature.sret,
+            current_return_ptr,
             &function.name,
             cfg,
             entry,

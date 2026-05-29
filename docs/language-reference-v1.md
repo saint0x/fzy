@@ -232,6 +232,7 @@ Semantics:
 - Current public operations include:
   - constructors and `splat`
   - safe fixed-array `load`/`store`
+  - fixed-array `load_masked`, `load_prefix`, `gather`, and vector-space `merge_masked`/`merge_prefix`
   - arithmetic, integer `saturating_add`/`saturating_sub`, min/max, shifts, bitwise ops
   - comparisons producing `mask32x4`
   - `select(mask, then, else)`
@@ -243,7 +244,8 @@ Semantics:
 - Backend posture:
   - LLVM and Cranelift both lower the current phase-1 fixed-array-safe surface
   - backend parity is semantic for the shipped subset; equal optimization maturity is not implied
-- Current safe memory interop is fixed-size array based; raw-buffer and alignment-sensitive SIMD APIs are not part of the shipped v1 surface yet.
+  - fixed-array return values are materialized into caller-owned native storage before later calls can reuse callee-local temporaries
+- Current safe memory interop is fixed-size array based; raw-buffer and explicit alignment-sensitive SIMD APIs are not part of the shipped v1 surface yet.
 - [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) is the reference example for the current production SIMD workflow.
 - Canonical standard-library wrapper import is `use core.process;`.
 - `core.process` exposes ergonomic wrappers like `process.argv_or`, `process.command_name`, and `process.has_flag`.

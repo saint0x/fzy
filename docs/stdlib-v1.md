@@ -229,6 +229,7 @@ Transcript guidance:
 - Shipped operation families:
   - constructors and `splat`
   - safe fixed-array `load`/`store` for the four shipped vector/mask aliases
+  - fixed-array `load_masked`, `load_prefix`, `gather`, and vector-space `merge_masked`/`merge_prefix` helpers before the final plain `store(...)`
   - add/sub/mul plus integer `saturating_add`/`saturating_sub`
   - min/max
   - shifts and bitwise ops
@@ -242,12 +243,13 @@ Transcript guidance:
 - Contract:
   - current production lowering for the shipped phase-1 subset is available in both LLVM and Cranelift
   - backend parity is semantic for the fixed-array-safe surface; this is not a performance-equivalence claim
+  - fixed-array helper returns are caller-owned on the native backends, so array-valued SIMD workflows remain stable across subsequent helper calls
   - SIMD values are rejected across ABI/FFI boundaries in phase 1
   - `shuffle` traps on lane selectors outside `0..7`
   - masks remain distinct from integer vectors in the public API
-  - current safe memory interop is fixed-size array based; raw-buffer, alignment-policy, and masked-memory APIs remain future work
+  - current safe memory interop is fixed-size array based; raw-buffer and explicit alignment-policy APIs remain future work
 - Example:
-  - [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) shows the current production-style fixed-array SIMD workflow for signed mix/limit and unsigned clamp kernels.
+  - [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) shows the current production-style fixed-array SIMD workflow for signed mix/limit, partial tail merges, channel swizzles, and highlighted-lane scatter.
 
 - `use core.text;` is the standard-library text helper module for native CLI/service rendering.
 - Common helpers:

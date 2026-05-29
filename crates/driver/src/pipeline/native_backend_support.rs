@@ -841,6 +841,7 @@ pub(super) fn declare_native_runtime_imports(
             ClifFunctionSignature {
                 params: (0..import.arity).map(|_| types::I32).collect(),
                 ret: Some(types::I32),
+                sret: None,
             },
         );
     }
@@ -888,7 +889,14 @@ pub(super) fn declare_native_runtime_imports(
                 anyhow!("failed declaring internal native helper `{symbol}`: {error}")
             })?;
         function_ids.insert(callee.to_string(), id);
-        function_signatures.insert(callee.to_string(), ClifFunctionSignature { params, ret });
+        function_signatures.insert(
+            callee.to_string(),
+            ClifFunctionSignature {
+                params,
+                ret,
+                sret: None,
+            },
+        );
     }
     Ok(())
 }
@@ -922,6 +930,7 @@ pub(super) fn declare_native_data_plane_imports(
             ClifFunctionSignature {
                 params: (0..import.arity).map(|_| types::I32).collect(),
                 ret: Some(types::I32),
+                sret: None,
             },
         );
     }
