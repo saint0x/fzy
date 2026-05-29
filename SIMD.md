@@ -204,13 +204,14 @@ This track adds an explicit author-facing SIMD model.
 
 - [x] Safe contiguous load/store operations for fixed-size array values.
 - [x] Partial/tail handling policy for the shipped fixed-array surface.
-- [ ] Explicit aligned vs unaligned load/store policy.
+- [x] Explicit aligned vs unaligned load/store policy.
 - [x] Gather/scatter for the shipped fixed-array four-lane surface.
 - [x] Slice/array interop:
   - [x] loading from fixed-size typed arrays
   - [x] storing back into fixed-size typed arrays
   - [ ] loading from `bytes` or other typed contiguous buffers
-  - [ ] storing back into non-array contiguous buffers
+  - [x] loading from raw contiguous buffers through explicit unsafe pointer APIs
+  - [x] storing back into raw contiguous buffers through explicit unsafe pointer APIs
 
 ### D. Masks
 
@@ -225,7 +226,7 @@ This track adds an explicit author-facing SIMD model.
 - [x] Type-check lane-count compatibility.
 - [x] Type-check element-type compatibility.
 - [ ] Reject unsupported implicit conversions.
-- [ ] Define safe/unsafe boundary for:
+- [x] Define safe/unsafe boundary for:
   - reinterpret casts
   - raw pointer loads/stores
   - unaligned assumptions

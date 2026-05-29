@@ -1,5 +1,51 @@
 use core.simd;
 
+fn plus1(ptr: *mut u8) -> *mut u8 {
+    unsafe {
+        return ptr + 1
+    }
+}
+
+fn aligned_i32_lane0(ptr: *mut u8) -> i32 {
+    unsafe {
+        let value = simd.i32x4_load_ptr_aligned(ptr)
+        return simd.i32x4_lane0(value)
+    }
+}
+
+fn aligned_i32_lane3(ptr: *mut u8) -> i32 {
+    unsafe {
+        let value = simd.i32x4_load_ptr_aligned(ptr)
+        return simd.i32x4_lane3(value)
+    }
+}
+
+fn unaligned_i32_lane0(ptr: *mut u8) -> i32 {
+    unsafe {
+        let value = simd.i32x4_load_ptr_unaligned(ptr)
+        return simd.i32x4_lane0(value)
+    }
+}
+
+fn unaligned_i32_lane3(ptr: *mut u8) -> i32 {
+    unsafe {
+        let value = simd.i32x4_load_ptr_unaligned(ptr)
+        return simd.i32x4_lane3(value)
+    }
+}
+
+fn aligned_mask_bitmask(ptr: *mut u8) -> i32 {
+    unsafe {
+        return simd.mask32x4_bitmask(simd.mask32x4_load_ptr_aligned(ptr))
+    }
+}
+
+fn unaligned_mask_bitmask(ptr: *mut u8) -> i32 {
+    unsafe {
+        return simd.mask32x4_bitmask(simd.mask32x4_load_ptr_unaligned(ptr))
+    }
+}
+
 fn main() -> i32 {
     let ints = simd.i32x4_add(simd.i32x4_load([1, 2, 3, 4]), simd.i32x4_splat(2))
     let uint_source = simd.u32x4_store(simd.u32x4_new(1, 2, 3, 4))
@@ -58,6 +104,60 @@ fn main() -> i32 {
     )
     let stored_floats = simd.f32x4_store(floats)
     let stored_mask = simd.mask32x4_store(mask)
+    let prefix = simd.i32x4_load_prefix([9, 8, 7, 6], 2, -1)
+    let prefix_merge = simd.i32x4_merge_prefix(prefix, 3, [100, 200, 300, 400])
+    let masked_load = simd.u32x4_load_masked(
+        simd.u32x4_store(simd.u32x4_new(5, 6, 7, 8)),
+        simd.mask32x4_load([true, false, true, false]),
+        99,
+    )
+    let masked_merge = simd.u32x4_merge_masked(
+        simd.u32x4_new(50, 60, 70, 80),
+        simd.mask32x4_load([false, true, false, true]),
+        simd.u32x4_store(simd.u32x4_new(1, 2, 3, 4)),
+    )
+    let gathered = simd.i32x4_gather([11, 22, 33, 44], [3, 1, 1, 0])
+    let scattered = simd.i32x4_scatter(simd.i32x4_new(9, 8, 7, 6), [2, 2, 0, 3], [100, 200, 300, 400])
+    let float_prefix = simd.f32x4_store(simd.f32x4_merge_prefix(
+        simd.f32x4_load_prefix(
+            simd.f32x4_store(simd.f32x4_new(9.0, 8.0, 7.0, 6.0)),
+            3,
+            -1.0,
+        ),
+        2,
+        simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0)),
+    ))
+    let mask_prefix = simd.mask32x4_store(simd.mask32x4_merge_prefix(
+        simd.mask32x4_load_prefix([true, false, true, true], 3, false),
+        2,
+        [false, false, false, true],
+    ))
+    let gathered_mask = simd.mask32x4_gather([true, false, true, false], [2, 0, 3, 1])
+    let scattered_mask = simd.mask32x4_scatter(
+        simd.mask32x4_load([true, false, true, true]),
+        [1, 1, 0, 3],
+        [false, false, false, false],
+    )
+    let aligned_ptr = alloc(32)
+    defer free(aligned_ptr)
+    let unaligned_ptr_base = alloc(32)
+    defer free(unaligned_ptr_base)
+    let aligned_mask_ptr = alloc(16)
+    defer free(aligned_mask_ptr)
+    let unaligned_mask_ptr_base = alloc(16)
+    defer free(unaligned_mask_ptr_base)
+    unsafe {
+        simd.i32x4_store_ptr_aligned(aligned_ptr, simd.i32x4_new(10, 20, 30, 40))
+        simd.i32x4_store_ptr_unaligned(plus1(unaligned_ptr_base), simd.i32x4_new(90, 80, 70, 60))
+        simd.mask32x4_store_ptr_aligned(
+            aligned_mask_ptr,
+            simd.mask32x4_load([true, false, true, false]),
+        )
+        simd.mask32x4_store_ptr_unaligned(
+            plus1(unaligned_mask_ptr_base),
+            simd.mask32x4_load([false, true, true, false]),
+        )
+    }
     let floats_ok = simd.mask32x4_all(
         simd.f32x4_eq(floats, simd.f32x4_new(1.5, 3.0, 4.5, 6.0)),
     )
@@ -141,6 +241,54 @@ fn main() -> i32 {
     }
     if simd.f32x4_reduce_min(floats) != simd.f32x4_lane0(floats) || simd.f32x4_reduce_max(floats) != simd.f32x4_lane3(floats) {
         return 57
+    }
+    if simd.mask32x4_all(simd.i32x4_eq(prefix, simd.i32x4_new(9, 8, -1, -1))) == false {
+        return 59
+    }
+    if simd.mask32x4_all(
+        simd.i32x4_eq(prefix_merge, simd.i32x4_new(9, 8, -1, 400)),
+    ) == false {
+        return 61
+    }
+    if simd.mask32x4_all(simd.u32x4_eq(masked_load, simd.u32x4_new(5, 99, 7, 99))) == false {
+        return 63
+    }
+    if simd.mask32x4_all(
+        simd.u32x4_eq(masked_merge, simd.u32x4_new(1, 60, 3, 80)),
+    ) == false {
+        return 65
+    }
+    if simd.mask32x4_all(simd.i32x4_eq(gathered, simd.i32x4_new(44, 22, 22, 11))) == false {
+        return 67
+    }
+    if scattered[0] != 7 || scattered[1] != 200 || scattered[2] != 8 || scattered[3] != 6 {
+        return 69
+    }
+    if simd.mask32x4_all(
+        simd.f32x4_eq(simd.f32x4_load(float_prefix), simd.f32x4_new(9.0, 8.0, 3.0, 4.0)),
+    ) == false {
+        return 71
+    }
+    if mask_prefix[0] != true || mask_prefix[1] != false || mask_prefix[2] != false || mask_prefix[3] != true {
+        return 73
+    }
+    if simd.mask32x4_bitmask(gathered_mask) != 3 {
+        return 75
+    }
+    if scattered_mask[0] != true || scattered_mask[1] != false || scattered_mask[2] != false || scattered_mask[3] != true {
+        return 77
+    }
+    if aligned_i32_lane0(aligned_ptr) != 10 || aligned_i32_lane3(aligned_ptr) != 40 {
+        return 79
+    }
+    if unaligned_i32_lane0(plus1(unaligned_ptr_base)) != 90 || unaligned_i32_lane3(plus1(unaligned_ptr_base)) != 60 {
+        return 81
+    }
+    if aligned_mask_bitmask(aligned_mask_ptr) != 5 {
+        return 83
+    }
+    if unaligned_mask_bitmask(plus1(unaligned_mask_ptr_base)) != 6 {
+        return 85
     }
     return 0
 }

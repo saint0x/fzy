@@ -2661,6 +2661,19 @@ int32_t fz_native_env_get(int32_t key_id) {
   return fz_intern_slice(value, strlen(value));
 }
 
+uintptr_t fz_native_alloc(uintptr_t size) {
+  size_t bytes = (size_t)size;
+  void* raw = bytes == 0 ? malloc(1) : malloc(bytes);
+  return (uintptr_t)raw;
+}
+
+void fz_native_free(uintptr_t ptr) {
+  if (ptr == 0) {
+    return;
+  }
+  free((void*)ptr);
+}
+
 int32_t fz_native_time_now(void) {
   return (int32_t)fz_now_ms();
 }

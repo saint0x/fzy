@@ -7,6 +7,16 @@ pub(super) struct NativeRuntimeImport {
 
 pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
+        callee: "alloc",
+        symbol: "fz_native_alloc",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "free",
+        symbol: "fz_native_free",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "http.bind",
         symbol: "fz_native_net_bind",
         arity: 0,

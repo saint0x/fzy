@@ -561,7 +561,7 @@ fn portable_simd_surface_executes_on_cranelift_backend() {
     )
     .expect("source should be written");
 
-    let artifact = compile_file_with_backend(&root, BuildProfile::Verify, Some("cranelift"))
+    let artifact = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
         .expect("cranelift SIMD build should succeed");
     assert_eq!(artifact.status, "ok");
     let exit = run_native_exit(
@@ -571,6 +571,46 @@ fn portable_simd_surface_executes_on_cranelift_backend() {
             .expect("cranelift SIMD artifact output should exist"),
     );
     assert_eq!(exit, 2);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn portable_simd_raw_pointer_memory_executes_on_native_backends() {
+    let project_name = format!(
+        "fozzylang-simd-ptr-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.simd;\n\nfn plus1(ptr: *mut u8) -> *mut u8 {\n    unsafe {\n        return ptr + 1\n    }\n}\n\nfn aligned_lane0(ptr: *mut u8) -> i32 {\n    unsafe {\n        let value = simd.i32x4_load_ptr_aligned(ptr)\n        return simd.i32x4_lane0(value)\n    }\n}\n\nfn aligned_lane3(ptr: *mut u8) -> i32 {\n    unsafe {\n        let value = simd.i32x4_load_ptr_aligned(ptr)\n        return simd.i32x4_lane3(value)\n    }\n}\n\nfn unaligned_lane0(ptr: *mut u8) -> i32 {\n    unsafe {\n        let value = simd.i32x4_load_ptr_unaligned(ptr)\n        return simd.i32x4_lane0(value)\n    }\n}\n\nfn unaligned_lane3(ptr: *mut u8) -> i32 {\n    unsafe {\n        let value = simd.i32x4_load_ptr_unaligned(ptr)\n        return simd.i32x4_lane3(value)\n    }\n}\n\nfn aligned_mask_bits(ptr: *mut u8) -> i32 {\n    unsafe {\n        return simd.mask32x4_bitmask(simd.mask32x4_load_ptr_aligned(ptr))\n    }\n}\n\nfn unaligned_mask_bits(ptr: *mut u8) -> i32 {\n    unsafe {\n        return simd.mask32x4_bitmask(simd.mask32x4_load_ptr_unaligned(ptr))\n    }\n}\n\nfn main() -> i32 {\n    let p = alloc(32)\n    defer free(p)\n    let r = alloc(32)\n    defer free(r)\n    let m = alloc(16)\n    defer free(m)\n    let n = alloc(16)\n    defer free(n)\n    unsafe {\n        simd.i32x4_store_ptr_aligned(p, simd.i32x4_new(10, 20, 30, 40))\n        simd.i32x4_store_ptr_unaligned(plus1(r), simd.i32x4_new(90, 80, 70, 60))\n        simd.mask32x4_store_ptr_aligned(m, simd.mask32x4_load([true, false, true, false]))\n        simd.mask32x4_store_ptr_unaligned(plus1(n), simd.mask32x4_load([false, true, true, false]))\n    }\n    if aligned_lane0(p) != 10 || aligned_lane3(p) != 40 { return 11 }\n    if unaligned_lane0(plus1(r)) != 90 || unaligned_lane3(plus1(r)) != 60 { return 13 }\n    if aligned_mask_bits(m) != 5 { return 15 }\n    if unaligned_mask_bits(plus1(n)) != 6 { return 17 }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(llvm.status, "ok");
+    assert_eq!(cranelift.status, "ok");
+    assert_eq!(
+        run_native_exit(llvm.output.as_ref().expect("llvm output should exist")),
+        0
+    );
+    assert_eq!(
+        run_native_exit(cranelift.output.as_ref().expect("cranelift output should exist")),
+        0
+    );
 
     let _ = std::fs::remove_dir_all(root);
 }

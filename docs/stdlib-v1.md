@@ -240,6 +240,7 @@ Transcript guidance:
   - explicit numeric bitcasts and signed/unsigned reinterpret helpers
   - lane extraction
   - reductions: `reduce_add`, `reduce_min`, `reduce_max`, `any`, `all`, `none`, `bitmask`
+  - explicit unsafe raw-pointer aligned/unaligned load/store helpers for `i32x4`, `u32x4`, `f32x4`, and `mask32x4`
 - Contract:
   - current production lowering for the shipped phase-1 subset is available in both LLVM and Cranelift
   - backend parity is semantic for the fixed-array-safe surface; this is not a performance-equivalence claim
@@ -247,9 +248,10 @@ Transcript guidance:
   - SIMD values are rejected across ABI/FFI boundaries in phase 1
   - `shuffle` traps on lane selectors outside `0..7`
   - masks remain distinct from integer vectors in the public API
-  - current safe memory interop is fixed-size array based; raw-buffer and explicit alignment-policy APIs remain future work
+  - fixed-array memory helpers are safe; raw contiguous-buffer interop is available through explicit `unsafe fn` aligned/unaligned pointer loads and stores
+  - `bytes`/slice-native SIMD memory views are still future work
 - Example:
-  - [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) shows the current production-style fixed-array SIMD workflow for signed mix/limit, partial tail merges, channel swizzles, and highlighted-lane scatter.
+  - [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) shows the current production-style SIMD workflow for signed mix/limit, partial tail merges, channel swizzles, highlighted-lane scatter, and the same cross-backend vector contracts the fixture suite exercises.
 
 - `use core.text;` is the standard-library text helper module for native CLI/service rendering.
 - Common helpers:

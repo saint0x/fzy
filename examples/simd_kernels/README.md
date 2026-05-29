@@ -8,6 +8,7 @@ This example shows the current production SIMD model in a realistic fixed-size b
 - channel swizzles via fixed-array `gather` and targeted highlight placement via `scatter`
 - scalar summaries recovered from SIMD blocks with `reduce_min` and `reduce_max`
 - array-valued helper composition that stays stable across both LLVM and Cranelift backends
+- the same aligned/unaligned raw-pointer memory contract the portable fixture now validates end to end across both native backends
 
 Recommended commands:
 

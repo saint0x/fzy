@@ -180,6 +180,143 @@ fn llvm_simd_scalar_type(kind: &str) -> &'static str {
     }
 }
 
+fn llvm_pointer_int_type() -> &'static str {
+    if std::mem::size_of::<usize>() == 8 {
+        "i64"
+    } else {
+        "i32"
+    }
+}
+
+fn llvm_emit_simd_ptr_alignment_check(
+    kind: &str,
+    op: &str,
+    ptr_int_value: &str,
+    ptr_int_ty: &str,
+    ctx: &mut LlvmFuncCtx,
+) {
+    if !op.contains("_aligned_") {
+        return;
+    }
+    let align = if kind == "mask32x4" { 4 } else { 16 };
+    let masked = ctx.value();
+    let aligned = ctx.value();
+    let ok_label = ctx.label("simd_ptr_align_ok");
+    let trap_label = ctx.label("simd_ptr_align_trap");
+    ctx.code.push_str(&format!(
+        "  {masked} = and {ptr_int_ty} {ptr_int_value}, {}\n  {aligned} = icmp eq {ptr_int_ty} {masked}, 0\n  br i1 {aligned}, label %{ok_label}, label %{trap_label}\n",
+        align - 1
+    ));
+    ctx.code.push_str(&format!("{trap_label}:\n"));
+    ctx.code.push_str("  call void @llvm.trap()\n  unreachable\n");
+    ctx.code.push_str(&format!("{ok_label}:\n"));
+}
+
+fn llvm_emit_simd_ptr_memory(
+    kind: &str,
+    op: &str,
+    args: &[ast::Expr],
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<LlvmValue> {
+    let lowered_ptr = llvm_emit_expr_as(
+        &args[0],
+        ctx,
+        string_literal_ids,
+        task_ref_ids,
+        llvm_pointer_int_type(),
+    )?;
+    llvm_emit_simd_ptr_alignment_check(kind, op, &lowered_ptr.value, &lowered_ptr.ty, ctx);
+    let base_ptr = {
+        let ptr = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {ptr} = inttoptr {} {} to ptr\n",
+            lowered_ptr.ty, lowered_ptr.value
+        ));
+        ptr
+    };
+    let is_aligned = op.contains("_aligned_");
+    let align = if is_aligned {
+        if kind == "mask32x4" { 4 } else { 16 }
+    } else {
+        1
+    };
+    let vec_ty = llvm_simd_vector_type(kind).to_string();
+    if op.starts_with("_load_") {
+        if kind == "mask32x4" {
+            let mut lanes = Vec::with_capacity(4);
+            for index in 0..4 {
+                let lane_ptr = if index == 0 {
+                    base_ptr.clone()
+                } else {
+                    let next = ctx.value();
+                    ctx.code.push_str(&format!(
+                        "  {next} = getelementptr inbounds i8, ptr {base_ptr}, i64 {index}\n"
+                    ));
+                    next
+                };
+                let loaded = ctx.value();
+                let pred = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {loaded} = load i8, ptr {lane_ptr}, align 1\n  {pred} = icmp ne i8 {loaded}, 0\n"
+                ));
+                lanes.push(pred);
+            }
+            let mut current = "undef".to_string();
+            for (index, lane) in lanes.iter().enumerate() {
+                let next = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {next} = insertelement {vec_ty} {current}, i1 {lane}, i32 {index}\n"
+                ));
+                current = next;
+            }
+            return Ok(LlvmValue {
+                value: current,
+                ty: vec_ty,
+            });
+        }
+        let out = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {out} = load {vec_ty}, ptr {base_ptr}, align {align}\n"
+        ));
+        return Ok(LlvmValue {
+            value: out,
+            ty: vec_ty,
+        });
+    }
+
+    let value = llvm_emit_expr_as(&args[1], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
+    if kind == "mask32x4" {
+        for index in 0..4 {
+            let lane = ctx.value();
+            let widened = ctx.value();
+            let lane_ptr = if index == 0 {
+                base_ptr.clone()
+            } else {
+                let next = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {next} = getelementptr inbounds i8, ptr {base_ptr}, i64 {index}\n"
+                ));
+                next
+            };
+            ctx.code.push_str(&format!(
+                "  {lane} = extractelement {vec_ty} {}, i32 {index}\n  {widened} = zext i1 {lane} to i8\n  store i8 {widened}, ptr {lane_ptr}, align 1\n",
+                value.value
+            ));
+        }
+    } else {
+        ctx.code.push_str(&format!(
+            "  store {vec_ty} {}, ptr {base_ptr}, align {align}\n",
+            value.value
+        ));
+    }
+    Ok(LlvmValue {
+        value: "0".to_string(),
+        ty: "i32".to_string(),
+    })
+}
+
 fn llvm_simd_bool_splat_literal() -> &'static str {
     "<i1 true, i1 true, i1 true, i1 true>"
 }
@@ -677,6 +814,12 @@ fn llvm_emit_simd_intrinsic_call(
         "_splat" => llvm_emit_simd_splat(kind, &args[0], ctx, string_literal_ids, task_ref_ids)?,
         "_load" => {
             llvm_emit_simd_load_from_array(kind, &args[0], ctx, string_literal_ids, task_ref_ids)?
+        }
+        "_load_aligned_ptr"
+        | "_load_unaligned_ptr"
+        | "_store_aligned_ptr"
+        | "_store_unaligned_ptr" => {
+            llvm_emit_simd_ptr_memory(kind, op, args, ctx, string_literal_ids, task_ref_ids)?
         }
         "_saturating_add" | "_saturating_sub" => llvm_emit_simd_saturating_int_binop(
             kind,
@@ -3131,6 +3274,7 @@ pub(super) fn llvm_ir_type_for_ast_type(ty: &ast::Type) -> String {
         ast::Type::Array { elem, len } => {
             format!("[{len} x {}]", llvm_ir_type_for_ast_type(elem))
         }
+        ast::Type::Ptr { .. } | ast::Type::Ref { .. } | ast::Type::Slice(_) => pointer_ty,
         ast::Type::SimdVector(shape) => match shape.element {
             ast::SimdElement::I32 | ast::SimdElement::U32 => format!("<{} x i32>", shape.lanes),
             ast::SimdElement::F32 => format!("<{} x float>", shape.lanes),
@@ -3310,14 +3454,35 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
     out.push_str("declare void @llvm.trap()\n");
     let used_imports = collect_used_native_runtime_imports(fir);
     for import in &used_imports {
-        let mut params = String::new();
-        for index in 0..import.arity {
-            if index > 0 {
-                params.push_str(", ");
+        match import.callee {
+            "alloc" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare {} @{}({})",
+                    llvm_pointer_int_type(),
+                    import.symbol,
+                    llvm_pointer_int_type()
+                );
             }
-            params.push_str("i32");
+            "free" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare void @{}({})",
+                    import.symbol,
+                    llvm_pointer_int_type()
+                );
+            }
+            _ => {
+                let mut params = String::new();
+                for index in 0..import.arity {
+                    if index > 0 {
+                        params.push_str(", ");
+                    }
+                    params.push_str("i32");
+                }
+                let _ = writeln!(&mut out, "declare i32 @{}({})", import.symbol, params);
+            }
         }
-        let _ = writeln!(&mut out, "declare i32 @{}({})", import.symbol, params);
     }
     let used_data_plane_imports = collect_used_native_data_plane_imports(fir);
     for import in &used_data_plane_imports {
@@ -3414,6 +3579,20 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         LlvmFunctionSig {
             params: vec!["i64".to_string()],
             ret: Some("i32".to_string()),
+        },
+    );
+    function_sigs.insert(
+        "alloc".to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string()],
+            ret: Some(llvm_pointer_int_type().to_string()),
+        },
+    );
+    function_sigs.insert(
+        "free".to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string()],
+            ret: None,
         },
     );
     for import in &extern_imports {

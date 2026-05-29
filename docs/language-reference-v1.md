@@ -240,12 +240,13 @@ Semantics:
   - paired lane-movement helpers `zip_lo/zip_hi` and `unzip_left/unzip_right`
   - explicit numeric reinterpret/bitcast helpers
   - lane extraction and reductions including `reduce_add`, `reduce_min`, and `reduce_max`
+  - explicit `unsafe fn` raw-pointer aligned/unaligned load/store helpers for the shipped vector and mask aliases
 - `shuffle` traps at runtime when any lane selector is outside `0..7`.
 - Backend posture:
   - LLVM and Cranelift both lower the current phase-1 fixed-array-safe surface
   - backend parity is semantic for the shipped subset; equal optimization maturity is not implied
   - fixed-array return values are materialized into caller-owned native storage before later calls can reuse callee-local temporaries
-- Current safe memory interop is fixed-size array based; raw-buffer and explicit alignment-sensitive SIMD APIs are not part of the shipped v1 surface yet.
+- Fixed-array memory helpers are safe; raw contiguous-buffer SIMD interop exists only behind explicit `unsafe fn` aligned/unaligned pointer APIs, and `bytes`/slice-native views are still not part of the shipped v1 surface.
 - [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) is the reference example for the current production SIMD workflow.
 - Canonical standard-library wrapper import is `use core.process;`.
 - `core.process` exposes ergonomic wrappers like `process.argv_or`, `process.command_name`, and `process.has_flag`.

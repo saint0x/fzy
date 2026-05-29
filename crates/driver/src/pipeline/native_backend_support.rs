@@ -822,10 +822,28 @@ pub(super) fn declare_native_runtime_imports(
             continue;
         }
         let mut sig = module.make_signature();
-        for _ in 0..import.arity {
-            sig.params.push(AbiParam::new(types::I32));
+        let mut params = Vec::with_capacity(import.arity);
+        let mut ret = Some(types::I32);
+        match import.callee {
+            "alloc" => {
+                params.push(pointer_sized_clif_type());
+                sig.params.push(AbiParam::new(pointer_sized_clif_type()));
+                sig.returns.push(AbiParam::new(pointer_sized_clif_type()));
+                ret = Some(pointer_sized_clif_type());
+            }
+            "free" => {
+                params.push(pointer_sized_clif_type());
+                sig.params.push(AbiParam::new(pointer_sized_clif_type()));
+                ret = None;
+            }
+            _ => {
+                for _ in 0..import.arity {
+                    params.push(types::I32);
+                    sig.params.push(AbiParam::new(types::I32));
+                }
+                sig.returns.push(AbiParam::new(types::I32));
+            }
         }
-        sig.returns.push(AbiParam::new(types::I32));
         let id = module
             .declare_function(import.symbol, Linkage::Import, &sig)
             .map_err(|error| {
@@ -839,8 +857,8 @@ pub(super) fn declare_native_runtime_imports(
         function_signatures.insert(
             import.callee.to_string(),
             ClifFunctionSignature {
-                params: (0..import.arity).map(|_| types::I32).collect(),
-                ret: Some(types::I32),
+                params,
+                ret,
                 sret: None,
             },
         );

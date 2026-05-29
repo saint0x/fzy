@@ -8046,7 +8046,7 @@ fn type_check_stmt(
             let inferred = infer_expr_type(value, scopes, env, state);
             let final_ty = match (ty, inferred) {
                 (Some(explicit), Some(actual)) => {
-                    if !type_compatible(explicit, &actual) {
+                    if !expr_type_compatible(explicit, &actual, value) {
                         record_type_error(
                             state.errors,
                             state.type_error_details,
@@ -8084,7 +8084,7 @@ fn type_check_stmt(
             let inferred = infer_expr_type(value, scopes, env, state);
             let final_ty = match (ty, inferred.clone()) {
                 (Some(explicit), Some(actual)) => {
-                    if !type_compatible(explicit, &actual) {
+                    if !expr_type_compatible(explicit, &actual, value) {
                         record_type_error(
                             state.errors,
                             state.type_error_details,
@@ -8790,7 +8790,7 @@ fn infer_expr_type(
                 }
                 for (index, expected) in params.iter().enumerate() {
                     if let Some(Some(actual)) = arg_types.get(index) {
-                        if !type_compatible(expected, actual) {
+                        if !expr_type_compatible(expected, actual, &args[index]) {
                             record_type_error(
                                 state.errors,
                                 state.type_error_details,
@@ -8971,11 +8971,11 @@ fn infer_expr_type(
                     record_type_error(state.errors, state.type_error_details, detail);
                     return None;
                 }
-                for (expected, actual) in params.iter().zip(arg_types.iter()) {
+                for (index, (expected, actual)) in params.iter().zip(arg_types.iter()).enumerate() {
                     let Some(actual) = actual else {
                         continue;
                     };
-                    if !type_compatible(expected, actual) {
+                    if !expr_type_compatible(expected, actual, &args[index]) {
                         record_type_error(
                             state.errors,
                             state.type_error_details,
@@ -11160,12 +11160,28 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "simd.__mask32x4",
         "simd.__i32x4_splat",
         "simd.__i32x4_load",
+        "simd.__i32x4_load_aligned_ptr",
+        "simd.__i32x4_load_unaligned_ptr",
+        "simd.__i32x4_store_aligned_ptr",
+        "simd.__i32x4_store_unaligned_ptr",
         "simd.__u32x4_splat",
         "simd.__u32x4_load",
+        "simd.__u32x4_load_aligned_ptr",
+        "simd.__u32x4_load_unaligned_ptr",
+        "simd.__u32x4_store_aligned_ptr",
+        "simd.__u32x4_store_unaligned_ptr",
         "simd.__f32x4_splat",
         "simd.__f32x4_load",
+        "simd.__f32x4_load_aligned_ptr",
+        "simd.__f32x4_load_unaligned_ptr",
+        "simd.__f32x4_store_aligned_ptr",
+        "simd.__f32x4_store_unaligned_ptr",
         "simd.__mask32x4_splat",
         "simd.__mask32x4_load",
+        "simd.__mask32x4_load_aligned_ptr",
+        "simd.__mask32x4_load_unaligned_ptr",
+        "simd.__mask32x4_store_aligned_ptr",
+        "simd.__mask32x4_store_unaligned_ptr",
         "simd.__i32x4_add",
         "simd.__i32x4_sub",
         "simd.__i32x4_mul",
@@ -11664,6 +11680,12 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             }],
             i32x4.clone(),
         ),
+        "simd.__i32x4_load_aligned_ptr" | "simd.__i32x4_load_unaligned_ptr" => {
+            (vec![ptr_u8.clone()], i32x4.clone())
+        }
+        "simd.__i32x4_store_aligned_ptr" | "simd.__i32x4_store_unaligned_ptr" => {
+            (vec![ptr_u8.clone(), i32x4.clone()], Type::Void)
+        }
         "simd.__u32x4_splat" => (vec![i32.clone()], u32x4.clone()),
         "simd.__u32x4_load" => (
             vec![Type::Array {
@@ -11672,6 +11694,12 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             }],
             u32x4.clone(),
         ),
+        "simd.__u32x4_load_aligned_ptr" | "simd.__u32x4_load_unaligned_ptr" => {
+            (vec![ptr_u8.clone()], u32x4.clone())
+        }
+        "simd.__u32x4_store_aligned_ptr" | "simd.__u32x4_store_unaligned_ptr" => {
+            (vec![ptr_u8.clone(), u32x4.clone()], Type::Void)
+        }
         "simd.__f32x4_splat" => (vec![Type::Float { bits: 64 }], f32x4.clone()),
         "simd.__f32x4_load" => (
             vec![Type::Array {
@@ -11680,6 +11708,12 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             }],
             f32x4.clone(),
         ),
+        "simd.__f32x4_load_aligned_ptr" | "simd.__f32x4_load_unaligned_ptr" => {
+            (vec![ptr_u8.clone()], f32x4.clone())
+        }
+        "simd.__f32x4_store_aligned_ptr" | "simd.__f32x4_store_unaligned_ptr" => {
+            (vec![ptr_u8.clone(), f32x4.clone()], Type::Void)
+        }
         "simd.__mask32x4_splat" => (vec![i32.clone()], mask32x4.clone()),
         "simd.__mask32x4_load" => (
             vec![Type::Array {
@@ -11688,6 +11722,12 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             }],
             mask32x4.clone(),
         ),
+        "simd.__mask32x4_load_aligned_ptr" | "simd.__mask32x4_load_unaligned_ptr" => {
+            (vec![ptr_u8.clone()], mask32x4.clone())
+        }
+        "simd.__mask32x4_store_aligned_ptr" | "simd.__mask32x4_store_unaligned_ptr" => {
+            (vec![ptr_u8.clone(), mask32x4.clone()], Type::Void)
+        }
         "simd.__i32x4_add"
         | "simd.__i32x4_sub"
         | "simd.__i32x4_mul"
@@ -12642,6 +12682,52 @@ fn type_compatible(expected: &Type, actual: &Type) -> bool {
                 && type_compatible(lhs_ret, rhs_ret)
         }
         _ => expected == actual,
+    }
+}
+
+fn coercible_integer_literal_value(expr: &Expr) -> Option<i128> {
+    match expr {
+        Expr::Int(v) => Some(*v as i128),
+        Expr::Group(inner) | Expr::Discard(inner) => coercible_integer_literal_value(inner),
+        Expr::Unary { op, expr } => {
+            let value = coercible_integer_literal_value(expr)?;
+            match op {
+                ast::UnaryOp::Plus => Some(value),
+                ast::UnaryOp::Neg => Some(-value),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn expr_type_compatible(expected: &Type, actual: &Type, expr: &Expr) -> bool {
+    if type_compatible(expected, actual) {
+        return true;
+    }
+    if !is_integer_type(expected) || !is_integer_type(actual) {
+        return false;
+    }
+    let Some(value) = coercible_integer_literal_value(expr) else {
+        return false;
+    };
+    match expected {
+        Type::USize => value >= 0,
+        Type::ISize => true,
+        Type::Int { signed, bits } => {
+            if *signed {
+                let width = (*bits).clamp(1, 127) as u32;
+                let min = -(1i128 << (width - 1));
+                let max = (1i128 << (width - 1)) - 1;
+                value >= min && value <= max
+            } else if value < 0 {
+                false
+            } else {
+                let width = (*bits).clamp(1, 127) as u32;
+                value <= ((1i128 << width) - 1)
+            }
+        }
+        _ => false,
     }
 }
 
