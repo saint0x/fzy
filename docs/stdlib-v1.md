@@ -218,6 +218,33 @@ Transcript guidance:
 
 ### `text`
 
+### `simd`
+
+- `core.simd` is the phase-1 portable SIMD facade.
+- Shipped vector aliases:
+  - `i32x4`
+  - `u32x4`
+  - `f32x4`
+  - `mask32x4`
+- Shipped operation families:
+  - constructors and `splat`
+  - add/sub/mul
+  - min/max
+  - shifts and bitwise ops
+  - eq/ne/lt/le/gt/ge
+  - `select(mask, then, else)`
+  - `shuffle(left, right, i0, i1, i2, i3)`
+  - paired lane helpers: `zip_lo/zip_hi`, `unzip_left/unzip_right`
+  - explicit numeric bitcasts and signed/unsigned reinterpret helpers
+  - lane extraction
+  - reductions: `reduce_add`, `any`, `all`, `none`, `bitmask`
+- Contract:
+  - current production lowering is LLVM-backed
+  - Cranelift rejects `core.simd` explicitly rather than silently scalarizing
+  - SIMD values are rejected across ABI/FFI boundaries in phase 1
+  - `shuffle` traps on lane selectors outside `0..7`
+  - masks remain distinct from integer vectors in the public API
+
 - `use core.text;` is the standard-library text helper module for native CLI/service rendering.
 - Common helpers:
   - `text.trim(value)`

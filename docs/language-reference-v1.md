@@ -218,6 +218,30 @@ Semantics:
 - Current-process argv access is first-class:
   - `proc.argv_count()`
   - `proc.argv_get(index)`
+
+## SIMD Surface
+
+- Phase-1 portable SIMD types are first-class language types:
+  - `i32x4`
+  - `u32x4`
+  - `f32x4`
+  - `mask32x4`
+- Lane counts are fixed at compile time in the current public surface.
+- Masks are distinct from integer vectors in the public type system.
+- SIMD values must not cross ABI/FFI boundaries in v1.
+- Current public operations include:
+  - constructors and `splat`
+  - arithmetic, min/max, shifts, bitwise ops
+  - comparisons producing `mask32x4`
+  - `select(mask, then, else)`
+  - public `shuffle(left, right, i0, i1, i2, i3)`
+  - paired lane-movement helpers `zip_lo/zip_hi` and `unzip_left/unzip_right`
+  - explicit numeric reinterpret/bitcast helpers
+  - lane extraction and reductions
+- `shuffle` traps at runtime when any lane selector is outside `0..7`.
+- Backend posture:
+  - LLVM lowers the current phase-1 surface
+  - Cranelift rejects `core.simd` explicitly until native SIMD lowering is implemented
 - Canonical standard-library wrapper import is `use core.process;`.
 - `core.process` exposes ergonomic wrappers like `process.argv_or`, `process.command_name`, and `process.has_flag`.
 - Structured process builders are first-class: `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`, `proc.run_cmd`.

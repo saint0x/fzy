@@ -433,6 +433,92 @@ fn llvm_emit_simd_intrinsic_call(
                 ty: vec_ty,
             }
         }
+        "_shuffle" => {
+            let lhs = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
+            let rhs = llvm_emit_expr_as(&args[1], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
+            let mut current = "undef".to_string();
+            for (lane_index, arg) in args[2..].iter().enumerate() {
+                let selector =
+                    llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, "i32")?;
+                let ge_zero = ctx.value();
+                let lt_eight = ctx.value();
+                let in_range = ctx.value();
+                let ok_label = ctx.label("simd_shuffle_ok");
+                let trap_label = ctx.label("simd_shuffle_trap");
+                ctx.code.push_str(&format!(
+                    "  {ge_zero} = icmp sge i32 {}, 0\n",
+                    selector.value
+                ));
+                ctx.code.push_str(&format!(
+                    "  {lt_eight} = icmp slt i32 {}, 8\n",
+                    selector.value
+                ));
+                ctx.code
+                    .push_str(&format!("  {in_range} = and i1 {ge_zero}, {lt_eight}\n"));
+                ctx.code.push_str(&format!(
+                    "  br i1 {in_range}, label %{ok_label}, label %{trap_label}\n"
+                ));
+                ctx.code.push_str(&format!("{trap_label}:\n"));
+                ctx.code
+                    .push_str("  call void @llvm.trap()\n  unreachable\n");
+                ctx.code.push_str(&format!("{ok_label}:\n"));
+
+                let use_left = ctx.value();
+                let right_index = ctx.value();
+                let left_lane = ctx.value();
+                let right_lane = ctx.value();
+                let picked_lane = ctx.value();
+                let next = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {use_left} = icmp slt i32 {}, 4\n",
+                    selector.value
+                ));
+                ctx.code.push_str(&format!(
+                    "  {right_index} = sub i32 {}, 4\n",
+                    selector.value
+                ));
+                ctx.code.push_str(&format!(
+                    "  {left_lane} = extractelement {vec_ty} {}, i32 {}\n",
+                    lhs.value, selector.value
+                ));
+                ctx.code.push_str(&format!(
+                    "  {right_lane} = extractelement {vec_ty} {}, i32 {right_index}\n",
+                    rhs.value
+                ));
+                ctx.code.push_str(&format!(
+                    "  {picked_lane} = select i1 {use_left}, {scalar_ty} {left_lane}, {scalar_ty} {right_lane}\n"
+                ));
+                ctx.code.push_str(&format!(
+                    "  {next} = insertelement {vec_ty} {current}, {scalar_ty} {picked_lane}, i32 {lane_index}\n"
+                ));
+                current = next;
+            }
+            LlvmValue {
+                value: current,
+                ty: vec_ty,
+            }
+        }
+        "_as_u32x4" | "_as_i32x4" | "_bitcast_f32x4" | "_bitcast_i32x4" | "_bitcast_u32x4" => {
+            let (source_ty, target_ty) = match op {
+                "_as_u32x4" => ("<4 x i32>", "<4 x i32>"),
+                "_as_i32x4" => ("<4 x i32>", "<4 x i32>"),
+                "_bitcast_f32x4" => ("<4 x i32>", "<4 x float>"),
+                "_bitcast_i32x4" => ("<4 x float>", "<4 x i32>"),
+                "_bitcast_u32x4" => ("<4 x float>", "<4 x i32>"),
+                _ => unreachable!(),
+            };
+            let input =
+                llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, source_ty)?;
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = bitcast {source_ty} {} to {target_ty}\n",
+                input.value
+            ));
+            LlvmValue {
+                value: out,
+                ty: target_ty.to_string(),
+            }
+        }
         "_reduce_add" => {
             let input = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
             let mut lanes = Vec::with_capacity(4);

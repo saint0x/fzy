@@ -49,7 +49,7 @@ fzy should be able to claim all of the following before SIMD is considered produ
 Phase 1 portable SIMD is now shipped with an LLVM-backed surface:
 
 - first-class `i32x4`, `u32x4`, `f32x4`, and `mask32x4` types
-- `core.simd` constructors, splats, arithmetic, min/max, scalar shifts, bitwise ops, comparisons, `select`, lane extraction, mask bitmask extraction, and reductions
+- `core.simd` constructors, splats, arithmetic, min/max, scalar shifts, bitwise ops, comparisons, `select`, public shuffle, paired zip/unzip helpers, explicit numeric bitcasts, lane extraction, mask bitmask extraction, and reductions
 - explicit verifier/backend rejection for SIMD ABI crossings
 - explicit Cranelift rejection instead of accidental scalar fallback
 - deterministic Fozzy scenario + trace coverage for the shipped surface
@@ -178,10 +178,10 @@ This track adds an explicit author-facing SIMD model.
 - [x] Selection:
   - [x] `select(mask, then, else)`
 - [ ] Lane movement:
-  - shuffle
-  - zip/unzip
-  - widen/narrow
-  - cast/reinterpret with strict rules
+  - [x] shuffle
+  - [x] zip/unzip via paired helpers
+  - [ ] widen/narrow
+  - [x] cast/reinterpret with strict rules
 - [x] Reductions:
   - [x] horizontal add
   - [x] any/all
@@ -204,7 +204,7 @@ This track adds an explicit author-facing SIMD model.
 ### D. Masks
 
 - [x] First-class portable mask type.
-- [ ] Define whether masks are distinct from integer vectors.
+- [x] Define whether masks are distinct from integer vectors.
 - [x] Add `any`, `all`, `none`, `bitmask` helpers.
 - [x] Define mask-to-select semantics clearly.
 
@@ -315,7 +315,7 @@ This track adds an explicit author-facing SIMD model.
 - [ ] Cranelift execution tests
 - [ ] parity/equivalence tests across backends
 - [x] failure-mode tests for unsupported operations
-- [ ] direct built-binary behavior checks for representative workloads
+- [x] direct built-binary behavior checks for representative workloads
 
 ### Fozzy-first production validation
 
@@ -342,8 +342,8 @@ This track adds an explicit author-facing SIMD model.
 
 - [ ] update `README.md` production surface summary when `core.simd` is real
 - [ ] update `USAGE.md` native/runtime surface guidance
-- [ ] add SIMD section to `docs/language-reference-v1.md`
-- [ ] add SIMD section to `docs/stdlib-v1.md`
+- [x] add SIMD section to `docs/language-reference-v1.md`
+- [x] add SIMD section to `docs/stdlib-v1.md`
 - [ ] update `fzl-showcase.html` with portable SIMD examples once stable
 - [ ] document the difference between:
   - writing scalar code that should auto-vectorize
