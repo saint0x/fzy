@@ -1,5 +1,11 @@
 [package]
 name = "fz"
+description = "fzy compiler and deterministic validation CLI"
+homepage = "https://github.com/saint0x/fzy"
+repository = "https://github.com/saint0x/fzy"
+readme = "../../README.md"
+license.workspace = true
+rust-version = "1.92"
 version.workspace = true
 edition.workspace = true
 default-run = "fz"

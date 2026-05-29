@@ -131,7 +131,7 @@ pub fn init_project_with_options(
   "steps": [
     { "type": "fs_write", "path": "tmp/host-smoke.txt", "data": "hello-host" },
     { "type": "fs_read_assert", "path": "tmp/host-smoke.txt", "equals": "hello-host" },
-    { "type": "proc_spawn", "cmd": "echo", "args": ["fozzy-host"], "expect_exit": 0, "expect_stdout": "fozzy-host\n" }
+    { "type": "proc_spawn", "cmd": "echo", "args": ["fz-host"], "expect_exit": 0, "expect_stdout": "fz-host\n" }
   ]
 }"#,
             force,
@@ -140,7 +140,7 @@ pub fn init_project_with_options(
     if selected.contains(&InitTestType::Fuzz) {
         let corpus_dir = project_path(&project_root, &config.corpora_dir()).join("fn-kv");
         std::fs::create_dir_all(&corpus_dir)?;
-        write_if_allowed(&corpus_dir.join("seed.bin"), b"fozzy-seed\n", force)?;
+        write_if_allowed(&corpus_dir.join("seed.bin"), b"fz-seed\n", force)?;
     }
 
     write_if_allowed(
@@ -156,7 +156,7 @@ pub fn init_project_with_options(
             if force || !readme.exists() {
                 std::fs::write(
                     &readme,
-                    "Fozzy project (Rust template)\n\n- scenarios live in `tests/*.fozzy.json`\n- run: `fz test --det --json`\n",
+                    "fzy project (Rust template)\n\n- scenarios live in `tests/*.fozzy.json`\n- run: `fz test --det --json`\n",
                 )?;
             }
         }
@@ -221,34 +221,41 @@ fn normalize_init_test_types(input: &[InitTestType]) -> Vec<InitTestType> {
 
 fn init_guide_markdown(selected: &[InitTestType]) -> String {
     let mut lines = vec![
-        "# Fozzy Init Guide".to_string(),
+        "# fzy Init Guide".to_string(),
         "".to_string(),
         "This scaffold is set up to run with strict mode by default.".to_string(),
         "Use `--unsafe` only when intentionally opting out of strict checks.".to_string(),
         "".to_string(),
         "## Recommended first run".to_string(),
         "```bash".to_string(),
-        "fz full --scenario-root tests --seed 7".to_string(),
+        "fz doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 7 --json"
+            .to_string(),
         "```".to_string(),
         "".to_string(),
         "## Targeted commands".to_string(),
     ];
     if selected.contains(&InitTestType::Run) {
         lines.push(
-            "- Run deterministic scenarios: `fz test tests/*.fozzy.json --det --json`".to_string(),
+            "- Run deterministic scenarios: `fz test tests/run.pass.fozzy.json --det --strict-verify --seed 7 --json`".to_string(),
         );
     }
     if selected.contains(&InitTestType::Memory) {
-        lines.push("- Run memory checks: `fz run tests/memory.pass.fozzy.json --det --mem-track --fail-on-leak --leak-budget 0 --json`".to_string());
+        lines.push("- Run memory checks: `fz run tests/memory.pass.fozzy.json --det --record artifacts/memory.trace.fozzy --json`".to_string());
     }
     if selected.contains(&InitTestType::Explore) {
-        lines.push("- Run distributed explore: `fz explore tests/distributed.pass.fozzy.json --schedule coverage_guided --nodes 3 --steps 200 --json`".to_string());
+        lines.push(
+            "- Run distributed explore: `fz explore tests/distributed.pass.fozzy.json --json`"
+                .to_string(),
+        );
     }
     if selected.contains(&InitTestType::Fuzz) {
-        lines.push("- Run fuzzing: `fz fuzz fn:kv --mode coverage --time 10s --corpus .fozzy/corpora/fn-kv --json`".to_string());
+        lines.push("- Run fuzzing: `fz fuzz tests/example.fozzy.json --json`".to_string());
     }
     if selected.contains(&InitTestType::Host) {
-        lines.push("- Run host-backed checks: `fz run tests/host.pass.fozzy.json --det --proc-backend host --fs-backend host --http-backend host --json`".to_string());
+        lines.push(
+            "- Run host-backed checks: `fz run tests/host.pass.fozzy.json --host-backends --json`"
+                .to_string(),
+        );
     }
     lines.push("".to_string());
     lines.push(

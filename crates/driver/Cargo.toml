@@ -1,5 +1,10 @@
 [package]
 name = "driver"
+description = "shared command and pipeline engine for the fzy CLI"
+homepage = "https://github.com/saint0x/fzy"
+repository = "https://github.com/saint0x/fzy"
+license.workspace = true
+rust-version = "1.92"
 version.workspace = true
 edition.workspace = true
 

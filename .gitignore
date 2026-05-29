@@ -2,6 +2,7 @@
 
 # Build outputs
 target/
+dist/
 **/.fozzyc/
 
 # Runtime artifacts and caches

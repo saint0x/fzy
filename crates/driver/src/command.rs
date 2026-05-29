@@ -1038,8 +1038,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             let output = serde_json::json!({
                 "os": output.os,
                 "arch": output.arch,
-                "fz": output.fozzy,
+                "fz": output.fz,
                 "capabilities": output.capabilities,
+                "install": output.install,
             });
             render_value_output(format, &output)
         }

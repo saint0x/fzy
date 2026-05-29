@@ -1,9 +1,9 @@
 {
-  "name": "fozzy-language-tools",
-  "displayName": "Fozzy Language Tools",
-  "description": "Syntax highlighting and LSP tooling for Fozzy",
+  "name": "fzy-language-tools",
+  "displayName": "fzy Language Tools",
+  "description": "Syntax highlighting and LSP tooling for fzy",
   "version": "1.0.0",
-  "publisher": "fozzy",
+  "publisher": "fzy",
   "engines": {
     "vscode": "^1.86.0"
   },
@@ -18,7 +18,7 @@
     "languages": [
       {
         "id": "fzy",
-        "aliases": ["Fozzy", "fzy"],
+        "aliases": ["fzy", "Fzy"],
         "extensions": [".fzy"],
         "configuration": "./language-configuration.json"
       }
@@ -31,9 +31,9 @@
       }
     ],
     "configuration": {
-      "title": "Fozzy",
+      "title": "fzy",
       "properties": {
-        "fozzy.fzPath": {
+        "fzy.fzPath": {
           "type": "string",
           "default": "fz",
           "description": "Absolute path to the fz binary used for language server startup."

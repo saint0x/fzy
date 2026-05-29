@@ -28,44 +28,46 @@ System safety/trust model: `docs/system-safety-trust-model-v1.md`
 You will mainly use these tools:
 
 - `fz`: language/compiler/project workflow CLI
-- `fozzy`: deterministic scenario testing, replay, fuzzing, diagnosis
 - `fz fmt`: source formatter for `.fzy`
 - `fz doc gen`: API docs extractor/generator for `.fzy`
 
-The canonical way to invoke local binaries from source is:
+Recommended install:
 
 ```bash
-cargo run -q -p <tool> -- <args>
+curl -fsSL https://raw.githubusercontent.com/saint0x/fzy/main/install.sh | sh
 ```
 
-Examples:
+After install, use `fz` directly:
 
 ```bash
-cargo run -q -p fz -- check examples/fullstack --json
-cargo run -q -p fz -- fmt examples/fullstack/src --check
-cargo run -q -p fz -- doc gen examples/fullstack/src --format markdown --out artifacts/fullstack.api.md
+fz check examples/fullstack --json
+fz fmt examples/fullstack/src --check
+fz doc gen examples/fullstack/src --format markdown --out artifacts/fullstack.api.md
 ```
 
-If you have globally installed binaries, direct usage also works:
+If you are working from a local checkout and intentionally want a source build path, use:
 
 ```bash
-fozzy ...
-fz ...
+cargo run -q -p fz -- <args>
 ```
 
 ## 2. Prerequisites
 
 Minimum expected environment:
 
-- Rust toolchain (`cargo`) installed
+- `curl` and `tar` for the release installer
 - Run commands from the project root
 - Network access only when you intentionally run host-backed scenarios
+
+Source-build prerequisites:
+
+- Rust toolchain (`cargo`) installed
 
 Recommended sanity check:
 
 ```bash
-cargo check --workspace
-cargo test --workspace
+fz version
+fz env --json
 ```
 
 ## 3. 10-Minute Quickstart
@@ -73,21 +75,21 @@ cargo test --workspace
 ### 3.1 Validate one example project
 
 ```bash
-cargo run -q -p fz -- dx-check examples/fullstack --strict --json
-cargo run -q -p fz -- check examples/fullstack --json
-cargo run -q -p fz -- build examples/fullstack --backend cranelift --json
-cargo run -q -p fz -- run examples/fullstack --backend cranelift --json
-cargo run -q -p fz -- test examples/fullstack --det --seed 41 --json
+fz dx-check examples/fullstack --strict --json
+fz check examples/fullstack --json
+fz build examples/fullstack --backend cranelift --json
+fz run examples/fullstack --backend cranelift --json
+fz test examples/fullstack --det --seed 41 --json
 ```
 
 ### 3.2 Format and generate docs
 
 ```bash
-cargo run -q -p fz -- fmt examples/fullstack/src --check
-cargo run -q -p fz -- doc gen examples/fullstack/src --format markdown --out artifacts/fullstack.api.md
+fz fmt examples/fullstack/src --check
+fz doc gen examples/fullstack/src --format markdown --out artifacts/fullstack.api.md
 ```
 
-### 3.3 Run Fozzy deterministic confidence flow
+### 3.3 Run deterministic confidence flow
 
 ```bash
 fz doctor --deep --scenario tests/run.pass.fozzy.json --runs 5 --seed 42 --json
@@ -501,8 +503,8 @@ fz dx-check [project] --strict
 2. `fz run ... --det --record artifacts/fail.fozzy --json`
 3. `fz trace verify artifacts/fail.fozzy --strict --json`
 4. `fz replay artifacts/fail.fozzy --json`
-5. `fozzy shrink artifacts/fail.fozzy --json`
-6. `fozzy report ...` / `fozzy artifacts ...` for analysis
+5. `fz shrink artifacts/fail.fozzy --json`
+6. `fz report show latest --format json --json` / `fz artifacts ls latest --json` for analysis
 
 ## 9.3 Prepare ABI-sensitive changes
 

@@ -5,7 +5,7 @@ const { LanguageClient, TransportKind } = require('vscode-languageclient/node');
 let client;
 
 function resolveFzCommand() {
-  const configured = workspace.getConfiguration('fozzy').get('fzPath');
+  const configured = workspace.getConfiguration('fzy').get('fzPath');
   if (configured && configured.trim().length > 0) {
     return configured;
   }
@@ -28,8 +28,8 @@ function activate(context) {
   };
 
   client = new LanguageClient(
-    'fozzy-lsp',
-    'Fozzy Language Server',
+    'fzy-lsp',
+    'fzy Language Server',
     serverOptions,
     clientOptions
   );

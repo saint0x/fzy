@@ -1,4 +1,4 @@
-# Fozzy VS Code Extension
+# fzy VS Code Extension
 
 This extension provides:
 - `.fzy` language registration
@@ -13,4 +13,4 @@ This extension provides:
 
 ## Settings
 
-- `fozzy.fzPath`: optional custom path to `fz` binary.
+- `fzy.fzPath`: optional custom path to the installed `fz` binary.

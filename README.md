@@ -2,10 +2,11 @@
 
 General-purpose systems language and production toolchain with a memory-safe-by-default shipped safe-language surface, verifiable correctness, deterministic execution, and replay-first debugging built in.
 
-fzy pairs the language/compiler (`fz`) with Fozzy runtime validation so correctness, determinism, replay, incident artifacts, and production evidence are part of the normal workflow rather than an afterthought. For a quick visual tour of the language, open the shipped [FZL showcase](./fzl-showcase.html) in your browser with `open fzl-showcase.html`. For the short argument for why you might pick it, see [WHYFZY.md](./WHYFZY.md).
+fzy ships one production CLI, `fz`, for both compiler workflows and deterministic validation. Correctness, determinism, replay, incident artifacts, and production evidence are part of the normal workflow rather than an afterthought. For a quick visual tour of the language, open the shipped [FZL showcase](./fzl-showcase.html) in your browser with `open fzl-showcase.html`. For the short argument for why you might pick it, see [WHYFZY.md](./WHYFZY.md).
 
 ## Start Here
 
+- Install: `INSTALL.md`
 - Full manual: `USAGE.md`
 - Why fzy: `WHYFZY.md`
 - Syntax and command examples: `CODE.md`
@@ -15,8 +16,23 @@ fzy pairs the language/compiler (`fz`) with Fozzy runtime validation so correctn
 - Stability tiers: `docs/language-stability-v1.md`
 - Workspace policy inheritance: `docs/workspace-policy-v1.md`
 - Operational insights: `docs/operational-insights-v1.md`
-- Fozzy: [ariacomputecompany/fozzy](https://github.com/ariacomputecompany/fozzy)
 - `fzyllm`: [saint0x/fzyllm](https://github.com/saint0x/fzyllm)
+
+## Install
+
+Recommended install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/saint0x/fzy/main/install.sh | sh
+```
+
+That installs `fz` to `~/.local/bin`, updates `PATH` if needed, and verifies the install with `fz version` and `fz env`.
+
+Source fallback:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/saint0x/fzy/main/install.sh | sh -s -- --from-source
+```
 
 ## Quick Look
 
@@ -297,7 +313,7 @@ Additive exports are allowed.
 - the default production flow is non-blocking for missing metadata unless strict unsafe policy is enabled
 - optional hardened scope controls live in `fozzy.toml`
 
-## Fozzy-First Validation Contract
+## Deterministic Validation Contract
 
 Use this sequence for strict confidence:
 
@@ -374,28 +390,30 @@ Available projects:
 Validation and project flows:
 
 ```bash
-cargo run -q -p fz -- dx-check examples/fullstack --strict --json
+fz dx-check examples/fullstack --strict --json
 
-cargo run -q -p fz -- check examples/fullstack --json
-cargo run -q -p fz -- build examples/fullstack --backend cranelift --json
-cargo run -q -p fz -- build examples/fullstack --release --backend llvm --json
-cargo run -q -p fz -- run examples/fullstack --backend cranelift --json
-cargo run -q -p fz -- test examples/fullstack --det --seed 41 --backend llvm --json
-cargo run -q -p fz -- headers examples/fullstack --json
-cargo run -q -p fz -- abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json
+fz check examples/fullstack --json
+fz build examples/fullstack --backend cranelift --json
+fz build examples/fullstack --release --backend llvm --json
+fz run examples/fullstack --backend cranelift --json
+fz test examples/fullstack --det --seed 41 --backend llvm --json
+fz headers examples/fullstack --json
+fz abi-check examples/fullstack/include/fullstack.abi.json --baseline examples/fullstack/include/fullstack.abi.json --json
 
-cargo run -q -p fz -- dx-check examples/robust_cli --strict --json
-cargo run -q -p fz -- build examples/robust_cli --backend cranelift --json
-cargo run -q -p fz -- run examples/robust_cli --backend llvm --json
-cargo run -q -p fz -- test examples/robust_cli --det --seed 55 --backend cranelift --json
+fz dx-check examples/robust_cli --strict --json
+fz build examples/robust_cli --backend cranelift --json
+fz run examples/robust_cli --backend llvm --json
+fz test examples/robust_cli --det --seed 55 --backend cranelift --json
 
-cargo run -q -p fz -- dx-check examples/live_server --strict --json
-cargo run -q -p fz -- build examples/live_server --backend cranelift --json
-cargo run -q -p fz -- run examples/live_server --backend llvm --json
-cargo run -q -p fz -- test examples/live_server --det --seed 77 --backend cranelift --record artifacts/live_server.stats.trace.json --rich-artifacts --json
+fz dx-check examples/live_server --strict --json
+fz build examples/live_server --backend cranelift --json
+fz run examples/live_server --backend llvm --json
+fz test examples/live_server --det --seed 77 --backend cranelift --record artifacts/live_server.stats.trace.json --rich-artifacts --json
 
 fz run tests/live.server.interhttp.fozzy.json --host-backends --json
 ```
+
+If you are contributing from a checkout instead of installing a release build, use `cargo run -q -p fz -- <args>` as a source-only fallback.
 
 ## Plan Tracking
 

@@ -1,4 +1,4 @@
-//! Environment and version metadata for `fozzy env` / `fozzy version`.
+//! Environment and version metadata for `fz env` / `fz version`.
 
 use serde::{Deserialize, Serialize};
 
@@ -10,8 +10,9 @@ use std::sync::OnceLock;
 pub struct EnvInfo {
     pub os: String,
     pub arch: String,
-    pub fozzy: VersionInfo,
+    pub fz: VersionInfo,
     pub capabilities: BTreeMap<String, CapabilityInfo>,
+    pub install: InstallInfo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +28,15 @@ pub struct VersionInfo {
     pub commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub build_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallInfo {
+    pub executable: String,
+    pub bin_dir: String,
+    pub dir_on_path: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell_profile: Option<String>,
 }
 
 pub fn version_info() -> VersionInfo {
@@ -125,7 +135,48 @@ pub fn env_info(config: &crate::Config) -> EnvInfo {
     EnvInfo {
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
-        fozzy: version_info(),
+        fz: version_info(),
         capabilities,
+        install: install_info(),
     }
+}
+
+fn install_info() -> InstallInfo {
+    let executable = std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "fz".to_string());
+    let bin_dir = std::path::Path::new(&executable)
+        .parent()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
+    InstallInfo {
+        dir_on_path: dir_on_path(&bin_dir),
+        shell_profile: default_shell_profile(),
+        executable,
+        bin_dir,
+    }
+}
+
+fn dir_on_path(dir: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|value| {
+        std::env::split_paths(&value).any(|entry| entry == std::path::Path::new(dir))
+    })
+}
+
+fn default_shell_profile() -> Option<String> {
+    if let Some(shell) = std::env::var_os("SHELL") {
+        let shell = shell.to_string_lossy();
+        if shell.ends_with("/zsh") {
+            return Some(
+                std::env::var("ZDOTDIR")
+                    .map(|dir| format!("{dir}/.zshrc"))
+                    .unwrap_or_else(|_| "~/.zshrc".to_string()),
+            );
+        }
+        if shell.ends_with("/bash") {
+            return Some("~/.bashrc".to_string());
+        }
+    }
+    Some("~/.profile".to_string())
 }

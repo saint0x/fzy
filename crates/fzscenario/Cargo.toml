@@ -1,5 +1,10 @@
 [package]
 name = "fzscenario"
+description = "deterministic scenario runtime and trace tooling for fzy"
+homepage = "https://github.com/saint0x/fzy"
+repository = "https://github.com/saint0x/fzy"
+license.workspace = true
+rust-version = "1.92"
 version.workspace = true
 edition = "2024"
 
