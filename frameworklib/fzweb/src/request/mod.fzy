@@ -1,5 +1,38 @@
 use core.http;
 
+struct RequestContext {
+    route_id: i32,
+    route_name: str,
+    route_path: str,
+    request_id: str,
+}
+
+struct RequestError {
+    status: i32,
+    code: str,
+    message: str,
+    details: str,
+}
+
+struct TextResult {
+    ok: i32,
+    value: str,
+    err: RequestError,
+}
+
+struct IntResult {
+    ok: i32,
+    value: i32,
+    err: RequestError,
+}
+
+struct JsonResult {
+    ok: i32,
+    payload: JsonHandle,
+    raw: str,
+    err: RequestError,
+}
+
 fn method(conn: HttpHandle) -> str {
     return http.method(conn)
 }
@@ -74,6 +107,83 @@ fn request_id(conn: HttpHandle) -> str {
 
 fn remote(conn: HttpHandle) -> str {
     return http.remote_addr(conn)
+}
+
+fn context(route_id: i32, route_name: str, route_path: str, request_id: str) -> RequestContext {
+    return RequestContext {
+        route_id: route_id,
+        route_name: route_name,
+        route_path: route_path,
+        request_id: request_id,
+    }
+}
+
+fn no_error() -> RequestError {
+    return RequestError {
+        status: 0,
+        code: "",
+        message: "",
+        details: "",
+    }
+}
+
+fn error(status: i32, code: str, message: str, details: str) -> RequestError {
+    return RequestError {
+        status: status,
+        code: code,
+        message: message,
+        details: details,
+    }
+}
+
+fn text_ok(value: str) -> TextResult {
+    return TextResult {
+        ok: 1,
+        value: value,
+        err: no_error(),
+    }
+}
+
+fn text_err(status: i32, code: str, message: str, details: str) -> TextResult {
+    return TextResult {
+        ok: 0,
+        value: "",
+        err: error(status, code, message, details),
+    }
+}
+
+fn int_ok(value: i32) -> IntResult {
+    return IntResult {
+        ok: 1,
+        value: value,
+        err: no_error(),
+    }
+}
+
+fn int_err(status: i32, code: str, message: str, details: str) -> IntResult {
+    return IntResult {
+        ok: 0,
+        value: 0,
+        err: error(status, code, message, details),
+    }
+}
+
+fn json_ok(payload: JsonHandle, raw: str) -> JsonResult {
+    return JsonResult {
+        ok: 1,
+        payload: payload,
+        raw: raw,
+        err: no_error(),
+    }
+}
+
+fn json_err(status: i32, code: str, message: str, details: str) -> JsonResult {
+    return JsonResult {
+        ok: 0,
+        payload: json.parse("{}"),
+        raw: "",
+        err: error(status, code, message, details),
+    }
 }
 
 fn digit_value(ch: str) -> i32 {
@@ -199,4 +309,69 @@ fn bearer_token(conn: HttpHandle) -> str {
         return ""
     }
     return str.slice(raw, str.len("Bearer "), str.len(raw))
+}
+
+fn query_required(conn: HttpHandle, key: str) -> TextResult {
+    let value = query(conn, key)
+    if str.trim(value) == "" {
+        return text_err(400, "missing_query", str.concat("missing query parameter: ", key), key)
+    }
+    return text_ok(value)
+}
+
+fn query_i32(conn: HttpHandle, key: str, fallback: i32, min_value: i32, max_value: i32) -> IntResult {
+    let raw = query(conn, key)
+    if str.trim(raw) == "" {
+        return int_ok(fallback)
+    }
+    let parsed = parse_i32(raw)
+    if parsed == 0 && str.trim(raw) != "0" {
+        return int_err(400, "invalid_query_i32", str.concat("invalid integer query parameter: ", key), raw)
+    }
+    let mut value = parsed
+    if value < min_value {
+        value = min_value
+    }
+    if value > max_value {
+        value = max_value
+    }
+    return int_ok(value)
+}
+
+fn param_required(conn: HttpHandle, key: str) -> TextResult {
+    let value = param(conn, key)
+    if str.trim(value) == "" {
+        return text_err(400, "missing_param", str.concat("missing route parameter: ", key), key)
+    }
+    return text_ok(value)
+}
+
+fn body_json_required(conn: HttpHandle, route_name: str) -> JsonResult {
+    let raw = str.trim(body(conn))
+    if raw == "" {
+        return json_err(400, "missing_json_body", "request body is required", route_name)
+    }
+    if content_type_is_json(conn) == 0 {
+        return json_err(400, "invalid_content_type", "content-type must be application/json", content_type(conn))
+    }
+    if body_is_json_like(conn) == 0 {
+        return json_err(400, "invalid_json_body", "request body must be valid JSON text", raw)
+    }
+    return json_ok(body_json(conn), raw)
+}
+
+fn json_required_str(payload: JsonHandle, key: str) -> TextResult {
+    let value = json.get_str(payload, key)
+    if str.trim(value) == "" {
+        return text_err(400, "missing_json_field", str.concat("missing json field: ", key), key)
+    }
+    return text_ok(value)
+}
+
+fn json_bool_default(payload: JsonHandle, key: str, fallback: i32) -> i32 {
+    let value = json.get_str(payload, key)
+    if str.trim(value) == "" {
+        return fallback
+    }
+    return parse_bool_text(value)
 }

@@ -1,6 +1,5 @@
 use core.http;
 use core.log;
-use core.storage;
 use core.time;
 use core.thread;
 
@@ -178,7 +177,7 @@ fn metrics_record(metrics: MetricsState, status: i32) -> MetricsState {
 }
 
 fn gate_body(reason: str) -> str {
-    return response.error_json(reason, reason)
+    return response.error_body(response.api_error(400, reason, reason, ""))
 }
 
 fn safe_static_name(name: str) -> str {
@@ -240,30 +239,255 @@ fn default_app(cfg: ServerConfig) -> app.App {
     web = app.use_middleware(web, "json")
     web = app.use_middleware(web, "rate_limit")
 
-    web = app.add_route(web, "GET", "/", "root", 1, 1, 0)
-    web = app.add_route(web, "GET", "/healthz", "healthz", 1, 1, 0)
-    web = app.add_route(web, "GET", "/readyz", "readyz", 1, 1, 0)
-    web = app.add_route(web, "GET", "/metrics", "metrics", 1, 1, 0)
-    web = app.add_route(web, "GET", "/inspect", "inspect", 0, 0, 0)
-    web = app.add_route(web, "GET", "/search", "search", 0, 0, 0)
-    web = app.add_route(web, "POST", "/echo", "echo_post", 0, 0, 1)
-    web = app.add_route(web, "GET", "/v1/echo/:name", "echo_name", 0, 0, 0)
-    web = app.add_route(web, "POST", "/bind", "bind", 0, 0, 1)
-    web = app.add_route(web, "GET", "/openapi.json", "openapi", 1, 1, 0)
-    web = app.add_route(web, "GET", "/version", "version", 1, 1, 0)
-    web = app.add_route(web, "GET", "/static/:name", "static", 0, 0, 0)
-    web = app.add_route(web, "GET", "/v1/items", "items_list", 0, 0, 0)
-    web = app.add_route(web, "GET", "/v1/items/:id", "item_get", 0, 0, 0)
-    web = app.add_route(web, "PUT", "/v1/items/:id", "item_put", 0, 0, 1)
-    web = app.add_route(web, "PATCH", "/v1/items/:id", "item_patch", 0, 0, 1)
-    web = app.add_route(web, "DELETE", "/v1/items/:id", "item_delete", 0, 0, 0)
-    web = app.add_route(web, "GET", "/cookies/set", "cookie_set", 1, 1, 0)
-    web = app.add_route(web, "POST", "/session/login", "session_login", 1, 1, 1)
-    web = app.add_route(web, "GET", "/session/me", "session_me", 1, 0, 0)
-    web = app.add_route(web, "POST", "/upload", "upload_multipart", 0, 0, 0)
-    web = app.add_route(web, "GET", "/events", "events", 1, 1, 0)
-    web = app.add_route(web, "GET", "/ws", "ws_echo", 1, 1, 0)
+    web = app.add_route(web, app.route(app.route_root_id(), "root", "GET", "/", "/", 1, 1, 0))
+    web = app.add_route(web, app.route(app.route_healthz_id(), "healthz", "GET", "/healthz", "/", 1, 1, 0))
+    web = app.add_route(web, app.route(app.route_readyz_id(), "readyz", "GET", "/readyz", "/", 1, 1, 0))
+    web = app.add_route(web, app.route(app.route_metrics_id(), "metrics", "GET", "/metrics", "/", 1, 1, 0))
+    web = app.add_route(web, app.route(app.route_inspect_id(), "inspect", "GET", "/inspect", "/", 0, 0, 0))
+    web = app.add_route(web, app.route(app.route_search_id(), "search", "GET", "/search", "/", 0, 0, 0))
+    web = app.add_route(web, app.route(app.route_echo_post_id(), "echo_post", "POST", "/echo", "/", 0, 0, 1))
+    web = app.add_route(web, app.route(app.route_echo_name_id(), "echo_name", "GET", "/v1/echo/:name", "/v1", 0, 0, 0))
+    web = app.add_route(web, app.route(app.route_bind_id(), "bind", "POST", "/bind", "/", 0, 0, 1))
+    web = app.add_route(web, app.route(app.route_openapi_id(), "openapi", "GET", "/openapi.json", "/", 1, 1, 0))
+    web = app.add_route(web, app.route(app.route_version_id(), "version", "GET", "/version", "/", 1, 1, 0))
+    web = app.add_route(web, app.route(app.route_static_id(), "static", "GET", "/static/:name", "/", 0, 0, 0))
+    web = app.add_route(web, app.route(app.route_items_list_id(), "items_list", "GET", "/v1/items", "/v1", 0, 0, 0))
+    web = app.add_route(web, app.route(app.route_item_get_id(), "item_get", "GET", "/v1/items/:id", "/v1", 0, 0, 0))
+    web = app.add_route(web, app.route(app.route_item_put_id(), "item_put", "PUT", "/v1/items/:id", "/v1", 0, 0, 1))
+    web = app.add_route(web, app.route(app.route_item_patch_id(), "item_patch", "PATCH", "/v1/items/:id", "/v1", 0, 0, 1))
+    web = app.add_route(web, app.route(app.route_item_delete_id(), "item_delete", "DELETE", "/v1/items/:id", "/v1", 0, 0, 0))
+    web = app.add_route(web, app.route(app.route_cookie_set_id(), "cookie_set", "GET", "/cookies/set", "/cookies", 1, 1, 0))
+    web = app.add_route(web, app.route(app.route_session_login_id(), "session_login", "POST", "/session/login", "/session", 1, 1, 1))
+    web = app.add_route(web, app.route(app.route_session_me_id(), "session_me", "GET", "/session/me", "/session", 1, 0, 0))
+    web = app.add_route(web, app.route(app.route_upload_multipart_id(), "upload_multipart", "POST", "/upload", "/", 0, 0, 0))
+    web = app.add_route(web, app.route(app.route_events_id(), "events", "GET", "/events", "/", 1, 1, 0))
+    web = app.add_route(web, app.route(app.route_ws_echo_id(), "ws_echo", "GET", "/ws", "/", 1, 1, 0))
     return web
+}
+
+fn outcome(rate: middleware.RateState, metrics: MetricsState, status: i32) -> HandleOutcome {
+    return HandleOutcome {
+        status: status,
+        rate: rate,
+        metrics: metrics_record(metrics, status),
+    }
+}
+
+fn emit_outcome(
+    conn: HttpHandle,
+    plan: response.ResponsePlan,
+    rate: middleware.RateState,
+    metrics: MetricsState,
+) -> HandleOutcome {
+    discard response.emit(conn, plan)
+    return outcome(rate, metrics, plan.status)
+}
+
+fn request_error_plan(err: request.RequestError) -> response.ResponsePlan {
+    return response.error_plan(response.request_error(err))
+}
+
+fn item_version(conn: HttpHandle) -> request.IntResult {
+    return request.query_i32(conn, "version", 1, 1, 1000000)
+}
+
+fn handle_root(ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
+    return response.json_plan(200, response.service_json(cfg.service_name, cfg.service_version, ctx.request_id))
+}
+
+fn handle_healthz() -> response.ResponsePlan {
+    return response.text(200, "ok")
+}
+
+fn handle_readyz() -> response.ResponsePlan {
+    return response.text(200, "ready")
+}
+
+fn handle_metrics(metrics: MetricsState, started_ms: i32) -> response.ResponsePlan {
+    return response.bytes(200, "text/plain; version=0.0.4; charset=utf-8", metrics_text(metrics, started_ms))
+}
+
+fn handle_inspect(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
+    return response.json_plan(
+        200,
+        response.inspect_json(
+            ctx.request_id,
+            request.method(conn),
+            request.path(conn),
+            request.remote(conn),
+            request.accept(conn),
+            request.content_type(conn),
+            ctx.route_name,
+        ),
+    )
+}
+
+fn handle_search(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
+    let limit = request.query_i32(conn, "limit", 10, 1, 1000)
+    if limit.ok == 0 {
+        return request_error_plan(limit.err)
+    }
+    return response.json_plan(
+        200,
+        response.search_json(request.query(conn, "q"), limit.value, ctx.request_id),
+    )
+}
+
+fn handle_echo_post(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
+    let mut body = request.body_max(conn, 1048576)
+    if body == "" && request.body_eof(conn) == 0 {
+        while request.body_eof(conn) == 0 && str.len(body) < 1048576 {
+            body = str.concat(body, request.body_read(conn, 512))
+        }
+    }
+    if body == "" && request.content_type_is_json(conn) == 1 {
+        body = json.get_str(request.body_json(conn), "raw")
+    }
+    if body == "" {
+        return response.json_plan(200, response.ok_json("echo", ctx.request_id))
+    }
+    return response.json_plan(200, body)
+}
+
+fn handle_echo_name(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
+    let name = request.param_required(conn, "name")
+    if name.ok == 0 {
+        return request_error_plan(name.err)
+    }
+    return response.json_plan(200, response.named_echo_json(name.value, ctx.request_id))
+}
+
+fn handle_bind(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
+    let payload = request.body_json_required(conn, ctx.route_name)
+    if payload.ok == 0 {
+        return request_error_plan(payload.err)
+    }
+    let user = request.json_required_str(payload.payload, "user")
+    if user.ok == 0 {
+        return request_error_plan(user.err)
+    }
+    return response.json_plan(
+        200,
+        response.bind_json(user.value, request.json_bool_default(payload.payload, "active", 0), ctx.request_id),
+    )
+}
+
+fn handle_openapi(web: app.App) -> response.ResponsePlan {
+    return response.json_plan(200, app.openapi_json(web))
+}
+
+fn handle_version(ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
+    return response.json_plan(200, response.version_json(cfg.service_name, cfg.service_version, ctx.request_id))
+}
+
+fn handle_static(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
+    let name = request.param_required(conn, "name")
+    if name.ok == 0 {
+        return request_error_plan(name.err)
+    }
+    return response.bytes(200, "text/plain; charset=utf-8", static_body(name.value))
+}
+
+fn handle_items_list(ctx: request.RequestContext) -> response.ResponsePlan {
+    return response.json_plan(200, response.items_json(ctx.request_id))
+}
+
+fn handle_item_get(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
+    let item_id = request.param_required(conn, "id")
+    if item_id.ok == 0 {
+        return request_error_plan(item_id.err)
+    }
+    let version = item_version(conn)
+    if version.ok == 0 {
+        return request_error_plan(version.err)
+    }
+    return response.json_plan(200, response.item_view_json(item_id.value, version.value, 1, ctx.request_id))
+}
+
+fn handle_item_put(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
+    let item_id = request.param_required(conn, "id")
+    if item_id.ok == 0 {
+        return request_error_plan(item_id.err)
+    }
+    let version = item_version(conn)
+    if version.ok == 0 {
+        return request_error_plan(version.err)
+    }
+    let payload = request.body_json_required(conn, ctx.route_name)
+    if payload.ok == 0 {
+        return request_error_plan(payload.err)
+    }
+    discard persistence.put_json(
+        persistence.open(cfg.store_path),
+        "item",
+        item_id.value,
+        payload.raw,
+    )
+    return response.json_plan(200, response.item_json("updated", item_id.value, version.value, ctx.request_id))
+}
+
+fn handle_item_patch(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
+    let item_id = request.param_required(conn, "id")
+    if item_id.ok == 0 {
+        return request_error_plan(item_id.err)
+    }
+    let version = item_version(conn)
+    if version.ok == 0 {
+        return request_error_plan(version.err)
+    }
+    let payload = request.body_json_required(conn, ctx.route_name)
+    if payload.ok == 0 {
+        return request_error_plan(payload.err)
+    }
+    discard persistence.put_json(
+        persistence.open(cfg.store_path),
+        "item_patch",
+        item_id.value,
+        payload.raw,
+    )
+    return response.json_plan(200, response.item_json("patched", item_id.value, version.value, ctx.request_id))
+}
+
+fn handle_item_delete(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
+    let item_id = request.param_required(conn, "id")
+    if item_id.ok == 0 {
+        return request_error_plan(item_id.err)
+    }
+    let version = item_version(conn)
+    if version.ok == 0 {
+        return request_error_plan(version.err)
+    }
+    return response.accepted_json(response.item_json("deleted", item_id.value, version.value, ctx.request_id))
+}
+
+fn handle_cookie_set(conn: HttpHandle, ctx: request.RequestContext) -> response.ResponsePlan {
+    discard cookies.set_cookie(conn, "theme", "light", "/", 86400, 0, 1, "Lax")
+    return response.json_plan(200, response.ok_json("cookie_set", ctx.request_id))
+}
+
+fn handle_session_login(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
+    let payload = request.body_json_required(conn, ctx.route_name)
+    if payload.ok == 0 {
+        return request_error_plan(payload.err)
+    }
+    let mut user = json.get_str(payload.payload, "user")
+    if user == "" {
+        user = request.query(conn, "user")
+    }
+    if str.trim(user) == "" {
+        return response.error_plan(response.api_error(400, "missing_user", "session user is required", "user"))
+    }
+    let rec = sessions.create(session_config(cfg), user)
+    discard sessions.attach(conn, session_config(cfg), rec)
+    return response.json_plan(200, response.bind_json(rec.user, 1, ctx.request_id))
+}
+
+fn handle_session_me(conn: HttpHandle, ctx: request.RequestContext, cfg: ServerConfig) -> response.ResponsePlan {
+    let rec = sessions.from_request(conn, session_config(cfg))
+    if sessions.valid(rec) == 0 {
+        return response.error_plan(response.api_error(401, "unauthorized", "unauthorized", ctx.route_name))
+    }
+    return response.json_plan(200, response.bind_json(rec.user, 1, ctx.request_id))
 }
 
 fn handle_route(
@@ -277,331 +501,90 @@ fn handle_route(
 ) -> HandleOutcome {
     if decision.method_allowed == 0 {
         discard webcore.response_method_not_allowed(conn)
-        return HandleOutcome {
-            status: 405,
-            rate: rate,
-            metrics: metrics_record(metrics, 405),
-        }
+        return outcome(rate, metrics, 405)
     }
 
     if app.has_middleware(web, "security_headers") == 1 {
-            discard cookies.default_security_headers(conn)
+        discard cookies.default_security_headers(conn)
     }
 
-    if decision.handler == "root" {
-            discard response.send_json(
-                conn,
-                200,
-                response.service_json(
-                    cfg.service_name,
-                    cfg.service_version,
-                    request.request_id(conn),
-                ),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    let ctx = request.context(decision.route_id, decision.route_name, decision.route_path, request.request_id(conn))
+
+    if decision.route_id == app.route_root_id() {
+        return emit_outcome(conn, handle_root(ctx, cfg), rate, metrics)
     }
-    if decision.handler == "healthz" {
-            discard response.send_text(conn, 200, "ok")
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_healthz_id() {
+        return emit_outcome(conn, handle_healthz(), rate, metrics)
     }
-    if decision.handler == "readyz" {
-            discard response.send_text(conn, 200, "ready")
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_readyz_id() {
+        return emit_outcome(conn, handle_readyz(), rate, metrics)
     }
-    if decision.handler == "metrics" {
-            discard response.send_bytes(
-                conn,
-                200,
-                "text/plain; version=0.0.4; charset=utf-8",
-                metrics_text(metrics, started_ms),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_metrics_id() {
+        return emit_outcome(conn, handle_metrics(metrics, started_ms), rate, metrics)
     }
-    if decision.handler == "inspect" {
-            discard response.send_json(
-                conn,
-                200,
-                response.inspect_json(
-                    request.request_id(conn),
-                    request.method(conn),
-                    request.path(conn),
-                    request.remote(conn),
-                    request.accept(conn),
-                    request.content_type(conn),
-                    decision.handler,
-                ),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_inspect_id() {
+        return emit_outcome(conn, handle_inspect(conn, ctx), rate, metrics)
     }
-    if decision.handler == "search" {
-            let q = request.query(conn, "q")
-            let limit = request.query_i32_default(conn, "limit", 10)
-            discard response.send_json(
-                conn,
-                200,
-                response.search_json(q, limit, request.request_id(conn)),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_search_id() {
+        return emit_outcome(conn, handle_search(conn, ctx), rate, metrics)
     }
-    if decision.handler == "echo_post" {
-            let mut body = request.body_max(conn, 1048576)
-            if body == "" && request.body_eof(conn) == 0 {
-                while request.body_eof(conn) == 0 && str.len(body) < 1048576 {
-                    body = str.concat(body, request.body_read(conn, 512))
-                }
-            }
-            if body == "" && request.content_type_is_json(conn) == 1 {
-                body = json.get_str(request.body_json(conn), "raw")
-            }
-            discard response.send_json(conn, 200, if body == "" { response.ok_json("echo", request.request_id(conn)) } else { body })
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_echo_post_id() {
+        return emit_outcome(conn, handle_echo_post(conn, ctx), rate, metrics)
     }
-    if decision.handler == "echo_name" {
-            let name = request.param(conn, "name")
-            discard response.send_json(
-                conn,
-                200,
-                response.named_echo_json(name, request.request_id(conn)),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_echo_name_id() {
+        return emit_outcome(conn, handle_echo_name(conn, ctx), rate, metrics)
     }
-    if decision.handler == "bind" {
-            let payload = request.body_json(conn)
-            discard response.send_json(
-                conn,
-                200,
-                response.bind_json(
-                    json.get_str(payload, "user"),
-                    request.parse_bool_text(json.get_str(payload, "active")),
-                    request.request_id(conn),
-                ),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_bind_id() {
+        return emit_outcome(conn, handle_bind(conn, ctx), rate, metrics)
     }
-    if decision.handler == "openapi" {
-            discard response.send_json(conn, 200, app.openapi_json(web))
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_openapi_id() {
+        return emit_outcome(conn, handle_openapi(web), rate, metrics)
     }
-    if decision.handler == "version" {
-            discard response.send_json(
-                conn,
-                200,
-                response.version_json(
-                    cfg.service_name,
-                    cfg.service_version,
-                    request.request_id(conn),
-                ),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_version_id() {
+        return emit_outcome(conn, handle_version(ctx, cfg), rate, metrics)
     }
-    if decision.handler == "static" {
-            let name = request.param(conn, "name")
-            discard response.send_bytes(
-                conn,
-                200,
-                "text/plain; charset=utf-8",
-                static_body(name),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_static_id() {
+        return emit_outcome(conn, handle_static(conn, ctx), rate, metrics)
     }
-    if decision.handler == "items_list" {
-            discard response.send_json(
-                conn,
-                200,
-                response.items_json(request.request_id(conn)),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_items_list_id() {
+        return emit_outcome(conn, handle_items_list(ctx), rate, metrics)
     }
-    if decision.handler == "item_get" {
-            let item_id = request.param(conn, "id")
-            let version = request.query_i32_default(conn, "version", 1)
-            discard response.send_json(
-                conn,
-                200,
-                response.item_view_json(item_id, version, 1, request.request_id(conn)),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_item_get_id() {
+        return emit_outcome(conn, handle_item_get(conn, ctx), rate, metrics)
     }
-    if decision.handler == "item_put" {
-            let item_id = request.param(conn, "id")
-            let version = request.query_i32_default(conn, "version", 1)
-            discard persistence.put_json(
-                persistence.open(cfg.store_path),
-                "item",
-                item_id,
-                response.item_json("updated", item_id, version, request.request_id(conn)),
-            )
-            discard response.send_json(
-                conn,
-                200,
-                response.item_json("updated", item_id, version, request.request_id(conn)),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_item_put_id() {
+        return emit_outcome(conn, handle_item_put(conn, ctx, cfg), rate, metrics)
     }
-    if decision.handler == "item_patch" {
-            let item_id = request.param(conn, "id")
-            let version = request.query_i32_default(conn, "version", 1)
-            discard response.send_json(
-                conn,
-                200,
-                response.item_json("patched", item_id, version, request.request_id(conn)),
-            )
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_item_patch_id() {
+        return emit_outcome(conn, handle_item_patch(conn, ctx, cfg), rate, metrics)
     }
-    if decision.handler == "item_delete" {
-            let item_id = request.param(conn, "id")
-            let version = request.query_i32_default(conn, "version", 1)
-            discard response.send_json(
-                conn,
-                202,
-                response.item_json("deleted", item_id, version, request.request_id(conn)),
-            )
-            return HandleOutcome {
-                status: 202,
-                rate: rate,
-                metrics: metrics_record(metrics, 202),
-            }
+    if decision.route_id == app.route_item_delete_id() {
+        return emit_outcome(conn, handle_item_delete(conn, ctx), rate, metrics)
     }
-    if decision.handler == "cookie_set" {
-            discard cookies.set_cookie(conn, "theme", "light", "/", 86400, 0, 1, "Lax")
-            discard response.send_json(conn, 200, response.ok_json("cookie_set", request.request_id(conn)))
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_cookie_set_id() {
+        return emit_outcome(conn, handle_cookie_set(conn, ctx), rate, metrics)
     }
-    if decision.handler == "session_login" {
-            let payload = request.body_json(conn)
-            let mut user = json.get_str(payload, "user")
-            if user == "" {
-                user = request.query(conn, "user")
-            }
-            if user == "" {
-                user = "session-user"
-            }
-            let rec = sessions.create(session_config(cfg), user)
-            discard sessions.attach(conn, session_config(cfg), rec)
-            discard response.send_json(conn, 200, response.bind_json(rec.user, 1, request.request_id(conn)))
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_session_login_id() {
+        return emit_outcome(conn, handle_session_login(conn, ctx, cfg), rate, metrics)
     }
-    if decision.handler == "session_me" {
-            let rec = sessions.from_request(conn, session_config(cfg))
-            if sessions.valid(rec) == 0 {
-                discard response.send_json(conn, 401, response.error_json("unauthorized", "unauthorized"))
-                return HandleOutcome {
-                    status: 401,
-                    rate: rate,
-                    metrics: metrics_record(metrics, 401),
-                }
-            }
-            discard response.send_json(conn, 200, response.bind_json(rec.user, 1, request.request_id(conn)))
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_session_me_id() {
+        return emit_outcome(conn, handle_session_me(conn, ctx, cfg), rate, metrics)
     }
-    if decision.handler == "upload_multipart" {
-            let upload = multipart.parse(conn, cfg.max_body_bytes)
-            discard response.send_json(conn, 200, multipart.json_summary(upload, request.request_id(conn)))
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_upload_multipart_id() {
+        let upload = multipart.parse(conn, cfg.max_body_bytes)
+        return emit_outcome(conn, response.json_plan(200, multipart.json_summary(upload, ctx.request_id)), rate, metrics)
     }
-    if decision.handler == "events" {
-            discard streaming.send_sse_boot(conn)
-            return HandleOutcome {
-                status: 200,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_events_id() {
+        discard streaming.send_sse_boot(conn)
+        return outcome(rate, metrics, 200)
     }
-    if decision.handler == "ws_echo" {
-            discard streaming.websocket_echo(conn)
-            return HandleOutcome {
-                status: 101,
-                rate: rate,
-                metrics: metrics_record(metrics, 200),
-            }
+    if decision.route_id == app.route_ws_echo_id() {
+        discard streaming.websocket_echo(conn)
+        return outcome(rate, metrics, 200)
     }
 
     discard webcore.response_not_found(conn)
-    return HandleOutcome {
-        status: 404,
-        rate: rate,
-        metrics: metrics_record(metrics, 404),
-    }
+    return outcome(rate, metrics, 404)
 }
 
 fn run_live_server() -> i32 {
@@ -649,9 +632,9 @@ fn run_live_server() -> i32 {
             continue
         }
 
-        let outcome = handle_route(conn, web, decision, cfg, metrics, rate, started_ms)
-        metrics = outcome.metrics
-        rate = outcome.rate
+        let result = handle_route(conn, web, decision, cfg, metrics, rate, started_ms)
+        metrics = result.metrics
+        rate = result.rate
         handled += 1
         if (handled % 256) == 0 {
             yield()
