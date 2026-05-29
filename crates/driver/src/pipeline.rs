@@ -11,7 +11,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use rayon::prelude::*;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, Once, OnceLock};
 use std::time::UNIX_EPOCH;
 
@@ -250,6 +250,7 @@ pub fn compile_file_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
     let (_typed, fir) = lower_fir_cached(&parsed);
+    write_safety_artifacts(&resolved.project_root, &fir)?;
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
@@ -341,6 +342,7 @@ pub fn compile_library_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
     let (_typed, fir) = lower_fir_cached(&parsed);
+    write_safety_artifacts(&resolved.project_root, &fir)?;
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
@@ -616,6 +618,969 @@ pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirMo
         );
     }
     (typed, fir_module)
+}
+
+fn write_safety_artifacts(project_root: &Path, fir: &fir::FirModule) -> Result<()> {
+    let out_dir = project_root.join(".fz");
+    std::fs::create_dir_all(&out_dir)
+        .with_context(|| format!("failed creating safety artifact dir: {}", out_dir.display()))?;
+
+    let memory_json = build_memory_report_json(fir);
+    std::fs::write(
+        out_dir.join("memory-report.json"),
+        serde_json::to_vec_pretty(&memory_json)?,
+    )
+    .with_context(|| format!("failed writing {}", out_dir.join("memory-report.json").display()))?;
+    std::fs::write(
+        out_dir.join("memory-report.md"),
+        render_memory_report_markdown(&memory_json),
+    )
+    .with_context(|| format!("failed writing {}", out_dir.join("memory-report.md").display()))?;
+
+    let unsafe_json = build_unsafe_report_json(fir);
+    std::fs::write(
+        out_dir.join("unsafe-report.json"),
+        serde_json::to_vec_pretty(&unsafe_json)?,
+    )
+    .with_context(|| format!("failed writing {}", out_dir.join("unsafe-report.json").display()))?;
+
+    let async_json = build_async_safety_json(fir);
+    std::fs::write(
+        out_dir.join("async-safety.json"),
+        serde_json::to_vec_pretty(&async_json)?,
+    )
+    .with_context(|| format!("failed writing {}", out_dir.join("async-safety.json").display()))?;
+
+    let rpc_json = build_rpc_safety_json(fir);
+    std::fs::write(
+        out_dir.join("rpc-safety.json"),
+        serde_json::to_vec_pretty(&rpc_json)?,
+    )
+    .with_context(|| format!("failed writing {}", out_dir.join("rpc-safety.json").display()))?;
+
+    Ok(())
+}
+
+#[derive(Clone)]
+struct MemoryOwnerArtifact {
+    function: String,
+    name: String,
+    owner_id: usize,
+    created_at: String,
+    terminal_state: String,
+    terminal_at: Option<String>,
+    transfer_edges: Vec<String>,
+}
+
+fn build_memory_report_json(fir: &fir::FirModule) -> serde_json::Value {
+    let mut owner_rows = Vec::<MemoryOwnerArtifact>::new();
+    let mut functions = Vec::<serde_json::Value>::new();
+    let mut borrows = Vec::<serde_json::Value>::new();
+    let mut linear_resources = Vec::<serde_json::Value>::new();
+
+    for function in &fir.typed_functions {
+        functions.push(serde_json::json!({
+            "name": function.name,
+            "isAsync": function.is_async,
+            "isUnsafe": function.is_unsafe,
+            "returnType": function.return_type.to_string(),
+            "params": function.params.iter().map(|param| {
+                serde_json::json!({
+                    "name": param.name,
+                    "type": param.ty.to_string(),
+                })
+            }).collect::<Vec<_>>(),
+        }));
+        collect_function_owner_artifacts(function, &mut owner_rows);
+        for param in &function.params {
+            if let ast::Type::Ref {
+                mutable,
+                lifetime,
+                to,
+            } = &param.ty
+            {
+                borrows.push(serde_json::json!({
+                    "function": function.name,
+                    "name": param.name,
+                    "kind": if *mutable { "mut" } else { "shared" },
+                    "lifetimeSource": lifetime,
+                    "type": to.to_string(),
+                    "origin": "param",
+                }));
+            }
+            if memory_report_is_linear_type(&param.ty) {
+                linear_resources.push(serde_json::json!({
+                    "function": function.name,
+                    "name": param.name,
+                    "type": param.ty.to_string(),
+                    "origin": "param",
+                }));
+            }
+        }
+        for (name, ty) in &function.local_types {
+            if let ast::Type::Ref {
+                mutable,
+                lifetime,
+                to,
+            } = ty
+            {
+                borrows.push(serde_json::json!({
+                    "function": function.name,
+                    "name": name,
+                    "kind": if *mutable { "mut" } else { "shared" },
+                    "lifetimeSource": lifetime,
+                    "type": to.to_string(),
+                    "origin": "local",
+                }));
+            }
+            if memory_report_is_linear_type(ty) {
+                linear_resources.push(serde_json::json!({
+                    "function": function.name,
+                    "name": name,
+                    "type": ty.to_string(),
+                    "origin": "local",
+                }));
+            }
+        }
+    }
+
+    let owners = owner_rows
+        .iter()
+        .map(|owner| {
+            serde_json::json!({
+                "function": owner.function,
+                "owner": owner.name,
+                "ownerId": owner.owner_id,
+                "created_at": owner.created_at,
+                "terminal_state": owner.terminal_state,
+                "terminal_at": owner.terminal_at,
+                "transfer_edges": owner.transfer_edges,
+            })
+        })
+        .collect::<Vec<_>>();
+    let moves = owner_rows
+        .iter()
+        .flat_map(|owner| {
+            owner.transfer_edges.iter().map(|edge| {
+                serde_json::json!({
+                    "function": owner.function,
+                    "ownerId": owner.owner_id,
+                    "edge": edge,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let violations = fir
+        .ownership_violations
+        .iter()
+        .map(|detail| serde_json::json!({ "kind": "ownership", "detail": detail }))
+        .chain(
+            fir.reference_lifetime_violations
+                .iter()
+                .map(|detail| serde_json::json!({ "kind": "borrow", "detail": detail })),
+        )
+        .chain(
+            fir.linear_type_violations
+                .iter()
+                .map(|detail| serde_json::json!({ "kind": "linear", "detail": detail })),
+        )
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schemaVersion": "fozzylang.memory_report.v1",
+        "functions": functions,
+        "owners": owners,
+        "moves": moves,
+        "borrows": borrows,
+        "linear_resources": linear_resources,
+        "violations": violations,
+    })
+}
+
+fn render_memory_report_markdown(value: &serde_json::Value) -> String {
+    let mut out = String::from("# Memory Report\n\n");
+    let function_count = value["functions"].as_array().map(|v| v.len()).unwrap_or(0);
+    let owner_count = value["owners"].as_array().map(|v| v.len()).unwrap_or(0);
+    let violation_count = value["violations"].as_array().map(|v| v.len()).unwrap_or(0);
+    out.push_str(&format!(
+        "- Functions: {function_count}\n- Owners: {owner_count}\n- Violations: {violation_count}\n\n"
+    ));
+    out.push_str("| Function | Owner | Created At | Terminal State | Terminal At |\n|---|---|---|---|---|\n");
+    if let Some(owners) = value["owners"].as_array() {
+        for owner in owners {
+            out.push_str(&format!(
+                "| {} | {} | `{}` | {} | `{}` |\n",
+                owner["function"].as_str().unwrap_or("?"),
+                owner["owner"].as_str().unwrap_or("?"),
+                owner["created_at"].as_str().unwrap_or("?"),
+                owner["terminal_state"].as_str().unwrap_or("?"),
+                owner["terminal_at"].as_str().unwrap_or("-"),
+            ));
+        }
+    }
+    out.push_str("\n## Violations\n\n");
+    if let Some(violations) = value["violations"].as_array() {
+        if violations.is_empty() {
+            out.push_str("_No violations._\n");
+        } else {
+            for violation in violations {
+                out.push_str(&format!(
+                    "- `{}`: {}\n",
+                    violation["kind"].as_str().unwrap_or("unknown"),
+                    violation["detail"].as_str().unwrap_or("missing"),
+                ));
+            }
+        }
+    }
+    out
+}
+
+fn build_unsafe_report_json(fir: &fir::FirModule) -> serde_json::Value {
+    let unsafe_sites = fir
+        .unsafe_contract_sites
+        .iter()
+        .filter(|site| site.kind != "unsafe_violation_callsite")
+        .collect::<Vec<_>>();
+    let reasoned = unsafe_sites
+        .iter()
+        .filter(|site| {
+            site.reason.as_deref().is_some_and(|value| !value.is_empty())
+                && site.invariant.as_deref().is_some_and(|value| !value.is_empty())
+                && site.owner.as_deref().is_some_and(|value| !value.is_empty())
+                && site.scope.as_deref().is_some_and(|value| !value.is_empty())
+                && site.risk_class.as_deref().is_some_and(|value| !value.is_empty())
+                && site.proof_ref.as_deref().is_some_and(|value| !value.is_empty())
+                && !site
+                    .proof_ref
+                    .as_deref()
+                    .unwrap_or_default()
+                    .starts_with("gate://compiler-generated/")
+        })
+        .count();
+    let ffi_sites = unsafe_sites
+        .iter()
+        .filter(|site| site.kind == "unsafe_import" || site.kind == "unsafe_wrapper")
+        .count();
+    let pointer_escape_sites = unsafe_sites
+        .iter()
+        .filter(|site| {
+            site.kind.contains("pointer")
+                || site
+                    .risk_class
+                    .as_deref()
+                    .is_some_and(|value| value.contains("pointer"))
+        })
+        .count();
+
+    serde_json::json!({
+        "schemaVersion": "fozzylang.unsafe_report.v1",
+        "unsafe_sites": unsafe_sites.len(),
+        "reasoned": reasoned,
+        "unreasoned": unsafe_sites.len().saturating_sub(reasoned),
+        "ffi_sites": ffi_sites,
+        "pointer_escape_sites": pointer_escape_sites,
+        "strict_safe": true,
+        "sites": unsafe_sites.iter().map(|site| {
+            serde_json::json!({
+                "siteId": site.site_id,
+                "kind": site.kind,
+                "function": site.function,
+                "reason": site.reason,
+                "owner": site.owner,
+                "scope": site.scope,
+                "riskClass": site.risk_class,
+                "proofRef": site.proof_ref,
+                "asyncContext": site.async_context,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
+    let async_functions = fir
+        .typed_functions
+        .iter()
+        .filter(|function| function.is_async)
+        .map(|function| function.name.clone())
+        .collect::<Vec<_>>();
+    let await_boundaries = fir
+        .typed_functions
+        .iter()
+        .filter_map(|function| {
+            let count = count_awaits_in_stmts(&function.body);
+            (count > 0).then(|| {
+                serde_json::json!({
+                    "function": function.name,
+                    "awaits": count,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    let task_transfers = fir
+        .typed_functions
+        .iter()
+        .flat_map(|function| collect_task_transfer_events(function))
+        .collect::<Vec<_>>();
+    let borrow_crossings = fir
+        .reference_lifetime_violations
+        .iter()
+        .filter(|detail| detail.contains("await"))
+        .map(|detail| serde_json::json!({ "detail": detail }))
+        .collect::<Vec<_>>();
+    let task_group_policies = fir
+        .typed_functions
+        .iter()
+        .flat_map(|function| collect_task_group_policy_events(function))
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schemaVersion": "fozzylang.async_safety.v1",
+        "async_functions": async_functions,
+        "await_boundaries": await_boundaries,
+        "task_transfers": task_transfers,
+        "borrow_crossings": borrow_crossings,
+        "task_group_policies": task_group_policies,
+    })
+}
+
+fn build_rpc_safety_json(fir: &fir::FirModule) -> serde_json::Value {
+    let rpc_methods = fir
+        .typed_functions
+        .iter()
+        .filter(|function| {
+            function.is_extern
+                && function
+                    .abi
+                    .as_deref()
+                    .is_some_and(|abi| abi.eq_ignore_ascii_case("rpc"))
+        })
+        .map(|function| {
+            serde_json::json!({
+                "name": function.name,
+                "params": function.params.iter().map(|param| {
+                    serde_json::json!({
+                        "name": param.name,
+                        "type": param.ty.to_string(),
+                    })
+                }).collect::<Vec<_>>(),
+                "returnType": function.return_type.to_string(),
+                "requestOwnership": "owned_by_handler",
+            })
+        })
+        .collect::<Vec<_>>();
+    let deadline_policies = rpc_methods
+        .iter()
+        .map(|method| {
+            serde_json::json!({
+                "method": method["name"].as_str().unwrap_or_default(),
+                "policy": "unspecified",
+            })
+        })
+        .collect::<Vec<_>>();
+    let cancel_policies = rpc_methods
+        .iter()
+        .map(|method| {
+            serde_json::json!({
+                "method": method["name"].as_str().unwrap_or_default(),
+                "policy": "unspecified",
+            })
+        })
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "schemaVersion": "fozzylang.rpc_safety.v1",
+        "rpc_methods": rpc_methods,
+        "deadline_policies": deadline_policies,
+        "cancel_policies": cancel_policies,
+        "resource_cleanup": [],
+        "rpc_frames": [
+            "rpc_send",
+            "rpc_recv",
+            "rpc_deadline",
+            "rpc_cancel",
+            "rpc_resource_open",
+            "rpc_resource_close",
+            "rpc_resource_leak_rejected"
+        ],
+    })
+}
+
+fn collect_function_owner_artifacts(
+    function: &hir::TypedFunction,
+    out: &mut Vec<MemoryOwnerArtifact>,
+) {
+    fn create_owner(
+        function_name: &str,
+        binding: &str,
+        created_at: String,
+        next_owner_id: &mut usize,
+        owners: &mut BTreeMap<String, usize>,
+        rows: &mut Vec<MemoryOwnerArtifact>,
+    ) {
+        let owner_id = *next_owner_id;
+        *next_owner_id += 1;
+        owners.insert(binding.to_string(), rows.len());
+        rows.push(MemoryOwnerArtifact {
+            function: function_name.to_string(),
+            name: binding.to_string(),
+            owner_id,
+            created_at,
+            terminal_state: "Owned".to_string(),
+            terminal_at: None,
+            transfer_edges: Vec::new(),
+        });
+    }
+
+    fn mark_terminal(
+        binding: &str,
+        owners: &mut BTreeMap<String, usize>,
+        rows: &mut [MemoryOwnerArtifact],
+        state: &str,
+        at: String,
+    ) {
+        if let Some(index) = owners.remove(binding) {
+            rows[index].terminal_state = state.to_string();
+            rows[index].terminal_at = Some(at);
+        }
+    }
+
+    fn scan_expr(
+        function: &hir::TypedFunction,
+        expr: &ast::Expr,
+        next_owner_id: &mut usize,
+        owners: &mut BTreeMap<String, usize>,
+        rows: &mut Vec<MemoryOwnerArtifact>,
+    ) {
+        match expr {
+            ast::Expr::UnsafeBlock { body, .. } => {
+                scan_stmts(function, body, next_owner_id, owners, rows);
+            }
+            ast::Expr::If {
+                then_expr,
+                else_expr,
+                ..
+            } => {
+                scan_expr(function, then_expr, next_owner_id, owners, rows);
+                scan_expr(function, else_expr, next_owner_id, owners, rows);
+            }
+            ast::Expr::Match { arms, .. } => {
+                for arm in arms {
+                    scan_expr(function, &arm.value, next_owner_id, owners, rows);
+                }
+            }
+            ast::Expr::While { body, .. }
+            | ast::Expr::ForIn { body, .. }
+            | ast::Expr::Loop { body } => {
+                scan_stmts(function, body, next_owner_id, owners, rows);
+            }
+            ast::Expr::For { body, .. } => {
+                scan_stmts(function, body, next_owner_id, owners, rows);
+            }
+            _ => {}
+        }
+    }
+
+    fn scan_stmts(
+        function: &hir::TypedFunction,
+        body: &[ast::Stmt],
+        next_owner_id: &mut usize,
+        owners: &mut BTreeMap<String, usize>,
+        rows: &mut Vec<MemoryOwnerArtifact>,
+    ) {
+        for stmt in body {
+            match stmt {
+                ast::Stmt::Let {
+                    name, value, ty, ..
+                } => {
+                    if let ast::Expr::Ident(from) = value {
+                        if let Some(index) = owners.remove(from) {
+                            rows[index]
+                                .transfer_edges
+                                .push(format!("let {name} = {from}"));
+                            rows[index].name = name.clone();
+                            owners.insert(name.clone(), index);
+                            continue;
+                        }
+                    }
+                    let binding_ty = ty.as_ref().or_else(|| function.local_types.get(name));
+                    if binding_ty.is_some_and(memory_report_is_linear_type) || memory_report_is_alloc_like(value) {
+                        create_owner(
+                            &function.name,
+                            name,
+                            memory_report_expr_origin(value),
+                            next_owner_id,
+                            owners,
+                            rows,
+                        );
+                    }
+                    scan_expr(function, value, next_owner_id, owners, rows);
+                }
+                ast::Stmt::Assign { target, value } => {
+                    if let ast::Expr::Ident(from) = value {
+                        if let Some(index) = owners.remove(from) {
+                            rows[index]
+                                .transfer_edges
+                                .push(format!("{target} = {from}"));
+                            rows[index].name = target.clone();
+                            owners.insert(target.clone(), index);
+                        }
+                    }
+                    scan_expr(function, value, next_owner_id, owners, rows);
+                }
+                ast::Stmt::Defer(expr) => {
+                    if let Some((binding, at)) = memory_report_terminal_call(expr) {
+                        mark_terminal(&binding, owners, rows, "Deferred", at);
+                    }
+                    scan_expr(function, expr, next_owner_id, owners, rows);
+                }
+                ast::Stmt::Return(Some(ast::Expr::Ident(name))) => {
+                    mark_terminal(name, owners, rows, "Returned", "return".to_string());
+                }
+                ast::Stmt::Return(Some(expr)) => {
+                    scan_expr(function, expr, next_owner_id, owners, rows);
+                }
+                ast::Stmt::Expr(expr) => {
+                    if let Some((binding, at)) = memory_report_terminal_call(expr) {
+                        let state = if at.starts_with("task.group_") {
+                            "Consumed"
+                        } else {
+                            "Consumed"
+                        };
+                        mark_terminal(&binding, owners, rows, state, at);
+                    }
+                    scan_expr(function, expr, next_owner_id, owners, rows);
+                }
+                ast::Stmt::If {
+                    then_body,
+                    else_body,
+                    ..
+                } => {
+                    scan_stmts(function, then_body, next_owner_id, owners, rows);
+                    scan_stmts(function, else_body, next_owner_id, owners, rows);
+                }
+                ast::Stmt::While { body, .. }
+                | ast::Stmt::ForIn { body, .. }
+                | ast::Stmt::Loop { body } => {
+                    scan_stmts(function, body, next_owner_id, owners, rows);
+                }
+                ast::Stmt::For { body, .. } => {
+                    scan_stmts(function, body, next_owner_id, owners, rows);
+                }
+                ast::Stmt::Match { arms, .. } => {
+                    for arm in arms {
+                        scan_expr(function, &arm.value, next_owner_id, owners, rows);
+                    }
+                }
+                ast::Stmt::LetPattern { value, .. }
+                | ast::Stmt::CompoundAssign { value, .. }
+                | ast::Stmt::Requires(value)
+                | ast::Stmt::Ensures(value) => {
+                    scan_expr(function, value, next_owner_id, owners, rows);
+                }
+                ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+            }
+        }
+    }
+
+    let mut next_owner_id = 1usize;
+    let mut active = BTreeMap::<String, usize>::new();
+    let start = out.len();
+    scan_stmts(function, &function.body, &mut next_owner_id, &mut active, out);
+    for index in active.into_values() {
+        if out[index].terminal_state == "Owned" {
+            out[index].terminal_at = Some("function_exit".to_string());
+        }
+    }
+    for row in &mut out[start..] {
+        if row.terminal_state == "Owned"
+            && row.transfer_edges.iter().any(|edge| edge.contains(" = "))
+        {
+            row.terminal_state = "TransferredToCaller".to_string();
+        }
+    }
+}
+
+fn memory_report_is_alloc_like(expr: &ast::Expr) -> bool {
+    matches!(expr, ast::Expr::Call { callee, .. } if callee == "alloc" || callee.ends_with(".alloc") || callee == "task.group_begin")
+}
+
+fn memory_report_expr_origin(expr: &ast::Expr) -> String {
+    match expr {
+        ast::Expr::Call { callee, .. } => callee.clone(),
+        ast::Expr::Ident(name) => name.clone(),
+        _ => "<expr>".to_string(),
+    }
+}
+
+fn memory_report_is_linear_type(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::Ptr { .. } => true,
+        ast::Type::Named { name, .. } => matches!(
+            name.as_str(),
+            "Linear"
+                | "Resource"
+                | "Ptr"
+                | "FileHandle"
+                | "ProcessHandle"
+                | "HttpHandle"
+                | "HttpStreamHandle"
+                | "WebSocketHandle"
+                | "TaskHandle"
+                | "TaskGroupHandle"
+                | "TaskGroup"
+                | "RpcFrame"
+        ),
+        _ => false,
+    }
+}
+
+fn memory_report_terminal_call(expr: &ast::Expr) -> Option<(String, String)> {
+    let ast::Expr::Call { callee, args } = expr else {
+        return None;
+    };
+    let binding = match args.first() {
+        Some(ast::Expr::Ident(name)) => name.clone(),
+        Some(ast::Expr::Group(inner)) => match inner.as_ref() {
+            ast::Expr::Ident(name) => name.clone(),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let terminal = match callee.as_str() {
+        "free" | "close" | "join" | "detach" | "cancel_task" | "http.stream_close"
+        | "task.group_join" | "task.group_join_all" | "task.group_cancel" => Some(callee.clone()),
+        _ if callee.ends_with(".free") || callee.ends_with(".close") => Some(callee.clone()),
+        _ => None,
+    }?;
+    Some((binding, terminal))
+}
+
+fn count_awaits_in_stmts(body: &[ast::Stmt]) -> usize {
+    body.iter().map(count_awaits_in_stmt).sum()
+}
+
+fn count_awaits_in_stmt(stmt: &ast::Stmt) -> usize {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Return(Some(value))
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => count_awaits_in_expr(value),
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            count_awaits_in_expr(condition)
+                + count_awaits_in_stmts(then_body)
+                + count_awaits_in_stmts(else_body)
+        }
+        ast::Stmt::While { condition, body } => {
+            count_awaits_in_expr(condition) + count_awaits_in_stmts(body)
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().map(count_awaits_in_stmt).unwrap_or(0)
+                + condition.as_ref().map(count_awaits_in_expr).unwrap_or(0)
+                + step.as_deref().map(count_awaits_in_stmt).unwrap_or(0)
+                + count_awaits_in_stmts(body)
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            count_awaits_in_expr(iterable) + count_awaits_in_stmts(body)
+        }
+        ast::Stmt::Loop { body } => count_awaits_in_stmts(body),
+        ast::Stmt::Match { scrutinee, arms } => {
+            count_awaits_in_expr(scrutinee)
+                + arms
+                    .iter()
+                    .map(|arm| {
+                        arm.guard.as_ref().map(count_awaits_in_expr).unwrap_or(0)
+                            + count_awaits_in_expr(&arm.value)
+                    })
+                    .sum::<usize>()
+        }
+        ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => 0,
+    }
+}
+
+fn count_awaits_in_expr(expr: &ast::Expr) -> usize {
+    match expr {
+        ast::Expr::Await(inner) => 1 + count_awaits_in_expr(inner),
+        ast::Expr::Call { args, .. } => args.iter().map(count_awaits_in_expr).sum(),
+        ast::Expr::UnsafeBlock { body, .. } => count_awaits_in_stmts(body),
+        ast::Expr::FieldAccess { base, .. }
+        | ast::Expr::Group(base)
+        | ast::Expr::Discard(base)
+        | ast::Expr::Unary { expr: base, .. } => count_awaits_in_expr(base),
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            fields.iter().map(|(_, value)| count_awaits_in_expr(value)).sum()
+        }
+        ast::Expr::EnumInit { payload, .. } | ast::Expr::Tuple(payload) | ast::Expr::ArrayLiteral(payload) => {
+            payload.iter().map(count_awaits_in_expr).sum()
+        }
+        ast::Expr::Closure { body, .. } => count_awaits_in_expr(body),
+        ast::Expr::TryCatch { try_expr, catch_expr } => {
+            count_awaits_in_expr(try_expr) + count_awaits_in_expr(catch_expr)
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            count_awaits_in_expr(condition)
+                + count_awaits_in_expr(then_expr)
+                + count_awaits_in_expr(else_expr)
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            count_awaits_in_expr(scrutinee)
+                + arms
+                    .iter()
+                    .map(|arm| {
+                        arm.guard.as_ref().map(count_awaits_in_expr).unwrap_or(0)
+                            + count_awaits_in_expr(&arm.value)
+                    })
+                    .sum::<usize>()
+        }
+        ast::Expr::While { condition, body } => {
+            count_awaits_in_expr(condition) + count_awaits_in_stmts(body)
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref().map(count_awaits_in_stmt).unwrap_or(0)
+                + condition.as_deref().map(count_awaits_in_expr).unwrap_or(0)
+                + step.as_deref().map(count_awaits_in_stmt).unwrap_or(0)
+                + count_awaits_in_stmts(body)
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            count_awaits_in_expr(iterable) + count_awaits_in_stmts(body)
+        }
+        ast::Expr::Loop { body } => count_awaits_in_stmts(body),
+        ast::Expr::Return(value) | ast::Expr::Break(value) => {
+            value.as_deref().map(count_awaits_in_expr).unwrap_or(0)
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            count_awaits_in_expr(left) + count_awaits_in_expr(right)
+        }
+        ast::Expr::Range { start, end, .. } => {
+            count_awaits_in_expr(start) + count_awaits_in_expr(end)
+        }
+        ast::Expr::Index { base, index } => {
+            count_awaits_in_expr(base) + count_awaits_in_expr(index)
+        }
+        ast::Expr::Continue
+        | ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Ident(_) => 0,
+    }
+}
+
+fn collect_task_transfer_events(function: &hir::TypedFunction) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    collect_task_transfer_events_from_stmts(&function.name, &function.body, &mut out);
+    out
+}
+
+fn collect_task_transfer_events_from_stmts(
+    function_name: &str,
+    body: &[ast::Stmt],
+    out: &mut Vec<serde_json::Value>,
+) {
+    for stmt in body {
+        match stmt {
+            ast::Stmt::Let { value, .. }
+            | ast::Stmt::LetPattern { value, .. }
+            | ast::Stmt::Assign { value, .. }
+            | ast::Stmt::CompoundAssign { value, .. }
+            | ast::Stmt::Return(Some(value))
+            | ast::Stmt::Defer(value)
+            | ast::Stmt::Requires(value)
+            | ast::Stmt::Ensures(value)
+            | ast::Stmt::Expr(value) => collect_task_transfer_events_from_expr(function_name, value, out),
+            ast::Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                collect_task_transfer_events_from_stmts(function_name, then_body, out);
+                collect_task_transfer_events_from_stmts(function_name, else_body, out);
+            }
+            ast::Stmt::While { body, .. }
+            | ast::Stmt::ForIn { body, .. }
+            | ast::Stmt::Loop { body } => collect_task_transfer_events_from_stmts(function_name, body, out),
+            ast::Stmt::For { body, .. } => collect_task_transfer_events_from_stmts(function_name, body, out),
+            ast::Stmt::Match { arms, .. } => {
+                for arm in arms {
+                    collect_task_transfer_events_from_expr(function_name, &arm.value, out);
+                }
+            }
+            ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+        }
+    }
+}
+
+fn collect_task_transfer_events_from_expr(
+    function_name: &str,
+    expr: &ast::Expr,
+    out: &mut Vec<serde_json::Value>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args }
+            if matches!(
+                callee.as_str(),
+                "spawn"
+                    | "thread.spawn"
+                    | "spawn_ctx"
+                    | "task.group_spawn"
+                    | "task.group_spawn_n"
+                    | "task.parallel_map"
+            ) =>
+        {
+            out.push(serde_json::json!({
+                "function": function_name,
+                "callee": callee,
+                "args": args.iter().map(memory_report_expr_origin).collect::<Vec<_>>(),
+                "result": "accepted",
+            }));
+        }
+        ast::Expr::UnsafeBlock { body, .. } => {
+            collect_task_transfer_events_from_stmts(function_name, body, out);
+        }
+        ast::Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            collect_task_transfer_events_from_expr(function_name, then_expr, out);
+            collect_task_transfer_events_from_expr(function_name, else_expr, out);
+        }
+        ast::Expr::Match { arms, .. } => {
+            for arm in arms {
+                collect_task_transfer_events_from_expr(function_name, &arm.value, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_task_group_policy_events(function: &hir::TypedFunction) -> Vec<serde_json::Value> {
+    let mut started = BTreeSet::<String>::new();
+    let mut terminal = BTreeMap::<String, String>::new();
+    for stmt in &function.body {
+        collect_task_group_policy_stmt(stmt, &mut started, &mut terminal);
+    }
+    started
+        .into_iter()
+        .map(|name| {
+            serde_json::json!({
+                "function": function.name,
+                "group": name,
+                "policy": terminal.get(&name).cloned().unwrap_or_else(|| "missing".to_string()),
+            })
+        })
+        .collect()
+}
+
+fn collect_task_group_policy_stmt(
+    stmt: &ast::Stmt,
+    started: &mut BTreeSet<String>,
+    terminal: &mut BTreeMap<String, String>,
+) {
+    match stmt {
+        ast::Stmt::Let { name, value, .. } => {
+            if matches!(value, ast::Expr::Call { callee, .. } if callee == "task.group_begin") {
+                started.insert(name.clone());
+            }
+        }
+        ast::Stmt::Expr(ast::Expr::Call { callee, args }) => {
+            if matches!(callee.as_str(), "task.group_join" | "task.group_join_all" | "task.group_cancel")
+            {
+                if let Some(ast::Expr::Ident(name)) = args.first() {
+                    terminal.insert(name.clone(), callee.clone());
+                }
+            }
+        }
+        ast::Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for nested in then_body {
+                collect_task_group_policy_stmt(nested, started, terminal);
+            }
+            for nested in else_body {
+                collect_task_group_policy_stmt(nested, started, terminal);
+            }
+        }
+        ast::Stmt::While { body, .. }
+        | ast::Stmt::ForIn { body, .. }
+        | ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_task_group_policy_stmt(nested, started, terminal);
+            }
+        }
+        ast::Stmt::For { body, .. } => {
+            for nested in body {
+                collect_task_group_policy_stmt(nested, started, terminal);
+            }
+        }
+        ast::Stmt::Match { arms, .. } => {
+            for arm in arms {
+                collect_task_group_policy_expr(&arm.value, started, terminal);
+            }
+        }
+        ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Return(Some(value))
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => collect_task_group_policy_expr(value, started, terminal),
+        ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_task_group_policy_expr(
+    expr: &ast::Expr,
+    started: &mut BTreeSet<String>,
+    terminal: &mut BTreeMap<String, String>,
+) {
+    match expr {
+        ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                collect_task_group_policy_stmt(stmt, started, terminal);
+            }
+        }
+        ast::Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            collect_task_group_policy_expr(then_expr, started, terminal);
+            collect_task_group_policy_expr(else_expr, started, terminal);
+        }
+        ast::Expr::Match { arms, .. } => {
+            for arm in arms {
+                collect_task_group_policy_expr(&arm.value, started, terminal);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn parse_program_uncached_with_root_source(

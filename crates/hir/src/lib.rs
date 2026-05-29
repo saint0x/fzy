@@ -2879,7 +2879,18 @@ fn is_linear_type(ty: &Type) -> bool {
 fn is_linear_runtime_handle(name: &str) -> bool {
     matches!(
         name,
-        "Linear" | "Resource" | "HttpHandle" | "HttpStreamHandle" | "ProcessHandle"
+        "Linear"
+            | "Resource"
+            | "Ptr"
+            | "FileHandle"
+            | "ProcessHandle"
+            | "HttpHandle"
+            | "HttpStreamHandle"
+            | "WebSocketHandle"
+            | "TaskHandle"
+            | "TaskGroupHandle"
+            | "TaskGroup"
+            | "RpcFrame"
     )
 }
 
@@ -3398,7 +3409,13 @@ fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
         | "http.write_response"
         | "route.write_404"
         | "route.write_405"
-        | "http.stream_close" => &[0],
+        | "http.stream_close"
+        | "join"
+        | "detach"
+        | "cancel_task"
+        | "task.group_join"
+        | "task.group_join_all"
+        | "task.group_cancel" => &[0],
         _ if is_free_callee(callee) || is_close_callee(callee) => &[0],
         _ => &[],
     }
@@ -16070,6 +16087,45 @@ mod tests {
         assert!(!typed.ownership_violations.iter().any(|detail| {
             detail.contains("divergent ownership state for `p`")
                 || detail.contains("conditionally consumed value `p`")
+        }));
+    }
+
+    #[test]
+    fn task_group_without_terminal_policy_is_rejected() {
+        let source = r#"
+            fn worker() -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let group = task.group_begin();
+                task.group_spawn(group, worker);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `main` linear value `group` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn task_group_join_all_satisfies_terminal_policy() {
+        let source = r#"
+            fn worker() -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let group = task.group_begin();
+                task.group_spawn(group, worker);
+                task.group_join_all(group);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `main` linear value `group` was not consumed/freed")
         }));
     }
 

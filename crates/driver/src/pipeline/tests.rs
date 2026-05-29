@@ -51,6 +51,48 @@ fn compile_file_runs_pipeline() {
 }
 
 #[test]
+fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-safety-artifacts-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"safety_artifacts\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"safety_artifacts\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn main() -> i32 {\n    let p = alloc(16)\n    defer free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+    for name in [
+        "memory-report.json",
+        "memory-report.md",
+        "unsafe-report.json",
+        "async-safety.json",
+        "rpc-safety.json",
+    ] {
+        assert!(
+            root.join(".fz").join(name).exists(),
+            "expected safety artifact {name}"
+        );
+    }
+
+    let memory_report = std::fs::read_to_string(root.join(".fz/memory-report.json"))
+        .expect("memory report should exist");
+    assert!(memory_report.contains("\"owners\""));
+    assert!(memory_report.contains("\"violations\""));
+}
+
+#[test]
 fn derive_anchors_from_message_extracts_primary_and_related_tokens() {
     let lines = vec![
         "fn main() -> i32 {".to_string(),
