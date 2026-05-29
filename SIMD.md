@@ -46,13 +46,13 @@ fzy should be able to claim all of the following before SIMD is considered produ
 
 ## Current Shipped Status
 
-Phase 1 portable SIMD is now shipped with an LLVM-backed surface:
+Phase 1 portable SIMD is now shipped as a cross-backend native surface for the supported subset:
 
 - first-class `i32x4`, `u32x4`, `f32x4`, and `mask32x4` types
 - `core.simd` constructors, splats, arithmetic, min/max, scalar shifts, bitwise ops, comparisons, `select`, public shuffle, paired zip/unzip helpers, explicit numeric bitcasts, lane extraction, mask bitmask extraction, and reductions
 - integer saturating add/sub plus scalar `reduce_min`/`reduce_max` on the shipped vector aliases
 - explicit verifier/backend rejection for SIMD ABI crossings
-- explicit Cranelift rejection instead of accidental scalar fallback
+- real native lowering in both LLVM and Cranelift for the shipped fixed-array-safe subset
 - deterministic Fozzy scenario + trace coverage for the shipped surface
 
 The broader roadmap below remains the long-term plan. Only the checked items should be treated as production-complete today.
@@ -238,9 +238,9 @@ This track adds an explicit author-facing SIMD model.
 ### F. Lowering and backend mapping
 
 - [x] Native lowering now treats phase-1 SIMD intrinsics as a well-defined lowered op family instead of host runtime imports.
-- [ ] Native lowering should map portable ops cleanly to:
+- [x] Native lowering should map portable ops cleanly to:
   - [x] LLVM vector IR
-  - Cranelift vector ops where available
+  - [x] Cranelift vector ops for the shipped subset
 - [x] Unsupported operations must fail clearly instead of silently degenerating into surprising behavior.
 - [x] Decide policy for scalar fallback:
   - [x] verifier/backend rejection until implemented
@@ -292,8 +292,8 @@ This track adds an explicit author-facing SIMD model.
 - [x] Land splat/load/store/basic arithmetic/bitwise/compare/select/reduction operations for the current fixed-array-safe surface.
 - [x] Land basic arithmetic/bitwise/compare/select/reduction operations for the no-memory phase-1 surface.
 - [x] Land LLVM lowering for the minimal surface.
-- [ ] Land Cranelift lowering for the supported subset.
-- [ ] Add cross-backend semantic parity tests.
+- [x] Land Cranelift lowering for the supported subset.
+- [x] Add cross-backend semantic parity tests.
 
 ### Phase 3: Production hardening
 
@@ -323,8 +323,8 @@ This track adds an explicit author-facing SIMD model.
 ### Backend/runtime
 
 - [x] LLVM execution tests
-- [ ] Cranelift execution tests
-- [ ] parity/equivalence tests across backends
+- [x] Cranelift execution tests
+- [x] parity/equivalence tests across backends
 - [x] failure-mode tests for unsupported operations
 - [x] direct built-binary behavior checks for representative workloads
 

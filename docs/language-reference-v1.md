@@ -241,8 +241,8 @@ Semantics:
   - lane extraction and reductions including `reduce_add`, `reduce_min`, and `reduce_max`
 - `shuffle` traps at runtime when any lane selector is outside `0..7`.
 - Backend posture:
-  - LLVM lowers the current phase-1 surface
-  - Cranelift rejects `core.simd` explicitly until native SIMD lowering is implemented
+  - LLVM and Cranelift both lower the current phase-1 fixed-array-safe surface
+  - backend parity is semantic for the shipped subset; equal optimization maturity is not implied
 - Current safe memory interop is fixed-size array based; raw-buffer and alignment-sensitive SIMD APIs are not part of the shipped v1 surface yet.
 - [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) is the reference example for the current production SIMD workflow.
 - Canonical standard-library wrapper import is `use core.process;`.

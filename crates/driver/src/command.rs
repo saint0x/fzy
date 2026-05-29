@@ -12123,6 +12123,60 @@ mod tests {
     }
 
     #[test]
+    fn portable_simd_surface_runs_via_fz_run_with_cranelift_backend() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-simd-runtime-cranelift-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        let fixture = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tests/fixtures/simd_portable/main.fzy"),
+        )
+        .expect("portable simd fixture should be readable");
+        std::fs::write(root.join("src/main.fzy"), fixture).expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .unwrap_or_else(|err| {
+            if let Some(command_failure) = err.downcast_ref::<CommandFailure>() {
+                panic!(
+                    "SIMD runtime should succeed on cranelift: {}\noutput:\n{}",
+                    command_failure, command_failure.output
+                );
+            }
+            panic!("SIMD runtime should succeed on cranelift: {err}");
+        });
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn native_http_post_json_applies_headers_and_preserves_raw_json_values() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let addr = listener.local_addr().expect("listener addr should resolve");

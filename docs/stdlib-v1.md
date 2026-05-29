@@ -240,8 +240,8 @@ Transcript guidance:
   - lane extraction
   - reductions: `reduce_add`, `reduce_min`, `reduce_max`, `any`, `all`, `none`, `bitmask`
 - Contract:
-  - current production lowering is LLVM-backed
-  - Cranelift rejects `core.simd` explicitly rather than silently scalarizing
+  - current production lowering for the shipped phase-1 subset is available in both LLVM and Cranelift
+  - backend parity is semantic for the fixed-array-safe surface; this is not a performance-equivalence claim
   - SIMD values are rejected across ABI/FFI boundaries in phase 1
   - `shuffle` traps on lane selectors outside `0..7`
   - masks remain distinct from integer vectors in the public API

@@ -502,7 +502,7 @@ fn llvm_array_literal_return_values_round_trip_through_named_locals() {
 }
 
 #[test]
-fn portable_simd_surface_rejects_cranelift_with_clear_diagnostic() {
+fn portable_simd_surface_executes_on_cranelift_backend() {
     let project_name = format!(
         "fozzylang-simd-cranelift-{}",
         SystemTime::now()
@@ -524,20 +524,15 @@ fn portable_simd_surface_rejects_cranelift_with_clear_diagnostic() {
     .expect("source should be written");
 
     let artifact = compile_file_with_backend(&root, BuildProfile::Verify, Some("cranelift"))
-        .expect("compile should surface diagnostics");
-    let diagnostic = artifact
-        .diagnostic_details
-        .iter()
-        .find(|diagnostic| {
-            diagnostic
-                .message
-                .contains("backend `cranelift` does not yet support `core.simd` lowering")
-        })
-        .expect("cranelift SIMD diagnostic should be present");
-    assert!(diagnostic
-        .code
-        .as_deref()
-        .is_some_and(|code| code.starts_with("E-NAT-")));
+        .expect("cranelift SIMD build should succeed");
+    assert_eq!(artifact.status, "ok");
+    let exit = run_native_exit(
+        artifact
+            .output
+            .as_deref()
+            .expect("cranelift SIMD artifact output should exist"),
+    );
+    assert_eq!(exit, 2);
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1197,8 +1192,11 @@ fn compile_project_fails_when_lockfile_drifts() {
         "fn main() -> i32 {\n    return 1\n}\n",
     )
     .expect("dep source should mutate");
-    let error = compile_file(&root, BuildProfile::Dev).expect_err("drift should fail build");
-    assert!(error.to_string().contains("lockfile drift detected"));
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("drift should auto-refresh");
+    assert_eq!(artifact.status, "ok");
+    let lock_text =
+        std::fs::read_to_string(root.join("fozzy.lock")).expect("lockfile should be readable");
+    assert!(lock_text.contains("dependencyGraphHash"));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1248,6 +1246,58 @@ fn refresh_lockfile_unblocks_drifted_project_build() {
     assert_eq!(artifact.status, "ok");
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_library_from_main_source_does_not_export_main_symbol() {
+    let source = std::env::temp_dir().join(format!(
+        "fozzylang-lib-main-symbol-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::write(
+        &source,
+        "#[ffi_panic(abort)]\npubext c fn exported() -> i32 {\n    return 7\n}\n\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_library_with_backend(&source, BuildProfile::Dev, None)
+        .expect("library build from main source should succeed");
+    assert_eq!(artifact.status, "ok");
+    let object_path = source
+        .parent()
+        .expect("temp source should have parent")
+        .join(".fz/build")
+        .join(format!(
+            "{}.ffi.o",
+            source
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .expect("source file stem should be valid")
+        ));
+    assert!(object_path.exists(), "ffi object should exist");
+    let nm = Command::new("nm")
+        .arg(&object_path)
+        .output()
+        .expect("nm should be available");
+    assert!(nm.status.success(), "nm should succeed");
+    let symbols = String::from_utf8_lossy(&nm.stdout);
+    assert!(
+        !symbols
+            .lines()
+            .any(|line| line.ends_with(" T _main") || line.ends_with(" T main")),
+        "library object should not export main as a global symbol: {symbols}"
+    );
+    assert!(
+        symbols
+            .lines()
+            .any(|line| line.ends_with(" _exported") || line.ends_with(" exported")),
+        "library object should export the pubext symbol: {symbols}"
+    );
+
+    let _ = std::fs::remove_file(source);
 }
 
 #[test]

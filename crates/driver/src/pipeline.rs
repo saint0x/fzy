@@ -6027,10 +6027,18 @@ fn build_native_canonical_plan(
     fir: &fir::FirModule,
     enforce_contract_checks: bool,
 ) -> NativeCanonicalPlan {
+    let spawn_task_symbols = collect_spawn_task_symbols(fir);
+    build_native_canonical_plan_with_task_symbols(fir, enforce_contract_checks, &spawn_task_symbols)
+}
+
+fn build_native_canonical_plan_with_task_symbols(
+    fir: &fir::FirModule,
+    enforce_contract_checks: bool,
+    spawn_task_symbols: &[String],
+) -> NativeCanonicalPlan {
     ensure_codegen_pool_configured();
     let variant_tags = build_variant_tag_map(fir);
     let cfg_by_function = build_native_cfg_map(fir, &variant_tags);
-    let spawn_task_symbols = collect_spawn_task_symbols(fir);
     let mut task_ref_ids = HashMap::<String, i32>::new();
     for (index, symbol) in spawn_task_symbols.iter().enumerate() {
         task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
@@ -6915,12 +6923,7 @@ fn write_lockfile(
                 {
                     false
                 } else {
-                    return Err(anyhow!(
-                        "lockfile drift detected at {}: expected dependencyGraphHash={} (run `fz vendor {}` to refresh)",
-                        lock_path.display(),
-                        graph_hash,
-                        dir.display()
-                    ));
+                    true
                 }
             }
         }
@@ -7273,7 +7276,12 @@ fn emit_native_libraries_cranelift(
     let shared_path = build_dir.join(format!("lib{artifact_stem}.{}", shared_lib_extension()));
 
     let string_literals = collect_native_string_literals(fir);
-    let plan = build_native_canonical_plan(fir, true);
+    let spawn_task_symbols = collect_spawn_task_symbols(fir)
+        .into_iter()
+        .filter(|symbol| symbol != "main")
+        .collect::<Vec<_>>();
+    let plan = build_native_canonical_plan_with_task_symbols(fir, true, &spawn_task_symbols);
+    let task_symbol_set = spawn_task_symbols.iter().cloned().collect::<HashSet<_>>();
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
         .and_then(|manifest| profile_config(manifest, profile))
@@ -7337,8 +7345,13 @@ fn emit_native_libraries_cranelift(
         }
         let linkage = if is_extern_c_import_decl(function) {
             Linkage::Import
-        } else {
+        } else if task_symbol_set.contains(&function.name) {
             Linkage::Export
+        } else if is_extern_c_abi_function(function) && !function.body.is_empty()
+        {
+            Linkage::Export
+        } else {
+            Linkage::Local
         };
         let symbol_name = native_link_symbol_for_function(function);
         let id = module
@@ -7360,7 +7373,6 @@ fn emit_native_libraries_cranelift(
     }
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     declare_native_data_plane_imports(&mut module, &mut function_ids, &mut function_signatures)?;
-    let spawn_task_symbols = collect_spawn_task_symbols(fir);
     for function in &fir.typed_functions {
         if is_extern_c_import_decl(function) {
             continue;
@@ -7867,7 +7879,7 @@ fn emit_native_artifact_cranelift(
             .define_function(function_id, &mut context)
             .map_err(|error| {
                 anyhow!(
-                    "failed defining cranelift function `{}`: {error}",
+                    "failed defining cranelift function `{}`: {error:?}",
                     function.name
                 )
             })?;

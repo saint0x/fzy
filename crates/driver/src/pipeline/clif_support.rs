@@ -458,6 +458,27 @@ fn clif_restore_shadowed_locals(
     }
 }
 
+fn clif_bind_local(
+    builder: &mut FunctionBuilder,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+    name: &str,
+    ty: ClifType,
+    value: cranelift_codegen::ir::Value,
+) {
+    let binding = if let Some(existing) = locals.get(name).copied() {
+        existing
+    } else {
+        let var = Variable::from_u32(*next_var as u32);
+        *next_var += 1;
+        builder.declare_var(var, ty);
+        let binding = LocalBinding { var, ty };
+        locals.insert(name.to_string(), binding);
+        binding
+    };
+    builder.def_var(binding.var, value);
+}
+
 fn clif_cast_scalar_to_i64(builder: &mut FunctionBuilder, value: ClifValue) -> Result<ClifValue> {
     cast_clif_value(builder, value, types::I64)
 }
@@ -475,6 +496,976 @@ fn clif_cast_i64_to_ty(
         },
         target_ty,
     )
+}
+
+fn clif_parse_simd_intrinsic(callee: &str) -> Option<(&str, &str)> {
+    let body = callee.strip_prefix("simd.__")?;
+    for kind in ["i32x4", "u32x4", "f32x4", "mask32x4"] {
+        if let Some(op) = body.strip_prefix(kind) {
+            return Some((kind, op));
+        }
+    }
+    None
+}
+
+fn clif_simd_vector_type(kind: &str) -> Option<ClifType> {
+    match kind {
+        "i32x4" | "u32x4" | "mask32x4" => Some(types::I32X4),
+        "f32x4" => Some(types::F32X4),
+        _ => None,
+    }
+}
+
+fn clif_simd_lane_type(kind: &str) -> Option<ClifType> {
+    match kind {
+        "i32x4" | "u32x4" | "mask32x4" => Some(types::I32),
+        "f32x4" => Some(types::F32),
+        _ => None,
+    }
+}
+
+fn clif_simd_true_lane(builder: &mut FunctionBuilder) -> cranelift_codegen::ir::Value {
+    builder.ins().iconst(types::I32, -1)
+}
+
+fn clif_simd_false_lane(builder: &mut FunctionBuilder) -> cranelift_codegen::ir::Value {
+    builder.ins().iconst(types::I32, 0)
+}
+
+fn clif_emit_simd_lane_from_expr(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    arg: &ast::Expr,
+    kind: &str,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<ClifValue> {
+    if kind == "mask32x4" {
+        let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+        let pred = clif_truthy_pred(builder, lowered);
+        let true_lane = clif_simd_true_lane(builder);
+        let false_lane = clif_simd_false_lane(builder);
+        return Ok(ClifValue {
+            value: builder.ins().select(pred, true_lane, false_lane),
+            ty: types::I32,
+        });
+    }
+    let lane_ty = clif_simd_lane_type(kind)
+        .ok_or_else(|| anyhow!("unsupported cranelift simd lane type for `{kind}`"))?;
+    let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+    cast_clif_value(builder, lowered, lane_ty)
+}
+
+fn clif_emit_simd_vector_from_lanes(
+    builder: &mut FunctionBuilder,
+    kind: &str,
+    lanes: &[ClifValue],
+) -> Result<ClifValue> {
+    let vec_ty = clif_simd_vector_type(kind)
+        .ok_or_else(|| anyhow!("unsupported cranelift simd vector type for `{kind}`"))?;
+    let lane_ty = clif_simd_lane_type(kind)
+        .ok_or_else(|| anyhow!("unsupported cranelift simd lane type for `{kind}`"))?;
+    if lanes.len() != 4 {
+        bail!("expected exactly 4 SIMD lanes for `{kind}`, found {}", lanes.len());
+    }
+    let first = if lanes[0].ty == lane_ty {
+        lanes[0].value
+    } else {
+        bail!("lane type mismatch while building `{kind}`");
+    };
+    let mut current = builder.ins().scalar_to_vector(vec_ty, first);
+    for (index, lane) in lanes.iter().enumerate().skip(1) {
+        if lane.ty != lane_ty {
+            bail!("lane type mismatch while building `{kind}`");
+        }
+        current = builder.ins().insertlane(current, lane.value, index as u8);
+    }
+    Ok(ClifValue {
+        value: current,
+        ty: vec_ty,
+    })
+}
+
+fn clif_emit_simd_lanes(
+    builder: &mut FunctionBuilder,
+    value: ClifValue,
+    kind: &str,
+) -> Result<Vec<ClifValue>> {
+    let mut lanes = Vec::with_capacity(4);
+    for lane in 0..4 {
+        lanes.push(clif_emit_simd_extract_lane(builder, value, kind, lane)?);
+    }
+    Ok(lanes)
+}
+
+fn clif_emit_simd_ctor_from_args(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    kind: &str,
+    args: &[ast::Expr],
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<ClifValue> {
+    let mut lanes = Vec::with_capacity(args.len());
+    for arg in args {
+        lanes.push(clif_emit_simd_lane_from_expr(
+            builder, ctx, arg, kind, locals, next_var,
+        )?);
+    }
+    clif_emit_simd_vector_from_lanes(builder, kind, &lanes)
+}
+
+fn clif_emit_simd_extract_lane(
+    builder: &mut FunctionBuilder,
+    value: ClifValue,
+    kind: &str,
+    lane: u8,
+) -> Result<ClifValue> {
+    let lane_ty = clif_simd_lane_type(kind)
+        .ok_or_else(|| anyhow!("unsupported cranelift simd lane type for `{kind}`"))?;
+    Ok(ClifValue {
+        value: builder.ins().extractlane(value.value, lane),
+        ty: lane_ty,
+    })
+}
+
+fn clif_emit_simd_mask_pred(
+    builder: &mut FunctionBuilder,
+    lane: ClifValue,
+) -> cranelift_codegen::ir::Value {
+    let zero = builder.ins().iconst(types::I32, 0);
+    builder.ins().icmp(IntCC::NotEqual, lane.value, zero)
+}
+
+fn clif_emit_simd_shuffle_lane(
+    builder: &mut FunctionBuilder,
+    selector: ClifValue,
+    candidates: &[ClifValue],
+) -> Result<ClifValue> {
+    if candidates.len() != 8 {
+        bail!(
+            "cranelift simd shuffle expected 8 lane candidates, found {}",
+            candidates.len()
+        );
+    }
+    let selector = cast_clif_value(builder, selector, types::I32)?;
+    let zero = builder.ins().iconst(types::I32, 0);
+    let eight = builder.ins().iconst(types::I32, 8);
+    let non_negative = builder
+        .ins()
+        .icmp(IntCC::SignedGreaterThanOrEqual, selector.value, zero);
+    let below_upper = builder.ins().icmp(IntCC::SignedLessThan, selector.value, eight);
+    let valid = builder.ins().band(non_negative, below_upper);
+    builder.ins().trapz(valid, TrapCode::unwrap_user(1));
+
+    let mut current = candidates[0].clone();
+    for (index, candidate) in candidates.iter().enumerate().skip(1) {
+        let lane_index = builder.ins().iconst(types::I32, index as i64);
+        let pick = builder
+            .ins()
+            .icmp(IntCC::Equal, selector.value, lane_index);
+        current = ClifValue {
+            value: builder.ins().select(pick, candidate.value, current.value),
+            ty: current.ty,
+        };
+    }
+    Ok(current)
+}
+
+fn clif_emit_simd_compare_lane(
+    builder: &mut FunctionBuilder,
+    kind: &str,
+    op: &str,
+    left: ClifValue,
+    right: ClifValue,
+) -> Result<ClifValue> {
+    let pred = match kind {
+        "f32x4" => {
+            let cc = match op {
+                "_eq" => FloatCC::Equal,
+                "_ne" => FloatCC::NotEqual,
+                "_lt" => FloatCC::LessThan,
+                "_le" => FloatCC::LessThanOrEqual,
+                "_gt" => FloatCC::GreaterThan,
+                "_ge" => FloatCC::GreaterThanOrEqual,
+                _ => bail!("unsupported cranelift simd comparison `{kind}{op}`"),
+            };
+            builder.ins().fcmp(cc, left.value, right.value)
+        }
+        "u32x4" => {
+            let cc = match op {
+                "_eq" => IntCC::Equal,
+                "_ne" => IntCC::NotEqual,
+                "_lt" => IntCC::UnsignedLessThan,
+                "_le" => IntCC::UnsignedLessThanOrEqual,
+                "_gt" => IntCC::UnsignedGreaterThan,
+                "_ge" => IntCC::UnsignedGreaterThanOrEqual,
+                _ => bail!("unsupported cranelift simd comparison `{kind}{op}`"),
+            };
+            builder.ins().icmp(cc, left.value, right.value)
+        }
+        _ => {
+            let cc = match op {
+                "_eq" => IntCC::Equal,
+                "_ne" => IntCC::NotEqual,
+                "_lt" => IntCC::SignedLessThan,
+                "_le" => IntCC::SignedLessThanOrEqual,
+                "_gt" => IntCC::SignedGreaterThan,
+                "_ge" => IntCC::SignedGreaterThanOrEqual,
+                _ => bail!("unsupported cranelift simd comparison `{kind}{op}`"),
+            };
+            builder.ins().icmp(cc, left.value, right.value)
+        }
+    };
+    Ok(ClifValue {
+        value: {
+            let true_lane = clif_simd_true_lane(builder);
+            let false_lane = clif_simd_false_lane(builder);
+            builder.ins().select(pred, true_lane, false_lane)
+        },
+        ty: types::I32,
+    })
+}
+
+fn clif_emit_simd_saturating_lane(
+    builder: &mut FunctionBuilder,
+    kind: &str,
+    op: &str,
+    left: ClifValue,
+    right: ClifValue,
+) -> Result<ClifValue> {
+    let lane_ty = types::I32;
+    match kind {
+        "i32x4" => {
+            let wide_left = builder.ins().sextend(types::I64, left.value);
+            let wide_right = builder.ins().sextend(types::I64, right.value);
+            let wide = if op == "_saturating_add" {
+                builder.ins().iadd(wide_left, wide_right)
+            } else {
+                builder.ins().isub(wide_left, wide_right)
+            };
+            let min_val = builder.ins().iconst(types::I64, i64::from(i32::MIN));
+            let max_val = builder.ins().iconst(types::I64, i64::from(i32::MAX));
+            let below = builder
+                .ins()
+                .icmp(IntCC::SignedLessThan, wide, min_val);
+            let above = builder
+                .ins()
+                .icmp(IntCC::SignedGreaterThan, wide, max_val);
+            let bounded_low = builder.ins().select(below, min_val, wide);
+            let bounded = builder.ins().select(above, max_val, bounded_low);
+            Ok(ClifValue {
+                value: builder.ins().ireduce(lane_ty, bounded),
+                ty: lane_ty,
+            })
+        }
+        "u32x4" => {
+            let wide_left = builder.ins().uextend(types::I64, left.value);
+            let wide_right = builder.ins().uextend(types::I64, right.value);
+            let max_val = builder.ins().iconst(types::I64, u32::MAX as i64);
+            let wide = if op == "_saturating_add" {
+                let sum = builder.ins().iadd(wide_left, wide_right);
+                let above = builder
+                    .ins()
+                    .icmp(IntCC::UnsignedGreaterThan, sum, max_val);
+                builder.ins().select(above, max_val, sum)
+            } else {
+                let underflow = builder
+                    .ins()
+                    .icmp(IntCC::UnsignedLessThan, wide_left, wide_right);
+                let diff = builder.ins().isub(wide_left, wide_right);
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.ins().select(underflow, zero, diff)
+            };
+            Ok(ClifValue {
+                value: builder.ins().ireduce(lane_ty, wide),
+                ty: lane_ty,
+            })
+        }
+        _ => bail!("unsupported cranelift simd saturating op `{kind}{op}`"),
+    }
+}
+
+fn clif_emit_simd_reduce_lanes(
+    builder: &mut FunctionBuilder,
+    kind: &str,
+    op: &str,
+    lanes: &[ClifValue],
+) -> Result<ClifValue> {
+    if lanes.is_empty() {
+        bail!("cannot reduce empty SIMD lane set for `{kind}{op}`");
+    }
+    let mut current = lanes[0].clone();
+    for lane in lanes.iter().skip(1) {
+        current = match (kind, op) {
+            ("f32x4", "_reduce_add") => ClifValue {
+                value: builder.ins().fadd(current.value, lane.value),
+                ty: types::F32,
+            },
+            ("f32x4", "_reduce_min") => ClifValue {
+                value: builder.ins().fmin(current.value, lane.value),
+                ty: types::F32,
+            },
+            ("f32x4", "_reduce_max") => ClifValue {
+                value: builder.ins().fmax(current.value, lane.value),
+                ty: types::F32,
+            },
+            ("u32x4", "_reduce_add") => ClifValue {
+                value: builder.ins().iadd(current.value, lane.value),
+                ty: types::I32,
+            },
+            ("u32x4", "_reduce_min") => ClifValue {
+                value: builder.ins().umin(current.value, lane.value),
+                ty: types::I32,
+            },
+            ("u32x4", "_reduce_max") => ClifValue {
+                value: builder.ins().umax(current.value, lane.value),
+                ty: types::I32,
+            },
+            (_, "_reduce_add") => ClifValue {
+                value: builder.ins().iadd(current.value, lane.value),
+                ty: types::I32,
+            },
+            (_, "_reduce_min") => ClifValue {
+                value: builder.ins().smin(current.value, lane.value),
+                ty: types::I32,
+            },
+            (_, "_reduce_max") => ClifValue {
+                value: builder.ins().smax(current.value, lane.value),
+                ty: types::I32,
+            },
+            _ => bail!("unsupported cranelift simd reduction `{kind}{op}`"),
+        };
+    }
+    Ok(current)
+}
+
+fn clif_emit_simd_intrinsic(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    kind: &str,
+    op: &str,
+    args: &[ast::Expr],
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<ClifValue> {
+    let vec_ty = clif_simd_vector_type(kind)
+        .ok_or_else(|| anyhow!("unsupported cranelift simd type family `{kind}`"))?;
+    let lane_ty = clif_simd_lane_type(kind)
+        .ok_or_else(|| anyhow!("unsupported cranelift simd lane family `{kind}`"))?;
+    match op {
+        "" => return clif_emit_simd_ctor_from_args(builder, ctx, kind, args, locals, next_var),
+        "_splat" => {
+            let lane = clif_emit_simd_lane_from_expr(
+                builder, ctx, &args[0], kind, locals, next_var,
+            )?;
+            return Ok(ClifValue {
+                value: builder.ins().splat(vec_ty, lane.value),
+                ty: vec_ty,
+            });
+        }
+        "_load" => {
+            if let ast::Expr::ArrayLiteral(items) = &args[0] {
+                return clif_emit_simd_ctor_from_args(
+                    builder, ctx, kind, items, locals, next_var,
+                );
+            }
+            if let ast::Expr::Ident(name) = &args[0] {
+                if let Some(binding) = ctx.array_bindings.get(name).cloned() {
+                    let mut lanes = Vec::with_capacity(binding.len.min(4));
+                    for index in 0..binding.len.min(4) {
+                        let ptr = builder.ins().stack_addr(
+                            pointer_sized_clif_type(),
+                            binding.stack_slot,
+                            (index as i32) * i32::from(binding.element_stride),
+                        );
+                        let loaded = builder.ins().load(binding.element_ty, MemFlags::new(), ptr, 0);
+                        let lane = if kind == "mask32x4" {
+                            let zero = builder.ins().iconst(binding.element_ty, 0);
+                            let pred = builder.ins().icmp(
+                                IntCC::NotEqual,
+                                loaded,
+                                zero,
+                            );
+                            let true_lane = clif_simd_true_lane(builder);
+                            let false_lane = clif_simd_false_lane(builder);
+                            ClifValue {
+                                value: builder.ins().select(pred, true_lane, false_lane),
+                                ty: types::I32,
+                            }
+                        } else {
+                            cast_clif_value(
+                                builder,
+                                ClifValue {
+                                    value: loaded,
+                                    ty: binding.element_ty,
+                                },
+                                lane_ty,
+                            )?
+                        };
+                        lanes.push(lane);
+                    }
+                    return clif_emit_simd_vector_from_lanes(builder, kind, &lanes);
+                }
+                if let Some(ast::Type::Array { elem, len }) = ctx.local_types.get(name) {
+                    if *len == 4 {
+                        if let Some(ptr_binding) = locals.get(name).copied() {
+                            let element_ty = ast_signature_type_to_clif_type(elem.as_ref())
+                                .ok_or_else(|| anyhow!("unsupported array element type for `{name}`"))?;
+                            let element_stride = if element_ty == types::I8 {
+                                1
+                            } else if element_ty == types::I16 {
+                                2
+                            } else {
+                                4
+                            };
+                            let base_ptr = builder.use_var(ptr_binding.var);
+                            let mut lanes = Vec::with_capacity(4);
+                            for index in 0..4 {
+                                let addr = if index == 0 {
+                                    base_ptr
+                                } else {
+                                    builder
+                                        .ins()
+                                        .iadd_imm(base_ptr, (index as i64) * i64::from(element_stride))
+                                };
+                                let loaded =
+                                    builder.ins().load(element_ty, MemFlags::new(), addr, 0);
+                                let lane = if kind == "mask32x4" {
+                                    let zero = builder.ins().iconst(element_ty, 0);
+                                    let pred =
+                                        builder.ins().icmp(IntCC::NotEqual, loaded, zero);
+                                    let true_lane = clif_simd_true_lane(builder);
+                                    let false_lane = clif_simd_false_lane(builder);
+                                    ClifValue {
+                                        value: builder.ins().select(pred, true_lane, false_lane),
+                                        ty: types::I32,
+                                    }
+                                } else {
+                                    cast_clif_value(
+                                        builder,
+                                        ClifValue {
+                                            value: loaded,
+                                            ty: element_ty,
+                                        },
+                                        lane_ty,
+                                    )?
+                                };
+                                lanes.push(lane);
+                            }
+                            return clif_emit_simd_vector_from_lanes(builder, kind, &lanes);
+                        }
+                    }
+                }
+            }
+            bail!("cranelift simd load currently requires fixed-array-backed values")
+        }
+        _ => {}
+    }
+
+    let vector_args = match op {
+        "_add" | "_sub" | "_mul" | "_min" | "_max" | "_and" | "_or" | "_xor"
+        | "_saturating_add" | "_saturating_sub" | "_eq" | "_ne" | "_lt" | "_le"
+        | "_gt" | "_ge" => 2,
+        "_select" => 3,
+        "_shuffle" => 2,
+        "_shl" | "_shr" | "_not" | "_as_u32x4" | "_as_i32x4" | "_bitcast_f32x4"
+        | "_bitcast_i32x4" | "_bitcast_u32x4" | "_reduce_add" | "_reduce_min"
+        | "_reduce_max" | "_any" | "_all" | "_none" | "_bitmask" | "_lane0"
+        | "_lane1" | "_lane2" | "_lane3" => 1,
+        _ => args.len(),
+    };
+    let mut lowered = Vec::with_capacity(vector_args);
+    for arg in args.iter().take(vector_args) {
+        lowered.push(clif_emit_expr(builder, ctx, arg, locals, next_var)?);
+    }
+
+    match op {
+        "_add" | "_sub" | "_mul" | "_min" | "_max" | "_and" | "_or" | "_xor" | "_not"
+        | "_shl" | "_shr" | "_eq" | "_ne" | "_lt" | "_le" | "_gt" | "_ge"
+        | "_select" | "_shuffle" | "_saturating_add" | "_saturating_sub"
+        | "_reduce_add" | "_reduce_min" | "_reduce_max" | "_any" | "_all" | "_none"
+        | "_bitmask" | "_lane0" | "_lane1" | "_lane2" | "_lane3" => {}
+        "_as_u32x4" | "_as_i32x4" => {
+            return Ok(ClifValue {
+                value: lowered[0].value,
+                ty: vec_ty,
+            });
+        }
+        "_bitcast_f32x4" | "_bitcast_i32x4" | "_bitcast_u32x4" => {
+            return Ok(ClifValue {
+                value: builder.ins().bitcast(vec_ty, MemFlags::new(), lowered[0].value),
+                ty: vec_ty,
+            });
+        }
+        _ => {
+            bail!("cranelift lowering does not support `simd.__{kind}{op}` yet");
+        }
+    }
+
+    if matches!(
+        op,
+        "_reduce_add"
+            | "_reduce_min"
+            | "_reduce_max"
+            | "_any"
+            | "_all"
+            | "_none"
+            | "_bitmask"
+            | "_lane0"
+            | "_lane1"
+            | "_lane2"
+            | "_lane3"
+    ) {
+        let lanes = clif_emit_simd_lanes(builder, lowered[0], kind)?;
+        return match op {
+            "_reduce_add" | "_reduce_min" | "_reduce_max" => {
+                clif_emit_simd_reduce_lanes(builder, kind, op, &lanes)
+            }
+            "_any" => {
+                let mut pred = clif_emit_simd_mask_pred(builder, lanes[0].clone());
+                for lane in lanes.iter().skip(1) {
+                    let lane_pred = clif_emit_simd_mask_pred(builder, lane.clone());
+                    pred = builder.ins().bor(pred, lane_pred);
+                }
+                Ok(bool_to_i8(builder, pred))
+            }
+            "_all" => {
+                let mut pred = clif_emit_simd_mask_pred(builder, lanes[0].clone());
+                for lane in lanes.iter().skip(1) {
+                    let lane_pred = clif_emit_simd_mask_pred(builder, lane.clone());
+                    pred = builder.ins().band(pred, lane_pred);
+                }
+                Ok(bool_to_i8(builder, pred))
+            }
+            "_none" => {
+                let mut pred = clif_emit_simd_mask_pred(builder, lanes[0].clone());
+                for lane in lanes.iter().skip(1) {
+                    let lane_pred = clif_emit_simd_mask_pred(builder, lane.clone());
+                    pred = builder.ins().bor(pred, lane_pred);
+                }
+                let zero = builder.ins().iconst(types::I8, 0);
+                let not_pred = builder.ins().icmp(IntCC::Equal, pred, zero);
+                Ok(bool_to_i8(builder, not_pred))
+            }
+            "_bitmask" => {
+                let mut mask = builder.ins().iconst(types::I32, 0);
+                for (index, lane) in lanes.iter().enumerate() {
+                    let lane_pred = clif_emit_simd_mask_pred(builder, lane.clone());
+                    let bit = bool_to_i8(builder, lane_pred);
+                    let wide = builder.ins().uextend(types::I32, bit.value);
+                    let shifted = if index == 0 {
+                        wide
+                    } else {
+                        builder.ins().ishl_imm(wide, index as i64)
+                    };
+                    mask = builder.ins().bor(mask, shifted);
+                }
+                Ok(ClifValue {
+                    value: mask,
+                    ty: types::I32,
+                })
+            }
+            "_lane0" | "_lane1" | "_lane2" | "_lane3" => {
+                let index = match op {
+                    "_lane0" => 0,
+                    "_lane1" => 1,
+                    "_lane2" => 2,
+                    _ => 3,
+                };
+                if kind == "mask32x4" {
+                    let pred = clif_emit_simd_mask_pred(builder, lanes[index].clone());
+                    Ok(bool_to_i8(builder, pred))
+                } else {
+                    Ok(lanes[index].clone())
+                }
+            }
+            _ => unreachable!(),
+        };
+    }
+
+    let lhs_lanes = clif_emit_simd_lanes(builder, lowered[0], kind)?;
+    let rhs_lanes = if lowered.len() > 1 {
+        Some(clif_emit_simd_lanes(builder, lowered[1], kind)?)
+    } else {
+        None
+    };
+    let shift_amount = if matches!(op, "_shl" | "_shr") {
+        let shift_expr = clif_emit_expr(builder, ctx, &args[1], locals, next_var)?;
+        Some(cast_clif_value(
+            builder,
+            shift_expr,
+            types::I32,
+        )?)
+    } else {
+        None
+    };
+    let select_then_lanes = if op == "_select" {
+        Some(clif_emit_simd_lanes(builder, lowered[1], kind)?)
+    } else {
+        None
+    };
+    let select_else_lanes = if op == "_select" {
+        Some(clif_emit_simd_lanes(builder, lowered[2], kind)?)
+    } else {
+        None
+    };
+    let shuffle_selectors = if op == "_shuffle" {
+        let mut selectors = Vec::with_capacity(4);
+        for lane_index in 0..4 {
+            let selector_expr =
+                clif_emit_expr(builder, ctx, &args[lane_index + 2], locals, next_var)?;
+            selectors.push(cast_clif_value(
+                builder,
+                selector_expr,
+                types::I32,
+            )?);
+        }
+        Some(selectors)
+    } else {
+        None
+    };
+    let mut out_lanes = Vec::with_capacity(4);
+    for lane_index in 0..4 {
+        let lhs_lane = lhs_lanes[lane_index].clone();
+        let lane = match op {
+            "_add" => match kind {
+                "f32x4" => ClifValue {
+                    value: builder.ins().fadd(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+                _ => ClifValue {
+                    value: builder.ins().iadd(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+            },
+            "_sub" => match kind {
+                "f32x4" => ClifValue {
+                    value: builder.ins().fsub(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+                _ => ClifValue {
+                    value: builder.ins().isub(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+            },
+            "_mul" => match kind {
+                "f32x4" => ClifValue {
+                    value: builder.ins().fmul(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+                _ => ClifValue {
+                    value: builder.ins().imul(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+            },
+            "_min" => match kind {
+                "f32x4" => ClifValue {
+                    value: builder.ins().fmin(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+                "u32x4" => ClifValue {
+                    value: builder.ins().umin(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+                _ => ClifValue {
+                    value: builder.ins().smin(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+            },
+            "_max" => match kind {
+                "f32x4" => ClifValue {
+                    value: builder.ins().fmax(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+                "u32x4" => ClifValue {
+                    value: builder.ins().umax(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+                _ => ClifValue {
+                    value: builder.ins().smax(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                    ty: lane_ty,
+                },
+            },
+            "_and" => ClifValue {
+                value: builder.ins().band(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                ty: lane_ty,
+            },
+            "_or" => ClifValue {
+                value: builder.ins().bor(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                ty: lane_ty,
+            },
+            "_xor" => ClifValue {
+                value: builder.ins().bxor(lhs_lane.value, rhs_lanes.as_ref().unwrap()[lane_index].value),
+                ty: lane_ty,
+            },
+            "_not" => ClifValue {
+                value: builder.ins().bnot(lhs_lane.value),
+                ty: lane_ty,
+            },
+            "_shl" => {
+                let amount = shift_amount
+                    .clone()
+                    .ok_or_else(|| anyhow!("missing cranelift simd shift amount"))?;
+                ClifValue {
+                    value: builder.ins().ishl(lhs_lane.value, amount.value),
+                    ty: lane_ty,
+                }
+            }
+            "_shr" => {
+                let amount = shift_amount
+                    .clone()
+                    .ok_or_else(|| anyhow!("missing cranelift simd shift amount"))?;
+                let value = if kind == "u32x4" {
+                    builder.ins().ushr(lhs_lane.value, amount.value)
+                } else {
+                    builder.ins().sshr(lhs_lane.value, amount.value)
+                };
+                ClifValue { value, ty: lane_ty }
+            }
+            "_eq" | "_ne" | "_lt" | "_le" | "_gt" | "_ge" => clif_emit_simd_compare_lane(
+                builder,
+                kind,
+                op,
+                lhs_lane,
+                rhs_lanes.as_ref().unwrap()[lane_index].clone(),
+            )?,
+            "_select" => {
+                let then_lanes = select_then_lanes
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing cranelift simd select then lanes"))?;
+                let else_lanes = select_else_lanes
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing cranelift simd select else lanes"))?;
+                let pred = clif_emit_simd_mask_pred(builder, lhs_lane);
+                ClifValue {
+                    value: builder
+                        .ins()
+                        .select(pred, then_lanes[lane_index].value, else_lanes[lane_index].value),
+                    ty: lane_ty,
+                }
+            }
+            "_shuffle" => {
+                let selector = shuffle_selectors
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("missing cranelift simd shuffle selectors"))?
+                    [lane_index]
+                    .clone();
+                let mut candidates = lhs_lanes.clone();
+                candidates.extend(rhs_lanes.as_ref().unwrap().iter().cloned());
+                clif_emit_simd_shuffle_lane(builder, selector, &candidates)?
+            }
+            "_saturating_add" | "_saturating_sub" => clif_emit_simd_saturating_lane(
+                builder,
+                kind,
+                op,
+                lhs_lane,
+                rhs_lanes.as_ref().unwrap()[lane_index].clone(),
+            )?,
+            _ => bail!("unsupported cranelift simd op `{kind}{op}`"),
+        };
+        out_lanes.push(lane);
+    }
+    let result_kind = if matches!(op, "_eq" | "_ne" | "_lt" | "_le" | "_gt" | "_ge") {
+        "mask32x4"
+    } else {
+        kind
+    };
+    clif_emit_simd_vector_from_lanes(builder, result_kind, &out_lanes)
+}
+
+fn clif_parse_simd_store_wrapper(callee: &str) -> Option<&'static str> {
+    match callee {
+        "simd.i32x4_store" => Some("i32x4"),
+        "simd.u32x4_store" => Some("u32x4"),
+        "simd.f32x4_store" => Some("f32x4"),
+        "simd.mask32x4_store" => Some("mask32x4"),
+        _ => None,
+    }
+}
+
+fn clif_materialize_simd_store_binding(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    name: &str,
+    kind: &str,
+    value_expr: &ast::Expr,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<()> {
+    let vector = clif_emit_expr(builder, ctx, value_expr, locals, next_var)?;
+    let lanes = clif_emit_simd_lanes(builder, vector, kind)?;
+    let (element_ty, element_bits, element_align, element_stride): (ClifType, u16, u8, u8) =
+        match kind {
+        "i32x4" | "u32x4" | "f32x4" => (clif_simd_lane_type(kind).unwrap_or(types::I32), 32, 4, 4),
+        "mask32x4" => (types::I8, 8, 1, 1),
+        _ => bail!("unsupported simd store wrapper `{kind}`"),
+    };
+    let slot_size = 4u32 * u32::from(element_stride);
+    let align_shift = element_align.trailing_zeros() as u8;
+    let stack_slot =
+        builder.create_sized_stack_slot(cranelift_codegen::ir::StackSlotData::new(
+            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+            slot_size,
+            align_shift,
+        ));
+    for (idx, lane) in lanes.into_iter().enumerate() {
+        let stored = if kind == "mask32x4" {
+            let pred = clif_emit_simd_mask_pred(builder, lane);
+            let one = builder.ins().iconst(types::I8, 1);
+            let zero = builder.ins().iconst(types::I8, 0);
+            ClifValue {
+                value: builder.ins().select(pred, one, zero),
+                ty: types::I8,
+            }
+        } else {
+            cast_clif_value(builder, lane, element_ty)?
+        };
+        let ptr = builder.ins().stack_addr(
+            pointer_sized_clif_type(),
+            stack_slot,
+            (idx as i32) * i32::from(element_stride),
+        );
+        builder.ins().store(MemFlags::new(), stored.value, ptr, 0);
+    }
+    ctx.array_bindings.insert(
+        name.to_string(),
+        ClifArrayBinding {
+            stack_slot,
+            len: 4,
+            element_ty,
+            element_bits,
+            element_align,
+            element_stride,
+        },
+    );
+    let ptr = builder
+        .ins()
+        .stack_addr(pointer_sized_clif_type(), stack_slot, 0);
+    clif_bind_local(
+        builder,
+        locals,
+        next_var,
+        name,
+        pointer_sized_clif_type(),
+        ptr,
+    );
+    ctx.aggregate_bindings.remove(name);
+    ctx.const_strings.remove(name);
+    ctx.closures.remove(name);
+    Ok(())
+}
+
+fn clif_emit_array_argument_pointer(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    arg: &ast::Expr,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<Option<ClifValue>> {
+    match arg {
+        ast::Expr::Ident(name) => {
+            if matches!(ctx.local_types.get(name), Some(ast::Type::Array { .. })) {
+                if let Some(binding) = locals.get(name).copied() {
+                    return Ok(Some(ClifValue {
+                        value: builder.use_var(binding.var),
+                        ty: binding.ty,
+                    }));
+                }
+            }
+            if let Some(binding) = ctx.array_bindings.get(name) {
+                return Ok(Some(ClifValue {
+                    value: builder
+                        .ins()
+                        .stack_addr(pointer_sized_clif_type(), binding.stack_slot, 0),
+                    ty: pointer_sized_clif_type(),
+                }));
+            }
+            Ok(None)
+        }
+        ast::Expr::ArrayLiteral(items) => {
+            let mut lowered_items = Vec::with_capacity(items.len());
+            for item in items {
+                lowered_items.push(clif_emit_expr(builder, ctx, item, locals, next_var)?);
+            }
+            let (element_ty, _element_bits, element_align, element_stride) =
+                clif_array_layout_from_values(&lowered_items);
+            let slot_size = (lowered_items.len() as u32) * u32::from(element_stride);
+            let align_shift = element_align.trailing_zeros() as u8;
+            let stack_slot = builder.create_sized_stack_slot(
+                cranelift_codegen::ir::StackSlotData::new(
+                    cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                    slot_size,
+                    align_shift,
+                ),
+            );
+            for (idx, mut item_val) in lowered_items.into_iter().enumerate() {
+                item_val = cast_clif_value(builder, item_val, element_ty)?;
+                let ptr = builder.ins().stack_addr(
+                    pointer_sized_clif_type(),
+                    stack_slot,
+                    (idx as i32) * i32::from(element_stride),
+                );
+                builder.ins().store(MemFlags::new(), item_val.value, ptr, 0);
+            }
+            Ok(Some(ClifValue {
+                value: builder
+                    .ins()
+                    .stack_addr(pointer_sized_clif_type(), stack_slot, 0),
+                ty: pointer_sized_clif_type(),
+            }))
+        }
+        ast::Expr::Call { callee, args } => {
+            if let Some(kind) = clif_parse_simd_store_wrapper(callee) {
+                if let Some(vector_expr) = args.first() {
+                    let vector = clif_emit_expr(builder, ctx, vector_expr, locals, next_var)?;
+                    let lanes = clif_emit_simd_lanes(builder, vector, kind)?;
+                    let (element_ty, element_align, element_stride): (ClifType, u8, u8) =
+                        match kind {
+                            "i32x4" | "u32x4" | "f32x4" => {
+                                (clif_simd_lane_type(kind).unwrap_or(types::I32), 4, 4)
+                            }
+                            "mask32x4" => (types::I8, 1, 1),
+                            _ => bail!("unsupported simd store wrapper `{kind}`"),
+                        };
+                    let stack_slot = builder.create_sized_stack_slot(
+                        cranelift_codegen::ir::StackSlotData::new(
+                            cranelift_codegen::ir::StackSlotKind::ExplicitSlot,
+                            4u32 * u32::from(element_stride),
+                            element_align.trailing_zeros() as u8,
+                        ),
+                    );
+                    for (idx, lane) in lanes.into_iter().enumerate() {
+                        let stored = if kind == "mask32x4" {
+                            let pred = clif_emit_simd_mask_pred(builder, lane);
+                            let one = builder.ins().iconst(types::I8, 1);
+                            let zero = builder.ins().iconst(types::I8, 0);
+                            ClifValue {
+                                value: builder.ins().select(pred, one, zero),
+                                ty: types::I8,
+                            }
+                        } else {
+                            cast_clif_value(builder, lane, element_ty)?
+                        };
+                        let ptr = builder.ins().stack_addr(
+                            pointer_sized_clif_type(),
+                            stack_slot,
+                            (idx as i32) * i32::from(element_stride),
+                        );
+                        builder.ins().store(MemFlags::new(), stored.value, ptr, 0);
+                    }
+                    return Ok(Some(ClifValue {
+                        value: builder
+                            .ins()
+                            .stack_addr(pointer_sized_clif_type(), stack_slot, 0),
+                        ty: pointer_sized_clif_type(),
+                    }));
+                }
+            }
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
 }
 
 fn clif_emit_aggregate_handle(
@@ -1111,6 +2102,16 @@ pub(super) fn clif_emit_linear_stmts(
                     ctx.array_bindings.remove(name);
                     ctx.aggregate_bindings.remove(name);
                 }
+                if let ast::Expr::Call { callee, args } = value {
+                    if let Some(kind) = clif_parse_simd_store_wrapper(callee) {
+                        if let Some(vector_expr) = args.first() {
+                            clif_materialize_simd_store_binding(
+                                builder, ctx, name, kind, vector_expr, locals, next_var,
+                            )?;
+                            continue;
+                        }
+                    }
+                }
                 if let ast::Expr::ArrayLiteral(items) = value {
                     let mut lowered_items = Vec::with_capacity(items.len());
                     for item in items {
@@ -1146,6 +2147,17 @@ pub(super) fn clif_emit_linear_stmts(
                             element_stride,
                         },
                     );
+                    let ptr = builder
+                        .ins()
+                        .stack_addr(pointer_sized_clif_type(), stack_slot, 0);
+                    clif_bind_local(
+                        builder,
+                        locals,
+                        next_var,
+                        name,
+                        pointer_sized_clif_type(),
+                        ptr,
+                    );
                     ctx.aggregate_bindings.remove(name);
                     continue;
                 }
@@ -1158,6 +2170,9 @@ pub(super) fn clif_emit_linear_stmts(
                     }
                     if let Some(source_bindings) = ctx.array_bindings.get(source).cloned() {
                         ctx.array_bindings.insert(name.clone(), source_bindings);
+                        if let Some(binding) = locals.get(source).copied() {
+                            locals.insert(name.clone(), binding);
+                        }
                         continue;
                     }
                 }
@@ -1312,6 +2327,16 @@ pub(super) fn clif_emit_linear_stmts(
                     ctx.array_bindings.remove(target);
                     ctx.aggregate_bindings.remove(target);
                 }
+                if let ast::Expr::Call { callee, args } = value {
+                    if let Some(kind) = clif_parse_simd_store_wrapper(callee) {
+                        if let Some(vector_expr) = args.first() {
+                            clif_materialize_simd_store_binding(
+                                builder, ctx, target, kind, vector_expr, locals, next_var,
+                            )?;
+                            continue;
+                        }
+                    }
+                }
                 if let ast::Expr::Closure {
                     params,
                     return_type,
@@ -1365,6 +2390,17 @@ pub(super) fn clif_emit_linear_stmts(
                             element_stride,
                         },
                     );
+                    let ptr = builder
+                        .ins()
+                        .stack_addr(pointer_sized_clif_type(), stack_slot, 0);
+                    clif_bind_local(
+                        builder,
+                        locals,
+                        next_var,
+                        target,
+                        pointer_sized_clif_type(),
+                        ptr,
+                    );
                     ctx.aggregate_bindings.remove(target);
                     continue;
                 }
@@ -1377,6 +2413,9 @@ pub(super) fn clif_emit_linear_stmts(
                     }
                     if let Some(source_bindings) = ctx.array_bindings.get(source).cloned() {
                         ctx.array_bindings.insert(target.clone(), source_bindings);
+                        if let Some(binding) = locals.get(source).copied() {
+                            locals.insert(target.clone(), binding);
+                        }
                         continue;
                     }
                 }
@@ -2310,9 +3349,9 @@ pub(super) fn clif_emit_expr(
                     });
                 }
             }
-            if callee.starts_with("simd.__") {
-                bail!(
-                    "cranelift lowering does not support `{callee}`; compile with `--backend llvm`"
+            if let Some((kind, op)) = clif_parse_simd_intrinsic(callee) {
+                return clif_emit_simd_intrinsic(
+                    builder, ctx, kind, op, args, locals, next_var,
                 );
             }
             if callee == "str.concat" && args.len() >= 2 {
@@ -2364,8 +3403,19 @@ pub(super) fn clif_emit_expr(
                     anyhow!("missing native function signature metadata for `{callee}`")
                 })?;
                 for (index, arg) in args.iter().enumerate() {
-                    let mut lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
-                    if let Some(target) = signature.params.get(index).copied() {
+                    let target = signature.params.get(index).copied();
+                    let mut lowered = if target == Some(pointer_sized_clif_type()) {
+                        if let Some(array_ptr) =
+                            clif_emit_array_argument_pointer(builder, ctx, arg, locals, next_var)?
+                        {
+                            array_ptr
+                        } else {
+                            clif_emit_expr(builder, ctx, arg, locals, next_var)?
+                        }
+                    } else {
+                        clif_emit_expr(builder, ctx, arg, locals, next_var)?
+                    };
+                    if let Some(target) = target {
                         lowered = cast_clif_value(builder, lowered, target)?;
                     }
                     values.push(lowered.value);
@@ -2462,12 +3512,19 @@ pub(super) fn ast_signature_type_to_clif_type(ty: &ast::Type) -> Option<ClifType
         | ast::Type::Decimal
         | ast::Type::DateTimeTz
         | ast::Type::ExitStatus
-        | ast::Type::SimdVector(_)
-        | ast::Type::SimdMask(_)
         | ast::Type::Tuple(_)
         | ast::Type::Function { .. }
         | ast::Type::Named { .. }
         | ast::Type::TypeVar(_) => Some(pointer_sized_clif_type()),
+        ast::Type::SimdVector(shape) => match (shape.element, shape.lanes) {
+            (ast::SimdElement::I32, 4) | (ast::SimdElement::U32, 4) => Some(types::I32X4),
+            (ast::SimdElement::F32, 4) => Some(types::F32X4),
+            _ => None,
+        },
+        ast::Type::SimdMask(shape) => match (shape.lane_bits, shape.lanes) {
+            (32, 4) => Some(types::I32X4),
+            _ => None,
+        },
     }
 }
 
@@ -2505,6 +3562,13 @@ pub(super) fn zero_for_type(
 ) -> cranelift_codegen::ir::Value {
     if ty.is_int() {
         builder.ins().iconst(ty, 0)
+    } else if ty.is_vector() {
+        let scalar = if ty.lane_type() == types::F32 {
+            builder.ins().f32const(0.0)
+        } else {
+            builder.ins().iconst(ty.lane_type(), 0)
+        };
+        builder.ins().splat(ty, scalar)
     } else if ty == types::F32 {
         builder.ins().f32const(0.0)
     } else if ty == types::F64 {
@@ -2625,6 +3689,12 @@ pub(super) fn cast_clif_value(
         return Ok(ClifValue {
             value: builder.ins().fdemote(types::F32, value.value),
             ty: types::F32,
+        });
+    }
+    if value.ty.is_vector() && target.is_vector() && value.ty.bytes() == target.bytes() {
+        return Ok(ClifValue {
+            value: builder.ins().bitcast(target, MemFlags::new(), value.value),
+            ty: target,
         });
     }
     bail!(
