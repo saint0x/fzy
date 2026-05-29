@@ -4561,9 +4561,22 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
         )
     })?;
     let mut markdown = String::from("# Unsafe Inventory\n\n");
+    let entry_count = payload["entries"].as_array().map(|v| v.len()).unwrap_or(0);
+    let compiler_satisfied = missing_contract_count == 0
+        && invalid_proof_ref_count == 0
+        && unsafe_context_violations == 0;
+    if compiler_satisfied {
+        markdown.push_str(
+            "Compiler status: unsafe-policy checks passed. The current unsafe inventory is accepted by the compiler, but unsafe remains review-worthy and is not itself a proof of semantic safety or correctness.\n\n",
+        );
+    } else {
+        markdown.push_str(
+            "Compiler status: unsafe-policy checks require attention. The compiler found contract, proof, or unsafe-context issues in the current unsafe inventory.\n\n",
+        );
+    }
     markdown.push_str(&format!(
         "- Entries: {}\n- Contract gaps: {}\n- Invalid proof refs: {}\n- Unsafe context violations: {}\n\n",
-        payload["entries"].as_array().map(|v| v.len()).unwrap_or(0),
+        entry_count,
         missing_contract_count,
         invalid_proof_ref_count,
         unsafe_context_violations

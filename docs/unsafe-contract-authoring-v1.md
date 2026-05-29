@@ -61,6 +61,9 @@ Default policy:
 - Generated contracts are enforced by profile policy from `fozzy.toml`.
 - Production verify/check output still emits a warning when unsafe exists.
 - Compiler-generated contracts are structural audit artifacts by default, not independently validated safety proofs.
+- When compiler-generated contracts and policy checks pass, the compiler should say that explicitly:
+  compiler unsafe-policy checks passed, the current unsafe inventory is accepted by the compiler,
+  and remaining caution is about human review and semantic correctness rather than an unsatisfied compiler rule.
 - When compiler-generated contracts and policy checks pass, that warning is informational:
   unsafe is present, review-worthy, and explicitly acknowledged, but it is not failing current policy.
 - When contract fields, invariants, async constraints, or unsafe-context rules do not check out,

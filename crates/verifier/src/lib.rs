@@ -347,7 +347,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 )
             } else if !policy.safe_profile && unsafe_attention_sites == 0 {
                 format!(
-                    "detected {} explicit unsafe escape marker(s); structural unsafe contract metadata is present, but independently reasoned evidence is still required for {} site(s)",
+                    "detected {} explicit unsafe escape marker(s); compiler unsafe-policy checks passed, and structural unsafe contract metadata is present for all sites; independently reasoned evidence is still required for {} compiler-generated site(s)",
                     unsafe_sites, placeholder_generated_sites
                 )
             } else if !policy.safe_profile {
@@ -363,7 +363,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             } else if unsafe_attention_sites == 0 && placeholder_generated_sites == 0 {
                 "warning is informational: unsafe exists and remains review-worthy, but the current compiler checks did not detect contract-policy defects".to_string()
             } else if unsafe_attention_sites == 0 {
-                "warning is informational: compiler-generated unsafe contracts currently count as structural audit records, not independently validated safety evidence".to_string()
+                "warning is informational: the compiler is satisfied with the current unsafe-policy checks, but compiler-generated unsafe contracts still count only as structural audit records, not independently validated safety or correctness evidence".to_string()
             } else {
                 "unsafe escapes exist and at least one contract or policy check still needs attention; review the accompanying unsafe diagnostics".to_string()
             }),
@@ -2558,12 +2558,12 @@ mod tests {
             },
         );
         assert!(report.diagnostics.iter().any(|d| d.message.contains(
-            "structural unsafe contract metadata is present, but independently reasoned evidence is still required"
+            "compiler unsafe-policy checks passed, and structural unsafe contract metadata is present for all sites"
         )));
         assert!(report.diagnostics.iter().any(|d| d
             .help
             .as_deref()
-            .is_some_and(|help| help.contains("structural audit records"))));
+            .is_some_and(|help| help.contains("the compiler is satisfied with the current unsafe-policy checks"))));
         assert!(report.is_clean());
     }
 
@@ -2624,12 +2624,12 @@ mod tests {
             },
         );
         assert!(report.diagnostics.iter().any(|d| d.message.contains(
-            "structural unsafe contract metadata is present, but independently reasoned evidence is still required"
+            "compiler unsafe-policy checks passed, and structural unsafe contract metadata is present for all sites"
         )));
         assert!(report.diagnostics.iter().any(|d| d
             .help
             .as_deref()
-            .is_some_and(|help| help.contains("structural audit records"))));
+            .is_some_and(|help| help.contains("the compiler is satisfied with the current unsafe-policy checks"))));
         assert!(!report.diagnostics.iter().any(|d| {
             d.message.contains(
                 "detected 1 explicit unsafe escape marker(s); compiler contract checks passed",
