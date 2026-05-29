@@ -12,7 +12,14 @@ fn log_latency_bucket() -> i32 {
     let h = fs.open() discard h log.info("telemetry.latency", fields2("component", "telemetry", "phase", "latency")) time.now() fs.write() return 0
 }
 fn log_perf_snapshot() -> i32 {
-    let h = fs.open() discard h let child = proc.spawn("echo telemetry-perf") discard proc.exec_timeout(child) log.info("telemetry.perf", fields2("component", "telemetry", "phase", "perf")) time.now() return 0
+    let h = fs.open()
+    discard h
+    let child = proc.spawn("echo telemetry-perf")
+    defer proc.close(child)
+    discard proc.exec_timeout(child)
+    log.info("telemetry.perf", fields2("component", "telemetry", "phase", "perf"))
+    time.now()
+    return 0
 }
 fn flush_runtime_stats() -> i32 {
     let h = fs.open() discard h log.info("telemetry.flush", fields2("component", "telemetry", "phase", "flush")) fs.write() fs.flush() fs.fsync() return 0

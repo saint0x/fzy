@@ -1,5 +1,5 @@
-pubext c fn cli_hash32(ptr_borrowed: *u8, len: usize) -> u32;
-pubext c fn cli_write(fd: i32, ptr_borrowed: *u8, len: usize) -> i32;
+ext unsafe c fn cli_hash32(ptr_borrowed: *u8, len: usize) -> u32;
+ext unsafe c fn cli_write(fd: i32, ptr_borrowed: *u8, len: usize) -> i32;
 fn touch() -> i32 {
     return 0
 }
