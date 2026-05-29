@@ -313,6 +313,10 @@ static const char* fz_lookup_string(int32_t id) {
   return value == NULL ? "" : value;
 }
 
+const uint8_t* fz_native_str_ptr(int32_t value_id) {
+  return (const uint8_t*)fz_lookup_string(value_id);
+}
+
 static int32_t fz_intern_owned(char* owned) {
   if (owned == NULL) {
     return 0;

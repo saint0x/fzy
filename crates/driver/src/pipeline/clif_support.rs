@@ -1,5 +1,5 @@
 use super::*;
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use std::collections::{BTreeMap, HashMap};
 
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
@@ -522,6 +522,56 @@ fn clif_cast_i64_to_ty(
         },
         target_ty,
     )
+}
+
+fn clif_expr_is_fzy_str(expr: &ast::Expr, ctx: &ClifLoweringCtx<'_>) -> bool {
+    match expr {
+        ast::Expr::Str(_) => true,
+        ast::Expr::Ident(name) => matches!(ctx.local_types.get(name), Some(ast::Type::Str)),
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
+            clif_expr_is_fzy_str(inner, ctx)
+        }
+        _ => false,
+    }
+}
+
+fn clif_is_extern_c_borrowed_ptr_param(sig: &ClifFunctionSignature, index: usize) -> bool {
+    sig.is_extern_c_import
+        && sig
+            .param_names
+            .get(index)
+            .is_some_and(|name| name.contains("_borrowed"))
+        && sig
+            .params
+            .get(index)
+            .is_some_and(|ty| *ty == pointer_sized_clif_type())
+}
+
+fn clif_emit_borrowed_str_ptr_arg(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    arg: &ast::Expr,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<ClifValue> {
+    let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+    let string_id = cast_clif_value(builder, lowered, types::I32)?;
+    let function_id = ctx
+        .function_ids
+        .get(NATIVE_STR_PTR)
+        .copied()
+        .ok_or_else(|| anyhow!("missing native helper signature metadata for `{NATIVE_STR_PTR}`"))?;
+    let signature = ctx
+        .function_signatures
+        .get(NATIVE_STR_PTR)
+        .ok_or_else(|| anyhow!("missing native helper signature metadata for `{NATIVE_STR_PTR}`"))?;
+    let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
+    let call = builder.ins().call(func_ref, &[string_id.value]);
+    let value = builder.inst_results(call)[0];
+    Ok(ClifValue {
+        value,
+        ty: signature.ret.unwrap_or(pointer_sized_clif_type()),
+    })
 }
 
 fn clif_parse_simd_intrinsic(callee: &str) -> Option<(&str, &str)> {
@@ -3873,7 +3923,11 @@ pub(super) fn clif_emit_expr(
                     values.push(result_ptr);
                     for (index, arg) in args.iter().enumerate() {
                         let target = signature.params.get(index + 1).copied();
-                        let mut lowered = if target == Some(pointer_sized_clif_type()) {
+                        let mut lowered = if clif_is_extern_c_borrowed_ptr_param(signature, index)
+                            && clif_expr_is_fzy_str(arg, ctx)
+                        {
+                            clif_emit_borrowed_str_ptr_arg(builder, ctx, arg, locals, next_var)?
+                        } else if target == Some(pointer_sized_clif_type()) {
                             if let Some(array_ptr) =
                                 clif_emit_array_argument_pointer(builder, ctx, arg, locals, next_var)?
                             {
@@ -3898,7 +3952,11 @@ pub(super) fn clif_emit_expr(
                 }
                 for (index, arg) in args.iter().enumerate() {
                     let target = signature.params.get(index).copied();
-                    let mut lowered = if target == Some(pointer_sized_clif_type()) {
+                    let mut lowered = if clif_is_extern_c_borrowed_ptr_param(signature, index)
+                        && clif_expr_is_fzy_str(arg, ctx)
+                    {
+                        clif_emit_borrowed_str_ptr_arg(builder, ctx, arg, locals, next_var)?
+                    } else if target == Some(pointer_sized_clif_type()) {
                         if let Some(array_ptr) =
                             clif_emit_array_argument_pointer(builder, ctx, arg, locals, next_var)?
                         {

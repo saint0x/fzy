@@ -12699,6 +12699,117 @@ mod tests {
     }
 
     #[test]
+    fn build_lib_host_callback_can_read_borrowed_string_payload_bytes() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-ffi-borrowed-payload-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("src dir should be created");
+        let input_path = root.join("control.input.json");
+        let echoed_path = root.join("control.echo.json");
+        let payload = "{\"status\":\"ok\",\"control_plane\":\"fzy\"}";
+        std::fs::write(&input_path, payload).expect("input payload should be written");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            format!(
+                "[package]\nname=\"ffi_borrowed_payload\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"ffi_borrowed_payload\"\npath=\"src/main.fzy\"\n\n[ffi]\npanic_boundary=\"error\"\n\n[unsafe]\ncontracts=\"compiler\"\nenforce_verify=true\nenforce_release=true\n"
+            ),
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            format!(
+                "use core.fs;\n\next unsafe c fn host_touch(buf_borrowed: *u8, len: usize) -> i32;\n\n#[ffi_panic(error)]\npubext c fn dispatch() -> i32 {{\n    let raw = fs.read_file(\"{}\")\n    unsafe {{\n        return host_touch(raw, str.len(raw))\n    }}\n}}\n",
+                input_path.display()
+            ),
+        )
+        .expect("source should be written");
+
+        for backend in ["llvm", "cranelift"] {
+            let output = run(
+                Command::Build {
+                    path: root.clone(),
+                    release: false,
+                    lib: true,
+                    threads: None,
+                    backend: Some(backend.to_string()),
+                    pgo_generate: false,
+                    pgo_use: None,
+                    link_libs: Vec::new(),
+                    link_search: Vec::new(),
+                    frameworks: Vec::new(),
+                },
+                Format::Json,
+            )
+            .expect("build --lib should succeed");
+            let payload_json: serde_json::Value =
+                serde_json::from_str(&output).expect("build output should be valid json");
+            let shared_lib = PathBuf::from(
+                payload_json["sharedLib"]
+                    .as_str()
+                    .expect("sharedLib should be present"),
+            );
+            let header_path = PathBuf::from(
+                payload_json["header"]
+                    .as_str()
+                    .expect("header should be present"),
+            );
+            let include_dir = header_path
+                .parent()
+                .expect("header should have parent directory");
+            let probe_source = root.join(format!("probe-{backend}.c"));
+            let probe_binary = root.join(format!("probe-{backend}"));
+            std::fs::write(
+                &probe_source,
+                format!(
+                    "#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include \"ffi_borrowed_payload.h\"\n\nstatic uint8_t captured[256];\nstatic size_t captured_len = 0;\n\nint32_t host_touch(const uint8_t* ptr, size_t len) {{\n  if (ptr == NULL) return 91;\n  if (len > sizeof(captured)) return 92;\n  memcpy(captured, ptr, len);\n  captured_len = len;\n  FILE* f = fopen(\"{}\", \"wb\");\n  if (f == NULL) return 93;\n  if (len > 0) fwrite(ptr, 1, len, f);\n  fclose(f);\n  return 0;\n}}\n\nint main(void) {{\n  if (fz_host_init() != 0) return 101;\n  int32_t rc = dispatch();\n  int32_t shutdown_rc = fz_host_shutdown();\n  int32_t cleanup_rc = fz_host_cleanup();\n  const char* expected = \"{}\";\n  size_t expected_len = strlen(expected);\n  if (rc != 0) return rc;\n  if (shutdown_rc != 0) return 102;\n  if (cleanup_rc != 0) return 103;\n  if (captured_len != expected_len) return 104;\n  if (memcmp(captured, expected, expected_len) != 0) return 105;\n  return 0;\n}}\n",
+                    echoed_path.display(),
+                    payload.replace('\\', "\\\\").replace('\"', "\\\"")
+                ),
+            )
+            .expect("probe source should be written");
+            let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());
+            let rpath_flag = format!(
+                "-Wl,-rpath,{}",
+                shared_lib
+                    .parent()
+                    .expect("shared lib should have parent")
+                    .display()
+            );
+            let status = ProcessCommand::new(&cc)
+                .arg(&probe_source)
+                .arg(&shared_lib)
+                .arg("-I")
+                .arg(include_dir)
+                .arg(&rpath_flag)
+                .arg("-o")
+                .arg(&probe_binary)
+                .status()
+                .expect("C probe should compile");
+            assert!(
+                status.success(),
+                "C probe compile should succeed for backend {backend}"
+            );
+            let status = ProcessCommand::new(&probe_binary)
+                .status()
+                .expect("C probe should execute");
+            assert_eq!(
+                status.code(),
+                Some(0),
+                "C probe should observe borrowed payload bytes for backend {backend}"
+            );
+            let echoed = std::fs::read_to_string(&echoed_path).expect("echoed payload should exist");
+            assert_eq!(echoed, payload);
+            let _ = std::fs::remove_file(&probe_source);
+            let _ = std::fs::remove_file(&probe_binary);
+            let _ = std::fs::remove_file(&echoed_path);
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn portable_simd_surface_runs_via_fz_run_with_llvm_backend() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

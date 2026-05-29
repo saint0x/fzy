@@ -860,6 +860,8 @@ pub(super) fn declare_native_runtime_imports(
                 params,
                 ret,
                 sret: None,
+                param_names: Vec::new(),
+                is_extern_c_import: false,
             },
         );
     }
@@ -889,6 +891,12 @@ pub(super) fn declare_native_runtime_imports(
             vec![types::I64],
             Some(types::I32),
         ),
+        (
+            NATIVE_STR_PTR,
+            NATIVE_STR_PTR_SYMBOL,
+            vec![types::I32],
+            Some(pointer_sized_clif_type()),
+        ),
     ];
     for (callee, symbol, params, ret) in internal_helpers {
         if function_ids.contains_key(callee) {
@@ -913,6 +921,8 @@ pub(super) fn declare_native_runtime_imports(
                 params,
                 ret,
                 sret: None,
+                param_names: Vec::new(),
+                is_extern_c_import: false,
             },
         );
     }
@@ -949,6 +959,8 @@ pub(super) fn declare_native_data_plane_imports(
                 params: (0..import.arity).map(|_| types::I32).collect(),
                 ret: Some(types::I32),
                 sret: None,
+                param_names: Vec::new(),
+                is_extern_c_import: false,
             },
         );
     }

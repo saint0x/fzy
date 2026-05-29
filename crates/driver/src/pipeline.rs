@@ -76,6 +76,8 @@ struct ClifFunctionSignature {
     params: Vec<ClifType>,
     ret: Option<ClifType>,
     sret: Option<ClifArrayAbi>,
+    param_names: Vec<String>,
+    is_extern_c_import: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -115,10 +117,12 @@ const NATIVE_AGG_NEW: &str = "__fz_native_agg_new";
 const NATIVE_AGG_SET_I64: &str = "__fz_native_agg_set_i64";
 const NATIVE_AGG_GET_I64: &str = "__fz_native_agg_get_i64";
 const NATIVE_AGG_TAG: &str = "__fz_native_agg_tag";
+const NATIVE_STR_PTR: &str = "__fz_native_str_ptr";
 const NATIVE_AGG_NEW_SYMBOL: &str = "fz_native_agg_new";
 const NATIVE_AGG_SET_I64_SYMBOL: &str = "fz_native_agg_set_i64";
 const NATIVE_AGG_GET_I64_SYMBOL: &str = "fz_native_agg_get_i64";
 const NATIVE_AGG_TAG_SYMBOL: &str = "fz_native_agg_tag";
+const NATIVE_STR_PTR_SYMBOL: &str = "fz_native_str_ptr";
 
 #[derive(Debug, Clone)]
 pub struct BuildArtifact {
@@ -5627,7 +5631,18 @@ fn collect_native_data_ops_from_expr(
                 collect_native_data_ops_from_expr(arg, array_lengths, const_strings, out);
             }
         }
-        ast::Expr::UnsafeBlock { .. } => {}
+        ast::Expr::UnsafeBlock { body, .. } => {
+            let mut nested_array_lengths = array_lengths.clone();
+            let mut nested_const_strings = const_strings.clone();
+            for stmt in body {
+                collect_native_data_ops_from_stmt(
+                    stmt,
+                    &mut nested_array_lengths,
+                    &mut nested_const_strings,
+                    out,
+                );
+            }
+        }
         ast::Expr::Index { base, index } => {
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(len) = array_lengths.get(name) {
@@ -5708,133 +5723,128 @@ fn collect_native_data_ops_from_expr(
     }
 }
 
+fn collect_native_data_ops_from_stmt(
+    stmt: &ast::Stmt,
+    array_lengths: &mut HashMap<String, usize>,
+    const_strings: &mut HashMap<String, String>,
+    out: &mut Vec<NativeDataOp>,
+) {
+    match stmt {
+        ast::Stmt::Let {
+            name,
+            value,
+            mutable: _,
+            ..
+        } => {
+            match value {
+                ast::Expr::ArrayLiteral(items) => {
+                    let (bits, align, stride) = infer_array_element_layout(items);
+                    array_lengths.insert(name.clone(), items.len());
+                    out.push(NativeDataOp {
+                        kind: NativeDataOpKind::ArrayLiteral {
+                            binding: name.clone(),
+                            len: items.len(),
+                            element_bits: bits,
+                            element_align: align,
+                            element_stride: stride,
+                            memory: NativeMemoryClass::Stack,
+                            alias: NativeAliasClass::LocalNoEscape,
+                        },
+                        effect_boundary: NativeEffectBoundary::Local,
+                    });
+                }
+                ast::Expr::Str(value) => {
+                    const_strings.insert(name.clone(), value.clone());
+                }
+                _ => {
+                    const_strings.remove(name);
+                }
+            }
+            collect_native_data_ops_from_expr(value, array_lengths, const_strings, out);
+        }
+        ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => {
+            collect_native_data_ops_from_expr(value, array_lengths, const_strings, out)
+        }
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_native_data_ops_from_expr(value, array_lengths, const_strings, out);
+            }
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_native_data_ops_from_expr(condition, array_lengths, const_strings, out);
+            for stmt in then_body {
+                collect_native_data_ops_from_stmt(stmt, array_lengths, const_strings, out);
+            }
+            for stmt in else_body {
+                collect_native_data_ops_from_stmt(stmt, array_lengths, const_strings, out);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_native_data_ops_from_expr(condition, array_lengths, const_strings, out);
+            for stmt in body {
+                collect_native_data_ops_from_stmt(stmt, array_lengths, const_strings, out);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_native_data_ops_from_stmt(init, array_lengths, const_strings, out);
+            }
+            if let Some(condition) = condition {
+                collect_native_data_ops_from_expr(condition, array_lengths, const_strings, out);
+            }
+            if let Some(step) = step {
+                collect_native_data_ops_from_stmt(step, array_lengths, const_strings, out);
+            }
+            for stmt in body {
+                collect_native_data_ops_from_stmt(stmt, array_lengths, const_strings, out);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_native_data_ops_from_expr(iterable, array_lengths, const_strings, out);
+            for stmt in body {
+                collect_native_data_ops_from_stmt(stmt, array_lengths, const_strings, out);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for stmt in body {
+                collect_native_data_ops_from_stmt(stmt, array_lengths, const_strings, out);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_native_data_ops_from_expr(scrutinee, array_lengths, const_strings, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_native_data_ops_from_expr(guard, array_lengths, const_strings, out);
+                }
+                collect_native_data_ops_from_expr(&arm.value, array_lengths, const_strings, out);
+            }
+        }
+        ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+    }
+}
+
 fn collect_native_data_ops_for_function(function: &hir::TypedFunction) -> Vec<NativeDataOp> {
     let mut out = Vec::new();
     let mut array_lengths = HashMap::<String, usize>::new();
     let mut const_strings = HashMap::<String, String>::new();
 
-    fn walk_stmt(
-        stmt: &ast::Stmt,
-        array_lengths: &mut HashMap<String, usize>,
-        const_strings: &mut HashMap<String, String>,
-        out: &mut Vec<NativeDataOp>,
-    ) {
-        match stmt {
-            ast::Stmt::Let {
-                name,
-                value,
-                mutable: _,
-                ..
-            } => {
-                match value {
-                    ast::Expr::ArrayLiteral(items) => {
-                        let (bits, align, stride) = infer_array_element_layout(items);
-                        array_lengths.insert(name.clone(), items.len());
-                        out.push(NativeDataOp {
-                            kind: NativeDataOpKind::ArrayLiteral {
-                                binding: name.clone(),
-                                len: items.len(),
-                                element_bits: bits,
-                                element_align: align,
-                                element_stride: stride,
-                                memory: NativeMemoryClass::Stack,
-                                alias: NativeAliasClass::LocalNoEscape,
-                            },
-                            effect_boundary: NativeEffectBoundary::Local,
-                        });
-                    }
-                    ast::Expr::Str(value) => {
-                        const_strings.insert(name.clone(), value.clone());
-                    }
-                    _ => {
-                        const_strings.remove(name);
-                    }
-                }
-                collect_native_data_ops_from_expr(value, array_lengths, const_strings, out);
-            }
-            ast::Stmt::LetPattern { value, .. }
-            | ast::Stmt::Assign { value, .. }
-            | ast::Stmt::CompoundAssign { value, .. }
-            | ast::Stmt::Defer(value)
-            | ast::Stmt::Requires(value)
-            | ast::Stmt::Ensures(value)
-            | ast::Stmt::Expr(value) => {
-                collect_native_data_ops_from_expr(value, array_lengths, const_strings, out)
-            }
-            ast::Stmt::Return(value) => {
-                if let Some(value) = value {
-                    collect_native_data_ops_from_expr(value, array_lengths, const_strings, out);
-                }
-            }
-            ast::Stmt::If {
-                condition,
-                then_body,
-                else_body,
-            } => {
-                collect_native_data_ops_from_expr(condition, array_lengths, const_strings, out);
-                for stmt in then_body {
-                    walk_stmt(stmt, array_lengths, const_strings, out);
-                }
-                for stmt in else_body {
-                    walk_stmt(stmt, array_lengths, const_strings, out);
-                }
-            }
-            ast::Stmt::While { condition, body } => {
-                collect_native_data_ops_from_expr(condition, array_lengths, const_strings, out);
-                for stmt in body {
-                    walk_stmt(stmt, array_lengths, const_strings, out);
-                }
-            }
-            ast::Stmt::For {
-                init,
-                condition,
-                step,
-                body,
-            } => {
-                if let Some(init) = init {
-                    walk_stmt(init, array_lengths, const_strings, out);
-                }
-                if let Some(condition) = condition {
-                    collect_native_data_ops_from_expr(condition, array_lengths, const_strings, out);
-                }
-                if let Some(step) = step {
-                    walk_stmt(step, array_lengths, const_strings, out);
-                }
-                for stmt in body {
-                    walk_stmt(stmt, array_lengths, const_strings, out);
-                }
-            }
-            ast::Stmt::ForIn { iterable, body, .. } => {
-                collect_native_data_ops_from_expr(iterable, array_lengths, const_strings, out);
-                for stmt in body {
-                    walk_stmt(stmt, array_lengths, const_strings, out);
-                }
-            }
-            ast::Stmt::Loop { body } => {
-                for stmt in body {
-                    walk_stmt(stmt, array_lengths, const_strings, out);
-                }
-            }
-            ast::Stmt::Match { scrutinee, arms } => {
-                collect_native_data_ops_from_expr(scrutinee, array_lengths, const_strings, out);
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        collect_native_data_ops_from_expr(guard, array_lengths, const_strings, out);
-                    }
-                    collect_native_data_ops_from_expr(
-                        &arm.value,
-                        array_lengths,
-                        const_strings,
-                        out,
-                    );
-                }
-            }
-            ast::Stmt::Break(_) | ast::Stmt::Continue => {}
-        }
-    }
-
     for stmt in &function.body {
-        walk_stmt(stmt, &mut array_lengths, &mut const_strings, &mut out);
+        collect_native_data_ops_from_stmt(stmt, &mut array_lengths, &mut const_strings, &mut out);
     }
     out
 }
@@ -6433,7 +6443,11 @@ fn collect_used_runtime_imports_from_expr(
                 collect_used_runtime_imports_from_expr(arg, seen, used);
             }
         }
-        ast::Expr::UnsafeBlock { .. } => {}
+        ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                collect_used_runtime_imports_from_stmt(stmt, seen, used);
+            }
+        }
         ast::Expr::FieldAccess { base, .. } => {
             collect_used_runtime_imports_from_expr(base, seen, used);
         }
@@ -6619,7 +6633,11 @@ fn collect_used_data_plane_imports_from_expr(
                 collect_used_data_plane_imports_from_expr(arg, seen, used);
             }
         }
-        ast::Expr::UnsafeBlock { .. } => {}
+        ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                collect_used_data_plane_imports_from_stmt(stmt, seen, used);
+            }
+        }
         ast::Expr::FieldAccess { base, .. } => {
             collect_used_data_plane_imports_from_expr(base, seen, used);
         }
@@ -7377,6 +7395,8 @@ fn emit_native_libraries_cranelift(
                 params: param_tys,
                 ret: ret_ty,
                 sret,
+                param_names: function.params.iter().map(|param| param.name.clone()).collect(),
+                is_extern_c_import: is_extern_c_import_decl(function),
             },
         );
     }
@@ -7811,6 +7831,8 @@ fn emit_native_artifact_cranelift(
                 params: param_tys,
                 ret: ret_ty,
                 sret,
+                param_names: function.params.iter().map(|param| param.name.clone()).collect(),
+                is_extern_c_import: is_extern_c_import_decl(function),
             },
         );
     }

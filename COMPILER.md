@@ -381,6 +381,10 @@ Compressed completion: runtime shim now drains child pipes during wait, native b
 
 ✅ Closed the remaining FFI wrapper verifier gap by treating `unsafe { ... }` as a real expression block in type inference and by honoring the shipped borrowed pointer-length FFI contract during signature resolution and post-check validation. This fixes production-safe wrappers of the form `let code = unsafe { host_touch(s, str.len(s)) }` and moved the Megaserver control-plane path from a grouped type-check failure to an ordinary host-link stage. Added HIR and driver regressions for both the direct-return and let-bound wrapper forms.
 
+## ✅ Production Blocker: Borrowed `str -> ptr_borrowed + len` Host Callback Payloads Crashed At Runtime
+
+✅ Closed the native FFI payload bug by adding an internal string-byte pointer helper at the runtime boundary and teaching both LLVM and Cranelift extern-C import lowering to materialize real borrowed byte views for `_borrowed` pointer parameters instead of passing internal string-handle IDs. Also fixed native import/data-op collection through `unsafe { ... }` bodies so wrapper-local `str.len(...)` calls are declared during library builds. Added a driver regression that builds a real shared library and proves a host callback can read exact borrowed payload bytes on both backends, then revalidated Megaserver end to end by restoring the direct `megaserver_host_dispatch(ptr_borrowed, len)` path and probing the emitted library from C without the old file-read workaround in the host callback.
+
 ## Tracking Notes
 
 When work is completed, mark the relevant line or section with `✅` and briefly note:

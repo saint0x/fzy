@@ -35,6 +35,8 @@ pub(super) struct LlvmArrayBinding {
 pub(super) struct LlvmFunctionSig {
     pub(super) params: Vec<String>,
     pub(super) ret: Option<String>,
+    pub(super) param_names: Vec<String>,
+    pub(super) is_extern_c_import: bool,
 }
 
 #[derive(Clone)]
@@ -186,6 +188,49 @@ fn llvm_pointer_int_type() -> &'static str {
     } else {
         "i32"
     }
+}
+
+fn llvm_expr_is_fzy_str(expr: &ast::Expr, ctx: &LlvmFuncCtx) -> bool {
+    match expr {
+        ast::Expr::Str(_) => true,
+        ast::Expr::Ident(name) => matches!(ctx.local_types.get(name), Some(ast::Type::Str)),
+        ast::Expr::Group(inner) | ast::Expr::Await(inner) | ast::Expr::Discard(inner) => {
+            llvm_expr_is_fzy_str(inner, ctx)
+        }
+        _ => false,
+    }
+}
+
+fn llvm_is_extern_c_borrowed_ptr_param(sig: &LlvmFunctionSig, index: usize) -> bool {
+    sig.is_extern_c_import
+        && sig
+            .param_names
+            .get(index)
+            .is_some_and(|name| name.contains("_borrowed"))
+        && sig
+            .params
+            .get(index)
+            .is_some_and(|ty| ty == llvm_pointer_int_type())
+}
+
+fn llvm_emit_borrowed_str_ptr_arg(
+    arg: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<LlvmValue> {
+    let string_id = llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, "i32")?;
+    let ptr = ctx.value();
+    let symbol = native_mangle_symbol(NATIVE_STR_PTR_SYMBOL);
+    ctx.code.push_str(&format!(
+        "  {ptr} = call {} @{symbol}(i32 {})\n",
+        llvm_pointer_int_type(),
+        string_id.value
+    ));
+    Ok(LlvmValue {
+        value: ptr,
+        ty: llvm_pointer_int_type().to_string(),
+    })
 }
 
 fn llvm_emit_simd_ptr_alignment_check(
@@ -2958,7 +3003,15 @@ pub(super) fn llvm_emit_complex_expr(
             let signature = ctx.function_sigs.get(callee).cloned();
             let mut rendered_args = Vec::with_capacity(args.len());
             for (index, arg) in args.iter().enumerate() {
-                let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
+                let value = if signature
+                    .as_ref()
+                    .is_some_and(|sig| llvm_is_extern_c_borrowed_ptr_param(sig, index))
+                    && llvm_expr_is_fzy_str(arg, ctx)
+                {
+                    llvm_emit_borrowed_str_ptr_arg(arg, ctx, string_literal_ids, task_ref_ids)?
+                } else {
+                    llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?
+                };
                 let value = if let Some(sig) = &signature {
                     if let Some(target_ty) = sig.params.get(index) {
                         llvm_cast_value(ctx, value, target_ty)?
@@ -3507,6 +3560,12 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         NATIVE_AGG_GET_I64_SYMBOL
     );
     let _ = writeln!(&mut out, "declare i32 @{}(i64)", NATIVE_AGG_TAG_SYMBOL);
+    let _ = writeln!(
+        &mut out,
+        "declare {} @{}(i32)",
+        llvm_pointer_int_type(),
+        NATIVE_STR_PTR_SYMBOL
+    );
     let extern_imports = collect_extern_c_imports(fir);
     let mut extern_link_symbols = fir
         .typed_functions
@@ -3538,6 +3597,10 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         NATIVE_AGG_TAG.to_string(),
         NATIVE_AGG_TAG_SYMBOL.to_string(),
     );
+    extern_link_symbols.insert(
+        NATIVE_STR_PTR.to_string(),
+        NATIVE_STR_PTR_SYMBOL.to_string(),
+    );
     let mut function_sigs = HashMap::<String, LlvmFunctionSig>::new();
     for function in &fir.typed_functions {
         function_sigs.insert(
@@ -3550,6 +3613,8 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                     .collect(),
                 ret: (!matches!(function.return_type, ast::Type::Void | ast::Type::Never))
                     .then(|| llvm_ir_type_for_ast_type(&function.return_type)),
+                param_names: function.params.iter().map(|param| param.name.clone()).collect(),
+                is_extern_c_import: is_extern_c_import_decl(function),
             },
         );
     }
@@ -3558,6 +3623,8 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         LlvmFunctionSig {
             params: vec!["i32".to_string(), "i32".to_string()],
             ret: Some("i64".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
         },
     );
     function_sigs.insert(
@@ -3565,6 +3632,8 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         LlvmFunctionSig {
             params: vec!["i64".to_string(), "i32".to_string(), "i64".to_string()],
             ret: Some("i32".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
         },
     );
     function_sigs.insert(
@@ -3572,6 +3641,8 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         LlvmFunctionSig {
             params: vec!["i64".to_string(), "i32".to_string()],
             ret: Some("i64".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
         },
     );
     function_sigs.insert(
@@ -3579,6 +3650,8 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         LlvmFunctionSig {
             params: vec!["i64".to_string()],
             ret: Some("i32".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
         },
     );
     function_sigs.insert(
@@ -3586,6 +3659,8 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         LlvmFunctionSig {
             params: vec![llvm_pointer_int_type().to_string()],
             ret: Some(llvm_pointer_int_type().to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
         },
     );
     function_sigs.insert(
@@ -3593,6 +3668,17 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         LlvmFunctionSig {
             params: vec![llvm_pointer_int_type().to_string()],
             ret: None,
+            param_names: Vec::new(),
+            is_extern_c_import: false,
+        },
+    );
+    function_sigs.insert(
+        NATIVE_STR_PTR.to_string(),
+        LlvmFunctionSig {
+            params: vec!["i32".to_string()],
+            ret: Some(llvm_pointer_int_type().to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
         },
     );
     for import in &extern_imports {
