@@ -3099,7 +3099,10 @@ fn analyze_ownership(
         let Some(caller_summary) = summaries.get(caller) else {
             continue;
         };
-        if callee_summary.unsafe_sites > 0 && callee_summary.unsafe_reasoned_sites == 0 {
+        if callee_summary.unsafe_sites > 0
+            && callee_summary.unsafe_reasoned_sites == 0
+            && !callee_summary.unsafe_call_edge_covered
+        {
             violations.push(format!(
                 "call edge `{caller} -> {callee}` reaches unsafe code without invariant proof/reasoned contract",
             ));
@@ -4735,6 +4738,7 @@ struct FunctionMemorySummary {
     close_sites: usize,
     unsafe_sites: usize,
     unsafe_reasoned_sites: usize,
+    unsafe_call_edge_covered: bool,
     has_mut_ref_params: bool,
     has_ref_params: bool,
     returns_ref: bool,
@@ -4752,6 +4756,18 @@ fn build_function_memory_summaries(
     functions: &[TypedFunction],
 ) -> BTreeMap<String, FunctionMemorySummary> {
     let mut out = BTreeMap::new();
+    let extern_unsafe_c_imports = functions
+        .iter()
+        .filter(|function| {
+            function.is_extern
+                && function.is_unsafe
+                && function
+                    .abi
+                    .as_deref()
+                    .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+        })
+        .map(|function| function.name.clone())
+        .collect::<BTreeSet<_>>();
     let mut unsafe_reasoned_sites_by_function = BTreeMap::<String, usize>::new();
     for site in collect_unsafe_contract_sites(functions)
         .into_iter()
@@ -4829,6 +4845,10 @@ fn build_function_memory_summaries(
             .iter()
             .map(|g| g.bounds.len())
             .sum::<usize>();
+        let unsafe_reasoned_sites = unsafe_reasoned_sites_by_function
+            .get(&function.name)
+            .copied()
+            .unwrap_or(0);
         out.insert(
             function.name.clone(),
             FunctionMemorySummary {
@@ -4836,10 +4856,9 @@ fn build_function_memory_summaries(
                 free_sites,
                 close_sites,
                 unsafe_sites,
-                unsafe_reasoned_sites: unsafe_reasoned_sites_by_function
-                    .get(&function.name)
-                    .copied()
-                    .unwrap_or(0),
+                unsafe_reasoned_sites,
+                unsafe_call_edge_covered: is_zero_arg_extern_unsafe_c_import(function)
+                    || is_documented_ffi_import_wrapper(function, &extern_unsafe_c_imports),
                 has_mut_ref_params,
                 has_ref_params,
                 returns_ref,
@@ -4879,6 +4898,72 @@ fn unsafe_contract_has_independent_proof(site: &UnsafeContractSite) -> bool {
         return false;
     };
     !proof_ref.starts_with("gate://compiler-generated/")
+}
+
+fn is_zero_arg_extern_unsafe_c_import(function: &TypedFunction) -> bool {
+    function.is_extern
+        && function.is_unsafe
+        && function
+            .abi
+            .as_deref()
+            .is_some_and(|abi| abi.eq_ignore_ascii_case("c"))
+        && function.params.is_empty()
+}
+
+fn is_documented_ffi_import_wrapper(
+    function: &TypedFunction,
+    extern_unsafe_c_imports: &BTreeSet<String>,
+) -> bool {
+    if function.is_extern {
+        return false;
+    }
+
+    let mut saw_unsafe_block = false;
+    let mut only_import_calls = true;
+
+    struct Visitor<'a> {
+        extern_unsafe_c_imports: &'a BTreeSet<String>,
+        saw_unsafe_block: &'a mut bool,
+        only_import_calls: &'a mut bool,
+        in_unsafe_block: bool,
+    }
+
+    impl AstVisitor for Visitor<'_> {
+        fn visit_expr(&mut self, expr: &Expr) {
+            match expr {
+                Expr::UnsafeBlock { body, .. } => {
+                    *self.saw_unsafe_block = true;
+                    let previous = self.in_unsafe_block;
+                    self.in_unsafe_block = true;
+                    for stmt in body {
+                        self.visit_stmt(stmt);
+                    }
+                    self.in_unsafe_block = previous;
+                }
+                Expr::Call { callee, args } => {
+                    if self.in_unsafe_block && !self.extern_unsafe_c_imports.contains(callee) {
+                        *self.only_import_calls = false;
+                    }
+                    for arg in args {
+                        self.visit_expr(arg);
+                    }
+                }
+                _ => ast::walk_expr(self, expr),
+            }
+        }
+    }
+
+    let mut visitor = Visitor {
+        extern_unsafe_c_imports,
+        saw_unsafe_block: &mut saw_unsafe_block,
+        only_import_calls: &mut only_import_calls,
+        in_unsafe_block: false,
+    };
+    for stmt in &function.body {
+        visitor.visit_stmt(stmt);
+    }
+
+    saw_unsafe_block && only_import_calls
 }
 
 fn stmt_uses_ident(stmt: &Stmt, target: &str) -> bool {
@@ -15812,6 +15897,40 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
+    }
+
+    #[test]
+    fn zero_arg_ffi_import_wrapper_call_edges_do_not_require_independent_proof() {
+        let source = r#"
+            use core.fs;
+
+            ext unsafe c fn host_dispatch() -> i32;
+
+            fn abi_dispatch(raw: str) -> i32 {
+                discard fs.write_file("/tmp/in.json", raw);
+                return safe_dispatch();
+            }
+
+            fn safe_dispatch() -> i32 {
+                return raw_dispatch();
+            }
+
+            fn raw_dispatch() -> i32 {
+                unsafe {
+                    return host_dispatch();
+                }
+            }
+
+            fn main() -> i32 {
+                return abi_dispatch("{}");
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("call edge `safe_dispatch -> raw_dispatch` reaches unsafe code")
+                || detail.contains("call edge `raw_dispatch -> host_dispatch` reaches unsafe code")
+        }));
     }
 
     #[test]

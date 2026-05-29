@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "ffi-zero-arg-wrapper-verify-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess; repo = pathlib.Path.cwd(); proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'verify', 'tests/fixtures/ffi_zero_arg_wrapper_verify', '--json'], cwd=str(repo), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload.get('errors') == 0, payload; messages = [item['message'] for item in payload.get('items', [])]; assert not any('call edge `safe_dispatch -> raw_dispatch` reaches unsafe code' in message for message in messages), payload; assert not any('call edge `raw_dispatch -> host_dispatch` reaches unsafe code' in message for message in messages), payload; assert any('structural unsafe contract metadata is present' in message for message in messages), payload; print('ffi-zero-arg-wrapper-verify-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "ffi-zero-arg-wrapper-verify-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess; repo = pathlib.Path.cwd(); proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'verify', 'tests/fixtures/ffi_zero_arg_wrapper_verify', '--json'], cwd=str(repo), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload.get('errors') == 0, payload; messages = [item['message'] for item in payload.get('items', [])]; assert not any('call edge `safe_dispatch -> raw_dispatch` reaches unsafe code' in message for message in messages), payload; assert not any('call edge `raw_dispatch -> host_dispatch` reaches unsafe code' in message for message in messages), payload; assert any('structural unsafe contract metadata is present' in message for message in messages), payload; print('ffi-zero-arg-wrapper-verify-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "ffi-zero-arg-wrapper-verify-ok\n"
+    }
+  ]
+}

@@ -12685,8 +12685,8 @@ mod tests {
         std::fs::create_dir_all(root.join("src")).expect("src dir should be created");
         let input_path = root.join("control.input.json");
         let echoed_path = root.join("control.echo.json");
-        let payload = "{\"status\":\"ok\",\"control_plane\":\"fzy\"}";
-        std::fs::write(&input_path, payload).expect("input payload should be written");
+        std::fs::write(&input_path, "{\"status\":\"ok\",\"control_plane\":\"fzy\"}")
+            .expect("input payload should be written");
         std::fs::write(
             root.join("fozzy.toml"),
             format!(
@@ -12740,9 +12740,9 @@ mod tests {
             std::fs::write(
                 &probe_source,
                 format!(
-                    "#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include \"ffi_borrowed_payload.h\"\n\nstatic uint8_t captured[256];\nstatic size_t captured_len = 0;\n\nint32_t host_touch(const uint8_t* ptr, size_t len) {{\n  if (ptr == NULL) return 91;\n  if (len > sizeof(captured)) return 92;\n  memcpy(captured, ptr, len);\n  captured_len = len;\n  FILE* f = fopen(\"{}\", \"wb\");\n  if (f == NULL) return 93;\n  if (len > 0) fwrite(ptr, 1, len, f);\n  fclose(f);\n  return 0;\n}}\n\nint main(void) {{\n  if (fz_host_init() != 0) return 101;\n  int32_t rc = dispatch();\n  int32_t shutdown_rc = fz_host_shutdown();\n  int32_t cleanup_rc = fz_host_cleanup();\n  const char* expected = \"{}\";\n  size_t expected_len = strlen(expected);\n  if (rc != 0) return rc;\n  if (shutdown_rc != 0) return 102;\n  if (cleanup_rc != 0) return 103;\n  if (captured_len != expected_len) return 104;\n  if (memcmp(captured, expected, expected_len) != 0) return 105;\n  return 0;\n}}\n",
+                    "#include <stddef.h>\n#include <stdint.h>\n#include <stdio.h>\n#include <string.h>\n#include \"ffi_borrowed_payload.h\"\n\nstatic uint8_t captured[256];\nstatic size_t captured_len = 0;\n\nint32_t host_touch(const uint8_t* ptr, size_t len) {{\n  if (ptr == NULL) return 91;\n  if (len > sizeof(captured)) return 92;\n  memcpy(captured, ptr, len);\n  captured_len = len;\n  FILE* f = fopen(\"{}\", \"wb\");\n  if (f == NULL) return 93;\n  if (len > 0) fwrite(ptr, 1, len, f);\n  fclose(f);\n  return 0;\n}}\n\nint main(void) {{\n  if (fz_host_init() != 0) return 101;\n  char expected[256];\n  for (int i = 0; i < 512; i++) {{\n    FILE* input = fopen(\"{}\", \"wb\");\n    if (input == NULL) return 106;\n    int written = snprintf(expected, sizeof(expected), \"{{\\\"status\\\":\\\"ok\\\",\\\"control_plane\\\":\\\"fzy\\\",\\\"seq\\\":%d}}\", i);\n    if (written < 0 || (size_t)written >= sizeof(expected)) {{\n      fclose(input);\n      return 107;\n    }}\n    fwrite(expected, 1, (size_t)written, input);\n    fclose(input);\n    int32_t rc = dispatch();\n    if (rc != 0) return rc;\n    if (captured_len != (size_t)written) return 104;\n    if (memcmp(captured, expected, (size_t)written) != 0) return 105;\n  }}\n  int32_t shutdown_rc = fz_host_shutdown();\n  int32_t cleanup_rc = fz_host_cleanup();\n  if (shutdown_rc != 0) return 102;\n  if (cleanup_rc != 0) return 103;\n  return 0;\n}}\n",
                     echoed_path.display(),
-                    payload.replace('\\', "\\\\").replace('\"', "\\\"")
+                    input_path.display()
                 ),
             )
             .expect("probe source should be written");
@@ -12778,7 +12778,10 @@ mod tests {
             );
             let echoed =
                 std::fs::read_to_string(&echoed_path).expect("echoed payload should exist");
-            assert_eq!(echoed, payload);
+            assert!(
+                echoed.contains("\"seq\":511"),
+                "final echoed payload should match the last borrowed callback payload"
+            );
             let _ = std::fs::remove_file(&probe_source);
             let _ = std::fs::remove_file(&probe_binary);
             let _ = std::fs::remove_file(&echoed_path);
@@ -16507,6 +16510,38 @@ fn main() -> i32 {
             .expect("verify should return diagnostics");
         assert!(output.contains("\"errors\":0"));
         assert!(!output.contains("return type mismatch: expected `i32`, got `void`"));
+        assert!(output.contains("structural unsafe contract metadata is present"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn verify_accepts_zero_arg_file_backed_unsafe_import_wrapper() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-ffi-zero-arg-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"ffi_zero_arg\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"ffi_zero_arg\"\npath=\"src/main.fzy\"\n\n[unsafe]\ncontracts=\"compiler\"\nenforce_verify=true\nenforce_release=true\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "use core.fs;\n\next unsafe c fn host_dispatch() -> i32;\n\nfn abi_dispatch(raw: str) -> i32 {\n    discard fs.write_file(\"/tmp/in.json\", raw)\n    return safe_dispatch()\n}\n\nfn safe_dispatch() -> i32 {\n    return raw_dispatch()\n}\n\nfn raw_dispatch() -> i32 {\n    unsafe {\n        return host_dispatch()\n    }\n}\n\nfn main() -> i32 {\n    return abi_dispatch(\"{}\")\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(Command::Verify { path: root.clone() }, Format::Json)
+            .expect("verify should return diagnostics");
+        assert!(
+            output.contains("\"errors\":0"),
+            "unexpected output: {output}"
+        );
+        assert!(!output.contains("call edge `safe_dispatch -> raw_dispatch` reaches unsafe code"));
+        assert!(!output.contains("call edge `raw_dispatch -> host_dispatch` reaches unsafe code"));
         assert!(output.contains("structural unsafe contract metadata is present"));
 
         let _ = std::fs::remove_dir_all(root);

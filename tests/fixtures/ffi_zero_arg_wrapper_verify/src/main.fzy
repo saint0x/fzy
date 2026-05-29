@@ -1,0 +1,22 @@
+use core.fs;
+
+ext unsafe c fn host_dispatch() -> i32;
+
+fn abi_dispatch(raw: str) -> i32 {
+    discard fs.write_file("/tmp/fz-zero-arg-wrapper-input.json", raw)
+    return safe_dispatch()
+}
+
+fn safe_dispatch() -> i32 {
+    return raw_dispatch()
+}
+
+fn raw_dispatch() -> i32 {
+    unsafe {
+        return host_dispatch()
+    }
+}
+
+fn main() -> i32 {
+    return abi_dispatch("{}")
+}

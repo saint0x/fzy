@@ -1,0 +1,12 @@
+[package]
+name = "ffi_zero_arg_wrapper_verify"
+version = "0.1.0"
+
+[[target.bin]]
+name = "ffi_zero_arg_wrapper_verify"
+path = "src/main.fzy"
+
+[unsafe]
+contracts = "compiler"
+enforce_verify = true
+enforce_release = true
