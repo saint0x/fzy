@@ -49,7 +49,7 @@ fzy should be able to claim all of the following before SIMD is considered produ
 Phase 1 portable SIMD is now shipped with an LLVM-backed surface:
 
 - first-class `i32x4`, `u32x4`, `f32x4`, and `mask32x4` types
-- `core.simd` constructors, splats, arithmetic, bitwise, comparisons, `select`, lane extraction, and reductions
+- `core.simd` constructors, splats, arithmetic, min/max, scalar shifts, bitwise ops, comparisons, `select`, lane extraction, mask bitmask extraction, and reductions
 - explicit verifier/backend rejection for SIMD ABI crossings
 - explicit Cranelift rejection instead of accidental scalar fallback
 - deterministic Fozzy scenario + trace coverage for the shipped surface
@@ -167,11 +167,11 @@ This track adds an explicit author-facing SIMD model.
   - zero/all-ones helpers where appropriate
 - [x] Arithmetic:
   - [x] add/sub/mul
-  - min/max
+  - [x] min/max
   - saturating ops where applicable
 - [x] Bitwise:
   - [x] and/or/xor/not
-  - shifts
+  - [x] shifts
 - [x] Comparison:
   - [x] eq/ne/lt/le/gt/ge
   - [x] mask-producing comparisons

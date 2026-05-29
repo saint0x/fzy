@@ -301,6 +301,62 @@ fn llvm_emit_simd_intrinsic_call(
                 ty: vec_ty,
             }
         }
+        "_shl" | "_shr" => {
+            let lhs = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
+            let rhs = llvm_emit_simd_splat(
+                "i32x4",
+                &args[1],
+                ctx,
+                string_literal_ids,
+                task_ref_ids,
+            )?;
+            let out = ctx.value();
+            let op_name = match (kind, op) {
+                ("u32x4", "_shr") => "lshr",
+                (_, "_shr") => "ashr",
+                _ => "shl",
+            };
+            ctx.code.push_str(&format!(
+                "  {out} = {op_name} {vec_ty} {}, {}\n",
+                lhs.value, rhs.value
+            ));
+            LlvmValue {
+                value: out,
+                ty: vec_ty,
+            }
+        }
+        "_min" | "_max" => {
+            let lhs = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
+            let rhs = llvm_emit_expr_as(&args[1], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
+            let pred = ctx.value();
+            if kind == "f32x4" {
+                let cc = if op == "_min" { "olt" } else { "ogt" };
+                ctx.code.push_str(&format!(
+                    "  {pred} = fcmp {cc} {vec_ty} {}, {}\n",
+                    lhs.value, rhs.value
+                ));
+            } else {
+                let cc = match (kind, op) {
+                    ("u32x4", "_min") => "ult",
+                    ("u32x4", "_max") => "ugt",
+                    (_, "_min") => "slt",
+                    _ => "sgt",
+                };
+                ctx.code.push_str(&format!(
+                    "  {pred} = icmp {cc} {vec_ty} {}, {}\n",
+                    lhs.value, rhs.value
+                ));
+            }
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = select {mask_ty} {pred}, {vec_ty} {}, {vec_ty} {}\n",
+                lhs.value, rhs.value
+            ));
+            LlvmValue {
+                value: out,
+                ty: vec_ty,
+            }
+        }
         "_not" => {
             let input = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
             let out = ctx.value();
@@ -440,6 +496,32 @@ fn llvm_emit_simd_intrinsic_call(
                 fold2
             };
             llvm_bool_from_pred(ctx, &pred)
+        }
+        "_bitmask" => {
+            let input =
+                llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &mask_ty)?;
+            let mut acc = "0".to_string();
+            for index in 0..4 {
+                let lane = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {lane} = extractelement {mask_ty} {}, i32 {index}\n",
+                    input.value
+                ));
+                let lane_i32 = ctx.value();
+                ctx.code
+                    .push_str(&format!("  {lane_i32} = zext i1 {lane} to i32\n"));
+                let shifted = ctx.value();
+                ctx.code
+                    .push_str(&format!("  {shifted} = shl i32 {lane_i32}, {index}\n"));
+                let next = ctx.value();
+                ctx.code
+                    .push_str(&format!("  {next} = or i32 {acc}, {shifted}\n"));
+                acc = next;
+            }
+            LlvmValue {
+                value: acc,
+                ty: "i32".to_string(),
+            }
         }
         "_lane0" | "_lane1" | "_lane2" | "_lane3" => {
             let index = match op {

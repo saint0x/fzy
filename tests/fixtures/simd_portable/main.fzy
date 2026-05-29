@@ -2,16 +2,31 @@ use core.simd;
 
 fn main() -> i32 {
     let ints = simd.i32x4_add(simd.i32x4_new(1, 2, 3, 4), simd.i32x4_splat(2))
+    let shifted = simd.i32x4_shl(ints, 1)
+    let bounded = simd.i32x4_max(shifted, simd.i32x4_new(7, 1, 11, 1))
     let mask = simd.i32x4_gt(ints, simd.i32x4_splat(4))
     let picked = simd.i32x4_select(mask, ints, simd.i32x4_splat(0))
     let sum = simd.i32x4_reduce_add(picked)
+    let bitmask = simd.mask32x4_bitmask(mask)
     let uints_ok = simd.mask32x4_all(
         simd.u32x4_eq(
-            simd.u32x4_mul(simd.u32x4_new(1, 2, 3, 4), simd.u32x4_splat(2)),
+            simd.u32x4_max(
+                simd.u32x4_shr(
+                    simd.u32x4_shl(simd.u32x4_new(1, 2, 3, 4), 2),
+                    1,
+                ),
+                simd.u32x4_new(0, 4, 0, 8),
+            ),
             simd.u32x4_new(2, 4, 6, 8),
         ),
     )
-    let floats = simd.f32x4_mul(simd.f32x4_splat(1.5), simd.f32x4_new(1.0, 2.0, 3.0, 4.0))
+    let floats = simd.f32x4_min(
+        simd.f32x4_mul(simd.f32x4_splat(1.5), simd.f32x4_new(1.0, 2.0, 3.0, 4.0)),
+        simd.f32x4_max(
+            simd.f32x4_new(1.0, 3.0, 4.0, 5.0),
+            simd.f32x4_new(1.5, 2.5, 4.5, 6.0),
+        ),
+    )
     let floats_ok = simd.mask32x4_all(
         simd.f32x4_eq(floats, simd.f32x4_new(1.5, 3.0, 4.5, 6.0)),
     )
@@ -27,8 +42,14 @@ fn main() -> i32 {
     if floats_ok == false {
         return 19
     }
+    if simd.i32x4_lane0(bounded) != 7 {
+        return 21
+    }
     if simd.i32x4_lane2(ints) != 5 {
         return 23
+    }
+    if bitmask != 12 {
+        return 27
     }
     if sum != 11 {
         return 29
