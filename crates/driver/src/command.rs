@@ -2450,10 +2450,13 @@ fn write_interop_artifact_manifest(
 ) -> Result<PathBuf> {
     let resolved = resolve_source(path)?;
     let manifest_path = headers.path.with_extension("artifacts.json");
+    let manifest_dir = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("artifact manifest path must have a parent directory"))?;
     let payload = serde_json::json!({
         "schemaVersion": "fozzylang.interop_artifacts.v1",
-        "source": resolved.source_path.display().to_string(),
-        "projectRoot": resolved.project_root.display().to_string(),
+        "source": manifest_relative_path(manifest_dir, &resolved.source_path),
+        "projectRoot": manifest_relative_path(manifest_dir, &resolved.project_root),
         "module": library.module,
         "profile": match library.profile {
             BuildProfile::Dev => "dev",
@@ -2461,11 +2464,11 @@ fn write_interop_artifact_manifest(
             BuildProfile::Verify => "verify",
         },
         "buildMode": "lib",
-        "staticLib": library.static_lib.as_ref().map(|path| path.display().to_string()),
-        "sharedLib": library.shared_lib.as_ref().map(|path| path.display().to_string()),
-        "header": headers.path.display().to_string(),
-        "abiManifest": headers.abi_manifest.display().to_string(),
-        "artifactManifest": manifest_path.display().to_string(),
+        "staticLib": library.static_lib.as_ref().map(|path| manifest_relative_path(manifest_dir, path)),
+        "sharedLib": library.shared_lib.as_ref().map(|path| manifest_relative_path(manifest_dir, path)),
+        "header": manifest_relative_path(manifest_dir, &headers.path),
+        "abiManifest": manifest_relative_path(manifest_dir, &headers.abi_manifest),
+        "artifactManifest": manifest_relative_path(manifest_dir, &manifest_path),
         "exports": export_symbols,
         "hostLifecycle": {
             "init": "fz_host_init",
@@ -2481,6 +2484,61 @@ fn write_interop_artifact_manifest(
     std::fs::write(&manifest_path, serde_json::to_vec_pretty(&payload)?)
         .with_context(|| format!("failed writing {}", manifest_path.display()))?;
     Ok(manifest_path)
+}
+
+fn manifest_relative_path(base: &Path, path: &Path) -> String {
+    relative_path_from(base, path)
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
+}
+
+fn relative_path_from(base: &Path, path: &Path) -> Option<String> {
+    let base_components = normalized_path_components(base)?;
+    let path_components = normalized_path_components(path)?;
+    if base_components.first()? != path_components.first()? {
+        return None;
+    }
+
+    let mut shared = 0usize;
+    while shared < base_components.len()
+        && shared < path_components.len()
+        && base_components[shared] == path_components[shared]
+    {
+        shared += 1;
+    }
+
+    let mut relative = PathBuf::new();
+    for _ in shared..base_components.len() {
+        relative.push("..");
+    }
+    for component in &path_components[shared..] {
+        relative.push(component);
+    }
+    if relative.as_os_str().is_empty() {
+        relative.push(".");
+    }
+    Some(relative.to_string_lossy().into_owned())
+}
+
+fn normalized_path_components(path: &Path) -> Option<Vec<String>> {
+    use std::path::Component;
+
+    let mut out = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(prefix) => out.push(prefix.as_os_str().to_string_lossy().into_owned()),
+            Component::RootDir => out.push("/".to_string()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if out.last().is_some_and(|segment| segment != "/") {
+                    out.pop();
+                } else {
+                    return None;
+                }
+            }
+            Component::Normal(part) => out.push(part.to_string_lossy().into_owned()),
+        }
+    }
+    Some(out)
 }
 
 fn project_has_c_exports(path: &Path) -> Result<bool> {
@@ -12149,11 +12207,39 @@ mod tests {
             Format::Json,
         )
         .expect("build --lib should succeed");
-        assert!(output.contains("\"buildMode\":\"lib\""));
-        assert!(output.contains("\"staticLib\""));
-        assert!(output.contains("\"sharedLib\""));
-        assert!(output.contains("\"header\""));
-        assert!(output.contains("\"abiManifest\""));
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("build output should be valid json");
+        assert_eq!(payload["buildMode"].as_str(), Some("lib"));
+        assert!(payload.get("staticLib").and_then(|value| value.as_str()).is_some());
+        assert!(payload.get("sharedLib").and_then(|value| value.as_str()).is_some());
+        assert!(payload.get("header").and_then(|value| value.as_str()).is_some());
+        assert!(payload.get("abiManifest").and_then(|value| value.as_str()).is_some());
+        let artifact_manifest = std::path::PathBuf::from(
+            payload["artifactManifest"]
+                .as_str()
+                .expect("artifact manifest should be present"),
+        );
+        let artifact_payload: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(&artifact_manifest).expect("artifact manifest should be readable"),
+        )
+        .expect("artifact manifest should be valid json");
+        for key in [
+            "source",
+            "projectRoot",
+            "staticLib",
+            "sharedLib",
+            "header",
+            "abiManifest",
+            "artifactManifest",
+        ] {
+            let value = artifact_payload[key]
+                .as_str()
+                .unwrap_or_else(|| panic!("artifact manifest field `{key}` should be a string"));
+            assert!(
+                !std::path::Path::new(value).is_absolute(),
+                "artifact manifest field `{key}` should be relative: {value}"
+            );
+        }
 
         let _ = std::fs::remove_file(source);
     }
