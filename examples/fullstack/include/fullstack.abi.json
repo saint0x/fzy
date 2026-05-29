@@ -1,13 +1,29 @@
 {
   "abiRevision": 1,
+  "callbackAbi": "signature-typed-v1",
   "compilerIdentityHash": "2f94649a8a371971b258cab36540b6e23fb8dcfa574a9ad138f357b1aaa1c1d7",
   "contractSchema": "fozzylang.ffi_contracts.v1",
   "dataLayoutHash": "4ef19cf377b4271c24656e2451536d23b76c8d7e35289fdb42706f8eff5d7afa",
-  "exports": [
+  "exports": [],
+  "hostApi": {
+    "callbacks": {
+      "invokeI32": "fz_host_invoke_callback_i32",
+      "registerI32": "fz_host_register_callback_i32"
+    },
+    "lastError": {
+      "class": "fz_host_last_error_class",
+      "code": "fz_host_last_error_code",
+      "message": "fz_host_last_error_message"
+    },
+    "lifecycle": {
+      "cleanup": "fz_host_cleanup",
+      "init": "fz_host_init",
+      "shutdown": "fz_host_shutdown"
+    }
+  },
+  "imports": [
     {
-      "async": false,
       "contract": {
-        "asyncBoundary": null,
         "callbackBindings": [],
         "execution": "sync"
       },
@@ -16,6 +32,7 @@
         {
           "c": "const uint8_t*",
           "contract": {
+            "callback": null,
             "lifetimeAnchor": "loan:path",
             "mutability": "const",
             "nullability": "non_null",
@@ -31,6 +48,7 @@
         {
           "c": "size_t",
           "contract": {
+            "callback": null,
             "lifetimeAnchor": null,
             "mutability": "const",
             "nullability": "n/a",
@@ -50,12 +68,10 @@
         },
         "fzy": "i32"
       },
-      "symbolVersion": 1
+      "unsafe": true
     },
     {
-      "async": false,
       "contract": {
-        "asyncBoundary": null,
         "callbackBindings": [],
         "execution": "sync"
       },
@@ -64,6 +80,7 @@
         {
           "c": "int32_t",
           "contract": {
+            "callback": null,
             "lifetimeAnchor": null,
             "mutability": "const",
             "nullability": "n/a",
@@ -76,6 +93,7 @@
         {
           "c": "const uint8_t*",
           "contract": {
+            "callback": null,
             "lifetimeAnchor": "loan:ptr",
             "mutability": "const",
             "nullability": "non_null",
@@ -91,6 +109,7 @@
         {
           "c": "size_t",
           "contract": {
+            "callback": null,
             "lifetimeAnchor": null,
             "mutability": "const",
             "nullability": "n/a",
@@ -110,12 +129,10 @@
         },
         "fzy": "i32"
       },
-      "symbolVersion": 1
+      "unsafe": true
     },
     {
-      "async": false,
       "contract": {
-        "asyncBoundary": null,
         "callbackBindings": [],
         "execution": "sync"
       },
@@ -124,6 +141,7 @@
         {
           "c": "const uint8_t*",
           "contract": {
+            "callback": null,
             "lifetimeAnchor": "loan:ptr",
             "mutability": "const",
             "nullability": "non_null",
@@ -139,6 +157,7 @@
         {
           "c": "size_t",
           "contract": {
+            "callback": null,
             "lifetimeAnchor": null,
             "mutability": "const",
             "nullability": "n/a",
@@ -158,7 +177,7 @@
         },
         "fzy": "u32"
       },
-      "symbolVersion": 1
+      "unsafe": true
     }
   ],
   "layoutPolicy": {
@@ -173,6 +192,7 @@
   "reprCLayouts": [
     {
       "align": 1,
+      "cName": "model_types_UserRow",
       "kind": "struct",
       "name": "model.types.UserRow",
       "size": 0
