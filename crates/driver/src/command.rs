@@ -8,18 +8,18 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use formatter::{format_source, is_fzy_source_path};
-use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEvent};
+use runtime::{DeterministicExecutor, Scheduler, TaskEvent, plan_async_checkpoints};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
-    compile_file_with_backend, compile_library_with_backend, emit_ir, lower_fir_cached,
-    parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact,
-    Output,
+    BuildArtifact, BuildProfile, LibraryArtifact, Output, compile_file_with_backend,
+    compile_library_with_backend, emit_ir, lower_fir_cached, parse_program, refresh_lockfile,
+    verify_file,
 };
 
 mod interop;
@@ -27,12 +27,12 @@ mod source;
 mod trace_native;
 
 use self::interop::{
-    generate_c_headers, generate_rpc_artifacts, render_headers, render_rpc_artifacts,
-    HeaderArtifact,
+    HeaderArtifact, generate_c_headers, generate_rpc_artifacts, render_headers,
+    render_rpc_artifacts,
 };
 use self::source::{
-    discover_nested_project_roots, discover_project_roots, load_resolved_module_set,
-    resolve_source, ResolvedModuleSource,
+    ResolvedModuleSource, discover_nested_project_roots, discover_project_roots,
+    load_resolved_module_set, resolve_source,
 };
 use self::trace_native::{
     convert_fozzy_trace_to_native, ensure_goal_trace_from_scenario, native_explore,
@@ -40,7 +40,7 @@ use self::trace_native::{
 };
 
 #[cfg(test)]
-use self::trace_native::{build_live_http_probe_steps, FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION};
+use self::trace_native::{FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION, build_live_http_probe_steps};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -66,6 +66,8 @@ impl StdError for CommandFailure {}
 struct BuildInteropArtifacts {
     library: LibraryArtifact,
     headers: HeaderArtifact,
+    artifact_manifest: PathBuf,
+    export_symbols: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,6 +263,15 @@ pub enum Command {
         out: Option<PathBuf>,
         reference: Option<PathBuf>,
     },
+    InspectSurface,
+    InspectArtifacts {
+        path: PathBuf,
+        release: bool,
+        backend: Option<String>,
+    },
+    InspectEmbedding {
+        path: PathBuf,
+    },
     Version,
 }
 
@@ -308,8 +319,14 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     backend.as_deref(),
                 )?;
                 let headers = generate_c_headers(&path, None)?;
-                let rendered =
-                    render_library_artifact(format, artifact, headers, threads, runtime_config);
+                let interop = finalize_build_interop_artifacts(&path, &artifact, headers)?;
+                let rendered = render_library_artifact(
+                    format,
+                    artifact,
+                    threads,
+                    runtime_config,
+                    Some(&interop),
+                );
                 let unsafe_docs = maybe_generate_unsafe_docs(&path);
                 Ok(append_unsafe_docs_field(rendered, format, unsafe_docs))
             } else {
@@ -1099,6 +1116,13 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 generate_doc_artifacts(&path, &doc_format, out.as_deref(), reference.as_deref())?;
             Ok(render_doc_artifacts(format, generated))
         }
+        Command::InspectSurface => Ok(render_surface_inspection(format)),
+        Command::InspectArtifacts {
+            path,
+            release,
+            backend,
+        } => inspect_artifacts_command(&path, release, backend.as_deref(), format),
+        Command::InspectEmbedding { path } => inspect_embedding_command(&path, format),
         Command::Version => Ok(render(format, env!("CARGO_PKG_VERSION"))),
     }
 }
@@ -1889,6 +1913,7 @@ fn render_artifact(
                 payload["interop"] = serde_json::json!({
                     "buildMode": "lib",
                     "exports": interop.headers.exports,
+                    "exportSymbols": interop.export_symbols,
                     "staticLib": interop
                         .library
                         .static_lib
@@ -1901,6 +1926,7 @@ fn render_artifact(
                         .map(|path| path.display().to_string()),
                     "header": interop.headers.path.display().to_string(),
                     "abiManifest": interop.headers.abi_manifest.display().to_string(),
+                    "artifactManifest": interop.artifact_manifest.display().to_string(),
                     "hostLifecycle": {
                         "init": "fz_host_init",
                         "shutdown": "fz_host_shutdown",
@@ -1919,13 +1945,13 @@ fn render_artifact(
 fn render_library_artifact(
     format: Format,
     artifact: LibraryArtifact,
-    headers: HeaderArtifact,
     threads: Option<u16>,
     runtime_config: Option<PathBuf>,
+    interop: Option<&BuildInteropArtifacts>,
 ) -> String {
     match format {
         Format::Text => {
-            let mut rendered = render_text_fields(&[
+            let mut fields = vec![
                 ("status", artifact.status.to_string()),
                 ("module", artifact.module.clone()),
                 ("profile", format!("{:?}", artifact.profile)),
@@ -1946,8 +1972,6 @@ fn render_library_artifact(
                         .map(|path| path.display().to_string())
                         .unwrap_or_else(|| "<none>".to_string()),
                 ),
-                ("header", headers.path.display().to_string()),
-                ("abi_manifest", headers.abi_manifest.display().to_string()),
                 (
                     "threads",
                     threads
@@ -1981,7 +2005,23 @@ fn render_library_artifact(
                         artifact.dependency_graph_hash.is_some(),
                     ),
                 ),
-            ]);
+            ];
+            if let Some(interop) = interop {
+                fields.push(("header", interop.headers.path.display().to_string()));
+                fields.push((
+                    "abi_manifest",
+                    interop.headers.abi_manifest.display().to_string(),
+                ));
+                fields.push((
+                    "artifact_manifest",
+                    interop.artifact_manifest.display().to_string(),
+                ));
+                fields.push(("exports", interop.headers.exports.to_string()));
+                if !interop.export_symbols.is_empty() {
+                    fields.push(("export_symbols", interop.export_symbols.join(", ")));
+                }
+            }
+            let mut rendered = render_text_fields(&fields);
             let details = render_diagnostics_text(&artifact.diagnostic_details);
             if !details.is_empty() {
                 rendered.push('\n');
@@ -2018,9 +2058,11 @@ fn render_library_artifact(
                 .shared_lib
                 .as_ref()
                 .map(|path| path.display().to_string()),
-            "header": headers.path.display().to_string(),
-            "abiManifest": headers.abi_manifest.display().to_string(),
-            "exports": headers.exports,
+            "header": interop.map(|value| value.headers.path.display().to_string()),
+            "abiManifest": interop.map(|value| value.headers.abi_manifest.display().to_string()),
+            "artifactManifest": interop.map(|value| value.artifact_manifest.display().to_string()),
+            "exports": interop.map(|value| value.headers.exports),
+            "exportSymbols": interop.map(|value| value.export_symbols.clone()).unwrap_or_default(),
         })
         .to_string(),
     }
@@ -2360,10 +2402,84 @@ fn maybe_generate_build_interop_artifacts(
     if !project_has_c_exports(path)? {
         return Ok(None);
     }
-    let library =
-        compile_library_with_backend_with_root_guidance(path, profile, backend_override)?;
+    let library = compile_library_with_backend_with_root_guidance(path, profile, backend_override)?;
     let headers = generate_c_headers(path, None)?;
-    Ok(Some(BuildInteropArtifacts { library, headers }))
+    Ok(Some(finalize_build_interop_artifacts(
+        path, &library, headers,
+    )?))
+}
+
+fn finalize_build_interop_artifacts(
+    path: &Path,
+    library: &LibraryArtifact,
+    headers: HeaderArtifact,
+) -> Result<BuildInteropArtifacts> {
+    let export_symbols = read_abi_export_symbols(&headers.abi_manifest)?;
+    let artifact_manifest =
+        write_interop_artifact_manifest(path, library, &headers, &export_symbols)?;
+    Ok(BuildInteropArtifacts {
+        library: library.clone(),
+        headers,
+        artifact_manifest,
+        export_symbols,
+    })
+}
+
+fn read_abi_export_symbols(abi_manifest: &Path) -> Result<Vec<String>> {
+    let value: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(abi_manifest)
+            .with_context(|| format!("failed reading {}", abi_manifest.display()))?,
+    )
+    .with_context(|| format!("failed parsing {}", abi_manifest.display()))?;
+    Ok(value
+        .get("exports")
+        .and_then(|exports| exports.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("name").and_then(|name| name.as_str()))
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn write_interop_artifact_manifest(
+    path: &Path,
+    library: &LibraryArtifact,
+    headers: &HeaderArtifact,
+    export_symbols: &[String],
+) -> Result<PathBuf> {
+    let resolved = resolve_source(path)?;
+    let manifest_path = headers.path.with_extension("artifacts.json");
+    let payload = serde_json::json!({
+        "schemaVersion": "fozzylang.interop_artifacts.v1",
+        "source": resolved.source_path.display().to_string(),
+        "projectRoot": resolved.project_root.display().to_string(),
+        "module": library.module,
+        "profile": match library.profile {
+            BuildProfile::Dev => "dev",
+            BuildProfile::Release => "release",
+            BuildProfile::Verify => "verify",
+        },
+        "buildMode": "lib",
+        "staticLib": library.static_lib.as_ref().map(|path| path.display().to_string()),
+        "sharedLib": library.shared_lib.as_ref().map(|path| path.display().to_string()),
+        "header": headers.path.display().to_string(),
+        "abiManifest": headers.abi_manifest.display().to_string(),
+        "artifactManifest": manifest_path.display().to_string(),
+        "exports": export_symbols,
+        "hostLifecycle": {
+            "init": "fz_host_init",
+            "shutdown": "fz_host_shutdown",
+            "cleanup": "fz_host_cleanup",
+            "lastErrorCode": "fz_host_last_error_code",
+            "lastErrorClass": "fz_host_last_error_class",
+            "lastErrorMessage": "fz_host_last_error_message",
+            "registerCallbackI32": "fz_host_register_callback_i32",
+            "invokeCallbackI32": "fz_host_invoke_callback_i32",
+        },
+    });
+    std::fs::write(&manifest_path, serde_json::to_vec_pretty(&payload)?)
+        .with_context(|| format!("failed writing {}", manifest_path.display()))?;
+    Ok(manifest_path)
 }
 
 fn project_has_c_exports(path: &Path) -> Result<bool> {
@@ -9569,6 +9685,11 @@ fn native_usage_doc() -> serde_json::Value {
                 "command": "fz env | schema | validate",
                 "when": "Inspect execution capabilities, authoring schema, and scenario validity.",
                 "how": "fz env --json && fz schema --json && fz validate tests/example.fozzy.json --json"
+            },
+            {
+                "command": "fz inspect surface | artifacts | embedding",
+                "when": "Explain what is builtin vs `use core.*`, inspect emitted interop artifacts, and read the embedding contract without spelunking generated files.",
+                "how": "fz inspect surface --json && fz inspect artifacts examples/fullstack --release --json && fz inspect embedding examples/fullstack --json"
             }
         ]
     })
@@ -10138,6 +10259,310 @@ fn render_doc_artifacts(format: Format, artifacts: DocArtifacts) -> String {
             "rendered": artifacts.rendered,
         })
         .to_string(),
+    }
+}
+
+fn surface_always_available_groups() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        (
+            "controlFlow",
+            vec![
+                "spawn",
+                "spawn_ctx",
+                "join",
+                "yield",
+                "checkpoint",
+                "timeout",
+                "cancel",
+                "pulse",
+            ],
+        ),
+        (
+            "string",
+            vec![
+                "str.concat",
+                "str.from_i32",
+                "str.from_bool",
+                "str.len",
+                "str.slice",
+                "str.trim",
+                "str.upper_ascii",
+                "str.lower_ascii",
+            ],
+        ),
+        (
+            "data",
+            vec![
+                "json.object",
+                "json.array",
+                "json.parse",
+                "json.get_str",
+                "list.new",
+                "list.push",
+                "map.new",
+                "map.set",
+            ],
+        ),
+        (
+            "hostIntrinsic",
+            vec![
+                "env.get",
+                "proc.argv_count",
+                "proc.argv_get",
+                "term.read_line",
+                "term.write",
+                "term.write_err",
+                "route.match",
+                "route.write_404",
+                "route.write_405",
+            ],
+        ),
+    ]
+}
+
+fn surface_core_modules() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        ("text", "stdlib facade", "no explicit capability"),
+        ("io", "stdlib facade", "no explicit capability"),
+        ("path", "stdlib facade", "no explicit capability"),
+        (
+            "process",
+            "stdlib facade over `proc.*`",
+            "no explicit capability",
+        ),
+        (
+            "term",
+            "stdlib facade over `term.*`",
+            "no explicit capability",
+        ),
+        ("thread", "stdlib facade", "implies `thread`"),
+        ("log", "stdlib facade", "implies `log`"),
+        ("http", "stdlib facade", "implies `http`"),
+        ("security", "stdlib facade", "implies `rng`"),
+        (
+            "env",
+            "builtin namespace marker only",
+            "always available as `env.*`",
+        ),
+        (
+            "str",
+            "builtin namespace marker only",
+            "always available as `str.*`",
+        ),
+    ]
+}
+
+fn surface_capabilities() -> Vec<&'static str> {
+    vec![
+        "time", "rng", "fs", "http", "proc", "mem", "thread", "log", "error",
+    ]
+}
+
+fn render_surface_inspection(format: Format) -> String {
+    let groups = surface_always_available_groups();
+    let modules = surface_core_modules();
+    let capabilities = surface_capabilities();
+    match format {
+        Format::Text => {
+            let mut lines = vec![
+                "status: ok".to_string(),
+                "mode: inspect-surface".to_string(),
+                "summary: builtins are always callable by namespace; `use core.*` imports facades and may imply capabilities".to_string(),
+                "always_available:".to_string(),
+            ];
+            for (group, names) in groups {
+                lines.push(format!("  {group}: {}", names.join(", ")));
+            }
+            lines.push("core_modules:".to_string());
+            for (name, kind, behavior) in modules {
+                lines.push(format!("  {name}: {kind}; {behavior}"));
+            }
+            lines.push(format!(
+                "capability_gated: {}",
+                capabilities.join(", ")
+            ));
+            lines.push("notes: `env.*`, `str.*`, `json.*`, `list.*`, `map.*`, and `route.*` are builtin namespaces; do not import them as ordinary modules".to_string());
+            lines.join("\n")
+        }
+        Format::Json => serde_json::json!({
+            "status": "ok",
+            "mode": "inspect-surface",
+            "summary": "Builtins are always callable by namespace. `use core.*` imports stdlib facades and may imply capability contracts.",
+            "alwaysAvailable": groups.into_iter().map(|(group, names)| {
+                serde_json::json!({
+                    "group": group,
+                    "names": names,
+                })
+            }).collect::<Vec<_>>(),
+            "coreModules": modules.into_iter().map(|(name, kind, behavior)| {
+                serde_json::json!({
+                    "name": name,
+                    "kind": kind,
+                    "behavior": behavior,
+                })
+            }).collect::<Vec<_>>(),
+            "capabilityGated": capabilities,
+            "notes": [
+                "`env.*`, `str.*`, `json.*`, `list.*`, `map.*`, and `route.*` are builtin namespaces.",
+                "`use core.env;` and `use core.str;` are markers for the builtin namespaces rather than ordinary imported modules.",
+            ],
+        })
+        .to_string(),
+    }
+}
+
+fn inspect_artifacts_command(
+    path: &Path,
+    release: bool,
+    backend_override: Option<&str>,
+    format: Format,
+) -> Result<String> {
+    let profile = if release {
+        BuildProfile::Release
+    } else {
+        BuildProfile::Dev
+    };
+    let resolved = resolve_source(path)?;
+    let native = compile_file_with_backend_with_root_guidance(path, profile, backend_override)?;
+    let interop = if project_has_c_exports(path)? {
+        let library =
+            compile_library_with_backend_with_root_guidance(path, profile, backend_override)?;
+        let headers = generate_c_headers(path, None)?;
+        Some(finalize_build_interop_artifacts(path, &library, headers)?)
+    } else {
+        None
+    };
+
+    match format {
+        Format::Text => {
+            let mut fields = vec![
+                ("status", "ok".to_string()),
+                ("mode", "inspect-artifacts".to_string()),
+                ("source", resolved.source_path.display().to_string()),
+                ("project_root", resolved.project_root.display().to_string()),
+                ("profile", if release { "release" } else { "dev" }.to_string()),
+                (
+                    "native_output",
+                    native
+                        .output
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ),
+            ];
+            if let Some(interop) = interop {
+                fields.push((
+                    "static_lib",
+                    interop
+                        .library
+                        .static_lib
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ));
+                fields.push((
+                    "shared_lib",
+                    interop
+                        .library
+                        .shared_lib
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_else(|| "<none>".to_string()),
+                ));
+                fields.push(("header", interop.headers.path.display().to_string()));
+                fields.push((
+                    "abi_manifest",
+                    interop.headers.abi_manifest.display().to_string(),
+                ));
+                fields.push((
+                    "artifact_manifest",
+                    interop.artifact_manifest.display().to_string(),
+                ));
+                fields.push(("exports", interop.export_symbols.join(", ")));
+            } else {
+                fields.push(("interop", "no C exports detected".to_string()));
+            }
+            Ok(render_text_fields(&fields))
+        }
+        Format::Json => Ok(serde_json::json!({
+            "status": "ok",
+            "mode": "inspect-artifacts",
+            "source": resolved.source_path.display().to_string(),
+            "projectRoot": resolved.project_root.display().to_string(),
+            "profile": if release { "release" } else { "dev" },
+            "nativeOutput": native.output.as_ref().map(|path| path.display().to_string()),
+            "interop": interop.map(|value| serde_json::json!({
+                "staticLib": value.library.static_lib.as_ref().map(|path| path.display().to_string()),
+                "sharedLib": value.library.shared_lib.as_ref().map(|path| path.display().to_string()),
+                "header": value.headers.path.display().to_string(),
+                "abiManifest": value.headers.abi_manifest.display().to_string(),
+                "artifactManifest": value.artifact_manifest.display().to_string(),
+                "exports": value.export_symbols,
+            })),
+        }).to_string()),
+    }
+}
+
+fn inspect_embedding_command(path: &Path, format: Format) -> Result<String> {
+    if !project_has_c_exports(path)? {
+        bail!(
+            "no exported `pubext c fn` surface found at `{}`; embedding inspection requires a C-exporting target",
+            path.display()
+        );
+    }
+    let resolved = resolve_source(path)?;
+    let headers = generate_c_headers(path, None)?;
+    let export_symbols = read_abi_export_symbols(&headers.abi_manifest)?;
+    match format {
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "inspect-embedding".to_string()),
+            ("source", resolved.source_path.display().to_string()),
+            ("project_root", resolved.project_root.display().to_string()),
+            ("header", headers.path.display().to_string()),
+            ("abi_manifest", headers.abi_manifest.display().to_string()),
+            ("exports", export_symbols.join(", ")),
+            ("host_init", "mandatory before callback registration or exported host-driven calls".to_string()),
+            ("host_shutdown", "marks runtime unavailable for further callback registration".to_string()),
+            ("host_cleanup", "clears callback slots and transient host state; safe during teardown".to_string()),
+            ("last_error", "read immediately after failing call via code/class/message trio".to_string()),
+            ("concurrency", "callback registry is process-global and guarded by a mutex; lifecycle state is shared across threads".to_string()),
+            ("callback_slots", "64 typed i32 callback slots are currently available".to_string()),
+        ])),
+        Format::Json => Ok(serde_json::json!({
+            "status": "ok",
+            "mode": "inspect-embedding",
+            "source": resolved.source_path.display().to_string(),
+            "projectRoot": resolved.project_root.display().to_string(),
+            "header": headers.path.display().to_string(),
+            "abiManifest": headers.abi_manifest.display().to_string(),
+            "exports": export_symbols,
+            "lifecycle": {
+                "init": {
+                    "symbol": "fz_host_init",
+                    "contract": "Call before registering callbacks or issuing exported calls from an in-process host.",
+                },
+                "shutdown": {
+                    "symbol": "fz_host_shutdown",
+                    "contract": "Marks the shared host runtime unavailable for further callback registration.",
+                },
+                "cleanup": {
+                    "symbol": "fz_host_cleanup",
+                    "contract": "Clears registered callbacks and transient host state during teardown.",
+                },
+            },
+            "lastError": {
+                "code": "fz_host_last_error_code",
+                "class": "fz_host_last_error_class",
+                "message": "fz_host_last_error_message",
+                "contract": "Read immediately after a failing exported call or callback operation.",
+            },
+            "concurrency": {
+                "scope": "process-global",
+                "callbackRegistry": "mutex-guarded",
+                "callbackSlots": 64,
+            },
+        }).to_string()),
     }
 }
 
@@ -10842,12 +11267,20 @@ mod tests {
         .expect("headers command should succeed");
         let header_text = std::fs::read_to_string(&header).expect("header should be created");
         assert!(header_text.contains("typedef uint64_t fz_async_handle_t;"));
-        assert!(header_text
-            .contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out);"));
-        assert!(header_text
-            .contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out);"));
-        assert!(header_text
-            .contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out);"));
+        assert!(
+            header_text.contains(
+                "int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out);"
+            )
+        );
+        assert!(
+            header_text
+                .contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out);")
+        );
+        assert!(
+            header_text.contains(
+                "int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out);"
+            )
+        );
         assert!(header_text.contains("int32_t flush_async_drop(fz_async_handle_t handle);"));
         assert!(!header_text.contains("int32_t flush(int32_t code);"));
 
@@ -11007,7 +11440,9 @@ mod tests {
             Format::Text,
         )
         .expect("check command should return diagnostics");
-        assert!(output.contains("must declare ownership suffix and paired length/context contract"));
+        assert!(
+            output.contains("must declare ownership suffix and paired length/context contract")
+        );
 
         let _ = std::fs::remove_file(source);
     }
@@ -11354,9 +11789,11 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for signature changes");
-        assert!(error
-            .to_string()
-            .contains("signature changed for export `add`"));
+        assert!(
+            error
+                .to_string()
+                .contains("signature changed for export `add`")
+        );
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -11410,9 +11847,11 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for weakened contracts");
-        assert!(error
-            .to_string()
-            .contains("contract weakened/changed for export `consume`"));
+        assert!(
+            error
+                .to_string()
+                .contains("contract weakened/changed for export `consume`")
+        );
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -11473,9 +11912,11 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for async mode changes");
-        assert!(error
-            .to_string()
-            .contains("signature changed for export `flush`"));
+        assert!(
+            error
+                .to_string()
+                .contains("signature changed for export `flush`")
+        );
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -11577,20 +12018,24 @@ mod tests {
         let items = rendered_json["items"]
             .as_array()
             .expect("doc items should be an array");
-        assert!(items.iter().any(|item| item["kind"] == "ffi-export"
-            && item["signature"]
-                .as_str()
-                .is_some_and(|value| value.contains("pubext c fn hash32"))
-            && item["docs"]
-                .as_str()
-                .is_some_and(|value| value.contains("Hash bytes for the host boundary."))));
-        assert!(items.iter().any(|item| item["kind"] == "rpc"
-            && item["signature"]
-                .as_str()
-                .is_some_and(|value| value.contains("rpc Ping(req: PingReq) -> PingRes;"))
-            && item["docs"]
-                .as_str()
-                .is_some_and(|value| value.contains("Ping the service edge."))));
+        assert!(items.iter().any(|item| {
+            item["kind"] == "ffi-export"
+                && item["signature"]
+                    .as_str()
+                    .is_some_and(|value| value.contains("pubext c fn hash32"))
+                && item["docs"]
+                    .as_str()
+                    .is_some_and(|value| value.contains("Hash bytes for the host boundary."))
+        }));
+        assert!(items.iter().any(|item| {
+            item["kind"] == "rpc"
+                && item["signature"]
+                    .as_str()
+                    .is_some_and(|value| value.contains("rpc Ping(req: PingReq) -> PingRes;"))
+                && item["docs"]
+                    .as_str()
+                    .is_some_and(|value| value.contains("Ping the service edge."))
+        }));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -11762,11 +12207,34 @@ mod tests {
         let interop = payload
             .get("interop")
             .expect("interop metadata should be present for c exports");
-        assert_eq!(interop.get("buildMode").and_then(|value| value.as_str()), Some("lib"));
-        assert!(interop.get("staticLib").and_then(|value| value.as_str()).is_some());
-        assert!(interop.get("sharedLib").and_then(|value| value.as_str()).is_some());
-        assert!(interop.get("header").and_then(|value| value.as_str()).is_some());
-        assert!(interop.get("abiManifest").and_then(|value| value.as_str()).is_some());
+        assert_eq!(
+            interop.get("buildMode").and_then(|value| value.as_str()),
+            Some("lib")
+        );
+        assert!(
+            interop
+                .get("staticLib")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
+        assert!(
+            interop
+                .get("sharedLib")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
+        assert!(
+            interop
+                .get("header")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
+        assert!(
+            interop
+                .get("abiManifest")
+                .and_then(|value| value.as_str())
+                .is_some()
+        );
         assert_eq!(
             interop
                 .get("hostLifecycle")
@@ -15895,11 +16363,8 @@ fn main() -> i32 {
         )
         .expect("source should be written");
 
-        let output = run(
-            Command::Verify { path: root.clone() },
-            Format::Json,
-        )
-        .expect("verify should return diagnostics");
+        let output = run(Command::Verify { path: root.clone() }, Format::Json)
+            .expect("verify should return diagnostics");
         assert!(output.contains("\"errors\":0"));
         assert!(!output.contains("call edge `abi_touch -> host_touch` reaches unsafe code"));
         assert!(!output.contains("call edge `safe_touch -> abi_touch` reaches unsafe code"));

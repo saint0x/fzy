@@ -1875,11 +1875,7 @@ fn capability_set_from_type(ty: &Type) -> Option<BTreeSet<String>> {
                     set.insert(cap_name);
                 }
             }
-            if set.is_empty() {
-                None
-            } else {
-                Some(set)
-            }
+            if set.is_empty() { None } else { Some(set) }
         }
         _ => None,
     }
@@ -8669,11 +8665,11 @@ fn infer_expr_type(
             if let Some(fn_ty) = function_ref_type(fn_sigs, name) {
                 return Some(fn_ty);
             }
-            record_type_error(
-                state.errors,
-                state.type_error_details,
-                format!("unresolved identifier `{name}`"),
-            );
+            let mut detail = format!("unresolved identifier `{name}`");
+            if let Some(hint) = builtin_namespace_hint(name) {
+                detail.push_str(&format!("; {hint}"));
+            }
+            record_type_error(state.errors, state.type_error_details, detail);
             None
         }
         Expr::UnsafeBlock { .. } => Some(Type::Void),
@@ -8891,6 +8887,8 @@ fn infer_expr_type(
                             "; autofix: replace with `log.fields(#{\"k\": json.str(\"v\")})`",
                         );
                     }
+                } else if let Some(hint) = builtin_namespace_hint(base_callee) {
+                    detail.push_str(&format!("; {hint}"));
                 } else if let Some(nearest) = nearest_intrinsic_name(base_callee) {
                     detail.push_str(&format!("; did you mean `{}`?", nearest));
                 }
@@ -11413,6 +11411,23 @@ fn nearest_intrinsic_name(name: &str) -> Option<String> {
         .and_then(|(candidate, distance)| (distance <= 6).then_some(candidate.to_string()))
 }
 
+fn builtin_namespace_hint(name: &str) -> Option<String> {
+    let namespace = name.split('.').next()?;
+    match namespace {
+        "env" | "str" | "json" | "list" | "map" | "route" => Some(format!(
+            "`{namespace}.*` is a builtin namespace; call it directly and do not treat `core.{namespace}` as an ordinary imported module"
+        )),
+        "process" => Some(
+            "`process.*` was removed; use `proc.*` runtime intrinsics or `use core.process;` for the stdlib facade"
+                .to_string(),
+        ),
+        "proc" | "term" => Some(format!(
+            "`{namespace}.*` is always available as a runtime intrinsic namespace; `use core.{namespace}` is only needed for the higher-level stdlib facade"
+        )),
+        _ => None,
+    }
+}
+
 fn edit_distance(left: &str, right: &str) -> usize {
     let left_chars = left.chars().collect::<Vec<_>>();
     let right_chars = right.chars().collect::<Vec<_>>();
@@ -11713,24 +11728,18 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "simd.__i32x4_not" => (vec![i32x4.clone()], i32x4.clone()),
         "simd.__u32x4_not" => (vec![u32x4.clone()], u32x4.clone()),
         "simd.__mask32x4_not" => (vec![mask32x4.clone()], mask32x4.clone()),
-        "simd.__i32x4_eq"
-        | "simd.__i32x4_ne"
-        | "simd.__i32x4_lt"
-        | "simd.__i32x4_le"
-        | "simd.__i32x4_gt"
-        | "simd.__i32x4_ge" => (vec![i32x4.clone(), i32x4.clone()], mask32x4.clone()),
-        "simd.__u32x4_eq"
-        | "simd.__u32x4_ne"
-        | "simd.__u32x4_lt"
-        | "simd.__u32x4_le"
-        | "simd.__u32x4_gt"
-        | "simd.__u32x4_ge" => (vec![u32x4.clone(), u32x4.clone()], mask32x4.clone()),
-        "simd.__f32x4_eq"
-        | "simd.__f32x4_ne"
-        | "simd.__f32x4_lt"
-        | "simd.__f32x4_le"
-        | "simd.__f32x4_gt"
-        | "simd.__f32x4_ge" => (vec![f32x4.clone(), f32x4.clone()], mask32x4.clone()),
+        "simd.__i32x4_eq" | "simd.__i32x4_ne" | "simd.__i32x4_lt" | "simd.__i32x4_le"
+        | "simd.__i32x4_gt" | "simd.__i32x4_ge" => {
+            (vec![i32x4.clone(), i32x4.clone()], mask32x4.clone())
+        }
+        "simd.__u32x4_eq" | "simd.__u32x4_ne" | "simd.__u32x4_lt" | "simd.__u32x4_le"
+        | "simd.__u32x4_gt" | "simd.__u32x4_ge" => {
+            (vec![u32x4.clone(), u32x4.clone()], mask32x4.clone())
+        }
+        "simd.__f32x4_eq" | "simd.__f32x4_ne" | "simd.__f32x4_lt" | "simd.__f32x4_le"
+        | "simd.__f32x4_gt" | "simd.__f32x4_ge" => {
+            (vec![f32x4.clone(), f32x4.clone()], mask32x4.clone())
+        }
         "simd.__i32x4_select" => (
             vec![mask32x4.clone(), i32x4.clone(), i32x4.clone()],
             i32x4.clone(),
@@ -11806,17 +11815,11 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             (vec![mask32x4.clone()], bool_ty.clone())
         }
         "simd.__mask32x4_bitmask" => (vec![mask32x4.clone()], i32.clone()),
-        "simd.__i32x4_lane0"
-        | "simd.__i32x4_lane1"
-        | "simd.__i32x4_lane2"
+        "simd.__i32x4_lane0" | "simd.__i32x4_lane1" | "simd.__i32x4_lane2"
         | "simd.__i32x4_lane3" => (vec![i32x4.clone()], i32.clone()),
-        "simd.__u32x4_lane0"
-        | "simd.__u32x4_lane1"
-        | "simd.__u32x4_lane2"
+        "simd.__u32x4_lane0" | "simd.__u32x4_lane1" | "simd.__u32x4_lane2"
         | "simd.__u32x4_lane3" => (vec![u32x4.clone()], u32_ty.clone()),
-        "simd.__f32x4_lane0"
-        | "simd.__f32x4_lane1"
-        | "simd.__f32x4_lane2"
+        "simd.__f32x4_lane0" | "simd.__f32x4_lane1" | "simd.__f32x4_lane2"
         | "simd.__f32x4_lane3" => (vec![f32x4.clone()], f32_ty.clone()),
         "simd.__mask32x4_lane0"
         | "simd.__mask32x4_lane1"
@@ -12115,7 +12118,11 @@ fn check_pattern_compatibility(
                 return;
             };
             for (field, _) in fields {
-                if !struct_def.fields.iter().any(|candidate| candidate.name == *field) {
+                if !struct_def
+                    .fields
+                    .iter()
+                    .any(|candidate| candidate.name == *field)
+                {
                     record_type_error(
                         errors,
                         type_error_details,
@@ -12175,7 +12182,8 @@ fn check_pattern_compatibility(
                         ),
                     );
                 }
-            } else if !bindings.is_empty() || found_variant.named_payload.len() != named_bindings.len()
+            } else if !bindings.is_empty()
+                || found_variant.named_payload.len() != named_bindings.len()
             {
                 record_type_error(
                     errors,
@@ -12188,14 +12196,22 @@ fn check_pattern_compatibility(
                 );
             }
         }
-        (ast::Pattern::Variant { enum_name, variant, .. }, Some(actual)) => {
-            record_type_error(
-                errors,
-                type_error_details,
-                format!("pattern `{enum_name}::{variant}` expects enum scrutinee, got `{actual}`"),
-            )
-        }
-        (ast::Pattern::Variant { enum_name, variant, .. }, None) => record_type_error(
+        (
+            ast::Pattern::Variant {
+                enum_name, variant, ..
+            },
+            Some(actual),
+        ) => record_type_error(
+            errors,
+            type_error_details,
+            format!("pattern `{enum_name}::{variant}` expects enum scrutinee, got `{actual}`"),
+        ),
+        (
+            ast::Pattern::Variant {
+                enum_name, variant, ..
+            },
+            None,
+        ) => record_type_error(
             errors,
             type_error_details,
             format!(
@@ -13880,10 +13896,12 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
         assert!(typed.trait_violations.is_empty());
-        assert!(typed
-            .generic_specializations
-            .iter()
-            .any(|entry| entry.starts_with("id<")));
+        assert!(
+            typed
+                .generic_specializations
+                .iter()
+                .any(|entry| entry.starts_with("id<"))
+        );
     }
 
     #[test]
@@ -13927,10 +13945,12 @@ mod tests {
         let module = parser::parse(&source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
-        assert!(typed
-            .typed_functions
-            .iter()
-            .any(|function| function.name == "Point.render"));
+        assert!(
+            typed
+                .typed_functions
+                .iter()
+                .any(|function| function.name == "Point.render")
+        );
     }
 
     #[test]
@@ -13944,10 +13964,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .trait_violations
-            .iter()
-            .any(|detail| detail.contains("parameter 0 type mismatch")));
+        assert!(
+            typed
+                .trait_violations
+                .iter()
+                .any(|detail| detail.contains("parameter 0 type mismatch"))
+        );
     }
 
     #[test]
@@ -13970,14 +13992,18 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .trait_violations
-            .iter()
-            .any(|detail| detail.contains("missing associated type `Key`")));
-        assert!(typed
-            .trait_violations
-            .iter()
-            .any(|detail| detail.contains("missing associated const `VERSION`")));
+        assert!(
+            typed
+                .trait_violations
+                .iter()
+                .any(|detail| detail.contains("missing associated type `Key`"))
+        );
+        assert!(
+            typed
+                .trait_violations
+                .iter()
+                .any(|detail| detail.contains("missing associated const `VERSION`"))
+        );
     }
 
     #[test]
@@ -14039,14 +14065,18 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .trait_violations
-            .iter()
-            .any(|detail| detail.contains("overlapping impls for trait `Show`")));
-        assert!(typed
-            .trait_violations
-            .iter()
-            .any(|detail| detail.contains("ambiguous bound `Show`")));
+        assert!(
+            typed
+                .trait_violations
+                .iter()
+                .any(|detail| detail.contains("overlapping impls for trait `Show`"))
+        );
+        assert!(
+            typed
+                .trait_violations
+                .iter()
+                .any(|detail| detail.contains("ambiguous bound `Show`"))
+        );
     }
 
     #[test]
@@ -14056,10 +14086,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .trait_violations
-            .iter()
-            .any(|detail| detail.contains("trait `Missing` is not defined")));
+        assert!(
+            typed
+                .trait_violations
+                .iter()
+                .any(|detail| detail.contains("trait `Missing` is not defined"))
+        );
     }
 
     #[test]
@@ -14072,10 +14104,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "error_trait").expect("parse");
         let typed = lower(&module);
-        assert!(!typed
-            .trait_violations
-            .iter()
-            .any(|detail| detail.contains("trait `Error` is not defined")));
+        assert!(
+            !typed
+                .trait_violations
+                .iter()
+                .any(|detail| detail.contains("trait `Error` is not defined"))
+        );
     }
 
     #[test]
@@ -14170,10 +14204,12 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("proc.spawn") && detail.contains("expected `str`")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("proc.spawn") && detail.contains("expected `str`"))
+        );
     }
 
     #[test]
@@ -14575,10 +14611,12 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("autofix")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("autofix"))
+        );
     }
 
     #[test]
@@ -14670,10 +14708,12 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("does not match scrutinee enum")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("does not match scrutinee enum"))
+        );
     }
 
     #[test]
@@ -14706,10 +14746,12 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("return type mismatch")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("return type mismatch"))
+        );
     }
 
     #[test]
@@ -14738,10 +14780,12 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("uses `await` but is not declared async")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("uses `await` but is not declared async"))
+        );
     }
 
     #[test]
@@ -14783,10 +14827,12 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("assignment to immutable binding")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("assignment to immutable binding"))
+        );
     }
 
     #[test]
@@ -14832,8 +14878,9 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed.type_error_details.iter().any(|detail| detail
-            .contains("must be initialized with an integer/char/bool compile-time expression")));
+        assert!(typed.type_error_details.iter().any(|detail| {
+            detail.contains("must be initialized with an integer/char/bool compile-time expression")
+        }));
     }
 
     #[test]
@@ -14849,10 +14896,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `q` after provenance root")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `q` after provenance root"))
+        );
     }
 
     #[test]
@@ -14878,14 +14927,18 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `from_first` after provenance root")));
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `from_second` after provenance root")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `from_first` after provenance root"))
+        );
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `from_second` after provenance root"))
+        );
     }
 
     #[test]
@@ -14904,14 +14957,18 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `left` after provenance root")));
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `right` after provenance root")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `left` after provenance root"))
+        );
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `right` after provenance root"))
+        );
     }
 
     #[test]
@@ -14931,14 +14988,18 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `left` after provenance root")));
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `right` after provenance root")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `left` after provenance root"))
+        );
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `right` after provenance root"))
+        );
     }
 
     #[test]
@@ -14956,10 +15017,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `q` after provenance root")));
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `q` after provenance root"))
+        );
     }
 
     #[test]
@@ -14980,10 +15043,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `ret` after provenance root")));
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `ret` after provenance root"))
+        );
     }
 
     #[test]
@@ -15003,10 +15068,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("uses value `q` after provenance root")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("uses value `q` after provenance root"))
+        );
     }
 
     #[test]
@@ -15082,10 +15149,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(!typed
-            .linear_type_violations
-            .iter()
-            .any(|detail| detail.contains("frees non-linear value `p`")));
+        assert!(
+            !typed
+                .linear_type_violations
+                .iter()
+                .any(|detail| detail.contains("frees non-linear value `p`"))
+        );
     }
 
     #[test]
@@ -15101,14 +15170,18 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.deferred_resources.iter().any(|name| name == "p"));
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`")));
-        assert!(!typed
-            .linear_type_violations
-            .iter()
-            .any(|detail| detail.contains("linear value `p` was not consumed/freed")));
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`"))
+        );
+        assert!(
+            !typed
+                .linear_type_violations
+                .iter()
+                .any(|detail| detail.contains("linear value `p` was not consumed/freed"))
+        );
     }
 
     #[test]
@@ -15122,10 +15195,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`"))
+        );
     }
 
     #[test]
@@ -15144,22 +15219,30 @@ mod tests {
         "#;
         let inferred_typed = lower(&parser::parse(inferred, "main").expect("parse"));
         let explicit_typed = lower(&parser::parse(typed_src, "main").expect("parse"));
-        assert!(inferred_typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("leaks allocation") && detail.contains("`listener`")));
-        assert!(explicit_typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("leaks allocation") && detail.contains("`listener`")));
-        assert!(inferred_typed
-            .linear_type_violations
-            .iter()
-            .any(|detail| detail.contains("linear value `listener` was not consumed/freed")));
-        assert!(explicit_typed
-            .linear_type_violations
-            .iter()
-            .any(|detail| detail.contains("linear value `listener` was not consumed/freed")));
+        assert!(
+            inferred_typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("leaks allocation") && detail.contains("`listener`"))
+        );
+        assert!(
+            explicit_typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("leaks allocation") && detail.contains("`listener`"))
+        );
+        assert!(
+            inferred_typed
+                .linear_type_violations
+                .iter()
+                .any(|detail| detail.contains("linear value `listener` was not consumed/freed"))
+        );
+        assert!(
+            explicit_typed
+                .linear_type_violations
+                .iter()
+                .any(|detail| detail.contains("linear value `listener` was not consumed/freed"))
+        );
     }
 
     #[test]
@@ -15199,10 +15282,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("aliases mutable reference parameter `x`")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("aliases mutable reference parameter `x`"))
+        );
     }
 
     #[test]
@@ -15219,10 +15304,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("aliases mutable reference parameter `x`")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("aliases mutable reference parameter `x`"))
+        );
     }
 
     #[test]
@@ -15238,10 +15325,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("double-frees provenance root")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("double-frees provenance root"))
+        );
     }
 
     #[test]
@@ -15298,10 +15387,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("function `main` leaks allocation")));
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("function `main` leaks allocation"))
+        );
     }
 
     #[test]
@@ -15319,10 +15410,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("function `produce` leaks allocation")));
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("function `produce` leaks allocation"))
+        );
     }
 
     #[test]
@@ -15357,10 +15450,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| { detail.contains("performs partial move from owned aggregate") }));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| { detail.contains("performs partial move from owned aggregate") })
+        );
     }
 
     #[test]
@@ -15377,10 +15472,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| { detail.contains("performs partial move from owned aggregate") }));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| { detail.contains("performs partial move from owned aggregate") })
+        );
     }
 
     #[test]
@@ -15396,10 +15493,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| { detail.contains("performs partial move from owned aggregate") }));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| { detail.contains("performs partial move from owned aggregate") })
+        );
     }
 
     #[test]
@@ -15415,10 +15514,12 @@ mod tests {
         let typed = lower(&module);
         assert!(typed.unsafe_sites > 0);
         assert_eq!(typed.unsafe_reasoned_sites, 0);
-        assert!(typed
-            .unsafe_contract_sites
-            .iter()
-            .any(|site| site.owner.as_deref() == Some("scope_root")));
+        assert!(
+            typed
+                .unsafe_contract_sites
+                .iter()
+                .any(|site| site.owner.as_deref() == Some("scope_root"))
+        );
     }
 
     #[test]
@@ -15466,14 +15567,17 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("function `main` leaks allocation")));
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| { detail.contains("consumes non-owned or already-consumed value `p`") }));
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("function `main` leaks allocation"))
+        );
+        assert!(
+            !typed.ownership_violations.iter().any(|detail| {
+                detail.contains("consumes non-owned or already-consumed value `p`")
+            })
+        );
     }
 
     #[test]
@@ -15489,8 +15593,9 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(!typed.linear_type_violations.iter().any(|detail| detail
-            .contains("function `inspect` linear value `stream` was not consumed/freed")));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `inspect` linear value `stream` was not consumed/freed")
+        }));
     }
 
     #[test]
@@ -15510,11 +15615,13 @@ mod tests {
         assert!(!typed.linear_type_violations.iter().any(|detail| {
             detail.contains("function `respond` linear value `conn` was not consumed/freed")
         }));
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("function `main` leaks allocation")
-                && detail.contains("`conn`")));
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("function `main` leaks allocation")
+                    && detail.contains("`conn`"))
+        );
     }
 
     #[test]
@@ -15579,10 +15686,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(!typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`")));
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`"))
+        );
         assert!(!typed.ownership_violations.iter().any(|detail| {
             detail.contains("divergent ownership state for `p`")
                 || detail.contains("conditionally consumed value `p`")
@@ -15601,14 +15710,18 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("atomic.load ordering `Release` is invalid")));
-        assert!(typed
-            .ownership_violations
-            .iter()
-            .any(|detail| detail.contains("atomic.fence ordering `Relaxed` is invalid")));
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("atomic.load ordering `Release` is invalid"))
+        );
+        assert!(
+            typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("atomic.fence ordering `Relaxed` is invalid"))
+        );
     }
 
     #[test]
@@ -15795,14 +15908,18 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("`break` is only valid inside loop bodies")));
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("`continue` is only valid inside loop bodies")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("`break` is only valid inside loop bodies"))
+        );
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("`continue` is only valid inside loop bodies"))
+        );
     }
 
     #[test]
@@ -15903,11 +16020,9 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail
-                .contains("or-pattern alternatives must bind identical names and types")));
+        assert!(typed.type_error_details.iter().any(|detail| {
+            detail.contains("or-pattern alternatives must bind identical names and types")
+        }));
     }
 
     #[test]
@@ -15936,10 +16051,12 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("closure return type mismatch")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("closure return type mismatch"))
+        );
     }
 
     #[test]
@@ -15953,10 +16070,12 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("is not callable")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("is not callable"))
+        );
     }
 
     #[test]
@@ -15984,10 +16103,12 @@ mod tests {
         "#;
         let module = parser::parse(source, "unsafe_ctx").expect("parse");
         let typed = lower(&module);
-        assert!(typed
-            .unsafe_context_violations
-            .iter()
-            .any(|detail| detail.contains("outside `unsafe` context")));
+        assert!(
+            typed
+                .unsafe_context_violations
+                .iter()
+                .any(|detail| detail.contains("outside `unsafe` context"))
+        );
     }
 
     #[test]
@@ -16005,10 +16126,12 @@ mod tests {
         let module = parser::parse(source, "exhaustive").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("non-exhaustive match for enum `State`")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("non-exhaustive match for enum `State`"))
+        );
     }
 
     #[test]
@@ -16039,10 +16162,12 @@ mod tests {
         let module = parser::parse(source, "await_future").expect("parse");
         let typed = lower(&module);
         assert!(typed.type_errors > 0);
-        assert!(typed
-            .type_error_details
-            .iter()
-            .any(|detail| detail.contains("await expects `Future<T>`")));
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("await expects `Future<T>`"))
+        );
     }
 
     #[test]

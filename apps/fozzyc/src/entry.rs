@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
-use driver::{cli_output, run as driver_run, Command, CommandFailure, Format};
+use anyhow::{Context, Result, bail};
+use driver::{Command, CommandFailure, Format, cli_output, run as driver_run};
 
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -105,11 +105,7 @@ fn infer_exit_code(command: &Command, output: &str, json: bool) -> Option<i32> {
                             .and_then(serde_json::Value::as_bool)
                             .is_some_and(|ok| !ok)
                     });
-                if has_error {
-                    Some(1)
-                } else {
-                    None
-                }
+                if has_error { Some(1) } else { None }
             }
             _ => None,
         };
@@ -517,6 +513,21 @@ fn parse_command(args: &[String]) -> Result<Command> {
                 bail!("unknown doc subcommand")
             }
         },
+        Some("inspect") => match args.get(1).map(String::as_str) {
+            Some("surface") => Ok(Command::InspectSurface),
+            Some("artifacts") => Ok(Command::InspectArtifacts {
+                path: arg_path_or_cwd(args, 2)?,
+                release: has_flag(args, "--release"),
+                backend: parse_backend_flag(args)?,
+            }),
+            Some("embedding") => Ok(Command::InspectEmbedding {
+                path: arg_path_or_cwd(args, 2)?,
+            }),
+            _ => {
+                print_help();
+                bail!("unknown inspect subcommand")
+            }
+        },
         Some("version") => Ok(Command::Version),
         Some("--version") => Ok(Command::Version),
         _ => {
@@ -603,6 +614,9 @@ commands:\n\
   headers [path] [--out path]\n\
   rpc gen [path] [--out-dir dir]\n\
   doc gen [path] [--format json|html|markdown] [--out path] [--reference path]\n\
+  inspect surface\n\
+  inspect artifacts [path] [--release] [--backend llvm|cranelift]\n\
+  inspect embedding [path]\n\
   fuzz <scenario>\n\
   explore <scenario>\n\
   map suites [--root dir] [--scenario-root dir] [--profile pedantic|production|compat]\n\
@@ -853,9 +867,10 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(err
-            .to_string()
-            .contains("production memory safety is always enabled"));
+        assert!(
+            err.to_string()
+                .contains("production memory safety is always enabled")
+        );
     }
 
     #[test]
@@ -866,9 +881,10 @@ mod tests {
             "--safe-profile".to_string(),
         ];
         let err = parse_command(&args).expect_err("safe profile flag must be rejected");
-        assert!(err
-            .to_string()
-            .contains("production memory safety is always enabled"));
+        assert!(
+            err.to_string()
+                .contains("production memory safety is always enabled")
+        );
     }
 
     #[test]
@@ -1171,9 +1187,11 @@ mod tests {
             "artifacts/default.profdata".to_string(),
         ];
         let error = parse_command(&args).expect_err("combined pgo flags should fail");
-        assert!(error
-            .to_string()
-            .contains("--pgo-generate and --pgo-use are mutually exclusive"));
+        assert!(
+            error
+                .to_string()
+                .contains("--pgo-generate and --pgo-use are mutually exclusive")
+        );
     }
 
     #[test]

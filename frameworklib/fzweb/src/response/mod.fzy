@@ -1,5 +1,21 @@
 use core.http;
 
+use request;
+
+struct ApiError {
+    status: i32,
+    code: str,
+    message: str,
+    details: str,
+}
+
+struct ResponsePlan {
+    status: i32,
+    content_type: str,
+    body: str,
+    close: i32,
+}
+
 fn header_set(conn: HttpHandle, key: str, value: str) -> i32 {
     return http.response_header_set(conn, key, value)
 }
@@ -12,28 +28,85 @@ fn header_clear(conn: HttpHandle) -> i32 {
     return http.response_header_clear(conn)
 }
 
+fn plan(status: i32, content_type: str, body: str) -> ResponsePlan {
+    return ResponsePlan {
+        status: status,
+        content_type: content_type,
+        body: body,
+        close: 1,
+    }
+}
+
+fn text(status: i32, body: str) -> ResponsePlan {
+    return plan(status, "text/plain; charset=utf-8", body)
+}
+
+fn json_plan(status: i32, body: str) -> ResponsePlan {
+    return plan(status, "application/json; charset=utf-8", body)
+}
+
+fn bytes(status: i32, content_type: str, body: str) -> ResponsePlan {
+    return plan(status, content_type, body)
+}
+
+fn no_content_plan() -> ResponsePlan {
+    return plan(204, "text/plain; charset=utf-8", "")
+}
+
+fn accepted_json(body: str) -> ResponsePlan {
+    return json_plan(202, body)
+}
+
+fn emit(conn: HttpHandle, out: ResponsePlan) -> i32 {
+    return http.write_response(conn, out.status, out.content_type, out.body, out.close)
+}
+
 fn send_text(conn: HttpHandle, status: i32, body: str) -> i32 {
-    return http.write_response(conn, status, "text/plain; charset=utf-8", body, 1)
+    return emit(conn, text(status, body))
 }
 
 fn send_json(conn: HttpHandle, status: i32, body: str) -> i32 {
-    return http.write_response(conn, status, "application/json; charset=utf-8", body, 1)
+    return emit(conn, json_plan(status, body))
 }
 
 fn send_bytes(conn: HttpHandle, status: i32, content_type: str, body: str) -> i32 {
-    return http.write_response(conn, status, content_type, body, 1)
+    return emit(conn, bytes(status, content_type, body))
 }
 
 fn no_content(conn: HttpHandle) -> i32 {
-    return http.write_response(conn, 204, "text/plain; charset=utf-8", "", 1)
+    return emit(conn, no_content_plan())
+}
+
+fn api_error(status: i32, code: str, message: str, details: str) -> ApiError {
+    return ApiError {
+        status: status,
+        code: code,
+        message: message,
+        details: details,
+    }
+}
+
+fn request_error(err: request.RequestError) -> ApiError {
+    return api_error(err.status, err.code, err.message, err.details)
 }
 
 fn error_json(code: str, message: str) -> str {
+    return error_body(api_error(400, code, message, ""))
+}
+
+fn error_body(err: ApiError) -> str {
     let payload = map.new()
-    discard map.set(payload, "error", json.str(code))
-    discard map.set(payload, "message", json.str(message))
+    discard map.set(payload, "error", json.str(err.code))
+    discard map.set(payload, "message", json.str(err.message))
+    if err.details != "" {
+        discard map.set(payload, "details", json.str(err.details))
+    }
     discard map.set(payload, "framework", json.str("fzweb"))
     return json.object(payload)
+}
+
+fn error_plan(err: ApiError) -> ResponsePlan {
+    return json_plan(err.status, error_body(err))
 }
 
 fn ok_json(event: str, request_id: str) -> str {

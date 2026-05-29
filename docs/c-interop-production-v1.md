@@ -43,6 +43,8 @@ panic_boundary = "abort"
 
 ```bash
 fz build path/to/module.fzy --lib --release --json
+fz inspect artifacts path/to/module.fzy --release --json
+fz inspect embedding path/to/module.fzy --json
 ```
 
 3. Outputs include:
@@ -52,6 +54,7 @@ fz build path/to/module.fzy --lib --release --json
 - `abiManifest`: ABI manifest JSON
 
 Default `fz build ... --json` now also reports an `interop` block for projects that define C exports, so embedders can discover the supported `.a`/`.so`/`.dylib`, header, and ABI manifest without scraping `.fz/build` internals.
+It also writes a sibling artifact manifest (`*.artifacts.json`) next to the generated header so Rust/C build scripts can consume a single stable machine-readable file.
 
 For async exports, generated headers expose:
 - `typedef uint64_t fz_async_handle_t;`
