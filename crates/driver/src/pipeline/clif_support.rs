@@ -3115,6 +3115,14 @@ pub(super) fn clif_emit_expr(
                     value: builder.use_var(binding.var),
                     ty: binding.ty,
                 }
+            } else if let Some(value) = ctx.const_strings.get(name).cloned() {
+                ClifValue {
+                    value: builder.ins().iconst(
+                        default_int_clif_type(),
+                        ctx.string_literal_ids.get(&value).copied().unwrap_or(0) as i64,
+                    ),
+                    ty: default_int_clif_type(),
+                }
             } else if let Some(value) =
                 resolve_native_global_const_i32_expr(expr, ctx.current_namespace, ctx.globals)
             {

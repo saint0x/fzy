@@ -1,5 +1,8 @@
 use core.fs;
 use core.mem;
+
 fn init() -> i32 {
-    let db = fs.open() discard db return 0
+    let db_ref = fs.open();
+    discard db_ref;
+    return 0;
 }

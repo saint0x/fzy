@@ -3,12 +3,32 @@ use core.proc;
 use core.thread;
 mod scheduler;
 mod worker;
+
 fn configure_profile() -> i32 {
-    time.now() return 0
+    discard time.now();
+    return 0;
 }
+
+fn start_worker() -> i32 {
+    spawn(worker.run);
+    return 0;
+}
+
+fn start_scheduler() -> i32 {
+    spawn(scheduler.tick);
+    return 0;
+}
+
 fn start() -> i32 {
-    spawn(worker.run) spawn(scheduler.tick) return 0
+    discard start_worker();
+    discard start_scheduler();
+    return 0;
 }
+
 fn begin_shutdown_drain() -> i32 {
-    let child = proc.spawn("echo robust-cli-shutdown") defer proc.close(child) discard proc.exec_timeout(child) checkpoint() return 0
+    let shutdown_proc_owned = proc.spawn("echo robust-cli-shutdown");
+    defer proc.close(shutdown_proc_owned);
+    discard proc.exec_timeout(shutdown_proc_owned);
+    checkpoint();
+    return 0;
 }

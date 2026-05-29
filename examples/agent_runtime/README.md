@@ -5,9 +5,9 @@
 It demonstrates:
 
 - signed session envelopes with `core.security`
-- JSON tool catalogs and request plans
+- model-first request classification plus JSON tool catalogs
 - audit-trail persistence through `core.storage`
-- transcript-friendly CLI behavior
+- transcript-friendly CLI behavior with a narrow command story
 - `spawn_ctx(...)` + `thread.context_id()` for bounded parallel work
 
 Validate it with:

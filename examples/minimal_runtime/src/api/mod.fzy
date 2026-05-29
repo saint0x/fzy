@@ -1,6 +1,5 @@
 mod ffi;
 
 fn touch() -> i32 {
-    ffi.ping();
-    return 0;
+    return ffi.ping();
 }

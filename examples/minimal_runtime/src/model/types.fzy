@@ -1,5 +1,18 @@
 #[repr(C)] struct MinimalRow {
+    heartbeat: i32,
+    worker_count: i32,
 }
+
+#[repr(C)] enum RuntimeMode {
+    SingleShot,
+    Background,
+}
+
 fn schema_version() -> i32 {
     return 1
+}
+
+fn default_worker_count() -> i32 {
+    let _mode = RuntimeMode::Background
+    return 2
 }

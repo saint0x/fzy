@@ -3077,6 +3077,11 @@ pub(super) fn llvm_emit_simple_expr(
     match expr {
         ast::Expr::Ident(name) => Some(Ok(if let Some(direct) = ctx.direct_values.get(name) {
             direct.clone()
+        } else if let Some(value) = ctx.const_strings.get(name).cloned() {
+            LlvmValue {
+                value: string_literal_ids.get(&value).copied().unwrap_or(0).to_string(),
+                ty: "i32".to_string(),
+            }
         } else if let Some(value) =
             resolve_native_global_const_i32_expr(expr, &ctx.current_namespace, &ctx.globals)
         {

@@ -1,15 +1,33 @@
 use core.fs;
 use core.mem;
 use core.time;
+
 fn open_db() -> i32 {
-    let handle = fs.open() discard handle fs.flush() return 0
+    let db_ref = fs.open();
+    discard db_ref;
+    fs.flush();
+    return 0;
 }
+
 fn write_kv() -> i32 {
-    let h = fs.open() discard h fs.write() fs.flush() fs.fsync() fs.atomic_write() time.now() return 0
+    let write_file_ref = fs.open();
+    discard write_file_ref;
+    fs.write();
+    fs.flush();
+    fs.fsync();
+    fs.atomic_write();
+    discard time.now();
+    return 0;
 }
+
 fn read_kv() -> i32 {
-    let h = fs.open() discard h fs.read() return 0
+    let read_file_ref = fs.open();
+    discard read_file_ref;
+    fs.read();
+    return 0;
 }
+
 fn scan_kv() -> i32 {
-    time.now() return 0
+    discard time.now();
+    return 0;
 }

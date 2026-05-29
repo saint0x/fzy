@@ -4,6 +4,14 @@ mod store;
 mod metrics;
 mod replication;
 mod telemetry;
+
 fn boot_all() -> i32 {
-    telemetry.bootstrap_metrics() http.listen_public() sessions.issue_token() store.read_user() metrics.record_req() replication.push_state() telemetry.flush_runtime_stats() return 0
+    discard telemetry.bootstrap_metrics();
+    discard http.listen_public();
+    discard sessions.issue_token();
+    discard store.read_user();
+    discard metrics.record_req();
+    discard replication.push_state();
+    discard telemetry.flush_runtime_stats();
+    return 0;
 }

@@ -1,5 +1,18 @@
 #[repr(C)] struct UserRow {
+    id: i32,
+    active: i32,
 }
+
+#[repr(C)] enum ServiceMode {
+    Rpc,
+    Http,
+}
+
 fn schema_version() -> i32 {
     return 2
+}
+
+fn default_http_port() -> i32 {
+    let _mode = ServiceMode::Http
+    return 8080
 }

@@ -1,3 +1,4 @@
 fn boot() -> i32 {
+    pulse();
     return 0
 }

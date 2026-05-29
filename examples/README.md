@@ -2,6 +2,15 @@
 
 These examples are meant to be executable production-shaped references, not syntax-only scraps.
 
+House style across the suite:
+
+- `main.fzy` only tells the boot story.
+- `model/` owns typed shapes, contracts, and boundary payload helpers.
+- `services/` owns direct effects.
+- `runtime/` owns lifecycle, workers, and shutdown paths.
+- `cli/` owns operator entrypoints.
+- resource names expose ownership when the value is an owned runtime handle.
+
 - `minimal_runtime`: smallest native runtime surface.
 - `service_app`: compact service composition baseline.
 - `robust_cli`: terminal-first product structure.

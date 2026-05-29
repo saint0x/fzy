@@ -3404,19 +3404,20 @@ fn expr_consumed_binding_name(expr: &Expr) -> Option<&str> {
 
 fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
     match callee {
-        "http.write"
-        | "http.write_json"
-        | "http.write_response"
-        | "route.write_404"
-        | "route.write_405"
-        | "http.stream_close"
-        | "join"
+        "join"
         | "detach"
         | "cancel_task"
         | "task.group_join"
         | "task.group_join_all"
         | "task.group_cancel" => &[0],
         _ if is_free_callee(callee) || is_close_callee(callee) => &[0],
+        _ if callee.ends_with("http.write")
+            || callee.ends_with("http.write_json")
+            || callee.ends_with("http.write_response")
+            || callee.ends_with("route.write_404")
+            || callee.ends_with("route.write_405")
+            || callee.ends_with("http.stream_close")
+            || callee.ends_with("http.websocket_accept") => &[0],
         _ => &[],
     }
 }
@@ -4051,6 +4052,18 @@ fn analyze_ownership_block(
             Stmt::Let {
                 name, value, ty, ..
             } => {
+                analyze_expr_value_ownership(
+                    function,
+                    value,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
                 state.owner_candidates.insert(name.clone());
                 if binding_creates_owned_resource(function, name, ty.as_ref(), value) {
                     state.owners.insert(name.clone(), *next_alloc);
@@ -4074,6 +4087,18 @@ fn analyze_ownership_block(
                 }
             }
             Stmt::LetPattern { pattern, value, .. } => {
+                analyze_expr_value_ownership(
+                    function,
+                    value,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
                 collect_pattern_bindings(pattern, &mut state.owner_candidates);
                 if is_partial_move_expr(function, value, &state.owners, struct_defs, enum_defs)
                     || pattern_performs_partial_move(
@@ -4091,6 +4116,18 @@ fn analyze_ownership_block(
                 }
             }
             Stmt::Assign { target, value } => {
+                analyze_expr_value_ownership(
+                    function,
+                    value,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
                 state.owner_candidates.insert(target.clone());
                 if let Expr::Ident(from) = value {
                     if let Some(owner) = state.owners.remove(from) {
@@ -4108,6 +4145,18 @@ fn analyze_ownership_block(
                 }
             }
             Stmt::CompoundAssign { target, value, .. } => {
+                analyze_expr_value_ownership(
+                    function,
+                    value,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
                 state.owner_candidates.insert(target.clone());
                 if let Expr::Ident(from) = value {
                     if let Some(owner) = state.owners.remove(from) {
@@ -4185,10 +4234,22 @@ fn analyze_ownership_block(
                 return false;
             }
             Stmt::If {
+                condition,
                 then_body,
                 else_body,
-                ..
             } => {
+                analyze_expr_value_ownership(
+                    function,
+                    condition,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
                 let entry_state = state.clone();
                 let mut then_state = state.clone();
                 let mut else_state = state.clone();
@@ -4230,6 +4291,18 @@ fn analyze_ownership_block(
                 };
             }
             Stmt::While { condition, body } => {
+                analyze_expr_value_ownership(
+                    function,
+                    condition,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
                 if !analyze_loop_ownership(
                     function,
                     body,
@@ -4247,7 +4320,7 @@ fn analyze_ownership_block(
             }
             Stmt::For {
                 init,
-                condition: _,
+                condition,
                 step,
                 body,
             } => {
@@ -4255,6 +4328,20 @@ fn analyze_ownership_block(
                     let _ = analyze_ownership_block(
                         function,
                         std::slice::from_ref(init.as_ref()),
+                        state,
+                        next_alloc,
+                        violations,
+                        function_name,
+                        ownership_summaries,
+                        struct_defs,
+                        enum_defs,
+                        None,
+                    );
+                }
+                if let Some(condition) = condition {
+                    analyze_expr_value_ownership(
+                        function,
+                        condition,
                         state,
                         next_alloc,
                         violations,
@@ -4284,7 +4371,23 @@ fn analyze_ownership_block(
                     return false;
                 }
             }
-            Stmt::ForIn { binding, body, .. } => {
+            Stmt::ForIn {
+                binding,
+                iterable,
+                body,
+            } => {
+                analyze_expr_value_ownership(
+                    function,
+                    iterable,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
                 state.moved.remove(binding);
                 state.maybe_moved.remove(binding);
                 state.owner_candidates.insert(binding.clone());
@@ -4331,13 +4434,36 @@ fn analyze_ownership_block(
                 }
                 return false;
             }
-            Stmt::Match { arms, .. } => {
+            Stmt::Match { scrutinee, arms } => {
+                analyze_expr_value_ownership(
+                    function,
+                    scrutinee,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
                 let entry_state = state.clone();
                 let mut arm_states = Vec::new();
                 for arm in arms {
                     let mut arm_state = state.clone();
                     if let Some(guard) = &arm.guard {
-                        let _ = guard;
+                        analyze_expr_value_ownership(
+                            function,
+                            guard,
+                            &mut arm_state,
+                            next_alloc,
+                            violations,
+                            function_name,
+                            ownership_summaries,
+                            struct_defs,
+                            enum_defs,
+                            None,
+                        );
                     }
                     analyze_expr_value_ownership(
                         function,
@@ -4418,6 +4544,20 @@ fn analyze_expr_value_ownership(
         }
         Expr::Call { callee, args } => {
             apply_call_consumed_params(callee, args, state, ownership_summaries);
+            for arg in args {
+                analyze_expr_value_ownership(
+                    function,
+                    arg,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
+            }
         }
         Expr::UnsafeBlock { body, .. } => {
             let _ = analyze_ownership_block(
@@ -4448,6 +4588,72 @@ fn analyze_expr_value_ownership(
                 struct_defs,
                 enum_defs,
                 loop_exits.as_deref_mut(),
+            );
+        }
+        Expr::Binary { left, right, .. } => {
+            analyze_expr_value_ownership(
+                function,
+                left,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+                None,
+            );
+            analyze_expr_value_ownership(
+                function,
+                right,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+                None,
+            );
+        }
+        Expr::FieldAccess { base, .. } => {
+            analyze_expr_value_ownership(
+                function,
+                base,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+                None,
+            );
+        }
+        Expr::Index { base, index } => {
+            analyze_expr_value_ownership(
+                function,
+                base,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+                None,
+            );
+            analyze_expr_value_ownership(
+                function,
+                index,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+                None,
             );
         }
         Expr::TryCatch {
@@ -4555,6 +4761,72 @@ fn analyze_expr_value_ownership(
                     &entry_state,
                     &arm_states,
                     violations,
+                );
+            }
+        }
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                analyze_expr_value_ownership(
+                    function,
+                    value,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
+            }
+        }
+        Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for item in payload {
+                analyze_expr_value_ownership(
+                    function,
+                    item,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
+            }
+            for (_, value) in named_payload {
+                analyze_expr_value_ownership(
+                    function,
+                    value,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
+                );
+            }
+        }
+        Expr::Tuple(items) | Expr::ArrayLiteral(items) => {
+            for item in items {
+                analyze_expr_value_ownership(
+                    function,
+                    item,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                    None,
                 );
             }
         }
@@ -5347,7 +5619,7 @@ fn is_free_callee(callee: &str) -> bool {
 }
 
 fn is_close_callee(callee: &str) -> bool {
-    callee == "close" || callee.ends_with(".close")
+    callee == "close" || callee.ends_with(".close") || callee.ends_with("_close")
 }
 
 fn is_alloc_expr(expr: &Expr) -> bool {
@@ -10099,6 +10371,20 @@ fn infer_expr_type(
                         && right_ty.as_ref().is_some_and(is_integer_type)
                     {
                         left_ty
+                    } else if matches!(op, BinaryOp::Add | BinaryOp::Sub)
+                        && left_ty
+                            .as_ref()
+                            .is_some_and(|ty| matches!(ty, Type::Ptr { .. }))
+                        && right_ty.as_ref().is_some_and(is_integer_type)
+                    {
+                        left_ty
+                    } else if *op == BinaryOp::Add
+                        && left_ty.as_ref().is_some_and(is_integer_type)
+                        && right_ty
+                            .as_ref()
+                            .is_some_and(|ty| matches!(ty, Type::Ptr { .. }))
+                    {
+                        right_ty
                     } else if left_ty.as_ref().is_some_and(is_float_type)
                         && right_ty.as_ref().is_some_and(is_float_type)
                     {
@@ -15788,6 +16074,92 @@ mod tests {
             detail.contains("function `main` leaks allocation")
                 || detail.contains("consumes non-owned or already-consumed value `p`")
         }));
+    }
+
+    #[test]
+    fn let_initializer_join_consumes_task_handle() {
+        let source = r#"
+            use core.thread;
+            fn worker() -> i32 {
+                return 7;
+            }
+            fn main() -> i32 {
+                let handle = spawn(worker);
+                let result = join(handle);
+                return result;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("function `main` leaks allocation") && detail.contains("`handle`")
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("linear value `handle` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn binary_expression_joins_consume_task_handles() {
+        let source = r#"
+            use core.thread;
+            fn worker() -> i32 {
+                return 1;
+            }
+            fn main() -> i32 {
+                let left = spawn(worker);
+                let right = spawn(worker);
+                return join(left) + join(right);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("function `main` leaks allocation")
+                && (detail.contains("`left`") || detail.contains("`right`"))
+        }));
+    }
+
+    #[test]
+    fn wrapper_close_consumes_websocket_handle() {
+        let source = r#"
+            use core.http;
+
+            fn close_ws(ws: WebSocketHandle) -> i32 {
+                return http.websocket_close(ws, 1000, "ok");
+            }
+
+            fn main() -> i32 {
+                let listener = http.bind();
+                defer close(listener);
+                let conn = http.accept();
+                let ws = http.websocket_accept(conn);
+                discard close_ws(ws);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("function `main` leaks allocation") && detail.contains("`ws`")
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("linear value `ws` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn pointer_arithmetic_with_integer_typechecks() {
+        let source = r#"
+            fn plus1(ptr: *mut u8) -> *mut u8 {
+                unsafe {
+                    return ptr + 1;
+                }
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0, "{:?}", typed.type_error_details);
     }
 
     #[test]

@@ -1,7 +1,17 @@
 #[repr(C)] struct UserRow {
+    id: i32,
+    version: i32,
 }
 #[repr(C)] enum HttpState {
+    Listening,
+    Draining,
 }
+
 fn schema_version() -> i32 {
     return 7
+}
+
+fn default_port() -> i32 {
+    let _state = HttpState::Listening
+    return 8080
 }

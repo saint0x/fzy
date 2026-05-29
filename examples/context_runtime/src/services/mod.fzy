@@ -24,17 +24,22 @@ fn count_occurrences(text_value: str, needle: str) -> i32 {
     return count
 }
 
+fn candidate_memory_items(workspace_id: str, session_id: str) -> ListHandle {
+    let items = list.new()
+    let workspace_fact = model.memory_json("mem-1", "workspace", "fact", "planner uses scoped memory and exact repo paths", 8, 9, 1, workspace_id, session_id)
+    let workspace_policy = model.memory_json("mem-2", "workspace", "policy", "answers must cite exact file paths for repo inspection", 7, 9, 1, workspace_id, "")
+    let global_fact = model.memory_json("mem-3", "global", "fact", "prefer deterministic traces and strict replay evidence", 8, 8, 0, "", "")
+    let session_note = model.memory_json("mem-4", "session", "note", "follow-up should stay concise unless asked for depth", 5, 7, 0, workspace_id, session_id)
+    discard list.push(items, workspace_fact)
+    discard list.push(items, workspace_policy)
+    discard list.push(items, global_fact)
+    discard list.push(items, session_note)
+    return items
+}
+
 fn selected_memory_json(request: str, workspace_id: str, session_id: str) -> str {
     let selected = list.new()
-    let m1 = model.memory_json("mem-1", "workspace", "fact", "planner uses scoped memory and exact repo paths", 8, 9, 1, workspace_id, session_id)
-    let m2 = model.memory_json("mem-2", "workspace", "policy", "answers must cite exact file paths for repo inspection", 7, 9, 1, workspace_id, "")
-    let m3 = model.memory_json("mem-3", "global", "fact", "prefer deterministic traces and strict replay evidence", 8, 8, 0, "", "")
-    let m4 = model.memory_json("mem-4", "session", "note", "follow-up should stay concise unless asked for depth", 5, 7, 0, workspace_id, session_id)
-    let items = list.new()
-    discard list.push(items, m1)
-    discard list.push(items, m2)
-    discard list.push(items, m3)
-    discard list.push(items, m4)
+    let items = candidate_memory_items(workspace_id, session_id)
     let mut idx = 0
     while idx < list.len(items) {
         let raw = list.get(items, idx)
@@ -60,10 +65,10 @@ fn protocol_json(request: str) -> str {
     let mode = model.task_mode(request)
     let payload = map.new()
     discard map.set(payload, "task_mode", json.str(mode))
-    discard map.set(payload, "answer_contract", json.str(if mode == "exact_answer" { "exact" } else { "grounded" }))
+    discard map.set(payload, "answer_contract", json.str(model.answer_contract(mode)))
     discard map.set(payload, "must_cite_paths", json.str(if mode == "local_inspect" { "true" } else { "false" }))
     discard map.set(payload, "must_obey_tool_outputs", json.str("true"))
-    discard map.set(payload, "max_tool_roundtrips", json.str(if mode == "local_inspect" { "4" } else { "2" }))
+    discard map.set(payload, "max_tool_roundtrips", json.str(model.max_tool_roundtrips(mode)))
     return json.object(payload)
 }
 
@@ -90,5 +95,6 @@ fn compact_json(workspace_id: str, session_id: str, request: str) -> str {
 }
 
 fn doctor_json(request: str) -> str {
-    return json_obj2("mode", json.str(model.task_mode(request)), "selected_count", json.str(str.from_i32(count_occurrences(frame_json("workspace-main", "session-a", request), "\"id\""))))
+    let selected_count = count_occurrences(frame_json("workspace-main", "session-a", request), "\"id\"")
+    return json_obj2("mode", json.str(model.task_mode(request)), "selected_count", json.str(str.from_i32(selected_count)))
 }

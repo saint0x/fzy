@@ -1,5 +1,18 @@
 #[repr(C)] struct UserRow {
+    id: i32,
+    shard: i32,
 }
+
+#[repr(C)] enum DeploymentMode {
+    Primary,
+    Replica,
+}
+
 fn schema_version() -> i32 {
     return 3
+}
+
+fn default_replica_count() -> i32 {
+    let _mode = DeploymentMode::Primary
+    return 2
 }

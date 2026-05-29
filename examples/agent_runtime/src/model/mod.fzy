@@ -1,5 +1,19 @@
 use core.security;
 
+fn request_is_local_inspect(request: str) -> i32 {
+    if str.contains(request, "repo") == 1 || str.contains(request, "path") == 1 || str.contains(request, "file") == 1 {
+        return 1
+    }
+    return 0
+}
+
+fn request_is_mutation(request: str) -> i32 {
+    if str.contains(request, "patch") == 1 || str.contains(request, "write") == 1 || str.contains(request, "edit") == 1 {
+        return 1
+    }
+    return 0
+}
+
 fn tool_record_json(tool_id: str, kind: str, mode: str, description: str) -> str {
     let payload = map.new()
     discard map.set(payload, "id", json.str(tool_id))
@@ -18,18 +32,22 @@ fn tool_catalog_json() -> str {
 }
 
 fn task_mode(request: str) -> str {
-    if str.contains(request, "repo") == 1 || str.contains(request, "path") == 1 || str.contains(request, "file") == 1 {
+    if request_is_local_inspect(request) == 1 {
         return "local_inspect"
     }
-    if str.contains(request, "patch") == 1 || str.contains(request, "write") == 1 || str.contains(request, "edit") == 1 {
+    if request_is_mutation(request) == 1 {
         return "mutation"
     }
     return "answer"
 }
 
+fn session_signing_input(workspace_id: str, session_id: str) -> str {
+    return str.concat(workspace_id, str.concat(":", session_id))
+}
+
 fn session_json(workspace_id: str, user: str) -> str {
     let session_id = security.random_base64_url(18)
-    let signed = security.sign_value("agent-runtime-secret", str.concat(workspace_id, str.concat(":", session_id)))
+    let signed = security.sign_value("agent-runtime-secret", session_signing_input(workspace_id, session_id))
     let payload = map.new()
     discard map.set(payload, "session_id", json.str(session_id))
     discard map.set(payload, "workspace_id", json.str(workspace_id))

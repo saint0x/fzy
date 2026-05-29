@@ -1,5 +1,9 @@
 use core.thread;
 use core.http;
+
 fn run() -> i32 {
-    http.poll_next() yield() return 0
+    http.poll_next();
+    checkpoint();
+    yield();
+    return 0;
 }

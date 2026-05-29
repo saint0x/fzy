@@ -4,6 +4,38 @@ mod worker;
 mod scheduler;
 mod supervisor;
 mod stats;
+
+fn start_acceptor() -> i32 {
+    spawn(acceptor.run);
+    return 0;
+}
+
+fn start_worker() -> i32 {
+    spawn(worker.run);
+    return 0;
+}
+
+fn start_scheduler() -> i32 {
+    spawn(scheduler.tick);
+    return 0;
+}
+
+fn start_supervisor() -> i32 {
+    spawn(supervisor.guard);
+    return 0;
+}
+
+fn start_stats() -> i32 {
+    spawn(stats.sample);
+    return 0;
+}
+
 fn start() -> i32 {
-    time.now() spawn(acceptor.run) spawn(worker.run) spawn(scheduler.tick) spawn(supervisor.guard) spawn(stats.sample) return 0
+    discard time.now();
+    discard start_acceptor();
+    discard start_worker();
+    discard start_scheduler();
+    discard start_supervisor();
+    discard start_stats();
+    return 0;
 }

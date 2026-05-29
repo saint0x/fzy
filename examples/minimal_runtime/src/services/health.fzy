@@ -1,6 +1,6 @@
 use core.time;
 
 fn check() -> i32 {
-    time.now();
+    discard time.now();
     return 0;
 }

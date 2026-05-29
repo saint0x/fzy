@@ -1,5 +1,9 @@
 mod types;
 mod contracts;
+
 fn preflight() -> i32 {
-    contracts.preflight() types.schema_version() return 0
+    discard contracts.preflight();
+    discard types.schema_version();
+    discard types.default_segment_limit();
+    return 0;
 }

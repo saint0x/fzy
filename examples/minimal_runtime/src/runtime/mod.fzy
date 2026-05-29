@@ -1,6 +1,18 @@
+mod pulse_loop;
 mod worker;
 
-fn start() -> i32 {
+fn start_worker() -> i32 {
     spawn(worker.run);
+    return 0;
+}
+
+fn start_pulse_loop() -> i32 {
+    spawn(pulse_loop.run);
+    return 0;
+}
+
+fn start() -> i32 {
+    discard start_worker();
+    discard start_pulse_loop();
     return 0;
 }

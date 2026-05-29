@@ -1,7 +1,16 @@
 use core.log;
+
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
-    let m = map.new() discard map.set(m, k1, v1) discard map.set(m, k2, v2) return log.fields(m)
+    let fields = map.new();
+    discard map.set(fields, k1, v1);
+    discard map.set(fields, k2, v2);
+    return log.fields(fields);
 }
+
 fn boot() -> i32 {
-    env.get("FZ_HOST") env.get("FZ_PORT") env.get("SERVICE_ENV") log.info("cli.boot", fields2("component", "cli", "phase", "boot")) return 0
+    discard env.get("FZ_HOST");
+    discard env.get("FZ_PORT");
+    discard env.get("SERVICE_ENV");
+    log.info("cli.boot", fields2("component", "cli", "phase", "boot"));
+    return 0;
 }

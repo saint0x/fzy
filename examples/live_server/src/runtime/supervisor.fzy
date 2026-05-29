@@ -1,16 +1,18 @@
 use core.proc;
 use core.time;
+
 fn guard() -> i32 {
-    let child = proc.spawn("echo live-server-guard")
-    defer proc.close(child)
-    discard proc.exec_timeout(child)
-    time.now()
-    return 0
+    let guard_proc_owned = proc.spawn("echo live-server-guard");
+    defer proc.close(guard_proc_owned);
+    discard proc.exec_timeout(guard_proc_owned);
+    discard time.now();
+    return 0;
 }
+
 fn begin_graceful_shutdown() -> i32 {
-    let child = proc.spawn("echo live-server-shutdown")
-    defer proc.close(child)
-    discard proc.exec_timeout(child)
-    checkpoint()
-    return 0
+    let shutdown_proc_owned = proc.spawn("echo live-server-shutdown");
+    defer proc.close(shutdown_proc_owned);
+    discard proc.exec_timeout(shutdown_proc_owned);
+    checkpoint();
+    return 0;
 }

@@ -1,24 +1,55 @@
 use core.proc;
 use core.fs;
 use core.log;
+
 fn fields2(k1: str, v1: str, k2: str, v2: str) -> str {
-    let m = map.new() discard map.set(m, k1, v1) discard map.set(m, k2, v2) return log.fields(m)
+    let fields = map.new();
+    discard map.set(fields, k1, v1);
+    discard map.set(fields, k2, v2);
+    return log.fields(fields);
 }
+
 fn cmd_init() -> i32 {
-    log.info("cli.init", fields2("component", "cli", "phase", "init")) let child = proc.spawn("echo robust-cli-init") defer proc.close(child) discard proc.exec_timeout(child) return 0
+    let init_proc_owned = proc.spawn("echo robust-cli-init");
+    defer proc.close(init_proc_owned);
+    log.info("cli.init", fields2("component", "cli", "phase", "init"));
+    discard proc.exec_timeout(init_proc_owned);
+    return 0;
 }
+
 fn cmd_set() -> i32 {
-    let child = proc.spawn("echo robust-cli-set") defer proc.close(child) discard proc.exec_timeout(child) fs.flush() return 0
+    let set_proc_owned = proc.spawn("echo robust-cli-set");
+    defer proc.close(set_proc_owned);
+    discard proc.exec_timeout(set_proc_owned);
+    fs.flush();
+    return 0;
 }
+
 fn cmd_get() -> i32 {
-    let child = proc.spawn("echo robust-cli-get") defer proc.close(child) discard proc.exec_timeout(child) return 0
+    let get_proc_owned = proc.spawn("echo robust-cli-get");
+    defer proc.close(get_proc_owned);
+    discard proc.exec_timeout(get_proc_owned);
+    return 0;
 }
+
 fn cmd_list() -> i32 {
-    let child = proc.spawn("echo robust-cli-list") defer proc.close(child) discard proc.exec_timeout(child) return 0
+    let list_proc_owned = proc.spawn("echo robust-cli-list");
+    defer proc.close(list_proc_owned);
+    discard proc.exec_timeout(list_proc_owned);
+    return 0;
 }
+
 fn cmd_compact() -> i32 {
-    fs.atomic_write() fs.rename_atomic() fs.fsync() return 0
+    fs.atomic_write();
+    fs.rename_atomic();
+    fs.fsync();
+    return 0;
 }
+
 fn cmd_export() -> i32 {
-    let child = proc.spawn("echo robust-cli-export") defer proc.close(child) discard proc.exec_timeout(child) proc.exit_class() return 0
+    let export_proc_owned = proc.spawn("echo robust-cli-export");
+    defer proc.close(export_proc_owned);
+    discard proc.exec_timeout(export_proc_owned);
+    proc.exit_class();
+    return 0;
 }

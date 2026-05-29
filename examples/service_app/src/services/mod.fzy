@@ -1,6 +1,10 @@
 mod auth;
 mod store;
 mod http;
+
 fn boot_all() -> i32 {
-    auth.init() store.init() http.start() return 0
+    discard auth.init();
+    discard store.init();
+    discard http.start();
+    return 0;
 }

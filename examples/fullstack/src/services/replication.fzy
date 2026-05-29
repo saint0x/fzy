@@ -1,4 +1,8 @@
 use core.http;
+
 fn init() -> i32 {
-    let listener: HttpHandle = http.bind() http.listen(listener) close(listener) return 0
+    let listener_owned: HttpHandle = http.bind();
+    http.listen(listener_owned);
+    close(listener_owned);
+    return 0;
 }

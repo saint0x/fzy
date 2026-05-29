@@ -3,5 +3,6 @@ use core.thread;
 fn run() -> i32 {
     checkpoint();
     yield();
+    pulse();
     return 0;
 }

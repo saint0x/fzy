@@ -6,11 +6,37 @@ use core.text;
 use model;
 use services;
 
+fn log_fields2(k1: str, v1: str, k2: str, v2: str) -> str {
+    let fields = map.new()
+    discard map.set(fields, k1, v1)
+    discard map.set(fields, k2, v2)
+    return log.fields(fields)
+}
+
 fn print_help() -> i32 {
     discard term.print_line("context_runtime")
     discard term.print_line("  frame <request>      assemble a deterministic context frame")
     discard term.print_line("  compact <request>    summarize selected evidence")
     discard term.print_line("  doctor <request>     show mode and selected memory count")
+    return 0
+}
+
+fn print_compact(request: str) -> i32 {
+    let compacted = services.compact_json("workspace-main", "session-a", request)
+    discard term.print_line(text.indent(compacted, "  "))
+    return 0
+}
+
+fn print_doctor(request: str) -> i32 {
+    let doctor = services.doctor_json(request)
+    discard term.print_line(text.indent(doctor, "  "))
+    return 0
+}
+
+fn print_frame(command: str, request: str) -> i32 {
+    let frame = services.frame_json("workspace-main", "session-a", request)
+    log.info("context_runtime.frame", log_fields2("mode", model.task_mode(request), "command", command))
+    discard term.print_line(text.indent(frame, "  "))
     return 0
 }
 
@@ -21,15 +47,10 @@ fn run(command: str) -> i32 {
         return print_help()
     }
     if command == "compact" {
-        discard term.print_line(text.indent(services.compact_json("workspace-main", "session-a", request), "  "))
-        return 0
+        return print_compact(request)
     }
     if command == "doctor" {
-        discard term.print_line(text.indent(services.doctor_json(request), "  "))
-        return 0
+        return print_doctor(request)
     }
-    let frame = services.frame_json("workspace-main", "session-a", request)
-    log.info("context_runtime.frame", services.json_obj2("mode", json.str(model.task_mode(request)), "command", json.str(command)))
-    discard term.print_line(text.indent(frame, "  "))
-    return 0
+    return print_frame(command, request)
 }

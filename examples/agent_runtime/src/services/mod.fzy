@@ -43,19 +43,32 @@ fn json_obj3(k1: str, v1: str, k2: str, v2: str, k3: str, v3: str) -> str {
     return json.object(obj)
 }
 
+fn session_id(session_json: str) -> str {
+    let session_parsed = json.parse(session_json)
+    return json.get_str(session_parsed, "session_id")
+}
+
+fn session_auth_mac(session_json: str) -> str {
+    let session_parsed = json.parse(session_json)
+    return json.get_str(session_parsed, "auth_mac")
+}
+
+fn session_auth_ok(workspace_id: str, session_json: str) -> i32 {
+    let signed_session_id = session_id(session_json)
+    return security.verify_value(
+        "agent-runtime-secret",
+        model.session_signing_input(workspace_id, signed_session_id),
+        session_auth_mac(session_json),
+    )
+}
+
 fn plan_json(workspace_id: str, user: str, request: str) -> str {
     let session = model.session_json(workspace_id, user)
-    let parsed = json.parse(session)
-    let session_id = json.get_str(parsed, "session_id")
-    let auth_mac = json.get_str(parsed, "auth_mac")
-    let auth_ok = security.verify_value(
-        "agent-runtime-secret",
-        str.concat(workspace_id, str.concat(":", session_id)),
-        auth_mac,
-    )
+    let mode = model.task_mode(request)
+    let auth_ok = session_auth_ok(workspace_id, session)
     let payload = map.new()
     discard map.set(payload, "request", json.str(request))
-    discard map.set(payload, "mode", json.str(model.task_mode(request)))
+    discard map.set(payload, "mode", json.str(mode))
     discard map.set(payload, "session", json.raw(session))
     discard map.set(payload, "tools", json.raw(model.tool_catalog_json()))
     discard map.set(payload, "parallel_budget", json.raw(str.from_i32(runtime.parallel_budget())))
@@ -64,7 +77,7 @@ fn plan_json(workspace_id: str, user: str, request: str) -> str {
 }
 
 fn append_audit(event: str, payload_json: str) -> i32 {
-    fs.mkdir("tmp")
+    discard fs.mkdir("tmp")
     let line = str.concat(
         json_obj3("event", json.str(event), "status", json.str("ok"), "payload", json.raw(payload_json)),
         "\n",

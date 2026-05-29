@@ -2,7 +2,8 @@ mod types;
 mod contracts;
 
 fn preflight() -> i32 {
-    contracts.preflight();
-    types.schema_version();
+    discard contracts.preflight();
+    discard types.schema_version();
+    discard types.default_worker_count();
     return 0;
 }

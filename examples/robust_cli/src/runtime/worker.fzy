@@ -1,5 +1,9 @@
 use core.thread;
 use core.time;
+
 fn run() -> i32 {
-    time.now() checkpoint() yield() return 0
+    discard time.now();
+    checkpoint();
+    yield();
+    return 0;
 }

@@ -8,8 +8,13 @@ fn worker_budget() -> i32 {
     return thread.context_id() + 1
 }
 
+fn run_budget_worker(context_id: i32) -> i32 {
+    let worker_task_owned = spawn_ctx(worker_budget, context_id)
+    return join(worker_task_owned)
+}
+
 fn parallel_budget() -> i32 {
-    let fast = spawn_ctx(worker_budget, 7)
-    let safe = spawn_ctx(worker_budget, 11)
-    return join(fast) + join(safe)
+    let fast_budget = run_budget_worker(7)
+    let safe_budget = run_budget_worker(11)
+    return fast_budget + safe_budget
 }

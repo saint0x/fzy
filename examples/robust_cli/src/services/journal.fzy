@@ -1,8 +1,20 @@
 use core.fs;
 use core.time;
+
 fn append_event() -> i32 {
-    let h = fs.open() discard h fs.write() fs.flush() return 0
+    let journal_file_ref = fs.open();
+    discard journal_file_ref;
+    fs.write();
+    fs.flush();
+    return 0;
 }
+
 fn rotate_segment() -> i32 {
-    let h = fs.open() discard h fs.atomic_write() fs.rename_atomic() fs.fsync() time.now() return 0
+    let segment_file_ref = fs.open();
+    discard segment_file_ref;
+    fs.atomic_write();
+    fs.rename_atomic();
+    fs.fsync();
+    discard time.now();
+    return 0;
 }

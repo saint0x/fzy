@@ -1,7 +1,22 @@
 #[repr(C)] struct KvRow {
+    key_hash: i32,
+    value_len: i32,
 }
 #[repr(C)] struct JournalEntry {
+    seq: i32,
+    kind: i32,
 }
+
+#[repr(C)] enum CompactionMode {
+    Foreground,
+    Background,
+}
+
 fn schema_version() -> i32 {
     return 4
+}
+
+fn default_segment_limit() -> i32 {
+    let _mode = CompactionMode::Background
+    return 8
 }

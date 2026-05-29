@@ -5,6 +5,7 @@
 It demonstrates:
 
 - scoped memory records with ranking heuristics
+- pure-ish mode and scoring helpers before JSON framing
 - deterministic context-frame assembly
 - planner/protocol JSON contracts
 - compaction summaries for selected evidence
