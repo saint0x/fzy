@@ -1,0 +1,38 @@
+use core.crypto;
+use core.security;
+
+fn main() -> i32 {
+    let digest = crypto.sha256("abc")
+    let mac = crypto.hmac_sha256("key", "The quick brown fox jumps over the lazy dog")
+    let encoded = crypto.base64_encode("fozzy")
+    let decoded = crypto.base64_decode(encoded)
+    let url = security.base64_url_encode("ok")
+    let roundtrip = security.base64_url_decode(url)
+    let hex_token = crypto.random_hex(16)
+    let b64_token = crypto.random_base64(16)
+    if digest != "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" {
+        return 11
+    }
+    if mac != "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8" {
+        return 13
+    }
+    if encoded != "Zm96enk=" || decoded != "fozzy" {
+        return 17
+    }
+    if url != "b2s" || roundtrip != "ok" {
+        return 19
+    }
+    if str.len(hex_token) != 32 || str.len(b64_token) != 24 {
+        return 23
+    }
+    if crypto.constant_time_eq(digest, digest) != 1 {
+        return 29
+    }
+    if crypto.constant_time_eq(digest, mac) != 0 {
+        return 31
+    }
+    if security.verify_value("key", "The quick brown fox jumps over the lazy dog", mac) != 1 {
+        return 37
+    }
+    return 0
+}

@@ -3187,6 +3187,7 @@ fn embedded_core_stdlib_module_source(module_name: &str) -> Option<&'static str>
         "term" => Some(include_str!("../../../corelib/src/term.fzy")),
         "thread" => Some(include_str!("../../../corelib/src/thread.fzy")),
         "log" => Some(include_str!("../../../corelib/src/log.fzy")),
+        "security" => Some(include_str!("../../../corelib/src/security.fzy")),
         "text" => Some(include_str!("../../../corelib/src/text.fzy")),
         "io" => Some(include_str!("../../../corelib/src/io.fzy")),
         "http" => Some(include_str!("../../../corelib/src/http.fzy")),
@@ -3457,9 +3458,24 @@ impl ControlFlowBuilder {
                     self.append_stmt(current, stmt.clone())?;
                 }
                 ast::Stmt::Return(expr) => {
+                    let return_expr = if let Some(expr) = expr {
+                        let temp = self.next_temp_name("return");
+                        self.append_stmt(
+                            current,
+                            ast::Stmt::Let {
+                                name: temp.clone(),
+                                mutable: false,
+                                ty: None,
+                                value: expr.clone(),
+                            },
+                        )?;
+                        Some(ast::Expr::Ident(temp))
+                    } else {
+                        None
+                    };
                     self.append_deferred_cleanup_from(current, 0)?;
                     self.active_defers.truncate(scope_defer_base);
-                    self.terminate(current, ControlFlowTerminator::Return(expr.clone()))?;
+                    self.terminate(current, ControlFlowTerminator::Return(return_expr))?;
                     return Ok(None);
                 }
                 ast::Stmt::Break(_) => {

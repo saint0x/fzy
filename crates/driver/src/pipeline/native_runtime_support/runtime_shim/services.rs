@@ -118,6 +118,131 @@ int32_t fz_native_time_deadline_after(int32_t delta_ms) {
   return (int32_t)(now + (int64_t)delta_ms);
 }
 
+int32_t fz_native_crypto_random_hex(int32_t len_bytes) {
+  if (len_bytes < 0) {
+    fz_set_last_error(EINVAL, 3, "crypto.random_hex failed: len must be >= 0");
+    return fz_intern_slice("", 0);
+  }
+  size_t len = (size_t)len_bytes;
+  uint8_t* raw = len == 0 ? NULL : (uint8_t*)malloc(len);
+  if (len > 0 && raw == NULL) {
+    fz_set_last_error(ENOMEM, 3, "crypto.random_hex failed: alloc failed");
+    return fz_intern_slice("", 0);
+  }
+  if (fz_crypto_fill_random(raw, len) != 0) {
+    free(raw);
+    fz_set_last_error(errno == 0 ? EIO : errno, 3, "crypto.random_hex failed: entropy unavailable");
+    return fz_intern_slice("", 0);
+  }
+  char* encoded = fz_crypto_hex_encode(raw == NULL ? (const uint8_t*)"" : raw, len);
+  free(raw);
+  if (encoded == NULL) {
+    fz_set_last_error(ENOMEM, 3, "crypto.random_hex failed: hex encode alloc failed");
+    return fz_intern_slice("", 0);
+  }
+  return fz_intern_owned(encoded);
+}
+
+int32_t fz_native_crypto_random_base64(int32_t len_bytes) {
+  if (len_bytes < 0) {
+    fz_set_last_error(EINVAL, 3, "crypto.random_base64 failed: len must be >= 0");
+    return fz_intern_slice("", 0);
+  }
+  size_t len = (size_t)len_bytes;
+  uint8_t* raw = len == 0 ? NULL : (uint8_t*)malloc(len);
+  if (len > 0 && raw == NULL) {
+    fz_set_last_error(ENOMEM, 3, "crypto.random_base64 failed: alloc failed");
+    return fz_intern_slice("", 0);
+  }
+  if (fz_crypto_fill_random(raw, len) != 0) {
+    free(raw);
+    fz_set_last_error(errno == 0 ? EIO : errno, 3, "crypto.random_base64 failed: entropy unavailable");
+    return fz_intern_slice("", 0);
+  }
+  char* encoded = fz_crypto_base64_encode_alloc(raw == NULL ? (const uint8_t*)"" : raw, len);
+  free(raw);
+  if (encoded == NULL) {
+    fz_set_last_error(ENOMEM, 3, "crypto.random_base64 failed: base64 encode alloc failed");
+    return fz_intern_slice("", 0);
+  }
+  return fz_intern_owned(encoded);
+}
+
+int32_t fz_native_crypto_sha256(int32_t input_id) {
+  const char* input = fz_lookup_string(input_id);
+  size_t len = input == NULL ? 0 : strlen(input);
+  uint8_t digest[32];
+  fz_sha256_hash((const uint8_t*)(input == NULL ? "" : input), len, digest);
+  char* encoded = fz_crypto_hex_encode(digest, sizeof(digest));
+  if (encoded == NULL) {
+    fz_set_last_error(ENOMEM, 3, "crypto.sha256 failed: hex encode alloc failed");
+    return fz_intern_slice("", 0);
+  }
+  return fz_intern_owned(encoded);
+}
+
+int32_t fz_native_crypto_hmac_sha256(int32_t key_id, int32_t data_id) {
+  const char* key = fz_lookup_string(key_id);
+  const char* data = fz_lookup_string(data_id);
+  uint8_t digest[32];
+  fz_hmac_sha256_hash(
+      (const uint8_t*)(key == NULL ? "" : key),
+      key == NULL ? 0 : strlen(key),
+      (const uint8_t*)(data == NULL ? "" : data),
+      data == NULL ? 0 : strlen(data),
+      digest);
+  char* encoded = fz_crypto_hex_encode(digest, sizeof(digest));
+  if (encoded == NULL) {
+    fz_set_last_error(ENOMEM, 3, "crypto.hmac_sha256 failed: hex encode alloc failed");
+    return fz_intern_slice("", 0);
+  }
+  return fz_intern_owned(encoded);
+}
+
+int32_t fz_native_crypto_constant_time_eq(int32_t left_id, int32_t right_id) {
+  const char* left = fz_lookup_string(left_id);
+  const char* right = fz_lookup_string(right_id);
+  size_t left_len = left == NULL ? 0 : strlen(left);
+  size_t right_len = right == NULL ? 0 : strlen(right);
+  size_t max_len = left_len > right_len ? left_len : right_len;
+  unsigned char diff = (unsigned char)(left_len ^ right_len);
+  for (size_t i = 0; i < max_len; i++) {
+    unsigned char a = i < left_len ? (unsigned char)left[i] : 0;
+    unsigned char b = i < right_len ? (unsigned char)right[i] : 0;
+    diff |= (unsigned char)(a ^ b);
+  }
+  return diff == 0 ? 1 : 0;
+}
+
+int32_t fz_native_crypto_base64_encode(int32_t input_id) {
+  const char* input = fz_lookup_string(input_id);
+  size_t len = input == NULL ? 0 : strlen(input);
+  char* encoded = fz_crypto_base64_encode_alloc((const uint8_t*)(input == NULL ? "" : input), len);
+  if (encoded == NULL) {
+    fz_set_last_error(ENOMEM, 3, "crypto.base64_encode failed: alloc failed");
+    return fz_intern_slice("", 0);
+  }
+  return fz_intern_owned(encoded);
+}
+
+int32_t fz_native_crypto_base64_decode(int32_t input_id) {
+  const char* input = fz_lookup_string(input_id);
+  uint8_t* decoded = NULL;
+  size_t decoded_len = 0;
+  if (fz_crypto_base64_decode_alloc(input == NULL ? "" : input, &decoded, &decoded_len) != 0) {
+    fz_set_last_error(EINVAL, 3, "crypto.base64_decode failed: invalid base64 input");
+    return fz_intern_slice("", 0);
+  }
+  if (decoded != NULL && memchr(decoded, '\0', decoded_len) != NULL) {
+    free(decoded);
+    fz_set_last_error(EINVAL, 3, "crypto.base64_decode failed: decoded bytes are not text-safe");
+    return fz_intern_slice("", 0);
+  }
+  int32_t out = fz_intern_slice((const char*)(decoded == NULL ? (const uint8_t*)"" : decoded), decoded_len);
+  free(decoded);
+  return out;
+}
+
 int32_t fz_native_time_interval(int32_t period_ms) {
   if (period_ms <= 0) {
     return -1;
@@ -1024,6 +1149,8 @@ int32_t fz_native_net_accept(void) {
   pthread_mutex_lock(&fz_conn_lock);
   fz_conn_state* state = fz_conn_state_for(conn_fd, 1);
   if (state != NULL) {
+    fz_conn_state_reset_request_body(state);
+    fz_conn_state_reset_response_headers(state);
     state->remote_addr_id = fz_intern_slice(rendered, strlen(rendered));
     state->request_id = 0;
     state->header_count = 0;
@@ -1085,19 +1212,18 @@ int32_t fz_native_net_poll_register(int32_t fd) {
   return -1;
 }
 
-int32_t fz_native_net_read(int32_t conn_fd) {
+int32_t fz_native_net_read_headers(int32_t conn_fd) {
   if (conn_fd < 0) {
-    fz_set_last_error(EINVAL, 3, "http.read failed: invalid connection handle");
+    fz_set_last_error(EINVAL, 3, "http.read_headers failed: invalid connection handle");
     return -1;
   }
   char* req = (char*)malloc(FZ_MAX_HTTP_READ + 1);
   if (req == NULL) {
-    fz_set_last_error(ENOMEM, 3, "http.read failed: allocation failed");
+    fz_set_last_error(ENOMEM, 3, "http.read_headers failed: allocation failed");
     return -1;
   }
   int total = 0;
   int header_end = -1;
-  int64_t content_length = -1;
   while (total < FZ_MAX_HTTP_READ) {
     ssize_t got = recv(conn_fd, req + total, (size_t)(FZ_MAX_HTTP_READ - total), 0);
     if (got < 0) {
@@ -1113,7 +1239,7 @@ int32_t fz_native_net_read(int32_t conn_fd) {
       snprintf(
           msg,
           sizeof(msg),
-          "http.read failed fd=%d errno=%d (%s)",
+          "http.read_headers failed fd=%d errno=%d (%s)",
           conn_fd,
           errno,
           strerror(errno));
@@ -1126,7 +1252,7 @@ int32_t fz_native_net_read(int32_t conn_fd) {
         fz_set_last_error(
             ECONNRESET,
             3,
-            "http.read failed: peer closed before a complete request was received");
+            "http.read_headers failed: peer closed before a complete request was received");
         free(req);
         return -1;
       }
@@ -1137,15 +1263,6 @@ int32_t fz_native_net_read(int32_t conn_fd) {
     if (header_end < 0) {
       header_end = fz_find_header_end(req, total);
       if (header_end >= 0) {
-        content_length = fz_parse_content_length(req, header_end);
-      }
-    }
-    if (header_end >= 0) {
-      if (content_length >= 0) {
-        if (total >= header_end + content_length) {
-          break;
-        }
-      } else {
         break;
       }
     }
@@ -1154,26 +1271,26 @@ int32_t fz_native_net_read(int32_t conn_fd) {
     fz_set_last_error(
         EPROTO,
         3,
-        "http.read failed: request headers were incomplete or malformed");
+        "http.read_headers failed: request headers were incomplete or malformed");
     free(req);
     return -1;
   }
 
   const char* line_end = strstr(req, "\r\n");
   if (line_end == NULL) {
-    fz_set_last_error(EPROTO, 3, "http.read failed: missing request line terminator");
+    fz_set_last_error(EPROTO, 3, "http.read_headers failed: missing request line terminator");
     free(req);
     return -1;
   }
   const char* sp1 = memchr(req, ' ', (size_t)(line_end - req));
   if (sp1 == NULL) {
-    fz_set_last_error(EPROTO, 3, "http.read failed: malformed request method/path");
+    fz_set_last_error(EPROTO, 3, "http.read_headers failed: malformed request method/path");
     free(req);
     return -1;
   }
   const char* sp2 = memchr(sp1 + 1, ' ', (size_t)(line_end - (sp1 + 1)));
   if (sp2 == NULL) {
-    fz_set_last_error(EPROTO, 3, "http.read failed: malformed request path/version");
+    fz_set_last_error(EPROTO, 3, "http.read_headers failed: malformed request path/version");
     free(req);
     return -1;
   }
@@ -1182,34 +1299,62 @@ int32_t fz_native_net_read(int32_t conn_fd) {
   size_t path_len = (size_t)(sp2 - (sp1 + 1));
   const char* version = sp2 + 1;
   int version_len = (int)(line_end - version);
-
-  int body_len = total - header_end;
-  if (content_length >= 0 && body_len > content_length) {
-    body_len = (int)content_length;
-  }
-  if (body_len < 0) {
-    body_len = 0;
-  }
-
   const char* raw_path = sp1 + 1;
   const char* query_mark = memchr(raw_path, '?', path_len);
   size_t clean_path_len = query_mark == NULL ? path_len : (size_t)(query_mark - raw_path);
 
   int32_t method_id = fz_intern_slice(req, method_len);
   int32_t path_id = fz_intern_slice(raw_path, clean_path_len);
-  int32_t body_id = fz_intern_slice(req + header_end, (size_t)body_len);
   int keep_alive = fz_parse_keep_alive(req, header_end, version, version_len);
+  int64_t content_length = fz_parse_content_length(req, header_end);
+  int chunked = fz_parse_chunked_flag(req, header_end);
+  size_t prefetched_body_len = total > header_end ? (size_t)(total - header_end) : 0;
 
   pthread_mutex_lock(&fz_conn_lock);
   fz_conn_state* state = fz_conn_state_for(conn_fd, 1);
   if (state != NULL) {
+    fz_conn_state_reset_request_body(state);
+    fz_conn_state_reset_response_headers(state);
     state->method_id = method_id;
     state->path_id = path_id;
-    state->body_id = body_id;
     state->keep_alive = keep_alive;
     state->header_count = 0;
     state->query_count = 0;
     state->param_count = 0;
+    state->request_headers_ready = 1;
+    state->request_body_active = 1;
+    if (chunked) {
+      state->request_body_mode = 2;
+      state->request_body_remaining = -1;
+      state->request_chunk_remaining = 0;
+      state->request_body_eof = 0;
+    } else if (content_length > 0) {
+      state->request_body_mode = 1;
+      state->request_body_remaining = content_length;
+      state->request_chunk_remaining = 0;
+      state->request_body_eof = 0;
+    } else {
+      state->request_body_mode = 0;
+      state->request_body_remaining = 0;
+      state->request_chunk_remaining = 0;
+      state->request_body_eof = 1;
+    }
+    if (prefetched_body_len > 0) {
+      state->request_body_buf = (char*)malloc(prefetched_body_len + 1);
+      if (state->request_body_buf != NULL) {
+        memcpy(state->request_body_buf, req + header_end, prefetched_body_len);
+        state->request_body_buf[prefetched_body_len] = '\0';
+        state->request_body_buf_len = prefetched_body_len;
+        state->request_body_buf_pos = 0;
+      }
+    }
+    if (state->request_body_mode == 1 && state->request_body_remaining >= 0) {
+      state->request_body_remaining -= (int64_t)prefetched_body_len;
+      if (state->request_body_remaining <= 0) {
+        state->request_body_remaining = 0;
+        state->request_body_eof = 1;
+      }
+    }
     fz_conn_request_counter += 1;
     char rid[64];
     snprintf(rid, sizeof(rid), "req-%d", fz_conn_request_counter);
@@ -1253,6 +1398,55 @@ int32_t fz_native_net_read(int32_t conn_fd) {
 
   fz_set_last_error(0, 0, "");
   free(req);
+  return 0;
+}
+
+int32_t fz_native_net_read(int32_t conn_fd) {
+  if (fz_native_net_read_headers(conn_fd) != 0) {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    fz_set_last_error(EINVAL, 3, "http.read failed: connection state unavailable");
+    return -1;
+  }
+  fz_bytes_buf body;
+  fz_bytes_buf_init(&body);
+  while (!state->request_body_eof) {
+    char* chunk = NULL;
+    size_t chunk_len = 0;
+    int rc = fz_conn_read_body_chunk(state, &chunk, &chunk_len, 4096);
+    if (rc < 0) {
+      if (chunk != NULL) {
+        free(chunk);
+      }
+      fz_bytes_buf_free(&body);
+      pthread_mutex_unlock(&fz_conn_lock);
+      fz_set_last_error(EIO, 3, "http.read failed while streaming request body");
+      return -1;
+    }
+    if (chunk != NULL) {
+      if (fz_bytes_buf_append(&body, chunk, chunk_len) != 0) {
+        free(chunk);
+        fz_bytes_buf_free(&body);
+        pthread_mutex_unlock(&fz_conn_lock);
+        fz_set_last_error(ENOMEM, 3, "http.read failed buffering request body");
+        return -1;
+      }
+      free(chunk);
+    }
+    if (rc > 0) {
+      break;
+    }
+  }
+  state->body_id = fz_intern_slice(body.data == NULL ? "" : body.data, body.len);
+  state->request_body_fully_buffered = 1;
+  state->request_body_active = 0;
+  fz_bytes_buf_free(&body);
+  pthread_mutex_unlock(&fz_conn_lock);
+  fz_set_last_error(0, 0, "");
   return 0;
 }
 
@@ -1333,6 +1527,72 @@ int32_t fz_native_net_body(int32_t conn_fd) {
   int32_t value = state == NULL ? 0 : state->body_id;
   pthread_mutex_unlock(&fz_conn_lock);
   return value;
+}
+
+int32_t fz_native_net_body_read(int32_t conn_fd, int32_t max_bytes) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return fz_intern_slice("", 0);
+  }
+  if (state->request_body_fully_buffered) {
+    const char* body = fz_lookup_string(state->body_id);
+    if (body == NULL) {
+      pthread_mutex_unlock(&fz_conn_lock);
+      return fz_intern_slice("", 0);
+    }
+    size_t total = strlen(body);
+    size_t start = state->request_body_buf_pos;
+    if (start >= total || max_bytes <= 0) {
+      state->request_body_eof = 1;
+      pthread_mutex_unlock(&fz_conn_lock);
+      return fz_intern_slice("", 0);
+    }
+    size_t take = (size_t)max_bytes;
+    if (take > total - start) {
+      take = total - start;
+    }
+    state->request_body_buf_pos += take;
+    if (state->request_body_buf_pos >= total) {
+      state->request_body_eof = 1;
+    }
+    int32_t out = fz_intern_slice(body + start, take);
+    pthread_mutex_unlock(&fz_conn_lock);
+    return out;
+  }
+  char* chunk = NULL;
+  size_t chunk_len = 0;
+  int rc = fz_conn_read_body_chunk(state, &chunk, &chunk_len, max_bytes);
+  if (rc < 0) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    if (chunk != NULL) {
+      free(chunk);
+    }
+    return fz_intern_slice("", 0);
+  }
+  int32_t out = fz_intern_slice(chunk == NULL ? "" : chunk, chunk_len);
+  if (chunk != NULL) {
+    free(chunk);
+  }
+  pthread_mutex_unlock(&fz_conn_lock);
+  return out;
+}
+
+int32_t fz_native_net_body_eof(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  int32_t value = (state == NULL || state->request_body_eof) ? 1 : 0;
+  pthread_mutex_unlock(&fz_conn_lock);
+  return value;
+}
+
+int32_t fz_native_net_body_discard(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  int rc = state == NULL ? -1 : fz_conn_discard_body(state);
+  pthread_mutex_unlock(&fz_conn_lock);
+  return rc;
 }
 
 int32_t fz_native_net_body_json(int32_t conn_fd) {
@@ -1529,6 +1789,212 @@ int32_t fz_native_net_remote_addr(int32_t conn_fd) {
   int32_t value = state == NULL ? 0 : state->remote_addr_id;
   pthread_mutex_unlock(&fz_conn_lock);
   return value;
+}
+
+int32_t fz_native_net_response_header_set(int32_t conn_fd, int32_t key_id, int32_t value_id) {
+  const char* key = fz_lookup_string(key_id);
+  if (key == NULL || key[0] == '\0') {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return -1;
+  }
+  for (int i = 0; i < state->response_header_count; i++) {
+    const char* existing = fz_lookup_string(state->response_header_key_ids[i]);
+    if (existing != NULL && strcasecmp(existing, key) == 0) {
+      state->response_header_value_ids[i] = value_id;
+      pthread_mutex_unlock(&fz_conn_lock);
+      return 0;
+    }
+  }
+  if (state->response_header_count >= FZ_MAX_CONN_META) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return -1;
+  }
+  state->response_header_key_ids[state->response_header_count] = key_id;
+  state->response_header_value_ids[state->response_header_count] = value_id;
+  state->response_header_count++;
+  pthread_mutex_unlock(&fz_conn_lock);
+  return 0;
+}
+
+int32_t fz_native_net_response_header_add(int32_t conn_fd, int32_t key_id, int32_t value_id) {
+  const char* key = fz_lookup_string(key_id);
+  if (key == NULL || key[0] == '\0') {
+    return -1;
+  }
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL || state->response_header_count >= FZ_MAX_CONN_META) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return -1;
+  }
+  state->response_header_key_ids[state->response_header_count] = key_id;
+  state->response_header_value_ids[state->response_header_count] = value_id;
+  state->response_header_count++;
+  pthread_mutex_unlock(&fz_conn_lock);
+  return 0;
+}
+
+int32_t fz_native_net_response_header_clear(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state != NULL) {
+    fz_conn_state_reset_response_headers(state);
+  }
+  pthread_mutex_unlock(&fz_conn_lock);
+  return 0;
+}
+
+int32_t fz_native_net_websocket_accept(int32_t conn_fd) {
+  pthread_mutex_lock(&fz_conn_lock);
+  fz_conn_state* state = fz_conn_state_for(conn_fd, 0);
+  if (state == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return -1;
+  }
+  const char* upgrade = "";
+  const char* connection = "";
+  const char* ws_key = "";
+  const char* ws_version = "";
+  for (int i = 0; i < state->header_count; i++) {
+    const char* key = fz_lookup_string(state->header_key_ids[i]);
+    const char* value = fz_lookup_string(state->header_value_ids[i]);
+    if (key == NULL || value == NULL) {
+      continue;
+    }
+    if (strcasecmp(key, "upgrade") == 0) {
+      upgrade = value;
+    } else if (strcasecmp(key, "connection") == 0) {
+      connection = value;
+    } else if (strcasecmp(key, "sec-websocket-key") == 0) {
+      ws_key = value;
+    } else if (strcasecmp(key, "sec-websocket-version") == 0) {
+      ws_version = value;
+    }
+  }
+  if (upgrade == NULL || strcasecmp(upgrade, "websocket") != 0
+      || connection == NULL || fz_contains_ci(connection, strlen(connection), "upgrade") == 0
+      || ws_key == NULL || ws_key[0] == '\0'
+      || ws_version == NULL || strcmp(ws_version, "13") != 0) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return -1;
+  }
+  const char* guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+  size_t concat_len = strlen(ws_key) + strlen(guid);
+  char* concat = (char*)malloc(concat_len + 1);
+  if (concat == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return -1;
+  }
+  snprintf(concat, concat_len + 1, "%s%s", ws_key, guid);
+  uint8_t digest[20];
+  fz_sha1_compute((const uint8_t*)concat, concat_len, digest);
+  free(concat);
+  char* accept_value = fz_base64_encode(digest, sizeof(digest));
+  if (accept_value == NULL) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return -1;
+  }
+  if (state->response_header_count + 3 <= FZ_MAX_CONN_META) {
+    state->response_header_key_ids[state->response_header_count] = fz_intern_slice("Upgrade", 7);
+    state->response_header_value_ids[state->response_header_count] = fz_intern_slice("websocket", 9);
+    state->response_header_count++;
+    state->response_header_key_ids[state->response_header_count] = fz_intern_slice("Connection", 10);
+    state->response_header_value_ids[state->response_header_count] = fz_intern_slice("Upgrade", 7);
+    state->response_header_count++;
+    state->response_header_key_ids[state->response_header_count] = fz_intern_slice("Sec-WebSocket-Accept", 20);
+    state->response_header_value_ids[state->response_header_count] = fz_intern_slice(accept_value, strlen(accept_value));
+    state->response_header_count++;
+  }
+  free(accept_value);
+  int rc = fz_send_http_response_state(state, 101, "", "", 0);
+  if (rc != 0) {
+    pthread_mutex_unlock(&fz_conn_lock);
+    return -1;
+  }
+  int32_t handle = fz_websocket_state_alloc(conn_fd);
+  pthread_mutex_unlock(&fz_conn_lock);
+  return handle;
+}
+
+int32_t fz_native_net_websocket_read(int32_t ws_handle, int32_t max_bytes) {
+  fz_websocket_state* ws = fz_websocket_state_get(ws_handle);
+  if (ws == NULL) {
+    return fz_intern_slice("", 0);
+  }
+  int32_t kind_id = 0;
+  int32_t close_code = 0;
+  int32_t error_id = 0;
+  int32_t payload_id = fz_websocket_read_frame(ws, max_bytes, &kind_id, &close_code, &error_id);
+  ws->last_kind_id = kind_id;
+  ws->close_code = close_code;
+  ws->last_error_id = error_id;
+  return payload_id;
+}
+
+int32_t fz_native_net_websocket_kind(int32_t ws_handle) {
+  fz_websocket_state* ws = fz_websocket_state_get(ws_handle);
+  return ws == NULL ? fz_intern_slice("error", 5) : ws->last_kind_id;
+}
+
+int32_t fz_native_net_websocket_close_code(int32_t ws_handle) {
+  fz_websocket_state* ws = fz_websocket_state_get(ws_handle);
+  return ws == NULL ? 0 : ws->close_code;
+}
+
+int32_t fz_native_net_websocket_error(int32_t ws_handle) {
+  fz_websocket_state* ws = fz_websocket_state_get(ws_handle);
+  return ws == NULL ? fz_intern_slice("websocket not found", 19) : ws->last_error_id;
+}
+
+int32_t fz_native_net_websocket_write_text(int32_t ws_handle, int32_t payload_id) {
+  fz_websocket_state* ws = fz_websocket_state_get(ws_handle);
+  const char* payload = fz_lookup_string(payload_id);
+  return ws == NULL ? -1 : fz_websocket_write_frame(ws->fd, 0x1u, payload, strlen(payload == NULL ? "" : payload));
+}
+
+int32_t fz_native_net_websocket_write_binary(int32_t ws_handle, int32_t payload_id) {
+  fz_websocket_state* ws = fz_websocket_state_get(ws_handle);
+  const char* payload = fz_lookup_string(payload_id);
+  return ws == NULL ? -1 : fz_websocket_write_frame(ws->fd, 0x2u, payload, strlen(payload == NULL ? "" : payload));
+}
+
+int32_t fz_native_net_websocket_ping(int32_t ws_handle, int32_t payload_id) {
+  fz_websocket_state* ws = fz_websocket_state_get(ws_handle);
+  const char* payload = fz_lookup_string(payload_id);
+  return ws == NULL ? -1 : fz_websocket_write_frame(ws->fd, 0x9u, payload, strlen(payload == NULL ? "" : payload));
+}
+
+int32_t fz_native_net_websocket_pong(int32_t ws_handle, int32_t payload_id) {
+  fz_websocket_state* ws = fz_websocket_state_get(ws_handle);
+  const char* payload = fz_lookup_string(payload_id);
+  return ws == NULL ? -1 : fz_websocket_write_frame(ws->fd, 0xAu, payload, strlen(payload == NULL ? "" : payload));
+}
+
+int32_t fz_native_net_websocket_close(int32_t ws_handle, int32_t code, int32_t reason_id) {
+  fz_websocket_state* ws = fz_websocket_state_get(ws_handle);
+  if (ws == NULL) {
+    return -1;
+  }
+  const char* reason = fz_lookup_string(reason_id);
+  size_t reason_len = strlen(reason == NULL ? "" : reason);
+  char* payload = (char*)malloc(reason_len + 2);
+  if (payload == NULL) {
+    return -1;
+  }
+  payload[0] = (char)((code >> 8) & 0xFF);
+  payload[1] = (char)(code & 0xFF);
+  if (reason_len > 0) {
+    memcpy(payload + 2, reason, reason_len);
+  }
+  int rc = fz_websocket_write_frame(ws->fd, 0x8u, payload, reason_len + 2);
+  free(payload);
+  ws->closed = 1;
+  return rc;
 }
 
 static int fz_route_match_path_and_capture(fz_conn_state* state, const char* pattern) {
@@ -1735,6 +2201,11 @@ int32_t fz_native_close(int32_t fd) {
   if (fd >= 0) {
     shutdown(fd, SHUT_RDWR);
     close(fd);
+  }
+  for (int i = 0; i < FZ_MAX_WEBSOCKETS; i++) {
+    if (fz_websocket_states[i].in_use && fz_websocket_states[i].fd == fd) {
+      memset(&fz_websocket_states[i], 0, sizeof(fz_websocket_states[i]));
+    }
   }
   fz_conn_state_drop(fd);
   return 0;

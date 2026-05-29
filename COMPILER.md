@@ -338,6 +338,47 @@ Recommended downstream builder scope:
 
 ✅ Closed the native runtime shim helper-ordering bug by emitting forward declarations for the shared bytes-buffer and fd-wait helpers before first use, adding a shim render regression plus a native build/run Fozzy gate, and re-verifying real `fzaudio` `check` / `build` / `run` on the production path.
 
+## ✅ Production Blocker: Spawned Child Processes Can Stall When Output Is Not Drained During Wait
+
+✅ Closed the native process backpressure stall by teaching `proc.wait(...)` to poll and drain child stdout/stderr while waiting, adding a large-output regression plus a host-backed Fozzy scenario, and fixing return/defer lowering so deferred `proc.close(...)` no longer clobbers returned exit codes. Re-ran the real `/Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin` production path through `inspect`, `build`, `validate`, `package`, and `release`, then completed deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and native execution validation for the active runtime fix.
+
+## Production Blocker: `fz run` Native Execution Diverges From The Built Binary For Child-Process Orchestration
+
+`fzaudio` now has a clean reproduction where the built native binary succeeds but `fz run` on the same app and arguments reports a false configure failure. This is no longer an app-level issue:
+
+- direct binary succeeds:
+  - `/Users/deepsaint/Desktop/fzaudio/.fz/build/fzaudio clean --project /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin --config /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin/fzaudio.toml`
+  - `/Users/deepsaint/Desktop/fzaudio/.fz/build/fzaudio build --project /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin --config /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin/fzaudio.toml`
+- wrapper path fails on the same build step:
+  - `cargo run -q -p fz -- run /Users/deepsaint/Desktop/fzaudio -- build --project /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin --config /Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin/fzaudio.toml`
+
+Observed behavior on this checkout:
+
+- the direct binary reports `info discovered artifacts 3` and exits `0`
+- app-level JSON via the direct binary also succeeds and reports three discovered artifacts
+- the `fz run` wrapper path prints `warn configure failed; report .../.fzaudio/configure.report.json` and exits `1`
+- the failure reproduces even after simplifying `fzaudio`’s shell status path down to a single captured command execution
+
+Why this is a compiler/runtime bug:
+
+- the exact same compiled app binary behaves differently depending on whether it is launched directly or via `fz run`
+- that means the divergence lives in the driver/runtime execution path, argument/environment plumbing, stream handling, or native wrapper integration rather than in `fzaudio`’s own build logic
+- production systems tooling cannot trust `fz run` as a faithful execution surface until wrapper-launched native behavior matches direct binary execution for child-process-heavy programs
+
+Required closure:
+
+- make `fz run` observationally equivalent to launching the built binary for native child-process orchestration
+- add a dedicated regression that launches a process-spawning fixture both ways and asserts identical success / exit code / stdout behavior
+- gate it with deterministic Fozzy execution plus at least one real host-backed run
+
+## ✅ Production Blocker: No Cryptographic Or Secure-Random Runtime Surface
+
+✅ Closed the missing crypto/runtime surface by adding native `core.crypto` intrinsics for secure random hex/base64 output, SHA-256, HMAC-SHA256, constant-time equality, and base64 encode/decode, then layering production `core.security` helpers for signed values and URL-safe token transport. Added HIR/driver/native-runtime regression coverage plus a dedicated deterministic Fozzy scenario and trace lifecycle for the shipped crypto/corelib surface. Documented the production-safe contract honestly: this checkout exposes textual encodings rather than raw binary-string APIs because native Fzy strings are NUL-terminated.
+
+## ✅ Production DX Blocker: Safe FFI Wrapper Layers Did Not Count As Documented ABI Facades
+
+✅ Closed the narrow strict-verification wrapper gap by distinguishing call-edge coverage from independently proven unsafe evidence: documented `ext unsafe c fn` imports and their immediate safe Fzy facades now satisfy caller-edge ownership verification without pretending compiler-generated unsafe metadata is a full proof artifact. Added HIR and `fz verify` regressions plus a Fozzy scenario for the exact two-layer host-ABI wrapper pattern.
+
 ## Tracking Notes
 
 When work is completed, mark the relevant line or section with `✅` and briefly note:

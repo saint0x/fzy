@@ -2033,7 +2033,9 @@ fn validate_reference_returns(
                     violations,
                 );
                 *ref_bindings = match (then_fallthrough, else_fallthrough) {
-                    (true, true) => merge_reference_bindings(&entry_bindings, &[then_bindings, else_bindings]),
+                    (true, true) => {
+                        merge_reference_bindings(&entry_bindings, &[then_bindings, else_bindings])
+                    }
                     (true, false) => then_bindings,
                     (false, true) => else_bindings,
                     (false, false) => return false,
@@ -2092,13 +2094,13 @@ fn validate_reference_returns(
                 for arm in arms {
                     let mut branch_bindings = ref_bindings.clone();
                     let fallthrough = validate_reference_return_expr(
-                            &arm.value,
-                            function,
-                            &mut branch_bindings,
-                            signatures,
-                            return_lifetime,
-                            violations,
-                        );
+                        &arm.value,
+                        function,
+                        &mut branch_bindings,
+                        signatures,
+                        return_lifetime,
+                        violations,
+                    );
                     if fallthrough {
                         any_fallthrough = true;
                         arm_bindings.push(branch_bindings);
@@ -2110,7 +2112,11 @@ fn validate_reference_returns(
                     return false;
                 }
             }
-            Stmt::Let { name, value, .. } | Stmt::Assign { target: name, value } => {
+            Stmt::Let { name, value, .. }
+            | Stmt::Assign {
+                target: name,
+                value,
+            } => {
                 update_reference_binding(name, value, ref_bindings, signatures);
             }
             Stmt::LetPattern { .. }
@@ -2176,7 +2182,9 @@ fn validate_reference_return_expr(
                 violations,
             );
             *ref_bindings = match (then_fallthrough, else_fallthrough) {
-                (true, true) => merge_reference_bindings(&entry_bindings, &[then_bindings, else_bindings]),
+                (true, true) => {
+                    merge_reference_bindings(&entry_bindings, &[then_bindings, else_bindings])
+                }
                 (true, false) => then_bindings,
                 (false, true) => else_bindings,
                 (false, false) => return false,
@@ -2804,7 +2812,8 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
 
             fn visit_expr(&mut self, expr: &Expr) {
                 if let Expr::Call { callee, args } = expr {
-                    for name in consumed_arg_identity_names(callee, args, self.ownership_summaries) {
+                    for name in consumed_arg_identity_names(callee, args, self.ownership_summaries)
+                    {
                         if !self.linear_owned.contains(name) {
                             self.violations.push(format!(
                                 "function `{}` frees non-linear value `{}` as linear resource",
@@ -2958,7 +2967,7 @@ fn collect_function_caps_and_calls(
                         "time" | "std.time" => {
                             self.caps.insert("time".to_string());
                         }
-                        "rng" | "random" | "std.rand" => {
+                        "rng" | "random" | "std.rand" | "crypto" => {
                             self.caps.insert("rng".to_string());
                         }
                         "fs" | "file" | "std.io" => {
@@ -3361,8 +3370,12 @@ fn expr_consumed_binding_name(expr: &Expr) -> Option<&str> {
 
 fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
     match callee {
-        "http.write" | "http.write_json" | "http.write_response" | "route.write_404"
-        | "route.write_405" | "http.stream_close" => &[0],
+        "http.write"
+        | "http.write_json"
+        | "http.write_response"
+        | "route.write_404"
+        | "route.write_405"
+        | "http.stream_close" => &[0],
         _ if is_free_callee(callee) || is_close_callee(callee) => &[0],
         _ => &[],
     }
@@ -4643,7 +4656,9 @@ fn merge_ownership_states(
         }
         match classes.first().copied().unwrap_or(MergeClass::Clear) {
             MergeClass::Owned(owner_id)
-                if classes.iter().all(|class| *class == MergeClass::Owned(owner_id)) =>
+                if classes
+                    .iter()
+                    .all(|class| *class == MergeClass::Owned(owner_id)) =>
             {
                 merged.owners.insert(name.clone(), owner_id);
             }
@@ -4709,10 +4724,24 @@ struct FunctionMemorySummary {
     is_async: bool,
 }
 
+fn unsafe_contract_counts_as_call_edge_covered(site: &UnsafeContractSite) -> bool {
+    unsafe_contract_metadata_complete(site) && unsafe_contract_invariant_is_specific(site)
+}
+
 fn build_function_memory_summaries(
     functions: &[TypedFunction],
 ) -> BTreeMap<String, FunctionMemorySummary> {
     let mut out = BTreeMap::new();
+    let mut unsafe_reasoned_sites_by_function = BTreeMap::<String, usize>::new();
+    for site in collect_unsafe_contract_sites(functions)
+        .into_iter()
+        .filter(|site| site.kind != "unsafe_violation_callsite")
+        .filter(unsafe_contract_counts_as_call_edge_covered)
+    {
+        *unsafe_reasoned_sites_by_function
+            .entry(site.function.clone())
+            .or_insert(0) += 1;
+    }
     for function in functions {
         let mut alloc_sites = 0usize;
         let mut free_sites = 0usize;
@@ -4787,7 +4816,10 @@ fn build_function_memory_summaries(
                 free_sites,
                 close_sites,
                 unsafe_sites,
-                unsafe_reasoned_sites: 0,
+                unsafe_reasoned_sites: unsafe_reasoned_sites_by_function
+                    .get(&function.name)
+                    .copied()
+                    .unwrap_or(0),
                 has_mut_ref_params,
                 has_ref_params,
                 returns_ref,
@@ -6577,7 +6609,7 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                             "time" | "std.time" => {
                                 self.caps.insert("time".to_string());
                             }
-                            "rng" | "random" | "std.rand" => {
+                            "rng" | "random" | "std.rand" | "crypto" => {
                                 self.caps.insert("rng".to_string());
                             }
                             "fs" | "file" | "std.io" => {
@@ -11066,11 +11098,15 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "http.poll_next",
         "http.listen",
         "http.read",
+        "http.read_headers",
         "http.close",
         "http.poll_register",
         "http.method",
         "http.path",
         "http.body",
+        "http.body_read",
+        "http.body_eof",
+        "http.body_discard",
         "http.body_json",
         "http.body_bind",
         "http.header",
@@ -11079,9 +11115,22 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "http.headers",
         "http.request_id",
         "http.remote_addr",
+        "http.response_header_set",
+        "http.response_header_add",
+        "http.response_header_clear",
         "http.write",
         "http.write_json",
         "http.write_response",
+        "http.websocket_accept",
+        "http.websocket_read",
+        "http.websocket_kind",
+        "http.websocket_close_code",
+        "http.websocket_error",
+        "http.websocket_write_text",
+        "http.websocket_write_binary",
+        "http.websocket_ping",
+        "http.websocket_pong",
+        "http.websocket_close",
         "http.post_json",
         "http.post_json_capture",
         "http.post_json_stream",
@@ -11095,6 +11144,13 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "http.header_set",
         "http.last_status",
         "http.last_error",
+        "crypto.random_hex",
+        "crypto.random_base64",
+        "crypto.sha256",
+        "crypto.hmac_sha256",
+        "crypto.constant_time_eq",
+        "crypto.base64_encode",
+        "crypto.base64_decode",
         "env.get",
         "proc.argv_count",
         "proc.argv_get",
@@ -11286,6 +11342,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         name: "HttpStreamHandle".to_string(),
         args: Vec::new(),
     };
+    let websocket_handle = Type::Named {
+        name: "WebSocketHandle".to_string(),
+        args: Vec::new(),
+    };
     let json_handle = Type::Named {
         name: "JsonHandle".to_string(),
         args: Vec::new(),
@@ -11360,10 +11420,12 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "http.bind" | "http.accept" | "http.connect" | "http.poll_next" => {
             (vec![], http_handle.clone())
         }
-        "http.listen" | "http.read" | "http.close" | "http.poll_register" => {
+        "http.listen" | "http.read" | "http.read_headers" | "http.close" | "http.poll_register" => {
             (vec![http_handle.clone()], i32.clone())
         }
         "http.method" | "http.path" | "http.body" => (vec![http_handle.clone()], str_ty.clone()),
+        "http.body_read" => (vec![http_handle.clone(), i32.clone()], str_ty.clone()),
+        "http.body_eof" | "http.body_discard" => (vec![http_handle.clone()], i32.clone()),
         "http.body_json" => (vec![http_handle.clone()], json_handle.clone()),
         "http.body_bind" => (vec![http_handle.clone()], json_handle.clone()),
         "http.header" | "http.query" | "http.param" => {
@@ -11371,7 +11433,26 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         }
         "http.headers" => (vec![http_handle.clone()], map_handle.clone()),
         "http.request_id" | "http.remote_addr" => (vec![http_handle.clone()], str_ty.clone()),
+        "http.response_header_set" | "http.response_header_add" => (
+            vec![http_handle.clone(), str_ty.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
+        "http.response_header_clear" => (vec![http_handle.clone()], i32.clone()),
         "http.header_set" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
+        "http.websocket_accept" => (vec![http_handle.clone()], websocket_handle.clone()),
+        "http.websocket_read" => (vec![websocket_handle.clone(), i32.clone()], str_ty.clone()),
+        "http.websocket_kind" | "http.websocket_error" => {
+            (vec![websocket_handle.clone()], str_ty.clone())
+        }
+        "http.websocket_close_code" => (vec![websocket_handle.clone()], i32.clone()),
+        "http.websocket_write_text"
+        | "http.websocket_write_binary"
+        | "http.websocket_ping"
+        | "http.websocket_pong" => (vec![websocket_handle.clone(), str_ty.clone()], i32.clone()),
+        "http.websocket_close" => (
+            vec![websocket_handle.clone(), i32.clone(), str_ty.clone()],
+            i32.clone(),
+        ),
         "http.request_stream" => (
             vec![str_ty.clone(), str_ty.clone(), str_ty.clone()],
             http_stream_handle.clone(),
@@ -11399,6 +11480,12 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             ],
             i32.clone(),
         ),
+        "crypto.random_hex" | "crypto.random_base64" => (vec![i32.clone()], str_ty.clone()),
+        "crypto.sha256" | "crypto.base64_encode" | "crypto.base64_decode" => {
+            (vec![str_ty.clone()], str_ty.clone())
+        }
+        "crypto.hmac_sha256" => (vec![str_ty.clone(), str_ty.clone()], str_ty.clone()),
+        "crypto.constant_time_eq" => (vec![str_ty.clone(), str_ty.clone()], i32.clone()),
         "env.get" => (vec![str_ty.clone()], str_ty.clone()),
         "proc.argv_count" => (vec![], i32.clone()),
         "proc.argv_get" => (vec![i32.clone()], str_ty.clone()),
@@ -11585,6 +11672,7 @@ fn runtime_default_value(ty: &Type) -> Option<Value> {
                 | "TaskGroupHandle"
                 | "HttpHandle"
                 | "HttpStreamHandle"
+                | "WebSocketHandle"
                 | "JsonHandle"
                 | "ListHandle"
                 | "MapHandle"
@@ -14998,6 +15086,35 @@ mod tests {
     }
 
     #[test]
+    fn documented_ffi_wrapper_call_edges_do_not_require_independent_proof() {
+        let source = r#"
+            ext unsafe c fn host_touch(buf_borrowed: *u8, len: usize) -> i32;
+
+            fn abi_touch(s: str) -> i32 {
+                unsafe {
+                    return host_touch(s, str.len(s));
+                }
+            }
+
+            fn safe_touch(s: str) -> i32 {
+                return abi_touch(s);
+            }
+
+            fn main() -> i32 {
+                return safe_touch("ok");
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.unsafe_sites > 0);
+        assert_eq!(typed.unsafe_reasoned_sites, 0);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("call edge `abi_touch -> host_touch` reaches unsafe code")
+                || detail.contains("call edge `safe_touch -> abi_touch` reaches unsafe code")
+        }));
+    }
+
+    #[test]
     fn non_consuming_helper_preserves_caller_ownership() {
         let source = r#"
             fn inspect(p: *mut u8) -> i32 {
@@ -15036,10 +15153,8 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
-        assert!(!typed
-            .linear_type_violations
-            .iter()
-            .any(|detail| detail.contains("function `inspect` linear value `stream` was not consumed/freed")));
+        assert!(!typed.linear_type_violations.iter().any(|detail| detail
+            .contains("function `inspect` linear value `stream` was not consumed/freed")));
     }
 
     #[test]
@@ -15062,7 +15177,8 @@ mod tests {
         assert!(!typed
             .ownership_violations
             .iter()
-            .any(|detail| detail.contains("function `main` leaks allocation") && detail.contains("`conn`")));
+            .any(|detail| detail.contains("function `main` leaks allocation")
+                && detail.contains("`conn`")));
     }
 
     #[test]
@@ -15325,7 +15441,9 @@ mod tests {
         let typed = lower(&module);
         assert!(typed.reference_lifetime_violations.iter().any(|detail| {
             detail.contains("returns reference expression with mismatched lifetime")
-                || detail.contains("returns reference expression without a statically traced lifetime source")
+                || detail.contains(
+                    "returns reference expression without a statically traced lifetime source",
+                )
         }));
     }
 

@@ -1,0 +1,12 @@
+{
+  "dependencyGraphHash": "5682a11c1bb9bbedfe0b4d475ceba5e827847a5b8c2b56a8d1a6272d654fa8b3",
+  "graph": {
+    "deps": [],
+    "package": {
+      "manifestHash": "779952ad31a661f9184715b42c3be938cc65b80bda2a2af094280a2607ab75c6",
+      "name": "ffi_wrapper_verify",
+      "version": "0.1.0"
+    }
+  },
+  "schemaVersion": "fozzylang.lock.v0"
+}

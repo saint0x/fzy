@@ -231,6 +231,33 @@ Transcript guidance:
   - `text.upper_ascii(value)`
   - `text.lower_ascii(value)`
 
+### `crypto`
+
+- `use core.crypto;` is the production cryptography and secure-random import.
+- Native runtime surface:
+  - `crypto.random_hex(bytes)`
+  - `crypto.random_base64(bytes)`
+  - `crypto.sha256(data)`
+  - `crypto.hmac_sha256(key, data)`
+  - `crypto.constant_time_eq(a, b)`
+  - `crypto.base64_encode(data)`
+  - `crypto.base64_decode(data)`
+- `use core.security;` is the higher-level web/security helper facade on top of `core.crypto`.
+- Common `core.security` helpers:
+  - `security.random_hex(bytes)`
+  - `security.random_base64(bytes)`
+  - `security.random_base64_url(bytes)`
+  - `security.sha256_hex(data)`
+  - `security.hmac_sha256_hex(key, data)`
+  - `security.sign_value(key, data)`
+  - `security.verify_value(key, data, mac_hex)`
+  - `security.secure_eq(a, b)`
+  - `security.base64_encode(data)`
+  - `security.base64_decode(data)`
+  - `security.base64_url_encode(data)`
+  - `security.base64_url_decode(data)`
+- This checkout intentionally exposes textual crypto encodings rather than raw binary string APIs; native Fzy strings are NUL-terminated, so `hex`/`base64` are the production-safe surface for random output and digest transport.
+
 ### `thread`
 
 - `use core.thread;` is the canonical concurrency-context helper import.

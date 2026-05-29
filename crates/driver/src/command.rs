@@ -11936,6 +11936,138 @@ mod tests {
     }
 
     #[test]
+    fn proc_wait_drains_large_child_output_without_stalling() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-proc-wait-backpressure-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.proc;\n\nfn main() -> i32 {\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"/usr/bin/python3 -c 'import sys; sys.stdout.write(\\\"o\\\" * 300000); sys.stdout.flush(); sys.stderr.write(\\\"e\\\" * 300000); sys.stderr.flush()'\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    let waited = proc.wait(handle, 10000)\n    let stdout = proc.stdout(handle)\n    let stderr = proc.stderr(handle)\n    let exit_code = proc.exit_code(handle)\n    discard proc.close(handle)\n    if waited == 0 && exit_code == 0 && str.len(stdout) == 300000 && str.len(stderr) == 300000 {\n        return 0\n    }\n    return 13\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("large-output proc wait should succeed");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn deferred_proc_close_does_not_clobber_returned_exit_code() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-proc-defer-return-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "use core.proc;\n\nfn status_of() -> i32 {\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"exit 0\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    defer proc.close(handle)\n    discard proc.wait(handle, 1000)\n    return proc.exit_code(handle)\n}\n\nfn main() -> i32 {\n    if status_of() == 0 {\n        return 0\n    }\n    return 13\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("deferred proc close should preserve exit code");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn crypto_runtime_surface_supports_hash_hmac_base64_and_secure_compare() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-crypto-runtime-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "use core.crypto;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" {\n        return 11\n    }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" {\n        return 13\n    }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" {\n        return 17\n    }\n    if url != \"b2s\" || roundtrip != \"ok\" {\n        return 19\n    }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 {\n        return 23\n    }\n    if crypto.constant_time_eq(digest, digest) != 1 {\n        return 29\n    }\n    if crypto.constant_time_eq(digest, mac) != 0 {\n        return 31\n    }\n    if security.verify_value(\"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 1 {\n        return 37\n    }\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("cranelift".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .unwrap_or_else(|err| {
+            if let Some(command_failure) = err.downcast_ref::<CommandFailure>() {
+                panic!(
+                    "crypto runtime should succeed: {}\noutput:\n{}",
+                    command_failure, command_failure.output
+                );
+            }
+            panic!("crypto runtime should succeed: {err}");
+        });
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn native_http_post_json_applies_headers_and_preserves_raw_json_values() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let addr = listener.local_addr().expect("listener addr should resolve");
@@ -12303,9 +12435,7 @@ mod tests {
             }
         };
         stream
-            .write_all(
-                b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
-            )
+            .write_all(b"GET /healthz HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
             .expect("request should write");
         let mut response = String::new();
         stream
@@ -12427,6 +12557,328 @@ mod tests {
                 "response should not collapse to an empty json object: {response}"
             );
         }
+
+        let status = child.wait().expect("server child should exit");
+        assert_eq!(status.code(), Some(0));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn response_headers_support_custom_and_repeated_set_cookie_values() {
+        let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
+        let port = probe
+            .local_addr()
+            .expect("probe addr should resolve")
+            .port();
+        drop(probe);
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-http-response-headers-{suffix}"));
+        let source = root.join("src/main.fzy");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"http_response_headers\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"http_response_headers\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read(conn) != 0 {\n        return 23\n    }\n    discard http.response_header_set(conn, \"X-Test\", \"present\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"sid=abc; Path=/; HttpOnly\")\n    discard http.response_header_add(conn, \"Set-Cookie\", \"pref=dark; Path=/; Secure\")\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", \"ok\", 1)\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let artifact = compile_file_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            Some("cranelift"),
+        )
+        .expect("build should succeed");
+        assert_eq!(artifact.status, "ok");
+        let binary = artifact
+            .output
+            .expect("build artifact should include output path");
+
+        let mut child = std::process::Command::new(&binary)
+            .env("AGENT_HOST", "127.0.0.1")
+            .env("AGENT_PORT", port.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("server child should spawn");
+
+        use std::io::{Read as _, Write as _};
+        let start = std::time::Instant::now();
+        let mut stream = loop {
+            match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => break stream,
+                Err(_) if start.elapsed() <= std::time::Duration::from_secs(5) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    panic!("server did not become reachable: {error}");
+                }
+            }
+        };
+        stream
+            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .expect("request should write");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response should read");
+
+        let status = child.wait().expect("server child should exit");
+        assert_eq!(status.code(), Some(0));
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response was: {response}"
+        );
+        assert!(
+            response.contains("X-Test: present"),
+            "custom header missing from response: {response}"
+        );
+        assert!(
+            response.contains("Set-Cookie: sid=abc; Path=/; HttpOnly"),
+            "first set-cookie missing from response: {response}"
+        );
+        assert!(
+            response.contains("Set-Cookie: pref=dark; Path=/; Secure"),
+            "second set-cookie missing from response: {response}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn request_body_streaming_reads_chunked_uploads_incrementally() {
+        let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
+        let port = probe
+            .local_addr()
+            .expect("probe addr should resolve")
+            .port();
+        drop(probe);
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-http-body-stream-{suffix}"));
+        let source = root.join("src/main.fzy");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"http_body_stream\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"http_body_stream\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    if http.read_headers(conn) != 0 {\n        return 23\n    }\n    let mut body = \"\"\n    while http.body_eof(conn) == 0 {\n        body = str.concat(body, http.body_read(conn, 4))\n    }\n    discard http.write_response(conn, 200, \"text/plain; charset=utf-8\", body, 1)\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let artifact = compile_file_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            Some("cranelift"),
+        )
+        .expect("build should succeed");
+        assert_eq!(artifact.status, "ok");
+        let binary = artifact
+            .output
+            .expect("build artifact should include output path");
+
+        let mut child = std::process::Command::new(&binary)
+            .env("AGENT_HOST", "127.0.0.1")
+            .env("AGENT_PORT", port.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("server child should spawn");
+
+        use std::io::{Read as _, Write as _};
+        let start = std::time::Instant::now();
+        let mut stream = loop {
+            match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => break stream,
+                Err(_) if start.elapsed() <= std::time::Duration::from_secs(5) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    panic!("request should connect: {error}");
+                }
+            }
+        };
+        stream
+            .write_all(
+                b"POST /upload HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nstre\r\n4\r\namin\r\n2\r\ng!\r\n0\r\n\r\n",
+            )
+            .expect("chunked request should write");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response should read");
+
+        let status = child.wait().expect("server child should exit");
+        assert_eq!(status.code(), Some(0));
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK"),
+            "response was: {response}"
+        );
+        assert!(
+            response.ends_with("streaming!"),
+            "streamed body should round-trip through response: {response}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn websocket_upgrade_supports_text_frame_round_trip() {
+        fn read_http_headers(stream: &mut std::net::TcpStream) -> String {
+            use std::io::Read as _;
+            let mut buf = Vec::new();
+            loop {
+                let mut chunk = [0u8; 256];
+                let read = stream.read(&mut chunk).expect("header read should succeed");
+                if read == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..read]);
+                if buf.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            String::from_utf8_lossy(&buf).to_string()
+        }
+
+        fn write_masked_text_frame(stream: &mut std::net::TcpStream, text: &str) {
+            use std::io::Write as _;
+            let payload = text.as_bytes();
+            let mask = [0x11u8, 0x22, 0x33, 0x44];
+            let mut frame = Vec::new();
+            frame.push(0x81u8);
+            frame.push(0x80u8 | payload.len() as u8);
+            frame.extend_from_slice(&mask);
+            for (idx, byte) in payload.iter().enumerate() {
+                frame.push(byte ^ mask[idx % 4]);
+            }
+            stream.write_all(&frame).expect("frame should write");
+        }
+
+        fn read_ws_frame(stream: &mut std::net::TcpStream) -> (u8, Vec<u8>) {
+            use std::io::Read as _;
+            let mut hdr = [0u8; 2];
+            stream
+                .read_exact(&mut hdr)
+                .expect("frame header should read");
+            let opcode = hdr[0] & 0x0f;
+            let mut len = (hdr[1] & 0x7f) as usize;
+            if len == 126 {
+                let mut ext = [0u8; 2];
+                stream
+                    .read_exact(&mut ext)
+                    .expect("extended len should read");
+                len = u16::from_be_bytes(ext) as usize;
+            }
+            let mut payload = vec![0u8; len];
+            if len > 0 {
+                stream
+                    .read_exact(&mut payload)
+                    .expect("payload should read");
+            }
+            (opcode, payload)
+        }
+
+        let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
+        let port = probe
+            .local_addr()
+            .expect("probe addr should resolve")
+            .port();
+        drop(probe);
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-websocket-upgrade-{suffix}"));
+        let source = root.join("src/main.fzy");
+        std::fs::create_dir_all(root.join("src")).expect("project src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname = \"websocket_upgrade\"\nversion = \"0.1.0\"\n\n[[target.bin]]\nname = \"websocket_upgrade\"\npath = \"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            &source,
+            "use core.http;\n\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    if http.listen(listener) != 0 {\n        return 21\n    }\n    let conn = http.accept()\n    defer close(conn)\n    if http.read_headers(conn) != 0 {\n        return 23\n    }\n    let ws = http.websocket_accept(conn)\n    let message = http.websocket_read(ws, 256)\n    let kind = http.websocket_kind(ws)\n    if kind != \"text\" || message != \"hello\" {\n        discard http.websocket_close(ws, 1002, \"protocol\")\n        return 25\n    }\n    discard http.websocket_write_text(ws, \"world\")\n    discard http.websocket_close(ws, 1000, \"bye\")\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let artifact = compile_file_with_backend_with_root_guidance(
+            &root,
+            BuildProfile::Dev,
+            Some("cranelift"),
+        )
+        .expect("build should succeed");
+        assert_eq!(artifact.status, "ok");
+        let binary = artifact
+            .output
+            .expect("build artifact should include output path");
+
+        let mut child = std::process::Command::new(&binary)
+            .env("AGENT_HOST", "127.0.0.1")
+            .env("AGENT_PORT", port.to_string())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("server child should spawn");
+
+        use std::io::Write as _;
+        let start = std::time::Instant::now();
+        let mut stream = loop {
+            match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Ok(stream) => break stream,
+                Err(_) if start.elapsed() <= std::time::Duration::from_secs(5) => {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(error) => {
+                    let _ = child.kill();
+                    panic!("request should connect: {error}");
+                }
+            }
+        };
+        stream
+            .write_all(
+                b"GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n",
+            )
+            .expect("websocket upgrade should write");
+        let response = read_http_headers(&mut stream);
+        assert!(
+            response.starts_with("HTTP/1.1 101"),
+            "upgrade response was: {response}"
+        );
+        assert!(
+            response.contains("Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo="),
+            "accept hash missing from response: {response}"
+        );
+
+        write_masked_text_frame(&mut stream, "hello");
+        let (opcode, payload) = read_ws_frame(&mut stream);
+        assert_eq!(opcode, 0x1, "expected text frame opcode");
+        assert_eq!(String::from_utf8_lossy(&payload), "world");
+        let (close_opcode, close_payload) = read_ws_frame(&mut stream);
+        assert_eq!(close_opcode, 0x8, "expected close frame opcode");
+        assert!(close_payload.len() >= 2, "close payload missing code");
+        assert_eq!(
+            u16::from_be_bytes([close_payload[0], close_payload[1]]),
+            1000
+        );
 
         let status = child.wait().expect("server child should exit");
         assert_eq!(status.code(), Some(0));
@@ -14859,6 +15311,38 @@ mod tests {
         assert!(output.contains("must be declared `ext unsafe c fn`"));
 
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn verify_accepts_documented_safe_wrapper_over_unsafe_import() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-ffi-wrapper-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("src dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"ffi_wrapper\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"ffi_wrapper\"\npath=\"src/main.fzy\"\n\n[unsafe]\ncontracts=\"compiler\"\nenforce_verify=true\nenforce_release=true\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "ext unsafe c fn host_touch(buf_borrowed: *u8, len: usize) -> i32;\n\nfn abi_touch(s: str) -> i32 {\n    unsafe {\n        return host_touch(s, str.len(s))\n    }\n}\n\nfn safe_touch(s: str) -> i32 {\n    return abi_touch(s)\n}\n\nfn main() -> i32 {\n    return safe_touch(\"ok\")\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Verify { path: root.clone() },
+            Format::Json,
+        )
+        .expect("verify should return diagnostics");
+        assert!(output.contains("\"errors\":0"));
+        assert!(!output.contains("call edge `abi_touch -> host_touch` reaches unsafe code"));
+        assert!(!output.contains("call edge `safe_touch -> abi_touch` reaches unsafe code"));
+        assert!(output.contains("structural unsafe contract metadata is present"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

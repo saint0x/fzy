@@ -45,6 +45,10 @@ fn write(ptr: *u8, len: usize) -> i32 {
 
 `ext c fn` remains available for safe contracts only.
 
+Production wrapper rule:
+- A safe Fzy wrapper directly above an `ext unsafe c fn` import is allowed and should be the preferred place to narrow naming, ownership, and argument-shaping contracts for the rest of the program.
+- Strict verification still treats the underlying compiler-generated unsafe metadata as structural audit evidence rather than an independent proof artifact, but documented ABI imports and their immediate safe facades no longer poison caller-edge ownership verification by default.
+
 ## Audit + Docs Artifacts
 
 `fz audit unsafe --workspace` emits:

@@ -18,7 +18,7 @@ impl Capability {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim() {
             "time" => Some(Self::Time),
-            "rng" | "random" => Some(Self::Random),
+            "rng" | "random" | "crypto" | "security" => Some(Self::Random),
             "fs" | "filesystem" => Some(Self::FileSystem),
             "storage" => Some(Self::Storage),
             "http" => Some(Self::Http),

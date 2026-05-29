@@ -1,0 +1,12 @@
+{
+  "dependencyGraphHash": "d170c30381f9a5605670e244683233049026e253bb285624b3703edfc3712f43",
+  "graph": {
+    "deps": [],
+    "package": {
+      "manifestHash": "4aeaf93b9f68d5a3c6e4f2ba7e510e6b4ddaf10a525eee4af8c3cfe345d9d753",
+      "name": "crypto-runtime",
+      "version": "0.1.0"
+    }
+  },
+  "schemaVersion": "fozzylang.lock.v0"
+}

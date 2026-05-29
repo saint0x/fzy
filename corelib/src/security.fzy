@@ -1,3 +1,5 @@
+use core.crypto;
+
 enum AuthDecision {
     Allow,
     Deny,
@@ -62,11 +64,82 @@ fn consume_tokens(tokens: i32, cost: i32) -> i32 {
     return tokens - cost
 }
 
+fn random_hex(bytes: i32) -> str {
+    return crypto.random_hex(bytes)
+}
+
+fn random_base64(bytes: i32) -> str {
+    return crypto.random_base64(bytes)
+}
+
+fn random_base64_url(bytes: i32) -> str {
+    let standard = crypto.random_base64(bytes)
+    let no_pad = str.replace(standard, "=", "")
+    let step1 = str.replace(no_pad, "+", "-")
+    return str.replace(step1, "/", "_")
+}
+
+fn sha256_hex(data: str) -> str {
+    return crypto.sha256(data)
+}
+
+fn hmac_sha256_hex(key: str, data: str) -> str {
+    return crypto.hmac_sha256(key, data)
+}
+
+fn secure_eq(a: str, b: str) -> i32 {
+    return crypto.constant_time_eq(a, b)
+}
+
+fn sign_value(key: str, data: str) -> str {
+    return hmac_sha256_hex(key, data)
+}
+
+fn verify_value(key: str, data: str, mac_hex: str) -> i32 {
+    return secure_eq(sign_value(key, data), mac_hex)
+}
+
+fn base64_encode(data: str) -> str {
+    return crypto.base64_encode(data)
+}
+
+fn base64_decode(data: str) -> str {
+    return crypto.base64_decode(data)
+}
+
+fn base64_url_encode(data: str) -> str {
+    let standard = base64_encode(data)
+    let no_pad = str.replace(standard, "=", "")
+    let step1 = str.replace(no_pad, "+", "-")
+    return str.replace(step1, "/", "_")
+}
+
+fn base64_url_decode(data: str) -> str {
+    let step1 = str.replace(data, "-", "+")
+    let standard = str.replace(step1, "_", "/")
+    let rem = str.len(standard) % 4
+    if rem == 0 {
+        return base64_decode(standard)
+    }
+    if rem == 2 {
+        return base64_decode(str.concat(standard, "=="))
+    }
+    if rem == 3 {
+        return base64_decode(str.concat(standard, "="))
+    }
+    return ""
+}
+
 fn sample() -> i32 {
     let policy = default_rate_limit()
     let red = redact_key_score("authorization")
     let auth = auth_score(classify_auth(1, 0, 1, 1, 1))
     let tokens = refill_tokens(3, 2500, policy)
     let rem = consume_tokens(tokens, 2)
-    return (red + auth + rem + policy.burst) % 251
+    let digest = sha256_hex("sample")
+    let mac = hmac_sha256_hex("key", "sample")
+    let encoded = base64_url_encode("sample")
+    let decoded = base64_url_decode(encoded)
+    let signed_ok = verify_value("key", "sample", mac)
+    return (red + auth + rem + policy.burst + str.len(digest) + str.len(mac) + str.len(decoded) + signed_ok) % 251
 }

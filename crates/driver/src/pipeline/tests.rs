@@ -1349,6 +1349,86 @@ fn native_runtime_import_table_is_boundary_only_and_unique() {
 }
 
 #[test]
+fn embedded_core_security_module_merges_qualified_helpers() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("fozzylang-core-security-{suffix}.fzy"));
+    std::fs::write(
+        &path,
+        "use core.security;\nfn main() -> i32 {\n    if security.verify_value(\"k\", \"v\", security.sign_value(\"k\", \"v\")) == 1 {\n        return 0\n    }\n    return 13\n}\n",
+    )
+    .expect("source should be written");
+
+    let parsed = parse_program(&path).expect("security facade should parse");
+    let function_names = parsed
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Function(function) => Some(function.name.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(function_names.iter().any(|name| name == "security.verify_value"));
+    assert!(function_names.iter().any(|name| name == "security.sign_value"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn embedded_core_security_module_typechecks_urlsafe_and_signing_helpers() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("fozzylang-core-security-typecheck-{suffix}.fzy"));
+    std::fs::write(
+        &path,
+        "use core.security;\nfn main() -> i32 {\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    if roundtrip == \"ok\" && security.verify_value(\"k\", \"v\", security.sign_value(\"k\", \"v\")) == 1 {\n        return 0\n    }\n    return 13\n}\n",
+    )
+    .expect("source should be written");
+
+    let parsed = parse_program(&path).expect("security facade should parse");
+    let typed = hir::lower(&parsed.module);
+    assert_eq!(
+        typed.type_errors, 0,
+        "unexpected type errors: {:?}",
+        typed.type_error_details
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn native_lowerability_accepts_embedded_core_security_helpers() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("fozzylang-core-security-native-{suffix}.fzy"));
+    std::fs::write(
+        &path,
+        "use core.security;\nfn main() -> i32 {\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    if roundtrip == \"ok\" && security.verify_value(\"k\", \"v\", security.sign_value(\"k\", \"v\")) == 1 {\n        return 0\n    }\n    return 13\n}\n",
+    )
+    .expect("source should be written");
+
+    let parsed = parse_program(&path).expect("security facade should parse");
+    let diagnostics = super::native_lowerability_diagnostics(&parsed.module);
+    assert!(
+        diagnostics.is_empty(),
+        "unexpected native diagnostics: {:?}",
+        diagnostics
+            .iter()
+            .map(|diag| diag.message.clone())
+            .collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     let shim = render_native_runtime_shim(
         &[
@@ -1392,6 +1472,14 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_http_stream_close(int32_t handle)"));
     assert!(shim.contains("int32_t fz_native_http_last_status(void)"));
     assert!(shim.contains("int32_t fz_native_http_last_error(void)"));
+    assert!(shim.contains("int32_t fz_native_crypto_random_hex(int32_t len_bytes)"));
+    assert!(shim.contains("int32_t fz_native_crypto_random_base64(int32_t len_bytes)"));
+    assert!(shim.contains("int32_t fz_native_crypto_sha256(int32_t input_id)"));
+    assert!(shim.contains("int32_t fz_native_crypto_hmac_sha256(int32_t key_id, int32_t data_id)"));
+    assert!(shim
+        .contains("int32_t fz_native_crypto_constant_time_eq(int32_t left_id, int32_t right_id)"));
+    assert!(shim.contains("int32_t fz_native_crypto_base64_encode(int32_t input_id)"));
+    assert!(shim.contains("int32_t fz_native_crypto_base64_decode(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_json_escape(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_json_str(int32_t input_id)"));
     assert!(shim.contains("int32_t fz_native_json_raw(int32_t input_id)"));
@@ -1445,6 +1533,51 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("int32_t fz_native_pulse(void)"));
     assert!(shim.contains("static const int fz_task_entry_count = 1;"));
     assert!(shim.contains("fz_spawn_thread_main"));
+}
+
+#[test]
+fn cross_backend_crypto_runtime_and_security_facade_execute_consistently() {
+    let project_name = format!(
+        "fozzylang-crypto-security-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.crypto;\nuse core.security;\n\nfn main() -> i32 {\n    let digest = crypto.sha256(\"abc\")\n    let mac = crypto.hmac_sha256(\"key\", \"The quick brown fox jumps over the lazy dog\")\n    let encoded = crypto.base64_encode(\"fozzy\")\n    let decoded = crypto.base64_decode(encoded)\n    let url = security.base64_url_encode(\"ok\")\n    let roundtrip = security.base64_url_decode(url)\n    let hex_token = crypto.random_hex(16)\n    let b64_token = crypto.random_base64(16)\n    if digest != \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\" { return 11 }\n    if mac != \"f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8\" { return 13 }\n    if encoded != \"Zm96enk=\" || decoded != \"fozzy\" { return 17 }\n    if url != \"b2s\" || roundtrip != \"ok\" { return 19 }\n    if str.len(hex_token) != 32 || str.len(b64_token) != 24 { return 23 }\n    if crypto.constant_time_eq(digest, digest) != 1 { return 29 }\n    if crypto.constant_time_eq(digest, mac) != 0 { return 31 }\n    if security.verify_value(\"key\", \"The quick brown fox jumps over the lazy dog\", mac) != 1 { return 37 }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    assert_eq!(cranelift.status, "ok");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+    assert_eq!(llvm.status, "ok");
+    let cranelift_exit = run_native_exit(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift artifact output should exist"),
+    );
+    let llvm_exit = run_native_exit(
+        llvm.output
+            .as_deref()
+            .expect("llvm artifact output should exist"),
+    );
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 0);
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

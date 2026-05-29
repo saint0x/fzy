@@ -27,6 +27,11 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "http.read_headers",
+        symbol: "fz_native_net_read_headers",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "env.get",
         symbol: "fz_native_env_get",
         arity: 1,
@@ -142,6 +147,41 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 0,
     },
     NativeRuntimeImport {
+        callee: "crypto.random_hex",
+        symbol: "fz_native_crypto_random_hex",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "crypto.random_base64",
+        symbol: "fz_native_crypto_random_base64",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "crypto.sha256",
+        symbol: "fz_native_crypto_sha256",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "crypto.hmac_sha256",
+        symbol: "fz_native_crypto_hmac_sha256",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "crypto.constant_time_eq",
+        symbol: "fz_native_crypto_constant_time_eq",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "crypto.base64_encode",
+        symbol: "fz_native_crypto_base64_encode",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "crypto.base64_decode",
+        symbol: "fz_native_crypto_base64_decode",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "json.escape",
         symbol: "fz_native_json_escape",
         arity: 1,
@@ -232,6 +272,21 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "http.body_read",
+        symbol: "fz_native_net_body_read",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "http.body_eof",
+        symbol: "fz_native_net_body_eof",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "http.body_discard",
+        symbol: "fz_native_net_body_discard",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "http.body_json",
         symbol: "fz_native_net_body_json",
         arity: 1,
@@ -272,6 +327,21 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "http.response_header_set",
+        symbol: "fz_native_net_response_header_set",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "http.response_header_add",
+        symbol: "fz_native_net_response_header_add",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "http.response_header_clear",
+        symbol: "fz_native_net_response_header_clear",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "http.write",
         symbol: "fz_native_net_write",
         arity: 3,
@@ -285,6 +355,56 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         callee: "http.write_response",
         symbol: "fz_native_net_write_response",
         arity: 5,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_accept",
+        symbol: "fz_native_net_websocket_accept",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_read",
+        symbol: "fz_native_net_websocket_read",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_kind",
+        symbol: "fz_native_net_websocket_kind",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_close_code",
+        symbol: "fz_native_net_websocket_close_code",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_error",
+        symbol: "fz_native_net_websocket_error",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_write_text",
+        symbol: "fz_native_net_websocket_write_text",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_write_binary",
+        symbol: "fz_native_net_websocket_write_binary",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_ping",
+        symbol: "fz_native_net_websocket_ping",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_pong",
+        symbol: "fz_native_net_websocket_pong",
+        arity: 2,
+    },
+    NativeRuntimeImport {
+        callee: "http.websocket_close",
+        symbol: "fz_native_net_websocket_close",
+        arity: 3,
     },
     NativeRuntimeImport {
         callee: "http.close",

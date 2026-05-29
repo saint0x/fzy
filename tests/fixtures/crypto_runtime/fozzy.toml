@@ -1,0 +1,7 @@
+[package]
+name = "crypto-runtime"
+version = "0.1.0"
+
+[[target.bin]]
+name = "crypto-runtime"
+path = "src/main.fzy"
