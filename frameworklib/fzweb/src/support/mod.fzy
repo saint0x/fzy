@@ -1,15 +1,25 @@
 use core.http;
 use core.log;
+use core.storage;
 use core.time;
 use core.thread;
 
+use app;
+use cookies;
 use middleware;
+use multipart;
+use persistence;
 use request;
 use response;
-use routing;
+use sessions;
+use streaming;
 use webcore;
 
 struct ServerConfig {
+    service_name: str,
+    service_version: str,
+    store_path: str,
+    session_secret: str,
     timeout_ms: i32,
     max_body_bytes: i32,
     enable_cors: i32,
@@ -90,6 +100,10 @@ fn text_env(key: str, fallback: str) -> str {
 
 fn server_config() -> ServerConfig {
     return ServerConfig {
+        service_name: text_env("FZWEB_SERVICE_NAME", "fzweb"),
+        service_version: text_env("FZWEB_SERVICE_VERSION", "dev"),
+        store_path: text_env("FZWEB_STORE_PATH", "fzweb.store.kv"),
+        session_secret: text_env("FZWEB_SESSION_SECRET", "fzweb-dev-secret"),
         timeout_ms: i32_env("FZWEB_TIMEOUT_MS", 2500, 1, 30000),
         max_body_bytes: i32_env("FZWEB_MAX_BODY_BYTES", 1048576, 64, 16777216),
         enable_cors: bool_env("FZWEB_ENABLE_CORS", 1),
@@ -213,9 +227,50 @@ fn route_kernel_score(method: str, path: str) -> i32 {
     return score % 251
 }
 
+fn session_config(cfg: ServerConfig) -> sessions.SessionConfig {
+    return sessions.config(cfg.store_path, cfg.session_secret, "fzweb_session", 3600)
+}
+
+fn default_app(cfg: ServerConfig) -> app.App {
+    let mut web = app.make(cfg.service_name, cfg.service_version, cfg.store_path, cfg.session_secret)
+    web = app.use_middleware(web, "security_headers")
+    web = app.use_middleware(web, "request_log")
+    web = app.use_middleware(web, "cors")
+    web = app.use_middleware(web, "auth")
+    web = app.use_middleware(web, "json")
+    web = app.use_middleware(web, "rate_limit")
+
+    web = app.add_route(web, "GET", "/", "root", 1, 1, 0)
+    web = app.add_route(web, "GET", "/healthz", "healthz", 1, 1, 0)
+    web = app.add_route(web, "GET", "/readyz", "readyz", 1, 1, 0)
+    web = app.add_route(web, "GET", "/metrics", "metrics", 1, 1, 0)
+    web = app.add_route(web, "GET", "/inspect", "inspect", 0, 0, 0)
+    web = app.add_route(web, "GET", "/search", "search", 0, 0, 0)
+    web = app.add_route(web, "POST", "/echo", "echo_post", 0, 0, 1)
+    web = app.add_route(web, "GET", "/v1/echo/:name", "echo_name", 0, 0, 0)
+    web = app.add_route(web, "POST", "/bind", "bind", 0, 0, 1)
+    web = app.add_route(web, "GET", "/openapi.json", "openapi", 1, 1, 0)
+    web = app.add_route(web, "GET", "/version", "version", 1, 1, 0)
+    web = app.add_route(web, "GET", "/static/:name", "static", 0, 0, 0)
+    web = app.add_route(web, "GET", "/v1/items", "items_list", 0, 0, 0)
+    web = app.add_route(web, "GET", "/v1/items/:id", "item_get", 0, 0, 0)
+    web = app.add_route(web, "PUT", "/v1/items/:id", "item_put", 0, 0, 1)
+    web = app.add_route(web, "PATCH", "/v1/items/:id", "item_patch", 0, 0, 1)
+    web = app.add_route(web, "DELETE", "/v1/items/:id", "item_delete", 0, 0, 0)
+    web = app.add_route(web, "GET", "/cookies/set", "cookie_set", 1, 1, 0)
+    web = app.add_route(web, "POST", "/session/login", "session_login", 1, 1, 1)
+    web = app.add_route(web, "GET", "/session/me", "session_me", 1, 0, 0)
+    web = app.add_route(web, "POST", "/upload", "upload_multipart", 0, 0, 0)
+    web = app.add_route(web, "GET", "/events", "events", 1, 1, 0)
+    web = app.add_route(web, "GET", "/ws", "ws_echo", 1, 1, 0)
+    return web
+}
+
 fn handle_route(
     conn: HttpHandle,
-    decision: routing.RouteDecision,
+    web: app.App,
+    decision: app.RouteDecision,
+    cfg: ServerConfig,
     metrics: MetricsState,
     rate: middleware.RateState,
     started_ms: i32,
@@ -229,7 +284,27 @@ fn handle_route(
         }
     }
 
-    if decision.route_id == routing.route_healthz_id() {
+    if app.has_middleware(web, "security_headers") == 1 {
+            discard cookies.default_security_headers(conn)
+    }
+
+    if decision.handler == "root" {
+            discard response.send_json(
+                conn,
+                200,
+                response.service_json(
+                    cfg.service_name,
+                    cfg.service_version,
+                    request.request_id(conn),
+                ),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "healthz" {
             discard response.send_text(conn, 200, "ok")
             return HandleOutcome {
                 status: 200,
@@ -237,7 +312,7 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_readyz_id() {
+    if decision.handler == "readyz" {
             discard response.send_text(conn, 200, "ready")
             return HandleOutcome {
                 status: 200,
@@ -245,7 +320,7 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_metrics_id() {
+    if decision.handler == "metrics" {
             discard response.send_bytes(
                 conn,
                 200,
@@ -258,7 +333,7 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_inspect_id() {
+    if decision.handler == "inspect" {
             discard response.send_json(
                 conn,
                 200,
@@ -269,7 +344,7 @@ fn handle_route(
                     request.remote(conn),
                     request.accept(conn),
                     request.content_type(conn),
-                    routing.route_name(decision.route_id),
+                    decision.handler,
                 ),
             )
             return HandleOutcome {
@@ -278,7 +353,7 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_search_id() {
+    if decision.handler == "search" {
             let q = request.query(conn, "q")
             let limit = request.query_i32_default(conn, "limit", 10)
             discard response.send_json(
@@ -292,8 +367,16 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_echo_post_id() {
-            let body = request.body_max(conn, 1048576)
+    if decision.handler == "echo_post" {
+            let mut body = request.body_max(conn, 1048576)
+            if body == "" && request.body_eof(conn) == 0 {
+                while request.body_eof(conn) == 0 && str.len(body) < 1048576 {
+                    body = str.concat(body, request.body_read(conn, 512))
+                }
+            }
+            if body == "" && request.content_type_is_json(conn) == 1 {
+                body = json.get_str(request.body_json(conn), "raw")
+            }
             discard response.send_json(conn, 200, if body == "" { response.ok_json("echo", request.request_id(conn)) } else { body })
             return HandleOutcome {
                 status: 200,
@@ -301,7 +384,7 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_echo_name_id() {
+    if decision.handler == "echo_name" {
             let name = request.param(conn, "name")
             discard response.send_json(
                 conn,
@@ -314,14 +397,14 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_bind_id() {
+    if decision.handler == "bind" {
             let payload = request.body_json(conn)
             discard response.send_json(
                 conn,
                 200,
                 response.bind_json(
                     json.get_str(payload, "user"),
-                    json.get_str(payload, "active"),
+                    request.parse_bool_text(json.get_str(payload, "active")),
                     request.request_id(conn),
                 ),
             )
@@ -331,15 +414,31 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_openapi_id() {
-            discard response.send_json(conn, 200, routing.openapi_json())
+    if decision.handler == "openapi" {
+            discard response.send_json(conn, 200, app.openapi_json(web))
             return HandleOutcome {
                 status: 200,
                 rate: rate,
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_static_id() {
+    if decision.handler == "version" {
+            discard response.send_json(
+                conn,
+                200,
+                response.version_json(
+                    cfg.service_name,
+                    cfg.service_version,
+                    request.request_id(conn),
+                ),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "static" {
             let name = request.param(conn, "name")
             discard response.send_bytes(
                 conn,
@@ -353,9 +452,41 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_item_put_id() {
+    if decision.handler == "items_list" {
+            discard response.send_json(
+                conn,
+                200,
+                response.items_json(request.request_id(conn)),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "item_get" {
             let item_id = request.param(conn, "id")
             let version = request.query_i32_default(conn, "version", 1)
+            discard response.send_json(
+                conn,
+                200,
+                response.item_view_json(item_id, version, 1, request.request_id(conn)),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "item_put" {
+            let item_id = request.param(conn, "id")
+            let version = request.query_i32_default(conn, "version", 1)
+            discard persistence.put_json(
+                persistence.open(cfg.store_path),
+                "item",
+                item_id,
+                response.item_json("updated", item_id, version, request.request_id(conn)),
+            )
             discard response.send_json(
                 conn,
                 200,
@@ -367,7 +498,21 @@ fn handle_route(
                 metrics: metrics_record(metrics, 200),
             }
     }
-    if decision.route_id == routing.route_item_delete_id() {
+    if decision.handler == "item_patch" {
+            let item_id = request.param(conn, "id")
+            let version = request.query_i32_default(conn, "version", 1)
+            discard response.send_json(
+                conn,
+                200,
+                response.item_json("patched", item_id, version, request.request_id(conn)),
+            )
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "item_delete" {
             let item_id = request.param(conn, "id")
             let version = request.query_i32_default(conn, "version", 1)
             discard response.send_json(
@@ -379,6 +524,75 @@ fn handle_route(
                 status: 202,
                 rate: rate,
                 metrics: metrics_record(metrics, 202),
+            }
+    }
+    if decision.handler == "cookie_set" {
+            discard cookies.set_cookie(conn, "theme", "light", "/", 86400, 0, 1, "Lax")
+            discard response.send_json(conn, 200, response.ok_json("cookie_set", request.request_id(conn)))
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "session_login" {
+            let payload = request.body_json(conn)
+            let mut user = json.get_str(payload, "user")
+            if user == "" {
+                user = request.query(conn, "user")
+            }
+            if user == "" {
+                user = "session-user"
+            }
+            let rec = sessions.create(session_config(cfg), user)
+            discard sessions.attach(conn, session_config(cfg), rec)
+            discard response.send_json(conn, 200, response.bind_json(rec.user, 1, request.request_id(conn)))
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "session_me" {
+            let rec = sessions.from_request(conn, session_config(cfg))
+            if sessions.valid(rec) == 0 {
+                discard response.send_json(conn, 401, response.error_json("unauthorized", "unauthorized"))
+                return HandleOutcome {
+                    status: 401,
+                    rate: rate,
+                    metrics: metrics_record(metrics, 401),
+                }
+            }
+            discard response.send_json(conn, 200, response.bind_json(rec.user, 1, request.request_id(conn)))
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "upload_multipart" {
+            let upload = multipart.parse(conn, cfg.max_body_bytes)
+            discard response.send_json(conn, 200, multipart.json_summary(upload, request.request_id(conn)))
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "events" {
+            discard streaming.send_sse_boot(conn)
+            return HandleOutcome {
+                status: 200,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
+            }
+    }
+    if decision.handler == "ws_echo" {
+            discard streaming.websocket_echo(conn)
+            return HandleOutcome {
+                status: 101,
+                rate: rate,
+                metrics: metrics_record(metrics, 200),
             }
     }
 
@@ -393,6 +607,7 @@ fn handle_route(
 fn run_live_server() -> i32 {
     discard log.set_json(1)
     let cfg = server_config()
+    let web = default_app(cfg)
     let policy = policy_from_config(cfg)
     let listener = http.bind()
     if http.listen(listener) != 0 {
@@ -417,13 +632,14 @@ fn run_live_server() -> i32 {
             continue
         }
 
-        let gate = middleware.before_dispatch(conn, policy, rate)
+        let decision = app.select(web, conn)
+        let gate = middleware.before_dispatch(conn, web, decision, policy, rate)
         rate = gate.rate
         if gate.handled == 1 {
             if gate.status == 204 {
-                discard webcore.response_no_content(conn)
+                discard response.no_content(conn)
             } else {
-                discard webcore.response_json(conn, gate.status, gate_body(gate.reason))
+                discard response.send_json(conn, gate.status, gate_body(gate.reason))
             }
             metrics = metrics_record(metrics, gate.status)
             handled += 1
@@ -433,8 +649,7 @@ fn run_live_server() -> i32 {
             continue
         }
 
-        let decision = routing.select(conn)
-        let outcome = handle_route(conn, decision, metrics, rate, started_ms)
+        let outcome = handle_route(conn, web, decision, cfg, metrics, rate, started_ms)
         metrics = outcome.metrics
         rate = outcome.rate
         handled += 1

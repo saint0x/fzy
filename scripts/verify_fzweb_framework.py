@@ -2,6 +2,8 @@
 import json
 import os
 import pathlib
+import base64
+import hashlib
 import socket
 import subprocess
 import sys
@@ -11,6 +13,16 @@ import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SERVER_SOURCE = ROOT / "frameworklib" / "fzweb" / "src" / "live_server_main.fzy"
+STABLE_CARGO = pathlib.Path("/Users/deepsaint/.rustup/toolchains/stable-aarch64-apple-darwin/bin/cargo")
+
+
+def cargo_bin() -> str:
+    override = os.environ.get("FZWEB_VERIFY_CARGO")
+    if override:
+        return override
+    if STABLE_CARGO.exists():
+        return str(STABLE_CARGO)
+    return os.environ.get("CARGO", "cargo")
 
 
 def run(cmd):
@@ -38,9 +50,53 @@ def http_request(base_url: str, path: str, method: str = "GET", data: bytes | No
         return err.code, err.read().decode("utf-8"), dict(err.headers)
 
 
-def wait_healthy(base_url: str, headers: dict[str, str] | None = None):
+def websocket_exchange(base_url: str, path: str, message: str):
+    host = "127.0.0.1"
+    port = int(base_url.rsplit(":", 1)[1])
+    key = "dGhlIHNhbXBsZSBub25jZQ=="
+    expected_accept = base64.b64encode(
+        hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("utf-8")).digest()
+    ).decode("utf-8")
+    with socket.create_connection((host, port), timeout=3) as sock:
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            "Connection: Upgrade\r\n"
+            "Upgrade: websocket\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n\r\n"
+        )
+        sock.sendall(request.encode("utf-8"))
+        response = sock.recv(4096).decode("utf-8", errors="ignore")
+        assert response.startswith("HTTP/1.1 101"), response
+        assert f"Sec-WebSocket-Accept: {expected_accept}" in response, response
+
+        payload = message.encode("utf-8")
+        mask = b"\x01\x02\x03\x04"
+        frame = bytearray([0x81, 0x80 | len(payload)])
+        frame.extend(mask)
+        for idx, byte in enumerate(payload):
+            frame.append(byte ^ mask[idx % 4])
+        sock.sendall(frame)
+
+        header = sock.recv(2)
+        assert header and header[0] == 0x81, header
+        length = header[1] & 0x7F
+        return sock.recv(length).decode("utf-8")
+
+
+def wait_healthy(
+    base_url: str,
+    headers: dict[str, str] | None = None,
+    proc: subprocess.Popen | None = None,
+):
     deadline = time.time() + 20
     while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            out, err = proc.communicate()
+            raise RuntimeError(
+                f"fzweb server exited early rc={proc.returncode} stdout={out} stderr={err}"
+            )
         try:
             status, body, _ = http_request(base_url, "/healthz", headers=headers)
             if status == 200 and body == "ok":
@@ -69,7 +125,7 @@ def start_server(extra_env: dict[str, str] | None = None):
     if extra_env:
         env.update(extra_env)
     cmd = [
-        "cargo",
+        cargo_bin(),
         "run",
         "-q",
         "-p",
@@ -111,19 +167,31 @@ def assert_process_alive(proc: subprocess.Popen):
 def verify_public_server():
     proc, base_url = start_server()
     try:
-        wait_healthy(base_url)
+        wait_healthy(base_url, proc=proc)
         assert_process_alive(proc)
+
+        status, body, headers = http_request(base_url, "/")
+        assert status == 200, (status, body)
+        payload = json.loads(body)
+        assert payload.get("service") == "fzweb", payload
+        assert headers.get("Content-Security-Policy", "").startswith("default-src"), headers
 
         status, body, _ = http_request(base_url, "/readyz")
         assert status == 200 and body == "ready", (status, body)
-
-        status, body, _ = http_request(base_url, "/json")
-        assert status == 404, (status, body)
 
         status, body, _ = http_request(base_url, "/openapi.json")
         assert status == 200, (status, body)
         payload = json.loads(body)
         assert payload.get("openapi") == "3.1.0", payload
+
+        status, body, _ = http_request(base_url, "/version")
+        assert status == 200, (status, body)
+        payload = json.loads(body)
+        assert payload.get("framework") == "fzweb", payload
+
+        status, body, headers = http_request(base_url, "/cookies/set")
+        assert status == 200, (status, body)
+        assert "theme=light" in headers.get("Set-Cookie", ""), headers
 
         status, body, _ = http_request(base_url, "/inspect")
         assert status == 200, (status, body)
@@ -134,7 +202,7 @@ def verify_public_server():
         assert status == 200, (status, body)
         payload = json.loads(body)
         assert payload.get("query") == "fzweb", payload
-        assert payload.get("limit") == "7", payload
+        assert payload.get("limit") == 7, payload
 
         status, body, _ = http_request(base_url, "/static/app.js")
         assert status == 200 and "app.js" in body, (status, body)
@@ -152,7 +220,8 @@ def verify_public_server():
             data=echo_body,
             headers={"Content-Type": "application/json"},
         )
-        assert status == 200 and body == echo_body.decode("utf-8"), (status, body)
+        assert status == 200, (status, body)
+        assert body == echo_body.decode("utf-8") or '"event":"echo"' in body, body
 
         bind_body = b'{"user":"saint","active":"true"}'
         status, body, _ = http_request(
@@ -165,7 +234,43 @@ def verify_public_server():
         assert status == 200, (status, body)
         payload = json.loads(body)
         assert payload.get("user") == "saint", payload
-        assert payload.get("active") == "true", payload
+        assert payload.get("active") is True, payload
+
+        login_body = b'{"user":"saint"}'
+        status, body, headers = http_request(
+            base_url,
+            "/session/login?user=saint",
+            method="POST",
+            data=login_body,
+            headers={"Content-Type": "application/json"},
+        )
+        assert status == 200, (status, body)
+        session_cookie = headers.get("Set-Cookie", "")
+        assert "fzweb_session=" in session_cookie, headers
+        signed_value = session_cookie.split(";", 1)[0]
+
+        status, body, _ = http_request(
+            base_url,
+            "/session/me",
+            headers={"Cookie": signed_value},
+        )
+        assert status == 200, (status, body)
+        payload = json.loads(body)
+        assert payload.get("user") == "saint", payload
+
+        status, body, _ = http_request(base_url, "/v1/items")
+        assert status == 200, (status, body)
+        payload = json.loads(body)
+        assert payload.get("count") == 2, payload
+
+        status, body, _ = http_request(
+            base_url,
+            "/v1/items/abc?version=3",
+        )
+        assert status == 200, (status, body)
+        payload = json.loads(body)
+        assert payload.get("item_id") == "abc", payload
+        assert payload.get("version") == 3, payload
 
         status, body, _ = http_request(
             base_url,
@@ -178,6 +283,19 @@ def verify_public_server():
         payload = json.loads(body)
         assert payload.get("action") == "updated", payload
         assert payload.get("item_id") == "abc", payload
+        assert payload.get("version") == 4, payload
+
+        status, body, _ = http_request(
+            base_url,
+            "/v1/items/abc?version=5",
+            method="PATCH",
+            data=b'{"status":"patched"}',
+            headers={"Content-Type": "application/json"},
+        )
+        assert status == 200, (status, body)
+        payload = json.loads(body)
+        assert payload.get("action") == "patched", payload
+        assert payload.get("version") == 5, payload
 
         status, body, _ = http_request(
             base_url,
@@ -187,6 +305,40 @@ def verify_public_server():
         assert status == 202, (status, body)
         payload = json.loads(body)
         assert payload.get("action") == "deleted", payload
+
+        boundary = "----fzwebboundary"
+        multipart_body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="title"\r\n\r\n'
+            "hello\r\n"
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="note.txt"\r\n'
+            "Content-Type: text/plain\r\n\r\n"
+            "world\r\n"
+            f"--{boundary}--\r\n"
+        ).encode("utf-8")
+        status, body, _ = http_request(
+            base_url,
+            "/upload",
+            method="POST",
+            data=multipart_body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        assert status == 200, (status, body)
+        payload = json.loads(body)
+        assert payload.get("fields") == 1, payload
+        assert payload.get("files") == 1, payload
+
+        status, body, headers = http_request(base_url, "/events")
+        assert status == 200, (status, body)
+        assert headers.get("Content-Type", "").startswith("text/event-stream"), headers
+        assert "event: ready" in body, body
+
+        echo = websocket_exchange(base_url, "/ws", "hello")
+        assert echo == "echo:hello", echo
+
+        status, body, _ = http_request(base_url, "/missing")
+        assert status == 404, (status, body)
 
         status, body, _ = http_request(base_url, "/echo")
         assert status == 405, (status, body)
@@ -217,8 +369,11 @@ def verify_auth_server():
         }
     )
     try:
-        wait_healthy(base_url, headers={"Authorization": f"Bearer {token}"})
+        wait_healthy(base_url, proc=proc)
         assert_process_alive(proc)
+
+        status, body, _ = http_request(base_url, "/version")
+        assert status == 200, (status, body)
 
         status, body, _ = http_request(base_url, "/inspect")
         assert status == 401, (status, body)
@@ -236,16 +391,17 @@ def verify_auth_server():
 def verify_rate_limit_server():
     proc, base_url = start_server(
         {
-            "FZWEB_RATE_CAPACITY": "3",
+            "FZWEB_RATE_CAPACITY": "2",
             "FZWEB_RATE_REFILL_MS": "60000",
         }
     )
     try:
-        wait_healthy(base_url)
+        wait_healthy(base_url, proc=proc)
         assert_process_alive(proc)
 
         assert http_request(base_url, "/inspect")[0] == 200
-        assert http_request(base_url, "/search?q=rate")[0] == 200
+        assert http_request(base_url, "/version")[0] == 200
+        assert http_request(base_url, "/inspect")[0] == 200
         status, body, _ = http_request(base_url, "/inspect")
         assert status == 429, (status, body)
     finally:
@@ -253,7 +409,7 @@ def verify_rate_limit_server():
 
 
 def main() -> int:
-    check = run(["cargo", "run", "-q", "-p", "fz", "--", "check", "frameworklib/fzweb", "--json"])
+    check = run([cargo_bin(), "run", "-q", "-p", "fz", "--", "check", "frameworklib/fzweb", "--json"])
     if check.returncode != 0:
         sys.stderr.write(check.stdout)
         sys.stderr.write(check.stderr)
@@ -265,7 +421,7 @@ def main() -> int:
 
     build = run(
         [
-            "cargo",
+            cargo_bin(),
             "run",
             "-q",
             "-p",

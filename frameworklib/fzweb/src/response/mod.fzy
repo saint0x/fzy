@@ -1,5 +1,17 @@
 use core.http;
 
+fn header_set(conn: HttpHandle, key: str, value: str) -> i32 {
+    return http.response_header_set(conn, key, value)
+}
+
+fn header_add(conn: HttpHandle, key: str, value: str) -> i32 {
+    return http.response_header_add(conn, key, value)
+}
+
+fn header_clear(conn: HttpHandle) -> i32 {
+    return http.response_header_clear(conn)
+}
+
 fn send_text(conn: HttpHandle, status: i32, body: str) -> i32 {
     return http.write_response(conn, status, "text/plain; charset=utf-8", body, 1)
 }

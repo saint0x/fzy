@@ -10,19 +10,28 @@
 - First-class `core.log` structured logging in live server path.
 - Request/response/routing modules with deterministic live-server contracts.
 - Host-backed readiness via `http.poll_register` + `http.poll_next` + `http.read`.
+- Route-aware auth/rate behavior for public endpoints and stricter request-body policy.
+- Production modules for cookies, opaque sessions, multipart uploads, persistence, event streaming, websockets, and declarative app routing.
 
 ## Module Groups
 
 - `src/webcore/mod.fzy`
+- `src/app/mod.fzy`
+- `src/cookies/mod.fzy`
 - `src/request/mod.fzy`
+- `src/persistence/mod.fzy`
 - `src/response/mod.fzy`
 - `src/routing/mod.fzy`
+- `src/sessions/mod.fzy`
+- `src/multipart/mod.fzy`
+- `src/streaming/mod.fzy`
 - `src/middleware/mod.fzy`
 - `src/support/mod.fzy`
 - `src/main.fzy`
 
 ## Built-In Production Routes
 
+- `GET /`
 - `GET /healthz`
 - `GET /readyz`
 - `GET /metrics`
@@ -31,7 +40,17 @@
 - `POST /echo`
 - `GET /v1/echo/:name`
 - `POST /bind`
+- `GET /version`
+- `GET /cookies/set`
+- `POST /session/login`
+- `GET /session/me`
+- `POST /upload`
+- `GET /events`
+- `GET /ws`
+- `GET /v1/items`
+- `GET /v1/items/:id`
 - `PUT /v1/items/:id`
+- `PATCH /v1/items/:id`
 - `DELETE /v1/items/:id`
 - `GET /openapi.json`
 - `GET /static/:name`

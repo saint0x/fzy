@@ -12,6 +12,22 @@ fn body(conn: HttpHandle) -> str {
     return http.body(conn)
 }
 
+fn read_headers(conn: HttpHandle) -> i32 {
+    return http.read_headers(conn)
+}
+
+fn body_read(conn: HttpHandle, max_bytes: i32) -> str {
+    return http.body_read(conn, max_bytes)
+}
+
+fn body_eof(conn: HttpHandle) -> i32 {
+    return http.body_eof(conn)
+}
+
+fn body_discard(conn: HttpHandle) -> i32 {
+    return http.body_discard(conn)
+}
+
 fn body_json(conn: HttpHandle) -> JsonHandle {
     return http.body_json(conn)
 }

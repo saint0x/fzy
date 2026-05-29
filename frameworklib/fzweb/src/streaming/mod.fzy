@@ -1,0 +1,40 @@
+use core.http;
+
+use request;
+use response;
+use webcore;
+
+fn websocket_echo(conn: HttpHandle) -> i32 {
+    let ws = webcore.websocket_accept(conn)
+    let message = webcore.websocket_read(ws, 2048)
+    let kind = webcore.websocket_kind(ws)
+    if kind == "ping" {
+        discard webcore.websocket_pong(ws, message)
+        discard webcore.websocket_close(ws, 1000, "ok")
+        return 0
+    }
+    if kind == "text" {
+        discard webcore.websocket_write_text(ws, str.concat("echo:", message))
+        discard webcore.websocket_close(ws, 1000, "ok")
+        return 0
+    }
+    discard webcore.websocket_close(ws, 1003, "unsupported")
+    return 0
+}
+
+fn sse_boot_payload(request_id: str) -> str {
+    return str.concat(
+        "event: ready\n",
+        "data: {\"framework\":\"fzweb\",\"request_id\":\"",
+        request_id,
+        "\"}\n\n",
+        "event: done\n",
+        "data: {}\n\n",
+    )
+}
+
+fn send_sse_boot(conn: HttpHandle) -> i32 {
+    discard response.header_set(conn, "Cache-Control", "no-store")
+    discard response.header_set(conn, "X-Accel-Buffering", "no")
+    return response.send_bytes(conn, 200, "text/event-stream; charset=utf-8", sse_boot_payload(request.request_id(conn)))
+}

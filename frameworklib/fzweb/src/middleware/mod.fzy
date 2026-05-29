@@ -2,8 +2,8 @@ use core.log;
 use core.time;
 use core.thread;
 
+use app;
 use request;
-use routing;
 
 struct Policy {
     timeout_ms: i32,
@@ -228,22 +228,23 @@ fn maybe_handle_preflight(conn: HttpHandle, policy: Policy) -> i32 {
 
 fn before_dispatch(
     conn: HttpHandle,
-    decision: routing.RouteDecision,
+    app_cfg: app.App,
+    decision: app.RouteDecision,
     policy: Policy,
     state: RateState,
 ) -> GateResult {
     discard apply_timeout(policy)
 
     let mut next_state = rate_refill(policy, state, time.monotonic_ms())
-    if policy.enable_request_log == 1 {
+    if policy.enable_request_log == 1 && app.has_middleware(app_cfg, "request_log") == 1 {
         discard log_request(conn, "received")
     }
 
-    if maybe_handle_preflight(conn, policy) == 1 {
+    if app.has_middleware(app_cfg, "cors") == 1 && maybe_handle_preflight(conn, policy) == 1 {
         return gate_handled(204, "preflight", next_state)
     }
 
-    if policy.require_auth == 1 && routing.is_public_route(decision.route_id) == 0 {
+    if policy.require_auth == 1 && app.has_middleware(app_cfg, "auth") == 1 && decision.public_route == 0 {
         let auth = request.auth(conn)
         if auth_header_valid(auth, policy.auth_token) == 0 {
             return gate_handled(401, "unauthorized", next_state)
@@ -254,7 +255,7 @@ fn before_dispatch(
         return gate_handled(413, "body_too_large", next_state)
     }
 
-    if policy.require_json_body == 1 && routing.requires_json_body(decision.route_id) == 1 {
+    if policy.require_json_body == 1 && app.has_middleware(app_cfg, "json") == 1 && decision.require_json == 1 {
         if request.content_type_is_json(conn) == 0 {
             return gate_handled(400, "invalid_content_type", next_state)
         }
@@ -263,7 +264,7 @@ fn before_dispatch(
         }
     }
 
-    if policy.enable_rate_limit == 1 && routing.skips_rate_limit(decision.route_id) == 0 {
+    if policy.enable_rate_limit == 1 && app.has_middleware(app_cfg, "rate_limit") == 1 && decision.skip_rate == 0 {
         if rate_allowed(next_state, 1) == 0 {
             return gate_handled(429, "rate_limited", next_state)
         }

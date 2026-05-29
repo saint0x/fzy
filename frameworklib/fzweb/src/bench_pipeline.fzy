@@ -1,4 +1,5 @@
 mod middleware;
+mod request;
 mod support;
 
 const ITERATIONS: i32 = 8000000
@@ -13,8 +14,8 @@ fn workload() -> i32 {
 
     while i < ITERATIONS {
         rate = middleware.rate_refill(policy, rate, i)
-        let valid = middleware.body_is_json_like("{\"ok\":true}")
-        let route = support.route_kernel_score("GET", "/healthz")
+        let valid = request.parse_i32("42")
+        let route = support.route_kernel_score("GET", "/version")
         metrics = support.metrics_record(metrics, 200)
         acc = (acc + valid + route + metrics.ok_responses + rate.tokens) % 251
         i += 1

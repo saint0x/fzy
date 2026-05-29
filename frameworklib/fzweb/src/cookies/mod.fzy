@@ -1,0 +1,143 @@
+use core.http;
+use core.security;
+
+use response;
+
+fn split_once(text: str, sep: str) -> str {
+    let mut idx = 0
+    while idx < str.len(text) {
+        if str.slice(text, idx, idx + 1) == sep {
+            return str.slice(text, 0, idx)
+        }
+        idx += 1
+    }
+    return text
+}
+
+fn trim_cookie_piece(text: str) -> str {
+    return str.trim(text)
+}
+
+fn cookie_value(cookie_header: str, name: str) -> str {
+    let mut start = 0
+    while start < str.len(cookie_header) {
+        let mut end = start
+        while end < str.len(cookie_header) && str.slice(cookie_header, end, end + 1) != ";" {
+            end += 1
+        }
+        let piece = trim_cookie_piece(str.slice(cookie_header, start, end))
+        let mut eq = 0
+        while eq < str.len(piece) {
+            if str.slice(piece, eq, eq + 1) == "=" {
+                let key = str.slice(piece, 0, eq)
+                if key == name {
+                    return str.slice(piece, eq + 1, str.len(piece))
+                }
+                break
+            }
+            eq += 1
+        }
+        start = end + 1
+    }
+    return ""
+}
+
+fn default_security_headers(conn: HttpHandle) -> i32 {
+    discard response.header_set(conn, "X-Content-Type-Options", "nosniff")
+    discard response.header_set(conn, "X-Frame-Options", "DENY")
+    discard response.header_set(conn, "Referrer-Policy", "no-referrer")
+    discard response.header_set(conn, "Permissions-Policy", "geolocation=(), microphone=(), camera=()")
+    discard response.header_set(conn, "Cross-Origin-Opener-Policy", "same-origin")
+    discard response.header_set(conn, "Cross-Origin-Resource-Policy", "same-origin")
+    discard response.header_set(conn, "Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; base-uri 'self'")
+    return 0
+}
+
+fn append_cookie_attrs(
+    base: str,
+    path: str,
+    max_age: i32,
+    http_only: i32,
+    secure_only: i32,
+    same_site: str,
+) -> str {
+    let mut out = base
+    if path != "" {
+        out = str.concat(out, "; Path=", path)
+    }
+    if max_age >= 0 {
+        out = str.concat(out, "; Max-Age=", str.from_i32(max_age))
+    }
+    if http_only == 1 {
+        out = str.concat(out, "; HttpOnly")
+    }
+    if secure_only == 1 {
+        out = str.concat(out, "; Secure")
+    }
+    if same_site != "" {
+        out = str.concat(out, "; SameSite=", same_site)
+    }
+    return out
+}
+
+fn set_cookie(
+    conn: HttpHandle,
+    name: str,
+    value: str,
+    path: str,
+    max_age: i32,
+    http_only: i32,
+    secure_only: i32,
+    same_site: str,
+) -> i32 {
+    let base = str.concat(name, "=", value)
+    let full = append_cookie_attrs(base, path, max_age, http_only, secure_only, same_site)
+    return response.header_add(conn, "Set-Cookie", full)
+}
+
+fn clear_cookie(conn: HttpHandle, name: str, path: str) -> i32 {
+    return set_cookie(conn, name, "", path, 0, 1, 1, "Lax")
+}
+
+fn sign_cookie_value(secret: str, name: str, value: str) -> str {
+    let payload = str.concat(name, ":", value)
+    let mac = security.sign_value(secret, payload)
+    return str.concat(value, ".", mac)
+}
+
+fn verify_signed_cookie_value(secret: str, name: str, signed_value: str) -> str {
+    let mut idx = str.len(signed_value) - 1
+    while idx > 0 {
+        if str.slice(signed_value, idx, idx + 1) == "." {
+            let value = str.slice(signed_value, 0, idx)
+            let mac = str.slice(signed_value, idx + 1, str.len(signed_value))
+            let payload = str.concat(name, ":", value)
+            if security.verify_value(secret, payload, mac) == 1 {
+                return value
+            }
+            return ""
+        }
+        idx -= 1
+    }
+    return ""
+}
+
+fn set_signed_cookie(
+    conn: HttpHandle,
+    secret: str,
+    name: str,
+    value: str,
+    path: str,
+    max_age: i32,
+) -> i32 {
+    return set_cookie(
+        conn,
+        name,
+        sign_cookie_value(secret, name, value),
+        path,
+        max_age,
+        1,
+        1,
+        "Lax",
+    )
+}

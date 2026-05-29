@@ -1,0 +1,35 @@
+use core.storage;
+
+struct Store {
+    handle: KvStoreHandle,
+}
+
+fn open(path: str) -> Store {
+    return Store {
+        handle: storage.kv_open(path),
+    }
+}
+
+fn namespaced_key(namespace: str, key: str) -> str {
+    return str.concat(namespace, ":", key)
+}
+
+fn get(store: Store, namespace: str, key: str) -> str {
+    return storage.kv_get(store.handle, namespaced_key(namespace, key))
+}
+
+fn put(store: Store, namespace: str, key: str, value: str) -> i32 {
+    return storage.kv_put(store.handle, namespaced_key(namespace, key), value)
+}
+
+fn get_json(store: Store, namespace: str, key: str) -> JsonHandle {
+    let raw = get(store, namespace, key)
+    if raw == "" {
+        return json.parse("{}")
+    }
+    return json.parse(raw)
+}
+
+fn put_json(store: Store, namespace: str, key: str, payload: str) -> i32 {
+    return put(store, namespace, key, payload)
+}

@@ -1,0 +1,82 @@
+use core.http;
+use request;
+
+struct UploadSummary {
+    field_count: i32,
+    file_count: i32,
+    bytes: i32,
+}
+
+fn summary(field_count: i32, file_count: i32, bytes: i32) -> UploadSummary {
+    return UploadSummary {
+        field_count: field_count,
+        file_count: file_count,
+        bytes: bytes,
+    }
+}
+
+fn boundary_from_content_type(content_type: str) -> str {
+    let marker = "boundary="
+    let mut idx = 0
+    while idx < str.len(content_type) {
+        if idx + str.len(marker) <= str.len(content_type) && str.slice(content_type, idx, idx + str.len(marker)) == marker {
+            return str.slice(content_type, idx + str.len(marker), str.len(content_type))
+        }
+        idx += 1
+    }
+    return ""
+}
+
+fn read_all_stream(conn: HttpHandle, max_bytes: i32) -> str {
+    let mut total = ""
+    while request.body_eof(conn) == 0 && str.len(total) < max_bytes {
+        total = str.concat(total, request.body_read(conn, 512))
+    }
+    return total
+}
+
+fn count_contains(text: str, needle: str) -> i32 {
+    if needle == "" {
+        return 0
+    }
+    let mut idx = 0
+    let mut count = 0
+    while idx + str.len(needle) <= str.len(text) {
+        if str.slice(text, idx, idx + str.len(needle)) == needle {
+            count += 1
+            idx += str.len(needle)
+        } else {
+            idx += 1
+        }
+    }
+    return count
+}
+
+fn parse(conn: HttpHandle, max_bytes: i32) -> UploadSummary {
+    let content_type = request.content_type(conn)
+    let boundary = boundary_from_content_type(content_type)
+    if boundary == "" {
+        return summary(0, 0, 0)
+    }
+    let mut body = request.body_max(conn, max_bytes)
+    if body == "" {
+        body = read_all_stream(conn, max_bytes)
+    }
+    let marker = str.concat("--", boundary)
+    let parts = count_contains(body, marker) - 1
+    let files = count_contains(body, "filename=\"")
+    let mut fields = parts - files
+    if fields < 0 {
+        fields = 0
+    }
+    return summary(fields, files, str.len(body))
+}
+
+fn json_summary(info: UploadSummary, request_id: str) -> str {
+    let payload = map.new()
+    discard map.set(payload, "fields", json.raw(str.from_i32(info.field_count)))
+    discard map.set(payload, "files", json.raw(str.from_i32(info.file_count)))
+    discard map.set(payload, "bytes", json.raw(str.from_i32(info.bytes)))
+    discard map.set(payload, "request_id", json.str(request_id))
+    return json.object(payload)
+}
