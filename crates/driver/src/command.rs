@@ -12070,6 +12070,59 @@ mod tests {
     }
 
     #[test]
+    fn portable_simd_surface_runs_via_fz_run_with_llvm_backend() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-simd-runtime-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "use core.simd;\n\nfn main() -> i32 {\n    let ints = simd.i32x4_add(simd.i32x4_new(1, 2, 3, 4), simd.i32x4_splat(2))\n    let mask = simd.i32x4_gt(ints, simd.i32x4_splat(4))\n    let picked = simd.i32x4_select(mask, ints, simd.i32x4_splat(0))\n    let sum = simd.i32x4_reduce_add(picked)\n    let uints_ok = simd.mask32x4_all(simd.u32x4_eq(simd.u32x4_mul(simd.u32x4_new(1, 2, 3, 4), simd.u32x4_splat(2)), simd.u32x4_new(2, 4, 6, 8)))\n    let floats = simd.f32x4_mul(simd.f32x4_splat(1.5), simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let floats_ok = simd.mask32x4_all(simd.f32x4_eq(floats, simd.f32x4_new(1.5, 3.0, 4.5, 6.0)))\n    if simd.mask32x4_any(mask) == false {\n        return 11\n    }\n    if simd.mask32x4_none(mask) == true {\n        return 13\n    }\n    if uints_ok == false {\n        return 17\n    }\n    if floats_ok == false {\n        return 19\n    }\n    if simd.i32x4_lane2(ints) != 5 {\n        return 23\n    }\n    if sum != 11 {\n        return 29\n    }\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: root.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: false,
+                backend: Some("llvm".to_string()),
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .unwrap_or_else(|err| {
+            if let Some(command_failure) = err.downcast_ref::<CommandFailure>() {
+                panic!(
+                    "SIMD runtime should succeed: {}\noutput:\n{}",
+                    command_failure, command_failure.output
+                );
+            }
+            panic!("SIMD runtime should succeed: {err}");
+        });
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn native_http_post_json_applies_headers_and_preserves_raw_json_values() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let addr = listener.local_addr().expect("listener addr should resolve");

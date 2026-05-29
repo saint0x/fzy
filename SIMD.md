@@ -44,6 +44,18 @@ fzy should be able to claim all of the following before SIMD is considered produ
 - unsupported shapes fail clearly instead of silently scalarizing in surprising ways
 - docs explain when to rely on scalar auto-vectorization versus explicit `core.simd`
 
+## Current Shipped Status
+
+Phase 1 portable SIMD is now shipped with an LLVM-backed surface:
+
+- first-class `i32x4`, `u32x4`, `f32x4`, and `mask32x4` types
+- `core.simd` constructors, splats, arithmetic, bitwise, comparisons, `select`, lane extraction, and reductions
+- explicit verifier/backend rejection for SIMD ABI crossings
+- explicit Cranelift rejection instead of accidental scalar fallback
+- deterministic Fozzy scenario + trace coverage for the shipped surface
+
+The broader roadmap below remains the long-term plan. Only the checked items should be treated as production-complete today.
+
 ## Track 1: Auto-Vectorization-Friendly Lowering
 
 This track improves ordinary code generation so users get SIMD wins without writing explicit SIMD code.
@@ -131,48 +143,49 @@ This track adds an explicit author-facing SIMD model.
 
 ### A. Types
 
-- [ ] Introduce first-class SIMD lane vector types in the type system.
+- [x] Introduce first-class SIMD lane vector types in the type system.
 - [ ] Decide canonical syntax:
   - recommended direction: generic form like `Simd<i32, 4>`
-  - possibly aliases like `i32x4`, `u8x16`, `f32x8`
-- [ ] Support at least:
-  - signed integers
-  - unsigned integers
-  - floating point
-  - mask types
-- [ ] Define lane-count policy:
-  - fixed compile-time lane counts only
-  - reject runtime-sized vectors in the initial design
-- [ ] Define ABI/FFI posture:
-  - probably no public FFI-stable promise in phase 1
-  - verifier should reject unsupported ABI crossings clearly
+  - [x] phase-1 shipped aliases: `i32x4`, `u32x4`, `f32x4`, `mask32x4`
+- [x] Support at least:
+  - [x] signed integers
+  - [x] unsigned integers
+  - [x] floating point
+  - [x] mask types
+- [x] Define lane-count policy:
+  - [x] fixed compile-time lane counts only
+  - [x] reject runtime-sized vectors in the initial design
+- [x] Define ABI/FFI posture:
+  - [x] no public FFI-stable promise in phase 1
+  - [x] verifier rejects unsupported ABI crossings clearly
 
 ### B. Core operations
 
-- [ ] Construction:
-  - `splat`
-  - lane tuple/array construction
+- [x] Construction:
+  - [x] `splat`
+  - [x] lane construction from explicit scalar arguments
   - zero/all-ones helpers where appropriate
-- [ ] Arithmetic:
-  - add/sub/mul
+- [x] Arithmetic:
+  - [x] add/sub/mul
   - min/max
   - saturating ops where applicable
-- [ ] Bitwise:
-  - and/or/xor/not
+- [x] Bitwise:
+  - [x] and/or/xor/not
   - shifts
-- [ ] Comparison:
-  - eq/ne/lt/le/gt/ge
-  - mask-producing comparisons
-- [ ] Selection:
-  - `select(mask, then, else)`
+- [x] Comparison:
+  - [x] eq/ne/lt/le/gt/ge
+  - [x] mask-producing comparisons
+- [x] Selection:
+  - [x] `select(mask, then, else)`
 - [ ] Lane movement:
   - shuffle
   - zip/unzip
   - widen/narrow
   - cast/reinterpret with strict rules
-- [ ] Reductions:
-  - horizontal add
-  - any/all
+- [x] Reductions:
+  - [x] horizontal add
+  - [x] any/all
+  - [x] none
   - min/max reduction
 
 ### C. Memory operations
@@ -190,16 +203,16 @@ This track adds an explicit author-facing SIMD model.
 
 ### D. Masks
 
-- [ ] First-class portable mask type.
+- [x] First-class portable mask type.
 - [ ] Define whether masks are distinct from integer vectors.
-- [ ] Add `any`, `all`, `none`, `bitmask` helpers.
-- [ ] Define mask-to-select semantics clearly.
+- [x] Add `any`, `all`, `none`, `bitmask` helpers.
+- [x] Define mask-to-select semantics clearly.
 
 ### E. Type system and verifier work
 
-- [ ] Add SIMD types to AST/HIR/FIR type representations.
-- [ ] Type-check lane-count compatibility.
-- [ ] Type-check element-type compatibility.
+- [x] Add SIMD types to AST/HIR/FIR type representations.
+- [x] Type-check lane-count compatibility.
+- [x] Type-check element-type compatibility.
 - [ ] Reject unsupported implicit conversions.
 - [ ] Define safe/unsafe boundary for:
   - reinterpret casts
@@ -208,33 +221,32 @@ This track adds an explicit author-facing SIMD model.
 - [ ] Add precise diagnostics for:
   - lane mismatch
   - unsupported backend type
-  - illegal ABI crossing
+  - [x] illegal ABI crossing
   - invalid mask/vector mixing
 
 ### F. Lowering and backend mapping
 
-- [ ] FIR should gain first-class SIMD instructions or a well-defined lowered op family, not just opaque function calls.
+- [x] Native lowering now treats phase-1 SIMD intrinsics as a well-defined lowered op family instead of host runtime imports.
 - [ ] Native lowering should map portable ops cleanly to:
-  - LLVM vector IR
+  - [x] LLVM vector IR
   - Cranelift vector ops where available
-- [ ] Unsupported operations must fail clearly instead of silently degenerating into surprising behavior.
-- [ ] Decide policy for scalar fallback:
-  - either explicit backend fallback in controlled cases
-  - or verifier rejection until implemented
+- [x] Unsupported operations must fail clearly instead of silently degenerating into surprising behavior.
+- [x] Decide policy for scalar fallback:
+  - [x] verifier/backend rejection until implemented
 - [ ] Keep operation coverage matrices for LLVM and Cranelift.
 
 ### G. Standard library layer
 
-- [ ] Add `corelib/src/simd.fzy`.
-- [ ] Register `use core.simd;` in parser + embedded stdlib merge path.
+- [x] Add `corelib/src/simd.fzy`.
+- [x] Register `use core.simd;` in parser + embedded stdlib merge path.
 - [ ] Decide whether `core.simd` implies any capability.
-  - likely no special capability unless raw CPU feature probing is added later
+  - [x] phase 1 uses no special capability unless raw CPU feature probing is added later
 - [ ] Add ergonomic helpers:
-  - aliases
-  - constructors
-  - reductions
+  - [x] aliases
+  - [x] constructors
+  - [x] reductions
   - safe load/store wrappers
-- [ ] Keep naming consistent with `core.process`, `core.term`, `core.http`, etc.
+- [x] Keep naming consistent with `core.process`, `core.term`, `core.http`, etc.
 
 ### H. Feature detection and target policy
 
@@ -250,10 +262,10 @@ This track adds an explicit author-facing SIMD model.
 
 ### Phase 0: Design + constraints
 
-- [ ] Finalize surface syntax and naming.
-- [ ] Finalize verifier stance on safe vs unsafe operations.
-- [ ] Finalize LLVM/Cranelift support matrix.
-- [ ] Finalize docs language for public claims.
+- [x] Finalize surface syntax and naming.
+- [x] Finalize verifier stance on safe vs unsafe operations.
+- [x] Finalize LLVM/Cranelift support matrix.
+- [x] Finalize docs language for public claims.
 
 ### Phase 1: Auto-vectorization-friendly lowering
 
@@ -264,19 +276,20 @@ This track adds an explicit author-facing SIMD model.
 
 ### Phase 2: Minimal portable SIMD
 
-- [ ] Land `core.simd` import + type surface.
-- [ ] Land core integer + float vector types.
+- [x] Land `core.simd` import + type surface.
+- [x] Land core integer + float vector types.
 - [ ] Land splat/load/store/basic arithmetic/bitwise/compare/select/reduction operations.
-- [ ] Land LLVM lowering for the minimal surface.
+- [x] Land basic arithmetic/bitwise/compare/select/reduction operations for the no-memory phase-1 surface.
+- [x] Land LLVM lowering for the minimal surface.
 - [ ] Land Cranelift lowering for the supported subset.
 - [ ] Add cross-backend semantic parity tests.
 
 ### Phase 3: Production hardening
 
-- [ ] Add stricter diagnostics and verifier coverage.
+- [x] Add stricter diagnostics and verifier coverage.
 - [ ] Add perf regression gates.
 - [ ] Add docs/examples/showcase updates.
-- [ ] Add Fozzy scenarios for SIMD-oriented runtime/compiler parity where meaningful.
+- [x] Add Fozzy scenarios for SIMD-oriented runtime/compiler parity where meaningful.
 - [ ] Add release-gate coverage for SIMD representative workloads.
 
 ### Phase 4: Advanced portable SIMD
@@ -291,27 +304,27 @@ This track adds an explicit author-facing SIMD model.
 
 ### Compiler/verifier
 
-- [ ] parser tests for SIMD syntax
+- [x] parser tests for SIMD syntax
 - [ ] HIR tests for SIMD types and operations
-- [ ] verifier tests for illegal conversions, ABI crossings, lane mismatches, unsafe boundaries
+- [x] verifier tests for illegal conversions, ABI crossings, lane mismatches, unsafe boundaries
 - [ ] FIR/lowering tests for canonical vector instructions or canonical scalar loop forms
 
 ### Backend/runtime
 
-- [ ] LLVM execution tests
+- [x] LLVM execution tests
 - [ ] Cranelift execution tests
 - [ ] parity/equivalence tests across backends
-- [ ] failure-mode tests for unsupported operations
+- [x] failure-mode tests for unsupported operations
 - [ ] direct built-binary behavior checks for representative workloads
 
 ### Fozzy-first production validation
 
-- [ ] `fozzy doctor --deep --scenario <simd-scenario> --runs 5 --seed <seed> --json`
-- [ ] `fozzy test --det --strict <simd-scenarios...> --json`
-- [ ] `fozzy run <simd-scenario> --det --record <trace.fozzy> --json`
-- [ ] `fozzy trace verify <trace.fozzy> --strict --json`
-- [ ] `fozzy replay <trace.fozzy> --json`
-- [ ] `fozzy ci <trace.fozzy> --json`
+- [x] `fozzy doctor --deep --scenario <simd-scenario> --runs 5 --seed <seed> --json`
+- [x] `fozzy test --det --strict <simd-scenarios...> --json`
+- [x] `fozzy run <simd-scenario> --det --record <trace.fozzy> --json`
+- [x] `fozzy trace verify <trace.fozzy> --strict --json`
+- [x] `fozzy replay <trace.fozzy> --json`
+- [x] `fozzy ci <trace.fozzy> --json`
 - [ ] host-backed confidence pass where SIMD functionality interacts with real file/process/network workloads
 
 ### Benchmarking

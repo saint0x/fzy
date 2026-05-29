@@ -426,7 +426,7 @@ fn portable_simd_surface_executes_on_llvm_backend() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "use core.simd;\n\nfn main() -> i32 {\n    let ints = simd.i32x4_add(simd.i32x4_new(1, 2, 3, 4), simd.i32x4_splat(2))\n    let mask = simd.i32x4_gt(ints, simd.i32x4_splat(4))\n    let picked = simd.i32x4_select(mask, ints, simd.i32x4_splat(0))\n    let sum = simd.i32x4_reduce_add(picked)\n    let uints_ok = simd.mask32x4_all(simd.u32x4_eq(simd.u32x4_mul(simd.u32x4_new(1, 2, 3, 4), simd.u32x4_splat(2)), simd.u32x4_new(2, 4, 6, 8)))\n    let floats = simd.f32x4_mul(simd.f32x4_splat(1.5), simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let floats_ok = simd.mask32x4_all(simd.f32x4_eq(floats, simd.f32x4_new(1.5, 3.0, 4.5, 6.0)))\n    if simd.mask32x4_any(mask) == false { return 11 }\n    if simd.mask32x4_none(mask) == true { return 13 }\n    if uints_ok == false { return 17 }\n    if floats_ok == false { return 19 }\n    if simd.i32x4_lane2(ints) != 5 { return 23 }\n    return sum\n}\n",
+        "use core.simd;\n\nfn main() -> i32 {\n    let ints = simd.i32x4_add(simd.i32x4_new(1, 2, 3, 4), simd.i32x4_splat(2))\n    let mask = simd.i32x4_gt(ints, simd.i32x4_splat(4))\n    let picked = simd.i32x4_select(mask, ints, simd.i32x4_splat(0))\n    let sum = simd.i32x4_reduce_add(picked)\n    let uints_ok = simd.mask32x4_all(simd.u32x4_eq(simd.u32x4_mul(simd.u32x4_new(1, 2, 3, 4), simd.u32x4_splat(2)), simd.u32x4_new(2, 4, 6, 8)))\n    let floats = simd.f32x4_mul(simd.f32x4_splat(1.5), simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let floats_ok = simd.mask32x4_all(simd.f32x4_eq(floats, simd.f32x4_new(1.5, 3.0, 4.5, 6.0)))\n    if simd.mask32x4_any(mask) == false { return 11 }\n    if simd.mask32x4_none(mask) == true { return 13 }\n    if uints_ok == false { return 17 }\n    if floats_ok == false { return 19 }\n    if simd.i32x4_lane2(ints) != 5 { return 23 }\n    if sum != 11 { return 29 }\n    return 0\n}\n",
     )
     .expect("source should be written");
 
@@ -434,7 +434,7 @@ fn portable_simd_surface_executes_on_llvm_backend() {
         .expect("llvm build should succeed");
     assert_eq!(llvm.status, "ok");
     let llvm_exit = run_native_exit(llvm.output.as_ref().expect("llvm output should exist"));
-    assert_eq!(llvm_exit, 11);
+    assert_eq!(llvm_exit, 0);
 
     let _ = std::fs::remove_dir_all(root);
 }
