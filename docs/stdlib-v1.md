@@ -229,7 +229,7 @@ Transcript guidance:
 - Shipped operation families:
   - constructors and `splat`
   - safe fixed-array `load`/`store` for the four shipped vector/mask aliases
-  - add/sub/mul
+  - add/sub/mul plus integer `saturating_add`/`saturating_sub`
   - min/max
   - shifts and bitwise ops
   - eq/ne/lt/le/gt/ge
@@ -238,7 +238,7 @@ Transcript guidance:
   - paired lane helpers: `zip_lo/zip_hi`, `unzip_left/unzip_right`
   - explicit numeric bitcasts and signed/unsigned reinterpret helpers
   - lane extraction
-  - reductions: `reduce_add`, `any`, `all`, `none`, `bitmask`
+  - reductions: `reduce_add`, `reduce_min`, `reduce_max`, `any`, `all`, `none`, `bitmask`
 - Contract:
   - current production lowering is LLVM-backed
   - Cranelift rejects `core.simd` explicitly rather than silently scalarizing
@@ -246,6 +246,8 @@ Transcript guidance:
   - `shuffle` traps on lane selectors outside `0..7`
   - masks remain distinct from integer vectors in the public API
   - current safe memory interop is fixed-size array based; raw-buffer, alignment-policy, and masked-memory APIs remain future work
+- Example:
+  - [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) shows the current production-style fixed-array SIMD workflow for signed mix/limit and unsigned clamp kernels.
 
 - `use core.text;` is the standard-library text helper module for native CLI/service rendering.
 - Common helpers:

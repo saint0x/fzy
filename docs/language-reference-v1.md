@@ -232,18 +232,19 @@ Semantics:
 - Current public operations include:
   - constructors and `splat`
   - safe fixed-array `load`/`store`
-  - arithmetic, min/max, shifts, bitwise ops
+  - arithmetic, integer `saturating_add`/`saturating_sub`, min/max, shifts, bitwise ops
   - comparisons producing `mask32x4`
   - `select(mask, then, else)`
   - public `shuffle(left, right, i0, i1, i2, i3)`
   - paired lane-movement helpers `zip_lo/zip_hi` and `unzip_left/unzip_right`
   - explicit numeric reinterpret/bitcast helpers
-  - lane extraction and reductions
+  - lane extraction and reductions including `reduce_add`, `reduce_min`, and `reduce_max`
 - `shuffle` traps at runtime when any lane selector is outside `0..7`.
 - Backend posture:
   - LLVM lowers the current phase-1 surface
   - Cranelift rejects `core.simd` explicitly until native SIMD lowering is implemented
 - Current safe memory interop is fixed-size array based; raw-buffer and alignment-sensitive SIMD APIs are not part of the shipped v1 surface yet.
+- [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) is the reference example for the current production SIMD workflow.
 - Canonical standard-library wrapper import is `use core.process;`.
 - `core.process` exposes ergonomic wrappers like `process.argv_or`, `process.command_name`, and `process.has_flag`.
 - Structured process builders are first-class: `proc.argv_new/push`, `proc.env_new/set`, `proc.spawn_cmd`, `proc.run_cmd`.

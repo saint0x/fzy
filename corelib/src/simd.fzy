@@ -94,6 +94,14 @@ fn i32x4_mul(left: i32x4, right: i32x4) -> i32x4 {
     return simd.__i32x4_mul(left, right)
 }
 
+fn i32x4_saturating_add(left: i32x4, right: i32x4) -> i32x4 {
+    return simd.__i32x4_saturating_add(left, right)
+}
+
+fn i32x4_saturating_sub(left: i32x4, right: i32x4) -> i32x4 {
+    return simd.__i32x4_saturating_sub(left, right)
+}
+
 fn i32x4_shl(value: i32x4, amount: i32) -> i32x4 {
     return simd.__i32x4_shl(value, amount)
 }
@@ -120,6 +128,14 @@ fn u32x4_sub(left: u32x4, right: u32x4) -> u32x4 {
 
 fn u32x4_mul(left: u32x4, right: u32x4) -> u32x4 {
     return simd.__u32x4_mul(left, right)
+}
+
+fn u32x4_saturating_add(left: u32x4, right: u32x4) -> u32x4 {
+    return simd.__u32x4_saturating_add(left, right)
+}
+
+fn u32x4_saturating_sub(left: u32x4, right: u32x4) -> u32x4 {
+    return simd.__u32x4_saturating_sub(left, right)
 }
 
 fn u32x4_shl(value: u32x4, amount: i32) -> u32x4 {
@@ -405,12 +421,36 @@ fn i32x4_reduce_add(value: i32x4) -> i32 {
     return simd.__i32x4_reduce_add(value)
 }
 
+fn i32x4_reduce_min(value: i32x4) -> i32 {
+    return simd.__i32x4_reduce_min(value)
+}
+
+fn i32x4_reduce_max(value: i32x4) -> i32 {
+    return simd.__i32x4_reduce_max(value)
+}
+
 fn u32x4_reduce_add(value: u32x4) -> u32 {
     return simd.__u32x4_reduce_add(value)
 }
 
+fn u32x4_reduce_min(value: u32x4) -> u32 {
+    return simd.__u32x4_reduce_min(value)
+}
+
+fn u32x4_reduce_max(value: u32x4) -> u32 {
+    return simd.__u32x4_reduce_max(value)
+}
+
 fn f32x4_reduce_add(value: f32x4) -> f32 {
     return simd.__f32x4_reduce_add(value)
+}
+
+fn f32x4_reduce_min(value: f32x4) -> f32 {
+    return simd.__f32x4_reduce_min(value)
+}
+
+fn f32x4_reduce_max(value: f32x4) -> f32 {
+    return simd.__f32x4_reduce_max(value)
 }
 
 fn mask32x4_any(value: mask32x4) -> bool {

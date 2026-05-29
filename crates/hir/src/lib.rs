@@ -11171,6 +11171,8 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "simd.__i32x4_add",
         "simd.__i32x4_sub",
         "simd.__i32x4_mul",
+        "simd.__i32x4_saturating_add",
+        "simd.__i32x4_saturating_sub",
         "simd.__i32x4_shl",
         "simd.__i32x4_shr",
         "simd.__i32x4_min",
@@ -11178,6 +11180,8 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "simd.__u32x4_add",
         "simd.__u32x4_sub",
         "simd.__u32x4_mul",
+        "simd.__u32x4_saturating_add",
+        "simd.__u32x4_saturating_sub",
         "simd.__u32x4_shl",
         "simd.__u32x4_shr",
         "simd.__u32x4_min",
@@ -11231,8 +11235,14 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "simd.__f32x4_bitcast_i32x4",
         "simd.__f32x4_bitcast_u32x4",
         "simd.__i32x4_reduce_add",
+        "simd.__i32x4_reduce_min",
+        "simd.__i32x4_reduce_max",
         "simd.__u32x4_reduce_add",
+        "simd.__u32x4_reduce_min",
+        "simd.__u32x4_reduce_max",
         "simd.__f32x4_reduce_add",
+        "simd.__f32x4_reduce_min",
+        "simd.__f32x4_reduce_max",
         "simd.__mask32x4_any",
         "simd.__mask32x4_all",
         "simd.__mask32x4_none",
@@ -11666,6 +11676,8 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "simd.__i32x4_add"
         | "simd.__i32x4_sub"
         | "simd.__i32x4_mul"
+        | "simd.__i32x4_saturating_add"
+        | "simd.__i32x4_saturating_sub"
         | "simd.__i32x4_and"
         | "simd.__i32x4_or"
         | "simd.__i32x4_xor" => (vec![i32x4.clone(), i32x4.clone()], i32x4.clone()),
@@ -11678,6 +11690,8 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "simd.__u32x4_add"
         | "simd.__u32x4_sub"
         | "simd.__u32x4_mul"
+        | "simd.__u32x4_saturating_add"
+        | "simd.__u32x4_saturating_sub"
         | "simd.__u32x4_and"
         | "simd.__u32x4_or"
         | "simd.__u32x4_xor" => (vec![u32x4.clone(), u32x4.clone()], u32x4.clone()),
@@ -11780,8 +11794,14 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "simd.__f32x4_bitcast_i32x4" => (vec![f32x4.clone()], i32x4.clone()),
         "simd.__f32x4_bitcast_u32x4" => (vec![f32x4.clone()], u32x4.clone()),
         "simd.__i32x4_reduce_add" => (vec![i32x4.clone()], i32.clone()),
+        "simd.__i32x4_reduce_min" => (vec![i32x4.clone()], i32.clone()),
+        "simd.__i32x4_reduce_max" => (vec![i32x4.clone()], i32.clone()),
         "simd.__u32x4_reduce_add" => (vec![u32x4.clone()], u32_ty.clone()),
+        "simd.__u32x4_reduce_min" => (vec![u32x4.clone()], u32_ty.clone()),
+        "simd.__u32x4_reduce_max" => (vec![u32x4.clone()], u32_ty.clone()),
         "simd.__f32x4_reduce_add" => (vec![f32x4.clone()], f32_ty.clone()),
+        "simd.__f32x4_reduce_min" => (vec![f32x4.clone()], f32_ty.clone()),
+        "simd.__f32x4_reduce_max" => (vec![f32x4.clone()], f32_ty.clone()),
         "simd.__mask32x4_any" | "simd.__mask32x4_all" | "simd.__mask32x4_none" => {
             (vec![mask32x4.clone()], bool_ty.clone())
         }

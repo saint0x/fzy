@@ -1,0 +1,7 @@
+[package]
+name = "simd_kernels"
+version = "0.1.0"
+
+[[target.bin]]
+name = "simd_kernels"
+path = "src/main.fzy"

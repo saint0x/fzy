@@ -478,6 +478,187 @@ fn llvm_emit_array_index_from_binding(
     })
 }
 
+fn llvm_emit_simd_saturating_int_binop(
+    kind: &str,
+    op: &str,
+    vec_ty: &str,
+    scalar_ty: &str,
+    args: &[ast::Expr],
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<LlvmValue> {
+    let lhs = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, vec_ty)?;
+    let rhs = llvm_emit_expr_as(&args[1], ctx, string_literal_ids, task_ref_ids, vec_ty)?;
+    let mut current = "undef".to_string();
+    for index in 0..4 {
+        let lhs_lane = ctx.value();
+        let rhs_lane = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {lhs_lane} = extractelement {vec_ty} {}, i32 {index}\n",
+            lhs.value
+        ));
+        ctx.code.push_str(&format!(
+            "  {rhs_lane} = extractelement {vec_ty} {}, i32 {index}\n",
+            rhs.value
+        ));
+        let clamped_lane = if kind == "i32x4" {
+            let lhs_i64 = ctx.value();
+            let rhs_i64 = ctx.value();
+            let wide = ctx.value();
+            let below = ctx.value();
+            let above = ctx.value();
+            let lower_sel = ctx.value();
+            let upper_sel = ctx.value();
+            let clamped = ctx.value();
+            ctx.code
+                .push_str(&format!("  {lhs_i64} = sext i32 {lhs_lane} to i64\n"));
+            ctx.code
+                .push_str(&format!("  {rhs_i64} = sext i32 {rhs_lane} to i64\n"));
+            let wide_op = if op == "_saturating_add" { "add" } else { "sub" };
+            ctx.code
+                .push_str(&format!("  {wide} = {wide_op} i64 {lhs_i64}, {rhs_i64}\n"));
+            ctx.code.push_str(&format!(
+                "  {below} = icmp slt i64 {wide}, -2147483648\n"
+            ));
+            ctx.code.push_str(&format!(
+                "  {above} = icmp sgt i64 {wide}, 2147483647\n"
+            ));
+            ctx.code.push_str(&format!(
+                "  {lower_sel} = select i1 {below}, i64 -2147483648, i64 {wide}\n"
+            ));
+            ctx.code.push_str(&format!(
+                "  {upper_sel} = select i1 {above}, i64 2147483647, i64 {lower_sel}\n"
+            ));
+            ctx.code
+                .push_str(&format!("  {clamped} = trunc i64 {upper_sel} to i32\n"));
+            clamped
+        } else {
+            let lhs_i64 = ctx.value();
+            let rhs_i64 = ctx.value();
+            ctx.code
+                .push_str(&format!("  {lhs_i64} = zext i32 {lhs_lane} to i64\n"));
+            ctx.code
+                .push_str(&format!("  {rhs_i64} = zext i32 {rhs_lane} to i64\n"));
+            if op == "_saturating_add" {
+                let wide = ctx.value();
+                let overflow = ctx.value();
+                let clamped_i64 = ctx.value();
+                let clamped = ctx.value();
+                ctx.code
+                    .push_str(&format!("  {wide} = add i64 {lhs_i64}, {rhs_i64}\n"));
+                ctx.code.push_str(&format!(
+                    "  {overflow} = icmp ugt i64 {wide}, 4294967295\n"
+                ));
+                ctx.code.push_str(&format!(
+                    "  {clamped_i64} = select i1 {overflow}, i64 4294967295, i64 {wide}\n"
+                ));
+                ctx.code
+                    .push_str(&format!("  {clamped} = trunc i64 {clamped_i64} to i32\n"));
+                clamped
+            } else {
+                let underflow = ctx.value();
+                let wide = ctx.value();
+                let clamped_i64 = ctx.value();
+                let clamped = ctx.value();
+                ctx.code
+                    .push_str(&format!("  {underflow} = icmp ult i64 {lhs_i64}, {rhs_i64}\n"));
+                ctx.code
+                    .push_str(&format!("  {wide} = sub i64 {lhs_i64}, {rhs_i64}\n"));
+                ctx.code.push_str(&format!(
+                    "  {clamped_i64} = select i1 {underflow}, i64 0, i64 {wide}\n"
+                ));
+                ctx.code
+                    .push_str(&format!("  {clamped} = trunc i64 {clamped_i64} to i32\n"));
+                clamped
+            }
+        };
+        let next = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {next} = insertelement {vec_ty} {current}, {scalar_ty} {clamped_lane}, i32 {index}\n"
+        ));
+        current = next;
+    }
+    Ok(LlvmValue {
+        value: current,
+        ty: vec_ty.to_string(),
+    })
+}
+
+fn llvm_emit_simd_reduce_scalar(
+    kind: &str,
+    op: &str,
+    vec_ty: &str,
+    scalar_ty: &str,
+    arg: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<LlvmValue> {
+    let input = llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, vec_ty)?;
+    let mut lanes = Vec::with_capacity(4);
+    for index in 0..4 {
+        let lane = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {lane} = extractelement {vec_ty} {}, i32 {index}\n",
+            input.value
+        ));
+        lanes.push(lane);
+    }
+    let fold_name = match op {
+        "_reduce_add" if kind == "f32x4" => "fadd",
+        "_reduce_add" => "add",
+        _ => "",
+    };
+    if !fold_name.is_empty() {
+        let fold0 = ctx.value();
+        let fold1 = ctx.value();
+        let fold2 = ctx.value();
+        ctx.code.push_str(&format!(
+            "  {fold0} = {fold_name} {scalar_ty} {}, {}\n",
+            lanes[0], lanes[1]
+        ));
+        ctx.code.push_str(&format!(
+            "  {fold1} = {fold_name} {scalar_ty} {fold0}, {}\n",
+            lanes[2]
+        ));
+        ctx.code.push_str(&format!(
+            "  {fold2} = {fold_name} {scalar_ty} {fold1}, {}\n",
+            lanes[3]
+        ));
+        return Ok(LlvmValue {
+            value: fold2,
+            ty: scalar_ty.to_string(),
+        });
+    }
+    let cmp = match (kind, op) {
+        ("f32x4", "_reduce_min") => "olt",
+        ("f32x4", "_reduce_max") => "ogt",
+        ("u32x4", "_reduce_min") => "ult",
+        ("u32x4", "_reduce_max") => "ugt",
+        (_, "_reduce_min") => "slt",
+        (_, "_reduce_max") => "sgt",
+        _ => unreachable!(),
+    };
+    let mut current = lanes[0].clone();
+    for lane in lanes.iter().skip(1) {
+        let pred = ctx.value();
+        let selected = ctx.value();
+        let cmp_op = if kind == "f32x4" { "fcmp" } else { "icmp" };
+        ctx.code.push_str(&format!(
+            "  {pred} = {cmp_op} {cmp} {scalar_ty} {lane}, {current}\n"
+        ));
+        ctx.code.push_str(&format!(
+            "  {selected} = select i1 {pred}, {scalar_ty} {lane}, {scalar_ty} {current}\n"
+        ));
+        current = selected;
+    }
+    Ok(LlvmValue {
+        value: current,
+        ty: scalar_ty.to_string(),
+    })
+}
+
 fn llvm_emit_simd_intrinsic_call(
     callee: &str,
     args: &[ast::Expr],
@@ -497,6 +678,16 @@ fn llvm_emit_simd_intrinsic_call(
         "_load" => {
             llvm_emit_simd_load_from_array(kind, &args[0], ctx, string_literal_ids, task_ref_ids)?
         }
+        "_saturating_add" | "_saturating_sub" => llvm_emit_simd_saturating_int_binop(
+            kind,
+            op,
+            &vec_ty,
+            scalar_ty,
+            args,
+            ctx,
+            string_literal_ids,
+            task_ref_ids,
+        )?,
         "_add" | "_sub" | "_mul" | "_and" | "_or" | "_xor" => {
             let lhs = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
             let rhs = llvm_emit_expr_as(&args[1], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
@@ -740,38 +931,16 @@ fn llvm_emit_simd_intrinsic_call(
                 ty: target_ty.to_string(),
             }
         }
-        "_reduce_add" => {
-            let input = llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &vec_ty)?;
-            let mut lanes = Vec::with_capacity(4);
-            for index in 0..4 {
-                let lane = ctx.value();
-                ctx.code.push_str(&format!(
-                    "  {lane} = extractelement {vec_ty} {}, i32 {index}\n",
-                    input.value
-                ));
-                lanes.push(lane);
-            }
-            let add0 = ctx.value();
-            let add1 = ctx.value();
-            let add2 = ctx.value();
-            let op_name = if kind == "f32x4" { "fadd" } else { "add" };
-            ctx.code.push_str(&format!(
-                "  {add0} = {op_name} {scalar_ty} {}, {}\n",
-                lanes[0], lanes[1]
-            ));
-            ctx.code.push_str(&format!(
-                "  {add1} = {op_name} {scalar_ty} {add0}, {}\n",
-                lanes[2]
-            ));
-            ctx.code.push_str(&format!(
-                "  {add2} = {op_name} {scalar_ty} {add1}, {}\n",
-                lanes[3]
-            ));
-            LlvmValue {
-                value: add2,
-                ty: scalar_ty.to_string(),
-            }
-        }
+        "_reduce_add" | "_reduce_min" | "_reduce_max" => llvm_emit_simd_reduce_scalar(
+            kind,
+            op,
+            &vec_ty,
+            scalar_ty,
+            &args[0],
+            ctx,
+            string_literal_ids,
+            task_ref_ids,
+        )?,
         "_any" | "_all" | "_none" => {
             let input =
                 llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, &mask_ty)?;

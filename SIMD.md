@@ -50,6 +50,7 @@ Phase 1 portable SIMD is now shipped with an LLVM-backed surface:
 
 - first-class `i32x4`, `u32x4`, `f32x4`, and `mask32x4` types
 - `core.simd` constructors, splats, arithmetic, min/max, scalar shifts, bitwise ops, comparisons, `select`, public shuffle, paired zip/unzip helpers, explicit numeric bitcasts, lane extraction, mask bitmask extraction, and reductions
+- integer saturating add/sub plus scalar `reduce_min`/`reduce_max` on the shipped vector aliases
 - explicit verifier/backend rejection for SIMD ABI crossings
 - explicit Cranelift rejection instead of accidental scalar fallback
 - deterministic Fozzy scenario + trace coverage for the shipped surface
@@ -61,6 +62,7 @@ This now includes the first safe memory-interop slice:
 - fixed-size array load/store for `i32x4`, `u32x4`, `f32x4`, and `mask32x4`
 - generic LLVM array-value lowering needed to make those wrappers real compiler features rather than surface-only helpers
 - deterministic Fozzy coverage plus a host-backed native confidence pass for the shipped slice
+- realistic reference example coverage in `examples/simd_kernels`
 
 ## Track 1: Auto-Vectorization-Friendly Lowering
 
@@ -174,7 +176,7 @@ This track adds an explicit author-facing SIMD model.
 - [x] Arithmetic:
   - [x] add/sub/mul
   - [x] min/max
-  - saturating ops where applicable
+  - [x] saturating ops where applicable for the shipped integer aliases
 - [x] Bitwise:
   - [x] and/or/xor/not
   - [x] shifts
@@ -192,7 +194,7 @@ This track adds an explicit author-facing SIMD model.
   - [x] horizontal add
   - [x] any/all
   - [x] none
-  - min/max reduction
+  - [x] min/max reduction
 
 ### C. Memory operations
 
@@ -296,7 +298,7 @@ This track adds an explicit author-facing SIMD model.
 
 - [x] Add stricter diagnostics and verifier coverage.
 - [ ] Add perf regression gates.
-- [ ] Add docs/examples/showcase updates.
+- [x] Add docs/examples/showcase updates.
 - [x] Add Fozzy scenarios for SIMD-oriented runtime/compiler parity where meaningful.
 - [ ] Add release-gate coverage for SIMD representative workloads.
 

@@ -16,10 +16,26 @@ fn main() -> i32 {
     let stored_ints = simd.i32x4_store(ints)
     let picked = simd.i32x4_select(mask, ints, simd.i32x4_splat(0))
     let sum = simd.i32x4_reduce_add(picked)
+    let signed_sat = simd.i32x4_saturating_add(
+        simd.i32x4_new(2147483640, -2147483640, 100, -100),
+        simd.i32x4_new(20, -20, -250, 250),
+    )
+    let signed_sat_back = simd.i32x4_saturating_sub(
+        signed_sat,
+        simd.i32x4_new(100, -100, -100, 100),
+    )
     let bitmask = simd.mask32x4_bitmask(mask)
     let signed_bits = simd.f32x4_bitcast_i32x4(simd.f32x4_new(1.0, -2.0, 0.0, 4.0))
     let signed_roundtrip = simd.i32x4_bitcast_f32x4(signed_bits)
     let alias_roundtrip = simd.i32x4_as_u32x4(simd.u32x4_as_i32x4(simd.u32x4_new(9, 11, 13, 15)))
+    let unsigned_sat = simd.u32x4_saturating_add(
+        simd.i32x4_as_u32x4(simd.i32x4_new(-1, -5, 10, 0)),
+        simd.i32x4_as_u32x4(simd.i32x4_new(1, 10, 20, -1)),
+    )
+    let unsigned_sat_back = simd.u32x4_saturating_sub(
+        unsigned_sat,
+        simd.u32x4_new(1, 5, 100, 0),
+    )
     let uints_ok = simd.mask32x4_all(
         simd.u32x4_eq(
             simd.u32x4_max(
@@ -72,32 +88,59 @@ fn main() -> i32 {
     if sum != 11 {
         return 29
     }
-    if simd.i32x4_lane3(zip_hi) != 12 {
+    if simd.i32x4_reduce_min(signed_sat) != simd.i32x4_lane1(signed_sat) {
+        return 30
+    }
+    if simd.i32x4_reduce_max(signed_sat) != simd.i32x4_lane0(signed_sat) {
         return 31
     }
-    if stored_ints[3] != 6 {
-        return 32
-    }
-    if simd.mask32x4_all(simd.i32x4_eq(unzipped_left, ints)) == false {
+    if simd.i32x4_lane3(zip_hi) != 12 {
         return 33
     }
-    if simd.mask32x4_all(simd.i32x4_eq(unzipped_right, shifted)) == false {
+    if stored_ints[3] != 6 {
+        return 34
+    }
+    if simd.mask32x4_all(simd.i32x4_eq(unzipped_left, ints)) == false {
         return 35
     }
-    if stored_mask[0] != false || stored_mask[2] != true {
-        return 36
-    }
-    if simd.mask32x4_all(simd.f32x4_eq(signed_roundtrip, simd.f32x4_new(1.0, -2.0, 0.0, 4.0))) == false {
+    if simd.mask32x4_all(simd.i32x4_eq(unzipped_right, shifted)) == false {
         return 37
     }
-    if simd.mask32x4_all(simd.f32x4_eq(simd.f32x4_load(stored_floats), floats)) == false {
+    if stored_mask[0] != false || stored_mask[2] != true {
+        return 38
+    }
+    if simd.mask32x4_all(simd.f32x4_eq(signed_roundtrip, simd.f32x4_new(1.0, -2.0, 0.0, 4.0))) == false {
         return 39
     }
-    if simd.mask32x4_all(simd.u32x4_eq(alias_roundtrip, simd.u32x4_new(9, 11, 13, 15))) == false {
+    if simd.mask32x4_all(simd.f32x4_eq(simd.f32x4_load(stored_floats), floats)) == false {
         return 41
     }
-    if simd.mask32x4_all(simd.u32x4_eq(simd.u32x4_load(stored_uints), alias_roundtrip)) == false {
+    if simd.mask32x4_all(simd.u32x4_eq(alias_roundtrip, simd.u32x4_new(9, 11, 13, 15))) == false {
         return 43
+    }
+    if simd.mask32x4_all(simd.u32x4_eq(simd.u32x4_load(stored_uints), alias_roundtrip)) == false {
+        return 45
+    }
+    if simd.i32x4_lane2(signed_sat) != -150 || simd.i32x4_lane3(signed_sat) != 150 {
+        return 47
+    }
+    if simd.i32x4_lane0(signed_sat_back) != 2147483547 || simd.i32x4_lane1(signed_sat_back) != -2147483548 {
+        return 49
+    }
+    if simd.i32x4_lane2(signed_sat_back) != -50 || simd.i32x4_lane3(signed_sat_back) != 50 {
+        return 50
+    }
+    if simd.mask32x4_all(simd.u32x4_eq(unsigned_sat, simd.i32x4_as_u32x4(simd.i32x4_new(-1, -1, 30, -1)))) == false {
+        return 51
+    }
+    if simd.mask32x4_all(simd.u32x4_eq(unsigned_sat_back, simd.i32x4_as_u32x4(simd.i32x4_new(-2, -6, 0, -1)))) == false {
+        return 53
+    }
+    if simd.u32x4_reduce_min(alias_roundtrip) != simd.u32x4_lane0(alias_roundtrip) || simd.u32x4_reduce_max(alias_roundtrip) != simd.u32x4_lane3(alias_roundtrip) {
+        return 55
+    }
+    if simd.f32x4_reduce_min(floats) != simd.f32x4_lane0(floats) || simd.f32x4_reduce_max(floats) != simd.f32x4_lane3(floats) {
+        return 57
     }
     return 0
 }
