@@ -7,6 +7,15 @@ fn mix_audio_window(dry: [i32; 4], wet: [i32; 4]) -> [i32; 4] {
     return simd.i32x4_store(limited)
 }
 
+fn mix_audio_tail(dry: [i32; 4], wet: [i32; 4], active_lanes: i32) -> i32x4 {
+    let dry_vec = simd.i32x4_load_prefix(dry, active_lanes, 0)
+    let wet_vec = simd.i32x4_load_prefix(wet, active_lanes, 0)
+    let mixed = simd.i32x4_saturating_add(dry_vec, wet_vec)
+    let limited_hi = simd.i32x4_min(mixed, simd.i32x4_splat(32767))
+    let limited = simd.i32x4_max(limited_hi, simd.i32x4_splat(-32768))
+    return simd.i32x4_merge_prefix(limited, active_lanes, dry)
+}
+
 fn audio_floor(window: [i32; 4]) -> i32 {
     return simd.i32x4_reduce_min(simd.i32x4_load(window))
 }
@@ -29,6 +38,14 @@ fn hottest_channel(pixel: [u32; 4]) -> u32 {
     return simd.u32x4_reduce_max(simd.u32x4_load(pixel))
 }
 
+fn swizzle_rgba(pixel: [u32; 4], order: [i32; 4]) -> u32x4 {
+    return simd.u32x4_gather(pixel, order)
+}
+
+fn scatter_highlights(base: [u32; 4], highlights: [u32; 4], lanes: [i32; 4]) -> [u32; 4] {
+    return simd.u32x4_scatter(simd.u32x4_load(highlights), lanes, base)
+}
+
 fn validate_audio_kernel() -> i32 {
     let mixed = mix_audio_window(
         [20000, -18000, 31000, -32000],
@@ -47,6 +64,16 @@ fn validate_audio_kernel() -> i32 {
     }
     if audio_ceiling(mixed) != 32767 {
         return 15
+    }
+    let tailed = mix_audio_tail(
+        [20000, -18000, 31000, -32000],
+        [15000, -12000, 9000, -5000],
+        3,
+    )
+    if simd.mask32x4_all(
+        simd.i32x4_eq(tailed, simd.i32x4_new(32767, -30000, 32767, -32000)),
+    ) == false {
+        return 17
     }
     return 0
 }
@@ -67,6 +94,22 @@ fn validate_rgba_kernel() -> i32 {
     }
     if hottest_channel(pixel) != simd.u32x4_lane0(expected) {
         return 25
+    }
+    let swizzled = swizzle_rgba(pixel, [2, 1, 0, 3])
+    let highlighted = scatter_highlights(
+        pixel,
+        simd.u32x4_store(simd.u32x4_new(7, 8, 9, 10)),
+        [1, 1, 0, 3],
+    )
+    if simd.mask32x4_all(
+        simd.u32x4_eq(swizzled, simd.u32x4_new(255, 30, 255, 255)),
+    ) == false {
+        return 27
+    }
+    if simd.mask32x4_all(
+        simd.u32x4_eq(simd.u32x4_load(highlighted), simd.u32x4_new(9, 8, 255, 10)),
+    ) == false {
+        return 29
     }
     return 0
 }

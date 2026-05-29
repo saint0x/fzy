@@ -448,16 +448,18 @@ impl Parser {
             let Some(name) = self.expect_ident("expected capability or stdlib module name") else {
                 return;
             };
-            if is_core_stdlib_module(name.as_str()) {
-                if let Some(capability) = core_stdlib_implied_capability(name.as_str()) {
+            if let Some(core_binding) = core_stdlib_binding(name.as_str()) {
+                if let Some(capability) = core_stdlib_implied_capability(core_binding.name) {
                     self.module.capabilities.push(capability.to_string());
                 }
-                self.module.imports.push(ast::Import {
-                    path: vec![name],
-                    alias: None,
-                    is_pub: false,
-                    wildcard: false,
-                });
+                if let Some(module_name) = core_binding.module_name {
+                    self.module.imports.push(ast::Import {
+                        path: vec![module_name.to_string()],
+                        alias: None,
+                        is_pub: false,
+                        wildcard: false,
+                    });
+                }
             } else {
                 self.module.capabilities.push(name);
             }
@@ -2825,20 +2827,63 @@ impl Parser {
     }
 }
 
-fn is_core_stdlib_module(name: &str) -> bool {
-    matches!(
-        name,
-        "process"
-            | "term"
-            | "thread"
-            | "log"
-            | "security"
-            | "simd"
-            | "text"
-            | "io"
-            | "path"
-            | "http"
-    )
+struct CoreStdlibBinding {
+    name: &'static str,
+    module_name: Option<&'static str>,
+}
+
+fn core_stdlib_binding(name: &str) -> Option<CoreStdlibBinding> {
+    match name {
+        "process" => Some(CoreStdlibBinding {
+            name: "process",
+            module_name: Some("process"),
+        }),
+        "term" => Some(CoreStdlibBinding {
+            name: "term",
+            module_name: Some("term"),
+        }),
+        "thread" => Some(CoreStdlibBinding {
+            name: "thread",
+            module_name: Some("thread"),
+        }),
+        "log" => Some(CoreStdlibBinding {
+            name: "log",
+            module_name: Some("log"),
+        }),
+        "security" => Some(CoreStdlibBinding {
+            name: "security",
+            module_name: Some("security"),
+        }),
+        "simd" => Some(CoreStdlibBinding {
+            name: "simd",
+            module_name: Some("simd"),
+        }),
+        "text" => Some(CoreStdlibBinding {
+            name: "text",
+            module_name: Some("text"),
+        }),
+        "io" => Some(CoreStdlibBinding {
+            name: "io",
+            module_name: Some("io"),
+        }),
+        "path" => Some(CoreStdlibBinding {
+            name: "path",
+            module_name: Some("path"),
+        }),
+        "http" => Some(CoreStdlibBinding {
+            name: "http",
+            module_name: Some("http"),
+        }),
+        "env" => Some(CoreStdlibBinding {
+            name: "env",
+            module_name: None,
+        }),
+        "str" => Some(CoreStdlibBinding {
+            name: "str",
+            module_name: None,
+        }),
+        _ => None,
+    }
 }
 
 fn core_stdlib_implied_capability(name: &str) -> Option<&'static str> {
@@ -5193,6 +5238,8 @@ mod tests {
             use core.thread;
             use core.log;
             use core.text;
+            use core.env;
+            use core.str;
             use core.io;
             use core.path;
             use core.http;
@@ -5226,6 +5273,14 @@ mod tests {
                 && entry.alias.is_none()
                 && entry.path == vec!["log".to_string()]
         }));
+        assert!(!module
+            .imports
+            .iter()
+            .any(|entry| entry.path == vec!["env".to_string()]));
+        assert!(!module
+            .imports
+            .iter()
+            .any(|entry| entry.path == vec!["str".to_string()]));
         assert!(module.imports.iter().any(|entry| {
             !entry.is_pub
                 && !entry.wildcard

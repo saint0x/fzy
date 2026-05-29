@@ -7,7 +7,7 @@ These examples are meant to be executable production-shaped references, not synt
 - `robust_cli`: terminal-first product structure.
 - `live_server`: long-lived native HTTP service shape.
 - `fullstack`: broader product wiring surface.
-- `simd_kernels`: fixed-array SIMD block processing for audio-style signed mixes and RGBA-style unsigned clamps.
+- `simd_kernels`: fixed-array SIMD block processing for signed mixes, tail-safe merges, channel swizzles, and RGBA-style unsigned clamps.
 - `agent_runtime`: distilled from `/Users/deepsaint/Desktop/fzyagent` and focused on signed sessions, tool catalogs, audit trails, and parallel task planning.
 - `context_runtime`: distilled from `/Users/deepsaint/Desktop/superctx` and focused on scoped memory scoring, protocol assembly, context framing, and deterministic compaction.
 
