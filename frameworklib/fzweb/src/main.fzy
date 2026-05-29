@@ -1,93 +1,14 @@
-use core.thread;
-use core.storage;
-use core.storage;
+use core.term;
 
-mod webcore;
-mod app;
-mod middleware;
-mod support;
-mod request;
-mod response;
-mod routing;
-mod cookies;
-mod persistence;
-mod sessions;
-mod multipart;
-mod streaming;
-
-fn surface_score() -> i32 {
-    let cfg = support.server_config()
-    let web = support.default_app(cfg)
-    let policy = support.policy_from_config(cfg)
-    let boot_rate = middleware.rate_init(policy, 0)
-    let warm_rate = middleware.rate_refill(policy, boot_rate, cfg.rate_refill_ms * 3)
-    let limited_rate = middleware.rate_take(warm_rate, 2)
-    let metrics0 = support.metrics_new()
-    let metrics1 = support.metrics_record(metrics0, 200)
-    let metrics2 = support.metrics_record(metrics1, 401)
-    let metrics3 = support.metrics_record(metrics2, 429)
-    let openapi = app.openapi_json(web)
-    let status = response.ok_json("boot", "req-det")
-    let route = support.route_kernel_score("GET", "/static/app.js")
-    let static_name = support.safe_static_name("../blocked")
-    let text = support.metrics_text(metrics3, 0)
-
-    return (
-        cfg.timeout_ms
-        + cfg.max_body_bytes
-        + boot_rate.tokens
-        + warm_rate.tokens
-        + limited_rate.tokens
-        + str.len(openapi)
-        + str.len(status)
-        + app.route_count(web)
-        + route
-        + str.len(static_name)
-        + str.len(text)
-    ) % 251
-}
-
-test "det_surface_score" {
-    let score = surface_score()
-    if score >= 0 {
-        checkpoint()
-    }
-}
-
-test "det_policy_and_rate" {
-    let cfg = support.server_config()
-    let policy = support.policy_from_config(cfg)
-    let rate0 = middleware.rate_init(policy, 0)
-    let rate1 = middleware.rate_refill(policy, rate0, cfg.rate_refill_ms * 5)
-    let rate2 = middleware.rate_take(rate1, 3)
-    discard rate2
-    checkpoint()
-}
-
-test "det_docs_and_metrics" {
-    let cfg = support.server_config()
-    let openapi = app.openapi_json(support.default_app(cfg))
-    let metrics = support.metrics_record(support.metrics_new(), 200)
-    let rendered = support.metrics_text(metrics, 0)
-    if str.contains(openapi, "/version") == 1 && str.contains(rendered, "fzweb_requests_total") == 1 {
-        checkpoint()
-    }
-}
-
-test "det_routing_and_response_surface" {
-    let cfg = support.server_config()
-    let catalog = app.openapi_json(support.default_app(cfg))
-    let inspect = response.inspect_json("req-1", "GET", "/inspect", "127.0.0.1", "application/json", "", "inspect")
-    let item = response.item_json("updated", "abc", 7, "req-2")
-    let service = response.service_json("fzweb", "dev", "req-3")
-    let signed = cookies.sign_cookie_value("secret", "sid", "value")
-    let upload = multipart.summary(2, 1, 64)
-    let upload_json = multipart.json_summary(upload, "req-4")
-    if str.contains(catalog, "/session/login") == 1 && str.contains(inspect, "\"route\":\"inspect\"") == 1 && str.contains(item, "\"version\":7") == 1 && str.contains(service, "\"service\":\"fzweb\"") == 1 && str.contains(signed, ".") == 1 && str.contains(upload_json, "\"files\":1") == 1 {
-        checkpoint()
-    }
-}
+mod api;
+mod model;
+mod services;
+mod runtime;
+mod cli;
+mod tests;
 
 fn main() -> i32 {
-    return surface_score()
+    discard runtime.boot()
+    discard cli.boot()
+    return runtime.surface_score()
 }
