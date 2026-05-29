@@ -1008,7 +1008,8 @@ fn collect_local_callable_bindings_from_expr(expr: &ast::Expr, out: &mut HashSet
 }
 
 pub(super) fn native_backend_supports_call(callee: &str) -> bool {
-    native_runtime_import_for_callee(callee).is_some()
+    callee.starts_with("simd.__")
+        || native_runtime_import_for_callee(callee).is_some()
         || native_data_plane_import_for_callee(callee).is_some()
 }
 

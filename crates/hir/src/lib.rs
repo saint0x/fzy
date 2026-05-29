@@ -11590,11 +11590,16 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             i32x4.clone(),
         ),
         "simd.__u32x4" => (
-            vec![u32_ty.clone(), u32_ty.clone(), u32_ty.clone(), u32_ty.clone()],
+            vec![i32.clone(), i32.clone(), i32.clone(), i32.clone()],
             u32x4.clone(),
         ),
         "simd.__f32x4" => (
-            vec![f32_ty.clone(), f32_ty.clone(), f32_ty.clone(), f32_ty.clone()],
+            vec![
+                Type::Float { bits: 64 },
+                Type::Float { bits: 64 },
+                Type::Float { bits: 64 },
+                Type::Float { bits: 64 },
+            ],
             f32x4.clone(),
         ),
         "simd.__mask32x4" => (
@@ -11602,8 +11607,8 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             mask32x4.clone(),
         ),
         "simd.__i32x4_splat" => (vec![i32.clone()], i32x4.clone()),
-        "simd.__u32x4_splat" => (vec![u32_ty.clone()], u32x4.clone()),
-        "simd.__f32x4_splat" => (vec![f32_ty.clone()], f32x4.clone()),
+        "simd.__u32x4_splat" => (vec![i32.clone()], u32x4.clone()),
+        "simd.__f32x4_splat" => (vec![Type::Float { bits: 64 }], f32x4.clone()),
         "simd.__mask32x4_splat" => (vec![i32.clone()], mask32x4.clone()),
         "simd.__i32x4_add"
         | "simd.__i32x4_sub"

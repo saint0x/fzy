@@ -2,11 +2,11 @@ fn i32x4_new(x0: i32, x1: i32, x2: i32, x3: i32) -> i32x4 {
     return simd.__i32x4(x0, x1, x2, x3)
 }
 
-fn u32x4_new(x0: u32, x1: u32, x2: u32, x3: u32) -> u32x4 {
+fn u32x4_new(x0: i32, x1: i32, x2: i32, x3: i32) -> u32x4 {
     return simd.__u32x4(x0, x1, x2, x3)
 }
 
-fn f32x4_new(x0: f32, x1: f32, x2: f32, x3: f32) -> f32x4 {
+fn f32x4_new(x0: f64, x1: f64, x2: f64, x3: f64) -> f32x4 {
     return simd.__f32x4(x0, x1, x2, x3)
 }
 
@@ -18,11 +18,11 @@ fn i32x4_splat(value: i32) -> i32x4 {
     return simd.__i32x4_splat(value)
 }
 
-fn u32x4_splat(value: u32) -> u32x4 {
+fn u32x4_splat(value: i32) -> u32x4 {
     return simd.__u32x4_splat(value)
 }
 
-fn f32x4_splat(value: f32) -> f32x4 {
+fn f32x4_splat(value: f64) -> f32x4 {
     return simd.__f32x4_splat(value)
 }
 
