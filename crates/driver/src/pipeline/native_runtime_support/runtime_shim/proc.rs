@@ -235,6 +235,42 @@ static int32_t fz_native_proc_spawn_argv(
   return handle;
 }
 
+static int fz_proc_poll_streams(fz_proc_state* state, int timeout_ms) {
+  if (state == NULL) {
+    return -1;
+  }
+  struct pollfd pfds[2];
+  int count = 0;
+  if (state->stdout_fd >= 0) {
+    pfds[count].fd = state->stdout_fd;
+    pfds[count].events = POLLIN | POLLHUP | POLLERR;
+    pfds[count].revents = 0;
+    count++;
+  }
+  if (state->stderr_fd >= 0) {
+    pfds[count].fd = state->stderr_fd;
+    pfds[count].events = POLLIN | POLLHUP | POLLERR;
+    pfds[count].revents = 0;
+    count++;
+  }
+  if (count == 0) {
+    if (timeout_ms > 0) {
+      usleep((useconds_t)timeout_ms * 1000);
+    }
+    return 0;
+  }
+  for (;;) {
+    int ready = poll(pfds, (nfds_t)count, timeout_ms);
+    if (ready >= 0) {
+      return ready;
+    }
+    if (errno == EINTR) {
+      continue;
+    }
+    return -1;
+  }
+}
+
 int32_t fz_native_proc_spawn(int32_t command_id) {
   const char* command = fz_lookup_string(command_id);
   if (command == NULL || command[0] == '\0') {
@@ -427,13 +463,34 @@ int32_t fz_native_proc_wait(int32_t handle, int32_t timeout_ms) {
       pthread_mutex_unlock(&fz_proc_lock);
       return 1;
     }
+    if (timeout_ms > 0) {
+      int64_t elapsed = fz_now_ms() - start;
+      if (elapsed >= timeout_ms) {
+        kill(state->pid, SIGKILL);
+        (void)waitpid(state->pid, &status, 0);
+        timed_out = 1;
+        break;
+      }
+      int remaining_ms = (int)(timeout_ms - elapsed);
+      int poll_timeout_ms = remaining_ms > 50 ? 50 : remaining_ms;
+      if (fz_proc_poll_streams(state, poll_timeout_ms) < 0) {
+        pthread_mutex_unlock(&fz_proc_lock);
+        fz_proc_set_last_error("proc_wait: stream poll failed");
+        return -1;
+      }
+    } else {
+      if (fz_proc_poll_streams(state, 50) < 0) {
+        pthread_mutex_unlock(&fz_proc_lock);
+        fz_proc_set_last_error("proc_wait: stream poll failed");
+        return -1;
+      }
+    }
     if (timeout_ms > 0 && (fz_now_ms() - start) >= timeout_ms) {
       kill(state->pid, SIGKILL);
       (void)waitpid(state->pid, &status, 0);
       timed_out = 1;
       break;
     }
-    usleep(10 * 1000);
   }
 
   int exit_code = -1;

@@ -341,6 +341,7 @@ Recommended downstream builder scope:
 ## ✅ Production Blocker: Spawned Child Processes Can Stall When Output Is Not Drained During Wait
 
 ✅ Closed the native process backpressure stall by teaching `proc.wait(...)` to poll and drain child stdout/stderr while waiting, adding a large-output regression plus a host-backed Fozzy scenario, and fixing return/defer lowering so deferred `proc.close(...)` no longer clobbers returned exit codes. Re-ran the real `/Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin` production path through `inspect`, `build`, `validate`, `package`, and `release`, then completed deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and native execution validation for the active runtime fix.
+Compressed completion: runtime shim now drains child pipes during wait, native backends preserve explicit return values across `defer`, and the shipped gate includes targeted Rust regressions plus deterministic/host-backed Fozzy scenario coverage.
 
 ## ✅ Production Blocker: `fz run` Native Execution Diverges From The Built Binary For Child-Process Orchestration
 

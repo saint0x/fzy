@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "proc-wait-backpressure-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess; repo = pathlib.Path.cwd(); proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', 'tests/fixtures/proc_wait_backpressure/main.fzy', '--host-backends', '--json'], cwd=str(repo), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload.get('exitCode') == 0, payload; print('proc-wait-backpressure-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "proc-wait-backpressure-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess; repo = pathlib.Path.cwd(); proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'run', 'tests/fixtures/proc_wait_backpressure/main.fzy', '--host-backends', '--json'], cwd=str(repo), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60); assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr); payload = json.loads(proc.stdout.strip()); assert payload.get('exitCode') == 0, payload; print('proc-wait-backpressure-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "proc-wait-backpressure-ok\n"
+    }
+  ]
+}

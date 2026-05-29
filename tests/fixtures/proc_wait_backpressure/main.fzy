@@ -1,0 +1,21 @@
+use core.proc;
+
+fn main() -> i32 {
+    let env_map = proc.env_new()
+    let argv = proc.argv_new()
+    discard proc.argv_push(argv, "-lc")
+    discard proc.argv_push(
+        argv,
+        "/usr/bin/python3 -c 'import sys; sys.stdout.write(\"o\" * 300000); sys.stdout.flush(); sys.stderr.write(\"e\" * 300000); sys.stderr.flush()'"
+    )
+    let handle = proc.spawn_cmd("/bin/sh", argv, env_map, "")
+    let waited = proc.wait(handle, 10000)
+    let stdout = proc.stdout(handle)
+    let stderr = proc.stderr(handle)
+    let exit_code = proc.exit_code(handle)
+    discard proc.close(handle)
+    if waited == 0 && exit_code == 0 && str.len(stdout) == 300000 && str.len(stderr) == 300000 {
+        return 0
+    }
+    return 13
+}

@@ -1547,24 +1547,33 @@ pub(super) fn clif_emit_linear_stmts(
                 let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
             }
             ast::Stmt::Return(value) => {
-                for expr in deferred.iter().rev() {
-                    let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
-                }
                 match (value, ctx.current_return_ty) {
                     (Some(expr), Some(ret_ty)) => {
                         let lowered = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
                         let lowered = cast_clif_value(builder, lowered, ret_ty)?;
+                        for expr in deferred.iter().rev() {
+                            let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
+                        }
                         builder.ins().return_(&[lowered.value]);
                     }
                     (Some(expr), None) => {
                         let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
+                        for expr in deferred.iter().rev() {
+                            let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
+                        }
                         builder.ins().return_(&[]);
                     }
                     (None, Some(ret_ty)) => {
+                        for expr in deferred.iter().rev() {
+                            let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
+                        }
                         let fallback = zero_for_type(builder, ret_ty);
                         builder.ins().return_(&[fallback]);
                     }
                     (None, None) => {
+                        for expr in deferred.iter().rev() {
+                            let _ = clif_emit_expr(builder, ctx, expr, locals, next_var)?;
+                        }
                         builder.ins().return_(&[]);
                     }
                 }

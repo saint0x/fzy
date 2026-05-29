@@ -1402,18 +1402,21 @@ pub(super) fn llvm_emit_linear_stmts(
                 let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
             }
             ast::Stmt::Return(value) => {
-                for expr in deferred.iter().rev() {
-                    let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
-                }
                 match value {
                     Some(expr) => {
                         let value = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids)?;
                         let function_return_ty = ctx.function_return_ty.clone();
                         let value = llvm_cast_value(ctx, value, &function_return_ty)?;
+                        for expr in deferred.iter().rev() {
+                            let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
+                        }
                         ctx.code
                             .push_str(&format!("  ret {} {}\n", value.ty, value.value));
                     }
                     None => {
+                        for expr in deferred.iter().rev() {
+                            let _ = llvm_emit_expr(expr, ctx, string_literal_ids, task_ref_ids);
+                        }
                         if ctx.function_return_ty == "void" {
                             ctx.code.push_str("  ret void\n");
                         } else {
