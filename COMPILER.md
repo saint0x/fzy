@@ -153,7 +153,7 @@ Handoff notes for other agents:
 
 ## Priority 0: Fix Real Safety Gaps
 
-### 0. Current `hir` buildability regression blocks all release confidence
+### ✅ 0. Historical `hir` buildability regression is closed on this checkout
 
 Update:
 
@@ -184,6 +184,12 @@ Required tests:
 1. `cargo test -p hir` must compile cleanly on a clean checkout
 2. the returned-reference lifetime mismatch tests must run and pass after the fix
 3. CI must fail immediately if the `hir` crate no longer builds
+
+Compressed completion:
+
+- the type mismatch in the lifetime checker is fixed
+- `hir` now builds directly again on a clean checkout
+- the returned-reference lifetime path is covered by direct crate tests and release-gate execution
 
 ### ✅ 1. Conditional ownership joins are now path-sensitive and preserve maybe-consumed state
 
@@ -253,7 +259,7 @@ Required tests:
 
 ### ✅ 13.75. Runtime evidence is no longer the primary proof for compiler-memory guarantees
 
-## Priority 5: Release Criteria Before Reclaiming Stronger Production Language
+## ✅ Priority 5: Release Criteria For Stronger Production Language Are Satisfied On This Checkout
 
 Do not consider the compiler area production-complete for full memory-safety claims until all items below are true:
 
@@ -270,7 +276,13 @@ Current status on this checkout:
 - Items `1` through `7` are closed for the currently shipped compiler/verifier surface.
 - Full memory-safety language remains scoped to the shipped safe-language surface plus the documented compiler/verifier rule set; do not broaden that wording beyond the enforced boundary described elsewhere in this file and the public docs.
 
-## Suggested Execution Order
+Compressed completion:
+
+- the release criteria are satisfied for the currently shipped compiler/verifier boundary
+- stronger language remains intentionally scoped to the enforced safe-language and verifier-backed surface
+- future wording expansion still requires new enforcement, tests, and public-doc updates rather than inference from existing passes
+
+## Historical Suggested Execution Order
 
 1. Fix the borrowed-reference false positive first so safe code stops failing for the wrong reason.
 2. Fix `match` ownership analysis next because it is a clear blind spot.
@@ -278,6 +290,7 @@ Current status on this checkout:
 4. Strengthen loop semantics once branch modeling is in place.
 5. Expand lifetime and alias coverage on top of the new control-flow model.
 6. Rework unsafe accounting and documentation once the enforcement story is stabilized.
+7. Lock everything in with unit tests, verifier fixtures, and Fozzy scenarios.
 
 ## Additional Product / Tooling Bugs
 
@@ -285,7 +298,7 @@ Current status on this checkout:
 
 ### ✅ 11. `fz init` now uses one canonical shipped bootstrap path
 
-## Compiler-Owned Build Surface
+## ✅ Compiler-Owned Build Surface
 
 The following build responsibilities should remain native to the compiler / `fz` tool rather than being pushed into a separate ecosystem builder:
 
@@ -312,7 +325,12 @@ Recommended downstream builder scope:
 - external C library discovery/integration
 - packaging, install/export flows, and higher-level product UX
 - multi-project automation on top of `fz` machine-readable outputs
-7. Lock everything in with unit tests, verifier fixtures, and Fozzy scenarios.
+
+Compressed completion:
+
+- the compiler/runtime boundary is now explicit on this checkout
+- `fz` remains the source of truth for ABI lowering, runtime shims, manifests, native artifact semantics, and machine-readable build outputs
+- downstream builders are expected to orchestrate around that contract rather than redefine it
 
 ## Additional Completed DX / Runtime Hardening
 
