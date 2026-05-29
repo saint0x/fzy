@@ -3,7 +3,6 @@ resolver = "2"
 members = [
   "apps/live_server",
   "apps/robust_cli",
-  "apps/fozzyc",
   "apps/text_bench_rust",
   "crates/ast",
   "crates/parser",
@@ -15,6 +14,7 @@ members = [
   "crates/formatter",
   "crates/stdlib",
   "crates/driver",
+  "crates/fz",
   "crates/diagnostics",
   "crates/session",
   "crates/manifest",

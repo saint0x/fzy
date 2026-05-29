@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "pedantic.apps_fozzyc.entry.host_backends_run.pass",
+  "name": "pedantic.crates_fz.entry.explore_schedule_faults.pass",
   "steps": [
     {
       "type": "trace_event",

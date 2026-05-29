@@ -191,7 +191,7 @@ install_from_local_checkout() {
   trap "rm -rf '$cargo_root'" EXIT
 
   log "building $BIN_NAME from local checkout"
-  cargo install --locked --root "$cargo_root" --path "$LOCAL_CHECKOUT/apps/fozzyc"
+  cargo install --locked --root "$cargo_root" --path "$LOCAL_CHECKOUT/crates/fz"
 
   install -m 0755 "$cargo_root/bin/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
   maybe_update_path "$INSTALL_DIR"

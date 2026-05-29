@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "pedantic-apps-fozzyc-entry-memory-graph-diff-top-pass",
+  "name": "pedantic-crates-fz-entry-memory-graph-diff-top-pass",
   "steps": [
     { "type": "memory_alloc", "bytes": 256, "key": "cli_buf_a", "tag": "entry" },
     { "type": "memory_alloc", "bytes": 128, "key": "cli_buf_b", "tag": "entry" },

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "pedantic.apps_fozzyc.entry.fuzz_inputs.pass",
+  "name": "pedantic.crates_fz.entry.host_backends_run.pass",
   "steps": [
     {
       "type": "trace_event",

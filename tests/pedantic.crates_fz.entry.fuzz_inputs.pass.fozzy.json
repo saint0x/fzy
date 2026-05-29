@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "pedantic.apps_fozzyc.entry.shrink_exercised.pass",
+  "name": "pedantic.crates_fz.entry.fuzz_inputs.pass",
   "steps": [
     {
       "type": "trace_event",

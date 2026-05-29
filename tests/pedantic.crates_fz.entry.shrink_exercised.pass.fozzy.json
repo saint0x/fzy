@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "name": "pedantic.apps_fozzyc.entry.explore_schedule_faults.pass",
+  "name": "pedantic.crates_fz.entry.shrink_exercised.pass",
   "steps": [
     {
       "type": "trace_event",
