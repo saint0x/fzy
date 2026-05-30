@@ -99,6 +99,10 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         .expect("native runtime contracts should exist");
     assert!(runtime_contracts.contains("\"requiredCapability\""));
     assert!(runtime_contracts.contains("\"blockingBehavior\""));
+    assert!(runtime_contracts.contains("\"callee\": \"join\""));
+    assert!(runtime_contracts.contains("\"callee\": \"task_result\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"consumes_linear_handle\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"observes_linear_handle\""));
 }
 
 #[test]

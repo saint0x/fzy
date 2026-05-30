@@ -1150,7 +1150,10 @@ fn required_capability_for_callee(callee: &str) -> &'static str {
         "log"
     } else if callee.starts_with("thread.")
         || callee.starts_with("task.")
-        || matches!(callee, "spawn" | "spawn_ctx" | "detach" | "cancel_task" | "yield" | "recv")
+        || matches!(
+            callee,
+            "spawn" | "spawn_ctx" | "detach" | "cancel_task" | "yield" | "recv"
+        )
     {
         "thread"
     } else {
@@ -1227,14 +1230,19 @@ fn default_linearity(callee: &str) -> &'static str {
         "produces_linear_handle"
     } else if matches!(
         callee,
-        "free"
-            | "http.stream_close"
-            | "http.websocket_close"
-            | "http.close"
-            | "proc.close"
+        "join"
+            | "detach"
+            | "cancel_task"
             | "task.group_join"
             | "task.group_join_all"
             | "task.group_cancel"
+    ) {
+        "consumes_linear_handle"
+    } else if matches!(callee, "task_result" | "proc.wait" | "proc.poll") {
+        "observes_linear_handle"
+    } else if matches!(
+        callee,
+        "free" | "http.stream_close" | "http.websocket_close" | "http.close" | "proc.close"
     ) {
         "consumes_linear_handle"
     } else {
@@ -1266,6 +1274,14 @@ pub(super) fn native_runtime_contract_for_callee(
         }
         "free" => {
             contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "join" | "detach" | "cancel_task" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "task_result" => {
+            contract.arg_ownership = "borrow_handle";
             contract.return_ownership = "status";
         }
         "http.request_stream" => {
