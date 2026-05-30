@@ -1,155 +1,35 @@
 # Compiler Hardening Checklist
 
-This document tracks the current compiler-side memory-safety hardening work for production readiness.
+Production status board. Detailed issue sections below remain the source of truth for full problem statements, required fixes, and required tests.
 
-Status convention:
+## Unfinished Work
 
-- `✅` means completed and verified work
-- pending work is written as plain bullets or numbered items only
+- `14. Compiler-phase lock-in suite`: add a golden corpus and lock every compiler phase behind direct tests, `fz` surface coverage, deterministic Fozzy runs, trace lifecycle, and host-backed validation.
+- `15. Memory-safety adversarial coverage`: formalize the borrow-region law and expand hostile ownership/lifetime coverage across moves, frees, branches, loops, `defer`, `await`, `spawn`, partial moves, and all linear handles.
+- `16. Native import contract tables`: replace name/arity-only metadata with full ownership/capability/cleanup/trace/blocking/error contracts and prove contract-table/runtime-shim agreement.
+- `17. Typed-handle and linear-resource law`: freeze one compiler-known handle matrix for `Http*`, `Proc*`, `Task*`, `File*`, `Json*`, `List*`, and `Map*` semantics across HIR, verifier, runtime, docs, and diagnostics.
+- `18. Async/task safety`: make async/task behavior compiler law with owned/send-safe `spawn`, linear task handles, explicit lifecycle state machines, deterministic timeout/deadline semantics, cancel cleanup, and replayable scheduling.
+- `19. RPC hardening`: enforce explicit deadline, cancel, ownership, ABI, payload, trace, and error contracts so RPC is a production-grade verified surface.
+- `20. Backend parity law`: turn LLVM/Cranelift parity into a documented contract for semantics, output, verifier results, runtime behavior, and native-library builds, with explicit non-parity carveouts where needed.
+- `21. Diagnostic stability`: snapshot-lock important compiler, verifier, native-lowerability, and LSP diagnostics so wording, help text, JSON, and catalog keys stay stable and actionable.
+- `22. Canary-app gates`: require real applications to stay green through deterministic and host-backed build/run coverage across the main compiler/runtime product shapes.
+- `23. Unsafe/FFI audit hardening`: require complete unsafe metadata, tighten FFI contracts, and ship `fz audit unsafe`, `fz audit ffi`, and `fz audit memory` on one validated contract model.
+- `24. Trace/replay compatibility system`: formalize trace/replay as compatibility-checked artifacts with explicit versioning and deterministic replay guarantees.
+- `25. v1 syntax and profile freeze`: freeze the syntax set and make `dev`, `verify`, `release`, and `strict` profiles explicit about checks, unsafe policy, backend, capabilities, imports, artifacts, optimization, and diagnostics.
+- `26. Stdlib and capability policy`: promote per-module contracts, capability propagation, JSON boundary rules, and security misuse checks into one compiler-visible policy.
+- `27. Error/perf/docs/compat policy`: standardize the v1 error model, benchmark real workloads, generate docs from implementation-backed metadata, and gate releases on the full compatibility set.
 
-## Historical Three-Agent Parallel Work Split
+## Completed Work
 
-Use this section as the coordination source of truth before touching any unfinished item below. The detailed issue sections later in this document remain authoritative for problem statements, required fixes, and required tests. This split exists so three agents can work in parallel without stepping on one another.
-
-This split is historical now that the work has been merged; later sections reflect the final closed vs blocked state on `main`.
-
-Parallel-work rules:
-
-- each unfinished section in this document has exactly one primary owner below
-- agents are working in the same repository and must not revert one another's edits
-- if a task needs another agent's new API, summary shape, or diagnostic contract, land the producer side first and note the dependency in the owned section rather than silently expanding scope
-- when a task spans multiple layers, the primary owner coordinates the handoff, but file ownership boundaries still apply
-- after finishing a section, mark the original detailed section with `✅` and record the commands/tests/doc updates there so nothing is lost in transit
-
-Historical ownership map before merges:
-
-- Agent 1 owns sections `1`, `3`, `5.35`, `6`, `7.25`, and `11`
-- Agent 2 owns sections `7.75`, `9`, `10`, `12`, `13`, `13.5`, `13.75`, and Priority `5`
-- Agent 3 owns Additional Product / Tooling Bug `10`, Additional Product / Tooling Bug `11`, and `Production Blocker: Native Filesystem Surface Too Thin For Real Artifact Builders`
-
-### Agent 1: Core HIR Analysis Owner
-
-Preamble:
-
-- you own the compiler-side semantic model in `crates/hir` and closely related parser/type-flow changes only when they are required to make `hir` correct
-- your job is to make control-flow ownership, lifetime flow, inferred owned-resource classification, and FFI semantic checks sound inside the compiler core
-- you are not alone in the codebase; do not revert verifier, docs, CLI, runtime, or scenario work from other agents
-- if you need verifier follow-up, expose the minimum stable summary/diagnostic surface and leave downstream verifier wording and release-gate work to Agent 2
-
-Strict file boundaries:
-
-- owned: `crates/hir/**`
-- allowed only if directly required by a `hir` fix: tightly scoped parser/type-definition updates and `crates/hir` unit tests
-- do not own: `crates/verifier/**`, `docs/**`, `tests/*.fozzy.json`, `corelib/**`, `crates/driver/**`
-
-Owned unfinished sections:
-
-1. Section `1`: conditional ownership merge can erase maybe-freed state
-2. Section `3`: loop ownership semantics need a real fixed-point model
-3. Section `5.35`: inferred handle-producing locals can bypass cleanup enforcement entirely
-4. Section `6`: lifetime analysis is too shallow for production-strength claims
-5. Section `7.25`: FFI alias and ownership-transfer checks are still identifier-shaped
-6. Section `11`: add targeted unit tests in `crates/hir`
-
-Expected outputs:
-
-- path-sensitive ownership-state modeling for branches and loops
-- inferred owned-handle/resource classification that does not depend on explicit `let` type spelling
-- deeper lifetime/control-flow coverage in the compiler core
-- semantic FFI alias/transfer checks that are provenance-based rather than identifier-shaped
-- direct `crates/hir` regressions for every newly closed bug class you touch
-
-Handoff notes for other agents:
-
-- document any new ownership-state categories, provenance summary shapes, or lifetime-summary contracts in the touched `hir` section notes
-- call out any verifier-visible behavior changes that require Agent 2 to update diagnostics, docs, or scenario expectations
-
-### Agent 2: Verifier, Evidence, And Docs Owner
-
-Preamble:
-
-- you own the verifier-facing enforcement story, unsafe-accounting honesty, public wording, and release-gate evidence
-- your job is to make sure the product says exactly what the implementation proves, and that the gate suite exercises those claims directly
-- you are not alone in the codebase; do not revert `hir`, driver, stdlib, or scaffold work from other agents
-- if you depend on new `hir` summaries from Agent 1, consume the published surface and keep any additional asks explicit rather than editing core analysis opportunistically
-
-Strict file boundaries:
-
-- owned: `crates/verifier/**`, `docs/**`, `USAGE.md`, `tests/*.fozzy.json`, verifier-facing integration fixtures, and release-checklist wording in this document
-- allowed when required for integration coverage: targeted driver/verify harness tests that do not change compiler semantics
-- do not own: `crates/hir/**` semantic changes, `corelib/**`, scaffold/bootstrap implementation, native build backend implementation
-
-Owned unfinished sections:
-
-1. Section `7.75`: verifier release rules currently require local `defer` even where transfer-based cleanup should be legal
-2. Section `9`: unsafe “reasoned contract” accounting is overstated
-3. Section `10`: unsafe docs and public language must stay within actual enforcement scope
-4. Section `12`: add verifier integration tests at the `fz verify` surface
-5. Section `13`: add Fozzy scenarios for compiler memory-safety regressions
-6. Section `13.5`: the current Fozzy memory release gate is too narrow
-7. Section `13.75`: some passing runtime evidence is still script-backed and too indirect for compiler-memory guarantees
-8. Priority `5`: release criteria before reclaiming stronger production language
-
-Expected outputs:
-
-- verifier behavior and diagnostics that match the implemented ownership-transfer model
-- unsafe-accounting/reporting language that distinguishes structural metadata from validated evidence
-- docs and usage text aligned to actual compiler/verifier enforcement scope
-- first-class `fz verify` fixtures and Fozzy scenarios covering every open compiler-memory bug class that is supposed to gate release
-
-Handoff notes for other agents:
-
-- if a scenario or doc claim depends on unresolved `hir` work, mark it as blocked by the exact section number rather than softening the requirement silently
-- keep the evidence matrix explicit: unit coverage from Agent 1 is not a replacement for verifier fixtures and Fozzy gate coverage here
-
-### Agent 3: Product Surface And Runtime Owner
-
-Preamble:
-
-- you own the unfinished product/tooling/runtime surface outside the core `hir` and verifier semantic engine
-- your job is to make the shipped CLI, scaffold, native build surface, and stdlib filesystem surface match the real supported product contract
-- you are not alone in the codebase; do not revert compiler-analysis or verifier/doc work from other agents
-- when docs must change for product-surface accuracy, coordinate narrowly with Agent 2 instead of broadening into the compiler-memory wording track
-
-Strict file boundaries:
-
-- owned: `crates/driver/**`, `corelib/**`, product-surface docs directly tied to CLI/runtime behavior, scaffold/bootstrap implementation, native-build integration tests, and filesystem/runtime tests
-- do not own: `crates/hir/**` semantic analysis, `crates/verifier/**` policy/diagnostic semantics, compiler-memory Fozzy gate design unless a product-flow scenario specifically exercises your shipped surface
-
-Owned unfinished sections:
-
-1. Additional Product / Tooling Bug `10`: native library backend contract is inconsistent with the public build surface
-2. Additional Product / Tooling Bug `11`: `fz init` is split, underpowered, and not yet a production one-shot bootstrap command
-3. `Production Blocker: Native Filesystem Surface Too Thin For Real Artifact Builders`
-
-Expected outputs:
-
-- one coherent shipped contract for native library backend support
-- one canonical `fz init` implementation and scaffold story
-- a production-usable filesystem surface for native-first artifact builders, with docs and runtime behavior reconciled
-
-Handoff notes for other agents:
-
-- if product-surface fixes introduce new user-facing claims in docs, flag the exact wording delta for Agent 2 review
-- keep Fozzy-first validation attached to real product flows for init/build/filesystem work, not just unit or doc checks
-
-## Completed Review Evidence
-
-✅ Completed the source-level audit across `crates/hir`, `crates/verifier`, product docs, and verifier-facing integration surfaces.
-
-✅ Reproduced the key pre-fix bug classes that motivated this checklist: borrowed-reference false positives, `defer free(...)` undercounting, inferred-owned cleanup gaps, branch/`match` ownership blind spots, loop/lifetime control-flow limitations, pointer/import unsafe enforcement gaps, callback context-anchor gaps, and proof-ref/accounting overstatement.
-
-✅ Landed the HIR-side fixes for branch-sensitive ownership joins, loop fixed-point analysis, grouped/projected consume roots, inferred handle cleanup parity, assignment-aware reference lifetime flow, async borrow hardening, and expanded alias/provenance tracking.
-
-✅ Landed the verifier/docs/evidence fixes for transfer-aware cleanup acceptance, unsafe-accounting honesty, proof-ref validation, thread-boundary diagnostics, scoped public safety wording, and first-class `fz verify` / Fozzy compiler-memory scenario gates.
-
-✅ Landed the product-surface fixes for canonical `fz init`, explicit Cranelift-only `fz build --lib` contract wording, and the native filesystem/runtime closure needed for real artifact builders.
-
-✅ Verified the merged checkout directly with `cargo test -q -p hir`, `cargo test -q -p verifier`, targeted `driver` / `fz` CLI tests, strict deterministic Fozzy doctor/test flows, recorded trace verify/replay/CI, and host-backed runs for the compiler-memory and init surfaces.
-
-✅ Confirmed the current unsafe-accounting posture is clean on this checkout, with zero missing contracts, invalid proof refs, or unsafe-context violations and the approved Rust `unsafe` footprint still limited to [crates/stdlib/src/security.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/security.rs:74) and [crates/stdlib/src/process.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/process.rs:198).
-
-✅ Added first-class `fz verify` / Fozzy release-gate coverage for conditional ownership joins, loop ownership merges, and returned-reference lifetime mismatches so the shipped evidence now matches the deeper HIR control-flow model.
+- ✅ Core compiler-memory hardening is closed: branch/`match` ownership joins, loop fixed-point analysis, inferred-owned and inferred-handle cleanup parity, lifetime/control-flow return validation, alias/provenance tracking, FFI ownership transfer checks, partial-move coverage, and callback/import safety checks are landed and regression-covered.
+- ✅ Safe-code false positives are closed: borrowed references are no longer treated as linear, cleanup detection is structural, inferred `alloc(...)` and handle-producing locals are classified correctly, and documented `defer free(...)` cleanup paths count as real cleanup.
+- ✅ Unsafe accounting and public wording are now honest: proof-ref validation, dedicated thread-boundary diagnostics, and scoped safety language match the actual enforced boundary.
+- ✅ Compiler-memory regression defense is in place: targeted `crates/hir` tests, `fz verify` fixtures, deterministic Fozzy scenarios, and broader release gates now back the shipped claims directly.
+- ✅ Stronger production-language release criteria are satisfied for the shipped compiler/verifier boundary, with scope intentionally limited to the enforced safe-language and verifier-backed surface.
+- ✅ Product-surface blockers are closed: canonical `fz init`, explicit Cranelift-only `fz build --lib`, native filesystem/runtime closure, process-handle cleanup parity, module-path and constant-lowering fixes, live-server/native poller/runtime-shim fixes, child-process wait/drain fixes, `fz run` parity, and crypto/security runtime delivery.
+- ✅ FFI and wrapper blockers are closed: safe ABI facades count correctly, `unsafe { ext_call(...) }` wrappers lower correctly, and borrowed `str -> ptr_borrowed + len` host callback payloads pass real byte views on both backends.
+- ✅ Validation evidence is production-shaped: direct `cargo test -q -p hir` and `-p verifier`, targeted driver/CLI tests, strict deterministic Fozzy doctor/test coverage, recorded trace verify/replay/CI, and host-backed runs have all been exercised on this checkout.
+- ✅ Unsafe-accounting posture is clean on this checkout, with zero missing contracts, invalid proof refs, or unsafe-context violations; approved Rust `unsafe` remains limited to [crates/stdlib/src/security.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/security.rs:74) and [crates/stdlib/src/process.rs](/Users/deepsaint/Desktop/fozzylang/crates/stdlib/src/process.rs:198).
 
 ## Priority 0: Fix Real Safety Gaps
 
