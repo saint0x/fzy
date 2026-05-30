@@ -10048,7 +10048,7 @@ fn infer_expr_type(
                 }
                 for (index, arg_ty) in post_check_arg_types.into_iter().enumerate() {
                     if let (Some(expected), Some(actual)) = (resolved_params.get(index), arg_ty) {
-                        if !type_compatible(expected, &actual) {
+                        if !expr_type_compatible(expected, &actual, &args[index]) {
                             record_type_error(
                                 state.errors,
                                 state.type_error_details,
@@ -11956,9 +11956,18 @@ fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<Strin
             mutable,
             lifetime,
             to: template_to,
-        } => {
-            matches!(concrete, Type::Ref { mutable: other_mut, lifetime: other_lifetime, to: other_to } if mutable == other_mut && lifetime == other_lifetime && bind_typevars(template_to, other_to, bindings))
-        }
+        } => match concrete {
+            Type::Ref {
+                mutable: other_mut,
+                lifetime: other_lifetime,
+                to: other_to,
+            } => {
+                mutable == other_mut
+                    && lifetime == other_lifetime
+                    && bind_typevars(template_to, other_to, bindings)
+            }
+            _ => bind_typevars(template_to, concrete, bindings),
+        },
         Type::Slice(inner) => {
             matches!(concrete, Type::Slice(other) if bind_typevars(inner, other, bindings))
         }
@@ -13730,6 +13739,11 @@ fn expr_type_compatible(expected: &Type, actual: &Type, expr: &Expr) -> bool {
     if type_compatible(expected, actual) {
         return true;
     }
+    if let Type::Ref { to, .. } = expected {
+        if expr_supports_implicit_borrow(expr) && type_compatible(to, actual) {
+            return true;
+        }
+    }
     if !is_integer_type(expected) || !is_integer_type(actual) {
         return false;
     }
@@ -13752,6 +13766,17 @@ fn expr_type_compatible(expected: &Type, actual: &Type, expr: &Expr) -> bool {
                 value <= ((1i128 << width) - 1)
             }
         }
+        _ => false,
+    }
+}
+
+fn expr_supports_implicit_borrow(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ident(_) => true,
+        Expr::Group(inner)
+        | Expr::Discard(inner)
+        | Expr::FieldAccess { base: inner, .. }
+        | Expr::Index { base: inner, .. } => expr_supports_implicit_borrow(inner),
         _ => false,
     }
 }
@@ -16284,6 +16309,29 @@ mod tests {
     }
 
     #[test]
+    fn explicit_borrowed_local_via_call_typechecks_without_linear_leak() {
+        let source = r#"
+            fn borrow(v: &'a *mut u8) -> &'a *mut u8 {
+                return v;
+            }
+            fn main() -> i32 {
+                let p = alloc(32);
+                let alias: &'a *mut u8 = borrow(p);
+                discard alias;
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("linear value `alias` was not consumed/freed")
+                || detail.contains("frees non-linear value `alias` as linear resource")
+        }));
+    }
+
+    #[test]
     fn inferred_alloc_local_is_treated_as_linear_resource() {
         let source = r#"
             fn main() -> i32 {
@@ -17285,6 +17333,7 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
         assert!(typed
             .ownership_violations
             .iter()
@@ -17351,11 +17400,16 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
         assert!(typed.ownership_violations.iter().any(|detail| {
             detail.contains(
                 "consumes owner `p` via `free(p)` while borrowed reference `alias` is still live",
             )
         }));
+        assert!(!typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| { detail.contains("linear value `alias` was not consumed/freed") }));
     }
 
     #[test]
@@ -17375,11 +17429,16 @@ mod tests {
         "#;
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
         assert!(typed.ownership_violations.iter().any(|detail| {
             detail.contains(
                 "consumes owner `p` via `let y = p` while borrowed reference `alias` is still live",
             )
         }));
+        assert!(!typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| { detail.contains("linear value `alias` was not consumed/freed") }));
     }
 
     #[test]

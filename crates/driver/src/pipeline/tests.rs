@@ -889,6 +889,130 @@ fn verify_process_builders_consumed_by_spawn_cmd_do_not_report_linear_leaks() {
 }
 
 #[test]
+fn verify_explicit_borrowed_local_via_call_stays_clean() {
+    let file_name = format!(
+        "fozzylang-borrowed-local-clean-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn borrow(v: &'a *mut u8) -> &'a *mut u8 {\n    return v\n}\nfn main() -> i32 {\n    let p = alloc(32)\n    let alias: &'a *mut u8 = borrow(p)\n    discard alias\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("call signature mismatch for `borrow`")
+            || diagnostic.message.contains("argument 0 type mismatch")
+            || diagnostic
+                .message
+                .contains("linear value `alias` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_borrow_then_free_prefers_borrow_region_diagnostic() {
+    let file_name = format!(
+        "fozzylang-borrow-then-free-snapshot-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn borrow(v: &'a *mut u8) -> &'a *mut u8 {\n    return v\n}\nfn main() -> i32 {\n    let p = alloc(32)\n    let alias: &'a *mut u8 = borrow(p)\n    free(p)\n    discard alias\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` consumes owner `p` via `free(p)` while borrowed reference `alias` is still live"
+        })
+        .expect("borrow-then-free diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("borrow-then-free diagnostic should carry stable code");
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("call signature mismatch for `borrow`")
+            || diagnostic
+                .message
+                .contains("linear value `alias` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_borrow_then_move_prefers_borrow_region_diagnostic() {
+    let file_name = format!(
+        "fozzylang-borrow-then-move-snapshot-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn borrow(v: &'a *mut u8) -> &'a *mut u8 {\n    return v\n}\nfn main() -> i32 {\n    let p = alloc(32)\n    let alias: &'a *mut u8 = borrow(p)\n    let y = p\n    discard alias\n    free(y)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` consumes owner `p` via `let y = p` while borrowed reference `alias` is still live"
+        })
+        .expect("borrow-then-move diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("borrow-then-move diagnostic should carry stable code");
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("call signature mismatch for `borrow`")
+            || diagnostic
+                .message
+                .contains("linear value `alias` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn derive_anchors_from_message_extracts_primary_and_related_tokens() {
     let lines = vec![
         "fn main() -> i32 {".to_string(),
