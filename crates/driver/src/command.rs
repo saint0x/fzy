@@ -13743,7 +13743,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_kv_open_reuses_existing_path_backing_state() {
+    fn storage_kv_roundtrips_and_closes_handles_cleanly() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock should be after epoch")
@@ -13761,7 +13761,7 @@ mod tests {
         std::fs::write(
             &source,
             format!(
-                "use core.fs;\nuse core.storage;\n\nfn main() -> i32 {{\n    let left = storage.kv_open(\"{}\")\n    discard storage.kv_put(left, \"session:key\", \"value\")\n    let right = storage.kv_open(\"{}\")\n    fs.write_file(\"{}\", storage.kv_get(right, \"session:key\"))\n    return 0\n}}\n",
+                "use core.fs;\nuse core.storage;\n\nfn main() -> i32 {{\n    let left = storage.kv_open(\"{}\")\n    discard storage.kv_put(left, \"session:key\", \"value\")\n    let right = storage.kv_open(\"{}\")\n    discard fs.write_file(\"{}\", storage.kv_get(right, \"session:key\"))\n    discard storage.kv_close(left)\n    discard storage.kv_close(right)\n    return 0\n}}\n",
                 store_path.display(),
                 store_path.display(),
                 out_path.display(),

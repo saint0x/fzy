@@ -1011,6 +1011,11 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 1,
     },
     NativeRuntimeImport {
+        callee: "storage.kv_close",
+        symbol: "fz_native_storage_kv_close",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "storage.kv_get",
         symbol: "fz_native_storage_kv_get",
         arity: 2,
@@ -1226,6 +1231,7 @@ fn default_linearity(callee: &str) -> &'static str {
             | "proc.spawnl"
             | "proc.spawn_cmd"
             | "task.group_begin"
+            | "storage.kv_open"
     ) {
         "produces_linear_handle"
     } else if matches!(
@@ -1236,6 +1242,7 @@ fn default_linearity(callee: &str) -> &'static str {
             | "task.group_join"
             | "task.group_join_all"
             | "task.group_cancel"
+            | "storage.kv_close"
     ) {
         "consumes_linear_handle"
     } else if matches!(callee, "task_result" | "proc.wait" | "proc.poll") {
@@ -1322,6 +1329,22 @@ pub(super) fn native_runtime_contract_for_callee(
         }
         "task.group_join" | "task.group_join_all" | "task.group_cancel" => {
             contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "storage.kv_open" => {
+            contract.arg_ownership = "borrow_path";
+            contract.return_ownership = "owned_kv_store";
+        }
+        "storage.kv_close" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "storage.kv_get" => {
+            contract.arg_ownership = "borrow_handle_key";
+            contract.return_ownership = "value";
+        }
+        "storage.kv_put" => {
+            contract.arg_ownership = "borrow_handle_key_value";
             contract.return_ownership = "status";
         }
         "fs.atomic_write" => {

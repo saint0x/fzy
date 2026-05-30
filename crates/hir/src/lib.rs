@@ -4277,6 +4277,7 @@ fn is_linear_runtime_handle(name: &str) -> bool {
             | "HttpHandle"
             | "HttpStreamHandle"
             | "WebSocketHandle"
+            | "KvStoreHandle"
             | "TaskHandle"
             | "TaskGroupHandle"
             | "TaskGroup"
@@ -13778,6 +13779,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "storage.append",
         "storage.atomic_append",
         "storage.kv_open",
+        "storage.kv_close",
         "storage.kv_get",
         "storage.kv_put",
     ]
@@ -14398,6 +14400,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             (vec![str_ty.clone(), str_ty.clone()], i32.clone())
         }
         "storage.kv_open" => (vec![str_ty.clone()], kv_handle.clone()),
+        "storage.kv_close" => (vec![kv_handle.clone()], i32.clone()),
         "storage.kv_get" => (vec![kv_handle.clone(), str_ty.clone()], str_ty.clone()),
         "storage.kv_put" => (
             vec![kv_handle.clone(), str_ty.clone(), str_ty.clone()],
@@ -16803,6 +16806,50 @@ mod tests {
     }
 
     #[test]
+    fn kv_store_handles_without_close_report_linear_leaks() {
+        let source = r#"
+            use core.storage;
+            fn main() -> i32 {
+                let store = storage.kv_open("session.kv");
+                discard storage.kv_put(store, "session:key", "value");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `main` linear value `store` was not consumed/freed")
+        }));
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`store`")));
+    }
+
+    #[test]
+    fn kv_close_consumes_store_handle() {
+        let source = r#"
+            use core.storage;
+            fn main() -> i32 {
+                let store = storage.kv_open("session.kv");
+                discard storage.kv_put(store, "session:key", "value");
+                discard storage.kv_close(store);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `main` linear value `store` was not consumed/freed")
+        }));
+        assert!(!typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("function `main` leaks allocation")
+                && detail.contains("`store`")));
+    }
+
+    #[test]
     fn current_process_cli_intrinsics_typecheck() {
         let source = r#"
             use core.proc;
@@ -18327,6 +18374,32 @@ mod tests {
         }));
         assert!(!typed.linear_type_violations.iter().any(|detail| {
             detail.contains("function `start_group` linear value `group` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn kv_store_wrapper_return_counts_as_transfer() {
+        let source = r#"
+            use core.storage;
+            fn open_store() -> KvStoreHandle {
+                return storage.kv_open("session.kv");
+            }
+            fn main() -> i32 {
+                let store = open_store();
+                discard storage.kv_put(store, "session:key", "value");
+                discard storage.kv_close(store);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> open_store` crosses function with potential resource escape",
+            )
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `open_store` linear value `store` was not consumed/freed")
         }));
     }
 

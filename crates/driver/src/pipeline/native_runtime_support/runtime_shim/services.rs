@@ -540,10 +540,17 @@ int32_t fz_native_storage_kv_open(int32_t path_id) {
       continue;
     }
     const char* existing_path = fz_lookup_string(fz_storage_kv[i].path_id);
-    if (existing_path != NULL && strcmp(existing_path, path) == 0) {
-      pthread_mutex_unlock(&fz_collections_lock);
-      return i + 1;
+    if (existing_path == NULL || strcmp(existing_path, path) != 0) {
+      continue;
     }
+    int32_t kv_handle = fz_storage_kv_alloc();
+    fz_storage_kv_state* kv = fz_storage_kv_get(kv_handle);
+    if (kv != NULL) {
+      kv->path_id = fz_storage_kv[i].path_id;
+      kv->map_handle = fz_storage_kv[i].map_handle;
+    }
+    pthread_mutex_unlock(&fz_collections_lock);
+    return kv == NULL ? -1 : kv_handle;
   }
   pthread_mutex_unlock(&fz_collections_lock);
   int32_t map_handle = fz_runtime_map_new();
@@ -564,6 +571,18 @@ int32_t fz_native_storage_kv_open(int32_t path_id) {
   }
   pthread_mutex_unlock(&fz_collections_lock);
   return kv == NULL ? -1 : kv_handle;
+}
+
+int32_t fz_native_storage_kv_close(int32_t kv_handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_storage_kv_state* kv = fz_storage_kv_get(kv_handle);
+  if (kv == NULL) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return -1;
+  }
+  memset(kv, 0, sizeof(*kv));
+  pthread_mutex_unlock(&fz_collections_lock);
+  return 0;
 }
 
 int32_t fz_native_storage_kv_get(int32_t kv_handle, int32_t key_id) {

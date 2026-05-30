@@ -174,6 +174,44 @@ fn compile_file_memory_report_tracks_process_builder_handles() {
 }
 
 #[test]
+fn compile_file_memory_report_tracks_kv_store_handles() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-memory-report-kv-store-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"memory_report_kv_store\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"memory_report_kv_store\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.storage;\nfn main() -> i32 {\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_put(store, \"session:key\", \"value\")\n    discard storage.kv_close(store)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let memory_report = std::fs::read_to_string(root.join(".fz/memory-report.json"))
+        .expect("memory report should exist");
+    assert!(
+        memory_report.contains("\"name\":\"store\"")
+            || memory_report.contains("\"name\": \"store\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"KvStoreHandle\"")
+            || memory_report.contains("\"type\": \"KvStoreHandle\"")
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn compile_file_memory_report_tracks_runtime_handle_families() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-memory-report-runtime-handles-{}",
@@ -376,6 +414,41 @@ fn compile_file_emits_rpc_policy_evidence() {
     assert!(rpc_report.contains("\"method\": \"Pong\""));
     assert!(rpc_report.contains("\"policy\": \"missing\""));
     assert!(rpc_report.contains("\"handlerCleanupStatus\": \"requires_explicit_cleanup_contract\""));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_file_runtime_contracts_cover_kv_store_consumers() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-runtime-contracts-kv-store-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"runtime_contracts_kv_store\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"runtime_contracts_kv_store\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.storage;\nfn main() -> i32 {\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_put(store, \"session:key\", \"value\")\n    discard storage.kv_close(store)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let runtime_contracts = std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
+        .expect("native runtime contracts should exist");
+    assert!(runtime_contracts.contains("\"callee\": \"storage.kv_open\""));
+    assert!(runtime_contracts.contains("\"returnOwnership\": \"owned_kv_store\""));
+    assert!(runtime_contracts.contains("\"callee\": \"storage.kv_close\""));
+    assert!(runtime_contracts.contains("\"argOwnership\": \"consume_arg0\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"consumes_linear_handle\""));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -986,6 +1059,42 @@ fn verify_process_wrapper_reuse_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_kv_store_wrapper_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-kv-store-wrapper-reuse-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.storage;\nfn close_store(store: KvStoreHandle) -> i32 {\n    return storage.kv_close(store)\n}\nfn main() -> i32 {\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_put(store, \"session:key\", \"value\")\n    discard close_store(store)\n    discard storage.kv_close(store)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses moved value `store` after move/consume"
+        })
+        .expect("kv-store wrapper reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("kv-store wrapper reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_stream_wrapper_reuse_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-memory-stream-wrapper-reuse-{}.fzy",
@@ -1417,6 +1526,37 @@ fn verify_process_handle_return_does_not_report_resource_escape() {
 }
 
 #[test]
+fn verify_kv_store_return_does_not_report_resource_escape() {
+    let file_name = format!(
+        "fozzylang-memory-kv-store-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.storage;\nfn open_store() -> KvStoreHandle {\n    return storage.kv_open(\"session.kv\")\n}\nfn main() -> i32 {\n    let store = open_store()\n    discard storage.kv_put(store, \"session:key\", \"value\")\n    discard storage.kv_close(store)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("potential resource escape")
+            || diagnostic
+                .message
+                .contains("linear value `store` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_http_stream_return_does_not_report_resource_escape() {
     let file_name = format!(
         "fozzylang-memory-http-stream-return-{}.fzy",
@@ -1708,6 +1848,39 @@ fn verify_process_close_wrapper_consumes_handle() {
             || diagnostic
                 .message
                 .contains("linear value `env` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_kv_close_wrapper_consumes_handle() {
+    let file_name = format!(
+        "fozzylang-memory-kv-close-wrapper-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.storage;\nfn close_store(store: KvStoreHandle) -> i32 {\n    return storage.kv_close(store)\n}\nfn main() -> i32 {\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_put(store, \"session:key\", \"value\")\n    discard close_store(store)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` leaks allocation")
+            || diagnostic
+                .message
+                .contains("linear value `store` was not consumed/freed")
     }));
 
     let _ = std::fs::remove_file(path);
@@ -2288,6 +2461,42 @@ fn verify_process_builder_env_leak_diagnostic_is_snapshot_stable() {
         .code
         .as_deref()
         .expect("process-builder env leak diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_kv_store_handle_leak_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-kv-store-leak-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.storage;\nfn main() -> i32 {\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_put(store, \"session:key\", \"value\")\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` linear value `store` was not consumed/freed"
+        })
+        .expect("kv-store leak diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("linear resources must be consumed exactly once")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("kv-store leak diagnostic should carry stable code");
 
     let _ = std::fs::remove_file(path);
 }

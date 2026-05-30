@@ -1877,6 +1877,7 @@ fn memory_report_is_linear_type(ty: &ast::Type) -> bool {
                 | "HttpHandle"
                 | "HttpStreamHandle"
                 | "WebSocketHandle"
+                | "KvStoreHandle"
                 | "TaskHandle"
                 | "TaskGroupHandle"
                 | "TaskGroup"
@@ -1908,7 +1909,12 @@ fn memory_report_terminal_call(expr: &ast::Expr) -> Option<(String, String)> {
         | "task.group_join"
         | "task.group_join_all"
         | "task.group_cancel" => Some(callee.clone()),
-        _ if callee.ends_with(".free") || callee.ends_with(".close") => Some(callee.clone()),
+        _ if callee.ends_with(".free")
+            || callee.ends_with(".close")
+            || callee.ends_with("_close") =>
+        {
+            Some(callee.clone())
+        }
         _ => None,
     }?;
     Some((binding, terminal))
