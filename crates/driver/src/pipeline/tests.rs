@@ -483,6 +483,74 @@ fn strict_task_handle_result_after_terminal_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_conditional_move_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-conditional-move-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    if true {\n        let q = p\n        discard q\n    }\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` uses conditionally consumed value `p` after path-sensitive ownership merge"
+        })
+        .expect("conditional-move memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-05B8968C"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_partial_move_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-partial-move-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "struct Pair { left: *mut u8, right: *mut u8 }\nfn main() -> i32 {\n    let pair: Pair = Pair { left: alloc(32), right: alloc(32) }\n    let Pair { left, right: _ } = pair\n    free(left)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` performs partial move from owned aggregate; partial moves are forbidden in v0"
+        })
+        .expect("partial-move memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-47DDFF6D"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn derive_anchors_from_message_extracts_primary_and_related_tokens() {
     let lines = vec![
         "fn main() -> i32 {".to_string(),

@@ -445,6 +445,14 @@ Required tests:
 
 ### 15. Expand memory-safety adversarial coverage from “sound core” to “v1 trustable”
 
+🟢 Completed slice:
+- ownership/provenance regressions already cover core use-after-move, double-free, branch-divergent ownership, grouped/projection provenance transfer, owned-parameter consumption, owned return transfer, loop merge cleanup, and runtime-handle cleanup parity
+- local borrow-region enforcement is live for the currently supported static model: mutable/shared alias conflicts are rejected, mismatched reference returns are diagnosed, borrowed references are rejected across `await`, and thread-capable borrowed-return / mutable-reference boundary violations are surfaced separately from capability failures
+- partial-move regressions are now locked for tuple, struct-field, and struct-pattern aggregate shapes
+- defer/cleanup ordering regressions now explicitly cover `free`-after-`defer`, `defer`-after-`free`, early-return leaks, branch leaks, and loop-scoped cleanup gaps
+- driver diagnostics now snapshot-lock representative memory failures for conditional consumption and partial-move wording/help/code stability
+- deterministic Fozzy adversarial coverage now exercises defer-ordering faults, early-return/branch/loop leak paths, conditional moves, partial moves, borrow-across-`await`, and reference-return mismatch through real `fz verify` CLI runs, with recorded trace verify/replay/CI coverage for the active suite
+
 Problem:
 
 - the current checkout has closed the known first-wave ownership and lifetime bugs, but v1 trust requires adversarial coverage against the shapes users will actually write

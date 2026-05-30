@@ -3093,15 +3093,7 @@ fn analyze_ownership(
             enum_defs,
             None,
         );
-        for (name, alloc_id) in state.owners {
-            if state.deferred.contains(&alloc_id) {
-                continue;
-            }
-            violations.push(format!(
-                "function `{}` leaks allocation id={} owned by `{}`",
-                function.name, alloc_id, name
-            ));
-        }
+        record_live_owner_leaks(&state, &mut violations, &function.name);
     }
     for (caller, callee) in call_graph {
         let Some(callee_summary) = summaries.get(callee) else {
@@ -3164,6 +3156,22 @@ struct OwnershipState {
 struct LoopExitStates {
     breaks: Vec<OwnershipState>,
     continues: Vec<OwnershipState>,
+}
+
+fn record_live_owner_leaks(
+    state: &OwnershipState,
+    violations: &mut Vec<String>,
+    function_name: &str,
+) {
+    for (name, alloc_id) in &state.owners {
+        if state.deferred.contains(alloc_id) {
+            continue;
+        }
+        violations.push(format!(
+            "function `{}` leaks allocation id={} owned by `{}`",
+            function_name, alloc_id, name
+        ));
+    }
 }
 
 fn build_function_ownership_summaries(
@@ -3417,7 +3425,10 @@ fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
             || callee.ends_with("route.write_404")
             || callee.ends_with("route.write_405")
             || callee.ends_with("http.stream_close")
-            || callee.ends_with("http.websocket_accept") => &[0],
+            || callee.ends_with("http.websocket_accept") =>
+        {
+            &[0]
+        }
         _ => &[],
     }
 }
@@ -4231,6 +4242,7 @@ fn analyze_ownership_block(
                         None,
                     );
                 }
+                record_live_owner_leaks(state, violations, function_name);
                 return false;
             }
             Stmt::If {
@@ -4503,7 +4515,10 @@ fn analyze_ownership_block(
                     None,
                 );
             }
-            Stmt::Return(None) => return false,
+            Stmt::Return(None) => {
+                record_live_owner_leaks(state, violations, function_name);
+                return false;
+            }
             Stmt::Requires(_) | Stmt::Ensures(_) => {}
         }
     }
@@ -15843,6 +15858,43 @@ mod tests {
     }
 
     #[test]
+    fn explicit_free_after_defer_is_rejected_as_double_cleanup() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                defer free(p);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("consumes value `p` after scheduling deferred cleanup")
+        }));
+    }
+
+    #[test]
+    fn defer_after_explicit_free_is_rejected_as_double_cleanup() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                free(p);
+                defer free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail
+                .contains("schedules deferred cleanup for non-owned or already-consumed value `p`")
+                || detail.contains("uses moved value `p` after move/consume")
+                || detail.contains("uses value `p` after provenance root")
+        }));
+    }
+
+    #[test]
     fn inferred_pointer_return_without_cleanup_is_tracked() {
         let source = r#"
             ext unsafe c fn acquire_owned() -> *u8;
@@ -16077,6 +16129,63 @@ mod tests {
     }
 
     #[test]
+    fn early_return_without_cleanup_reports_leak() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`p`")));
+    }
+
+    #[test]
+    fn branch_early_return_without_cleanup_reports_leak() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                if true {
+                    return 0;
+                }
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("leaks allocation")
+                || detail.contains("divergent ownership state for `p`")
+                || detail.contains("conditionally consumed value `p`")
+        }));
+    }
+
+    #[test]
+    fn loop_scoped_cleanup_gap_reports_leak() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                while false {
+                    free(p);
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("leaks allocation")
+                || detail.contains("divergent ownership state for `p`")
+                || detail.contains("conditionally consumed value `p`")
+        }));
+    }
+
+    #[test]
     fn let_initializer_join_consumes_task_handle() {
         let source = r#"
             use core.thread;
@@ -16094,9 +16203,10 @@ mod tests {
         assert!(!typed.ownership_violations.iter().any(|detail| {
             detail.contains("function `main` leaks allocation") && detail.contains("`handle`")
         }));
-        assert!(!typed.linear_type_violations.iter().any(|detail| {
-            detail.contains("linear value `handle` was not consumed/freed")
-        }));
+        assert!(!typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| { detail.contains("linear value `handle` was not consumed/freed") }));
     }
 
     #[test]
@@ -16143,9 +16253,10 @@ mod tests {
         assert!(!typed.ownership_violations.iter().any(|detail| {
             detail.contains("function `main` leaks allocation") && detail.contains("`ws`")
         }));
-        assert!(!typed.linear_type_violations.iter().any(|detail| {
-            detail.contains("linear value `ws` was not consumed/freed")
-        }));
+        assert!(!typed
+            .linear_type_violations
+            .iter()
+            .any(|detail| { detail.contains("linear value `ws` was not consumed/freed") }));
     }
 
     #[test]
