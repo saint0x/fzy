@@ -233,6 +233,8 @@ Core ownership/provenance regressions, borrow-region enforcement, partial-move c
 - `ProcessArgv` / `ProcessEnv` now follow compiler-owned linear-handle law too: unused builders leak, `proc.spawn_cmd` / `proc.run_cmd` / `proc.spawnl` / `proc.runl` consume them, helper-mediated transfer is regression-covered, and the shipped Fozzy corpus now exercises that exact builder-ownership surface
 - implicit borrow admission is now compiler law instead of an accidental partial behavior: reference-typed calls and explicit reference locals accept borrowable owned expressions, generic reference calls resolve without fake signature fallout, and borrow-region failures now surface as ownership diagnostics instead of bogus `call signature mismatch` or `linear value ... was not consumed/freed` noise
 - the borrow-region suite is now end-to-end regression-covered across HIR, `fz verify`, and deterministic Fozzy scenarios for: explicit borrowed locals, borrow-then-free, borrow-then-move, mutable/shared alias conflicts, and returned-reference lifetime mismatch without downstream diagnostic pollution
+- overlapping borrow exclusivity is now enforced in local borrow regions too: creating a mutable borrow while a shared borrow is still live, creating a shared borrow while a mutable borrow is still live, and creating transient call-site borrows that overlap a live mutable borrow now all fail as first-class ownership violations
+- `memory-report.json` is now aligned with compiler law for process builder handles too, so `ProcessArgv` / `ProcessEnv` appear in emitted linear-resource evidence instead of being enforced by HIR but omitted from the production safety artifact surface
 
 Problem:
 

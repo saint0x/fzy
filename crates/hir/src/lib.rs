@@ -2048,6 +2048,47 @@ fn analyze_live_borrow_block(
                     .iter()
                     .any(|candidate| stmt_uses_ident(candidate, alias))
         };
+        for creation in stmt_borrow_creations(function, stmt, bindings, signatures) {
+            for (alias, binding) in bindings.iter() {
+                if creation.alias.as_deref() == Some(alias.as_str()) {
+                    continue;
+                }
+                if binding.owner != creation.owner
+                    || !future_uses_alias(alias)
+                    || !(binding.mutable || creation.mutable)
+                {
+                    continue;
+                }
+                let new_kind = if creation.mutable {
+                    "mutable"
+                } else {
+                    "shared"
+                };
+                let existing_kind = if binding.mutable { "mutable" } else { "shared" };
+                let detail = if let Some(new_alias) = creation.alias.as_deref() {
+                    format!(
+                        "function `{}` creates {} borrow `{}` from owner `{}` while {} borrowed reference `{}` is still live",
+                        function.name,
+                        new_kind,
+                        new_alias,
+                        creation.owner,
+                        existing_kind,
+                        alias
+                    )
+                } else {
+                    format!(
+                        "function `{}` creates {} borrow of owner `{}` via `{}` while {} borrowed reference `{}` is still live",
+                        function.name,
+                        new_kind,
+                        creation.owner,
+                        creation.via,
+                        existing_kind,
+                        alias
+                    )
+                };
+                violations.push(detail);
+            }
+        }
         for consume in stmt_borrow_consumptions(stmt, ownership_summaries) {
             for (alias, binding) in bindings.iter() {
                 if binding.owner == consume.owner && future_uses_alias(alias) {
@@ -2177,6 +2218,14 @@ struct BorrowConsume {
     via: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BorrowCreation {
+    owner: String,
+    via: String,
+    mutable: bool,
+    alias: Option<String>,
+}
+
 fn stmt_borrow_consumptions(
     stmt: &Stmt,
     ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
@@ -2228,6 +2277,103 @@ fn stmt_borrow_consumptions(
         _ => {}
     }
     out
+}
+
+fn stmt_borrow_creations(
+    function: &TypedFunction,
+    stmt: &Stmt,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> Vec<BorrowCreation> {
+    let mut out = Vec::new();
+    match stmt {
+        Stmt::Let {
+            name, value, ty, ..
+        } => {
+            if let Some(binding) =
+                infer_borrow_binding_from_expr(value, ty.as_ref(), bindings, signatures)
+            {
+                out.push(BorrowCreation {
+                    owner: binding.owner,
+                    via: format!("let {name} = {}", borrow_creation_expr_label(value)),
+                    mutable: binding.mutable,
+                    alias: Some(name.clone()),
+                });
+            }
+        }
+        Stmt::Assign { target, value } => {
+            let explicit_ty = function.local_types.get(target).or_else(|| {
+                function
+                    .params
+                    .iter()
+                    .find(|param| param.name == *target)
+                    .map(|param| &param.ty)
+            });
+            if let Some(binding) =
+                infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
+            {
+                out.push(BorrowCreation {
+                    owner: binding.owner,
+                    via: format!("{target} = {}", borrow_creation_expr_label(value)),
+                    mutable: binding.mutable,
+                    alias: Some(target.clone()),
+                });
+            }
+        }
+        Stmt::Expr(Expr::Call { callee, args }) => {
+            let params = signatures
+                .get(callee)
+                .map(|function| {
+                    function
+                        .params
+                        .iter()
+                        .map(|param| param.ty.clone())
+                        .collect::<Vec<_>>()
+                })
+                .or_else(|| runtime_call_signature(callee).map(|(params, _)| params));
+            let Some(params) = params else {
+                return out;
+            };
+            for (index, param_ty) in params.iter().enumerate() {
+                let Type::Ref { mutable, .. } = param_ty else {
+                    continue;
+                };
+                let Some(arg) = args.get(index) else {
+                    continue;
+                };
+                let Some(owner) = infer_borrow_owner_name(arg, bindings, signatures) else {
+                    continue;
+                };
+                out.push(BorrowCreation {
+                    via: format!("{callee}({owner})"),
+                    owner,
+                    mutable: *mutable,
+                    alias: None,
+                });
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn borrow_creation_expr_label(expr: &Expr) -> String {
+    match expr {
+        Expr::Ident(name) => name.clone(),
+        Expr::Group(inner) => borrow_creation_expr_label(inner),
+        Expr::Call { callee, args } => {
+            let rendered = args
+                .iter()
+                .filter_map(expr_consumed_binding_name)
+                .collect::<Vec<_>>();
+            if rendered.is_empty() {
+                format!("{callee}(...)")
+            } else {
+                format!("{callee}({})", rendered.join(", "))
+            }
+        }
+        _ => "<expr>".to_string(),
+    }
 }
 
 fn infer_borrow_binding_from_expr(
@@ -17338,6 +17484,75 @@ mod tests {
             .ownership_violations
             .iter()
             .any(|detail| detail.contains("aliases mutable and shared borrows for `x`")));
+    }
+
+    #[test]
+    fn mutable_borrow_then_shared_local_reborrow_is_rejected() {
+        let source = r#"
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let unique: &'a mut i32 = x;
+                let shared: &'a i32 = x;
+                discard unique;
+                discard shared;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "creates shared borrow `shared` from owner `x` while mutable borrowed reference `unique` is still live",
+            )
+        }));
+    }
+
+    #[test]
+    fn shared_borrow_then_mutable_local_reborrow_is_rejected() {
+        let source = r#"
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let shared: &'a i32 = x;
+                let unique: &'a mut i32 = x;
+                discard shared;
+                discard unique;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "creates mutable borrow `unique` from owner `x` while shared borrowed reference `shared` is still live",
+            )
+        }));
+    }
+
+    #[test]
+    fn mutable_borrow_then_shared_call_reborrow_is_rejected() {
+        let source = r#"
+            fn inspect(v: &'a i32) -> i32 {
+                discard v;
+                return 0;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let unique: &'a mut i32 = x;
+                discard inspect(x);
+                discard unique;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "creates shared borrow of owner `x` via `inspect(x)` while mutable borrowed reference `unique` is still live",
+            )
+        }));
     }
 
     #[test]

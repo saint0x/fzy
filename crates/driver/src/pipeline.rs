@@ -1863,6 +1863,8 @@ fn memory_report_is_linear_type(ty: &ast::Type) -> bool {
                 | "Ptr"
                 | "FileHandle"
                 | "ProcessHandle"
+                | "ProcessArgv"
+                | "ProcessEnv"
                 | "HttpHandle"
                 | "HttpStreamHandle"
                 | "WebSocketHandle"

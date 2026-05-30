@@ -130,6 +130,50 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
 }
 
 #[test]
+fn compile_file_memory_report_tracks_process_builder_handles() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-memory-report-process-builders-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"memory_report_process_builders\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"memory_report_process_builders\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.proc;\nfn main() -> i32 {\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"hi\")\n    let env = proc.env_new()\n    discard proc.env_set(env, \"K\", \"V\")\n    let handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let memory_report = std::fs::read_to_string(root.join(".fz/memory-report.json"))
+        .expect("memory report should exist");
+    assert!(
+        memory_report.contains("\"name\":\"argv\"") || memory_report.contains("\"name\": \"argv\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"ProcessArgv\"")
+            || memory_report.contains("\"type\": \"ProcessArgv\"")
+    );
+    assert!(
+        memory_report.contains("\"name\":\"env\"") || memory_report.contains("\"name\": \"env\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"ProcessEnv\"")
+            || memory_report.contains("\"type\": \"ProcessEnv\"")
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn compile_file_emits_rpc_policy_evidence() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-rpc-safety-artifacts-{}",
@@ -1008,6 +1052,117 @@ fn verify_borrow_then_move_prefers_borrow_region_diagnostic() {
                 .message
                 .contains("linear value `alias` was not consumed/freed")
     }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_mutable_borrow_then_shared_local_reborrow_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-mut-borrow-shared-reborrow-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let x: i32 = 1\n    let unique: &'a mut i32 = x\n    let shared: &'a i32 = x\n    discard unique\n    discard shared\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` creates shared borrow `shared` from owner `x` while mutable borrowed reference `unique` is still live"
+        })
+        .expect("mutable/shared local reborrow diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("mutable/shared local reborrow diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_shared_borrow_then_mutable_local_reborrow_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-shared-borrow-mut-reborrow-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let x: i32 = 1\n    let shared: &'a i32 = x\n    let unique: &'a mut i32 = x\n    discard shared\n    discard unique\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` creates mutable borrow `unique` from owner `x` while shared borrowed reference `shared` is still live"
+        })
+        .expect("shared/mutable local reborrow diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("shared/mutable local reborrow diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_mutable_borrow_then_shared_call_reborrow_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-mut-borrow-shared-call-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn inspect(v: &'a i32) -> i32 {\n    discard v\n    return 0\n}\nfn main() -> i32 {\n    let x: i32 = 1\n    let unique: &'a mut i32 = x\n    discard inspect(x)\n    discard unique\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` creates shared borrow of owner `x` via `inspect(x)` while mutable borrowed reference `unique` is still live"
+        })
+        .expect("mutable/shared call reborrow diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("mutable/shared call reborrow diagnostic should carry stable code");
 
     let _ = std::fs::remove_file(path);
 }
