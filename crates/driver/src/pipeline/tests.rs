@@ -174,6 +174,96 @@ fn compile_file_memory_report_tracks_process_builder_handles() {
 }
 
 #[test]
+fn compile_file_memory_report_tracks_runtime_handle_families() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-memory-report-runtime-handles-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"memory_report_runtime_handles\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"memory_report_runtime_handles\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn close_ws(ws: WebSocketHandle) -> i32 {\n    return http.websocket_close(ws, 1000, \"ok\")\n}\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    let conn = http.accept()\n    let ws = http.websocket_accept(conn)\n    discard close_ws(ws)\n    let handle = spawn(worker)\n    discard join(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let memory_report = std::fs::read_to_string(root.join(".fz/memory-report.json"))
+        .expect("memory report should exist");
+    assert!(
+        memory_report.contains("\"name\":\"listener\"")
+            || memory_report.contains("\"name\": \"listener\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"HttpHandle\"")
+            || memory_report.contains("\"type\": \"HttpHandle\"")
+    );
+    assert!(
+        memory_report.contains("\"name\":\"ws\"") || memory_report.contains("\"name\": \"ws\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"WebSocketHandle\"")
+            || memory_report.contains("\"type\": \"WebSocketHandle\"")
+    );
+    assert!(
+        memory_report.contains("\"name\":\"handle\"")
+            || memory_report.contains("\"name\": \"handle\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"TaskHandle\"")
+            || memory_report.contains("\"type\": \"TaskHandle\"")
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_file_runtime_contracts_cover_runtime_handle_consumers() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-runtime-contracts-runtime-handles-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"runtime_contracts_runtime_handles\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"runtime_contracts_runtime_handles\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.proc;\nuse core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    let conn = http.accept()\n    let ws = http.websocket_accept(conn)\n    discard http.websocket_close(ws, 1000, \"ok\")\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let proc_handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(proc_handle)\n    let handle = spawn(worker)\n    discard join(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let runtime_contracts = std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
+        .expect("native runtime contracts should exist");
+    assert!(runtime_contracts.contains("\"callee\": \"http.websocket_close\""));
+    assert!(runtime_contracts.contains("\"argOwnership\": \"consume_arg0_borrow_close_payload\""));
+    assert!(runtime_contracts.contains("\"returnOwnership\": \"status\""));
+    assert!(runtime_contracts.contains("\"callee\": \"proc.close\""));
+    assert!(runtime_contracts.contains("\"argOwnership\": \"consume_arg0\""));
+    assert!(runtime_contracts.contains("\"callee\": \"join\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"consumes_linear_handle\""));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn compile_file_emits_rpc_policy_evidence() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-rpc-safety-artifacts-{}",
