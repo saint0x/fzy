@@ -49,42 +49,6 @@ Production status board. Detailed issue sections below remain the source of trut
 
 ### ✅ 0. Historical `hir` buildability regression is closed on this checkout
 
-Update:
-
-- this no longer reproduces on the current checkout
-- keep this section as historical context only unless the compile failure reappears on a clean branch
-- current direct evidence is `cargo test -q -p hir` passing locally
-
-Problem:
-
-- the current checkout fails to build the `hir` memory-safety path
-- `crates/hir/src/lib.rs` compares `Option<Option<String>>` against `Option<String>` in the reference-return lifetime validator
-- this prevents `cargo test -p hir` from compiling, which blocks direct verification of the memory-safety analysis itself
-
-Why this matters:
-
-- a non-building safety path is a release blocker regardless of the underlying soundness story
-- we cannot claim production readiness for the compiler area while the core `hir` safety crate does not compile
-- this also weakens trust in any passing higher-level gate that does not exercise the broken path directly
-
-Required fixes:
-
-1. repair the type mismatch in the return-lifetime comparison path
-2. add a focused regression test that compiles the affected `hir` lifetime checker path
-3. make sure CI runs a direct `cargo test -p hir` target so this cannot hide behind broader gates
-
-Required tests:
-
-1. `cargo test -p hir` must compile cleanly on a clean checkout
-2. the returned-reference lifetime mismatch tests must run and pass after the fix
-3. CI must fail immediately if the `hir` crate no longer builds
-
-Compressed completion:
-
-- the type mismatch in the lifetime checker is fixed
-- `hir` now builds directly again on a clean checkout
-- the returned-reference lifetime path is covered by direct crate tests and release-gate execution
-
 ### ✅ 1. Conditional ownership joins are now path-sensitive and preserve maybe-consumed state
 
 ### ✅ 2. `match` ownership effects are modeled for direct cleanup paths and regression-covered
@@ -154,27 +118,7 @@ Compressed completion:
 ### ✅ 13.75. Runtime evidence is no longer the primary proof for compiler-memory guarantees
 
 ## ✅ Priority 5: Release Criteria For Stronger Production Language Are Satisfied On This Checkout
-
-Do not consider the compiler area production-complete for full memory-safety claims until all items below are true:
-
-1. conditional and `match` ownership state is path-sensitive and tested
-2. borrowed references are no longer treated as linear cleanup obligations
-3. loop ownership semantics are modeled soundly enough for shipped control-flow forms
-4. lifetime analysis coverage is expanded and documented honestly
-5. unsafe summary/accounting no longer overstates compiler assurance
-6. unit tests, verifier fixtures, and Fozzy scenarios cover every bug class in this document
-7. public docs are reconciled to the actual enforcement model
-
-Current status on this checkout:
-
-- Items `1` through `7` are closed for the currently shipped compiler/verifier surface.
-- Full memory-safety language remains scoped to the shipped safe-language surface plus the documented compiler/verifier rule set; do not broaden that wording beyond the enforced boundary described elsewhere in this file and the public docs.
-
-Compressed completion:
-
-- the release criteria are satisfied for the currently shipped compiler/verifier boundary
-- stronger language remains intentionally scoped to the enforced safe-language and verifier-backed surface
-- future wording expansion still requires new enforcement, tests, and public-doc updates rather than inference from existing passes
+Release criteria are closed for the currently shipped compiler/verifier boundary, and stronger language remains intentionally scoped to the enforced safe-language and verifier-backed surface.
 
 ## Historical Suggested Execution Order
 
@@ -194,90 +138,41 @@ Compressed completion:
 
 ## ✅ Compiler-Owned Build Surface
 
-The following build responsibilities should remain native to the compiler / `fz` tool rather than being pushed into a separate ecosystem builder:
-
-- ABI lowering and symbol/link-name rules for `pubext c fn`, `pubext async c fn`, and `ext unsafe c fn`
-- C header generation and ABI manifest generation
-- ABI compatibility enforcement (`fz abi-check`) and contract validation
-- native object/artifact emission for supported backends
-- runtime-shim generation and compilation for native targets
-- manifest-defined target/profile/link configuration parsing
-- stable machine-readable build outputs that higher-level tools can consume
-- backend capability reporting and diagnostics when a requested build mode is unsupported
-
-Why this boundary matters:
-
-- these concerns depend directly on compiler IR, verified type/layout information, and language safety policy
-- duplicating them in a standalone builder would create drift between the language contract and the build contract
-- the separate builder should orchestrate builds, not redefine the meaning of Fozzy ABI, profiles, or native artifact semantics
-
-Recommended downstream builder scope:
-
-- workspace orchestration
-- dependency graph scheduling
-- incremental caching and rebuild policy
-- external C library discovery/integration
-- packaging, install/export flows, and higher-level product UX
-- multi-project automation on top of `fz` machine-readable outputs
-
-Compressed completion:
-
-- the compiler/runtime boundary is now explicit on this checkout
-- `fz` remains the source of truth for ABI lowering, runtime shims, manifests, native artifact semantics, and machine-readable build outputs
-- downstream builders are expected to orchestrate around that contract rather than redefine it
+The compiler/runtime build boundary is now explicit: `fz` remains the source of truth for ABI lowering, runtime shims, manifests, native artifact semantics, and machine-readable build outputs, while downstream builders are expected to orchestrate around that contract.
 
 ## Additional Completed DX / Runtime Hardening
 
-✅ Closed the split `fz init` product surface by removing the old scaffold path, centralizing bootstrap under the shipped `fz init` command, narrowing the generated tree to the canonical minimal layout, aligning generated guidance with real commands, and validating it with crate tests plus deterministic, trace-backed, replay, CI, and host-backed Fozzy runs.
-
-✅ Closed the process-handle lifecycle contract gap by giving `proc.spawn*` handles an explicit typed cleanup path through `proc.close(handle)`, wiring the intrinsic end to end, regression-covering the typing path in `crates/hir`, and validating it with compiler and real-project checks.
-
-✅ Closed the qualified module-path inconsistency so dot-qualified type paths parse in signatures and cross-module const/static value paths resolve consistently, with focused parser and driver regressions backing the fix.
-
-✅ Closed the `core.log` stdlib/verifier import poison so logging helper setup no longer leaks linear map ownership during normal import/configuration flows, with driver regression coverage and doc alignment.
-
-✅ Closed the host-backed live-server read contract gap so `http.read(conn)` now returns `0` on successful request parse, waits through transient socket-readiness stalls, and no longer turns normal `GET /healthz` traffic into the old `503 {"error":"read_failed"}` branch.
-
-✅ Closed the native poller surface mismatch so `http.poll_register` is now wired through native lowering, `http.poll_next` is implemented in the host runtime instead of stubbed, and both are regression-covered by driver tests plus a trace-backed host Fozzy scenario.
-
-✅ Closed the remaining compiler control-flow evidence gap by adding a dedicated `fz verify` / Fozzy scenario for conditional ownership joins, loop iteration merges, and returned-reference lifetime mismatches, alongside passing control-flow/lifetime counterparts.
-
-✅ Closed the native namespaced-constant lowering bug so same-module `const i32` references and dotted module constant paths no longer collapse to `0` under native codegen; `fzaudio inspect` and `build` now agree again, with driver cross-backend regression coverage plus a dedicated Fozzy scenario guarding the exact project-kind-label case.
-
-✅ Closed the Cranelift linear-emission crash triggered by statement-position `unsafe { ... }` blocks that contained nested branches and returns around `ext unsafe c fn` calls inside exported control-plane code. Unsafe block bodies are now flattened into the surrounding CFG before backend linearization, the exported-FFI dispatch shape is regression-covered across LLVM and Cranelift, and the `megaserver` control-plane build now fails only on ordinary verifier/frontend diagnostics instead of aborting in backend codegen.
-
-✅ Re-ran the production Fozzy trace lifecycle after the DX/runtime fixes through deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and host-backed execution.
+✅ `fz init` is now one canonical shipped bootstrap path with minimal generated layout and real-command guidance.
+✅ `proc.spawn*` handles now have an explicit typed cleanup path through `proc.close(handle)`.
+✅ Dot-qualified module/type paths and cross-module const/static resolution now behave consistently.
+✅ `core.log` import/configuration no longer leaks linear map ownership.
+✅ Host-backed `http.read(conn)` now handles normal request parsing and transient readiness stalls correctly.
+✅ Native poller wiring is closed: `http.poll_register` lowers natively and `http.poll_next` runs in the host runtime.
+✅ Compiler control-flow evidence now includes dedicated `fz verify` / Fozzy coverage for branch joins, loop merges, and returned-reference lifetime mismatches.
+✅ Native namespaced constant lowering is fixed, so `inspect` and `build` agree on same-module and dotted constant paths.
+✅ Cranelift no longer crashes on statement-position `unsafe { ... }` blocks with nested branches/returns around exported FFI calls.
+✅ Production Fozzy trace lifecycle was re-run after the DX/runtime fixes through deterministic, replay, CI, and host-backed paths.
 
 ## ✅ Production Blocker: Native Filesystem Surface Is Closed On This Checkout
-
-✅ Closed the native runtime shim helper-ordering bug by emitting forward declarations for the shared bytes-buffer and fd-wait helpers before first use, adding a shim render regression plus a native build/run Fozzy gate, and re-verifying real `fzaudio` `check` / `build` / `run` on the production path.
+Native runtime shim helper ordering is fixed, with shim/render regressions and native build/run gating backing the production path.
 
 ## ✅ Production Blocker: Spawned Child Processes Can Stall When Output Is Not Drained During Wait
-
-✅ Closed the native process backpressure stall by teaching `proc.wait(...)` to poll and drain child stdout/stderr while waiting, adding a large-output regression plus a host-backed Fozzy scenario, and fixing return/defer lowering so deferred `proc.close(...)` no longer clobbers returned exit codes. Re-ran the real `/Users/deepsaint/Desktop/fzaudio/fixtures/cmake-plugin` production path through `inspect`, `build`, `validate`, `package`, and `release`, then completed deterministic doctor, strict test, recorded trace, trace verify, replay, CI, and native execution validation for the active runtime fix.
-Compressed completion: runtime shim now drains child pipes during wait, native backends preserve explicit return values across `defer`, and the shipped gate includes targeted Rust regressions plus deterministic/host-backed Fozzy scenario coverage.
+`proc.wait(...)` now drains child pipes while waiting, preserves explicit return values across `defer`, and is backed by targeted regressions plus deterministic and host-backed Fozzy coverage.
 
 ## ✅ Production Blocker: `fz run` Native Execution Diverges From The Built Binary For Child-Process Orchestration
-
-✅ Re-ran the live `fzaudio` reproduction from a clean fixture state and verified parity again: the direct binary and `fz run` both complete the same child-process-heavy CMake build successfully. Added a dedicated driver regression that compiles a tiny Fozzy program which shells out, writes a configure-style report, and asserts identical success when invoked directly and through `Command::Run`, so wrapper/native parity for this orchestration path now has coverage instead of relying on ad hoc manual repros.
-- add a dedicated regression that launches a process-spawning fixture both ways and asserts identical success / exit code / stdout behavior
-- gate it with deterministic Fozzy execution plus at least one real host-backed run
+Direct binary execution and `fz run` now agree on child-process-heavy orchestration paths, with dedicated driver regression coverage and deterministic plus host-backed validation.
 
 ## ✅ Production Blocker: No Cryptographic Or Secure-Random Runtime Surface
-
-✅ Closed the missing crypto/runtime surface by adding native `core.crypto` intrinsics for secure random hex/base64 output, SHA-256, HMAC-SHA256, constant-time equality, and base64 encode/decode, then layering production `core.security` helpers for signed values and URL-safe token transport. Added HIR/driver/native-runtime regression coverage plus a dedicated deterministic Fozzy scenario and trace lifecycle for the shipped crypto/corelib surface. Documented the production-safe contract honestly: this checkout exposes textual encodings rather than raw binary-string APIs because native Fzy strings are NUL-terminated.
+Native `core.crypto` and `core.security` runtime surface is shipped with secure random, hashing, HMAC, constant-time equality, base64 helpers, and regression-backed deterministic trace coverage.
 
 ## ✅ Production DX Blocker: Safe FFI Wrapper Layers Did Not Count As Documented ABI Facades
-
-✅ Closed the narrow strict-verification wrapper gap by distinguishing call-edge coverage from independently proven unsafe evidence: documented `ext unsafe c fn` imports and their immediate safe Fzy facades now satisfy caller-edge ownership verification without pretending compiler-generated unsafe metadata is a full proof artifact. Added HIR and `fz verify` regressions plus a Fozzy scenario for the exact two-layer host-ABI wrapper pattern.
+Documented `ext unsafe c fn` imports and their immediate safe facades now satisfy caller-edge ownership verification, with HIR, `fz verify`, and Fozzy coverage for the shipped wrapper pattern.
 
 ## ✅ Production Blocker: `unsafe { ext_call(...) }` Expression Wrappers Collapsed To `void` On Strict Verify
-
-✅ Closed the remaining FFI wrapper verifier gap by treating `unsafe { ... }` as a real expression block in type inference and by honoring the shipped borrowed pointer-length FFI contract during signature resolution and post-check validation. This fixes production-safe wrappers of the form `let code = unsafe { host_touch(s, str.len(s)) }` and moved the Megaserver control-plane path from a grouped type-check failure to an ordinary host-link stage. Added HIR and driver regressions for both the direct-return and let-bound wrapper forms.
+`unsafe { ... }` expression wrappers now type-check and lower correctly under strict verify, including borrowed pointer-length wrapper forms, with HIR and driver regressions for direct-return and let-bound cases.
 
 ## ✅ Production Blocker: Borrowed `str -> ptr_borrowed + len` Host Callback Payloads Crashed At Runtime
-
-✅ Closed the native FFI payload bug by adding an internal string-byte pointer helper at the runtime boundary and teaching both LLVM and Cranelift extern-C import lowering to materialize real borrowed byte views for `_borrowed` pointer parameters instead of passing internal string-handle IDs. Also fixed native import/data-op collection through `unsafe { ... }` bodies so wrapper-local `str.len(...)` calls are declared during library builds. Added a driver regression that builds a real shared library and proves a host callback can read exact borrowed payload bytes on both backends, then revalidated Megaserver end to end by restoring the direct `megaserver_host_dispatch(ptr_borrowed, len)` path and probing the emitted library from C without the old file-read workaround in the host callback.
+Borrowed `str -> ptr_borrowed + len` host callback payloads now lower to real borrowed byte views on both backends, with shared-library regression coverage and end-to-end host validation.
 
 ## Open Hardening Program: From Serious Prototype To Trusted v1 Systems Language
 
@@ -296,15 +191,9 @@ Audit baseline on this checkout:
 
 Completed slices already landed from this queue:
 
-- 🟢 strict production profile is now first-class across manifest, driver, runtime routing, and CLI entrypoints
-- 🟢 native runtime imports now emit contract artifacts with ownership/capability/linearity/error/trace/blocking metadata
-- 🟢 `fz audit ffi` and `fz audit memory` are first-class commands with shipped JSON/markdown outputs
-- 🟢 RPC safety artifacts now report enforced per-call deadline evidence instead of placeholder `unspecified` policy
-- 🟢 strict builds reject RPC call paths that are not explicitly bounded by `timeout(...)` or `deadline(...)`
-- 🟢 task-handle runtime contracts now distinguish consuming operations (`join` / `detach` / `cancel_task`) from observational ones (`task_result`)
-- 🟢 async-safety artifacts now report task-handle lifecycle policy, task-handle misuse findings, task-group misuse findings, and strict async requirements
-- 🟢 strict builds now surface dedicated async/task diagnostics for handle misuse and missing/repeated task-group terminal policy
-- 🟢 backend parity coverage now includes observable behavior checks for exit code, stdout, stderr, and emitted file artifacts across LLVM and Cranelift for real runtime shapes
+- 🟢 strict production profile, native runtime contract artifacts, and first-class `fz audit ffi` / `fz audit memory` commands are already shipped
+- 🟢 RPC deadline enforcement, async/task lifecycle reporting, and dedicated strict diagnostics are already live on the current surface
+- 🟢 backend parity coverage already includes observable exit code, stdout, stderr, and emitted artifact checks for representative runtime flows
 
 ## Priority 6: Lock Compiler And Runtime Behavior Behind Brutal Regression Coverage
 
@@ -340,18 +229,7 @@ Required tests:
 ### 15. Expand memory-safety adversarial coverage from “sound core” to “v1 trustable”
 
 🟢 Completed slice:
-- ownership/provenance regressions already cover core use-after-move, double-free, branch-divergent ownership, grouped/projection provenance transfer, owned-parameter consumption, owned return transfer, loop merge cleanup, and runtime-handle cleanup parity
-- ownership-transfer regressions now lock both grouped and plain owned returns as real transfer sites, so returning an owned local no longer requires a grouped workaround to avoid leak/resource-escape fallout
-- local borrow-region enforcement is live for the currently supported static model: mutable/shared alias conflicts are rejected, mismatched reference returns are diagnosed, borrowed references are rejected across `await`, and thread-capable borrowed-return / mutable-reference boundary violations are surfaced separately from capability failures
-- local borrow-region enforcement now also rejects shared borrowed parameters across thread-capable boundaries, not just mutable ones, so borrowed params/returns are consistently forced through owned or Send-safe handoff shapes
-- partial-move regressions are now locked for tuple, struct-field, and struct-pattern aggregate shapes
-- match-pattern ownership now applies the same partial-move law to enum destructuring too, and HIR regressions plus `fz verify` snapshots lock both struct and enum aggregate failures to the same stable diagnostic surface
-- defer/cleanup ordering regressions now explicitly cover `free`-after-`defer`, `defer`-after-`free`, early-return leaks, branch leaks, and loop-scoped cleanup gaps
-- driver diagnostics now snapshot-lock representative memory failures for conditional consumption and partial-move wording/help/code stability
-- driver diagnostics now also snapshot-lock representative double-free wording/help/code stability, while deterministic transfer scenarios cover plain owned returns and owned-parameter handoff through real `fz verify` runs
-- driver diagnostics now snapshot-lock the remaining high-value ownership/lifetime failures too: `free`-after-`defer`, `defer`-after-`free`, branch-leak ownership loss, and shared borrowed thread-boundary rejection
-- local borrow-live enforcement now rejects consuming an owned source while a derived borrowed alias is still live, so borrow-then-free and borrow-then-move are covered by direct HIR regressions instead of relying only on downstream alias fallout
-- deterministic Fozzy adversarial coverage now exercises defer-ordering faults, early-return/branch/loop leak paths, conditional moves, partial moves, borrow-across-`await`, and reference-return mismatch through real `fz verify` CLI runs, with recorded trace verify/replay/CI coverage for the active suite
+Core ownership/provenance regressions, borrow-region enforcement, partial-move coverage, diagnostic snapshots, process-builder handle tracking, and deterministic Fozzy memory scenarios are already in place; the remaining work is extending that closed core to the remaining adversarial shapes and handle classes.
 
 Problem:
 
@@ -400,9 +278,7 @@ Required tests:
 ### 16. Promote native runtime imports from name tables to contract tables
 
 🟢 Completed slice:
-- native runtime contracts are now emitted from one structured table with ownership/capability/linearity/error/trace/blocking metadata
-- consuming task/runtime edges are now encoded explicitly instead of inferred from callee names alone
-- `fz audit ffi` / `fz audit memory` ship on top of these artifacts
+Native runtime contracts already come from one structured table with ownership/capability/linearity/error/trace/blocking metadata, and consuming task/runtime edges plus `fz audit ffi` / `fz audit memory` already ride on that surface.
 
 Problem:
 
@@ -444,8 +320,7 @@ Required tests:
 ### 17. Lock in typed-handle and linear-resource law
 
 🟢 Completed slice:
-- task handles and task groups now have explicit runtime contract metadata that distinguishes consuming and observational operations
-- async-safety artifacts now expose handle/group lifecycle policy instead of leaving those edges implicit
+Task handles and task groups already have explicit consuming-vs-observational contract metadata, and async-safety artifacts already expose handle/group lifecycle policy on the current surface.
 
 Problem:
 
@@ -486,8 +361,7 @@ Required tests:
 ### 18. Make async/task safety as strict as ownership safety
 
 🟢 Completed slice:
-- async-safety artifacts now publish strict requirements, task-handle lifecycle policy, task-handle misuse findings, and task-group misuse findings
-- strict builds now reject `task_result(...)` after terminal consumption, repeated handle terminal operations, and missing/repeated task-group terminal policy with dedicated diagnostics
+Async-safety artifacts already publish strict requirements and lifecycle findings, and strict builds already reject post-terminal `task_result(...)`, repeated handle terminal operations, and missing/repeated task-group terminal policy.
 
 Problem:
 
@@ -524,8 +398,7 @@ Required tests:
 ### 19. Turn RPC from “present” into one of the strongest shipped surfaces
 
 🟢 Completed slice:
-- RPC safety artifacts now derive per-method deadline/cancel evidence from compiler-visible call behavior
-- strict builds now reject RPC call paths that are not explicitly bounded by `timeout(...)` or `deadline(...)`
+RPC safety artifacts already derive per-method deadline/cancel evidence from compiler-visible behavior, and strict builds already reject call paths that are not explicitly bounded by `timeout(...)` or `deadline(...)`.
 
 Problem:
 
@@ -564,8 +437,7 @@ Required tests:
 ### 20. Expand backend parity from “important discipline” to “documented law”
 
 🟢 Completed slice:
-- parity coverage already spans many exit-code/runtime categories and now also asserts observable parity for stdout, stderr, and emitted JSON/file artifacts on representative async/task/process flows
-- `fz parity` and `fz equivalence` are part of the active validation loop for this hardening work
+Parity coverage already spans key exit-code/runtime categories, including observable stdout/stderr/emitted-artifact checks on representative async/task/process flows, and `fz parity` / `fz equivalence` are already part of the active validation loop.
 
 Problem:
 
