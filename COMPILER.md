@@ -5,19 +5,33 @@ Production status board. Detailed issue sections below remain the source of trut
 ## Unfinished Work
 
 - `14. Compiler-phase lock-in suite`: add a golden corpus and lock every compiler phase behind direct tests, `fz` surface coverage, deterministic Fozzy runs, trace lifecycle, and host-backed validation.
+  Start in `Priority 6 / 14` and wire this through the parser/AST/HIR/FIR/verifier crates plus the driver/native-lowerability fixtures, because the gap here is whole-pipeline lock-in rather than one isolated bug.
 - `15. Memory-safety adversarial coverage`: formalize the borrow-region law and expand hostile ownership/lifetime coverage across moves, frees, branches, loops, `defer`, `await`, `spawn`, partial moves, and all linear handles.
+  Start in `Priority 6 / 15` and extend the existing `crates/hir` regressions, `fz verify` fixtures, and Fozzy memory scenarios, because the missing work is coverage depth around the already-shipped ownership model.
 - `16. Native import contract tables`: replace name/arity-only metadata with full ownership/capability/cleanup/trace/blocking/error contracts and prove contract-table/runtime-shim agreement.
+  Start in `Priority 7 / 16` at the centralized native import table and its lowering/runtime-shim consumers, because the risk is contract drift between compiler metadata and the actual host/runtime behavior.
 - `17. Typed-handle and linear-resource law`: freeze one compiler-known handle matrix for `Http*`, `Proc*`, `Task*`, `File*`, `Json*`, `List*`, and `Map*` semantics across HIR, verifier, runtime, docs, and diagnostics.
+  Start in `Priority 7 / 17` and follow every shipped handle type through HIR classification, verifier enforcement, stdlib docs, and runtime contracts, because this is about closing the remaining semantic matrix, not inventing new handles.
 - `18. Async/task safety`: make async/task behavior compiler law with owned/send-safe `spawn`, linear task handles, explicit lifecycle state machines, deterministic timeout/deadline semantics, cancel cleanup, and replayable scheduling.
+  Start in `Priority 8 / 18` across the async/task verifier paths, runtime task lifecycle, and scheduler-backed Fozzy coverage, because the remaining holes are terminal-state and cross-boundary enforcement rather than surface syntax.
 - `19. RPC hardening`: enforce explicit deadline, cancel, ownership, ABI, payload, trace, and error contracts so RPC is a production-grade verified surface.
+  Start in `Priority 8 / 19` at RPC declaration parsing, verifier policy, ABI lowering, and trace emission, because the unfinished work is making the existing RPC surface fully enforced instead of partly reported.
 - `20. Backend parity law`: turn LLVM/Cranelift parity into a documented contract for semantics, output, verifier results, runtime behavior, and native-library builds, with explicit non-parity carveouts where needed.
+  Start in `Priority 9 / 20` with `fz parity` fixtures, backend capability reporting, and native-library build coverage, because the main job is to convert observed parity into an explicit shipped boundary.
 - `21. Diagnostic stability`: snapshot-lock important compiler, verifier, native-lowerability, and LSP diagnostics so wording, help text, JSON, and catalog keys stay stable and actionable.
+  Start in `Priority 9 / 21` by enumerating the high-value diagnostic classes in compiler/verifier/native-lowerability/LSP tests, because this is a snapshot and catalog discipline problem more than a semantic one.
 - `22. Canary-app gates`: require real applications to stay green through deterministic and host-backed build/run coverage across the main compiler/runtime product shapes.
+  Start in `Priority 10 / 22` with the named canary apps and their build/run matrices, because the missing proof is application-level survival across real compiler/runtime flows rather than fixture-level correctness.
 - `23. Unsafe/FFI audit hardening`: require complete unsafe metadata, tighten FFI contracts, and ship `fz audit unsafe`, `fz audit ffi`, and `fz audit memory` on one validated contract model.
+  Start in `Priority 10 / 23` in the unsafe metadata, verifier contract checks, and audit command outputs, because the remaining gap is operator-grade audit completeness and consistency across JSON/markdown/reporting paths.
 - `24. Trace/replay compatibility system`: formalize trace/replay as compatibility-checked artifacts with explicit versioning and deterministic replay guarantees.
+  Start in `Priority 10 / 24` where trace schema fields, replay validators, and artifact version metadata are defined, because the work is to turn strong tooling into a published compatibility contract.
 - `25. v1 syntax and profile freeze`: freeze the syntax set and make `dev`, `verify`, `release`, and `strict` profiles explicit about checks, unsafe policy, backend, capabilities, imports, artifacts, optimization, and diagnostics.
+  Start in `Second-Wave / 25` across parser grammar, manifest/profile handling, driver profile routing, and docs, because this is a freeze-and-policy exercise across already-existing surfaces.
 - `26. Stdlib and capability policy`: promote per-module contracts, capability propagation, JSON boundary rules, and security misuse checks into one compiler-visible policy.
+  Start in `Second-Wave / 26` with the `core.*` module contracts, verifier capability propagation, and boundary/security checks, because the missing work is policy unification across the shipped stdlib surface.
 - `27. Error/perf/docs/compat policy`: standardize the v1 error model, benchmark real workloads, generate docs from implementation-backed metadata, and gate releases on the full compatibility set.
+  Start in `Second-Wave / 27` at the error/reporting types, benchmark harnesses, metadata-driven docs sources, and release-gate version matrix, because this is the final contract-polish layer tying the whole product together.
 
 ## Completed Work
 
