@@ -551,6 +551,72 @@ fn verify_partial_move_memory_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_double_free_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-double-free-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    free(p)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` double-frees provenance root 1 via `p`"
+        })
+        .expect("double-free memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-6C81B006"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_plain_owned_return_does_not_report_resource_escape() {
+    let file_name = format!(
+        "fozzylang-memory-owned-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn produce() -> *mut u8 {\n    let p = alloc(32)\n    return p\n}\nfn main() -> i32 {\n    let p = produce()\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("crosses function with potential resource escape")
+            || diagnostic
+                .message
+                .contains("linear value `p` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn derive_anchors_from_message_extracts_primary_and_related_tokens() {
     let lines = vec![
         "fn main() -> i32 {".to_string(),

@@ -2824,6 +2824,13 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
                         }
                     }
                 }
+                if let Stmt::Return(Some(expr)) = stmt {
+                    if let Some(name) = expr_identity_name(expr) {
+                        if self.linear_owned.contains(name) {
+                            self.linear_freed.insert(name.to_string());
+                        }
+                    }
+                }
                 ast::walk_stmt(self, stmt);
             }
 
@@ -3107,7 +3114,11 @@ fn analyze_ownership(
                 "call edge `{caller} -> {callee}` reaches unsafe code without invariant proof/reasoned contract",
             ));
         }
-        if callee_summary.alloc_sites > callee_summary.free_sites + callee_summary.close_sites {
+        if callee_summary.alloc_sites
+            > callee_summary.free_sites
+                + callee_summary.close_sites
+                + callee_summary.returned_owned_sites
+        {
             violations.push(format!(
                 "call edge `{caller} -> {callee}` crosses function with potential resource escape (alloc/free+close imbalance)",
             ));
@@ -5037,6 +5048,7 @@ struct FunctionMemorySummary {
     alloc_sites: usize,
     free_sites: usize,
     close_sites: usize,
+    returned_owned_sites: usize,
     unsafe_sites: usize,
     unsafe_reasoned_sites: usize,
     unsafe_call_edge_covered: bool,
@@ -5083,6 +5095,7 @@ fn build_function_memory_summaries(
         let mut alloc_sites = 0usize;
         let mut free_sites = 0usize;
         let mut close_sites = 0usize;
+        let returned_owned_sites = count_owned_return_transfers(function);
         let mut unsafe_sites = 0usize;
         let mut has_await = false;
         if function.is_unsafe {
@@ -5156,6 +5169,7 @@ fn build_function_memory_summaries(
                 alloc_sites,
                 free_sites,
                 close_sites,
+                returned_owned_sites,
                 unsafe_sites,
                 unsafe_reasoned_sites,
                 unsafe_call_edge_covered: is_zero_arg_extern_unsafe_c_import(function)
@@ -5171,6 +5185,43 @@ fn build_function_memory_summaries(
         );
     }
     out
+}
+
+fn count_owned_return_transfers(function: &TypedFunction) -> usize {
+    fn count_stmt(stmt: &Stmt) -> usize {
+        match stmt {
+            Stmt::Return(Some(expr)) => usize::from(is_owned_return_transfer_expr(expr)),
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                then_body.iter().map(count_stmt).sum::<usize>()
+                    + else_body.iter().map(count_stmt).sum::<usize>()
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::ForIn { body, .. } => {
+                body.iter().map(count_stmt).sum()
+            }
+            Stmt::For {
+                init, step, body, ..
+            } => {
+                init.as_deref().map(count_stmt).unwrap_or(0)
+                    + step.as_deref().map(count_stmt).unwrap_or(0)
+                    + body.iter().map(count_stmt).sum::<usize>()
+            }
+            Stmt::Match { arms, .. } => arms
+                .iter()
+                .map(|arm| usize::from(is_owned_return_transfer_expr(&arm.value)))
+                .sum(),
+            _ => 0,
+        }
+    }
+
+    function.body.iter().map(count_stmt).sum()
+}
+
+fn is_owned_return_transfer_expr(expr: &Expr) -> bool {
+    expr_identity_name(expr).is_some() || is_alloc_expr(expr)
 }
 
 fn unsafe_contract_counts_as_reasoned(site: &UnsafeContractSite) -> bool {
@@ -16103,6 +16154,32 @@ mod tests {
             .ownership_violations
             .iter()
             .any(|detail| detail.contains("function `produce` leaks allocation")));
+    }
+
+    #[test]
+    fn plain_return_transfers_ownership_without_local_defer() {
+        let source = r#"
+            fn produce() -> *mut u8 {
+                let p = alloc(32);
+                return p;
+            }
+            fn main() -> i32 {
+                let p = produce();
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("function `produce` leaks allocation")
+                || detail.contains(
+                    "call edge `main -> produce` crosses function with potential resource escape",
+                )
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `produce` linear value `p` was not consumed/freed")
+        }));
     }
 
     #[test]
