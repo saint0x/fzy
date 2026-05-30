@@ -400,6 +400,82 @@ fn compile_file_memory_report_tracks_stream_and_task_group_handles() {
 }
 
 #[test]
+fn compile_file_memory_report_tracks_collection_handles() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-memory-report-collection-handles-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"memory_report_collection_handles\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"memory_report_collection_handles\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn main() -> i32 {\n    let payload = json.parse(\"{\\\"items\\\":{\\\"a\\\":\\\"1\\\",\\\"b\\\":\\\"2\\\"}}\")\n    let items = json.keys(payload)\n    let table = json.to_map(json.path(payload, \"items\"))\n    discard list.len(items)\n    discard map.len(table)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let memory_report = std::fs::read_to_string(root.join(".fz/memory-report.json"))
+        .expect("memory report should exist");
+    assert!(
+        memory_report.contains("\"type\":\"JsonHandle\"")
+            || memory_report.contains("\"type\": \"JsonHandle\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"ListHandle\"")
+            || memory_report.contains("\"type\": \"ListHandle\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"MapHandle\"")
+            || memory_report.contains("\"type\": \"MapHandle\"")
+    );
+}
+
+#[test]
+fn compile_file_runtime_contracts_cover_collection_handle_observers() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-runtime-contracts-collection-handles-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"runtime_contracts_collection_handles\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"runtime_contracts_collection_handles\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn main() -> i32 {\n    let payload = json.parse(\"{\\\"items\\\":{\\\"a\\\":\\\"1\\\",\\\"b\\\":\\\"2\\\"}}\")\n    let items = json.keys(payload)\n    let table = json.to_map(json.path(payload, \"items\"))\n    discard list.len(items)\n    discard map.len(table)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let runtime_contracts = std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
+        .expect("native runtime contracts should exist");
+    assert!(runtime_contracts.contains("\"callee\": \"json.parse\""));
+    assert!(runtime_contracts.contains("\"callee\": \"json.path\""));
+    assert!(runtime_contracts.contains("\"callee\": \"json.to_map\""));
+    assert!(runtime_contracts.contains("\"callee\": \"json.keys\""));
+    assert!(runtime_contracts.contains("\"callee\": \"list.len\""));
+    assert!(runtime_contracts.contains("\"callee\": \"map.len\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"produces_handle\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"observes_handle\""));
+}
+
+#[test]
 fn compile_file_runtime_contracts_cover_stream_and_task_group_consumers() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-runtime-contracts-stream-task-group-{}",
@@ -2454,6 +2530,96 @@ fn verify_non_consuming_stream_param_stays_clean() {
         diagnostic
             .message
             .contains("function `inspect` linear value `stream` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_json_handle_helper_return_and_observer_chain_stays_clean() {
+    let file_name = format!(
+        "fozzylang-memory-json-helper-return-observer-clean-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn load() -> JsonHandle {\n    return json.parse(\"{\\\"items\\\":{\\\"a\\\":\\\"1\\\",\\\"b\\\":\\\"2\\\"}}\")\n}\nfn item_keys(payload: JsonHandle) -> ListHandle {\n    return json.keys(payload)\n}\nfn main() -> i32 {\n    let payload = load()\n    let keys = item_keys(payload)\n    return list.len(keys)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("resource escape")
+            || diagnostic.message.contains("was not consumed/freed")
+            || diagnostic.message.contains("uses moved value")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_list_handle_helper_observers_preserve_ownership() {
+    let file_name = format!(
+        "fozzylang-memory-list-helper-observers-clean-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn size(items: ListHandle) -> i32 {\n    return list.len(items)\n}\nfn main() -> i32 {\n    let items = list.new()\n    discard list.push(items, \"alpha\")\n    discard list.push(items, \"beta\")\n    return size(items) + list.len(items)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("resource escape")
+            || diagnostic.message.contains("was not consumed/freed")
+            || diagnostic.message.contains("uses moved value")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_map_handle_helper_return_and_observers_stay_clean() {
+    let file_name = format!(
+        "fozzylang-memory-map-helper-return-observers-clean-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn build_map() -> MapHandle {\n    let payload = map.new()\n    discard map.set(payload, \"a\", \"1\")\n    discard map.set(payload, \"b\", \"2\")\n    return payload\n}\nfn count(payload: MapHandle) -> i32 {\n    return map.len(payload)\n}\nfn main() -> i32 {\n    let payload = build_map()\n    discard map.set(payload, \"c\", \"3\")\n    return count(payload) + map.len(payload)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("resource escape")
+            || diagnostic.message.contains("was not consumed/freed")
+            || diagnostic.message.contains("uses moved value")
     }));
 
     let _ = std::fs::remove_file(path);

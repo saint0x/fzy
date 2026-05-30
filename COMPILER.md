@@ -44,7 +44,7 @@ Required tests:
 Checklist:
 
 - Finish promoting any remaining aggregate, provenance, and control-flow ownership shapes that are still only HIR-covered or partially regression-covered at the shipped `fz verify` surface.
-- Finish bringing every remaining shipped linear or owned runtime handle family under the same ownership-state, cleanup, and post-consume law as `alloc(...)` and `free(...)`.
+- Finish bringing any still-unlocked shipped runtime handle families under the same ownership-state, cleanup, and post-consume law as `alloc(...)` and `free(...)`.
 
 Required tests:
 
@@ -75,7 +75,7 @@ Required tests:
 
 Checklist:
 
-- Define the shipped handle set and contract for at least `HttpHandle`, `HttpStreamHandle`, `WebSocketHandle`, `ProcHandle`, `TaskHandle`, `TaskGroup`, `FileHandle`, `JsonHandle`, `ListHandle`, and `MapHandle`.
+- Finish defining the shipped handle set and contract for any still-unlocked handle families such as `FileHandle`.
 - For each handle, declare whether it is copy, owned, linear, closable, send-safe, and async-stable.
 - Make those handle rules visible to HIR, verifier, stdlib docs, runtime shim contracts, and diagnostics.
 - Reject any runtime or helper path that consumes or aliases a handle in a way the handle matrix does not permit.

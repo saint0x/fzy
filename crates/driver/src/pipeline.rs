@@ -782,6 +782,7 @@ fn build_memory_report_json(fir: &fir::FirModule) -> serde_json::Value {
     let mut owner_rows = Vec::<MemoryOwnerArtifact>::new();
     let mut functions = Vec::<serde_json::Value>::new();
     let mut borrows = Vec::<serde_json::Value>::new();
+    let mut owned_handles = Vec::<serde_json::Value>::new();
     let mut linear_resources = Vec::<serde_json::Value>::new();
 
     for function in &fir.typed_functions {
@@ -821,6 +822,13 @@ fn build_memory_report_json(fir: &fir::FirModule) -> serde_json::Value {
                     "type": param.ty.to_string(),
                     "origin": "param",
                 }));
+            } else if memory_report_is_owned_handle_type(&param.ty) {
+                owned_handles.push(serde_json::json!({
+                    "function": function.name,
+                    "name": param.name,
+                    "type": param.ty.to_string(),
+                    "origin": "param",
+                }));
             }
         }
         for (name, ty) in &function.local_types {
@@ -841,6 +849,13 @@ fn build_memory_report_json(fir: &fir::FirModule) -> serde_json::Value {
             }
             if memory_report_is_linear_type(ty) {
                 linear_resources.push(serde_json::json!({
+                    "function": function.name,
+                    "name": name,
+                    "type": ty.to_string(),
+                    "origin": "local",
+                }));
+            } else if memory_report_is_owned_handle_type(ty) {
+                owned_handles.push(serde_json::json!({
                     "function": function.name,
                     "name": name,
                     "type": ty.to_string(),
@@ -899,6 +914,7 @@ fn build_memory_report_json(fir: &fir::FirModule) -> serde_json::Value {
         "owners": owners,
         "moves": moves,
         "borrows": borrows,
+        "owned_handles": owned_handles,
         "linear_resources": linear_resources,
         "violations": violations,
     })
@@ -1902,6 +1918,14 @@ fn memory_report_is_linear_type(ty: &ast::Type) -> bool {
             hir::runtime_handle_contract(name).is_some_and(|contract| contract.linear)
                 || matches!(name.as_str(), "Linear" | "Resource" | "Ptr")
         }
+        _ => false,
+    }
+}
+
+fn memory_report_is_owned_handle_type(ty: &ast::Type) -> bool {
+    match ty {
+        ast::Type::Named { name, .. } => hir::runtime_handle_contract(name)
+            .is_some_and(|contract| contract.owned && !contract.linear),
         _ => false,
     }
 }
