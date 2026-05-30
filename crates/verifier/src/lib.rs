@@ -525,6 +525,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             "stop using aliases after freeing the owning value; move the free later, or return/assign a fresh owned value before reuse".to_string()
         } else if violation.contains("performs partial move") {
             "move or destructure the full owned aggregate, or borrow fields instead of extracting only one owned subvalue".to_string()
+        } else if violation.contains("conditionally consumed value `")
+            || violation.contains("divergent ownership state for `")
+        {
+            "make ownership outcomes consistent on every branch and loop path before reusing or freeing the value".to_string()
         } else {
             "enforce ownership transfer semantics and ensure every allocation is released"
                 .to_string()

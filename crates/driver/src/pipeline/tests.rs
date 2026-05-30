@@ -1824,6 +1824,117 @@ fn verify_enum_partial_move_memory_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_continue_after_free_loop_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-continue-after-free-loop-reuse-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let i: i32 = 0\n    let p = alloc(32)\n    while i < 2 {\n        if i == 0 {\n            free(p)\n            i = i + 1\n            continue\n        }\n        close(p)\n        i = i + 1\n    }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message.contains(
+                "uses conditionally consumed value `p` after path-sensitive ownership merge",
+            ) || diagnostic
+                .message
+                .contains("divergent ownership state for `p` across loop iterations")
+        })
+        .expect("continue-after-free loop reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("make ownership outcomes consistent on every branch and loop path before reusing or freeing the value")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("continue-after-free loop reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_break_after_free_loop_exit_stays_clean() {
+    let file_name = format!(
+        "fozzylang-memory-break-after-free-loop-exit-clean-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    while true {\n        free(p)\n        break\n    }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("leaks allocation")
+            || diagnostic
+                .message
+                .contains("divergent ownership state for `p`")
+            || diagnostic
+                .message
+                .contains("uses conditionally consumed value `p`")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_branch_divergent_ownership_diagnostic_prefers_control_flow_guidance() {
+    let file_name = format!(
+        "fozzylang-memory-branch-divergent-ownership-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    if true {\n        free(p)\n    } else {\n    }\n    close(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("divergent ownership state for `p`")
+                || diagnostic.message.contains(
+                    "uses conditionally consumed value `p` after path-sensitive ownership merge",
+                )
+        })
+        .expect("branch divergent ownership diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("make ownership outcomes consistent on every branch and loop path before reusing or freeing the value")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("branch divergent ownership diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_double_free_memory_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-memory-double-free-{}.fzy",
