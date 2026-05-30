@@ -6469,6 +6469,7 @@ fn build_function_memory_summaries(
     functions: &[TypedFunction],
 ) -> BTreeMap<String, FunctionMemorySummary> {
     let mut out = BTreeMap::new();
+    let signatures = build_call_shapes(functions);
     let extern_unsafe_c_imports = functions
         .iter()
         .filter(|function| {
@@ -6495,7 +6496,7 @@ fn build_function_memory_summaries(
         let mut alloc_sites = 0usize;
         let mut free_sites = 0usize;
         let mut close_sites = 0usize;
-        let returned_owned_sites = count_owned_return_transfers(function);
+        let returned_owned_sites = count_owned_return_transfers(function, &signatures);
         let mut unsafe_sites = 0usize;
         let mut has_await = false;
         if function.is_unsafe {
@@ -6587,41 +6588,99 @@ fn build_function_memory_summaries(
     out
 }
 
-fn count_owned_return_transfers(function: &TypedFunction) -> usize {
-    fn count_stmt(stmt: &Stmt) -> usize {
+pub fn count_module_owned_return_transfers(functions: &[TypedFunction]) -> usize {
+    let signatures = build_call_shapes(functions);
+    functions
+        .iter()
+        .map(|function| count_owned_return_transfers(function, &signatures))
+        .sum()
+}
+
+fn count_owned_return_transfers(
+    function: &TypedFunction,
+    signatures: &BTreeMap<String, CallShape>,
+) -> usize {
+    fn count_expr(expr: &Expr, signatures: &BTreeMap<String, CallShape>) -> usize {
+        match expr {
+            Expr::Group(inner) => count_expr(inner, signatures),
+            Expr::UnsafeBlock { body, .. } => body
+                .iter()
+                .map(|stmt| count_stmt(stmt, signatures))
+                .sum::<usize>(),
+            Expr::If {
+                then_expr,
+                else_expr,
+                ..
+            } => count_expr(then_expr, signatures) + count_expr(else_expr, signatures),
+            Expr::Match { arms, .. } => arms
+                .iter()
+                .map(|arm| count_expr(&arm.value, signatures))
+                .sum(),
+            Expr::Call { callee, .. } => usize::from(
+                signatures
+                    .get(callee)
+                    .is_some_and(|shape| is_owned_transfer_return_type(&shape.return_type)),
+            ),
+            _ => usize::from(is_owned_return_transfer_expr(expr)),
+        }
+    }
+
+    fn count_stmt(stmt: &Stmt, signatures: &BTreeMap<String, CallShape>) -> usize {
         match stmt {
-            Stmt::Return(Some(expr)) => usize::from(is_owned_return_transfer_expr(expr)),
+            Stmt::Return(Some(expr)) => count_expr(expr, signatures),
             Stmt::If {
                 then_body,
                 else_body,
                 ..
             } => {
-                then_body.iter().map(count_stmt).sum::<usize>()
-                    + else_body.iter().map(count_stmt).sum::<usize>()
+                then_body
+                    .iter()
+                    .map(|stmt| count_stmt(stmt, signatures))
+                    .sum::<usize>()
+                    + else_body
+                        .iter()
+                        .map(|stmt| count_stmt(stmt, signatures))
+                        .sum::<usize>()
             }
             Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::ForIn { body, .. } => {
-                body.iter().map(count_stmt).sum()
+                body.iter().map(|stmt| count_stmt(stmt, signatures)).sum()
             }
             Stmt::For {
                 init, step, body, ..
             } => {
-                init.as_deref().map(count_stmt).unwrap_or(0)
-                    + step.as_deref().map(count_stmt).unwrap_or(0)
-                    + body.iter().map(count_stmt).sum::<usize>()
+                init.as_deref()
+                    .map(|stmt| count_stmt(stmt, signatures))
+                    .unwrap_or(0)
+                    + step
+                        .as_deref()
+                        .map(|stmt| count_stmt(stmt, signatures))
+                        .unwrap_or(0)
+                    + body
+                        .iter()
+                        .map(|stmt| count_stmt(stmt, signatures))
+                        .sum::<usize>()
             }
             Stmt::Match { arms, .. } => arms
                 .iter()
-                .map(|arm| usize::from(is_owned_return_transfer_expr(&arm.value)))
+                .map(|arm| count_expr(&arm.value, signatures))
                 .sum(),
             _ => 0,
         }
     }
 
-    function.body.iter().map(count_stmt).sum()
+    function
+        .body
+        .iter()
+        .map(|stmt| count_stmt(stmt, signatures))
+        .sum()
 }
 
 fn is_owned_return_transfer_expr(expr: &Expr) -> bool {
     expr_identity_name(expr).is_some() || is_alloc_expr(expr)
+}
+
+fn is_owned_transfer_return_type(ty: &Type) -> bool {
+    matches!(ty, Type::Ptr { .. }) || is_linear_type(ty)
 }
 
 fn unsafe_contract_counts_as_reasoned(site: &UnsafeContractSite) -> bool {
@@ -7091,22 +7150,7 @@ fn is_alloc_expr(expr: &Expr) -> bool {
 
 fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
-    let mut signatures = functions
-        .iter()
-        .map(|function| {
-            (
-                function.name.clone(),
-                CallShape {
-                    params: function.params.clone(),
-                    return_type: function.return_type.clone(),
-                    is_extern: function.is_extern,
-                    is_unsafe: function.is_unsafe,
-                    return_provenance: ReturnProvenanceSummary::Unknown,
-                },
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    populate_return_provenance_summaries(functions, &mut signatures);
+    let signatures = build_call_shapes(functions);
     for function in functions {
         let mut next_root = 1usize;
         let mut state = ProvenanceState::default();
@@ -7126,6 +7170,26 @@ fn analyze_alias_and_provenance(functions: &[TypedFunction]) -> Vec<String> {
         );
     }
     violations
+}
+
+fn build_call_shapes(functions: &[TypedFunction]) -> BTreeMap<String, CallShape> {
+    let mut signatures = functions
+        .iter()
+        .map(|function| {
+            (
+                function.name.clone(),
+                CallShape {
+                    params: function.params.clone(),
+                    return_type: function.return_type.clone(),
+                    is_extern: function.is_extern,
+                    is_unsafe: function.is_unsafe,
+                    return_provenance: ReturnProvenanceSummary::Unknown,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    populate_return_provenance_summaries(functions, &mut signatures);
+    signatures
 }
 
 #[derive(Debug, Clone, Default)]
@@ -17712,6 +17776,90 @@ mod tests {
         }));
         assert!(!typed.linear_type_violations.iter().any(|detail| {
             detail.contains("function `produce` linear value `p` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn branch_relayed_owned_return_transfers_without_lifecycle_fallout() {
+        let source = r#"
+            fn produce() -> *mut u8 {
+                let p = alloc(32);
+                return p;
+            }
+            fn relay(flag: i32) -> *mut u8 {
+                if flag == 0 {
+                    return produce();
+                }
+                return produce();
+            }
+            fn main() -> i32 {
+                let p = relay(0);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> relay` crosses function with potential resource escape",
+            ) || detail.contains(
+                "call edge `relay -> produce` crosses function with potential resource escape",
+            )
+        }));
+    }
+
+    #[test]
+    fn if_expression_relayed_owned_return_transfers_without_lifecycle_fallout() {
+        let source = r#"
+            fn produce() -> *mut u8 {
+                let p = alloc(32);
+                return p;
+            }
+            fn relay(flag: i32) -> *mut u8 {
+                return if flag == 0 { produce() } else { produce() };
+            }
+            fn main() -> i32 {
+                let p = relay(0);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> relay` crosses function with potential resource escape",
+            ) || detail.contains(
+                "call edge `relay -> produce` crosses function with potential resource escape",
+            )
+        }));
+    }
+
+    #[test]
+    fn task_handle_wrapper_return_counts_as_transfer() {
+        let source = r#"
+            use core.thread;
+            fn worker() -> i32 {
+                return 7;
+            }
+            fn start() -> TaskHandle {
+                return spawn(worker);
+            }
+            fn main() -> i32 {
+                let handle = start();
+                return join(handle);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> start` crosses function with potential resource escape",
+            )
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `start` linear value `handle` was not consumed/freed")
         }));
     }
 

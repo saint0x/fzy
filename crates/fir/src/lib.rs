@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use ast::Type;
 use core::CapabilitySet;
+pub use hir::count_module_owned_return_transfers;
 pub use hir::TypedFunction;
 pub use hir::UnsafeContractSite;
 use hir::{FunctionCapabilityRequirement, TypedModule};

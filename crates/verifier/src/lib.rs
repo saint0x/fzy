@@ -1,5 +1,5 @@
 use diagnostics::{assign_stable_codes, Diagnostic, DiagnosticDomain, Severity};
-use fir::{FirModule, TypedFunction};
+use fir::{count_module_owned_return_transfers, FirModule, TypedFunction};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Default)]
@@ -488,7 +488,8 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             Some("continue preferring owned values when possible and add regression coverage for borrowed control-flow paths".to_string()),
         ));
     }
-    if module.alloc_sites > module.free_sites {
+    let returned_owned_sites = count_module_owned_return_transfers(&module.typed_functions);
+    if module.alloc_sites > module.free_sites + returned_owned_sites {
         let severity = if memory_safety_enforced {
             Severity::Error
         } else {
@@ -497,10 +498,13 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         report.diagnostics.push(Diagnostic::new(
             severity,
             format!(
-                "memory lifecycle imbalance: alloc sites={} free sites={}",
-                module.alloc_sites, module.free_sites
+                "memory lifecycle imbalance: alloc sites={} free sites={} returned-owned sites={}",
+                module.alloc_sites, module.free_sites, returned_owned_sites
             ),
-            Some("pair allocations with explicit `free(...)` or defer-based cleanup".to_string()),
+            Some(
+                "pair allocations with explicit `free(...)` or defer-based cleanup, or return the owned value explicitly on every allocating path"
+                    .to_string(),
+            ),
         ));
     }
     for violation in &module.ownership_violations {

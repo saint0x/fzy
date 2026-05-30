@@ -695,6 +695,136 @@ fn verify_plain_owned_return_does_not_report_resource_escape() {
 }
 
 #[test]
+fn verify_branch_relayed_owned_return_does_not_report_memory_lifecycle_imbalance() {
+    let file_name = format!(
+        "fozzylang-memory-branch-relay-owned-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn produce() -> *mut u8 {\n    let p = alloc(32)\n    return p\n}\nfn relay(flag: i32) -> *mut u8 {\n    if flag == 0 {\n        return produce()\n    }\n    return produce()\n}\nfn main() -> i32 {\n    let p = relay(0)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("memory lifecycle imbalance")
+            || diagnostic
+                .message
+                .contains("crosses function with potential resource escape")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_if_expression_relayed_owned_return_does_not_report_memory_lifecycle_imbalance() {
+    let file_name = format!(
+        "fozzylang-memory-if-expr-owned-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn produce() -> *mut u8 {\n    let p = alloc(32)\n    return p\n}\nfn relay(flag: i32) -> *mut u8 {\n    return if flag == 0 { produce() } else { produce() }\n}\nfn main() -> i32 {\n    let p = relay(0)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("memory lifecycle imbalance")
+            || diagnostic
+                .message
+                .contains("crosses function with potential resource escape")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_task_handle_wrapper_return_does_not_report_memory_lifecycle_imbalance() {
+    let file_name = format!(
+        "fozzylang-memory-task-handle-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn start() -> TaskHandle {\n    return spawn(worker)\n}\nfn main() -> i32 {\n    let handle = start()\n    return join(handle)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("memory lifecycle imbalance")
+            || diagnostic
+                .message
+                .contains("crosses function with potential resource escape")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_memory_lifecycle_imbalance_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-lifecycle-imbalance-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let left = alloc(32)\n    let right = alloc(64)\n    free(left)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "memory lifecycle imbalance: alloc sites=2 free sites=1 returned-owned sites=0"
+        })
+        .expect("memory lifecycle imbalance diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("pair allocations with explicit `free(...)` or defer-based cleanup, or return the owned value explicitly on every allocating path")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("memory lifecycle imbalance diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_free_after_defer_memory_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-memory-free-after-defer-{}.fzy",
