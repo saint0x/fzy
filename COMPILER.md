@@ -237,6 +237,7 @@ Core ownership/provenance regressions, borrow-region enforcement, partial-move c
 - mutable-borrow exclusivity now rejects direct owner access during the live borrow too: reading the owner directly or passing it through plain owner-based calls while a mutable alias is still live now fails with dedicated guidance, while owner access after the borrow's last accepted use remains valid and regression-covered
 - `memory-report.json` is now aligned with compiler law for process builder handles too, so `ProcessArgv` / `ProcessEnv` appear in emitted linear-resource evidence instead of being enforced by HIR but omitted from the production safety artifact surface
 - async borrow-edge analysis is now verify-surface law too: mutable borrowed call edges across `await`, borrowed-return propagation across async suspension, and generic/trait-heavy borrowed async call edges now emit dedicated diagnostics with action-oriented fixes instead of collapsing into generic ownership noise
+- borrow-across-`spawn` is now compiler law for spawned closures too: `spawn`, `spawn_ctx`, `task.group_spawn`, and `task.parallel_map` reject closures that capture shared or mutable borrowed references across task boundaries, while owned captures remain legal and regression-covered; this also closed a real compiler gap where `task.*` calls were not consistently treated as `thread` capability use
 
 Problem:
 

@@ -553,6 +553,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             .contains("returns borrowed reference across thread-capable boundary")
         {
             "return owned values or a Send/Sync-safe handle across thread boundaries".to_string()
+        } else if violation.contains("captures shared borrowed reference `")
+            || violation.contains("captures mutable borrowed reference `")
+        {
+            "move owned data into the spawned task, or wrap borrowed references/pointers in a Send/Sync-safe owned boundary type".to_string()
         } else if violation.contains("requires Send/Sync-safe wrapper before thread crossing") {
             "wrap borrowed references/pointers in a Send/Sync-safe owned boundary type before crossing threads"
                 .to_string()
@@ -1290,6 +1294,29 @@ mod tests {
         let help = diagnostic.help.as_deref().unwrap_or_default();
         assert!(help.contains("wrap borrowed references/pointers"));
         assert!(!help.contains("capability token parameters"));
+    }
+
+    #[test]
+    fn spawned_closure_borrow_capture_uses_spawn_specific_guidance() {
+        let mut module = base_module();
+        module.thread_boundary_violations.push(
+            "function `main` spawn captures shared borrowed reference `shared` across thread boundary"
+                .to_string(),
+        );
+
+        let report = verify(&module);
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.message.contains(
+                    "spawn captures shared borrowed reference `shared` across thread boundary",
+                )
+            })
+            .expect("thread-boundary diagnostic");
+        let help = diagnostic.help.as_deref().unwrap_or_default();
+        assert!(help.contains("move owned data into the spawned task"));
+        assert!(help.contains("wrap borrowed references/pointers"));
     }
 
     #[test]

@@ -5904,6 +5904,146 @@ fn verify_thread_boundary_shared_param_reports_send_sync_wrapper_guidance() {
 }
 
 #[test]
+fn verify_spawn_closure_shared_borrow_reports_thread_boundary_help() {
+    let file_name = format!(
+        "fozzylang-spawn-closure-shared-borrow-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn observe(v: &'a i32) -> i32 {\n    return 0\n}\nfn main() -> i32 {\n    let x: i32 = 1\n    let shared: &'a i32 = x\n    let worker = | | observe(shared)\n    let handle = spawn(worker)\n    return join(handle)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                == "function `main` spawn captures shared borrowed reference `shared` across thread boundary"
+        })
+        .expect("spawn closure shared-borrow diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("move owned data into the spawned task, or wrap borrowed references/pointers in a Send/Sync-safe owned boundary type")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("spawn closure shared-borrow diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_spawn_closure_mutable_borrow_reports_thread_boundary_help() {
+    let file_name = format!(
+        "fozzylang-spawn-closure-mutable-borrow-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn touch(v: &'a mut i32) -> i32 {\n    return 0\n}\nfn main() -> i32 {\n    let x: i32 = 1\n    let unique: &'a mut i32 = x\n    let worker = | | touch(unique)\n    let handle = spawn(worker)\n    return join(handle)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                == "function `main` spawn captures mutable borrowed reference `unique` across thread boundary"
+        })
+        .expect("spawn closure mutable-borrow diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("move owned data into the spawned task, or wrap borrowed references/pointers in a Send/Sync-safe owned boundary type")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("spawn closure mutable-borrow diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_task_group_spawn_closure_shared_borrow_reports_thread_boundary_help() {
+    let file_name = format!(
+        "fozzylang-task-group-spawn-shared-borrow-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn observe(v: &'a i32) -> i32 {\n    return 0\n}\nfn main() -> i32 {\n    let group = task.group_begin()\n    let x: i32 = 1\n    let shared: &'a i32 = x\n    let worker = | | observe(shared)\n    discard task.group_spawn(group, worker)\n    discard task.group_join_all(group)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                == "function `main` task.group_spawn captures shared borrowed reference `shared` across thread boundary"
+        })
+        .expect("task.group_spawn closure shared-borrow diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("move owned data into the spawned task, or wrap borrowed references/pointers in a Send/Sync-safe owned boundary type")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("task.group_spawn closure shared-borrow diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_spawn_closure_owned_capture_stays_clean() {
+    let file_name = format!(
+        "fozzylang-spawn-closure-owned-capture-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn main() -> i32 {\n    let x: i32 = 1\n    let worker = | | x\n    let handle = spawn(worker)\n    return join(handle)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diag| matches!(diag.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diag| {
+        diag.message.contains("captures shared borrowed reference")
+            || diag.message.contains("captures mutable borrowed reference")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_non_thread_borrowed_reference_does_not_report_thread_boundary_diagnostic() {
     let file_name = format!(
         "fozzylang-borrowed-reference-pass-{}.fzy",

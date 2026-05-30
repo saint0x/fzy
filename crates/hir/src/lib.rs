@@ -3205,8 +3205,856 @@ fn analyze_send_sync_contracts(functions: &[TypedFunction]) -> Vec<String> {
                 function.name
             ));
         }
+        violations.extend(analyze_spawn_borrow_escapes(function));
     }
     violations
+}
+
+fn analyze_spawn_borrow_escapes(function: &TypedFunction) -> Vec<String> {
+    let mut violations = Vec::new();
+    let mut closure_bindings = BTreeMap::<String, Expr>::new();
+    let binding_types = function.local_types.clone();
+    for stmt in &function.body {
+        analyze_spawn_borrow_escapes_stmt(
+            stmt,
+            function,
+            &binding_types,
+            &closure_bindings,
+            &mut violations,
+        );
+        record_closure_binding_stmt(stmt, &mut closure_bindings);
+    }
+    violations
+}
+
+fn analyze_spawn_borrow_escapes_stmt(
+    stmt: &Stmt,
+    function: &TypedFunction,
+    binding_types: &BTreeMap<String, Type>,
+    closure_bindings: &BTreeMap<String, Expr>,
+    violations: &mut Vec<String>,
+) {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => analyze_spawn_borrow_escapes_expr(
+            value,
+            function,
+            binding_types,
+            closure_bindings,
+            violations,
+        ),
+        Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue => {}
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            analyze_spawn_borrow_escapes_expr(
+                condition,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            for nested in then_body {
+                analyze_spawn_borrow_escapes_stmt(
+                    nested,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+            for nested in else_body {
+                analyze_spawn_borrow_escapes_stmt(
+                    nested,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Stmt::While { condition, body } => {
+            analyze_spawn_borrow_escapes_expr(
+                condition,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            for nested in body {
+                analyze_spawn_borrow_escapes_stmt(
+                    nested,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init.as_deref() {
+                analyze_spawn_borrow_escapes_stmt(
+                    init,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+            if let Some(condition) = condition.as_ref() {
+                analyze_spawn_borrow_escapes_expr(
+                    condition,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+            for nested in body {
+                analyze_spawn_borrow_escapes_stmt(
+                    nested,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+            if let Some(step) = step.as_deref() {
+                analyze_spawn_borrow_escapes_stmt(
+                    step,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            analyze_spawn_borrow_escapes_expr(
+                iterable,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            for nested in body {
+                analyze_spawn_borrow_escapes_stmt(
+                    nested,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Stmt::Loop { body } => {
+            for nested in body {
+                analyze_spawn_borrow_escapes_stmt(
+                    nested,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            analyze_spawn_borrow_escapes_expr(
+                scrutinee,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            for arm in arms {
+                if let Some(guard) = arm.guard.as_ref() {
+                    analyze_spawn_borrow_escapes_expr(
+                        guard,
+                        function,
+                        binding_types,
+                        closure_bindings,
+                        violations,
+                    );
+                }
+                analyze_spawn_borrow_escapes_expr(
+                    &arm.value,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+    }
+}
+
+fn analyze_spawn_borrow_escapes_expr(
+    expr: &Expr,
+    function: &TypedFunction,
+    binding_types: &BTreeMap<String, Type>,
+    closure_bindings: &BTreeMap<String, Expr>,
+    violations: &mut Vec<String>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            if let Some(task_fn_arg_index) = spawn_callable_arg_index(callee) {
+                if let Some(task_fn) = args.get(task_fn_arg_index) {
+                    if let Some(closure_expr) =
+                        resolve_spawn_closure_expr(task_fn, closure_bindings)
+                    {
+                        let captures = collect_spawn_closure_captures(closure_expr, binding_types);
+                        for capture in captures {
+                            let Some(ty) = binding_types.get(&capture) else {
+                                continue;
+                            };
+                            if let Type::Ref { mutable, .. } = ty {
+                                let borrow_kind = if *mutable { "mutable" } else { "shared" };
+                                violations.push(format!(
+                                    "function `{}` {} captures {} borrowed reference `{}` across thread boundary",
+                                    function.name, callee, borrow_kind, capture
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            for arg in args {
+                analyze_spawn_borrow_escapes_expr(
+                    arg,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Expr::Discard(inner)
+        | Expr::Group(inner)
+        | Expr::Await(inner)
+        | Expr::Unary { expr: inner, .. }
+        | Expr::FieldAccess { base: inner, .. }
+        | Expr::Return(Some(inner))
+        | Expr::Break(Some(inner)) => analyze_spawn_borrow_escapes_expr(
+            inner,
+            function,
+            binding_types,
+            closure_bindings,
+            violations,
+        ),
+        Expr::Return(None)
+        | Expr::Break(None)
+        | Expr::Continue
+        | Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Ident(_) => {}
+        Expr::UnsafeBlock { body, .. } | Expr::Loop { body } => {
+            for stmt in body {
+                analyze_spawn_borrow_escapes_stmt(
+                    stmt,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                analyze_spawn_borrow_escapes_expr(
+                    value,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Expr::EnumInit { payload, .. } | Expr::Tuple(payload) | Expr::ArrayLiteral(payload) => {
+            for value in payload {
+                analyze_spawn_borrow_escapes_expr(
+                    value,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Expr::Closure { body, .. } => analyze_spawn_borrow_escapes_expr(
+            body,
+            function,
+            binding_types,
+            closure_bindings,
+            violations,
+        ),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            analyze_spawn_borrow_escapes_expr(
+                try_expr,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            analyze_spawn_borrow_escapes_expr(
+                catch_expr,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            analyze_spawn_borrow_escapes_expr(
+                condition,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            analyze_spawn_borrow_escapes_expr(
+                then_expr,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            analyze_spawn_borrow_escapes_expr(
+                else_expr,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+        }
+        Expr::Match { scrutinee, arms } => {
+            analyze_spawn_borrow_escapes_expr(
+                scrutinee,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            for arm in arms {
+                if let Some(guard) = arm.guard.as_ref() {
+                    analyze_spawn_borrow_escapes_expr(
+                        guard,
+                        function,
+                        binding_types,
+                        closure_bindings,
+                        violations,
+                    );
+                }
+                analyze_spawn_borrow_escapes_expr(
+                    &arm.value,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Expr::While { condition, body } => {
+            analyze_spawn_borrow_escapes_expr(
+                condition,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            for stmt in body {
+                analyze_spawn_borrow_escapes_stmt(
+                    stmt,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init.as_deref() {
+                analyze_spawn_borrow_escapes_stmt(
+                    init,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+            if let Some(condition) = condition.as_ref() {
+                analyze_spawn_borrow_escapes_expr(
+                    condition,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+            for stmt in body {
+                analyze_spawn_borrow_escapes_stmt(
+                    stmt,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+            if let Some(step) = step.as_deref() {
+                analyze_spawn_borrow_escapes_stmt(
+                    step,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            analyze_spawn_borrow_escapes_expr(
+                iterable,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            for stmt in body {
+                analyze_spawn_borrow_escapes_stmt(
+                    stmt,
+                    function,
+                    binding_types,
+                    closure_bindings,
+                    violations,
+                );
+            }
+        }
+        Expr::Binary { left, right, .. }
+        | Expr::Range {
+            start: left,
+            end: right,
+            ..
+        } => {
+            analyze_spawn_borrow_escapes_expr(
+                left,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            analyze_spawn_borrow_escapes_expr(
+                right,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+        }
+        Expr::Index { base, index } => {
+            analyze_spawn_borrow_escapes_expr(
+                base,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+            analyze_spawn_borrow_escapes_expr(
+                index,
+                function,
+                binding_types,
+                closure_bindings,
+                violations,
+            );
+        }
+    }
+}
+
+fn spawn_callable_arg_index(callee: &str) -> Option<usize> {
+    match callee {
+        "spawn" | "thread.spawn" | "spawn_ctx" => Some(0),
+        "task.group_spawn" | "task.group_spawn_n" | "task.parallel_map" => Some(1),
+        _ => None,
+    }
+}
+
+fn resolve_spawn_closure_expr<'a>(
+    expr: &'a Expr,
+    closure_bindings: &'a BTreeMap<String, Expr>,
+) -> Option<&'a Expr> {
+    match expr {
+        Expr::Closure { .. } => Some(expr),
+        Expr::Ident(name) => closure_bindings.get(name),
+        _ => None,
+    }
+}
+
+fn record_closure_binding_stmt(stmt: &Stmt, closure_bindings: &mut BTreeMap<String, Expr>) {
+    match stmt {
+        Stmt::Let { name, value, .. } => record_closure_binding(name, value, closure_bindings),
+        Stmt::Assign { target, value } => record_closure_binding(target, value, closure_bindings),
+        Stmt::If {
+            then_body,
+            else_body,
+            ..
+        } => {
+            for nested in then_body {
+                record_closure_binding_stmt(nested, closure_bindings);
+            }
+            for nested in else_body {
+                record_closure_binding_stmt(nested, closure_bindings);
+            }
+        }
+        Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::ForIn { body, .. } => {
+            for nested in body {
+                record_closure_binding_stmt(nested, closure_bindings);
+            }
+        }
+        Stmt::For {
+            init, step, body, ..
+        } => {
+            if let Some(init) = init.as_deref() {
+                record_closure_binding_stmt(init, closure_bindings);
+            }
+            for nested in body {
+                record_closure_binding_stmt(nested, closure_bindings);
+            }
+            if let Some(step) = step.as_deref() {
+                record_closure_binding_stmt(step, closure_bindings);
+            }
+        }
+        Stmt::Match { .. }
+        | Stmt::LetPattern { .. }
+        | Stmt::CompoundAssign { .. }
+        | Stmt::Return(_)
+        | Stmt::Break(_)
+        | Stmt::Continue
+        | Stmt::Defer(_)
+        | Stmt::Requires(_)
+        | Stmt::Ensures(_)
+        | Stmt::Expr(_) => {}
+    }
+}
+
+fn record_closure_binding(name: &str, value: &Expr, closure_bindings: &mut BTreeMap<String, Expr>) {
+    if let Expr::Closure { .. } = value {
+        closure_bindings.insert(name.to_string(), value.clone());
+    }
+}
+
+fn collect_spawn_closure_captures(
+    closure_expr: &Expr,
+    binding_types: &BTreeMap<String, Type>,
+) -> BTreeSet<String> {
+    let Expr::Closure { params, body, .. } = closure_expr else {
+        return BTreeSet::new();
+    };
+    let mut scopes = vec![params
+        .iter()
+        .map(|param| param.name.clone())
+        .collect::<BTreeSet<_>>()];
+    let mut captures = BTreeSet::new();
+    collect_expr_free_idents(body, &mut scopes, binding_types, &mut captures);
+    captures
+}
+
+fn collect_stmt_free_idents(
+    stmt: &Stmt,
+    scopes: &mut Vec<BTreeSet<String>>,
+    binding_types: &BTreeMap<String, Type>,
+    captures: &mut BTreeSet<String>,
+) {
+    match stmt {
+        Stmt::Let { name, value, .. } => {
+            collect_expr_free_idents(value, scopes, binding_types, captures);
+            if let Some(scope) = scopes.last_mut() {
+                scope.insert(name.clone());
+            }
+        }
+        Stmt::LetPattern { pattern, value, .. } => {
+            collect_expr_free_idents(value, scopes, binding_types, captures);
+            let mut bindings = BTreeSet::new();
+            collect_pattern_bindings(pattern, &mut bindings);
+            if let Some(scope) = scopes.last_mut() {
+                scope.extend(bindings);
+            }
+        }
+        Stmt::Assign { target, value } | Stmt::CompoundAssign { target, value, .. } => {
+            if !scopes.iter().rev().any(|scope| scope.contains(target))
+                && binding_types.contains_key(target)
+            {
+                captures.insert(target.clone());
+            }
+            collect_expr_free_idents(value, scopes, binding_types, captures);
+        }
+        Stmt::Return(Some(value))
+        | Stmt::Break(Some(value))
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => collect_expr_free_idents(value, scopes, binding_types, captures),
+        Stmt::Return(None) | Stmt::Break(None) | Stmt::Continue => {}
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_expr_free_idents(condition, scopes, binding_types, captures);
+            scopes.push(BTreeSet::new());
+            for nested in then_body {
+                collect_stmt_free_idents(nested, scopes, binding_types, captures);
+            }
+            scopes.pop();
+            scopes.push(BTreeSet::new());
+            for nested in else_body {
+                collect_stmt_free_idents(nested, scopes, binding_types, captures);
+            }
+            scopes.pop();
+        }
+        Stmt::While { condition, body } => {
+            collect_expr_free_idents(condition, scopes, binding_types, captures);
+            scopes.push(BTreeSet::new());
+            for nested in body {
+                collect_stmt_free_idents(nested, scopes, binding_types, captures);
+            }
+            scopes.pop();
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            scopes.push(BTreeSet::new());
+            if let Some(init) = init.as_deref() {
+                collect_stmt_free_idents(init, scopes, binding_types, captures);
+            }
+            if let Some(condition) = condition {
+                collect_expr_free_idents(condition, scopes, binding_types, captures);
+            }
+            for nested in body {
+                collect_stmt_free_idents(nested, scopes, binding_types, captures);
+            }
+            if let Some(step) = step.as_deref() {
+                collect_stmt_free_idents(step, scopes, binding_types, captures);
+            }
+            scopes.pop();
+        }
+        Stmt::ForIn {
+            binding,
+            iterable,
+            body,
+        } => {
+            collect_expr_free_idents(iterable, scopes, binding_types, captures);
+            scopes.push(BTreeSet::from([binding.clone()]));
+            for nested in body {
+                collect_stmt_free_idents(nested, scopes, binding_types, captures);
+            }
+            scopes.pop();
+        }
+        Stmt::Loop { body } => {
+            scopes.push(BTreeSet::new());
+            for nested in body {
+                collect_stmt_free_idents(nested, scopes, binding_types, captures);
+            }
+            scopes.pop();
+        }
+        Stmt::Match { scrutinee, arms } => {
+            collect_expr_free_idents(scrutinee, scopes, binding_types, captures);
+            for arm in arms {
+                scopes.push(BTreeSet::new());
+                let mut bindings = BTreeSet::new();
+                collect_pattern_bindings(&arm.pattern, &mut bindings);
+                if let Some(scope) = scopes.last_mut() {
+                    scope.extend(bindings);
+                }
+                if let Some(guard) = arm.guard.as_ref() {
+                    collect_expr_free_idents(guard, scopes, binding_types, captures);
+                }
+                collect_expr_free_idents(&arm.value, scopes, binding_types, captures);
+                scopes.pop();
+            }
+        }
+    }
+}
+
+fn collect_expr_free_idents(
+    expr: &Expr,
+    scopes: &mut Vec<BTreeSet<String>>,
+    binding_types: &BTreeMap<String, Type>,
+    captures: &mut BTreeSet<String>,
+) {
+    match expr {
+        Expr::Ident(name) => {
+            if scopes.iter().rev().any(|scope| scope.contains(name)) {
+                return;
+            }
+            if binding_types.contains_key(name) {
+                captures.insert(name.clone());
+            }
+        }
+        Expr::Call { args, .. } => {
+            for arg in args {
+                collect_expr_free_idents(arg, scopes, binding_types, captures);
+            }
+        }
+        Expr::Discard(inner)
+        | Expr::Group(inner)
+        | Expr::Await(inner)
+        | Expr::Unary { expr: inner, .. }
+        | Expr::FieldAccess { base: inner, .. }
+        | Expr::Return(Some(inner))
+        | Expr::Break(Some(inner)) => {
+            collect_expr_free_idents(inner, scopes, binding_types, captures);
+        }
+        Expr::Return(None)
+        | Expr::Break(None)
+        | Expr::Continue
+        | Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Str(_) => {}
+        Expr::UnsafeBlock { body, .. } | Expr::Loop { body } => {
+            scopes.push(BTreeSet::new());
+            for stmt in body {
+                collect_stmt_free_idents(stmt, scopes, binding_types, captures);
+            }
+            scopes.pop();
+        }
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_expr_free_idents(value, scopes, binding_types, captures);
+            }
+        }
+        Expr::EnumInit { payload, .. } | Expr::Tuple(payload) | Expr::ArrayLiteral(payload) => {
+            for value in payload {
+                collect_expr_free_idents(value, scopes, binding_types, captures);
+            }
+        }
+        Expr::Closure { params, body, .. } => {
+            scopes.push(
+                params
+                    .iter()
+                    .map(|param| param.name.clone())
+                    .collect::<BTreeSet<_>>(),
+            );
+            collect_expr_free_idents(body, scopes, binding_types, captures);
+            scopes.pop();
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_expr_free_idents(try_expr, scopes, binding_types, captures);
+            collect_expr_free_idents(catch_expr, scopes, binding_types, captures);
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_expr_free_idents(condition, scopes, binding_types, captures);
+            collect_expr_free_idents(then_expr, scopes, binding_types, captures);
+            collect_expr_free_idents(else_expr, scopes, binding_types, captures);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_expr_free_idents(scrutinee, scopes, binding_types, captures);
+            for arm in arms {
+                scopes.push(BTreeSet::new());
+                let mut bindings = BTreeSet::new();
+                collect_pattern_bindings(&arm.pattern, &mut bindings);
+                if let Some(scope) = scopes.last_mut() {
+                    scope.extend(bindings);
+                }
+                if let Some(guard) = arm.guard.as_ref() {
+                    collect_expr_free_idents(guard, scopes, binding_types, captures);
+                }
+                collect_expr_free_idents(&arm.value, scopes, binding_types, captures);
+                scopes.pop();
+            }
+        }
+        Expr::While { condition, body } => {
+            collect_expr_free_idents(condition, scopes, binding_types, captures);
+            scopes.push(BTreeSet::new());
+            for stmt in body {
+                collect_stmt_free_idents(stmt, scopes, binding_types, captures);
+            }
+            scopes.pop();
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            scopes.push(BTreeSet::new());
+            if let Some(init) = init.as_deref() {
+                collect_stmt_free_idents(init, scopes, binding_types, captures);
+            }
+            if let Some(condition) = condition {
+                collect_expr_free_idents(condition, scopes, binding_types, captures);
+            }
+            for stmt in body {
+                collect_stmt_free_idents(stmt, scopes, binding_types, captures);
+            }
+            if let Some(step) = step.as_deref() {
+                collect_stmt_free_idents(step, scopes, binding_types, captures);
+            }
+            scopes.pop();
+        }
+        Expr::ForIn {
+            binding,
+            iterable,
+            body,
+        } => {
+            collect_expr_free_idents(iterable, scopes, binding_types, captures);
+            scopes.push(BTreeSet::from([binding.clone()]));
+            for stmt in body {
+                collect_stmt_free_idents(stmt, scopes, binding_types, captures);
+            }
+            scopes.pop();
+        }
+        Expr::Binary { left, right, .. }
+        | Expr::Range {
+            start: left,
+            end: right,
+            ..
+        } => {
+            collect_expr_free_idents(left, scopes, binding_types, captures);
+            collect_expr_free_idents(right, scopes, binding_types, captures);
+        }
+        Expr::Index { base, index } => {
+            collect_expr_free_idents(base, scopes, binding_types, captures);
+            collect_expr_free_idents(index, scopes, binding_types, captures);
+        }
+    }
 }
 
 fn function_body_has_await(body: &[Stmt]) -> bool {
@@ -3558,7 +4406,7 @@ fn collect_function_caps_and_calls(
                         "alloc" | "std.alloc" => {
                             self.caps.insert("mem".to_string());
                         }
-                        "thread" | "std.thread" => {
+                        "thread" | "task" | "std.thread" => {
                             self.caps.insert("thread".to_string());
                         }
                         "log" | "logger" | "std.log" => {
@@ -7636,7 +8484,7 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                             "alloc" | "std.alloc" => {
                                 self.caps.insert("mem".to_string());
                             }
-                            "thread" | "std.thread" => {
+                            "thread" | "task" | "std.thread" => {
                                 self.caps.insert("thread".to_string());
                             }
                             "log" | "logger" | "std.log" => {
@@ -17578,6 +18426,103 @@ mod tests {
             detail.contains("parameter `v` requires Send/Sync-safe wrapper before thread crossing")
         }));
         assert!(typed.capability_token_violations.is_empty());
+    }
+
+    #[test]
+    fn spawn_rejects_closure_capturing_shared_borrow() {
+        let source = r#"
+            use core.thread;
+            fn observe(v: &'a i32) -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let shared: &'a i32 = x;
+                let worker = | | observe(shared);
+                let handle = spawn(worker);
+                return join(handle);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains(
+                "spawn captures shared borrowed reference `shared` across thread boundary",
+            )
+        }));
+    }
+
+    #[test]
+    fn spawn_rejects_closure_capturing_mutable_borrow() {
+        let source = r#"
+            use core.thread;
+            fn touch(v: &'a mut i32) -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let unique: &'a mut i32 = x;
+                let worker = | | touch(unique);
+                let handle = spawn(worker);
+                return join(handle);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains(
+                "spawn captures mutable borrowed reference `unique` across thread boundary",
+            )
+        }));
+    }
+
+    #[test]
+    fn task_group_spawn_rejects_closure_capturing_shared_borrow() {
+        let source = r#"
+            use core.thread;
+            fn observe(v: &'a i32) -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let group = task.group_begin();
+                let x: i32 = 1;
+                let shared: &'a i32 = x;
+                let worker = | | observe(shared);
+                discard task.group_spawn(group, worker);
+                discard task.group_join_all(group);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains(
+                "task.group_spawn captures shared borrowed reference `shared` across thread boundary",
+            )
+        }));
+    }
+
+    #[test]
+    fn spawn_allows_closure_capturing_owned_values() {
+        let source = r#"
+            use core.thread;
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let worker = | | x;
+                let handle = spawn(worker);
+                return join(handle);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            !typed.thread_boundary_violations.iter().any(|detail| {
+                detail.contains("captures shared borrowed reference")
+                    || detail.contains("captures mutable borrowed reference")
+            }),
+            "{:?}",
+            typed.thread_boundary_violations
+        );
     }
 
     #[test]
