@@ -561,6 +561,254 @@ fn verify_conditional_move_memory_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_if_expression_conditional_move_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-if-expr-conditional-move-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    let q = if true { p } else { alloc(64) }\n    free(p)\n    free(q)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` uses conditionally consumed value `p` after path-sensitive ownership merge"
+        })
+        .expect("if-expression conditional-move diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("if-expression conditional-move diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_match_expression_conditional_move_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-match-expr-conditional-move-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    let q = match true {\n        true => p,\n        _ => alloc(64),\n    }\n    free(p)\n    free(q)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` uses conditionally consumed value `p` after path-sensitive ownership merge"
+        })
+        .expect("match-expression conditional-move diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("match-expression conditional-move diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_grouped_binding_move_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-grouped-binding-move-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    let q = (p)\n    free(p)\n    free(q)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses moved value `p` after move/consume"
+        })
+        .expect("grouped-binding move diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("grouped-binding move diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_return_if_expression_partial_terminal_transfer_reports_leak() {
+    let file_name = format!(
+        "fozzylang-memory-return-if-expr-transfer-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn produce(flag: i32) -> *mut u8 {\n    let p = alloc(32)\n    return if flag == 0 { p } else { alloc(64) }\n}\nfn main() -> i32 {\n    let p = produce(0)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `produce` leaks allocation id=1 owned by `p`"
+        })
+        .expect("return-if terminal leak diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("return-if terminal leak diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_return_match_expression_partial_terminal_transfer_reports_leak() {
+    let file_name = format!(
+        "fozzylang-memory-return-match-expr-transfer-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn produce(flag: i32) -> *mut u8 {\n    let p = alloc(32)\n    return match flag {\n        0 => p,\n        _ => alloc(64),\n    }\n}\nfn main() -> i32 {\n    let p = produce(0)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `produce` leaks allocation id=1 owned by `p`"
+        })
+        .expect("return-match terminal leak diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("return-match terminal leak diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_return_if_expression_owned_transfer_on_all_paths_stays_clean() {
+    let file_name = format!(
+        "fozzylang-memory-return-if-expr-transfer-clean-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn produce(flag: i32) -> *mut u8 {\n    let p = alloc(32)\n    return if flag == 0 { p } else { (p) }\n}\nfn main() -> i32 {\n    let p = produce(0)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("divergent ownership state for `p`")
+            || diagnostic
+                .message
+                .contains("crosses function with potential resource escape")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_return_match_expression_owned_transfer_on_all_paths_stays_clean() {
+    let file_name = format!(
+        "fozzylang-memory-return-match-expr-transfer-clean-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn produce(flag: i32) -> *mut u8 {\n    let p = alloc(32)\n    return match flag {\n        0 => p,\n        _ => (p),\n    }\n}\nfn main() -> i32 {\n    let p = produce(0)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `produce` leaks allocation")
+            || diagnostic
+                .message
+                .contains("crosses function with potential resource escape")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_partial_move_memory_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-memory-partial-move-{}.fzy",

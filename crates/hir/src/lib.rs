@@ -4209,9 +4209,9 @@ fn analyze_linear_types(functions: &[TypedFunction]) -> Vec<String> {
                     }
                 }
                 if let Stmt::Return(Some(expr)) = stmt {
-                    if let Some(name) = expr_identity_name(expr) {
-                        if self.linear_owned.contains(name) {
-                            self.linear_freed.insert(name.to_string());
+                    for name in terminal_return_identity_names_on_all_paths(expr) {
+                        if self.linear_owned.contains(&name) {
+                            self.linear_freed.insert(name);
                         }
                     }
                 }
@@ -5478,10 +5478,10 @@ fn analyze_ownership_block(
                     state.moved.remove(name);
                     state.maybe_moved.remove(name);
                 }
-                if let Expr::Ident(from) = value {
+                if let Some(from) = expr_identity_name(value) {
                     if let Some(owner) = state.owners.remove(from) {
                         state.owners.insert(name.clone(), owner);
-                        state.moved.insert(from.clone());
+                        state.moved.insert(from.to_string());
                         state.moved.remove(name);
                         state.maybe_moved.remove(name);
                     }
@@ -5536,10 +5536,10 @@ fn analyze_ownership_block(
                     None,
                 );
                 state.owner_candidates.insert(target.clone());
-                if let Expr::Ident(from) = value {
+                if let Some(from) = expr_identity_name(value) {
                     if let Some(owner) = state.owners.remove(from) {
                         state.owners.insert(target.clone(), owner);
-                        state.moved.insert(from.clone());
+                        state.moved.insert(from.to_string());
                     }
                 }
                 state.moved.remove(target);
@@ -5565,10 +5565,10 @@ fn analyze_ownership_block(
                     None,
                 );
                 state.owner_candidates.insert(target.clone());
-                if let Expr::Ident(from) = value {
+                if let Some(from) = expr_identity_name(value) {
                     if let Some(owner) = state.owners.remove(from) {
                         state.owners.insert(target.clone(), owner);
-                        state.moved.insert(from.clone());
+                        state.moved.insert(from.to_string());
                     }
                 }
                 state.moved.remove(target);
@@ -5620,25 +5620,17 @@ fn analyze_ownership_block(
                 }
             }
             Stmt::Return(Some(expr)) => {
-                if let Some(name) = expr_identity_name(expr) {
-                    if state.owners.remove(name).is_some() {
-                        state.moved.insert(name.to_string());
-                    }
-                } else {
-                    analyze_expr_value_ownership(
-                        function,
-                        expr,
-                        state,
-                        next_alloc,
-                        violations,
-                        function_name,
-                        ownership_summaries,
-                        struct_defs,
-                        enum_defs,
-                        None,
-                    );
-                }
-                record_live_owner_leaks(state, violations, function_name);
+                analyze_terminal_return_expr(
+                    function,
+                    expr,
+                    state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                );
                 return false;
             }
             Stmt::If {
@@ -6098,6 +6090,7 @@ fn analyze_expr_value_ownership(
                 enum_defs,
                 None,
             );
+            consume_value_result_owner(try_expr, &mut try_state);
             analyze_expr_value_ownership(
                 function,
                 catch_expr,
@@ -6110,6 +6103,7 @@ fn analyze_expr_value_ownership(
                 enum_defs,
                 None,
             );
+            consume_value_result_owner(catch_expr, &mut catch_state);
             *state = merge_ownership_states(
                 function_name,
                 "try/catch expressions",
@@ -6138,6 +6132,7 @@ fn analyze_expr_value_ownership(
                 enum_defs,
                 None,
             );
+            consume_value_result_owner(then_expr, &mut then_state);
             analyze_expr_value_ownership(
                 function,
                 else_expr,
@@ -6150,6 +6145,7 @@ fn analyze_expr_value_ownership(
                 enum_defs,
                 None,
             );
+            consume_value_result_owner(else_expr, &mut else_state);
             *state = merge_ownership_states(
                 function_name,
                 "conditional expressions",
@@ -6175,6 +6171,7 @@ fn analyze_expr_value_ownership(
                     enum_defs,
                     None,
                 );
+                consume_value_result_owner(&arm.value, &mut arm_state);
                 arm_states.push(arm_state);
             }
             if !arm_states.is_empty() {
@@ -6255,6 +6252,151 @@ fn analyze_expr_value_ownership(
         }
         _ => {}
     }
+}
+
+fn analyze_terminal_return_expr(
+    function: &TypedFunction,
+    expr: &Expr,
+    state: &mut OwnershipState,
+    next_alloc: &mut usize,
+    violations: &mut Vec<String>,
+    function_name: &str,
+    ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) {
+    match expr {
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            analyze_expr_value_ownership(
+                function,
+                condition,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+                None,
+            );
+            let mut then_state = state.clone();
+            analyze_terminal_return_expr(
+                function,
+                then_expr,
+                &mut then_state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+            );
+            let mut else_state = state.clone();
+            analyze_terminal_return_expr(
+                function,
+                else_expr,
+                &mut else_state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+            );
+        }
+        Expr::Match { scrutinee, arms } => {
+            analyze_expr_value_ownership(
+                function,
+                scrutinee,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+                None,
+            );
+            for arm in arms {
+                let mut arm_state = state.clone();
+                if let Some(guard) = &arm.guard {
+                    analyze_expr_value_ownership(
+                        function,
+                        guard,
+                        &mut arm_state,
+                        next_alloc,
+                        violations,
+                        function_name,
+                        ownership_summaries,
+                        struct_defs,
+                        enum_defs,
+                        None,
+                    );
+                }
+                analyze_terminal_return_expr(
+                    function,
+                    &arm.value,
+                    &mut arm_state,
+                    next_alloc,
+                    violations,
+                    function_name,
+                    ownership_summaries,
+                    struct_defs,
+                    enum_defs,
+                );
+            }
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            let mut try_state = state.clone();
+            analyze_terminal_return_expr(
+                function,
+                try_expr,
+                &mut try_state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+            );
+            let mut catch_state = state.clone();
+            analyze_terminal_return_expr(
+                function,
+                catch_expr,
+                &mut catch_state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+            );
+        }
+        _ => {
+            analyze_expr_value_ownership(
+                function,
+                expr,
+                state,
+                next_alloc,
+                violations,
+                function_name,
+                ownership_summaries,
+                struct_defs,
+                enum_defs,
+                None,
+            );
+            consume_value_result_owner(expr, state);
+            record_live_owner_leaks(state, violations, function_name);
+        }
+    }
+    *state = OwnershipState::default();
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6338,6 +6480,16 @@ fn apply_call_consumed_params(
         if let Some(owner) = state.owners.remove(arg_name) {
             state.moved.insert(arg_name.to_string());
             state.maybe_moved.remove(arg_name);
+            state.deferred.remove(&owner);
+        }
+    }
+}
+
+fn consume_value_result_owner(expr: &Expr, state: &mut OwnershipState) {
+    if let Some(name) = expr_identity_name(expr) {
+        if let Some(owner) = state.owners.remove(name) {
+            state.moved.insert(name.to_string());
+            state.maybe_moved.remove(name);
             state.deferred.remove(&owner);
         }
     }
@@ -6617,9 +6769,10 @@ fn count_owned_return_transfers(
                 .map(|arm| count_expr(&arm.value, signatures))
                 .sum(),
             Expr::Call { callee, .. } => usize::from(
-                signatures
-                    .get(callee)
-                    .is_some_and(|shape| is_owned_transfer_return_type(&shape.return_type)),
+                is_alloc_expr(expr)
+                    || signatures
+                        .get(callee)
+                        .is_some_and(|shape| is_owned_transfer_return_type(&shape.return_type)),
             ),
             _ => usize::from(is_owned_return_transfer_expr(expr)),
         }
@@ -6677,6 +6830,53 @@ fn count_owned_return_transfers(
 
 fn is_owned_return_transfer_expr(expr: &Expr) -> bool {
     expr_identity_name(expr).is_some() || is_alloc_expr(expr)
+}
+
+fn intersect_identity_sets(left: BTreeSet<String>, right: BTreeSet<String>) -> BTreeSet<String> {
+    left.intersection(&right).cloned().collect()
+}
+
+fn terminal_return_identity_names_on_all_paths(expr: &Expr) -> BTreeSet<String> {
+    match expr {
+        Expr::Ident(name) => BTreeSet::from([name.clone()]),
+        Expr::Group(inner) | Expr::Discard(inner) => {
+            terminal_return_identity_names_on_all_paths(inner)
+        }
+        Expr::UnsafeBlock { body, .. } => body
+            .last()
+            .map(|stmt| match stmt {
+                Stmt::Expr(expr) | Stmt::Return(Some(expr)) => {
+                    terminal_return_identity_names_on_all_paths(expr)
+                }
+                _ => BTreeSet::new(),
+            })
+            .unwrap_or_default(),
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => intersect_identity_sets(
+            terminal_return_identity_names_on_all_paths(then_expr),
+            terminal_return_identity_names_on_all_paths(else_expr),
+        ),
+        Expr::Match { arms, .. } => {
+            let mut arm_sets = arms
+                .iter()
+                .map(|arm| terminal_return_identity_names_on_all_paths(&arm.value));
+            let Some(first) = arm_sets.next() else {
+                return BTreeSet::new();
+            };
+            arm_sets.fold(first, intersect_identity_sets)
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => intersect_identity_sets(
+            terminal_return_identity_names_on_all_paths(try_expr),
+            terminal_return_identity_names_on_all_paths(catch_expr),
+        ),
+        _ => BTreeSet::new(),
+    }
 }
 
 fn is_owned_transfer_return_type(ty: &Type) -> bool {
@@ -17610,6 +17810,168 @@ mod tests {
             detail.contains("divergent ownership state for `p`")
                 || detail.contains("uses moved value `p` after move/consume")
                 || detail.contains("consumes non-owned or already-consumed value `p`")
+        }));
+    }
+
+    #[test]
+    fn if_expression_move_in_one_branch_marks_source_conditionally_consumed() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                let q = if true { p } else { alloc(64) };
+                free(p);
+                free(q);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("conditionally consumed value `p`")
+                || detail.contains("uses moved value `p` after move/consume")
+                || detail.contains("divergent ownership state for `p`")
+        }));
+    }
+
+    #[test]
+    fn match_expression_move_in_one_arm_marks_source_conditionally_consumed() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                let q = match true {
+                    true => p,
+                    _ => alloc(64),
+                };
+                free(p);
+                free(q);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("conditionally consumed value `p`")
+                || detail.contains("uses moved value `p` after move/consume")
+                || detail.contains("divergent ownership state for `p`")
+        }));
+    }
+
+    #[test]
+    fn grouped_binding_move_marks_source_moved() {
+        let source = r#"
+            fn main() -> i32 {
+                let p = alloc(32);
+                let q = (p);
+                free(p);
+                free(q);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("uses moved value `p` after move/consume")
+                || detail.contains("consumes non-owned or already-consumed value `p`")
+        }));
+    }
+
+    #[test]
+    fn return_if_expression_move_in_one_branch_reports_terminal_leak() {
+        let source = r#"
+            fn produce(flag: i32) -> *mut u8 {
+                let p = alloc(32);
+                return if flag == 0 { p } else { alloc(64) };
+            }
+            fn main() -> i32 {
+                let p = produce(0);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| detail
+            .contains("function `produce` leaks allocation")
+            && detail.contains("`p`")));
+        assert!(typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `produce` linear value `p` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn return_match_expression_move_in_one_arm_reports_terminal_leak() {
+        let source = r#"
+            fn produce(flag: i32) -> *mut u8 {
+                let p = alloc(32);
+                return match flag {
+                    0 => p,
+                    _ => alloc(64),
+                };
+            }
+            fn main() -> i32 {
+                let p = produce(0);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| detail
+            .contains("function `produce` leaks allocation")
+            && detail.contains("`p`")));
+        assert!(typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `produce` linear value `p` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn return_if_expression_owned_transfer_on_all_paths_stays_clean() {
+        let source = r#"
+            fn produce(flag: i32) -> *mut u8 {
+                let p = alloc(32);
+                return if flag == 0 { p } else { (p) };
+            }
+            fn main() -> i32 {
+                let p = produce(0);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("function `produce` leaks allocation")
+                || detail.contains("crosses function with potential resource escape")
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `produce` linear value `p` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn return_match_expression_owned_transfer_on_all_paths_stays_clean() {
+        let source = r#"
+            fn produce(flag: i32) -> *mut u8 {
+                let p = alloc(32);
+                return match flag {
+                    0 => p,
+                    _ => (p),
+                };
+            }
+            fn main() -> i32 {
+                let p = produce(0);
+                free(p);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("function `produce` leaks allocation")
+                || detail.contains("crosses function with potential resource escape")
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `produce` linear value `p` was not consumed/freed")
         }));
     }
 
