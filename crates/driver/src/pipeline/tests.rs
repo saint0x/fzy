@@ -1279,6 +1279,111 @@ fn verify_generic_borrow_across_await_call_edge_diagnostic_is_snapshot_stable() 
 }
 
 #[test]
+fn verify_mutable_borrow_then_direct_owner_access_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-mut-borrow-direct-owner-access-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let x: i32 = 1\n    let unique: &'a mut i32 = x\n    discard x\n    discard unique\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` accesses owner `x` via `x` while mutable borrowed reference `unique` is still live"
+        })
+        .expect("mutable borrow direct owner access diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("use the mutable-borrowed alias directly, or move the owner access after the borrow's last use")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("mutable borrow direct owner access diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_mutable_borrow_then_plain_owner_call_access_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-mut-borrow-owner-call-access-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn inspect_value(v: i32) -> i32 {\n    return v\n}\nfn main() -> i32 {\n    let x: i32 = 1\n    let unique: &'a mut i32 = x\n    discard inspect_value(x)\n    discard unique\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` accesses owner `x` via `inspect_value(x)` while mutable borrowed reference `unique` is still live"
+        })
+        .expect("mutable borrow owner call access diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("use the mutable-borrowed alias directly, or move the owner access after the borrow's last use")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("mutable borrow owner call access diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_owner_access_after_mutable_borrow_last_use_stays_clean() {
+    let file_name = format!(
+        "fozzylang-mut-borrow-last-use-clean-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn inspect_value(v: i32) -> i32 {\n    return v\n}\nfn main() -> i32 {\n    let x: i32 = 1\n    let unique: &'a mut i32 = x\n    discard unique\n    discard inspect_value(x)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("accesses owner `x`")
+            && diagnostic
+                .message
+                .contains("mutable borrowed reference `unique`")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn derive_anchors_from_message_extracts_primary_and_related_tokens() {
     let lines = vec![
         "fn main() -> i32 {".to_string(),

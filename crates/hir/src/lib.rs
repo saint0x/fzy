@@ -2089,6 +2089,24 @@ fn analyze_live_borrow_block(
                 violations.push(detail);
             }
         }
+        for (alias, binding) in bindings.iter() {
+            if !binding.mutable || !future_uses_alias(alias) {
+                continue;
+            }
+            if let Some(access) = stmt_direct_owner_access_label(
+                function,
+                stmt,
+                &binding.owner,
+                bindings,
+                signatures,
+                ownership_summaries,
+            ) {
+                violations.push(format!(
+                    "function `{}` accesses owner `{}` via `{}` while mutable borrowed reference `{}` is still live",
+                    function.name, binding.owner, access, alias
+                ));
+            }
+        }
         for consume in stmt_borrow_consumptions(stmt, ownership_summaries) {
             for (alias, binding) in bindings.iter() {
                 if binding.owner == consume.owner && future_uses_alias(alias) {
@@ -2355,6 +2373,60 @@ fn stmt_borrow_creations(
         _ => {}
     }
     out
+}
+
+fn stmt_direct_owner_access_label(
+    function: &TypedFunction,
+    stmt: &Stmt,
+    owner: &str,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
+) -> Option<String> {
+    if !stmt_uses_ident(stmt, owner) {
+        return None;
+    }
+    if stmt_borrow_consumptions(stmt, ownership_summaries)
+        .iter()
+        .any(|consume| consume.owner == owner)
+    {
+        return None;
+    }
+    if stmt_borrow_creations(function, stmt, bindings, signatures)
+        .iter()
+        .any(|creation| creation.owner == owner)
+    {
+        return None;
+    }
+    match stmt {
+        Stmt::Expr(expr) => expr_direct_owner_access_label(expr, owner),
+        Stmt::Return(Some(expr)) => {
+            expr_direct_owner_access_label(expr, owner).map(|label| format!("return {label}"))
+        }
+        Stmt::Let { name, value, .. } if expr_uses_ident(value, owner) => Some(format!(
+            "let {name} = {}",
+            borrow_creation_expr_label(value)
+        )),
+        Stmt::Assign { target, value } if expr_uses_ident(value, owner) => {
+            Some(format!("{target} = {}", borrow_creation_expr_label(value)))
+        }
+        _ => Some(owner.to_string()),
+    }
+}
+
+fn expr_direct_owner_access_label(expr: &Expr, owner: &str) -> Option<String> {
+    match expr {
+        Expr::Ident(name) if name == owner => Some(name.clone()),
+        Expr::Call { callee, args } if args.iter().any(|arg| expr_uses_ident(arg, owner)) => {
+            Some(format!("{callee}({owner})"))
+        }
+        Expr::Discard(inner) => {
+            expr_direct_owner_access_label(inner, owner).map(|label| format!("discard {label}"))
+        }
+        Expr::Group(inner) => expr_direct_owner_access_label(inner, owner),
+        _ if expr_uses_ident(expr, owner) => Some(owner.to_string()),
+        _ => None,
+    }
 }
 
 fn borrow_creation_expr_label(expr: &Expr) -> String {
@@ -17595,6 +17667,74 @@ mod tests {
             detail.contains(
                 "creates shared borrow of owner `x` via `inspect(x)` while mutable borrowed reference `unique` is still live",
             )
+        }));
+    }
+
+    #[test]
+    fn mutable_borrow_then_direct_owner_access_is_rejected() {
+        let source = r#"
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let unique: &'a mut i32 = x;
+                discard x;
+                discard unique;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "accesses owner `x` via `x` while mutable borrowed reference `unique` is still live",
+            )
+        }));
+    }
+
+    #[test]
+    fn mutable_borrow_then_plain_owner_call_access_is_rejected() {
+        let source = r#"
+            fn inspect_value(v: i32) -> i32 {
+                return v;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let unique: &'a mut i32 = x;
+                discard inspect_value(x);
+                discard unique;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "accesses owner `x` via `inspect_value(x)` while mutable borrowed reference `unique` is still live",
+            )
+        }));
+    }
+
+    #[test]
+    fn owner_access_after_mutable_borrow_last_use_is_allowed() {
+        let source = r#"
+            fn inspect_value(v: i32) -> i32 {
+                return v;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let unique: &'a mut i32 = x;
+                discard unique;
+                discard inspect_value(x);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("accesses owner `x`")
+                || detail.contains("mutable borrowed reference `unique`")
         }));
     }
 

@@ -513,6 +513,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 .to_string()
         } else if violation.contains("generic/trait-heavy with borrowed parameters across await") {
             "specialize the borrowed call edge away from the async suspension path, or hand off owned values instead".to_string()
+        } else if violation.contains("accesses owner `")
+            && violation.contains("while mutable borrowed reference `")
+        {
+            "use the mutable-borrowed alias directly, or move the owner access after the borrow's last use".to_string()
         } else {
             "enforce ownership transfer semantics and ensure every allocation is released"
                 .to_string()
