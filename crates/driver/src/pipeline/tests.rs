@@ -91,7 +91,7 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     .expect("manifest should be written");
     std::fs::write(
         root.join("src/main.fzy"),
-        "fn main() -> i32 {\n    let p = alloc(16)\n    defer free(p)\n    return 0\n}\n",
+        "use core.time;\nfn main() -> i32 {\n    return 0\n}\n",
     )
     .expect("source should be written");
 
@@ -106,6 +106,7 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         "ffi-report.json",
         "ffi-report.md",
         "native-runtime-contracts.json",
+        "handle-contracts.json",
     ] {
         assert!(
             root.join(".fz").join(name).exists(),
@@ -127,6 +128,57 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     assert!(runtime_contracts.contains("\"callee\": \"task_result\""));
     assert!(runtime_contracts.contains("\"linearity\": \"consumes_linear_handle\""));
     assert!(runtime_contracts.contains("\"linearity\": \"observes_linear_handle\""));
+
+    let handle_contracts = std::fs::read_to_string(root.join(".fz/handle-contracts.json"))
+        .expect("handle contracts should exist");
+    assert!(handle_contracts.contains("\"name\": \"HttpHandle\""));
+    assert!(handle_contracts.contains("\"name\": \"JsonHandle\""));
+    assert!(handle_contracts.contains("\"linear\": true"));
+    assert!(handle_contracts.contains("\"linear\": false"));
+}
+
+#[test]
+fn compile_file_handle_contracts_align_with_runtime_contracts() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-handle-contracts-alignment-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"handle_contracts_alignment\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"handle_contracts_alignment\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.proc;\nuse core.storage;\nuse core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn main() -> i32 {\n    let conn = http.accept()\n    discard http.write_json(conn, 200, \"{}\")\n    let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n    discard http.stream_close(stream)\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(handle)\n    let task = spawn(worker)\n    discard join(task)\n    let store = storage.kv_open(\"session.kv\")\n    discard storage.kv_close(store)\n    let payload = json.parse(\"{}\")\n    let items = json.to_list(payload)\n    let table = map.new()\n    discard list.len(items)\n    discard map.len(table)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let handle_contracts = std::fs::read_to_string(root.join(".fz/handle-contracts.json"))
+        .expect("handle contracts should exist");
+    assert!(handle_contracts.contains("\"name\": \"HttpHandle\""));
+    assert!(handle_contracts.contains("\"consumerIntrinsics\""));
+    assert!(handle_contracts.contains("\"name\": \"JsonHandle\""));
+    assert!(handle_contracts.contains("\"producerIntrinsics\""));
+    assert!(handle_contracts.contains("\"name\": \"KvStoreHandle\""));
+
+    let runtime_contracts = std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
+        .expect("native runtime contracts should exist");
+    assert!(runtime_contracts.contains("\"callee\": \"http.write_json\""));
+    assert!(runtime_contracts.contains("\"argOwnership\": \"consume_arg0_borrow_status_payload\""));
+    assert!(runtime_contracts.contains("\"callee\": \"http.post_json_stream\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"produces_linear_handle\""));
+    assert!(runtime_contracts.contains("\"callee\": \"json.parse\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"produces_handle\""));
+    assert!(runtime_contracts.contains("\"callee\": \"list.len\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"observes_handle\""));
 }
 
 #[test]

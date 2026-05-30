@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "compiler-memory-handle-contracts-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); fz = repo / 'target/debug/fz'\n\ndef write_project(name, source):\n    root = pathlib.Path(tempfile.mkdtemp(prefix=f'fozzylang-{name}-'))\n    (root / 'src').mkdir(parents=True, exist_ok=True)\n    (root / 'fozzy.toml').write_text(textwrap.dedent(f'''\\\n        [package]\n        name=\"{name}\"\n        version=\"0.1.0\"\n\n        [[target.bin]]\n        name=\"{name}\"\n        path=\"src/main.fzy\"\n    '''))\n    (root / 'src/main.fzy').write_text(textwrap.dedent(source))\n    return root\n\nroot = write_project('handle_contracts', '''\n    use core.http;\n    use core.proc;\n    use core.storage;\n    use core.thread;\n    fn worker() -> i32 {\n        return 1\n    }\n    fn main() -> i32 {\n        let conn = http.accept()\n        discard http.write_json(conn, 200, \"{}\")\n        let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n        discard http.stream_close(stream)\n        let argv = proc.argv_new()\n        let env = proc.env_new()\n        let proc_handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n        discard proc.close(proc_handle)\n        let task = spawn(worker)\n        discard join(task)\n        let store = storage.kv_open(\"session.kv\")\n        discard storage.kv_close(store)\n        let payload = json.parse(\"{}\")\n        let entries = json.to_map(payload)\n        discard map.len(entries)\n        return 0\n    }\n''')\nproc = subprocess.run([str(fz), 'verify', str(root), '--json'], cwd=str(repo), capture_output=True, text=True)\npayload = json.loads(proc.stdout.strip())\nassert proc.returncode == 0 and payload['errors'] == 0, (proc.returncode, payload, proc.stderr)\nhandle_contracts = json.loads((root / '.fz' / 'handle-contracts.json').read_text())\nruntime_contracts = json.loads((root / '.fz' / 'native-runtime-contracts.json').read_text())\nhandle_text = json.dumps(handle_contracts)\nruntime_text = json.dumps(runtime_contracts)\nassert 'HttpHandle' in handle_text and 'JsonHandle' in handle_text and 'KvStoreHandle' in handle_text, handle_contracts\nassert 'http.write_json' in runtime_text and 'consume_arg0_borrow_status_payload' in runtime_text, runtime_contracts\nassert 'json.parse' in runtime_text and 'produces_handle' in runtime_text, runtime_contracts\nassert 'list.len' in runtime_text and 'observes_handle' in runtime_text, runtime_contracts\nprint('compiler-memory-handle-contracts-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-memory-handle-contracts-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); fz = repo / 'target/debug/fz'\n\ndef write_project(name, source):\n    root = pathlib.Path(tempfile.mkdtemp(prefix=f'fozzylang-{name}-'))\n    (root / 'src').mkdir(parents=True, exist_ok=True)\n    (root / 'fozzy.toml').write_text(textwrap.dedent(f'''\\\n        [package]\n        name=\"{name}\"\n        version=\"0.1.0\"\n\n        [[target.bin]]\n        name=\"{name}\"\n        path=\"src/main.fzy\"\n    '''))\n    (root / 'src/main.fzy').write_text(textwrap.dedent(source))\n    return root\n\nroot = write_project('handle_contracts', '''\n    use core.http;\n    use core.proc;\n    use core.storage;\n    use core.thread;\n    fn worker() -> i32 {\n        return 1\n    }\n    fn main() -> i32 {\n        let conn = http.accept()\n        discard http.write_json(conn, 200, \"{}\")\n        let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n        discard http.stream_close(stream)\n        let argv = proc.argv_new()\n        let env = proc.env_new()\n        let proc_handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n        discard proc.close(proc_handle)\n        let task = spawn(worker)\n        discard join(task)\n        let store = storage.kv_open(\"session.kv\")\n        discard storage.kv_close(store)\n        let payload = json.parse(\"{}\")\n        let entries = json.to_map(payload)\n        discard map.len(entries)\n        return 0\n    }\n''')\nproc = subprocess.run([str(fz), 'verify', str(root), '--json'], cwd=str(repo), capture_output=True, text=True)\npayload = json.loads(proc.stdout.strip())\nassert proc.returncode == 0 and payload['errors'] == 0, (proc.returncode, payload, proc.stderr)\nhandle_contracts = json.loads((root / '.fz' / 'handle-contracts.json').read_text())\nruntime_contracts = json.loads((root / '.fz' / 'native-runtime-contracts.json').read_text())\nhandle_text = json.dumps(handle_contracts)\nruntime_text = json.dumps(runtime_contracts)\nassert 'HttpHandle' in handle_text and 'JsonHandle' in handle_text and 'KvStoreHandle' in handle_text, handle_contracts\nassert 'http.write_json' in runtime_text and 'consume_arg0_borrow_status_payload' in runtime_text, runtime_contracts\nassert 'json.parse' in runtime_text and 'produces_handle' in runtime_text, runtime_contracts\nassert 'list.len' in runtime_text and 'observes_handle' in runtime_text, runtime_contracts\nprint('compiler-memory-handle-contracts-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "compiler-memory-handle-contracts-ok\n"
+    }
+  ]
+}

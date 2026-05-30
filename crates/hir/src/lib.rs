@@ -4264,25 +4264,324 @@ fn is_linear_type(ty: &Type) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeHandleContract {
+    pub name: &'static str,
+    pub copy: bool,
+    pub owned: bool,
+    pub linear: bool,
+    pub closable: bool,
+    pub send_safe: bool,
+    pub async_stable: bool,
+    pub producer_intrinsics: &'static [&'static str],
+    pub consumer_intrinsics: &'static [&'static str],
+    pub observer_intrinsics: &'static [&'static str],
+}
+
+const RUNTIME_HANDLE_CONTRACTS: &[RuntimeHandleContract] = &[
+    RuntimeHandleContract {
+        name: "HttpHandle",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &["http.bind", "http.accept", "http.connect", "http.poll_next"],
+        consumer_intrinsics: &[
+            "close",
+            "http.close",
+            "http.write",
+            "http.write_json",
+            "http.write_response",
+            "http.websocket_accept",
+            "route.write_404",
+            "route.write_405",
+        ],
+        observer_intrinsics: &[
+            "http.listen",
+            "http.read",
+            "http.read_headers",
+            "http.method",
+            "http.path",
+            "http.body",
+            "http.body_read",
+            "http.body_eof",
+            "http.body_discard",
+            "http.body_json",
+            "http.body_bind",
+            "http.header",
+            "http.query",
+            "http.param",
+            "http.headers",
+            "http.request_id",
+            "http.remote_addr",
+            "http.response_header_set",
+            "http.response_header_add",
+            "http.response_header_clear",
+            "route.match",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "HttpStreamHandle",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &["http.request_stream", "http.post_json_stream"],
+        consumer_intrinsics: &["http.stream_close"],
+        observer_intrinsics: &[
+            "http.stream_read",
+            "http.stream_read_line",
+            "http.stream_eof",
+            "http.stream_status",
+            "http.stream_error",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "WebSocketHandle",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &["http.websocket_accept"],
+        consumer_intrinsics: &["http.websocket_close"],
+        observer_intrinsics: &[
+            "http.websocket_read",
+            "http.websocket_kind",
+            "http.websocket_error",
+            "http.websocket_close_code",
+            "http.websocket_write_text",
+            "http.websocket_write_binary",
+            "http.websocket_ping",
+            "http.websocket_pong",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "ProcessHandle",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &[
+            "proc.spawn",
+            "proc.spawnl",
+            "proc.spawn_cmd",
+            "proc.run_cmd",
+        ],
+        consumer_intrinsics: &["proc.close"],
+        observer_intrinsics: &[
+            "proc.exec_timeout",
+            "proc.wait",
+            "proc.poll",
+            "proc.event",
+            "proc.read_stdout",
+            "proc.read_stderr",
+            "proc.stdout",
+            "proc.stderr",
+            "proc.exit_code",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "ProcessArgv",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: false,
+        send_safe: false,
+        async_stable: false,
+        producer_intrinsics: &["proc.argv_new"],
+        consumer_intrinsics: &["proc.spawnl", "proc.spawn_cmd", "proc.runl", "proc.run_cmd"],
+        observer_intrinsics: &["proc.argv_push"],
+    },
+    RuntimeHandleContract {
+        name: "ProcessEnv",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: false,
+        send_safe: false,
+        async_stable: false,
+        producer_intrinsics: &["proc.env_new"],
+        consumer_intrinsics: &["proc.spawnl", "proc.spawn_cmd", "proc.runl", "proc.run_cmd"],
+        observer_intrinsics: &["proc.env_set"],
+    },
+    RuntimeHandleContract {
+        name: "TaskHandle",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: false,
+        send_safe: true,
+        async_stable: true,
+        producer_intrinsics: &["spawn", "spawn_ctx", "task.group_spawn"],
+        consumer_intrinsics: &["join", "detach", "cancel_task"],
+        observer_intrinsics: &["task_result", "ctx.deadline"],
+    },
+    RuntimeHandleContract {
+        name: "TaskGroupHandle",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: false,
+        send_safe: true,
+        async_stable: true,
+        producer_intrinsics: &["task.group_begin"],
+        consumer_intrinsics: &[
+            "task.group_join",
+            "task.group_join_all",
+            "task.group_cancel",
+        ],
+        observer_intrinsics: &[
+            "task.group_spawn",
+            "task.group_spawn_n",
+            "task.parallel_map",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "TaskGroup",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: false,
+        send_safe: true,
+        async_stable: true,
+        producer_intrinsics: &[],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[],
+    },
+    RuntimeHandleContract {
+        name: "FileHandle",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &[],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[],
+    },
+    RuntimeHandleContract {
+        name: "JsonHandle",
+        copy: false,
+        owned: true,
+        linear: false,
+        closable: false,
+        send_safe: true,
+        async_stable: true,
+        producer_intrinsics: &[
+            "json.parse",
+            "http.body_json",
+            "http.body_bind",
+            "json.get",
+            "json.path",
+        ],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[
+            "json.get_str",
+            "json.has",
+            "json.to_list",
+            "json.to_map",
+            "json.keys",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "ListHandle",
+        copy: false,
+        owned: true,
+        linear: false,
+        closable: false,
+        send_safe: true,
+        async_stable: true,
+        producer_intrinsics: &["list.new", "json.to_list", "json.keys", "fs.listdir"],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[
+            "list.push",
+            "list.pop",
+            "list.len",
+            "list.get",
+            "list.set",
+            "list.clear",
+            "list.join",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "MapHandle",
+        copy: false,
+        owned: true,
+        linear: false,
+        closable: false,
+        send_safe: true,
+        async_stable: true,
+        producer_intrinsics: &["map.new", "http.headers", "json.to_map"],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[
+            "map.set",
+            "map.get",
+            "map.has",
+            "map.delete",
+            "map.keys",
+            "map.len",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "KvStoreHandle",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &["storage.kv_open"],
+        consumer_intrinsics: &["storage.kv_close"],
+        observer_intrinsics: &["storage.kv_get", "storage.kv_put"],
+    },
+    RuntimeHandleContract {
+        name: "ChannelHandle",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: false,
+        send_safe: true,
+        async_stable: true,
+        producer_intrinsics: &[],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &["channel.send", "channel.recv"],
+    },
+    RuntimeHandleContract {
+        name: "RpcFrame",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: false,
+        send_safe: false,
+        async_stable: false,
+        producer_intrinsics: &[],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[],
+    },
+];
+
+pub fn runtime_handle_contracts() -> &'static [RuntimeHandleContract] {
+    RUNTIME_HANDLE_CONTRACTS
+}
+
+pub fn runtime_handle_contract(name: &str) -> Option<&'static RuntimeHandleContract> {
+    runtime_handle_contracts()
+        .iter()
+        .find(|contract| contract.name == name)
+}
+
 fn is_linear_runtime_handle(name: &str) -> bool {
-    matches!(
-        name,
-        "Linear"
-            | "Resource"
-            | "Ptr"
-            | "FileHandle"
-            | "ProcessHandle"
-            | "ProcessArgv"
-            | "ProcessEnv"
-            | "HttpHandle"
-            | "HttpStreamHandle"
-            | "WebSocketHandle"
-            | "KvStoreHandle"
-            | "TaskHandle"
-            | "TaskGroupHandle"
-            | "TaskGroup"
-            | "RpcFrame"
-    )
+    matches!(name, "Linear" | "Resource" | "Ptr")
+        || runtime_handle_contract(name).is_some_and(|contract| contract.linear)
 }
 
 fn binding_resource_type<'a>(
@@ -14412,22 +14711,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
 
 fn runtime_default_value(ty: &Type) -> Option<Value> {
     fn is_runtime_handle(name: &str) -> bool {
-        matches!(
-            name,
-            "TaskHandle"
-                | "TaskGroupHandle"
-                | "HttpHandle"
-                | "HttpStreamHandle"
-                | "WebSocketHandle"
-                | "JsonHandle"
-                | "ListHandle"
-                | "MapHandle"
-                | "ProcessHandle"
-                | "ProcessArgv"
-                | "ProcessEnv"
-                | "KvStoreHandle"
-                | "ChannelHandle"
-        )
+        runtime_handle_contract(name).is_some()
     }
     match ty {
         Type::Bool => Some(Value::Bool(false)),

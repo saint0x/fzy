@@ -742,6 +742,18 @@ fn write_safety_artifacts(
         )
     })?;
 
+    let handle_contracts_json = build_handle_contracts_json();
+    std::fs::write(
+        out_dir.join("handle-contracts.json"),
+        serde_json::to_vec_pretty(&handle_contracts_json)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("handle-contracts.json").display()
+        )
+    })?;
+
     Ok(())
 }
 
@@ -1647,6 +1659,27 @@ fn build_native_runtime_contracts_json() -> serde_json::Value {
     })
 }
 
+fn build_handle_contracts_json() -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": "fozzylang.handle_contracts.v1",
+        "versions": compatibility_versions_json(),
+        "handles": hir::runtime_handle_contracts().iter().map(|contract| {
+            serde_json::json!({
+                "name": contract.name,
+                "copy": contract.copy,
+                "owned": contract.owned,
+                "linear": contract.linear,
+                "closable": contract.closable,
+                "sendSafe": contract.send_safe,
+                "asyncStable": contract.async_stable,
+                "producerIntrinsics": contract.producer_intrinsics,
+                "consumerIntrinsics": contract.consumer_intrinsics,
+                "observerIntrinsics": contract.observer_intrinsics,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
 fn collect_function_owner_artifacts(
     function: &hir::TypedFunction,
     out: &mut Vec<MemoryOwnerArtifact>,
@@ -1865,24 +1898,10 @@ fn memory_report_expr_origin(expr: &ast::Expr) -> String {
 fn memory_report_is_linear_type(ty: &ast::Type) -> bool {
     match ty {
         ast::Type::Ptr { .. } => true,
-        ast::Type::Named { name, .. } => matches!(
-            name.as_str(),
-            "Linear"
-                | "Resource"
-                | "Ptr"
-                | "FileHandle"
-                | "ProcessHandle"
-                | "ProcessArgv"
-                | "ProcessEnv"
-                | "HttpHandle"
-                | "HttpStreamHandle"
-                | "WebSocketHandle"
-                | "KvStoreHandle"
-                | "TaskHandle"
-                | "TaskGroupHandle"
-                | "TaskGroup"
-                | "RpcFrame"
-        ),
+        ast::Type::Named { name, .. } => {
+            hir::runtime_handle_contract(name).is_some_and(|contract| contract.linear)
+                || matches!(name.as_str(), "Linear" | "Resource" | "Ptr")
+        }
         _ => false,
     }
 }

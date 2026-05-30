@@ -1223,17 +1223,36 @@ fn default_linearity(callee: &str) -> &'static str {
         callee,
         "alloc"
             | "http.bind"
-            | "http.listen"
             | "http.accept"
+            | "http.connect"
+            | "http.poll_next"
             | "http.request_stream"
+            | "http.post_json_stream"
             | "http.websocket_accept"
+            | "spawn"
+            | "spawn_ctx"
             | "proc.spawn"
             | "proc.spawnl"
             | "proc.spawn_cmd"
+            | "proc.run_cmd"
+            | "proc.argv_new"
+            | "proc.env_new"
             | "task.group_begin"
+            | "task.group_spawn"
             | "storage.kv_open"
     ) {
         "produces_linear_handle"
+    } else if matches!(
+        callee,
+        "list.new"
+            | "map.new"
+            | "json.parse"
+            | "json.to_list"
+            | "json.to_map"
+            | "json.keys"
+            | "fs.listdir"
+    ) {
+        "produces_handle"
     } else if matches!(
         callee,
         "join"
@@ -1242,14 +1261,92 @@ fn default_linearity(callee: &str) -> &'static str {
             | "task.group_join"
             | "task.group_join_all"
             | "task.group_cancel"
+            | "http.write"
+            | "http.write_json"
+            | "http.write_response"
+            | "http.close"
+            | "close"
+            | "route.write_404"
+            | "route.write_405"
+            | "proc.close"
             | "storage.kv_close"
     ) {
         "consumes_linear_handle"
-    } else if matches!(callee, "task_result" | "proc.wait" | "proc.poll") {
+    } else if matches!(
+        callee,
+        "task_result"
+            | "proc.wait"
+            | "proc.poll"
+            | "http.listen"
+            | "http.read"
+            | "http.read_headers"
+            | "http.method"
+            | "http.path"
+            | "http.body"
+            | "http.body_read"
+            | "http.body_eof"
+            | "http.body_discard"
+            | "http.body_json"
+            | "http.body_bind"
+            | "http.header"
+            | "http.query"
+            | "http.param"
+            | "http.headers"
+            | "http.request_id"
+            | "http.remote_addr"
+            | "http.response_header_set"
+            | "http.response_header_add"
+            | "http.response_header_clear"
+            | "http.stream_read"
+            | "http.stream_read_line"
+            | "http.stream_eof"
+            | "http.stream_status"
+            | "http.stream_error"
+            | "http.websocket_read"
+            | "http.websocket_kind"
+            | "http.websocket_error"
+            | "http.websocket_close_code"
+            | "http.websocket_write_text"
+            | "http.websocket_write_binary"
+            | "http.websocket_ping"
+            | "http.websocket_pong"
+            | "proc.exec_timeout"
+            | "proc.event"
+            | "proc.read_stdout"
+            | "proc.read_stderr"
+            | "proc.stdout"
+            | "proc.stderr"
+            | "proc.exit_code"
+            | "channel.send"
+            | "channel.recv"
+            | "storage.kv_get"
+            | "storage.kv_put"
+    ) {
         "observes_linear_handle"
     } else if matches!(
         callee,
-        "free" | "http.stream_close" | "http.websocket_close" | "http.close" | "proc.close"
+        "list.push"
+            | "list.pop"
+            | "list.len"
+            | "list.get"
+            | "list.set"
+            | "list.clear"
+            | "list.join"
+            | "map.set"
+            | "map.get"
+            | "map.has"
+            | "map.delete"
+            | "map.keys"
+            | "map.len"
+            | "json.get"
+            | "json.get_str"
+            | "json.has"
+            | "json.path"
+    ) {
+        "observes_handle"
+    } else if matches!(
+        callee,
+        "free" | "http.stream_close" | "http.websocket_close"
     ) {
         "consumes_linear_handle"
     } else {
@@ -1287,29 +1384,130 @@ pub(super) fn native_runtime_contract_for_callee(
             contract.arg_ownership = "consume_arg0";
             contract.return_ownership = "status";
         }
+        "spawn" | "spawn_ctx" => {
+            contract.arg_ownership = "borrow_spawn_fn";
+            contract.return_ownership = "owned_task_handle";
+        }
         "task_result" => {
             contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "status";
+        }
+        "http.bind" | "http.accept" | "http.connect" | "http.poll_next" => {
+            contract.arg_ownership = "none";
+            contract.return_ownership = "owned_http_handle";
+        }
+        "http.listen"
+        | "http.read"
+        | "http.read_headers"
+        | "http.body_eof"
+        | "http.body_discard"
+        | "http.request_id"
+        | "http.remote_addr"
+        | "http.response_header_clear" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "status";
+        }
+        "http.method" | "http.path" | "http.body" | "http.header" | "http.query" | "http.param" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "value";
+        }
+        "http.body_read" => {
+            contract.arg_ownership = "borrow_handle_limit";
+            contract.return_ownership = "value";
+        }
+        "http.body_json" | "http.body_bind" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "owned_json_handle";
+        }
+        "http.headers" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "owned_map_handle";
+        }
+        "http.response_header_set" | "http.response_header_add" => {
+            contract.arg_ownership = "borrow_handle_key_value";
             contract.return_ownership = "status";
         }
         "http.request_stream" => {
             contract.arg_ownership = "borrow_endpoint_payload_headers";
             contract.return_ownership = "owned_http_stream";
         }
+        "http.post_json_stream" => {
+            contract.arg_ownership = "borrow_endpoint_payload";
+            contract.return_ownership = "owned_http_stream";
+        }
         "http.stream_close" => {
             contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "http.stream_read" => {
+            contract.arg_ownership = "borrow_handle_limit";
+            contract.return_ownership = "value";
+        }
+        "http.stream_read_line" | "http.stream_error" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "value";
+        }
+        "http.stream_eof" | "http.stream_status" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "status";
+        }
+        "http.write" | "http.write_json" => {
+            contract.arg_ownership = "consume_arg0_borrow_status_payload";
+            contract.return_ownership = "status";
+        }
+        "http.write_response" => {
+            contract.arg_ownership = "consume_arg0_borrow_response_parts";
+            contract.return_ownership = "status";
+        }
+        "http.websocket_accept" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "owned_websocket_handle";
+        }
+        "http.websocket_read"
+        | "http.websocket_kind"
+        | "http.websocket_error"
+        | "http.websocket_close_code" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "value";
+        }
+        "http.websocket_write_text"
+        | "http.websocket_write_binary"
+        | "http.websocket_ping"
+        | "http.websocket_pong" => {
+            contract.arg_ownership = "borrow_handle_payload";
             contract.return_ownership = "status";
         }
         "http.websocket_close" => {
             contract.arg_ownership = "consume_arg0_borrow_close_payload";
             contract.return_ownership = "status";
         }
-        "http.close" => {
+        "close" | "http.close" | "route.write_404" | "route.write_405" => {
             contract.arg_ownership = "consume_arg0";
             contract.return_ownership = "status";
         }
         "proc.spawn" | "proc.spawnl" | "proc.spawn_cmd" => {
             contract.arg_ownership = "borrow_spawn_spec";
             contract.return_ownership = "owned_proc_handle";
+        }
+        "proc.run_cmd" => {
+            contract.arg_ownership = "borrow_spawn_spec";
+            contract.return_ownership = "owned_proc_handle";
+        }
+        "proc.argv_new" => {
+            contract.arg_ownership = "none";
+            contract.return_ownership = "owned_proc_argv";
+        }
+        "proc.env_new" => {
+            contract.arg_ownership = "none";
+            contract.return_ownership = "owned_proc_env";
+        }
+        "proc.argv_push" => {
+            contract.arg_ownership = "borrow_handle_value";
+            contract.return_ownership = "status";
+        }
+        "proc.env_set" => {
+            contract.arg_ownership = "borrow_handle_key_value";
+            contract.return_ownership = "status";
         }
         "proc.close" => {
             contract.arg_ownership = "consume_arg0";
@@ -1319,7 +1517,19 @@ pub(super) fn native_runtime_contract_for_callee(
             contract.arg_ownership = "borrow_handle_timeout";
             contract.return_ownership = "status";
         }
-        "proc.poll" => {
+        "proc.poll" | "proc.exec_timeout" | "proc.event" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "status";
+        }
+        "proc.read_stdout" | "proc.read_stderr" => {
+            contract.arg_ownership = "borrow_handle_limit";
+            contract.return_ownership = "value";
+        }
+        "proc.stdout" | "proc.stderr" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "value";
+        }
+        "proc.exit_code" => {
             contract.arg_ownership = "borrow_handle";
             contract.return_ownership = "status";
         }
@@ -1327,9 +1537,93 @@ pub(super) fn native_runtime_contract_for_callee(
             contract.arg_ownership = "none";
             contract.return_ownership = "owned_task_group";
         }
+        "task.group_spawn" => {
+            contract.arg_ownership = "borrow_group_spawn_fn";
+            contract.return_ownership = "owned_task_handle";
+        }
         "task.group_join" | "task.group_join_all" | "task.group_cancel" => {
             contract.arg_ownership = "consume_arg0";
             contract.return_ownership = "status";
+        }
+        "list.new" => {
+            contract.arg_ownership = "none";
+            contract.return_ownership = "owned_list_handle";
+        }
+        "list.push" | "list.set" => {
+            contract.arg_ownership = "borrow_handle_value";
+            contract.return_ownership = "status";
+        }
+        "list.pop" | "list.get" => {
+            contract.arg_ownership = "borrow_handle_index";
+            contract.return_ownership = "value";
+        }
+        "list.len" | "list.clear" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "status";
+        }
+        "list.join" => {
+            contract.arg_ownership = "borrow_handle_separator";
+            contract.return_ownership = "value";
+        }
+        "map.new" => {
+            contract.arg_ownership = "none";
+            contract.return_ownership = "owned_map_handle";
+        }
+        "map.set" => {
+            contract.arg_ownership = "borrow_handle_key_value";
+            contract.return_ownership = "status";
+        }
+        "map.get" => {
+            contract.arg_ownership = "borrow_handle_key";
+            contract.return_ownership = "value";
+        }
+        "map.has" | "map.delete" => {
+            contract.arg_ownership = "borrow_handle_key";
+            contract.return_ownership = "status";
+        }
+        "map.keys" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "owned_list_handle";
+        }
+        "map.len" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "status";
+        }
+        "json.parse" => {
+            contract.arg_ownership = "borrow_text";
+            contract.return_ownership = "owned_json_handle";
+        }
+        "json.to_list" | "json.keys" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "owned_list_handle";
+        }
+        "json.to_map" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "owned_map_handle";
+        }
+        "json.get" | "json.path" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "owned_json_handle";
+        }
+        "json.get_str" => {
+            contract.arg_ownership = "borrow_handle_key";
+            contract.return_ownership = "value";
+        }
+        "json.has" => {
+            contract.arg_ownership = "borrow_handle_key";
+            contract.return_ownership = "status";
+        }
+        "fs.listdir" => {
+            contract.arg_ownership = "borrow_path";
+            contract.return_ownership = "owned_list_handle";
+        }
+        "channel.send" => {
+            contract.arg_ownership = "borrow_handle_payload";
+            contract.return_ownership = "status";
+        }
+        "channel.recv" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "value";
         }
         "storage.kv_open" => {
             contract.arg_ownership = "borrow_path";

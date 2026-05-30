@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use super::super::*;
 use super::super::native_runtime_tables::native_runtime_contract_for_callee;
+use super::super::*;
 
 pub(crate) fn native_runtime_import_contract_errors() -> Vec<String> {
     let mut errors = Vec::new();
@@ -93,6 +93,44 @@ pub(crate) fn native_runtime_import_contract_errors() -> Vec<String> {
                 "native import `{}` has incomplete runtime contract metadata",
                 callee
             ));
+        }
+    }
+    for handle in hir::runtime_handle_contracts() {
+        for callee in handle
+            .producer_intrinsics
+            .iter()
+            .copied()
+            .filter(|callee| imported_runtime.contains(callee))
+        {
+            let Some(contract) = native_runtime_contract_for_callee(callee) else {
+                continue;
+            };
+            if !contract.return_ownership.starts_with("owned_")
+                && !contract.linearity.starts_with("produces")
+            {
+                errors.push(format!(
+                    "handle `{}` producer `{}` must return owned handle metadata, found returnOwnership=`{}` linearity=`{}`",
+                    handle.name, callee, contract.return_ownership, contract.linearity
+                ));
+            }
+        }
+        if handle.closable {
+            for callee in handle
+                .consumer_intrinsics
+                .iter()
+                .copied()
+                .filter(|callee| imported_runtime.contains(callee))
+            {
+                let Some(contract) = native_runtime_contract_for_callee(callee) else {
+                    continue;
+                };
+                if !contract.arg_ownership.contains("consume") {
+                    errors.push(format!(
+                        "closable handle `{}` consumer `{}` must consume the handle argument, found `{}`",
+                        handle.name, callee, contract.arg_ownership
+                    ));
+                }
+            }
         }
     }
     errors

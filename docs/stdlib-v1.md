@@ -147,6 +147,26 @@ let err = proc.stderr(handle)
 - Canonical safe patterns include `defer free(ptr)` for heap memory, `defer proc.close(handle)` for process handles, and `defer close(handle)` for other linear stdlib/runtime wrappers that expose bare `close(...)`.
 - `alloc(...)` / `free(...)` remain part of the safe subset when verifier tracking succeeds; they do not require `unsafe` unless combined with unchecked raw-memory operations.
 
+### Handle Contract Matrix
+
+- Linear and explicitly terminal:
+  - `HttpHandle`
+  - `HttpStreamHandle`
+  - `WebSocketHandle`
+  - `ProcessHandle`
+  - `ProcessArgv`
+  - `ProcessEnv`
+  - `TaskHandle`
+  - `TaskGroupHandle`
+  - `KvStoreHandle`
+- Owned but non-linear:
+  - `JsonHandle`
+  - `ListHandle`
+  - `MapHandle`
+- Compiler-shipped handle contracts are emitted in `.fz/handle-contracts.json`.
+- Native runtime edge contracts are emitted in `.fz/native-runtime-contracts.json`.
+- Production code should treat the emitted contract artifacts as the source of truth for handle cleanup, borrowing, send-safety, and async-stability semantics.
+
 ### `term`
 
 - Current-process terminal I/O is first-class:
