@@ -1667,9 +1667,122 @@ fn verify_partial_move_memory_diagnostic_is_snapshot_stable() {
         .expect("partial-move memory diagnostic should be present");
     assert_eq!(
         diagnostic.help.as_deref(),
-        Some("enforce ownership transfer semantics and ensure every allocation is released")
+        Some(
+            "move or destructure the full owned aggregate, or borrow fields instead of extracting only one owned subvalue"
+        )
     );
-    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-47DDFF6D"));
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-16CC6B10"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_tuple_partial_move_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-tuple-partial-move-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let pair: (*mut u8, *mut u8) = (alloc(32), alloc(32))\n    let (left, _) = pair\n    close(left)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` performs partial move from owned aggregate; partial moves are forbidden in v0"
+        })
+        .expect("tuple partial-move memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "move or destructure the full owned aggregate, or borrow fields instead of extracting only one owned subvalue"
+        )
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-16CC6B10"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_nested_struct_field_partial_move_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-nested-struct-field-partial-move-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "struct Inner { ptr: *mut u8 }\nstruct Outer { inner: Inner, tag: i32 }\nfn main() -> i32 {\n    let outer: Outer = Outer { inner: Inner { ptr: alloc(32) }, tag: 7 }\n    let ptr = outer.inner.ptr\n    close(ptr)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` performs partial move from owned aggregate; partial moves are forbidden in v0"
+        })
+        .expect("nested struct-field partial-move memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "move or destructure the full owned aggregate, or borrow fields instead of extracting only one owned subvalue"
+        )
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-16CC6B10"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_partial_move_assignment_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-partial-move-assignment-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "struct Inner { ptr: *mut u8 }\nstruct Outer { inner: Inner, tag: i32 }\nfn main() -> i32 {\n    let mut ptr = alloc(8)\n    let outer: Outer = Outer { inner: Inner { ptr: alloc(32) }, tag: 7 }\n    ptr = outer.inner.ptr\n    close(ptr)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` performs partial move assignment from owned aggregate; partial moves are forbidden in v0"
+        })
+        .expect("partial-move assignment memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "move or destructure the full owned aggregate, or borrow fields instead of extracting only one owned subvalue"
+        )
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("partial-move assignment memory diagnostic should carry stable code");
 
     let _ = std::fs::remove_file(path);
 }
@@ -1701,9 +1814,11 @@ fn verify_enum_partial_move_memory_diagnostic_is_snapshot_stable() {
         .expect("enum partial-move memory diagnostic should be present");
     assert_eq!(
         diagnostic.help.as_deref(),
-        Some("enforce ownership transfer semantics and ensure every allocation is released")
+        Some(
+            "move or destructure the full owned aggregate, or borrow fields instead of extracting only one owned subvalue"
+        )
     );
-    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-47DDFF6D"));
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-16CC6B10"));
 
     let _ = std::fs::remove_file(path);
 }

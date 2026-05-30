@@ -523,6 +523,8 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             "use the mutable-borrowed alias directly, or move the owner access after the borrow's last use".to_string()
         } else if violation.contains("after provenance root") {
             "stop using aliases after freeing the owning value; move the free later, or return/assign a fresh owned value before reuse".to_string()
+        } else if violation.contains("performs partial move") {
+            "move or destructure the full owned aggregate, or borrow fields instead of extracting only one owned subvalue".to_string()
         } else {
             "enforce ownership transfer semantics and ensure every allocation is released"
                 .to_string()

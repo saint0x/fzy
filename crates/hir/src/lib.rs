@@ -18919,6 +18919,26 @@ mod tests {
     }
 
     #[test]
+    fn partial_move_assignment_from_owned_aggregate_is_rejected() {
+        let source = r#"
+            struct Inner { ptr: *mut u8 }
+            struct Outer { inner: Inner, tag: i32 }
+            fn main() -> i32 {
+                let mut ptr = alloc(8);
+                let outer: Outer = Outer { inner: Inner { ptr: alloc(32) }, tag: 7 };
+                ptr = outer.inner.ptr;
+                close(ptr);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains("performs partial move assignment from owned aggregate")
+        }));
+    }
+
+    #[test]
     fn struct_pattern_partial_move_is_rejected() {
         let source = r#"
             struct Pair { left: *mut u8, right: *mut u8 }
