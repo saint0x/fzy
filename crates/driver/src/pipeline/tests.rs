@@ -26,6 +26,12 @@ fn run_native_status(exe: &Path) -> std::process::ExitStatus {
         .expect("native artifact should execute")
 }
 
+fn run_native_output(exe: &Path) -> std::process::Output {
+    Command::new(exe)
+        .output()
+        .expect("native artifact should execute")
+}
+
 #[test]
 fn compile_file_runs_pipeline() {
     let file_name = format!(
@@ -4374,6 +4380,151 @@ fn cross_backend_unsafe_local_function_calls_execute_consistently() {
     assert_eq!(llvm_exit, 7);
 
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn cross_backend_async_term_and_file_artifacts_remain_identical() {
+    let project_name = format!(
+        "fozzylang-async-term-file-parity-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    let out_path = root.join("parity-output.json");
+    let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"backend_parity\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"backend_parity\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        format!(
+            "use core.fs;\nuse core.term;\nuse core.thread;\n\nfn worker() -> i32 {{\n    return 5\n}}\n\nfn main() -> i32 {{\n    let handle = spawn(worker)\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    let direct = join(handle)\n    let grouped = task.group_join_all(group)\n    let payload = map.new()\n    discard map.set(payload, \"direct\", json.str(str.from_i32(direct)))\n    discard map.set(payload, \"grouped\", json.str(str.from_i32(grouped)))\n    discard map.set(payload, \"mode\", json.str(\"parity\"))\n    fs.write_file(\"{quoted_out}\", json.object(payload))\n    discard term.write(\"stdout-parity\\n\")\n    discard term.write_err(\"stderr-parity\\n\")\n    return direct + grouped\n}}\n"
+        ),
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+
+    let _ = std::fs::remove_file(&out_path);
+    let cranelift_output = run_native_output(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift output should exist"),
+    );
+    let cranelift_exit = cranelift_output
+        .status
+        .code()
+        .expect("cranelift output should include exit code");
+    let cranelift_stdout =
+        String::from_utf8(cranelift_output.stdout).expect("cranelift stdout should be utf-8");
+    let cranelift_stderr =
+        String::from_utf8(cranelift_output.stderr).expect("cranelift stderr should be utf-8");
+    let cranelift_artifact =
+        std::fs::read_to_string(&out_path).expect("cranelift artifact should exist");
+
+    let _ = std::fs::remove_file(&out_path);
+    let llvm_output = run_native_output(llvm.output.as_deref().expect("llvm output should exist"));
+    let llvm_exit = llvm_output
+        .status
+        .code()
+        .expect("llvm output should include exit code");
+    let llvm_stdout = String::from_utf8(llvm_output.stdout).expect("llvm stdout should be utf-8");
+    let llvm_stderr = String::from_utf8(llvm_output.stderr).expect("llvm stderr should be utf-8");
+    let llvm_artifact = std::fs::read_to_string(&out_path).expect("llvm artifact should exist");
+
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 10);
+    assert_eq!(cranelift_stdout, llvm_stdout);
+    assert_eq!(cranelift_stdout, "stdout-parity\n");
+    assert_eq!(cranelift_stderr, llvm_stderr);
+    assert_eq!(cranelift_stderr, "stderr-parity\n");
+    assert_eq!(cranelift_artifact, llvm_artifact);
+    assert!(cranelift_artifact.contains("\"direct\":\"5\""));
+    assert!(cranelift_artifact.contains("\"grouped\":\"5\""));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cross_backend_proc_payload_artifacts_remain_identical() {
+    let project_name = format!(
+        "fozzylang-proc-payload-parity-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    let out_path = root.join("proc-output.json");
+    let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"backend_proc_parity\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"backend_proc_parity\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        format!(
+            "use core.fs;\nuse core.proc;\n\nfn main() -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"printf left; printf right >&2\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    let wait_status = proc.wait(handle, 1000)\n    let stdout = proc.stdout(handle)\n    let stderr = proc.stderr(handle)\n    discard proc.close(handle)\n    let payload = map.new()\n    discard map.set(payload, \"wait\", json.str(str.from_i32(wait_status)))\n    discard map.set(payload, \"stdout\", json.str(stdout))\n    discard map.set(payload, \"stderr\", json.str(stderr))\n    fs.write_file(\"{quoted_out}\", json.object(payload))\n    return wait_status\n}}\n"
+        ),
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+
+    let _ = std::fs::remove_file(&out_path);
+    let cranelift_output = run_native_output(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift output should exist"),
+    );
+    let cranelift_exit = cranelift_output
+        .status
+        .code()
+        .expect("cranelift output should include exit code");
+    let cranelift_stdout =
+        String::from_utf8(cranelift_output.stdout).expect("cranelift stdout should be utf-8");
+    let cranelift_stderr =
+        String::from_utf8(cranelift_output.stderr).expect("cranelift stderr should be utf-8");
+    let cranelift_artifact =
+        std::fs::read_to_string(&out_path).expect("cranelift artifact should exist");
+
+    let _ = std::fs::remove_file(&out_path);
+    let llvm_output = run_native_output(llvm.output.as_deref().expect("llvm output should exist"));
+    let llvm_exit = llvm_output
+        .status
+        .code()
+        .expect("llvm output should include exit code");
+    let llvm_stdout = String::from_utf8(llvm_output.stdout).expect("llvm stdout should be utf-8");
+    let llvm_stderr = String::from_utf8(llvm_output.stderr).expect("llvm stderr should be utf-8");
+    let llvm_artifact = std::fs::read_to_string(&out_path).expect("llvm artifact should exist");
+
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert_eq!(cranelift_exit, 0);
+    assert_eq!(cranelift_stdout, llvm_stdout);
+    assert!(cranelift_stdout.is_empty());
+    assert_eq!(cranelift_stderr, llvm_stderr);
+    assert!(cranelift_stderr.is_empty());
+    assert_eq!(cranelift_artifact, llvm_artifact);
+    assert!(cranelift_artifact.contains("\"wait\":\"0\""));
+    assert!(cranelift_artifact.contains("\"stdout\":\"left\""));
+    assert!(cranelift_artifact.contains("\"stderr\":\"right\""));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
