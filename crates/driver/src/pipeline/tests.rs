@@ -1003,6 +1003,271 @@ fn verify_helper_owned_param_reuse_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_alias_use_after_free_provenance_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-alias-use-after-free-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    let q = p\n    free(p)\n    close(q)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses value `q` after provenance root 1 was freed"
+        })
+        .expect("alias use-after-free provenance diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "stop using aliases after freeing the owning value; move the free later, or return/assign a fresh owned value before reuse"
+        )
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("alias use-after-free provenance diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_helper_returned_first_arg_provenance_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-helper-returned-first-arg-provenance-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn first(a: *mut u8, b: *mut u8) -> *mut u8 {\n    return a\n}\nfn second(a: *mut u8, b: *mut u8) -> *mut u8 {\n    return b\n}\nfn main() -> i32 {\n    let a = alloc(32)\n    let b = alloc(32)\n    let from_first = first(a, b)\n    let from_second = second(a, b)\n    free(a)\n    close(from_first)\n    close(from_second)\n    free(b)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let from_first = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` uses value `from_first` after provenance root 1 was freed"
+        })
+        .expect("helper-returned first-arg provenance diagnostic should be present");
+    assert_eq!(
+        from_first.help.as_deref(),
+        Some(
+            "stop using aliases after freeing the owning value; move the free later, or return/assign a fresh owned value before reuse"
+        )
+    );
+    assert!(
+        !output.diagnostic_details.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("uses value `from_second` after provenance root")),
+        "second parameter provenance should stay distinct"
+    );
+    let _ = from_first
+        .code
+        .as_deref()
+        .expect("helper-returned first-arg provenance diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_tuple_pattern_provenance_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-tuple-pattern-provenance-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let a = alloc(32)\n    let b = alloc(32)\n    let (left, right) = (a, b)\n    free(a)\n    close(left)\n    close(right)\n    free(b)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let left = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` uses value `left` after provenance root 1 was freed"
+        })
+        .expect("tuple-pattern provenance diagnostic should be present");
+    assert_eq!(
+        left.help.as_deref(),
+        Some(
+            "stop using aliases after freeing the owning value; move the free later, or return/assign a fresh owned value before reuse"
+        )
+    );
+    assert!(
+        !output.diagnostic_details.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("uses value `right` after provenance root")),
+        "tuple right element should preserve distinct provenance"
+    );
+    let _ = left
+        .code
+        .as_deref()
+        .expect("tuple-pattern provenance diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_struct_pattern_provenance_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-struct-pattern-provenance-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "struct Pair { left: *mut u8, right: *mut u8 }\nfn main() -> i32 {\n    let a = alloc(32)\n    let b = alloc(32)\n    let Pair { left, right } = Pair { left: a, right: b }\n    free(a)\n    close(left)\n    close(right)\n    free(b)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let left = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` uses value `left` after provenance root 1 was freed"
+        })
+        .expect("struct-pattern provenance diagnostic should be present");
+    assert_eq!(
+        left.help.as_deref(),
+        Some(
+            "stop using aliases after freeing the owning value; move the free later, or return/assign a fresh owned value before reuse"
+        )
+    );
+    assert!(
+        !output.diagnostic_details.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("uses value `right` after provenance root")),
+        "struct right field should preserve distinct provenance"
+    );
+    let _ = left
+        .code
+        .as_deref()
+        .expect("struct-pattern provenance diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_reassignment_clears_stale_provenance_root() {
+    let file_name = format!(
+        "fozzylang-memory-reassignment-clears-stale-provenance-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "ext unsafe c fn acquire_owned() -> *u8\nunsafe fn main() -> i32 {\n    let p = alloc(32)\n    let q = p\n    q = acquire_owned()\n    free(p)\n    close(q)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    assert!(
+        !output.diagnostic_details.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("uses value `q` after provenance root")),
+        "reassignment should clear stale provenance on q"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_returned_second_pointer_arg_stays_clean() {
+    let file_name = format!(
+        "fozzylang-memory-returned-second-pointer-arg-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn passthrough(a: *mut u8, b: *mut u8) -> *mut u8 {\n    return b\n}\nfn main() -> i32 {\n    let a = alloc(32)\n    let b = alloc(32)\n    let ret = passthrough(a, b)\n    free(a)\n    close(ret)\n    free(b)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    assert!(
+        !output.diagnostic_details.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("uses value `ret` after provenance root")),
+        "returned second parameter should not collapse to first argument provenance root"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_nested_use_after_free_control_flow_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-nested-use-after-free-control-flow-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    let q = p\n    if true {\n        free(p)\n    } else {\n        return 0\n    }\n    close(q)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses value `q` after provenance root 1 was freed"
+        })
+        .expect("nested use-after-free control-flow diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "stop using aliases after freeing the owning value; move the free later, or return/assign a fresh owned value before reuse"
+        )
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("nested use-after-free control-flow diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_task_handle_wrapper_reuse_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-memory-task-handle-wrapper-reuse-{}.fzy",
