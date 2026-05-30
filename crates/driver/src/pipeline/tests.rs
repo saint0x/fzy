@@ -786,6 +786,109 @@ fn verify_thread_boundary_shared_param_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_process_builder_argv_leak_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-process-builder-argv-leak-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.proc;\nfn main() -> i32 {\n    let argv = proc.argv_new()\n    proc.argv_push(argv, \"hi\")\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` linear value `argv` was not consumed/freed"
+        })
+        .expect("process-builder argv leak diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("linear resources must be consumed exactly once")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("process-builder argv leak diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_process_builder_env_leak_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-process-builder-env-leak-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.proc;\nfn main() -> i32 {\n    let env = proc.env_new()\n    proc.env_set(env, \"K\", \"V\")\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` linear value `env` was not consumed/freed"
+        })
+        .expect("process-builder env leak diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("linear resources must be consumed exactly once")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("process-builder env leak diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_process_builders_consumed_by_spawn_cmd_do_not_report_linear_leaks() {
+    let file_name = format!(
+        "fozzylang-process-builder-spawn-pass-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.proc;\nfn main() -> i32 {\n    let argv = proc.argv_new()\n    proc.argv_push(argv, \"hi\")\n    let env = proc.env_new()\n    proc.env_set(env, \"K\", \"V\")\n    let handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard proc.close(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("linear value `argv` was not consumed/freed")
+            || diagnostic
+                .message
+                .contains("linear value `env` was not consumed/freed")
+            || (diagnostic.message.contains("leaks allocation")
+                && (diagnostic.message.contains("`argv`") || diagnostic.message.contains("`env`")))
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn derive_anchors_from_message_extracts_primary_and_related_tokens() {
     let lines = vec![
         "fn main() -> i32 {".to_string(),

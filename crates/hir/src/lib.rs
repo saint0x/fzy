@@ -3206,6 +3206,8 @@ fn is_linear_runtime_handle(name: &str) -> bool {
             | "Ptr"
             | "FileHandle"
             | "ProcessHandle"
+            | "ProcessArgv"
+            | "ProcessEnv"
             | "HttpHandle"
             | "HttpStreamHandle"
             | "WebSocketHandle"
@@ -3745,6 +3747,7 @@ fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
         | "task.group_join"
         | "task.group_join_all"
         | "task.group_cancel" => &[0],
+        "proc.spawn_cmd" | "proc.run_cmd" | "proc.spawnl" | "proc.runl" => &[1, 2],
         _ if is_free_callee(callee) || is_close_callee(callee) => &[0],
         _ if callee.ends_with("http.write")
             || callee.ends_with("http.write_json")
@@ -15316,6 +15319,91 @@ mod tests {
         let module = parser::parse(source, "main").expect("parse");
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn process_builder_handles_without_spawn_report_linear_leaks() {
+        let source = r#"
+            use core.proc;
+            fn main() -> i32 {
+                let argv = proc.argv_new();
+                let env = proc.env_new();
+                proc.argv_push(argv, "hi");
+                proc.env_set(env, "K", "V");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `main` linear value `argv` was not consumed/freed")
+        }));
+        assert!(typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `main` linear value `env` was not consumed/freed")
+        }));
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`argv`")));
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("leaks allocation") && detail.contains("`env`")));
+    }
+
+    #[test]
+    fn process_spawn_cmd_consumes_argv_and_env_builders() {
+        let source = r#"
+            use core.proc;
+            fn main() -> i32 {
+                let argv = proc.argv_new();
+                proc.argv_push(argv, "hi");
+                let env = proc.env_new();
+                proc.env_set(env, "K", "V");
+                let handle = proc.spawn_cmd("echo", argv, env, "");
+                discard proc.close(handle);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `main` linear value `argv` was not consumed/freed")
+                || detail.contains("function `main` linear value `env` was not consumed/freed")
+        }));
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("function `main` leaks allocation")
+                && (detail.contains("`argv`") || detail.contains("`env`"))
+        }));
+    }
+
+    #[test]
+    fn process_spawn_wrapper_can_consume_builder_handles() {
+        let source = r#"
+            use core.proc;
+            fn launch(argv: ProcessArgv, env: ProcessEnv) -> ProcessHandle {
+                return proc.spawn_cmd("echo", argv, env, "");
+            }
+            fn main() -> i32 {
+                let argv = proc.argv_new();
+                proc.argv_push(argv, "hi");
+                let env = proc.env_new();
+                proc.env_set(env, "K", "V");
+                let handle = launch(argv, env);
+                discard proc.close(handle);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("linear value `argv` was not consumed/freed")
+                || detail.contains("linear value `env` was not consumed/freed")
+        }));
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains("function `main` leaks allocation")
+                && (detail.contains("`argv`") || detail.contains("`env`"))
+        }));
     }
 
     #[test]

@@ -230,6 +230,7 @@ Required tests:
 
 🟢 Completed slice:
 Core ownership/provenance regressions, borrow-region enforcement, partial-move coverage, diagnostic snapshots, process-builder handle tracking, and deterministic Fozzy memory scenarios are already in place; the remaining work is extending that closed core to the remaining adversarial shapes and handle classes.
+- `ProcessArgv` / `ProcessEnv` now follow compiler-owned linear-handle law too: unused builders leak, `proc.spawn_cmd` / `proc.run_cmd` / `proc.spawnl` / `proc.runl` consume them, helper-mediated transfer is regression-covered, and the shipped Fozzy corpus now exercises that exact builder-ownership surface
 
 Problem:
 
