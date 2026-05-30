@@ -32,6 +32,24 @@ fn run_native_output(exe: &Path) -> std::process::Output {
         .expect("native artifact should execute")
 }
 
+fn nm_symbols(path: &Path) -> Vec<String> {
+    let nm = Command::new("nm")
+        .arg(path)
+        .output()
+        .expect("nm should be available");
+    assert!(
+        nm.status.success(),
+        "nm should succeed for {}",
+        path.display()
+    );
+    String::from_utf8_lossy(&nm.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 #[test]
 fn compile_file_runs_pipeline() {
     let file_name = format!(
@@ -4525,6 +4543,110 @@ fn cross_backend_proc_payload_artifacts_remain_identical() {
     assert!(cranelift_artifact.contains("\"stderr\":\"right\""));
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn cross_backend_library_exports_remain_identical() {
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    let llvm_root = std::env::temp_dir().join(format!("fozzylang-lib-parity-llvm-{suffix}"));
+    let clif_root = std::env::temp_dir().join(format!("fozzylang-lib-parity-clif-{suffix}"));
+
+    for root in [&llvm_root, &clif_root] {
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"backend_lib_parity\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"backend_lib_parity\"\npath=\"src/lib.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n\n#[ffi_panic(abort)]\npubext c fn mul(left: i32, right: i32) -> i32 {\n    return left * right\n}\n",
+        )
+        .expect("source should be written");
+    }
+
+    let llvm = compile_library_with_backend(&llvm_root, BuildProfile::Release, Some("llvm"))
+        .expect("llvm library build should succeed");
+    let cranelift = compile_library_with_backend(&clif_root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift library build should succeed");
+
+    let llvm_static_symbols = nm_symbols(
+        llvm.static_lib
+            .as_deref()
+            .expect("llvm static lib should exist"),
+    );
+    let clif_static_symbols = nm_symbols(
+        cranelift
+            .static_lib
+            .as_deref()
+            .expect("cranelift static lib should exist"),
+    );
+    let llvm_shared_symbols = nm_symbols(
+        llvm.shared_lib
+            .as_deref()
+            .expect("llvm shared lib should exist"),
+    );
+    let clif_shared_symbols = nm_symbols(
+        cranelift
+            .shared_lib
+            .as_deref()
+            .expect("cranelift shared lib should exist"),
+    );
+
+    for expected in ["add", "mul"] {
+        assert!(
+            llvm_static_symbols
+                .iter()
+                .any(|line| line.contains(expected)),
+            "llvm static exports should include {expected}"
+        );
+        assert!(
+            clif_static_symbols
+                .iter()
+                .any(|line| line.contains(expected)),
+            "cranelift static exports should include {expected}"
+        );
+        assert!(
+            llvm_shared_symbols
+                .iter()
+                .any(|line| line.contains(expected)),
+            "llvm shared exports should include {expected}"
+        );
+        assert!(
+            clif_shared_symbols
+                .iter()
+                .any(|line| line.contains(expected)),
+            "cranelift shared exports should include {expected}"
+        );
+    }
+
+    let llvm_public = llvm_shared_symbols
+        .iter()
+        .filter(|line| {
+            line.contains(" add")
+                || line.ends_with(" add")
+                || line.contains(" mul")
+                || line.ends_with(" mul")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let clif_public = clif_shared_symbols
+        .iter()
+        .filter(|line| {
+            line.contains(" add")
+                || line.ends_with(" add")
+                || line.contains(" mul")
+                || line.ends_with(" mul")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(llvm_public.len(), clif_public.len());
+
+    let _ = std::fs::remove_dir_all(llvm_root);
+    let _ = std::fs::remove_dir_all(clif_root);
 }
 
 #[test]

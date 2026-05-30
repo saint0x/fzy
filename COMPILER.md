@@ -400,6 +400,18 @@ Audit baseline on this checkout:
 7. Both LLVM and Cranelift are already live backends, and parity hooks exist, but parity is not yet a documented all-feature guarantee with a closed allowlist/denylist.
 8. Trace/reporting artifacts already carry multiple schema versions, but the language version, manifest schema version, runtime ABI/import-table version, trace schema version, and diagnostic catalog version are not yet locked together as one explicit compatibility policy.
 
+Completed slices already landed from this queue:
+
+- 🟢 strict production profile is now first-class across manifest, driver, runtime routing, and CLI entrypoints
+- 🟢 native runtime imports now emit contract artifacts with ownership/capability/linearity/error/trace/blocking metadata
+- 🟢 `fz audit ffi` and `fz audit memory` are first-class commands with shipped JSON/markdown outputs
+- 🟢 RPC safety artifacts now report enforced per-call deadline evidence instead of placeholder `unspecified` policy
+- 🟢 strict builds reject RPC call paths that are not explicitly bounded by `timeout(...)` or `deadline(...)`
+- 🟢 task-handle runtime contracts now distinguish consuming operations (`join` / `detach` / `cancel_task`) from observational ones (`task_result`)
+- 🟢 async-safety artifacts now report task-handle lifecycle policy, task-handle misuse findings, task-group misuse findings, and strict async requirements
+- 🟢 strict builds now surface dedicated async/task diagnostics for handle misuse and missing/repeated task-group terminal policy
+- 🟢 backend parity coverage now includes observable behavior checks for exit code, stdout, stderr, and emitted file artifacts across LLVM and Cranelift for real runtime shapes
+
 ## Priority 6: Lock Compiler And Runtime Behavior Behind Brutal Regression Coverage
 
 ### 14. Build a compiler-phase lock-in suite that makes changes safe
@@ -479,6 +491,11 @@ Required tests:
 
 ### 16. Promote native runtime imports from name tables to contract tables
 
+🟢 Completed slice:
+- native runtime contracts are now emitted from one structured table with ownership/capability/linearity/error/trace/blocking metadata
+- consuming task/runtime edges are now encoded explicitly instead of inferred from callee names alone
+- `fz audit ffi` / `fz audit memory` ship on top of these artifacts
+
 Problem:
 
 - the native import tables are centralized, which is good, but they currently stop at callee/symbol/arity for most enforcement
@@ -518,6 +535,10 @@ Required tests:
 
 ### 17. Lock in typed-handle and linear-resource law
 
+🟢 Completed slice:
+- task handles and task groups now have explicit runtime contract metadata that distinguishes consuming and observational operations
+- async-safety artifacts now expose handle/group lifecycle policy instead of leaving those edges implicit
+
 Problem:
 
 - FZY already treats several runtime values as linear or owned, but the handle model is not yet written as one closed, compiler-known matrix
@@ -556,6 +577,10 @@ Required tests:
 
 ### 18. Make async/task safety as strict as ownership safety
 
+🟢 Completed slice:
+- async-safety artifacts now publish strict requirements, task-handle lifecycle policy, task-handle misuse findings, and task-group misuse findings
+- strict builds now reject `task_result(...)` after terminal consumption, repeated handle terminal operations, and missing/repeated task-group terminal policy with dedicated diagnostics
+
 Problem:
 
 - async is a differentiator for FZY, so the safety story cannot remain partly structural and partly advisory
@@ -589,6 +614,10 @@ Required tests:
 3. trace verification that async schedule and task-group terminal policy are deterministic and replayable
 
 ### 19. Turn RPC from “present” into one of the strongest shipped surfaces
+
+🟢 Completed slice:
+- RPC safety artifacts now derive per-method deadline/cancel evidence from compiler-visible call behavior
+- strict builds now reject RPC call paths that are not explicitly bounded by `timeout(...)` or `deadline(...)`
 
 Problem:
 
@@ -625,6 +654,10 @@ Required tests:
 ## Priority 9: Guarantee Backend And Diagnostic Trustworthiness
 
 ### 20. Expand backend parity from “important discipline” to “documented law”
+
+🟢 Completed slice:
+- parity coverage already spans many exit-code/runtime categories and now also asserts observable parity for stdout, stderr, and emitted JSON/file artifacts on representative async/task/process flows
+- `fz parity` and `fz equivalence` are part of the active validation loop for this hardening work
 
 Problem:
 
