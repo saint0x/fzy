@@ -1036,6 +1036,213 @@ fn verify_task_handle_wrapper_return_does_not_report_memory_lifecycle_imbalance(
 }
 
 #[test]
+fn verify_binary_expression_joins_consume_task_handles() {
+    let file_name = format!(
+        "fozzylang-memory-binary-join-task-handles-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn main() -> i32 {\n    let left = spawn(worker)\n    let right = spawn(worker)\n    return join(left) + join(right)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` leaks allocation")
+            || diagnostic
+                .message
+                .contains("linear value `left` was not consumed/freed")
+            || diagnostic
+                .message
+                .contains("linear value `right` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_websocket_close_wrapper_consumes_handle() {
+    let file_name = format!(
+        "fozzylang-memory-websocket-close-wrapper-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn close_ws(ws: WebSocketHandle) -> i32 {\n    return http.websocket_close(ws, 1000, \"ok\")\n}\nfn main() -> i32 {\n    let listener = http.bind()\n    defer close(listener)\n    let conn = http.accept()\n    let ws = http.websocket_accept(conn)\n    discard close_ws(ws)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` leaks allocation")
+            || diagnostic
+                .message
+                .contains("linear value `ws` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_process_close_wrapper_consumes_handle() {
+    let file_name = format!(
+        "fozzylang-memory-process-close-wrapper-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.proc;\nfn close_wrapper(handle: ProcessHandle) -> i32 {\n    return proc.close(handle)\n}\nfn main() -> i32 {\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard close_wrapper(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` leaks allocation")
+            || diagnostic
+                .message
+                .contains("linear value `handle` was not consumed/freed")
+            || diagnostic
+                .message
+                .contains("linear value `argv` was not consumed/freed")
+            || diagnostic
+                .message
+                .contains("linear value `env` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_non_consuming_stream_param_stays_clean() {
+    let file_name = format!(
+        "fozzylang-memory-non-consuming-stream-param-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn inspect(stream: HttpStreamHandle) -> i32 {\n    if http.stream_eof(stream) == 1 {\n        return 1\n    }\n    discard http.stream_status(stream)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `inspect` linear value `stream` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_http_write_json_consumes_connection_param() {
+    let file_name = format!(
+        "fozzylang-memory-http-write-json-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn respond(conn: HttpHandle) -> i32 {\n    return http.write_json(conn, 200, \"{\\\"ok\\\":true}\")\n}\nfn main() -> i32 {\n    let conn = http.accept()\n    discard respond(conn)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` leaks allocation")
+            || diagnostic
+                .message
+                .contains("function `respond` linear value `conn` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_loop_local_consumed_http_handle_does_not_escape_merge() {
+    let file_name = format!(
+        "fozzylang-memory-loop-consumed-http-handle-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn main() -> i32 {\n    let mut served = 0\n    while served < 2 {\n        let conn = http.accept()\n        discard http.write_json(conn, 200, \"{\\\"ok\\\":true}\")\n        served = served + 1\n    }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("divergent ownership state for `conn`")
+            || diagnostic
+                .message
+                .contains("uses moved value `conn` after move/consume")
+            || diagnostic
+                .message
+                .contains("function `main` leaks allocation")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_memory_lifecycle_imbalance_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-memory-lifecycle-imbalance-{}.fzy",
