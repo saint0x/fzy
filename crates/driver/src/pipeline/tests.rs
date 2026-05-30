@@ -142,6 +142,41 @@ fn compile_file_emits_rpc_policy_evidence() {
 }
 
 #[test]
+fn compile_file_emits_async_task_handle_policy_evidence() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-task-handle-artifacts-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_task_handle_artifacts\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_task_handle_artifacts\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let handle = spawn(worker)\n    let status = task_result(handle)\n    if status < 0 {\n        return join(handle)\n    }\n    return join(handle)\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let async_report = std::fs::read_to_string(root.join(".fz/async-safety.json"))
+        .expect("async safety report should exist");
+    assert!(async_report.contains("\"taskHandleTerminalPolicy\": true"));
+    assert!(async_report.contains("\"handle\": \"handle\""));
+    assert!(async_report.contains("\"origin\": \"spawn\""));
+    assert!(async_report.contains("\"policy\": \"join\""));
+    assert!(async_report.contains("\"resultReads\": 1"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn strict_compile_rejects_rpc_calls_without_deadlines() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-rpc-strict-{}",
