@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "name": "compiler-memory-controlflow-and-owned-params-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd();\n\ndef write_project(name, source):\n    root = pathlib.Path(tempfile.mkdtemp(prefix=f'fozzylang-{name}-'))\n    (root / 'src').mkdir(parents=True, exist_ok=True)\n    (root / 'fozzy.toml').write_text(textwrap.dedent(f'''\\\n        [package]\n        name=\"{name}\"\n        version=\"0.1.0\"\n\n        [[target.bin]]\n        name=\"{name}\"\n        path=\"src/main.fzy\"\n    '''))\n    (root / 'src/main.fzy').write_text(textwrap.dedent(source))\n    return root\n\ndef verify(name, source, expect_rc):\n    root = write_project(name, source)\n    proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'verify', str(root), '--json'], cwd=str(repo), capture_output=True, text=True)\n    payload = json.loads(proc.stdout.strip())\n    assert proc.returncode == expect_rc, (name, proc.returncode, payload, proc.stderr)\n    return payload\n\ndef messages(payload):\n    return [item['message'] for item in payload['items']]\n\nearly_return_leak = verify('early_return_leak', '''\n    fn main() -> i32 {\n        let p = alloc(32)\n        return 0\n    }\n''', 1)\nassert any('function `main` leaks allocation id=1 owned by `p`' in message for message in messages(early_return_leak)), early_return_leak\n\nloop_leak = verify('loop_leak', '''\n    fn main() -> i32 {\n        let p = alloc(32)\n        loop {\n            break\n        }\n        return 0\n    }\n''', 1)\nassert any('function `main` leaks allocation id=1 owned by `p`' in message for message in messages(loop_leak)), loop_leak\n\ngrouped_owned_return = verify('grouped_owned_return', '''\n    fn produce() -> *mut u8 {\n        let p = alloc(32)\n        return (p)\n    }\n    fn main() -> i32 {\n        let p = produce()\n        free(p)\n        return 0\n    }\n''', 0)\nassert grouped_owned_return['errors'] == 0, grouped_owned_return\nassert not any('potential resource escape' in message for message in messages(grouped_owned_return)), grouped_owned_return\n\nowned_param_transfer = verify('owned_param_transfer', '''\n    fn consume(p: *mut u8) -> i32 {\n        free(p)\n        return 0\n    }\n    fn main() -> i32 {\n        let p = alloc(32)\n        discard consume(p)\n        return 0\n    }\n''', 0)\nassert owned_param_transfer['errors'] == 0, owned_param_transfer\nassert not any('function `main` leaks allocation' in message for message in messages(owned_param_transfer)), owned_param_transfer\n\nprint('compiler-memory-controlflow-and-owned-params-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-memory-controlflow-and-owned-params-ok\n",
+      "stderr": "",
+      "times": 1
+    },
+    {
+      "type": "proc_spawn",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd();\n\ndef write_project(name, source):\n    root = pathlib.Path(tempfile.mkdtemp(prefix=f'fozzylang-{name}-'))\n    (root / 'src').mkdir(parents=True, exist_ok=True)\n    (root / 'fozzy.toml').write_text(textwrap.dedent(f'''\\\n        [package]\n        name=\"{name}\"\n        version=\"0.1.0\"\n\n        [[target.bin]]\n        name=\"{name}\"\n        path=\"src/main.fzy\"\n    '''))\n    (root / 'src/main.fzy').write_text(textwrap.dedent(source))\n    return root\n\ndef verify(name, source, expect_rc):\n    root = write_project(name, source)\n    proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'verify', str(root), '--json'], cwd=str(repo), capture_output=True, text=True)\n    payload = json.loads(proc.stdout.strip())\n    assert proc.returncode == expect_rc, (name, proc.returncode, payload, proc.stderr)\n    return payload\n\ndef messages(payload):\n    return [item['message'] for item in payload['items']]\n\nearly_return_leak = verify('early_return_leak', '''\n    fn main() -> i32 {\n        let p = alloc(32)\n        return 0\n    }\n''', 1)\nassert any('function `main` leaks allocation id=1 owned by `p`' in message for message in messages(early_return_leak)), early_return_leak\n\nloop_leak = verify('loop_leak', '''\n    fn main() -> i32 {\n        let p = alloc(32)\n        loop {\n            break\n        }\n        return 0\n    }\n''', 1)\nassert any('function `main` leaks allocation id=1 owned by `p`' in message for message in messages(loop_leak)), loop_leak\n\ngrouped_owned_return = verify('grouped_owned_return', '''\n    fn produce() -> *mut u8 {\n        let p = alloc(32)\n        return (p)\n    }\n    fn main() -> i32 {\n        let p = produce()\n        free(p)\n        return 0\n    }\n''', 0)\nassert grouped_owned_return['errors'] == 0, grouped_owned_return\nassert not any('potential resource escape' in message for message in messages(grouped_owned_return)), grouped_owned_return\n\nowned_param_transfer = verify('owned_param_transfer', '''\n    fn consume(p: *mut u8) -> i32 {\n        free(p)\n        return 0\n    }\n    fn main() -> i32 {\n        let p = alloc(32)\n        discard consume(p)\n        return 0\n    }\n''', 0)\nassert owned_param_transfer['errors'] == 0, owned_param_transfer\nassert not any('function `main` leaks allocation' in message for message in messages(owned_param_transfer)), owned_param_transfer\n\nprint('compiler-memory-controlflow-and-owned-params-ok')"
+      ],
+      "expect_exit": 0,
+      "expect_stdout": "compiler-memory-controlflow-and-owned-params-ok\n"
+    }
+  ]
+}

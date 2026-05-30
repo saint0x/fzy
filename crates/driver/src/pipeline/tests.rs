@@ -1174,6 +1174,150 @@ fn verify_branch_leak_memory_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_early_return_leak_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-early-return-leak-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` leaks allocation id=1 owned by `p`"
+        })
+        .expect("early-return leak memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("early-return leak diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_loop_leak_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-loop-leak-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    loop {\n        break\n    }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` leaks allocation id=1 owned by `p`"
+        })
+        .expect("loop leak memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("loop leak diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_grouped_owned_return_stays_clean() {
+    let file_name = format!(
+        "fozzylang-memory-grouped-owned-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn produce() -> *mut u8 {\n    let p = alloc(32)\n    return (p)\n}\nfn main() -> i32 {\n    let p = produce()\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `produce` leaks allocation")
+            || diagnostic
+                .message
+                .contains("crosses function with potential resource escape")
+            || diagnostic
+                .message
+                .contains("linear value `p` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_helper_owned_param_transfer_stays_clean() {
+    let file_name = format!(
+        "fozzylang-memory-helper-owned-param-transfer-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn consume(p: *mut u8) -> i32 {\n    free(p)\n    return 0\n}\nfn main() -> i32 {\n    let p = alloc(32)\n    discard consume(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` leaks allocation")
+            || diagnostic
+                .message
+                .contains("consumes non-owned or already-consumed value `p`")
+            || diagnostic
+                .message
+                .contains("linear value `p` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_thread_boundary_shared_param_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-thread-boundary-shared-param-snapshot-{}.fzy",
