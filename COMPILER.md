@@ -451,9 +451,12 @@ Required tests:
 - local borrow-region enforcement is live for the currently supported static model: mutable/shared alias conflicts are rejected, mismatched reference returns are diagnosed, borrowed references are rejected across `await`, and thread-capable borrowed-return / mutable-reference boundary violations are surfaced separately from capability failures
 - local borrow-region enforcement now also rejects shared borrowed parameters across thread-capable boundaries, not just mutable ones, so borrowed params/returns are consistently forced through owned or Send-safe handoff shapes
 - partial-move regressions are now locked for tuple, struct-field, and struct-pattern aggregate shapes
+- match-pattern ownership now applies the same partial-move law to enum destructuring too, and HIR regressions plus `fz verify` snapshots lock both struct and enum aggregate failures to the same stable diagnostic surface
 - defer/cleanup ordering regressions now explicitly cover `free`-after-`defer`, `defer`-after-`free`, early-return leaks, branch leaks, and loop-scoped cleanup gaps
 - driver diagnostics now snapshot-lock representative memory failures for conditional consumption and partial-move wording/help/code stability
 - driver diagnostics now also snapshot-lock representative double-free wording/help/code stability, while deterministic transfer scenarios cover plain owned returns and owned-parameter handoff through real `fz verify` runs
+- driver diagnostics now snapshot-lock the remaining high-value ownership/lifetime failures too: `free`-after-`defer`, `defer`-after-`free`, branch-leak ownership loss, and shared borrowed thread-boundary rejection
+- local borrow-live enforcement now rejects consuming an owned source while a derived borrowed alias is still live, so borrow-then-free and borrow-then-move are covered by direct HIR regressions instead of relying only on downstream alias fallout
 - deterministic Fozzy adversarial coverage now exercises defer-ordering faults, early-return/branch/loop leak paths, conditional moves, partial moves, borrow-across-`await`, and reference-return mismatch through real `fz verify` CLI runs, with recorded trace verify/replay/CI coverage for the active suite
 
 Problem:

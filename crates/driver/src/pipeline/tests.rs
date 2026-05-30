@@ -551,6 +551,40 @@ fn verify_partial_move_memory_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_enum_partial_move_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-enum-partial-move-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "enum Pairish { Both(*mut u8, *mut u8), Empty }\nfn main() -> i32 {\n    let pair = Pairish::Both(alloc(32), alloc(32))\n    match pair {\n        Pairish::Both(left, _) => close(left),\n        _ => return 0,\n    }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` performs partial move from owned aggregate; partial moves are forbidden in v0"
+        })
+        .expect("enum partial-move memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-47DDFF6D"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_double_free_memory_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-memory-double-free-{}.fzy",
@@ -612,6 +646,141 @@ fn verify_plain_owned_return_does_not_report_resource_escape() {
                 .message
                 .contains("linear value `p` was not consumed/freed")
     }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_free_after_defer_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-free-after-defer-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    defer free(p)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` consumes value `p` after scheduling deferred cleanup for the same owner"
+        })
+        .expect("free-after-defer memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-6A188E7B"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_defer_after_free_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-defer-after-free-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    free(p)\n    defer free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` schedules deferred cleanup for non-owned or already-consumed value `p`"
+        })
+        .expect("defer-after-free memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-51C35EBD"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_branch_leak_memory_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-branch-leak-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    if true {\n        return 0\n    }\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` leaks allocation id=1 owned by `p`"
+        })
+        .expect("branch-leak memory diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-52019802"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_thread_boundary_shared_param_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-thread-boundary-shared-param-snapshot-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nasync fn worker(v: &'a i32) -> i32 {\n    discard v\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `worker` parameter `v` requires Send/Sync-safe wrapper before thread crossing"
+        })
+        .expect("thread-boundary shared-param diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("wrap borrowed references/pointers in a Send/Sync-safe owned boundary type before crossing threads")
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-635AA029"));
 
     let _ = std::fs::remove_file(path);
 }

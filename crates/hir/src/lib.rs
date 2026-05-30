@@ -2001,6 +2001,324 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BorrowBinding {
+    owner: String,
+    mutable: bool,
+}
+
+fn analyze_live_borrow_consumption(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let signatures = functions
+        .iter()
+        .map(|function| (function.name.clone(), function.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let ownership_summaries = build_function_ownership_summaries(functions);
+    for function in functions {
+        let mut bindings = BTreeMap::<String, BorrowBinding>::new();
+        analyze_live_borrow_block(
+            function,
+            &function.body,
+            &[],
+            &mut bindings,
+            &signatures,
+            &ownership_summaries,
+            &mut violations,
+        );
+    }
+    violations
+}
+
+fn analyze_live_borrow_block(
+    function: &TypedFunction,
+    body: &[Stmt],
+    suffix_after_block: &[Stmt],
+    bindings: &mut BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
+    violations: &mut Vec<String>,
+) {
+    for (index, stmt) in body.iter().enumerate() {
+        let remaining = &body[index + 1..];
+        let future_uses_alias = |alias: &str| {
+            remaining
+                .iter()
+                .any(|candidate| stmt_uses_ident(candidate, alias))
+                || suffix_after_block
+                    .iter()
+                    .any(|candidate| stmt_uses_ident(candidate, alias))
+        };
+        for consume in stmt_borrow_consumptions(stmt, ownership_summaries) {
+            for (alias, binding) in bindings.iter() {
+                if binding.owner == consume.owner && future_uses_alias(alias) {
+                    violations.push(format!(
+                        "function `{}` consumes owner `{}` via `{}` while borrowed reference `{}` is still live",
+                        function.name, consume.owner, consume.via, alias
+                    ));
+                }
+            }
+        }
+        match stmt {
+            Stmt::Let {
+                name, value, ty, ..
+            } => {
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr(value, ty.as_ref(), bindings, signatures)
+                {
+                    bindings.insert(name.clone(), binding);
+                } else {
+                    bindings.remove(name);
+                }
+            }
+            Stmt::Assign { target, value } => {
+                let explicit_ty = function.local_types.get(target).or_else(|| {
+                    function
+                        .params
+                        .iter()
+                        .find(|param| param.name == *target)
+                        .map(|param| &param.ty)
+                });
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
+                {
+                    bindings.insert(target.clone(), binding);
+                } else {
+                    bindings.remove(target);
+                }
+            }
+            Stmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                let mut stitched_suffix = remaining.to_vec();
+                stitched_suffix.extend_from_slice(suffix_after_block);
+                let mut then_bindings = bindings.clone();
+                analyze_live_borrow_block(
+                    function,
+                    then_body,
+                    &stitched_suffix,
+                    &mut then_bindings,
+                    signatures,
+                    ownership_summaries,
+                    violations,
+                );
+                let mut else_bindings = bindings.clone();
+                analyze_live_borrow_block(
+                    function,
+                    else_body,
+                    &stitched_suffix,
+                    &mut else_bindings,
+                    signatures,
+                    ownership_summaries,
+                    violations,
+                );
+            }
+            Stmt::While { body, .. } | Stmt::Loop { body } | Stmt::ForIn { body, .. } => {
+                let mut stitched_suffix = remaining.to_vec();
+                stitched_suffix.extend_from_slice(suffix_after_block);
+                let mut loop_bindings = bindings.clone();
+                analyze_live_borrow_block(
+                    function,
+                    body,
+                    &stitched_suffix,
+                    &mut loop_bindings,
+                    signatures,
+                    ownership_summaries,
+                    violations,
+                );
+            }
+            Stmt::For {
+                init, step, body, ..
+            } => {
+                let mut stitched_suffix = remaining.to_vec();
+                stitched_suffix.extend_from_slice(suffix_after_block);
+                if let Some(init) = init {
+                    analyze_live_borrow_block(
+                        function,
+                        std::slice::from_ref(init.as_ref()),
+                        &stitched_suffix,
+                        bindings,
+                        signatures,
+                        ownership_summaries,
+                        violations,
+                    );
+                }
+                let mut loop_bindings = bindings.clone();
+                analyze_live_borrow_block(
+                    function,
+                    body,
+                    &stitched_suffix,
+                    &mut loop_bindings,
+                    signatures,
+                    ownership_summaries,
+                    violations,
+                );
+                if let Some(step) = step {
+                    analyze_live_borrow_block(
+                        function,
+                        std::slice::from_ref(step.as_ref()),
+                        &stitched_suffix,
+                        bindings,
+                        signatures,
+                        ownership_summaries,
+                        violations,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BorrowConsume {
+    owner: String,
+    via: String,
+}
+
+fn stmt_borrow_consumptions(
+    stmt: &Stmt,
+    ownership_summaries: &BTreeMap<String, BTreeSet<usize>>,
+) -> Vec<BorrowConsume> {
+    let mut out = Vec::new();
+    match stmt {
+        Stmt::Let {
+            name, value, ty, ..
+        } => {
+            if !matches!(ty.as_ref(), Some(Type::Ref { .. })) {
+                if let Expr::Ident(from) = value {
+                    out.push(BorrowConsume {
+                        owner: from.clone(),
+                        via: format!("let {name} = {from}"),
+                    });
+                }
+            }
+        }
+        Stmt::Assign { target, value } | Stmt::CompoundAssign { target, value, .. } => {
+            if let Expr::Ident(from) = value {
+                out.push(BorrowConsume {
+                    owner: from.clone(),
+                    via: format!("{target} = {from}"),
+                });
+            }
+        }
+        Stmt::Expr(Expr::Call { callee, args }) => {
+            for index in runtime_consumed_param_indices(callee) {
+                if let Some(owner) = args.get(*index).and_then(expr_consumed_binding_name) {
+                    out.push(BorrowConsume {
+                        owner: owner.to_string(),
+                        via: format!("{callee}({owner})"),
+                    });
+                }
+            }
+            if let Some(consumed) = ownership_summaries.get(callee) {
+                for index in consumed {
+                    if let Some(owner) = args.get(*index).and_then(expr_consumed_binding_name) {
+                        if !out.iter().any(|existing| existing.owner == owner) {
+                            out.push(BorrowConsume {
+                                owner: owner.to_string(),
+                                via: format!("{callee}({owner})"),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn infer_borrow_binding_from_expr(
+    value: &Expr,
+    explicit_ty: Option<&Type>,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> Option<BorrowBinding> {
+    let Type::Ref { mutable, .. } = explicit_ty? else {
+        return None;
+    };
+    infer_borrow_owner_name(value, bindings, signatures).map(|owner| BorrowBinding {
+        owner,
+        mutable: *mutable,
+    })
+}
+
+fn infer_borrow_owner_name(
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name) => Some(
+            bindings
+                .get(name)
+                .map(|binding| binding.owner.clone())
+                .unwrap_or_else(|| name.clone()),
+        ),
+        Expr::Group(inner) | Expr::FieldAccess { base: inner, .. } => {
+            infer_borrow_owner_name(inner, bindings, signatures)
+        }
+        Expr::Call { callee, args } => signatures.get(callee).and_then(|function| {
+            let Type::Ref {
+                lifetime: Some(return_lifetime),
+                ..
+            } = &function.return_type
+            else {
+                return None;
+            };
+            let matching = function
+                .params
+                .iter()
+                .enumerate()
+                .filter_map(|(index, param)| match &param.ty {
+                    Type::Ref {
+                        lifetime: Some(param_lifetime),
+                        ..
+                    } if param_lifetime == return_lifetime => args.get(index),
+                    _ => None,
+                })
+                .filter_map(|arg| infer_borrow_owner_name(arg, bindings, signatures))
+                .collect::<Vec<_>>();
+            if matching.is_empty() {
+                None
+            } else if matching.windows(2).all(|window| window[0] == window[1]) {
+                matching.first().cloned()
+            } else {
+                None
+            }
+        }),
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_owner = infer_borrow_owner_name(then_expr, bindings, signatures);
+            let else_owner = infer_borrow_owner_name(else_expr, bindings, signatures);
+            if then_owner == else_owner {
+                then_owner
+            } else {
+                None
+            }
+        }
+        Expr::Match { arms, .. } => {
+            let owners = arms
+                .iter()
+                .filter_map(|arm| infer_borrow_owner_name(&arm.value, bindings, signatures))
+                .collect::<Vec<_>>();
+            if owners.is_empty() {
+                None
+            } else if owners.windows(2).all(|window| window[0] == window[1]) {
+                owners.first().cloned()
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 fn validate_reference_returns(
     body: &[Stmt],
     function: &TypedFunction,
@@ -3062,6 +3380,7 @@ fn analyze_ownership(
     let ownership_summaries = build_function_ownership_summaries(functions);
     violations.extend(analyze_alias_and_provenance(functions));
     violations.extend(analyze_atomic_ordering_claims(functions));
+    violations.extend(analyze_live_borrow_consumption(functions));
     for function in functions {
         let seeded_owners = if function.is_extern {
             BTreeMap::new()
@@ -4471,6 +4790,18 @@ fn analyze_ownership_block(
                 let mut arm_states = Vec::new();
                 for arm in arms {
                     let mut arm_state = state.clone();
+                    if pattern_performs_partial_move(
+                        &arm.pattern,
+                        function,
+                        scrutinee,
+                        struct_defs,
+                        enum_defs,
+                    ) {
+                        violations.push(format!(
+                            "function `{}` performs partial move from owned aggregate; partial moves are forbidden in v0",
+                            function_name
+                        ));
+                    }
                     if let Some(guard) = &arm.guard {
                         analyze_expr_value_ownership(
                             function,
@@ -16914,6 +17245,74 @@ mod tests {
                     "returns reference expression without a statically traced lifetime source",
                 )
         }));
+    }
+
+    #[test]
+    fn borrow_then_free_is_rejected_while_alias_is_still_live() {
+        let source = r#"
+            fn borrow(v: &'a *mut u8) -> &'a *mut u8 {
+                return v;
+            }
+            fn main() -> i32 {
+                let p = alloc(32);
+                let alias: &'a *mut u8 = borrow(p);
+                free(p);
+                discard alias;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "consumes owner `p` via `free(p)` while borrowed reference `alias` is still live",
+            )
+        }));
+    }
+
+    #[test]
+    fn borrow_then_move_is_rejected_while_alias_is_still_live() {
+        let source = r#"
+            fn borrow(v: &'a *mut u8) -> &'a *mut u8 {
+                return v;
+            }
+            fn main() -> i32 {
+                let p = alloc(32);
+                let alias: &'a *mut u8 = borrow(p);
+                let y = p;
+                discard alias;
+                free(y);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "consumes owner `p` via `let y = p` while borrowed reference `alias` is still live",
+            )
+        }));
+    }
+
+    #[test]
+    fn enum_pattern_partial_move_is_rejected() {
+        let source = r#"
+            enum Pairish { Both(*mut u8, *mut u8), Empty }
+            fn main() -> i32 {
+                let pair = Pairish::Both(alloc(32), alloc(32));
+                match pair {
+                    Pairish::Both(left, _) => close(left),
+                    _ => return 0,
+                }
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("performs partial move from owned aggregate")));
     }
 
     #[test]
