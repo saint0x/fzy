@@ -210,6 +210,40 @@ fn compile_file_emits_async_task_handle_misuse_findings() {
 }
 
 #[test]
+fn compile_file_emits_async_task_group_misuse_findings() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-task-group-misuse-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_task_group_misuse\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_task_group_misuse\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("compile should run");
+    assert_eq!(artifact.status, "error");
+
+    let async_report = std::fs::read_to_string(root.join(".fz/async-safety.json"))
+        .expect("async safety report should exist");
+    assert!(async_report.contains("\"kind\": \"task_group_missing_terminal\""));
+    assert!(async_report.contains("\"group\": \"group\""));
+    assert!(async_report
+        .contains("without `task.group_join`, `task.group_join_all`, or `task.group_cancel`"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn strict_compile_rejects_rpc_calls_without_deadlines() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-rpc-strict-{}",
@@ -238,6 +272,36 @@ fn strict_compile_rejects_rpc_calls_without_deadlines() {
         .any(|diagnostic| diagnostic
             .message
             .contains("RPC method `Ping` is called without an explicit timeout/deadline")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_compile_surfaces_task_group_missing_terminal_diagnostic() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-task-group-strict-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_task_group_strict\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_task_group_strict\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "error");
+    assert!(artifact.diagnostic_details.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("task group `group` is created by `task.group_begin()` and exits `main` without `task.group_join`, `task.group_join_all`, or `task.group_cancel`")));
 
     let _ = std::fs::remove_dir_all(root);
 }
