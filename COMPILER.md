@@ -235,6 +235,7 @@ Core ownership/provenance regressions, borrow-region enforcement, partial-move c
 - the borrow-region suite is now end-to-end regression-covered across HIR, `fz verify`, and deterministic Fozzy scenarios for: explicit borrowed locals, borrow-then-free, borrow-then-move, mutable/shared alias conflicts, and returned-reference lifetime mismatch without downstream diagnostic pollution
 - overlapping borrow exclusivity is now enforced in local borrow regions too: creating a mutable borrow while a shared borrow is still live, creating a shared borrow while a mutable borrow is still live, and creating transient call-site borrows that overlap a live mutable borrow now all fail as first-class ownership violations
 - `memory-report.json` is now aligned with compiler law for process builder handles too, so `ProcessArgv` / `ProcessEnv` appear in emitted linear-resource evidence instead of being enforced by HIR but omitted from the production safety artifact surface
+- async borrow-edge analysis is now verify-surface law too: mutable borrowed call edges across `await`, borrowed-return propagation across async suspension, and generic/trait-heavy borrowed async call edges now emit dedicated diagnostics with action-oriented fixes instead of collapsing into generic ownership noise
 
 Problem:
 

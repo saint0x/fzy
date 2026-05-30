@@ -1168,6 +1168,117 @@ fn verify_mutable_borrow_then_shared_call_reborrow_diagnostic_is_snapshot_stable
 }
 
 #[test]
+fn verify_mutable_borrow_across_await_call_edge_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-mut-borrow-await-edge-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn touch(value: &'a mut i32) -> i32 {\n    discard value\n    return 0\n}\nasync fn worker(v: &'a mut i32) -> i32 {\n    await recv()\n    return touch(v)\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "call edge `worker -> touch` can hold mutable borrows across await boundary"
+        })
+        .expect("mutable borrow across await call-edge diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("move the `await` before borrowing, or switch the async call edge to owned/Send-safe data")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("mutable borrow across await call-edge diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_borrowed_return_across_async_suspension_call_edge_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-borrowed-return-await-edge-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn borrow(v: &'a i32) -> &'a i32 {\n    return v\n}\nasync fn worker(v: &'a i32) -> i32 {\n    await recv()\n    let alias = borrow(v)\n    discard alias\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "call edge `worker -> borrow` can propagate borrowed references across async suspension boundary"
+        })
+        .expect("borrowed return across await call-edge diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("resolve borrowed data before the suspension point or return an owned value instead")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("borrowed return across await call-edge diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_generic_borrow_across_await_call_edge_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-generic-borrow-await-edge-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn project<T: Show>(value: &'a T) -> &'a T {\n    return value\n}\nasync fn worker(v: &'a i32) -> i32 {\n    await recv()\n    discard project<i32>(v)\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "call edge `worker -> project` is generic/trait-heavy with borrowed parameters across await; inter-procedural lifetime summary rejected"
+        })
+        .expect("generic borrowed await-edge diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("specialize the borrowed call edge away from the async suspension path, or hand off owned values instead")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("generic borrowed await-edge diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn derive_anchors_from_message_extracts_primary_and_related_tokens() {
     let lines = vec![
         "fn main() -> i32 {".to_string(),

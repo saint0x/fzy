@@ -17341,6 +17341,49 @@ mod tests {
     }
 
     #[test]
+    fn detects_mutable_borrow_across_await_call_edge() {
+        let source = r#"
+            fn touch(value: &'a mut i32) -> i32 {
+                discard value;
+                return 0;
+            }
+            async fn worker(v: &'a mut i32) -> i32 {
+                await recv();
+                return touch(v);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `worker -> touch` can hold mutable borrows across await boundary",
+            )
+        }));
+    }
+
+    #[test]
+    fn detects_borrowed_return_across_async_suspension_call_edge() {
+        let source = r#"
+            fn borrow(v: &'a i32) -> &'a i32 {
+                return v;
+            }
+            async fn worker(v: &'a i32) -> i32 {
+                await recv();
+                let alias = borrow(v);
+                discard alias;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `worker -> borrow` can propagate borrowed references across async suspension boundary",
+            )
+        }));
+    }
+
+    #[test]
     fn detects_inferred_local_reference_used_across_await() {
         let source = r#"
             fn borrow(v: &'a i32) -> &'a i32 {

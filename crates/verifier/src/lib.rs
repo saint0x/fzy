@@ -504,6 +504,19 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         ));
     }
     for violation in &module.ownership_violations {
+        let help = if violation.contains("can hold mutable borrows across await boundary") {
+            "move the `await` before borrowing, or switch the async call edge to owned/Send-safe data".to_string()
+        } else if violation
+            .contains("can propagate borrowed references across async suspension boundary")
+        {
+            "resolve borrowed data before the suspension point or return an owned value instead"
+                .to_string()
+        } else if violation.contains("generic/trait-heavy with borrowed parameters across await") {
+            "specialize the borrowed call edge away from the async suspension path, or hand off owned values instead".to_string()
+        } else {
+            "enforce ownership transfer semantics and ensure every allocation is released"
+                .to_string()
+        };
         report.diagnostics.push(Diagnostic::new(
             if memory_safety_enforced {
                 Severity::Error
@@ -511,10 +524,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 Severity::Warning
             },
             violation.clone(),
-            Some(
-                "enforce ownership transfer semantics and ensure every allocation is released"
-                    .to_string(),
-            ),
+            Some(help),
         ));
     }
     for violation in &module.unsafe_context_violations {
