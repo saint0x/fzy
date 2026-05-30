@@ -1046,6 +1046,21 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
         .iter()
         .flat_map(|function| collect_task_handle_policy_events(function))
         .collect::<Vec<_>>();
+    let task_handle_findings = fir
+        .typed_functions
+        .iter()
+        .flat_map(collect_task_handle_findings)
+        .map(|finding| {
+            serde_json::json!({
+                "function": finding.function,
+                "handle": finding.handle,
+                "kind": finding.kind,
+                "severity": "error",
+                "message": finding.message,
+                "help": finding.help,
+            })
+        })
+        .collect::<Vec<_>>();
 
     serde_json::json!({
         "schemaVersion": "fozzylang.async_safety.v1",
@@ -1061,6 +1076,7 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
         "task_transfers": task_transfers,
         "borrow_crossings": borrow_crossings,
         "task_handle_policies": task_handle_policies,
+        "task_handle_findings": task_handle_findings,
         "task_group_policies": task_group_policies,
     })
 }
@@ -2144,6 +2160,271 @@ fn collect_task_handle_policy_events(function: &hir::TypedFunction) -> Vec<serde
             })
         })
         .collect()
+}
+
+#[derive(Debug, Clone)]
+struct TaskHandleFinding {
+    function: String,
+    handle: String,
+    kind: &'static str,
+    message: String,
+    help: String,
+}
+
+fn collect_task_handle_findings(function: &hir::TypedFunction) -> Vec<TaskHandleFinding> {
+    let mut terminal = BTreeMap::<String, String>::new();
+    let mut findings = Vec::new();
+    for stmt in &function.body {
+        collect_task_handle_finding_stmt(stmt, &function.name, &mut terminal, &mut findings);
+    }
+    findings
+}
+
+fn collect_task_handle_finding_stmt(
+    stmt: &ast::Stmt,
+    function_name: &str,
+    terminal: &mut BTreeMap<String, String>,
+    findings: &mut Vec<TaskHandleFinding>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Return(Some(value)) => {
+            collect_task_handle_finding_expr(value, function_name, terminal, findings);
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+            for nested in then_body {
+                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+            }
+            for nested in else_body {
+                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+            for nested in body {
+                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_task_handle_finding_stmt(init, function_name, terminal, findings);
+            }
+            if let Some(condition) = condition {
+                collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+            }
+            if let Some(step) = step {
+                collect_task_handle_finding_stmt(step, function_name, terminal, findings);
+            }
+            for nested in body {
+                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_task_handle_finding_expr(iterable, function_name, terminal, findings);
+            for nested in body {
+                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_task_handle_finding_expr(scrutinee, function_name, terminal, findings);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_task_handle_finding_expr(guard, function_name, terminal, findings);
+                }
+                collect_task_handle_finding_expr(&arm.value, function_name, terminal, findings);
+            }
+        }
+        ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_task_handle_finding_expr(
+    expr: &ast::Expr,
+    function_name: &str,
+    terminal: &mut BTreeMap<String, String>,
+    findings: &mut Vec<TaskHandleFinding>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if let Some(ast::Expr::Ident(name)) = args.first() {
+                match callee.as_str() {
+                    "join" | "detach" | "cancel_task" => {
+                        if let Some(previous) = terminal.get(name) {
+                            findings.push(TaskHandleFinding {
+                                function: function_name.to_string(),
+                                handle: name.clone(),
+                                kind: "task_handle_double_terminal",
+                                message: format!(
+                                    "task handle `{name}` is already terminated by `{previous}({name})` and later consumed again by `{callee}({name})`"
+                                ),
+                                help: "Consume a task handle exactly once with `join`, `detach`, or `cancel_task`, and remove the later terminal operation."
+                                    .to_string(),
+                            });
+                        } else {
+                            terminal.insert(name.clone(), callee.clone());
+                        }
+                    }
+                    "task_result" => {
+                        if let Some(previous) = terminal.get(name) {
+                            findings.push(TaskHandleFinding {
+                                function: function_name.to_string(),
+                                handle: name.clone(),
+                                kind: "task_result_after_terminal",
+                                message: format!(
+                                    "task handle `{name}` is already terminated by `{previous}({name})` and later observed by `task_result({name})`"
+                                ),
+                                help: "Read `task_result(...)` before the terminal operation, or remove the later result observation."
+                                    .to_string(),
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            for arg in args {
+                collect_task_handle_finding_expr(arg, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::Await(inner)
+        | ast::Expr::Group(inner)
+        | ast::Expr::Discard(inner)
+        | ast::Expr::FieldAccess { base: inner, .. }
+        | ast::Expr::Unary { expr: inner, .. } => {
+            collect_task_handle_finding_expr(inner, function_name, terminal, findings);
+        }
+        ast::Expr::Index { base, index } => {
+            collect_task_handle_finding_expr(base, function_name, terminal, findings);
+            collect_task_handle_finding_expr(index, function_name, terminal, findings);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_task_handle_finding_expr(left, function_name, terminal, findings);
+            collect_task_handle_finding_expr(right, function_name, terminal, findings);
+        }
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for value in payload {
+                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+            }
+            for (_, value) in named_payload {
+                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::Tuple(payload) | ast::Expr::ArrayLiteral(payload) => {
+            for value in payload {
+                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::Closure { body, .. } => {
+            collect_task_handle_finding_expr(body, function_name, terminal, findings);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_task_handle_finding_expr(try_expr, function_name, terminal, findings);
+            collect_task_handle_finding_expr(catch_expr, function_name, terminal, findings);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+            collect_task_handle_finding_expr(then_expr, function_name, terminal, findings);
+            collect_task_handle_finding_expr(else_expr, function_name, terminal, findings);
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            collect_task_handle_finding_expr(scrutinee, function_name, terminal, findings);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_task_handle_finding_expr(guard, function_name, terminal, findings);
+                }
+                collect_task_handle_finding_expr(&arm.value, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::While { condition, body } => {
+            collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+            for stmt in body {
+                collect_task_handle_finding_stmt(stmt, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_task_handle_finding_stmt(init, function_name, terminal, findings);
+            }
+            if let Some(condition) = condition {
+                collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+            }
+            if let Some(step) = step {
+                collect_task_handle_finding_stmt(step, function_name, terminal, findings);
+            }
+            for stmt in body {
+                collect_task_handle_finding_stmt(stmt, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            collect_task_handle_finding_expr(iterable, function_name, terminal, findings);
+            for stmt in body {
+                collect_task_handle_finding_stmt(stmt, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::Loop { body } | ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                collect_task_handle_finding_stmt(stmt, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::Return(value) | ast::Expr::Break(value) => {
+            if let Some(value) = value {
+                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+            }
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_task_handle_finding_expr(start, function_name, terminal, findings);
+            collect_task_handle_finding_expr(end, function_name, terminal, findings);
+        }
+        ast::Expr::Continue
+        | ast::Expr::Ident(_)
+        | ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_) => {}
+    }
 }
 
 fn collect_task_handle_policy_stmt(
@@ -7795,10 +8076,25 @@ fn compile_time_contract_diagnostics(
     };
 
     if matches!(profile, BuildProfile::Strict) {
+        diagnostics.extend(strict_async_contract_diagnostics(fir));
         diagnostics.extend(strict_rpc_contract_diagnostics(module, fir));
     }
 
     diagnostics
+}
+
+fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::Diagnostic> {
+    fir.typed_functions
+        .iter()
+        .flat_map(collect_task_handle_findings)
+        .map(|finding| {
+            diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                finding.message,
+                Some(finding.help),
+            )
+        })
+        .collect()
 }
 
 fn strict_rpc_contract_diagnostics(
