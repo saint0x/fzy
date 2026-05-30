@@ -540,7 +540,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         {
             "return owned values or a Send/Sync-safe handle across thread boundaries".to_string()
         } else if violation.contains("requires Send/Sync-safe wrapper before thread crossing") {
-            "wrap mutable references/pointers in a Send/Sync-safe owned boundary type before crossing threads"
+            "wrap borrowed references/pointers in a Send/Sync-safe owned boundary type before crossing threads"
                 .to_string()
         } else {
             "change the borrowed thread boundary to an owned or Send/Sync-safe handoff".to_string()
@@ -1251,7 +1251,30 @@ mod tests {
             })
             .expect("thread-boundary diagnostic");
         let help = diagnostic.help.as_deref().unwrap_or_default();
-        assert!(help.contains("wrap mutable references/pointers"));
+        assert!(help.contains("wrap borrowed references/pointers"));
+        assert!(!help.contains("capability token parameters"));
+    }
+
+    #[test]
+    fn thread_boundary_shared_param_uses_send_sync_wrapper_guidance() {
+        let mut module = base_module();
+        module.thread_boundary_violations.push(
+            "function `worker` parameter `shared` requires Send/Sync-safe wrapper before thread crossing"
+                .to_string(),
+        );
+
+        let report = verify(&module);
+        let diagnostic = report
+            .diagnostics
+            .iter()
+            .find(|d| {
+                d.message.contains(
+                    "parameter `shared` requires Send/Sync-safe wrapper before thread crossing",
+                )
+            })
+            .expect("thread-boundary diagnostic");
+        let help = diagnostic.help.as_deref().unwrap_or_default();
+        assert!(help.contains("wrap borrowed references/pointers"));
         assert!(!help.contains("capability token parameters"));
     }
 
@@ -2563,7 +2586,8 @@ mod tests {
         assert!(report.diagnostics.iter().any(|d| d
             .help
             .as_deref()
-            .is_some_and(|help| help.contains("the compiler is satisfied with the current unsafe-policy checks"))));
+            .is_some_and(|help| help
+                .contains("the compiler is satisfied with the current unsafe-policy checks"))));
         assert!(report.is_clean());
     }
 
@@ -2629,7 +2653,8 @@ mod tests {
         assert!(report.diagnostics.iter().any(|d| d
             .help
             .as_deref()
-            .is_some_and(|help| help.contains("the compiler is satisfied with the current unsafe-policy checks"))));
+            .is_some_and(|help| help
+                .contains("the compiler is satisfied with the current unsafe-policy checks"))));
         assert!(!report.diagnostics.iter().any(|d| {
             d.message.contains(
                 "detected 1 explicit unsafe escape marker(s); compiler contract checks passed",

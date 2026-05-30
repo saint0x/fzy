@@ -2656,10 +2656,7 @@ fn analyze_send_sync_contracts(functions: &[TypedFunction]) -> Vec<String> {
             continue;
         }
         for param in &function.params {
-            if matches!(
-                param.ty,
-                Type::Ptr { mutable: true, .. } | Type::Ref { mutable: true, .. }
-            ) {
+            if matches!(param.ty, Type::Ptr { mutable: true, .. } | Type::Ref { .. }) {
                 violations.push(format!(
                     "function `{}` parameter `{}` requires Send/Sync-safe wrapper before thread crossing",
                     function.name, param.name
@@ -16760,6 +16757,42 @@ mod tests {
             detail.contains("parameter `v` requires Send/Sync-safe wrapper before thread crossing")
         }));
         assert!(typed.capability_token_violations.is_empty());
+    }
+
+    #[test]
+    fn routes_shared_reference_thread_boundary_failures_out_of_capability_bucket() {
+        let source = r#"
+            async fn worker(v: &'a i32) -> i32 {
+                discard v;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains("parameter `v` requires Send/Sync-safe wrapper before thread crossing")
+        }));
+        assert!(typed.capability_token_violations.is_empty());
+    }
+
+    #[test]
+    fn detects_mutable_and_shared_aliasing_across_ref_params() {
+        let source = r#"
+            fn touch(a: &'a mut i32, b: &'a i32) -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                touch(x, x);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains("aliases mutable and shared borrows for `x`")));
     }
 
     #[test]

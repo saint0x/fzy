@@ -5032,7 +5032,39 @@ fn verify_thread_boundary_mutable_param_reports_send_sync_wrapper_guidance() {
         })
         .expect("thread-boundary mutable-param diagnostic should be present");
     let help = diagnostic.help.as_deref().unwrap_or_default();
-    assert!(help.contains("wrap mutable references/pointers"));
+    assert!(help.contains("wrap borrowed references/pointers"));
+    assert!(!help.contains("capability token parameters"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_thread_boundary_shared_param_reports_send_sync_wrapper_guidance() {
+    let file_name = format!(
+        "fozzylang-thread-boundary-shared-param-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nasync fn worker(v: &'a i32) -> i32 {\n    discard v\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                .contains("parameter `v` requires Send/Sync-safe wrapper before thread crossing")
+        })
+        .expect("thread-boundary shared-param diagnostic should be present");
+    let help = diagnostic.help.as_deref().unwrap_or_default();
+    assert!(help.contains("wrap borrowed references/pointers"));
     assert!(!help.contains("capability token parameters"));
 
     let _ = std::fs::remove_file(path);
@@ -5067,6 +5099,40 @@ fn verify_non_thread_borrowed_reference_does_not_report_thread_boundary_diagnost
                 .unwrap_or_default()
                 .contains("Send/Sync-safe handle")
     }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_mutable_and_shared_alias_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-mutable-shared-alias-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn touch(a: &'a mut i32, b: &'a i32) -> i32 {\n    return 0\n}\nfn main() -> i32 {\n    let x: i32 = 1\n    touch(x, x)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "function `main` call `touch` aliases mutable and shared borrows for `x`"
+        })
+        .expect("mutable/shared alias diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-VER-E4FA711B"));
 
     let _ = std::fs::remove_file(path);
 }
