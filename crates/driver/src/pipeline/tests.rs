@@ -842,6 +842,241 @@ fn verify_grouped_binding_move_diagnostic_is_snapshot_stable() {
 }
 
 #[test]
+fn verify_helper_owned_param_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-helper-owned-param-reuse-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn consume(p: *mut u8) -> i32 {\n    free(p)\n    return 0\n}\nfn main() -> i32 {\n    let p = alloc(32)\n    discard consume(p)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses moved value `p` after move/consume"
+        })
+        .expect("helper-owned-param reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("helper-owned-param reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_task_handle_wrapper_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-task-handle-wrapper-reuse-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn finish(handle: TaskHandle) -> i32 {\n    return join(handle)\n}\nfn main() -> i32 {\n    let handle = spawn(worker)\n    discard finish(handle)\n    discard join(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses moved value `handle` after move/consume"
+        })
+        .expect("task-handle wrapper reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("task-handle wrapper reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_http_wrapper_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-http-wrapper-reuse-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn respond(conn: HttpHandle) -> i32 {\n    return http.write_json(conn, 200, \"{}\")\n}\nfn main() -> i32 {\n    let conn = http.accept()\n    discard respond(conn)\n    discard http.write_json(conn, 200, \"{}\")\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses moved value `conn` after move/consume"
+        })
+        .expect("http wrapper reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("http wrapper reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_process_wrapper_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-process-wrapper-reuse-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.proc;\nfn close_handle(handle: ProcessHandle) -> i32 {\n    return proc.close(handle)\n}\nfn main() -> i32 {\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    let handle = proc.spawn_cmd(\"echo\", argv, env, \"\")\n    discard close_handle(handle)\n    discard proc.close(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses moved value `handle` after move/consume"
+        })
+        .expect("process wrapper reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("process wrapper reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_stream_wrapper_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-stream-wrapper-reuse-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn close_stream(stream: HttpStreamHandle) -> i32 {\n    return http.stream_close(stream)\n}\nfn main() -> i32 {\n    let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n    discard close_stream(stream)\n    discard http.stream_close(stream)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses moved value `stream` after move/consume"
+        })
+        .expect("stream wrapper reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("stream wrapper reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_task_group_wrapper_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-task-group-wrapper-reuse-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn finish(group: TaskGroupHandle) -> i32 {\n    return task.group_join_all(group)\n}\nfn main() -> i32 {\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    discard finish(group)\n    discard task.group_cancel(group)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let moved = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message == "function `main` uses moved value `group` after move/consume"
+        })
+        .expect("task-group wrapper reuse moved diagnostic should be present");
+    assert_eq!(
+        moved.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = moved
+        .code
+        .as_deref()
+        .expect("task-group wrapper reuse moved diagnostic should carry stable code");
+
+    let double_terminal = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "task group `group` is terminated multiple times (task.group_join_all via finish, task.group_cancel)"
+        })
+        .expect("task-group wrapper reuse double-terminal diagnostic should be present");
+    assert_eq!(
+        double_terminal.help.as_deref(),
+        Some(
+            "Choose exactly one terminal group operation for each task group and remove the later terminal calls."
+        )
+    );
+    let _ = double_terminal
+        .code
+        .as_deref()
+        .expect("task-group wrapper reuse double-terminal diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_return_if_expression_partial_terminal_transfer_reports_leak() {
     let file_name = format!(
         "fozzylang-memory-return-if-expr-transfer-{}.fzy",
