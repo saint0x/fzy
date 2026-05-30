@@ -56,8 +56,8 @@ use self::native_runtime_support::{
 };
 use self::native_runtime_tables::{
     native_data_plane_import_for_callee, native_runtime_contracts,
-    native_runtime_import_for_callee, NativeRuntimeImport,
-    NATIVE_DATA_PLANE_IMPORTS, NATIVE_RUNTIME_IMPORTS,
+    native_runtime_import_for_callee, NativeRuntimeImport, NATIVE_DATA_PLANE_IMPORTS,
+    NATIVE_RUNTIME_IMPORTS,
 };
 
 #[derive(Clone, Copy)]
@@ -269,7 +269,7 @@ pub fn compile_file_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
     let (_typed, fir) = lower_fir_cached(&parsed);
-    write_safety_artifacts(&resolved.project_root, &fir)?;
+    write_safety_artifacts(&resolved.project_root, &parsed, &fir)?;
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
@@ -288,7 +288,8 @@ pub fn compile_file_with_backend(
         .as_ref()
         .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
         .unwrap_or(true);
-    let contract_diagnostics = compile_time_contract_diagnostics(&fir, checks_enabled);
+    let contract_diagnostics =
+        compile_time_contract_diagnostics(&parsed.module, &fir, checks_enabled, profile);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -361,7 +362,7 @@ pub fn compile_library_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
     let (_typed, fir) = lower_fir_cached(&parsed);
-    write_safety_artifacts(&resolved.project_root, &fir)?;
+    write_safety_artifacts(&resolved.project_root, &parsed, &fir)?;
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
@@ -380,7 +381,8 @@ pub fn compile_library_with_backend(
         .as_ref()
         .and_then(|manifest| profile_config(manifest, profile).and_then(|config| config.checks))
         .unwrap_or(true);
-    let contract_diagnostics = compile_time_contract_diagnostics(&fir, checks_enabled);
+    let contract_diagnostics =
+        compile_time_contract_diagnostics(&parsed.module, &fir, checks_enabled, profile);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -507,7 +509,12 @@ pub fn verify_file_with_root_source(
         },
     );
     diagnostics.extend(report.diagnostics);
-    diagnostics.extend(compile_time_contract_diagnostics(&fir, true));
+    diagnostics.extend(compile_time_contract_diagnostics(
+        &parsed.module,
+        &fir,
+        true,
+        BuildProfile::Strict,
+    ));
     for diagnostic in &mut diagnostics {
         if diagnostic.path.is_none() {
             diagnostic.path = Some(resolved.source_path.display().to_string());
@@ -639,7 +646,11 @@ pub fn lower_fir_cached(parsed: &ParsedProgram) -> (hir::TypedModule, fir::FirMo
     (typed, fir_module)
 }
 
-fn write_safety_artifacts(project_root: &Path, fir: &fir::FirModule) -> Result<()> {
+fn write_safety_artifacts(
+    project_root: &Path,
+    parsed: &ParsedProgram,
+    fir: &fir::FirModule,
+) -> Result<()> {
     let out_dir = project_root.join(".fz");
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("failed creating safety artifact dir: {}", out_dir.display()))?;
@@ -649,40 +660,70 @@ fn write_safety_artifacts(project_root: &Path, fir: &fir::FirModule) -> Result<(
         out_dir.join("memory-report.json"),
         serde_json::to_vec_pretty(&memory_json)?,
     )
-    .with_context(|| format!("failed writing {}", out_dir.join("memory-report.json").display()))?;
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("memory-report.json").display()
+        )
+    })?;
     std::fs::write(
         out_dir.join("memory-report.md"),
         render_memory_report_markdown(&memory_json),
     )
-    .with_context(|| format!("failed writing {}", out_dir.join("memory-report.md").display()))?;
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("memory-report.md").display()
+        )
+    })?;
 
     let unsafe_json = build_unsafe_report_json(fir);
     std::fs::write(
         out_dir.join("unsafe-report.json"),
         serde_json::to_vec_pretty(&unsafe_json)?,
     )
-    .with_context(|| format!("failed writing {}", out_dir.join("unsafe-report.json").display()))?;
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("unsafe-report.json").display()
+        )
+    })?;
 
     let async_json = build_async_safety_json(fir);
     std::fs::write(
         out_dir.join("async-safety.json"),
         serde_json::to_vec_pretty(&async_json)?,
     )
-    .with_context(|| format!("failed writing {}", out_dir.join("async-safety.json").display()))?;
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("async-safety.json").display()
+        )
+    })?;
 
-    let rpc_json = build_rpc_safety_json(fir);
+    let rpc_json = build_rpc_safety_json(&parsed.module, fir);
     std::fs::write(
         out_dir.join("rpc-safety.json"),
         serde_json::to_vec_pretty(&rpc_json)?,
     )
-    .with_context(|| format!("failed writing {}", out_dir.join("rpc-safety.json").display()))?;
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("rpc-safety.json").display()
+        )
+    })?;
 
     let ffi_json = build_ffi_report_json(fir);
     std::fs::write(
         out_dir.join("ffi-report.json"),
         serde_json::to_vec_pretty(&ffi_json)?,
     )
-    .with_context(|| format!("failed writing {}", out_dir.join("ffi-report.json").display()))?;
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("ffi-report.json").display()
+        )
+    })?;
     std::fs::write(
         out_dir.join("ffi-report.md"),
         render_ffi_report_markdown(&ffi_json),
@@ -859,7 +900,9 @@ fn render_memory_report_markdown(value: &serde_json::Value) -> String {
     out.push_str(&format!(
         "- Functions: {function_count}\n- Owners: {owner_count}\n- Violations: {violation_count}\n\n"
     ));
-    out.push_str("| Function | Owner | Created At | Terminal State | Terminal At |\n|---|---|---|---|---|\n");
+    out.push_str(
+        "| Function | Owner | Created At | Terminal State | Terminal At |\n|---|---|---|---|---|\n",
+    );
     if let Some(owners) = value["owners"].as_array() {
         for owner in owners {
             out.push_str(&format!(
@@ -898,12 +941,23 @@ fn build_unsafe_report_json(fir: &fir::FirModule) -> serde_json::Value {
     let reasoned = unsafe_sites
         .iter()
         .filter(|site| {
-            site.reason.as_deref().is_some_and(|value| !value.is_empty())
-                && site.invariant.as_deref().is_some_and(|value| !value.is_empty())
+            site.reason
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+                && site
+                    .invariant
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
                 && site.owner.as_deref().is_some_and(|value| !value.is_empty())
                 && site.scope.as_deref().is_some_and(|value| !value.is_empty())
-                && site.risk_class.as_deref().is_some_and(|value| !value.is_empty())
-                && site.proof_ref.as_deref().is_some_and(|value| !value.is_empty())
+                && site
+                    .risk_class
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
+                && site
+                    .proof_ref
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty())
                 && !site
                     .proof_ref
                     .as_deref()
@@ -999,7 +1053,7 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
     })
 }
 
-fn build_rpc_safety_json(fir: &fir::FirModule) -> serde_json::Value {
+fn build_rpc_safety_json(module: &ast::Module, fir: &fir::FirModule) -> serde_json::Value {
     let rpc_methods = fir
         .typed_functions
         .iter()
@@ -1024,21 +1078,39 @@ fn build_rpc_safety_json(fir: &fir::FirModule) -> serde_json::Value {
             })
         })
         .collect::<Vec<_>>();
+    let policy_evidence = collect_rpc_policy_evidence(module, &rpc_methods);
     let deadline_policies = rpc_methods
         .iter()
         .map(|method| {
+            let name = method["name"].as_str().unwrap_or_default();
+            let evidence = policy_evidence
+                .get(name)
+                .cloned()
+                .unwrap_or_else(RpcPolicyEvidence::default);
             serde_json::json!({
-                "method": method["name"].as_str().unwrap_or_default(),
-                "policy": "unspecified",
+                "method": name,
+                "policy": evidence.deadline_policy(),
+                "calls": evidence.calls,
+                "protectedCalls": evidence.deadline_protected_calls,
+                "strictReady": evidence.calls > 0 && evidence.deadline_protected_calls == evidence.calls,
             })
         })
         .collect::<Vec<_>>();
     let cancel_policies = rpc_methods
         .iter()
         .map(|method| {
+            let name = method["name"].as_str().unwrap_or_default();
+            let evidence = policy_evidence
+                .get(name)
+                .cloned()
+                .unwrap_or_else(RpcPolicyEvidence::default);
             serde_json::json!({
-                "method": method["name"].as_str().unwrap_or_default(),
-                "policy": "unspecified",
+                "method": name,
+                "policy": evidence.cancel_policy(),
+                "calls": evidence.calls,
+                "cancelObservedCalls": evidence.cancel_observed_calls,
+                "recvObservedCalls": evidence.recv_observed_calls,
+                "handlerCleanupStatus": "requires_explicit_cleanup_contract",
             })
         })
         .collect::<Vec<_>>();
@@ -1047,6 +1119,11 @@ fn build_rpc_safety_json(fir: &fir::FirModule) -> serde_json::Value {
         "schemaVersion": "fozzylang.rpc_safety.v1",
         "versions": compatibility_versions_json(),
         "rpc_methods": rpc_methods,
+        "strictRequirements": {
+            "deadlinePerCall": true,
+            "handlerCancelCleanup": "required",
+            "frameTraceability": true,
+        },
         "deadline_policies": deadline_policies,
         "cancel_policies": cancel_policies,
         "resource_cleanup": [],
@@ -1060,6 +1137,345 @@ fn build_rpc_safety_json(fir: &fir::FirModule) -> serde_json::Value {
             "rpc_resource_leak_rejected"
         ],
     })
+}
+
+#[derive(Debug, Clone, Default)]
+struct RpcPolicyEvidence {
+    calls: usize,
+    deadline_protected_calls: usize,
+    cancel_observed_calls: usize,
+    recv_observed_calls: usize,
+}
+
+impl RpcPolicyEvidence {
+    fn deadline_policy(&self) -> &'static str {
+        if self.calls == 0 {
+            "not_observed"
+        } else if self.deadline_protected_calls == self.calls {
+            "explicit"
+        } else if self.deadline_protected_calls > 0 {
+            "partial"
+        } else {
+            "missing"
+        }
+    }
+
+    fn cancel_policy(&self) -> &'static str {
+        if self.calls == 0 {
+            "not_observed"
+        } else if self.cancel_observed_calls == self.calls {
+            "explicit"
+        } else if self.cancel_observed_calls > 0 {
+            "partial"
+        } else if self.recv_observed_calls == self.calls {
+            "recv_only"
+        } else if self.recv_observed_calls > 0 {
+            "recv_partial"
+        } else {
+            "missing"
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingRpcCall {
+    method: String,
+    deadline_seen: bool,
+    cancel_seen: bool,
+    recv_seen: bool,
+}
+
+fn collect_rpc_policy_evidence(
+    module: &ast::Module,
+    rpc_methods: &[serde_json::Value],
+) -> HashMap<String, RpcPolicyEvidence> {
+    let rpc_method_names = rpc_methods
+        .iter()
+        .filter_map(|method| method["name"].as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let call_sequence = collect_pipeline_call_sequence(module);
+    let mut evidence = rpc_method_names
+        .iter()
+        .map(|method| ((*method).to_string(), RpcPolicyEvidence::default()))
+        .collect::<HashMap<_, _>>();
+    let mut pending = Vec::<PendingRpcCall>::new();
+    let mut next_rpc_has_deadline = false;
+
+    for call in call_sequence {
+        if rpc_method_names.contains(call.as_str()) {
+            let entry = evidence.entry(call.clone()).or_default();
+            entry.calls += 1;
+            pending.push(PendingRpcCall {
+                method: call,
+                deadline_seen: next_rpc_has_deadline,
+                cancel_seen: false,
+                recv_seen: false,
+            });
+            next_rpc_has_deadline = false;
+            continue;
+        }
+
+        match call.as_str() {
+            "timeout" | "deadline" => {
+                if let Some(last) = pending
+                    .iter_mut()
+                    .rev()
+                    .find(|rpc| !rpc.cancel_seen && !rpc.recv_seen)
+                {
+                    last.deadline_seen = true;
+                } else {
+                    next_rpc_has_deadline = true;
+                }
+            }
+            "cancel" => {
+                if let Some(last) = pending
+                    .iter_mut()
+                    .rev()
+                    .find(|rpc| !rpc.cancel_seen && !rpc.recv_seen)
+                {
+                    last.cancel_seen = true;
+                }
+            }
+            "recv" => {
+                if let Some(last) = pending
+                    .iter_mut()
+                    .rev()
+                    .find(|rpc| !rpc.recv_seen && !rpc.cancel_seen)
+                {
+                    last.recv_seen = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    for rpc in pending {
+        let entry = evidence.entry(rpc.method).or_default();
+        if rpc.deadline_seen {
+            entry.deadline_protected_calls += 1;
+        }
+        if rpc.cancel_seen {
+            entry.cancel_observed_calls += 1;
+        }
+        if rpc.recv_seen {
+            entry.recv_observed_calls += 1;
+        }
+    }
+
+    evidence
+}
+
+fn collect_pipeline_call_sequence(module: &ast::Module) -> Vec<String> {
+    let mut call_sequence = Vec::new();
+    for item in &module.items {
+        if let ast::Item::Function(function) = item {
+            for statement in &function.body {
+                collect_pipeline_call_names_from_stmt(statement, &mut call_sequence);
+            }
+        }
+    }
+    call_sequence
+}
+
+fn collect_pipeline_call_names_from_stmt(statement: &ast::Stmt, out: &mut Vec<String>) {
+    match statement {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value) => collect_pipeline_call_names_from_expr(value, out),
+        ast::Stmt::Return(value) => {
+            if let Some(value) = value {
+                collect_pipeline_call_names_from_expr(value, out);
+            }
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_pipeline_call_names_from_expr(condition, out);
+            for stmt in then_body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+            for stmt in else_body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_pipeline_call_names_from_expr(condition, out);
+            for stmt in body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_pipeline_call_names_from_stmt(init, out);
+            }
+            if let Some(condition) = condition {
+                collect_pipeline_call_names_from_expr(condition, out);
+            }
+            if let Some(step) = step {
+                collect_pipeline_call_names_from_stmt(step, out);
+            }
+            for stmt in body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_pipeline_call_names_from_expr(iterable, out);
+            for stmt in body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for stmt in body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_pipeline_call_names_from_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_pipeline_call_names_from_expr(guard, out);
+                }
+                collect_pipeline_call_names_from_expr(&arm.value, out);
+            }
+        }
+        ast::Stmt::Break(value) => {
+            if let Some(value) = value {
+                collect_pipeline_call_names_from_expr(value, out);
+            }
+        }
+        ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_pipeline_call_names_from_expr(expr: &ast::Expr, out: &mut Vec<String>) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            for arg in args {
+                collect_pipeline_call_names_from_expr(arg, out);
+            }
+            out.push(callee.clone());
+        }
+        ast::Expr::Await(inner)
+        | ast::Expr::Group(inner)
+        | ast::Expr::Discard(inner)
+        | ast::Expr::FieldAccess { base: inner, .. }
+        | ast::Expr::Unary { expr: inner, .. } => collect_pipeline_call_names_from_expr(inner, out),
+        ast::Expr::Index { base, index } => {
+            collect_pipeline_call_names_from_expr(base, out);
+            collect_pipeline_call_names_from_expr(index, out);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_pipeline_call_names_from_expr(left, out);
+            collect_pipeline_call_names_from_expr(right, out);
+        }
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_pipeline_call_names_from_expr(value, out);
+            }
+        }
+        ast::Expr::EnumInit { payload, .. }
+        | ast::Expr::Tuple(payload)
+        | ast::Expr::ArrayLiteral(payload) => {
+            for value in payload {
+                collect_pipeline_call_names_from_expr(value, out);
+            }
+        }
+        ast::Expr::Closure { body, .. } => collect_pipeline_call_names_from_expr(body, out),
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_pipeline_call_names_from_expr(try_expr, out);
+            collect_pipeline_call_names_from_expr(catch_expr, out);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_pipeline_call_names_from_expr(condition, out);
+            collect_pipeline_call_names_from_expr(then_expr, out);
+            collect_pipeline_call_names_from_expr(else_expr, out);
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            collect_pipeline_call_names_from_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_pipeline_call_names_from_expr(guard, out);
+                }
+                collect_pipeline_call_names_from_expr(&arm.value, out);
+            }
+        }
+        ast::Expr::While { condition, body } => {
+            collect_pipeline_call_names_from_expr(condition, out);
+            for stmt in body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_pipeline_call_names_from_stmt(init, out);
+            }
+            if let Some(condition) = condition {
+                collect_pipeline_call_names_from_expr(condition, out);
+            }
+            if let Some(step) = step {
+                collect_pipeline_call_names_from_stmt(step, out);
+            }
+            for stmt in body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            collect_pipeline_call_names_from_expr(iterable, out);
+            for stmt in body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Expr::Loop { body } => {
+            for stmt in body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Expr::Return(value) | ast::Expr::Break(value) => {
+            if let Some(value) = value {
+                collect_pipeline_call_names_from_expr(value, out);
+            }
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_pipeline_call_names_from_expr(start, out);
+            collect_pipeline_call_names_from_expr(end, out);
+        }
+        ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                collect_pipeline_call_names_from_stmt(stmt, out);
+            }
+        }
+        ast::Expr::Ident(_)
+        | ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_)
+        | ast::Expr::Char(_)
+        | ast::Expr::Continue => {}
+    }
 }
 
 fn build_ffi_report_json(fir: &fir::FirModule) -> serde_json::Value {
@@ -1123,8 +1539,14 @@ fn build_ffi_report_json(fir: &fir::FirModule) -> serde_json::Value {
 
 fn render_ffi_report_markdown(value: &serde_json::Value) -> String {
     let mut out = String::from("# FFI Report\n\n");
-    let import_count = value["imports"].as_array().map(|items| items.len()).unwrap_or(0);
-    let export_count = value["exports"].as_array().map(|items| items.len()).unwrap_or(0);
+    let import_count = value["imports"]
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
+    let export_count = value["exports"]
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
     out.push_str(&format!(
         "- Imports: {import_count}\n- Exports: {export_count}\n\n"
     ));
@@ -1270,7 +1692,9 @@ fn collect_function_owner_artifacts(
                         }
                     }
                     let binding_ty = ty.as_ref().or_else(|| function.local_types.get(name));
-                    if binding_ty.is_some_and(memory_report_is_linear_type) || memory_report_is_alloc_like(value) {
+                    if binding_ty.is_some_and(memory_report_is_linear_type)
+                        || memory_report_is_alloc_like(value)
+                    {
                         create_owner(
                             &function.name,
                             name,
@@ -1352,7 +1776,13 @@ fn collect_function_owner_artifacts(
     let mut next_owner_id = 1usize;
     let mut active = BTreeMap::<String, usize>::new();
     let start = out.len();
-    scan_stmts(function, &function.body, &mut next_owner_id, &mut active, out);
+    scan_stmts(
+        function,
+        &function.body,
+        &mut next_owner_id,
+        &mut active,
+        out,
+    );
     for index in active.into_values() {
         if out[index].terminal_state == "Owned" {
             out[index].terminal_at = Some("function_exit".to_string());
@@ -1414,8 +1844,15 @@ fn memory_report_terminal_call(expr: &ast::Expr) -> Option<(String, String)> {
         _ => return None,
     };
     let terminal = match callee.as_str() {
-        "free" | "close" | "join" | "detach" | "cancel_task" | "http.stream_close"
-        | "task.group_join" | "task.group_join_all" | "task.group_cancel" => Some(callee.clone()),
+        "free"
+        | "close"
+        | "join"
+        | "detach"
+        | "cancel_task"
+        | "http.stream_close"
+        | "task.group_join"
+        | "task.group_join_all"
+        | "task.group_cancel" => Some(callee.clone()),
         _ if callee.ends_with(".free") || callee.ends_with(".close") => Some(callee.clone()),
         _ => None,
     }?;
@@ -1487,16 +1924,18 @@ fn count_awaits_in_expr(expr: &ast::Expr) -> usize {
         | ast::Expr::Group(base)
         | ast::Expr::Discard(base)
         | ast::Expr::Unary { expr: base, .. } => count_awaits_in_expr(base),
-        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
-            fields.iter().map(|(_, value)| count_awaits_in_expr(value)).sum()
-        }
-        ast::Expr::EnumInit { payload, .. } | ast::Expr::Tuple(payload) | ast::Expr::ArrayLiteral(payload) => {
-            payload.iter().map(count_awaits_in_expr).sum()
-        }
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => fields
+            .iter()
+            .map(|(_, value)| count_awaits_in_expr(value))
+            .sum(),
+        ast::Expr::EnumInit { payload, .. }
+        | ast::Expr::Tuple(payload)
+        | ast::Expr::ArrayLiteral(payload) => payload.iter().map(count_awaits_in_expr).sum(),
         ast::Expr::Closure { body, .. } => count_awaits_in_expr(body),
-        ast::Expr::TryCatch { try_expr, catch_expr } => {
-            count_awaits_in_expr(try_expr) + count_awaits_in_expr(catch_expr)
-        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => count_awaits_in_expr(try_expr) + count_awaits_in_expr(catch_expr),
         ast::Expr::If {
             condition,
             then_expr,
@@ -1577,7 +2016,9 @@ fn collect_task_transfer_events_from_stmts(
             | ast::Stmt::Defer(value)
             | ast::Stmt::Requires(value)
             | ast::Stmt::Ensures(value)
-            | ast::Stmt::Expr(value) => collect_task_transfer_events_from_expr(function_name, value, out),
+            | ast::Stmt::Expr(value) => {
+                collect_task_transfer_events_from_expr(function_name, value, out)
+            }
             ast::Stmt::If {
                 then_body,
                 else_body,
@@ -1588,8 +2029,12 @@ fn collect_task_transfer_events_from_stmts(
             }
             ast::Stmt::While { body, .. }
             | ast::Stmt::ForIn { body, .. }
-            | ast::Stmt::Loop { body } => collect_task_transfer_events_from_stmts(function_name, body, out),
-            ast::Stmt::For { body, .. } => collect_task_transfer_events_from_stmts(function_name, body, out),
+            | ast::Stmt::Loop { body } => {
+                collect_task_transfer_events_from_stmts(function_name, body, out)
+            }
+            ast::Stmt::For { body, .. } => {
+                collect_task_transfer_events_from_stmts(function_name, body, out)
+            }
             ast::Stmt::Match { arms, .. } => {
                 for arm in arms {
                     collect_task_transfer_events_from_expr(function_name, &arm.value, out);
@@ -1674,8 +2119,10 @@ fn collect_task_group_policy_stmt(
             }
         }
         ast::Stmt::Expr(ast::Expr::Call { callee, args }) => {
-            if matches!(callee.as_str(), "task.group_join" | "task.group_join_all" | "task.group_cancel")
-            {
+            if matches!(
+                callee.as_str(),
+                "task.group_join" | "task.group_join_all" | "task.group_cancel"
+            ) {
                 if let Some(ast::Expr::Ident(name)) = args.first() {
                     terminal.insert(name.clone(), callee.clone());
                 }
@@ -7035,10 +7482,12 @@ fn merge_contract_conditions(
 }
 
 fn compile_time_contract_diagnostics(
+    module: &ast::Module,
     fir: &fir::FirModule,
     enforce_contract_checks: bool,
+    profile: BuildProfile,
 ) -> Vec<diagnostics::Diagnostic> {
-    match compute_forced_main_return(fir, enforce_contract_checks) {
+    let mut diagnostics = match compute_forced_main_return(fir, enforce_contract_checks) {
         Some(120) => vec![diagnostics::Diagnostic::new(
             diagnostics::Severity::Error,
             "entry `requires` contract is statically false",
@@ -7061,7 +7510,67 @@ fn compile_time_contract_diagnostics(
             None,
         )],
         None => Vec::new(),
+    };
+
+    if matches!(profile, BuildProfile::Strict) {
+        diagnostics.extend(strict_rpc_contract_diagnostics(module, fir));
     }
+
+    diagnostics
+}
+
+fn strict_rpc_contract_diagnostics(
+    module: &ast::Module,
+    fir: &fir::FirModule,
+) -> Vec<diagnostics::Diagnostic> {
+    let rpc_methods = fir
+        .typed_functions
+        .iter()
+        .filter(|function| {
+            function.is_extern
+                && function
+                    .abi
+                    .as_deref()
+                    .is_some_and(|abi| abi.eq_ignore_ascii_case("rpc"))
+        })
+        .map(|function| {
+            serde_json::json!({
+                "name": function.name,
+            })
+        })
+        .collect::<Vec<_>>();
+    if rpc_methods.is_empty() {
+        return Vec::new();
+    }
+
+    let policy_evidence = collect_rpc_policy_evidence(module, &rpc_methods);
+    let mut diagnostics = Vec::new();
+    for method in rpc_methods
+        .iter()
+        .filter_map(|method| method["name"].as_str())
+        .collect::<Vec<_>>()
+    {
+        let evidence = policy_evidence
+            .get(method)
+            .cloned()
+            .unwrap_or_else(RpcPolicyEvidence::default);
+        if evidence.calls == 0 {
+            continue;
+        }
+        if evidence.deadline_protected_calls < evidence.calls {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "RPC method `{method}` is called without an explicit timeout/deadline on every call path"
+                ),
+                Some(
+                    "Add `timeout(...)` or `deadline(...)` before the RPC call or immediately after it so strict mode can prove the request is bounded."
+                        .to_string(),
+                ),
+            ));
+        }
+    }
+    diagnostics
 }
 
 fn collect_main_contract_conditions(

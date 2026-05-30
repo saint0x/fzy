@@ -95,11 +95,79 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     assert!(memory_report.contains("\"violations\""));
     assert!(memory_report.contains("\"versions\""));
 
-    let runtime_contracts =
-        std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
-            .expect("native runtime contracts should exist");
+    let runtime_contracts = std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
+        .expect("native runtime contracts should exist");
     assert!(runtime_contracts.contains("\"requiredCapability\""));
     assert!(runtime_contracts.contains("\"blockingBehavior\""));
+}
+
+#[test]
+fn compile_file_emits_rpc_policy_evidence() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-rpc-safety-artifacts-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"rpc_safety_artifacts\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"rpc_safety_artifacts\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nuse core.http;\nrpc Ping(req: i32) -> i32;\nrpc Pong(req: i32) -> i32;\nfn main() -> i32 {\n    timeout(50)\n    Ping(1)\n    Pong(2)\n    cancel()\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let rpc_report =
+        std::fs::read_to_string(root.join(".fz/rpc-safety.json")).expect("rpc report should exist");
+    assert!(rpc_report.contains("\"deadlinePerCall\": true"));
+    assert!(rpc_report.contains("\"method\": \"Ping\""));
+    assert!(rpc_report.contains("\"policy\": \"explicit\""));
+    assert!(rpc_report.contains("\"method\": \"Pong\""));
+    assert!(rpc_report.contains("\"policy\": \"missing\""));
+    assert!(rpc_report.contains("\"handlerCleanupStatus\": \"requires_explicit_cleanup_contract\""));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_compile_rejects_rpc_calls_without_deadlines() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-rpc-strict-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"rpc_strict\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"rpc_strict\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "rpc Ping(req: i32) -> i32;\nfn main() -> i32 {\n    Ping(1)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "error");
+    assert!(artifact
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| diagnostic
+            .message
+            .contains("RPC method `Ping` is called without an explicit timeout/deadline")));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
