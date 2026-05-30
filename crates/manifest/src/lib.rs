@@ -78,12 +78,16 @@ pub struct Profiles {
     pub dev: Option<Profile>,
     pub release: Option<Profile>,
     pub verify: Option<Profile>,
+    pub strict: Option<Profile>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Profile {
     pub optimize: Option<bool>,
     pub checks: Option<bool>,
+    pub backend: Option<String>,
+    pub diagnostic_strictness: Option<String>,
+    pub emit_safety_artifacts: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -118,6 +122,7 @@ pub struct UnsafePolicy {
     pub enforce_dev: Option<bool>,
     pub enforce_verify: Option<bool>,
     pub enforce_release: Option<bool>,
+    pub enforce_strict: Option<bool>,
     #[serde(default)]
     pub deny_unsafe_in: Vec<String>,
     #[serde(default)]
@@ -131,6 +136,7 @@ impl Default for UnsafePolicy {
             enforce_dev: Some(false),
             enforce_verify: Some(true),
             enforce_release: Some(true),
+            enforce_strict: Some(true),
             deny_unsafe_in: Vec::new(),
             allow_unsafe_in: Vec::new(),
         }
@@ -207,6 +213,30 @@ impl Manifest {
         if let Some(mode) = self.unsafe_policy.contracts.as_deref() {
             if mode != "compiler" {
                 return Err("unsafe.contracts must be `compiler`".to_string());
+            }
+        }
+        for (profile_name, profile) in [
+            ("profiles.dev", self.profiles.dev.as_ref()),
+            ("profiles.verify", self.profiles.verify.as_ref()),
+            ("profiles.release", self.profiles.release.as_ref()),
+            ("profiles.strict", self.profiles.strict.as_ref()),
+        ] {
+            let Some(profile) = profile else {
+                continue;
+            };
+            if let Some(backend) = profile.backend.as_deref() {
+                if backend != "llvm" && backend != "cranelift" {
+                    return Err(format!(
+                        "{profile_name}.backend must be `llvm` or `cranelift`"
+                    ));
+                }
+            }
+            if let Some(strictness) = profile.diagnostic_strictness.as_deref() {
+                if strictness != "standard" && strictness != "strict" {
+                    return Err(format!(
+                        "{profile_name}.diagnostic_strictness must be `standard` or `strict`"
+                    ));
+                }
             }
         }
         for (index, scope) in self.unsafe_policy.deny_unsafe_in.iter().enumerate() {
@@ -459,5 +489,61 @@ mod tests {
             .validate()
             .expect_err("experimental tier must require explicit opt-in");
         assert!(err.contains("allow_experimental"));
+    }
+
+    #[test]
+    fn validates_strict_profile_configuration() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [profiles.strict]
+            optimize = true
+            checks = true
+            backend = "llvm"
+            diagnostic_strictness = "strict"
+            emit_safety_artifacts = true
+
+            [unsafe]
+            enforce_strict = true
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        manifest
+            .validate()
+            .expect("strict profile should validate");
+        let strict = manifest
+            .profiles
+            .strict
+            .as_ref()
+            .expect("strict profile should be present");
+        assert_eq!(strict.backend.as_deref(), Some("llvm"));
+        assert_eq!(strict.diagnostic_strictness.as_deref(), Some("strict"));
+        assert_eq!(manifest.unsafe_policy.enforce_strict, Some(true));
+    }
+
+    #[test]
+    fn rejects_invalid_profile_backend() {
+        let input = r#"
+            [package]
+            name = "demo"
+            version = "0.1.0"
+
+            [[target.bin]]
+            name = "demo"
+            path = "src/main.fzy"
+
+            [profiles.strict]
+            backend = "jit"
+        "#;
+        let manifest = load(input).expect("manifest should parse");
+        let err = manifest
+            .validate()
+            .expect_err("invalid backend should fail validation");
+        assert!(err.contains("profiles.strict.backend"));
     }
 }

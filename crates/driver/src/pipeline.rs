@@ -55,7 +55,8 @@ use self::native_runtime_support::{
     native_runtime_import_contract_errors,
 };
 use self::native_runtime_tables::{
-    native_data_plane_import_for_callee, native_runtime_import_for_callee, NativeRuntimeImport,
+    native_data_plane_import_for_callee, native_runtime_contracts,
+    native_runtime_import_for_callee, NativeRuntimeImport,
     NATIVE_DATA_PLANE_IMPORTS, NATIVE_RUNTIME_IMPORTS,
 };
 
@@ -111,7 +112,25 @@ pub enum BuildProfile {
     Dev,
     Release,
     Verify,
+    Strict,
 }
+
+impl BuildProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dev => "dev",
+            Self::Release => "release",
+            Self::Verify => "verify",
+            Self::Strict => "strict",
+        }
+    }
+}
+
+const LANGUAGE_VERSION: &str = "fozzylang.language.v1";
+const MANIFEST_SCHEMA_VERSION: &str = "fozzylang.manifest.v1";
+const RUNTIME_ABI_VERSION: &str = "fozzylang.runtime_abi.v1";
+const NATIVE_IMPORT_TABLE_VERSION: &str = "fozzylang.native_imports.v1";
+const DIAGNOSTIC_CATALOG_VERSION: &str = "fozzylang.diagnostic_catalog.v1";
 
 const NATIVE_AGG_NEW: &str = "__fz_native_agg_new";
 const NATIVE_AGG_SET_I64: &str = "__fz_native_agg_set_i64";
@@ -658,7 +677,41 @@ fn write_safety_artifacts(project_root: &Path, fir: &fir::FirModule) -> Result<(
     )
     .with_context(|| format!("failed writing {}", out_dir.join("rpc-safety.json").display()))?;
 
+    let ffi_json = build_ffi_report_json(fir);
+    std::fs::write(
+        out_dir.join("ffi-report.json"),
+        serde_json::to_vec_pretty(&ffi_json)?,
+    )
+    .with_context(|| format!("failed writing {}", out_dir.join("ffi-report.json").display()))?;
+    std::fs::write(
+        out_dir.join("ffi-report.md"),
+        render_ffi_report_markdown(&ffi_json),
+    )
+    .with_context(|| format!("failed writing {}", out_dir.join("ffi-report.md").display()))?;
+
+    let runtime_contracts_json = build_native_runtime_contracts_json();
+    std::fs::write(
+        out_dir.join("native-runtime-contracts.json"),
+        serde_json::to_vec_pretty(&runtime_contracts_json)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("native-runtime-contracts.json").display()
+        )
+    })?;
+
     Ok(())
+}
+
+fn compatibility_versions_json() -> serde_json::Value {
+    serde_json::json!({
+        "languageVersion": LANGUAGE_VERSION,
+        "manifestSchemaVersion": MANIFEST_SCHEMA_VERSION,
+        "runtimeAbiVersion": RUNTIME_ABI_VERSION,
+        "nativeImportTableVersion": NATIVE_IMPORT_TABLE_VERSION,
+        "diagnosticCatalogVersion": DIAGNOSTIC_CATALOG_VERSION,
+    })
 }
 
 #[derive(Clone)]
@@ -788,6 +841,7 @@ fn build_memory_report_json(fir: &fir::FirModule) -> serde_json::Value {
 
     serde_json::json!({
         "schemaVersion": "fozzylang.memory_report.v1",
+        "versions": compatibility_versions_json(),
         "functions": functions,
         "owners": owners,
         "moves": moves,
@@ -874,6 +928,7 @@ fn build_unsafe_report_json(fir: &fir::FirModule) -> serde_json::Value {
 
     serde_json::json!({
         "schemaVersion": "fozzylang.unsafe_report.v1",
+        "versions": compatibility_versions_json(),
         "unsafe_sites": unsafe_sites.len(),
         "reasoned": reasoned,
         "unreasoned": unsafe_sites.len().saturating_sub(reasoned),
@@ -935,6 +990,7 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
 
     serde_json::json!({
         "schemaVersion": "fozzylang.async_safety.v1",
+        "versions": compatibility_versions_json(),
         "async_functions": async_functions,
         "await_boundaries": await_boundaries,
         "task_transfers": task_transfers,
@@ -989,6 +1045,7 @@ fn build_rpc_safety_json(fir: &fir::FirModule) -> serde_json::Value {
 
     serde_json::json!({
         "schemaVersion": "fozzylang.rpc_safety.v1",
+        "versions": compatibility_versions_json(),
         "rpc_methods": rpc_methods,
         "deadline_policies": deadline_policies,
         "cancel_policies": cancel_policies,
@@ -1002,6 +1059,116 @@ fn build_rpc_safety_json(fir: &fir::FirModule) -> serde_json::Value {
             "rpc_resource_close",
             "rpc_resource_leak_rejected"
         ],
+    })
+}
+
+fn build_ffi_report_json(fir: &fir::FirModule) -> serde_json::Value {
+    let imports = collect_extern_c_imports(fir)
+        .into_iter()
+        .map(|function| {
+            serde_json::json!({
+                "name": function.name,
+                "unsafe": function.is_unsafe,
+                "linkName": function.link_name,
+                "params": function.params.iter().map(|param| {
+                    serde_json::json!({
+                        "name": param.name,
+                        "type": param.ty.to_string(),
+                    })
+                }).collect::<Vec<_>>(),
+                "returnType": function.return_type.to_string(),
+                "panicBoundary": function.ffi_panic,
+            })
+        })
+        .collect::<Vec<_>>();
+    let exports = fir
+        .typed_functions
+        .iter()
+        .filter(|function| is_extern_c_abi_function(function) && !function.body.is_empty())
+        .map(|function| {
+            serde_json::json!({
+                "name": function.name,
+                "async": function.is_async,
+                "linkName": function.link_name,
+                "params": function.params.iter().map(|param| {
+                    serde_json::json!({
+                        "name": param.name,
+                        "type": param.ty.to_string(),
+                    })
+                }).collect::<Vec<_>>(),
+                "returnType": function.return_type.to_string(),
+                "panicBoundary": function.ffi_panic,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "schemaVersion": "fozzylang.ffi_report.v1",
+        "versions": compatibility_versions_json(),
+        "imports": imports,
+        "exports": exports,
+        "asyncExports": collect_async_c_exports(fir).iter().map(|export| {
+            serde_json::json!({
+                "name": export.name,
+                "symbol": export.mangled_symbol,
+                "params": export.params.iter().map(|(ty, name)| {
+                    serde_json::json!({
+                        "name": name,
+                        "cType": ty,
+                    })
+                }).collect::<Vec<_>>(),
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn render_ffi_report_markdown(value: &serde_json::Value) -> String {
+    let mut out = String::from("# FFI Report\n\n");
+    let import_count = value["imports"].as_array().map(|items| items.len()).unwrap_or(0);
+    let export_count = value["exports"].as_array().map(|items| items.len()).unwrap_or(0);
+    out.push_str(&format!(
+        "- Imports: {import_count}\n- Exports: {export_count}\n\n"
+    ));
+    out.push_str("## Imports\n\n");
+    if let Some(imports) = value["imports"].as_array() {
+        for import in imports {
+            out.push_str(&format!(
+                "- `{}` -> `{}`\n",
+                import["name"].as_str().unwrap_or("?"),
+                import["returnType"].as_str().unwrap_or("?"),
+            ));
+        }
+    }
+    out.push_str("\n## Exports\n\n");
+    if let Some(exports) = value["exports"].as_array() {
+        for export in exports {
+            out.push_str(&format!(
+                "- `{}` -> `{}`\n",
+                export["name"].as_str().unwrap_or("?"),
+                export["returnType"].as_str().unwrap_or("?"),
+            ));
+        }
+    }
+    out
+}
+
+fn build_native_runtime_contracts_json() -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": "fozzylang.native_runtime_contracts.v1",
+        "versions": compatibility_versions_json(),
+        "imports": native_runtime_contracts().into_iter().map(|contract| {
+            serde_json::json!({
+                "callee": contract.callee,
+                "symbol": contract.symbol,
+                "arity": contract.arity,
+                "argOwnership": contract.arg_ownership,
+                "returnOwnership": contract.return_ownership,
+                "requiredCapability": contract.required_capability,
+                "linearity": contract.linearity,
+                "errorBehavior": contract.error_behavior,
+                "traceBehavior": contract.trace_behavior,
+                "blockingBehavior": contract.blocking_behavior,
+            })
+        }).collect::<Vec<_>>(),
     })
 }
 
@@ -8286,6 +8453,7 @@ fn emit_native_libraries_cranelift(
         (BuildProfile::Dev, None) => "none",
         (BuildProfile::Release, None) => "speed",
         (BuildProfile::Verify, None) => "speed",
+        (BuildProfile::Strict, None) => "speed",
     };
     flags_builder
         .set("opt_level", opt_level)
@@ -8634,6 +8802,7 @@ fn resolve_native_backend(profile: BuildProfile, backend_override: Option<&str>)
         BuildProfile::Release => "llvm".to_string(),
         BuildProfile::Dev => "cranelift".to_string(),
         BuildProfile::Verify => "llvm".to_string(),
+        BuildProfile::Strict => "llvm".to_string(),
     })
 }
 
@@ -8727,6 +8896,7 @@ fn emit_native_artifact_cranelift(
         (BuildProfile::Dev, None) => "none",
         (BuildProfile::Release, None) => "speed",
         (BuildProfile::Verify, None) => "speed",
+        (BuildProfile::Strict, None) => "speed",
     };
     flags_builder
         .set("opt_level", opt_level)

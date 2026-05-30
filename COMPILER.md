@@ -385,6 +385,501 @@ Compressed completion: runtime shim now drains child pipes during wait, native b
 
 ✅ Closed the native FFI payload bug by adding an internal string-byte pointer helper at the runtime boundary and teaching both LLVM and Cranelift extern-C import lowering to materialize real borrowed byte views for `_borrowed` pointer parameters instead of passing internal string-handle IDs. Also fixed native import/data-op collection through `unsafe { ... }` bodies so wrapper-local `str.len(...)` calls are declared during library builds. Added a driver regression that builds a real shared library and proves a host callback can read exact borrowed payload bytes on both backends, then revalidated Megaserver end to end by restoring the direct `megaserver_host_dispatch(ptr_borrowed, len)` path and probing the emitted library from C without the old file-read workaround in the host callback.
 
+## Open Hardening Program: From Serious Prototype To Trusted v1 Systems Language
+
+This section is the next open work queue after the current memory-safety/compiler hardening pass. The goal is not to make FZY bigger. The goal is to make the existing language/compiler/runtime surfaces difficult to break, easy to validate, and honest about what they guarantee.
+
+Audit baseline on this checkout:
+
+1. The compiler pipeline is already split into explicit crates for lexer/parser-adjacent parsing, AST, HIR, FIR, verifier, driver, stdlib, runtime, and manifest handling.
+2. The verifier and driver already emit production-shaped artifacts for diagnostics, memory safety, unsafe accounting, async safety, RPC safety, and trace/reporting surfaces.
+3. Native runtime imports already have one centralized table, but the current contract is still mostly callee/symbol/arity level rather than full ownership/capability/trace/blocking metadata.
+4. Async/task/runtime machinery already exists in both the language and Rust support layers, but several shipped reports still describe policy as `unspecified` rather than enforced compiler law.
+5. Manifest/runtime profile support currently centers on `dev`, `verify`, and `release`; there is not yet one explicit `strict` production profile contract spanning compiler, verifier, runtime, imports, and artifacts.
+6. The stdlib/runtime surface is already broad enough to warrant formal per-module contracts: HTTP, JSON, process, filesystem, task/thread, crypto/security, logging, observability, time, and C interop are all first-class.
+7. Both LLVM and Cranelift are already live backends, and parity hooks exist, but parity is not yet a documented all-feature guarantee with a closed allowlist/denylist.
+8. Trace/reporting artifacts already carry multiple schema versions, but the language version, manifest schema version, runtime ABI/import-table version, trace schema version, and diagnostic catalog version are not yet locked together as one explicit compatibility policy.
+
+## Priority 6: Lock Compiler And Runtime Behavior Behind Brutal Regression Coverage
+
+### 14. Build a compiler-phase lock-in suite that makes changes safe
+
+Problem:
+
+- the repository already has meaningful verifier, driver, and Fozzy coverage, but the next v1 step is to make every compiler phase changeable without fear
+- today the evidence is stronger for selected memory-safety and product-flow bugs than for a complete phase-by-phase compiler regression story
+
+Required fixes:
+
+1. build a golden corpus that covers lexer, parser, AST shaping, HIR typing/effects, FIR lowering, verifier outcomes, native lowerability, LLVM backend output, Cranelift backend output, and runtime shim linking
+2. require both positive and negative coverage for every phase:
+   - valid programs compile
+   - invalid programs fail
+   - diagnostics remain stable
+   - verify/build behavior matches
+   - LLVM/Cranelift outputs agree where the feature is marked parity-supported
+   - module imports resolve correctly
+   - caches do not hide stale results
+3. add regression classes specifically for multi-file projects, nested modules, public/wildcard imports, manifest-root discovery, dependency-graph hashing, and module-cache invalidation
+4. add panic-resistance gates so invalid user programs produce diagnostics rather than Rust panics across parser, HIR, verifier, and driver/native-lowerability paths
+
+Required tests:
+
+1. direct crate tests for parser/AST/HIR/FIR/verifier behavior
+2. `fz check`, `fz verify`, `fz build`, and `fz parity` fixture coverage for the same corpus
+3. strict deterministic Fozzy doctor/test coverage for representative compiler scenarios
+4. at least one recorded trace for the active compiler-regression suite, followed by strict trace verify, replay, and CI
+5. host-backed runs for compiler/runtime integration scenarios where native linking and runtime shim behavior matter
+
+### 15. Expand memory-safety adversarial coverage from “sound core” to “v1 trustable”
+
+Problem:
+
+- the current checkout has closed the known first-wave ownership and lifetime bugs, but v1 trust requires adversarial coverage against the shapes users will actually write
+- local borrow/lifetime analysis exists, yet the policy needs to be spelled out as a stable borrow-region contract and tested against hostile programs
+
+Required fixes:
+
+1. lock in the local borrow-region model explicitly:
+   - borrow starts at creation
+   - borrow ends at last statically accepted use
+   - owned value cannot be moved or freed while a borrow is live
+   - mutable borrow excludes all other access during its live region
+   - borrow cannot cross `await` unless the language explicitly marks that path as legal
+2. add adversarial tests for:
+   - use-after-move
+   - double-free
+   - free-after-defer
+   - defer-after-free
+   - leak on early return
+   - leak through branch
+   - leak through loop
+   - move in one branch only
+   - return owned resource
+   - consume owned parameter
+   - partial move from struct
+   - partial move from enum
+   - borrow then move
+   - borrow then free
+   - mutable borrow conflict
+   - reference return lifetime mismatch
+   - borrow across `await`
+   - borrow across `spawn`
+3. extend partial-move and provenance logic to the remaining aggregate/control-flow forms that are still only partially covered by current targeted regressions
+4. ensure every shipped linear or owned runtime handle participates in the same ownership-state and cleanup rules as `alloc(...)` / `free(...)`
+
+Required tests:
+
+1. HIR unit regressions for every new adversarial shape
+2. `fz verify` fixtures that assert both failure class and stable diagnostic/help wording
+3. deterministic Fozzy memory scenarios that reproduce branch, loop, defer, and thread/await lifetime hazards
+4. recorded traces plus trace verify/replay/CI for at least one adversarial memory suite per active goal
+
+## Priority 7: Turn Runtime Surface Area Into Explicit Compiler-Known Law
+
+### 16. Promote native runtime imports from name tables to contract tables
+
+Problem:
+
+- the native import tables are centralized, which is good, but they currently stop at callee/symbol/arity for most enforcement
+- v1 needs the compiler/runtime boundary to know ownership, capability, cleanup, tracing, and blocking semantics rather than relying on docs and convention
+
+Required fixes:
+
+1. for every native import, define:
+   - name
+   - arity
+   - argument ownership
+   - return ownership
+   - capability required
+   - linear-resource behavior
+   - error behavior
+   - trace behavior
+   - blocking or nonblocking behavior
+2. make the compiler consume this metadata for ownership-transfer, cleanup, capability, unsafe, and native-lowerability checks
+3. specifically harden and document:
+   - `http.stream_close`
+   - `http.websocket_close`
+   - `proc.close`
+   - `proc.wait`
+   - `proc.poll`
+   - `task.group_join_all`
+   - `task.group_cancel`
+   - `fs.atomic_write`
+   - `storage.atomic_append`
+4. add contract-validation tests that fail if an intrinsic exists in HIR without a full native contract, or if the contract and runtime shim disagree
+
+Required tests:
+
+1. import-table schema/unit tests
+2. verifier/driver regressions asserting that consuming calls really consume handles
+3. native runtime shim build tests that cover the full declared import surface
+4. host-backed scenarios for close/wait/poll/stream/atomic-write behaviors
+
+### 17. Lock in typed-handle and linear-resource law
+
+Problem:
+
+- FZY already treats several runtime values as linear or owned, but the handle model is not yet written as one closed, compiler-known matrix
+- without that matrix, the language risks drifting into stringly or convention-only resource management
+
+Required fixes:
+
+1. define the shipped handle set and contract for at least:
+   - `HttpHandle`
+   - `HttpStreamHandle`
+   - `WebSocketHandle`
+   - `ProcHandle`
+   - `TaskHandle`
+   - `TaskGroup`
+   - `FileHandle`
+   - `JsonHandle`
+   - `ListHandle`
+   - `MapHandle`
+2. for each handle, declare whether it is:
+   - copy
+   - owned
+   - linear
+   - closable
+   - send-safe
+   - async-stable
+3. make those handle rules visible to HIR, verifier, stdlib docs, runtime shim contracts, and diagnostics
+4. reject any runtime/helper path that consumes or aliases a handle in a way the handle matrix does not permit
+
+Required tests:
+
+1. per-handle type/lifetime/cleanup regressions
+2. backend parity tests using representative handle operations
+3. stdlib contract doc generation or validation from the same metadata source
+
+## Priority 8: Harden Async, Task, And RPC As Core Language Features
+
+### 18. Make async/task safety as strict as ownership safety
+
+Problem:
+
+- async is a differentiator for FZY, so the safety story cannot remain partly structural and partly advisory
+- the checkout already emits async safety JSON and task-group policy artifacts, but the remaining policies must become enforced compiler law
+
+Required fixes:
+
+1. enforce:
+   - `spawn` only accepts owned and send-safe values
+   - task groups must join, cancel, or detach
+   - timeout/deadline semantics are deterministic
+   - cancelled tasks clean resources
+   - task handles are linear
+   - references cannot cross task boundaries
+   - task result cannot be read after cancel/detach unless the language explicitly permits it
+2. harden the call-edge model for borrow/mutability/thread crossings beyond same-function checks when feasible
+3. define one explicit state machine for task handle lifecycle, task-group lifecycle, and cancel/join/detach/result-read legality
+4. make async-safety artifacts report enforced policy rather than inferred or open-ended observations
+
+Required tests:
+
+1. test programs for:
+   - spawn leak
+   - double join
+   - join after cancel
+   - detach then result read
+   - group without join
+   - group cancel with open resources
+   - timeout around stream/proc/http
+2. deterministic scheduler coverage across `fifo`, `random`, and `coverage_guided`
+3. trace verification that async schedule and task-group terminal policy are deterministic and replayable
+
+### 19. Turn RPC from “present” into one of the strongest shipped surfaces
+
+Problem:
+
+- RPC declarations, safety JSON, and frame events already exist, but deadline/cancel policy is still emitted as `unspecified`
+- v1 production RPC must be explicit about ownership, cancellation, deadlines, traceability, and method stability
+
+Required fixes:
+
+1. harden:
+   - RPC declaration parsing
+   - RPC ABI lowering
+   - request/response ownership
+   - deadline policy
+   - cancel policy
+   - RPC frame trace emission
+   - RPC error normalization
+   - RPC method-name stability
+   - RPC payload type checking
+2. in strict and production mode, require:
+   - every RPC method has a deadline policy
+   - every RPC handler has a cancel-cleanup policy
+   - every RPC frame is traceable
+   - request-body ownership is explicit
+3. generate machine-readable RPC safety artifacts from enforced compiler facts rather than placeholders
+4. add parity and replay coverage for RPC behavior across deterministic and host-backed flows
+
+Required tests:
+
+1. parser/HIR/verifier regressions for valid and invalid RPC declarations
+2. strict `fz verify` fixtures for deadline/cancel/ownership failures
+3. deterministic RPC trace scenarios with ordered frame assertions
+4. replay/CI validation for representative RPC request-cancel-deadline paths
+
+## Priority 9: Guarantee Backend And Diagnostic Trustworthiness
+
+### 20. Expand backend parity from “important discipline” to “documented law”
+
+Problem:
+
+- both LLVM and Cranelift are already supported and parity tooling exists, but the product still needs an explicit supported-feature parity contract
+- unmarked parity gaps would make the dual-backend story dangerous
+
+Required fixes:
+
+1. add parity suites that assert same source, same exit code, same stdout/stderr, same verifier result, and same runtime behavior
+2. cover at minimum:
+   - integer ops
+   - float ops
+   - strings
+   - structs
+   - enums
+   - matches
+   - loops
+   - closures
+   - arrays
+   - JSON handles
+   - HTTP handles
+   - process handles
+   - `defer`
+   - unsafe boundaries
+3. if any feature is not parity-guaranteed, mark it explicitly in docs, diagnostics, and backend-capability reporting rather than leaving it implicit
+4. add backend/link/runtime-shim parity checks for native library builds as well as executables
+
+Required tests:
+
+1. direct `fz parity` fixtures for each supported category
+2. host-backed runs where runtime behavior matters
+3. at least one real canary app per backend in CI
+
+### 21. Make diagnostics snapshot-stable and elite
+
+Problem:
+
+- the diagnostics schema/catalog story is already strong, but v1 trust requires error wording to stay actionable and stable under regression pressure
+- users should be able to depend on diagnostics as part of the language contract, not just the implementation
+
+Required fixes:
+
+1. require every important diagnostic class to answer:
+   - what happened
+   - where
+   - why it is unsafe or invalid
+   - what state was expected
+   - how to fix it
+2. add snapshot tests for compiler/verifier/native-lowerability diagnostics so wording, codes, help text, and catalog keys remain stable unless intentionally changed
+3. prioritize ownership, borrow, async/task, RPC, capability, module-resolution, backend-parity, and FFI diagnostics for first-wave snapshot coverage
+4. add specific “good over bad” wording guidance for common ownership/resource failures so errors name both the consuming site and the invalid later use
+
+Required tests:
+
+1. text and JSON snapshot tests
+2. `fz explain` catalog regressions
+3. LSP diagnostics schema regressions for the same catalog classes
+
+## Priority 10: Prove The Product On Real Programs, Audits, And Replay
+
+### 22. Add canary-app hardening gates
+
+Problem:
+
+- language features are most trustworthy when they survive real applications, not only synthetic fixtures
+- the repo already contains examples and app surfaces that can serve as production canaries
+
+Required fixes:
+
+1. define and keep green canary apps for:
+   - `fzyagent`
+   - `superctx`
+   - small HTTP server
+   - small RPC server
+   - process supervisor
+   - streaming client
+   - SQLite-backed state service
+2. require compiler/runtime/backend changes to compile and run these apps before stronger production language is claimed
+3. attach at least one deterministic and one host-backed validation path to each canary class that actually exercises its core runtime surface
+
+Required tests:
+
+1. canary-app build matrix across supported backends where applicable
+2. smoke tests via `fz run` and built binaries
+3. deterministic doctor/test plus trace verify/replay/CI for representative canary flows
+
+### 23. Finish unsafe/FFI audit hardening
+
+Problem:
+
+- unsafe metadata, FFI contract enforcement, and audit artifacts already exist, but v1 still needs a sharper operator-grade audit surface
+- the audit story should distinguish structural metadata from independently proven invariants while remaining easy to consume in CI
+
+Required fixes:
+
+1. require unsafe sites to carry:
+   - reason
+   - owner
+   - owner_id
+   - scope
+   - invariant
+   - risk_class
+   - proof_ref
+2. require FFI contracts to enforce:
+   - ownership annotation for pointers
+   - len pairing for buffers
+   - context anchors for callbacks
+   - no extern-C async imports
+   - `repr(C)` for ABI-crossing structs
+   - declared panic behavior
+3. add first-class commands:
+   - `fz audit unsafe`
+   - `fz audit ffi`
+   - `fz audit memory`
+4. make these emit both JSON and markdown from the same underlying contract data
+
+Required tests:
+
+1. verifier/driver contract regressions
+2. JSON schema tests for audit outputs
+3. Fozzy scenarios that fail on missing or invalid proof/ownership/FFI metadata
+
+### 24. Harden trace/replay into a compatibility-checked artifact system
+
+Problem:
+
+- trace/replay is already one of the strongest FZY surfaces, but v1 should formalize the schema and replay contract across compiler/runtime evolution
+- today multiple artifacts expose schema versions; the next step is one explicit compatibility matrix
+
+Required fixes:
+
+1. harden trace schema fields for:
+   - schema version
+   - scheduler
+   - seed
+   - execution order
+   - async schedule
+   - RPC frames
+   - runtime events
+   - causal links
+   - capability set
+2. add validation rules for:
+   - schema validity
+   - replay success
+   - trace matches run
+   - ordered RPC frames
+   - deterministic async schedule
+   - matching checkpoint count
+3. version and publish the compatibility set:
+   - FZY language version
+   - trace schema version
+   - manifest schema version
+   - runtime ABI version
+   - native import table version
+   - diagnostic catalog version
+4. ensure produced artifacts include the relevant versions so breakage is explicit rather than inferred
+
+Required tests:
+
+1. trace schema validation tests
+2. replay compatibility tests across representative artifact versions when introduced
+3. deterministic Fozzy trace lifecycle for every active hardening area
+
+## Second-Wave v1 Lock-In Work
+
+### 25. Freeze the v1 syntax and manifest/profile contract
+
+Required fixes:
+
+1. declare the syntax freeze set for:
+   - `fn`
+   - `let` / `let mut`
+   - `struct`
+   - `enum`
+   - `match`
+   - `trait` / `impl`
+   - `async` / `await`
+   - `rpc`
+   - unsafe metadata
+   - `defer`
+   - `use core.*`
+   - `extern` / `pubext` ABI syntax
+2. after freeze, permit additive changes only unless the version policy says otherwise
+3. extend profile policy so the shipped story is explicit for `dev`, `verify`, `release`, and a production-facing `strict` contract that defines:
+   - checks enabled
+   - unsafe policy
+   - backend
+   - capabilities
+   - runtime imports allowed
+   - artifact emission
+   - optimization level
+   - diagnostic strictness
+
+### 26. Promote stdlib contracts, capability law, JSON boundaries, and security helpers into one coherent policy
+
+Required fixes:
+
+1. define per-module contracts for at least:
+   - `core.mem`
+   - `core.http`
+   - `core.proc`
+   - `core.fs`
+   - `core.thread`
+   - `core.time`
+   - `core.crypto`
+   - `core.json`
+   - `core.log`
+2. each contract must specify:
+   - capability
+   - ownership behavior
+   - error behavior
+   - linear handles
+   - cleanup requirement
+   - thread-safety
+   - async-safety
+3. strengthen capability propagation so calls require the capabilities they actually exercise, and capability-token delegation is enforced as compiler-visible authority rather than documentation
+4. lock in the JSON rule:
+   - JSON at boundaries
+   - typed structs/enums inside
+5. add strict-mode warnings or failures for unsafe `json.raw` misuse, path traversal hazards, shell/process construction hazards, temp-file/atomic-write hazards, header normalization gaps, raw-injection hazards, and constant-time-compare misuse
+
+### 27. Standardize the error model, performance story, docs-from-implementation flow, and compatibility policy
+
+Required fixes:
+
+1. define and document the v1 error idiom around:
+   - `Result<T, Error>`
+   - `Status`
+   - `ErrorClass`
+   - `ExitStatus`
+   - `RuntimeError`
+2. benchmark real FZY workloads rather than generic micro-optimizations:
+   - CLI startup
+   - HTTP throughput
+   - JSON build/parse
+   - process spawn/wait
+   - stream reading
+   - task-group execution
+   - compiler parse/lower/build time
+   - native binary size
+3. generate docs from implementation-backed sources where possible:
+   - AST nodes
+   - native runtime table
+   - capability table
+   - verifier rules
+   - diagnostic catalog
+   - stdlib contract metadata
+4. treat this compatibility set as part of release gating:
+   - language version
+   - trace schema version
+   - manifest schema version
+   - runtime ABI version
+   - native import-table version
+   - diagnostic catalog version
+
 ## Tracking Notes
 
 When work is completed, mark the relevant line or section with `✅` and briefly note:

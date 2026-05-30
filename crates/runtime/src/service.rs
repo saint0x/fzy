@@ -5,6 +5,7 @@ pub enum RuntimeProfile {
     Dev,
     Verify,
     Release,
+    Strict,
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +32,11 @@ impl RuntimeProfile {
                 worker_count: 8,
                 deterministic: true,
                 strict_verify: false,
+            },
+            Self::Strict => RuntimeProfileConfig {
+                worker_count: 4,
+                deterministic: true,
+                strict_verify: true,
             },
         }
     }
@@ -178,6 +184,14 @@ mod tests {
         let cfg = RuntimeProfile::Verify.config();
         assert!(cfg.deterministic);
         assert!(cfg.strict_verify);
+    }
+
+    #[test]
+    fn strict_profile_enables_deterministic_strict_runtime() {
+        let cfg = RuntimeProfile::Strict.config();
+        assert!(cfg.deterministic);
+        assert!(cfg.strict_verify);
+        assert_eq!(cfg.worker_count, 4);
     }
 
     #[test]

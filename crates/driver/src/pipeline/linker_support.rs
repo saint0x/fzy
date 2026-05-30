@@ -28,6 +28,9 @@ pub(super) fn apply_profile_optimization_flags(
         (BuildProfile::Verify, None) => {
             cmd.arg("-O1").arg("-g");
         }
+        (BuildProfile::Strict, None) => {
+            cmd.arg("-O2").arg("-g");
+        }
     }
 }
 
@@ -140,6 +143,7 @@ pub(super) fn profile_config(
         BuildProfile::Dev => manifest.profiles.dev.as_ref(),
         BuildProfile::Release => manifest.profiles.release.as_ref(),
         BuildProfile::Verify => manifest.profiles.verify.as_ref(),
+        BuildProfile::Strict => manifest.profiles.strict.as_ref(),
     }
 }
 
@@ -153,6 +157,7 @@ pub(super) fn unsafe_contracts_enforced(
             BuildProfile::Dev => unsafe_policy.enforce_dev.unwrap_or(false),
             BuildProfile::Verify => unsafe_policy.enforce_verify.unwrap_or(true),
             BuildProfile::Release => unsafe_policy.enforce_release.unwrap_or(true),
+            BuildProfile::Strict => unsafe_policy.enforce_strict.unwrap_or(true),
         };
     }
     !matches!(profile, BuildProfile::Dev)

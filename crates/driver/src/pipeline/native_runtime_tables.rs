@@ -5,6 +5,20 @@ pub(super) struct NativeRuntimeImport {
     pub(super) arity: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeRuntimeImportContract {
+    pub(super) callee: &'static str,
+    pub(super) symbol: &'static str,
+    pub(super) arity: usize,
+    pub(super) arg_ownership: &'static str,
+    pub(super) return_ownership: &'static str,
+    pub(super) required_capability: &'static str,
+    pub(super) linearity: &'static str,
+    pub(super) error_behavior: &'static str,
+    pub(super) trace_behavior: &'static str,
+    pub(super) blocking_behavior: &'static str,
+}
+
 pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
     NativeRuntimeImport {
         callee: "alloc",
@@ -1115,4 +1129,202 @@ pub(super) fn native_data_plane_import_for_callee(
     NATIVE_DATA_PLANE_IMPORTS
         .iter()
         .find(|import| import.callee == callee)
+}
+
+fn required_capability_for_callee(callee: &str) -> &'static str {
+    if callee == "alloc" || callee == "free" {
+        "mem"
+    } else if callee.starts_with("http.") || callee.starts_with("route.") {
+        "http"
+    } else if callee.starts_with("proc.") {
+        "proc"
+    } else if callee.starts_with("fs.") {
+        "fs"
+    } else if callee.starts_with("storage.") {
+        "storage"
+    } else if callee.starts_with("crypto.") {
+        "rng"
+    } else if callee.starts_with("time.") {
+        "time"
+    } else if callee.starts_with("term.") {
+        "log"
+    } else if callee.starts_with("thread.")
+        || callee.starts_with("task.")
+        || matches!(callee, "spawn" | "spawn_ctx" | "detach" | "cancel_task" | "yield" | "recv")
+    {
+        "thread"
+    } else {
+        "none"
+    }
+}
+
+fn default_error_behavior(callee: &str) -> &'static str {
+    if callee.starts_with("json.") || callee.starts_with("str.") {
+        "value_or_empty"
+    } else if callee.starts_with("http.")
+        || callee.starts_with("route.")
+        || callee.starts_with("proc.")
+        || callee.starts_with("fs.")
+        || callee.starts_with("storage.")
+        || callee.starts_with("crypto.")
+    {
+        "runtime_status_with_last_error"
+    } else {
+        "none"
+    }
+}
+
+fn default_trace_behavior(callee: &str) -> &'static str {
+    if callee.starts_with("http.")
+        || callee.starts_with("proc.")
+        || callee.starts_with("task.")
+        || callee.starts_with("thread.")
+        || callee.starts_with("fs.")
+        || callee.starts_with("storage.")
+    {
+        "emit_runtime_event"
+    } else {
+        "none"
+    }
+}
+
+fn default_blocking_behavior(callee: &str) -> &'static str {
+    if matches!(
+        callee,
+        "proc.wait"
+            | "http.read"
+            | "http.read_headers"
+            | "http.stream_read"
+            | "http.stream_read_line"
+            | "http.request_stream"
+            | "http.websocket_read"
+            | "term.read_line"
+            | "fs.read_file"
+            | "fs.write_file"
+            | "fs.atomic_write"
+            | "storage.atomic_append"
+    ) {
+        "may_block"
+    } else {
+        "nonblocking"
+    }
+}
+
+fn default_linearity(callee: &str) -> &'static str {
+    if matches!(
+        callee,
+        "alloc"
+            | "http.bind"
+            | "http.listen"
+            | "http.accept"
+            | "http.request_stream"
+            | "http.websocket_accept"
+            | "proc.spawn"
+            | "proc.spawnl"
+            | "proc.spawn_cmd"
+            | "task.group_begin"
+    ) {
+        "produces_linear_handle"
+    } else if matches!(
+        callee,
+        "free"
+            | "http.stream_close"
+            | "http.websocket_close"
+            | "http.close"
+            | "proc.close"
+            | "task.group_join"
+            | "task.group_join_all"
+            | "task.group_cancel"
+    ) {
+        "consumes_linear_handle"
+    } else {
+        "nonlinear"
+    }
+}
+
+pub(super) fn native_runtime_contract_for_callee(
+    callee: &str,
+) -> Option<NativeRuntimeImportContract> {
+    let import = native_runtime_import_for_callee(callee)
+        .or_else(|| native_data_plane_import_for_callee(callee))?;
+    let mut contract = NativeRuntimeImportContract {
+        callee: import.callee,
+        symbol: import.symbol,
+        arity: import.arity,
+        arg_ownership: "borrow_args",
+        return_ownership: "value",
+        required_capability: required_capability_for_callee(import.callee),
+        linearity: default_linearity(import.callee),
+        error_behavior: default_error_behavior(import.callee),
+        trace_behavior: default_trace_behavior(import.callee),
+        blocking_behavior: default_blocking_behavior(import.callee),
+    };
+    match import.callee {
+        "alloc" => {
+            contract.arg_ownership = "borrow_size";
+            contract.return_ownership = "owned_allocation";
+        }
+        "free" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "http.request_stream" => {
+            contract.arg_ownership = "borrow_endpoint_payload_headers";
+            contract.return_ownership = "owned_http_stream";
+        }
+        "http.stream_close" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "http.websocket_close" => {
+            contract.arg_ownership = "consume_arg0_borrow_close_payload";
+            contract.return_ownership = "status";
+        }
+        "http.close" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "proc.spawn" | "proc.spawnl" | "proc.spawn_cmd" => {
+            contract.arg_ownership = "borrow_spawn_spec";
+            contract.return_ownership = "owned_proc_handle";
+        }
+        "proc.close" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "proc.wait" => {
+            contract.arg_ownership = "borrow_handle_timeout";
+            contract.return_ownership = "status";
+        }
+        "proc.poll" => {
+            contract.arg_ownership = "borrow_handle";
+            contract.return_ownership = "status";
+        }
+        "task.group_begin" => {
+            contract.arg_ownership = "none";
+            contract.return_ownership = "owned_task_group";
+        }
+        "task.group_join" | "task.group_join_all" | "task.group_cancel" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
+        }
+        "fs.atomic_write" => {
+            contract.arg_ownership = "borrow_path_bytes";
+            contract.return_ownership = "status";
+        }
+        "storage.atomic_append" => {
+            contract.arg_ownership = "borrow_target_bytes";
+            contract.return_ownership = "status";
+        }
+        _ => {}
+    }
+    Some(contract)
+}
+
+pub(super) fn native_runtime_contracts() -> Vec<NativeRuntimeImportContract> {
+    NATIVE_RUNTIME_IMPORTS
+        .iter()
+        .chain(NATIVE_DATA_PLANE_IMPORTS.iter())
+        .filter_map(|import| native_runtime_contract_for_callee(import.callee))
+        .collect()
 }

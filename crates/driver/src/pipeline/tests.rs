@@ -79,6 +79,9 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         "unsafe-report.json",
         "async-safety.json",
         "rpc-safety.json",
+        "ffi-report.json",
+        "ffi-report.md",
+        "native-runtime-contracts.json",
     ] {
         assert!(
             root.join(".fz").join(name).exists(),
@@ -90,6 +93,13 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         .expect("memory report should exist");
     assert!(memory_report.contains("\"owners\""));
     assert!(memory_report.contains("\"violations\""));
+    assert!(memory_report.contains("\"versions\""));
+
+    let runtime_contracts =
+        std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
+            .expect("native runtime contracts should exist");
+    assert!(runtime_contracts.contains("\"requiredCapability\""));
+    assert!(runtime_contracts.contains("\"blockingBehavior\""));
 }
 
 #[test]

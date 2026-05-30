@@ -82,6 +82,7 @@ pub enum Command {
     Build {
         path: PathBuf,
         release: bool,
+        strict: bool,
         lib: bool,
         threads: Option<u16>,
         backend: Option<String>,
@@ -178,6 +179,12 @@ pub enum Command {
     AuditUnsafe {
         path: PathBuf,
         workspace: bool,
+    },
+    AuditFfi {
+        path: PathBuf,
+    },
+    AuditMemory {
+        path: PathBuf,
     },
     Vendor {
         path: PathBuf,
@@ -294,6 +301,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
         Command::Build {
             path,
             release,
+            strict,
             lib,
             threads,
             backend,
@@ -303,7 +311,12 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             link_search,
             frameworks,
         } => {
-            let profile = if release {
+            if release && strict {
+                bail!("`fz build` accepts either `--release` or `--strict`, not both");
+            }
+            let profile = if strict {
+                BuildProfile::Strict
+            } else if release {
                 BuildProfile::Release
             } else {
                 BuildProfile::Dev
@@ -567,7 +580,9 @@ pub fn run(command: Command, format: Format) -> Result<String> {
 
             let artifact = compile_file_with_backend_with_root_guidance(
                 &path,
-                if safe_profile {
+                if strict_verify {
+                    BuildProfile::Strict
+                } else if safe_profile {
                     BuildProfile::Verify
                 } else {
                     BuildProfile::Dev
@@ -630,7 +645,13 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         (
                             "policy",
                             policy_summary_text(
-                                if safe_profile { "verify" } else { "dev" },
+                                if strict_verify {
+                                    "strict"
+                                } else if safe_profile {
+                                    "verify"
+                                } else {
+                                    "dev"
+                                },
                                 Some(if strict_verify {
                                     "strict"
                                 } else {
@@ -683,7 +704,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                         "smokeHttp": smoke_http,
                         "deterministicApplied": deterministic,
                         "policy": {
-                            "profile": if safe_profile { "verify" } else { "dev" },
+                            "profile": if strict_verify { "strict" } else if safe_profile { "verify" } else { "dev" },
                             "unsafeEnforcement": if strict_verify { "strict" } else { "profile-driven" },
                             "memorySafetyMode": "production",
                             "backend": routing_mode,
@@ -858,7 +879,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                 (
                     "policy",
                     policy_summary_text(
-                        if strict_verify { "verify" } else { "dev" },
+                        if strict_verify { "strict" } else { "dev" },
                         Some(if strict_verify {
                             "strict"
                         } else {
@@ -890,7 +911,7 @@ pub fn run(command: Command, format: Format) -> Result<String> {
                     "safeProfile": safe_profile,
                     "productionMemorySafety": true,
                     "policy": {
-                        "profile": if strict_verify { "verify" } else { "dev" },
+                        "profile": if strict_verify { "strict" } else { "dev" },
                         "unsafeEnforcement": if strict_verify { "strict" } else { "profile-driven" },
                         "memorySafetyMode": "production",
                         "backend": "deterministic-model",
@@ -1014,6 +1035,8 @@ pub fn run(command: Command, format: Format) -> Result<String> {
             equivalence_command(&path, seed.unwrap_or(1), format)
         }
         Command::AuditUnsafe { path, workspace } => audit_unsafe_command(&path, workspace, format),
+        Command::AuditFfi { path } => audit_ffi_command(&path, format),
+        Command::AuditMemory { path } => audit_memory_command(&path, format),
         Command::Vendor { path } => vendor_command(&path, format),
         Command::AbiCheck { current, baseline } => abi_check_command(&current, &baseline, format),
         Command::DebugCheck { path } => debug_check_command(&path, format),
@@ -1836,11 +1859,7 @@ fn render_artifact(
                 (
                     "policy",
                     policy_summary_text(
-                        match artifact.profile {
-                            BuildProfile::Dev => "dev",
-                            BuildProfile::Release => "release",
-                            BuildProfile::Verify => "verify",
-                        },
+                        artifact.profile.as_str(),
                         Some("compiler"),
                         None,
                         artifact.dependency_graph_hash.is_some(),
@@ -1892,11 +1911,7 @@ fn render_artifact(
                 "items": artifact.diagnostic_details,
                 "dependencyGraphHash": artifact.dependency_graph_hash,
                 "policy": {
-                    "profile": match artifact.profile {
-                        BuildProfile::Dev => "dev",
-                        BuildProfile::Release => "release",
-                        BuildProfile::Verify => "verify",
-                    },
+                    "profile": artifact.profile.as_str(),
                     "unsafeEnforcement": "profile-driven",
                     "memorySafetyMode": "production",
                     "backend": "compiler",
@@ -1995,11 +2010,7 @@ fn render_library_artifact(
                 (
                     "policy",
                     policy_summary_text(
-                        match artifact.profile {
-                            BuildProfile::Dev => "dev",
-                            BuildProfile::Release => "release",
-                            BuildProfile::Verify => "verify",
-                        },
+                        artifact.profile.as_str(),
                         Some("compiler"),
                         None,
                         artifact.dependency_graph_hash.is_some(),
@@ -2037,11 +2048,7 @@ fn render_library_artifact(
             "items": artifact.diagnostic_details,
             "dependencyGraphHash": artifact.dependency_graph_hash,
             "policy": {
-                "profile": match artifact.profile {
-                    BuildProfile::Dev => "dev",
-                    BuildProfile::Release => "release",
-                    BuildProfile::Verify => "verify",
-                },
+                "profile": artifact.profile.as_str(),
                 "unsafeEnforcement": "profile-driven",
                 "memorySafetyMode": "production",
                 "backend": "compiler",
@@ -2458,11 +2465,7 @@ fn write_interop_artifact_manifest(
         "source": manifest_relative_path(manifest_dir, &resolved.source_path),
         "projectRoot": manifest_relative_path(manifest_dir, &resolved.project_root),
         "module": library.module,
-        "profile": match library.profile {
-            BuildProfile::Dev => "dev",
-            BuildProfile::Release => "release",
-            BuildProfile::Verify => "verify",
-        },
+        "profile": library.profile.as_str(),
         "buildMode": "lib",
         "staticLib": library.static_lib.as_ref().map(|path| manifest_relative_path(manifest_dir, path)),
         "sharedLib": library.shared_lib.as_ref().map(|path| manifest_relative_path(manifest_dir, path)),
@@ -4678,6 +4681,103 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
         })
         .to_string()),
     }
+}
+
+fn audit_memory_command(path: &Path, format: Format) -> Result<String> {
+    let root = compile_strict_safety_artifacts(path)?;
+    let json_path = root.join(".fz/memory-report.json");
+    let md_path = root.join(".fz/memory-report.md");
+    let payload: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&json_path)
+            .with_context(|| format!("failed reading {}", json_path.display()))?,
+    )
+    .with_context(|| format!("failed parsing {}", json_path.display()))?;
+    let owner_count = payload["owners"].as_array().map(|items| items.len()).unwrap_or(0);
+    let violation_count = payload["violations"]
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
+    match format {
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "memory-audit".to_string()),
+            ("profile", "strict".to_string()),
+            ("owners", owner_count.to_string()),
+            ("violations", violation_count.to_string()),
+            ("json", json_path.display().to_string()),
+            ("markdown", md_path.display().to_string()),
+        ])),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "mode": "memory-audit",
+            "profile": "strict",
+            "json": json_path.display().to_string(),
+            "markdown": md_path.display().to_string(),
+            "owners": owner_count,
+            "violations": violation_count,
+            "report": payload,
+        })
+        .to_string()),
+    }
+}
+
+fn audit_ffi_command(path: &Path, format: Format) -> Result<String> {
+    let root = compile_strict_safety_artifacts(path)?;
+    let json_path = root.join(".fz/ffi-report.json");
+    let md_path = root.join(".fz/ffi-report.md");
+    let payload: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&json_path)
+            .with_context(|| format!("failed reading {}", json_path.display()))?,
+    )
+    .with_context(|| format!("failed parsing {}", json_path.display()))?;
+    let import_count = payload["imports"].as_array().map(|items| items.len()).unwrap_or(0);
+    let export_count = payload["exports"].as_array().map(|items| items.len()).unwrap_or(0);
+    match format {
+        Format::Text => Ok(render_text_fields(&[
+            ("status", "ok".to_string()),
+            ("mode", "ffi-audit".to_string()),
+            ("profile", "strict".to_string()),
+            ("imports", import_count.to_string()),
+            ("exports", export_count.to_string()),
+            ("json", json_path.display().to_string()),
+            ("markdown", md_path.display().to_string()),
+        ])),
+        Format::Json => Ok(serde_json::json!({
+            "ok": true,
+            "mode": "ffi-audit",
+            "profile": "strict",
+            "json": json_path.display().to_string(),
+            "markdown": md_path.display().to_string(),
+            "imports": import_count,
+            "exports": export_count,
+            "report": payload,
+        })
+        .to_string()),
+    }
+}
+
+fn compile_strict_safety_artifacts(path: &Path) -> Result<PathBuf> {
+    match compile_file_with_backend_with_root_guidance(path, BuildProfile::Strict, None) {
+        Ok(artifact) if artifact.status != "error" => {}
+        Ok(_) | Err(_) if project_has_c_exports(path).unwrap_or(false) => {
+            let artifact =
+                compile_library_with_backend_with_root_guidance(path, BuildProfile::Strict, None)?;
+            if artifact.status == "error" {
+                bail!(
+                    "strict safety artifact generation failed for `{}`",
+                    path.display()
+                );
+            }
+        }
+        Ok(_) => {
+            bail!(
+                "strict safety artifact generation failed for `{}`",
+                path.display()
+            );
+        }
+        Err(error) => return Err(error),
+    }
+    Ok(resolve_source(path)?.project_root)
 }
 
 fn proof_ref_machine_linkable(value: &str) -> bool {
@@ -11240,6 +11340,62 @@ mod tests {
     }
 
     #[test]
+    fn audit_memory_emits_strict_artifact_paths() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-audit-memory-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"audit_memory\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"audit_memory\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main() -> i32 {\n    let p = alloc(16)\n    defer free(p)\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(Command::AuditMemory { path: root.clone() }, Format::Json)
+            .expect("memory audit should succeed");
+        assert!(output.contains("\"mode\":\"memory-audit\""));
+        assert!(output.contains("\"profile\":\"strict\""));
+        assert!(output.contains("\"owners\""));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn audit_ffi_emits_import_and_export_inventory() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-audit-ffi-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"audit_ffi\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"audit_ffi\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "ext unsafe c fn host_touch(buf_borrowed: *u8, len: usize) -> i32;\n#[ffi_panic(abort)]\npubext c fn dispatch(v: i32) -> i32 {\n    discard host_touch\n    return v\n}\n\nfn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(Command::AuditFfi { path: root.clone() }, Format::Json)
+            .expect("ffi audit should succeed");
+        assert!(output.contains("\"mode\":\"ffi-audit\""));
+        assert!(output.contains("\"imports\":1"));
+        assert!(output.contains("\"exports\":1"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn audit_unsafe_non_project_root_reports_target_guidance() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -12110,6 +12266,7 @@ mod tests {
             Command::Build {
                 path: source.clone(),
                 release: false,
+                strict: false,
                 lib: false,
                 threads: Some(3),
                 backend: None,
@@ -12159,6 +12316,7 @@ mod tests {
             Command::Build {
                 path: root.clone(),
                 release: false,
+                strict: false,
                 lib: false,
                 threads: None,
                 backend: None,
@@ -12208,6 +12366,7 @@ mod tests {
             Command::Build {
                 path: source.clone(),
                 release: false,
+                strict: false,
                 lib: true,
                 threads: None,
                 backend: None,
@@ -12274,6 +12433,7 @@ mod tests {
             Command::Build {
                 path: source.clone(),
                 release: false,
+                strict: false,
                 lib: false,
                 threads: None,
                 backend: None,
@@ -12807,6 +12967,7 @@ mod tests {
                 Command::Build {
                     path: root.clone(),
                     release: false,
+                    strict: false,
                     lib: true,
                     threads: None,
                     backend: Some(backend.to_string()),

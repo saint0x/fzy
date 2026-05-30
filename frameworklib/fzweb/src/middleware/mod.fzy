@@ -228,8 +228,8 @@ fn maybe_handle_preflight(conn: HttpHandle, policy: Policy) -> i32 {
 
 fn before_dispatch(
     conn: HttpHandle,
-    app_cfg: App,
-    decision: RouteDecision,
+    app_cfg: app.App,
+    decision: app.RouteDecision,
     policy: Policy,
     state: RateState
 ) -> GateResult {

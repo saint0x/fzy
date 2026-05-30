@@ -168,6 +168,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
         Some("build") => {
             let path = arg_path_or_cwd(args, 1)?;
             let release = args.iter().any(|a| a == "--release");
+            let strict = args.iter().any(|a| a == "--strict");
             let lib = args.iter().any(|a| a == "--lib");
             let threads = parse_u16_flag(args, "--threads")?;
             let backend = parse_backend_flag(args)?;
@@ -182,6 +183,7 @@ fn parse_command(args: &[String]) -> Result<Command> {
             Ok(Command::Build {
                 path,
                 release,
+                strict,
                 lib,
                 threads,
                 backend,
@@ -376,6 +378,12 @@ fn parse_command(args: &[String]) -> Result<Command> {
             Some("unsafe") => Ok(Command::AuditUnsafe {
                 path: arg_path_or_cwd(args, 2)?,
                 workspace: has_flag(args, "--workspace"),
+            }),
+            Some("ffi") => Ok(Command::AuditFfi {
+                path: arg_path_or_cwd(args, 2)?,
+            }),
+            Some("memory") => Ok(Command::AuditMemory {
+                path: arg_path_or_cwd(args, 2)?,
             }),
             _ => {
                 print_help();
@@ -584,7 +592,7 @@ fn print_help() {
         "fz <command> [options]\n\
 commands:\n\
   init [path] [--name package] [--template minimal|rust|ts] [--with run,fuzz,explore,memory,host|all] [--force]\n\
-  build [path] [--release] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
+  build [path] [--release|--strict] [--lib] [--threads N] [--backend llvm|cranelift] [--pgo-generate|--pgo-use file] [-l lib] [-L path] [-framework name]\n\
   run [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--max-seconds N] [--exit-on-healthcheck URL] [--smoke-http URL] [-- <args>]\n\
   test [path] [--det] [--strict-verify] [--seed N] [--record path] [--host-backends] [--backend llvm|cranelift] [--sched policy] [--filter substring]\n\
   fmt [path ...] [--check]\n\
@@ -605,6 +613,8 @@ commands:\n\
   parity [path] [--seed N]\n\
   equivalence [path] [--seed N]\n\
   audit unsafe [path] [--workspace]\n\
+  audit ffi [path]\n\
+  audit memory [path]\n\
   vendor [project]\n\
   abi-check <current.abi.json> --baseline <baseline.abi.json>\n\
   debug-check [path]\n\
@@ -1177,6 +1187,40 @@ mod tests {
             }
             _ => panic!("expected build command"),
         }
+    }
+
+    #[test]
+    fn parse_build_with_strict_profile() {
+        let args = vec![
+            "build".to_string(),
+            "examples/fullstack".to_string(),
+            "--strict".to_string(),
+        ];
+        let command = parse_command(&args).expect("strict build should parse");
+        match command {
+            Command::Build {
+                path,
+                strict,
+                release,
+                ..
+            } => {
+                assert_eq!(path, PathBuf::from("examples/fullstack"));
+                assert!(strict);
+                assert!(!release);
+            }
+            _ => panic!("expected build command"),
+        }
+    }
+
+    #[test]
+    fn parse_audit_ffi_and_memory_commands() {
+        let ffi = parse_command(&["audit".to_string(), "ffi".to_string()])
+            .expect("ffi audit should parse");
+        assert!(matches!(ffi, Command::AuditFfi { .. }));
+
+        let memory = parse_command(&["audit".to_string(), "memory".to_string()])
+            .expect("memory audit should parse");
+        assert!(matches!(memory, Command::AuditMemory { .. }));
     }
 
     #[test]

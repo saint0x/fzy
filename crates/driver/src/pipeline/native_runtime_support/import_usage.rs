@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use super::super::*;
+use super::super::native_runtime_tables::native_runtime_contract_for_callee;
 
 pub(crate) fn native_runtime_import_contract_errors() -> Vec<String> {
     let mut errors = Vec::new();
@@ -71,6 +72,28 @@ pub(crate) fn native_runtime_import_contract_errors() -> Vec<String> {
             "native import `{}` is not declared as a runtime intrinsic in HIR",
             callee
         ));
+    }
+    for callee in imported_runtime.iter().copied() {
+        let Some(contract) = native_runtime_contract_for_callee(callee) else {
+            errors.push(format!(
+                "native import `{}` has no runtime contract metadata",
+                callee
+            ));
+            continue;
+        };
+        if contract.required_capability.trim().is_empty()
+            || contract.arg_ownership.trim().is_empty()
+            || contract.return_ownership.trim().is_empty()
+            || contract.linearity.trim().is_empty()
+            || contract.error_behavior.trim().is_empty()
+            || contract.trace_behavior.trim().is_empty()
+            || contract.blocking_behavior.trim().is_empty()
+        {
+            errors.push(format!(
+                "native import `{}` has incomplete runtime contract metadata",
+                callee
+            ));
+        }
     }
     errors
 }
