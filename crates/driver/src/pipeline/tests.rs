@@ -264,6 +264,87 @@ fn compile_file_runtime_contracts_cover_runtime_handle_consumers() {
 }
 
 #[test]
+fn compile_file_memory_report_tracks_stream_and_task_group_handles() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-memory-report-stream-task-group-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"memory_report_stream_task_group\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"memory_report_stream_task_group\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn finish(group: TaskGroupHandle) -> i32 {\n    return task.group_join_all(group)\n}\nfn close_stream(stream: HttpStreamHandle) -> i32 {\n    return http.stream_close(stream)\n}\nfn main() -> i32 {\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    discard finish(group)\n    let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n    discard close_stream(stream)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let memory_report = std::fs::read_to_string(root.join(".fz/memory-report.json"))
+        .expect("memory report should exist");
+    assert!(
+        memory_report.contains("\"name\":\"group\"")
+            || memory_report.contains("\"name\": \"group\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"TaskGroupHandle\"")
+            || memory_report.contains("\"type\": \"TaskGroupHandle\"")
+    );
+    assert!(
+        memory_report.contains("\"name\":\"stream\"")
+            || memory_report.contains("\"name\": \"stream\"")
+    );
+    assert!(
+        memory_report.contains("\"type\":\"HttpStreamHandle\"")
+            || memory_report.contains("\"type\": \"HttpStreamHandle\"")
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_file_runtime_contracts_cover_stream_and_task_group_consumers() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-runtime-contracts-stream-task-group-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"runtime_contracts_stream_task_group\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"runtime_contracts_stream_task_group\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn main() -> i32 {\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    discard task.group_join_all(group)\n    let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n    discard http.stream_close(stream)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("project should compile");
+    assert_eq!(artifact.status, "ok");
+
+    let runtime_contracts = std::fs::read_to_string(root.join(".fz/native-runtime-contracts.json"))
+        .expect("native runtime contracts should exist");
+    assert!(runtime_contracts.contains("\"callee\": \"http.stream_close\""));
+    assert!(runtime_contracts.contains("\"argOwnership\": \"consume_arg0\""));
+    assert!(runtime_contracts.contains("\"returnOwnership\": \"status\""));
+    assert!(runtime_contracts.contains("\"callee\": \"task.group_join_all\""));
+    assert!(runtime_contracts.contains("\"linearity\": \"consumes_linear_handle\""));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn compile_file_emits_rpc_policy_evidence() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-rpc-safety-artifacts-{}",
@@ -1258,6 +1339,98 @@ fn verify_non_consuming_stream_param_stays_clean() {
         diagnostic
             .message
             .contains("function `inspect` linear value `stream` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_stream_close_wrapper_consumes_handle() {
+    let file_name = format!(
+        "fozzylang-memory-stream-close-wrapper-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn close_stream(stream: HttpStreamHandle) -> i32 {\n    return http.stream_close(stream)\n}\nfn main() -> i32 {\n    let stream = http.post_json_stream(\"https://example.com\", \"{}\")\n    discard close_stream(stream)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` linear value `stream` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_task_group_join_all_wrapper_consumes_group() {
+    let file_name = format!(
+        "fozzylang-memory-task-group-join-wrapper-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn finish(group: TaskGroupHandle) -> i32 {\n    return task.group_join_all(group)\n}\nfn main() -> i32 {\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    discard finish(group)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` linear value `group` was not consumed/freed")
+            || diagnostic.message.contains("task group `group`")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_task_group_cancel_wrapper_consumes_group() {
+    let file_name = format!(
+        "fozzylang-memory-task-group-cancel-wrapper-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn worker() -> i32 {\n    return 1\n}\nfn finish(group: TaskGroupHandle) -> i32 {\n    return task.group_cancel(group)\n}\nfn main() -> i32 {\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    discard finish(group)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` linear value `group` was not consumed/freed")
+            || diagnostic.message.contains("task group `group`")
     }));
 
     let _ = std::fs::remove_file(path);

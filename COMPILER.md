@@ -243,6 +243,7 @@ Core ownership/provenance regressions, borrow-region enforcement, partial-move c
 - control-flow leak and owned-parameter transfer coverage now reaches the verify/Fozzy surface too: early-return leaks, loop leaks, grouped owned returns, and helper-owned-parameter cleanup are all snapshot-covered in `fz verify` and locked into deterministic Fozzy scenarios instead of living only as HIR-local regressions
 - runtime-handle ownership law now has verify/Fozzy lock-in across the real shipped handle families too: task-handle binary joins, websocket close wrappers, process-handle close wrappers, HTTP connection response writers, non-consuming stream helpers, and loop-local consumed HTTP handles are all regression-covered at the compiler surface instead of only being trusted through HIR-only tests
 - emitted safety artifacts now have runtime-handle lock-in too: `memory-report.json` and `native-runtime-contracts.json` are regression-covered for HTTP, websocket, process, process-builder, and task handle families so the compiler’s shipped ownership evidence cannot silently drift from the real linear-handle/runtime-contract law
+- stream and task-group terminal ownership now have the same production lock-in too: `http.stream_close`, `task.group_join_all`, and `task.group_cancel` are regression-covered through wrapper-transfer verify cases, emitted safety artifacts, and deterministic Fozzy scenarios so these remaining linear handle families follow the same memory law as `free`, `close`, and `join`
 
 Problem:
 

@@ -1036,15 +1036,24 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
         .filter(|detail| detail.contains("await"))
         .map(|detail| serde_json::json!({ "detail": detail }))
         .collect::<Vec<_>>();
+    let task_group_terminal_param_summaries = fir
+        .typed_functions
+        .iter()
+        .filter_map(summarize_task_group_terminal_params)
+        .collect::<BTreeMap<_, _>>();
     let task_group_policies = fir
         .typed_functions
         .iter()
-        .flat_map(|function| collect_task_group_policy_events(function))
+        .flat_map(|function| {
+            collect_task_group_policy_events(function, &task_group_terminal_param_summaries)
+        })
         .collect::<Vec<_>>();
     let task_group_findings = fir
         .typed_functions
         .iter()
-        .flat_map(collect_task_group_findings)
+        .flat_map(|function| {
+            collect_task_group_findings(function, &task_group_terminal_param_summaries)
+        })
         .map(|finding| {
             serde_json::json!({
                 "function": finding.function,
@@ -2135,11 +2144,250 @@ fn collect_task_transfer_events_from_expr(
     }
 }
 
-fn collect_task_group_policy_events(function: &hir::TypedFunction) -> Vec<serde_json::Value> {
+fn summarize_task_group_terminal_params(
+    function: &hir::TypedFunction,
+) -> Option<(String, BTreeMap<usize, String>)> {
+    let mut terminal_params = BTreeMap::<usize, String>::new();
+    for stmt in &function.body {
+        collect_task_group_terminal_param_stmt(stmt, function, &mut terminal_params);
+    }
+    (!terminal_params.is_empty()).then_some((function.name.clone(), terminal_params))
+}
+
+fn collect_task_group_terminal_param_stmt(
+    stmt: &ast::Stmt,
+    function: &hir::TypedFunction,
+    terminal_params: &mut BTreeMap<usize, String>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Return(Some(value)) => {
+            collect_task_group_terminal_param_expr(value, function, terminal_params);
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_task_group_terminal_param_expr(condition, function, terminal_params);
+            for nested in then_body {
+                collect_task_group_terminal_param_stmt(nested, function, terminal_params);
+            }
+            for nested in else_body {
+                collect_task_group_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_task_group_terminal_param_expr(condition, function, terminal_params);
+            for nested in body {
+                collect_task_group_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_task_group_terminal_param_stmt(init, function, terminal_params);
+            }
+            if let Some(condition) = condition {
+                collect_task_group_terminal_param_expr(condition, function, terminal_params);
+            }
+            if let Some(step) = step {
+                collect_task_group_terminal_param_stmt(step, function, terminal_params);
+            }
+            for nested in body {
+                collect_task_group_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_task_group_terminal_param_expr(iterable, function, terminal_params);
+            for nested in body {
+                collect_task_group_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_task_group_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_task_group_terminal_param_expr(scrutinee, function, terminal_params);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_task_group_terminal_param_expr(guard, function, terminal_params);
+                }
+                collect_task_group_terminal_param_expr(&arm.value, function, terminal_params);
+            }
+        }
+        ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_task_group_terminal_param_expr(
+    expr: &ast::Expr,
+    function: &hir::TypedFunction,
+    terminal_params: &mut BTreeMap<usize, String>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if matches!(
+                callee.as_str(),
+                "task.group_join" | "task.group_join_all" | "task.group_cancel"
+            ) {
+                if let Some(ast::Expr::Ident(name)) = args.first() {
+                    if let Some((index, _)) =
+                        function.params.iter().enumerate().find(|(_, param)| {
+                            param.name == *name && param.ty.to_string() == "TaskGroupHandle"
+                        })
+                    {
+                        terminal_params
+                            .entry(index)
+                            .or_insert_with(|| callee.clone());
+                    }
+                }
+            }
+            for arg in args {
+                collect_task_group_terminal_param_expr(arg, function, terminal_params);
+            }
+        }
+        ast::Expr::Await(inner)
+        | ast::Expr::Group(inner)
+        | ast::Expr::Discard(inner)
+        | ast::Expr::FieldAccess { base: inner, .. }
+        | ast::Expr::Unary { expr: inner, .. } => {
+            collect_task_group_terminal_param_expr(inner, function, terminal_params);
+        }
+        ast::Expr::Index { base, index } => {
+            collect_task_group_terminal_param_expr(base, function, terminal_params);
+            collect_task_group_terminal_param_expr(index, function, terminal_params);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_task_group_terminal_param_expr(left, function, terminal_params);
+            collect_task_group_terminal_param_expr(right, function, terminal_params);
+        }
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_task_group_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for value in payload {
+                collect_task_group_terminal_param_expr(value, function, terminal_params);
+            }
+            for (_, value) in named_payload {
+                collect_task_group_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::Tuple(values) | ast::Expr::ArrayLiteral(values) => {
+            for value in values {
+                collect_task_group_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::Closure { body, .. } => {
+            collect_task_group_terminal_param_expr(body, function, terminal_params);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_task_group_terminal_param_expr(try_expr, function, terminal_params);
+            collect_task_group_terminal_param_expr(catch_expr, function, terminal_params);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_task_group_terminal_param_expr(condition, function, terminal_params);
+            collect_task_group_terminal_param_expr(then_expr, function, terminal_params);
+            collect_task_group_terminal_param_expr(else_expr, function, terminal_params);
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            collect_task_group_terminal_param_expr(scrutinee, function, terminal_params);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_task_group_terminal_param_expr(guard, function, terminal_params);
+                }
+                collect_task_group_terminal_param_expr(&arm.value, function, terminal_params);
+            }
+        }
+        ast::Expr::While { condition, body } => {
+            collect_task_group_terminal_param_expr(condition, function, terminal_params);
+            for stmt in body {
+                collect_task_group_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_task_group_terminal_param_stmt(init, function, terminal_params);
+            }
+            if let Some(condition) = condition {
+                collect_task_group_terminal_param_expr(condition, function, terminal_params);
+            }
+            if let Some(step) = step {
+                collect_task_group_terminal_param_stmt(step, function, terminal_params);
+            }
+            for stmt in body {
+                collect_task_group_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            collect_task_group_terminal_param_expr(iterable, function, terminal_params);
+            for stmt in body {
+                collect_task_group_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::Loop { body } | ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                collect_task_group_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::Return(value) | ast::Expr::Break(value) => {
+            if let Some(value) = value {
+                collect_task_group_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_task_group_terminal_param_expr(start, function, terminal_params);
+            collect_task_group_terminal_param_expr(end, function, terminal_params);
+        }
+        ast::Expr::Continue
+        | ast::Expr::Ident(_)
+        | ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_) => {}
+    }
+}
+
+fn collect_task_group_policy_events(
+    function: &hir::TypedFunction,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) -> Vec<serde_json::Value> {
     let mut started = BTreeSet::<String>::new();
     let mut terminal = BTreeMap::<String, String>::new();
     for stmt in &function.body {
-        collect_task_group_policy_stmt(stmt, &mut started, &mut terminal);
+        collect_task_group_policy_stmt(stmt, &mut started, &mut terminal, terminal_param_summaries);
     }
     started
         .into_iter()
@@ -2162,11 +2410,19 @@ struct TaskGroupFinding {
     help: String,
 }
 
-fn collect_task_group_findings(function: &hir::TypedFunction) -> Vec<TaskGroupFinding> {
+fn collect_task_group_findings(
+    function: &hir::TypedFunction,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) -> Vec<TaskGroupFinding> {
     let mut started = BTreeSet::<String>::new();
     let mut terminals = BTreeMap::<String, Vec<String>>::new();
     for stmt in &function.body {
-        collect_task_group_findings_stmt(stmt, &mut started, &mut terminals);
+        collect_task_group_findings_stmt(
+            stmt,
+            &mut started,
+            &mut terminals,
+            terminal_param_summaries,
+        );
     }
     let mut findings = Vec::new();
     for group in started {
@@ -2203,13 +2459,14 @@ fn collect_task_group_findings_stmt(
     stmt: &ast::Stmt,
     started: &mut BTreeSet<String>,
     terminals: &mut BTreeMap<String, Vec<String>>,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match stmt {
         ast::Stmt::Let { name, value, .. } => {
             if matches!(value, ast::Expr::Call { callee, .. } if callee == "task.group_begin") {
                 started.insert(name.clone());
             }
-            collect_task_group_findings_expr(value, started, terminals);
+            collect_task_group_findings_expr(value, started, terminals, terminal_param_summaries);
         }
         ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
@@ -2219,25 +2476,50 @@ fn collect_task_group_findings_stmt(
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value)
         | ast::Stmt::Return(Some(value)) => {
-            collect_task_group_findings_expr(value, started, terminals);
+            collect_task_group_findings_expr(value, started, terminals, terminal_param_summaries);
         }
         ast::Stmt::If {
             condition,
             then_body,
             else_body,
         } => {
-            collect_task_group_findings_expr(condition, started, terminals);
+            collect_task_group_findings_expr(
+                condition,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
             for nested in then_body {
-                collect_task_group_findings_stmt(nested, started, terminals);
+                collect_task_group_findings_stmt(
+                    nested,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
             for nested in else_body {
-                collect_task_group_findings_stmt(nested, started, terminals);
+                collect_task_group_findings_stmt(
+                    nested,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::While { condition, body } => {
-            collect_task_group_findings_expr(condition, started, terminals);
+            collect_task_group_findings_expr(
+                condition,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
             for nested in body {
-                collect_task_group_findings_stmt(nested, started, terminals);
+                collect_task_group_findings_stmt(
+                    nested,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::For {
@@ -2247,36 +2529,86 @@ fn collect_task_group_findings_stmt(
             body,
         } => {
             if let Some(init) = init {
-                collect_task_group_findings_stmt(init, started, terminals);
+                collect_task_group_findings_stmt(
+                    init,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
             if let Some(condition) = condition {
-                collect_task_group_findings_expr(condition, started, terminals);
+                collect_task_group_findings_expr(
+                    condition,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
             if let Some(step) = step {
-                collect_task_group_findings_stmt(step, started, terminals);
+                collect_task_group_findings_stmt(
+                    step,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
             for nested in body {
-                collect_task_group_findings_stmt(nested, started, terminals);
+                collect_task_group_findings_stmt(
+                    nested,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::ForIn { iterable, body, .. } => {
-            collect_task_group_findings_expr(iterable, started, terminals);
+            collect_task_group_findings_expr(
+                iterable,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
             for nested in body {
-                collect_task_group_findings_stmt(nested, started, terminals);
+                collect_task_group_findings_stmt(
+                    nested,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::Loop { body } => {
             for nested in body {
-                collect_task_group_findings_stmt(nested, started, terminals);
+                collect_task_group_findings_stmt(
+                    nested,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::Match { scrutinee, arms } => {
-            collect_task_group_findings_expr(scrutinee, started, terminals);
+            collect_task_group_findings_expr(
+                scrutinee,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_task_group_findings_expr(guard, started, terminals);
+                    collect_task_group_findings_expr(
+                        guard,
+                        started,
+                        terminals,
+                        terminal_param_summaries,
+                    );
                 }
-                collect_task_group_findings_expr(&arm.value, started, terminals);
+                collect_task_group_findings_expr(
+                    &arm.value,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
@@ -2287,6 +2619,7 @@ fn collect_task_group_findings_expr(
     expr: &ast::Expr,
     started: &mut BTreeSet<String>,
     terminals: &mut BTreeMap<String, Vec<String>>,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match expr {
         ast::Expr::Call { callee, args } => {
@@ -2301,8 +2634,18 @@ fn collect_task_group_findings_expr(
                         .push(callee.clone());
                 }
             }
+            if let Some(summary) = terminal_param_summaries.get(callee) {
+                for (index, terminal_name) in summary {
+                    if let Some(ast::Expr::Ident(name)) = args.get(*index) {
+                        terminals
+                            .entry(name.clone())
+                            .or_default()
+                            .push(format!("{terminal_name} via {callee}"));
+                    }
+                }
+            }
             for arg in args {
-                collect_task_group_findings_expr(arg, started, terminals);
+                collect_task_group_findings_expr(arg, started, terminals, terminal_param_summaries);
             }
         }
         ast::Expr::Await(inner)
@@ -2310,19 +2653,24 @@ fn collect_task_group_findings_expr(
         | ast::Expr::Discard(inner)
         | ast::Expr::FieldAccess { base: inner, .. }
         | ast::Expr::Unary { expr: inner, .. } => {
-            collect_task_group_findings_expr(inner, started, terminals);
+            collect_task_group_findings_expr(inner, started, terminals, terminal_param_summaries);
         }
         ast::Expr::Index { base, index } => {
-            collect_task_group_findings_expr(base, started, terminals);
-            collect_task_group_findings_expr(index, started, terminals);
+            collect_task_group_findings_expr(base, started, terminals, terminal_param_summaries);
+            collect_task_group_findings_expr(index, started, terminals, terminal_param_summaries);
         }
         ast::Expr::Binary { left, right, .. } => {
-            collect_task_group_findings_expr(left, started, terminals);
-            collect_task_group_findings_expr(right, started, terminals);
+            collect_task_group_findings_expr(left, started, terminals, terminal_param_summaries);
+            collect_task_group_findings_expr(right, started, terminals, terminal_param_summaries);
         }
         ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
             for (_, value) in fields {
-                collect_task_group_findings_expr(value, started, terminals);
+                collect_task_group_findings_expr(
+                    value,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::EnumInit {
@@ -2331,49 +2679,114 @@ fn collect_task_group_findings_expr(
             ..
         } => {
             for value in payload {
-                collect_task_group_findings_expr(value, started, terminals);
+                collect_task_group_findings_expr(
+                    value,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
             for (_, value) in named_payload {
-                collect_task_group_findings_expr(value, started, terminals);
+                collect_task_group_findings_expr(
+                    value,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Tuple(payload) | ast::Expr::ArrayLiteral(payload) => {
             for value in payload {
-                collect_task_group_findings_expr(value, started, terminals);
+                collect_task_group_findings_expr(
+                    value,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Closure { body, .. } => {
-            collect_task_group_findings_expr(body, started, terminals);
+            collect_task_group_findings_expr(body, started, terminals, terminal_param_summaries);
         }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
         } => {
-            collect_task_group_findings_expr(try_expr, started, terminals);
-            collect_task_group_findings_expr(catch_expr, started, terminals);
+            collect_task_group_findings_expr(
+                try_expr,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
+            collect_task_group_findings_expr(
+                catch_expr,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            collect_task_group_findings_expr(condition, started, terminals);
-            collect_task_group_findings_expr(then_expr, started, terminals);
-            collect_task_group_findings_expr(else_expr, started, terminals);
+            collect_task_group_findings_expr(
+                condition,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
+            collect_task_group_findings_expr(
+                then_expr,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
+            collect_task_group_findings_expr(
+                else_expr,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::Match { scrutinee, arms } => {
-            collect_task_group_findings_expr(scrutinee, started, terminals);
+            collect_task_group_findings_expr(
+                scrutinee,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_task_group_findings_expr(guard, started, terminals);
+                    collect_task_group_findings_expr(
+                        guard,
+                        started,
+                        terminals,
+                        terminal_param_summaries,
+                    );
                 }
-                collect_task_group_findings_expr(&arm.value, started, terminals);
+                collect_task_group_findings_expr(
+                    &arm.value,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::While { condition, body } => {
-            collect_task_group_findings_expr(condition, started, terminals);
+            collect_task_group_findings_expr(
+                condition,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
             for stmt in body {
-                collect_task_group_findings_stmt(stmt, started, terminals);
+                collect_task_group_findings_stmt(
+                    stmt,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::For {
@@ -2383,37 +2796,77 @@ fn collect_task_group_findings_expr(
             body,
         } => {
             if let Some(init) = init {
-                collect_task_group_findings_stmt(init, started, terminals);
+                collect_task_group_findings_stmt(
+                    init,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
             if let Some(condition) = condition {
-                collect_task_group_findings_expr(condition, started, terminals);
+                collect_task_group_findings_expr(
+                    condition,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
             if let Some(step) = step {
-                collect_task_group_findings_stmt(step, started, terminals);
+                collect_task_group_findings_stmt(
+                    step,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
             for stmt in body {
-                collect_task_group_findings_stmt(stmt, started, terminals);
+                collect_task_group_findings_stmt(
+                    stmt,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::ForIn { iterable, body, .. } => {
-            collect_task_group_findings_expr(iterable, started, terminals);
+            collect_task_group_findings_expr(
+                iterable,
+                started,
+                terminals,
+                terminal_param_summaries,
+            );
             for stmt in body {
-                collect_task_group_findings_stmt(stmt, started, terminals);
+                collect_task_group_findings_stmt(
+                    stmt,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Loop { body } | ast::Expr::UnsafeBlock { body, .. } => {
             for stmt in body {
-                collect_task_group_findings_stmt(stmt, started, terminals);
+                collect_task_group_findings_stmt(
+                    stmt,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Return(value) | ast::Expr::Break(value) => {
             if let Some(value) = value {
-                collect_task_group_findings_expr(value, started, terminals);
+                collect_task_group_findings_expr(
+                    value,
+                    started,
+                    terminals,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Range { start, end, .. } => {
-            collect_task_group_findings_expr(start, started, terminals);
-            collect_task_group_findings_expr(end, started, terminals);
+            collect_task_group_findings_expr(start, started, terminals, terminal_param_summaries);
+            collect_task_group_findings_expr(end, started, terminals, terminal_param_summaries);
         }
         ast::Expr::Continue
         | ast::Expr::Ident(_)
@@ -2964,6 +3417,7 @@ fn collect_task_group_policy_stmt(
     stmt: &ast::Stmt,
     started: &mut BTreeSet<String>,
     terminal: &mut BTreeMap<String, String>,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match stmt {
         ast::Stmt::Let { name, value, .. } => {
@@ -2980,6 +3434,13 @@ fn collect_task_group_policy_stmt(
                     terminal.insert(name.clone(), callee.clone());
                 }
             }
+            if let Some(summary) = terminal_param_summaries.get(callee) {
+                for (index, terminal_name) in summary {
+                    if let Some(ast::Expr::Ident(name)) = args.get(*index) {
+                        terminal.insert(name.clone(), format!("{terminal_name} via {callee}"));
+                    }
+                }
+            }
         }
         ast::Stmt::If {
             then_body,
@@ -2987,27 +3448,32 @@ fn collect_task_group_policy_stmt(
             ..
         } => {
             for nested in then_body {
-                collect_task_group_policy_stmt(nested, started, terminal);
+                collect_task_group_policy_stmt(nested, started, terminal, terminal_param_summaries);
             }
             for nested in else_body {
-                collect_task_group_policy_stmt(nested, started, terminal);
+                collect_task_group_policy_stmt(nested, started, terminal, terminal_param_summaries);
             }
         }
         ast::Stmt::While { body, .. }
         | ast::Stmt::ForIn { body, .. }
         | ast::Stmt::Loop { body } => {
             for nested in body {
-                collect_task_group_policy_stmt(nested, started, terminal);
+                collect_task_group_policy_stmt(nested, started, terminal, terminal_param_summaries);
             }
         }
         ast::Stmt::For { body, .. } => {
             for nested in body {
-                collect_task_group_policy_stmt(nested, started, terminal);
+                collect_task_group_policy_stmt(nested, started, terminal, terminal_param_summaries);
             }
         }
         ast::Stmt::Match { arms, .. } => {
             for arm in arms {
-                collect_task_group_policy_expr(&arm.value, started, terminal);
+                collect_task_group_policy_expr(
+                    &arm.value,
+                    started,
+                    terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::LetPattern { value, .. }
@@ -3017,7 +3483,9 @@ fn collect_task_group_policy_stmt(
         | ast::Stmt::Defer(value)
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
-        | ast::Stmt::Expr(value) => collect_task_group_policy_expr(value, started, terminal),
+        | ast::Stmt::Expr(value) => {
+            collect_task_group_policy_expr(value, started, terminal, terminal_param_summaries)
+        }
         ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
     }
 }
@@ -3026,11 +3494,12 @@ fn collect_task_group_policy_expr(
     expr: &ast::Expr,
     started: &mut BTreeSet<String>,
     terminal: &mut BTreeMap<String, String>,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match expr {
         ast::Expr::UnsafeBlock { body, .. } => {
             for stmt in body {
-                collect_task_group_policy_stmt(stmt, started, terminal);
+                collect_task_group_policy_stmt(stmt, started, terminal, terminal_param_summaries);
             }
         }
         ast::Expr::If {
@@ -3038,12 +3507,17 @@ fn collect_task_group_policy_expr(
             else_expr,
             ..
         } => {
-            collect_task_group_policy_expr(then_expr, started, terminal);
-            collect_task_group_policy_expr(else_expr, started, terminal);
+            collect_task_group_policy_expr(then_expr, started, terminal, terminal_param_summaries);
+            collect_task_group_policy_expr(else_expr, started, terminal, terminal_param_summaries);
         }
         ast::Expr::Match { arms, .. } => {
             for arm in arms {
-                collect_task_group_policy_expr(&arm.value, started, terminal);
+                collect_task_group_policy_expr(
+                    &arm.value,
+                    started,
+                    terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         _ => {}
@@ -8374,6 +8848,11 @@ fn compile_time_contract_diagnostics(
 }
 
 fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::Diagnostic> {
+    let task_group_terminal_param_summaries = fir
+        .typed_functions
+        .iter()
+        .filter_map(summarize_task_group_terminal_params)
+        .collect::<BTreeMap<_, _>>();
     let mut diagnostics = fir
         .typed_functions
         .iter()
@@ -8389,7 +8868,9 @@ fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::D
     diagnostics.extend(
         fir.typed_functions
             .iter()
-            .flat_map(collect_task_group_findings)
+            .flat_map(|function| {
+                collect_task_group_findings(function, &task_group_terminal_param_summaries)
+            })
             .map(|finding| {
                 diagnostics::Diagnostic::new(
                     diagnostics::Severity::Error,
