@@ -18226,6 +18226,139 @@ mod tests {
     }
 
     #[test]
+    fn http_handle_wrapper_return_counts_as_transfer() {
+        let source = r#"
+            use core.http;
+            fn open_listener() -> HttpHandle {
+                return http.bind();
+            }
+            fn main() -> i32 {
+                let listener = open_listener();
+                close(listener);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> open_listener` crosses function with potential resource escape",
+            )
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail
+                .contains("function `open_listener` linear value `listener` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn process_handle_wrapper_return_counts_as_transfer() {
+        let source = r#"
+            use core.proc;
+            fn start() -> ProcessHandle {
+                let argv = proc.argv_new();
+                let env = proc.env_new();
+                return proc.spawn_cmd("echo", argv, env, "");
+            }
+            fn main() -> i32 {
+                let handle = start();
+                discard proc.close(handle);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> start` crosses function with potential resource escape",
+            ) || detail.contains("function `start` leaks allocation")
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `start` linear value `handle` was not consumed/freed")
+                || detail.contains("function `start` linear value `argv` was not consumed/freed")
+                || detail.contains("function `start` linear value `env` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn http_stream_wrapper_return_counts_as_transfer() {
+        let source = r#"
+            use core.http;
+            fn open_stream() -> HttpStreamHandle {
+                return http.post_json_stream("https://example.com", "{}");
+            }
+            fn main() -> i32 {
+                let stream = open_stream();
+                discard http.stream_close(stream);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> open_stream` crosses function with potential resource escape",
+            )
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `open_stream` linear value `stream` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn task_group_wrapper_return_counts_as_transfer() {
+        let source = r#"
+            use core.thread;
+            fn start_group() -> TaskGroupHandle {
+                return task.group_begin();
+            }
+            fn main() -> i32 {
+                let group = start_group();
+                discard task.group_cancel(group);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> start_group` crosses function with potential resource escape",
+            )
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `start_group` linear value `group` was not consumed/freed")
+        }));
+    }
+
+    #[test]
+    fn websocket_wrapper_return_counts_as_transfer() {
+        let source = r#"
+            use core.http;
+            fn accept_ws(conn: HttpHandle) -> WebSocketHandle {
+                return http.websocket_accept(conn);
+            }
+            fn main() -> i32 {
+                let conn = http.accept();
+                let ws = accept_ws(conn);
+                discard http.websocket_close(ws, 1000, "ok");
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(!typed.ownership_violations.iter().any(|detail| {
+            detail.contains(
+                "call edge `main -> accept_ws` crosses function with potential resource escape",
+            )
+        }));
+        assert!(!typed.linear_type_violations.iter().any(|detail| {
+            detail.contains("function `accept_ws` linear value `ws` was not consumed/freed")
+                || detail
+                    .contains("function `accept_ws` linear value `conn` was not consumed/freed")
+        }));
+    }
+
+    #[test]
     fn return_of_consuming_helper_call_does_not_require_local_defer() {
         let source = r#"
             fn consume(p: *mut u8) -> i32 {

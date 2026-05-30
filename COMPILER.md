@@ -245,6 +245,7 @@ Core ownership/provenance regressions, borrow-region enforcement, partial-move c
 - emitted safety artifacts now have runtime-handle lock-in too: `memory-report.json` and `native-runtime-contracts.json` are regression-covered for HTTP, websocket, process, process-builder, and task handle families so the compiler’s shipped ownership evidence cannot silently drift from the real linear-handle/runtime-contract law
 - stream and task-group terminal ownership now have the same production lock-in too: `http.stream_close`, `task.group_join_all`, and `task.group_cancel` are regression-covered through wrapper-transfer verify cases, emitted safety artifacts, and deterministic Fozzy scenarios so these remaining linear handle families follow the same memory law as `free`, `close`, and `join`
 - helper-mediated post-consume misuse is now locked across ownership families too: once a helper consumes an owned pointer, task handle, HTTP handle, process handle, stream handle, or task group, later reuse now stays regression-covered through stable `uses moved value ... after move/consume` diagnostics and deterministic Fozzy scenarios instead of only being trusted through ad hoc spot checks
+- runtime-handle return transfer is now locked across the real ownership families too: HTTP listeners, process handles, HTTP streams, task groups, and websocket handles can cross helper return boundaries without false `resource escape` or local linear-leak fallout, and that behavior is now pinned in HIR regressions, `fz verify`, and deterministic Fozzy scenarios
 
 Problem:
 

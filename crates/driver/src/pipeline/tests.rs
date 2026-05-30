@@ -1349,6 +1349,170 @@ fn verify_plain_owned_return_does_not_report_resource_escape() {
 }
 
 #[test]
+fn verify_http_handle_return_does_not_report_resource_escape() {
+    let file_name = format!(
+        "fozzylang-memory-http-handle-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn open_listener() -> HttpHandle {\n    return http.bind()\n}\nfn main() -> i32 {\n    let listener = open_listener()\n    close(listener)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("potential resource escape")
+            || diagnostic
+                .message
+                .contains("linear value `listener` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_process_handle_return_does_not_report_resource_escape() {
+    let file_name = format!(
+        "fozzylang-memory-process-handle-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.proc;\nfn start() -> ProcessHandle {\n    let argv = proc.argv_new()\n    let env = proc.env_new()\n    return proc.spawn_cmd(\"echo\", argv, env, \"\")\n}\nfn main() -> i32 {\n    let handle = start()\n    discard proc.close(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("potential resource escape")
+            || diagnostic
+                .message
+                .contains("linear value `handle` was not consumed/freed")
+            || diagnostic
+                .message
+                .contains("linear value `argv` was not consumed/freed")
+            || diagnostic
+                .message
+                .contains("linear value `env` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_http_stream_return_does_not_report_resource_escape() {
+    let file_name = format!(
+        "fozzylang-memory-http-stream-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn open_stream() -> HttpStreamHandle {\n    return http.post_json_stream(\"https://example.com\", \"{}\")\n}\nfn main() -> i32 {\n    let stream = open_stream()\n    discard http.stream_close(stream)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("potential resource escape")
+            || diagnostic
+                .message
+                .contains("linear value `stream` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_task_group_return_does_not_report_resource_escape() {
+    let file_name = format!(
+        "fozzylang-memory-task-group-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn start_group() -> TaskGroupHandle {\n    return task.group_begin()\n}\nfn main() -> i32 {\n    let group = start_group()\n    discard task.group_cancel(group)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("potential resource escape")
+            || diagnostic
+                .message
+                .contains("linear value `group` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_websocket_return_does_not_report_resource_escape() {
+    let file_name = format!(
+        "fozzylang-memory-websocket-return-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nfn accept_ws(conn: HttpHandle) -> WebSocketHandle {\n    return http.websocket_accept(conn)\n}\nfn main() -> i32 {\n    let conn = http.accept()\n    let ws = accept_ws(conn)\n    discard http.websocket_close(ws, 1000, \"ok\")\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("potential resource escape")
+            || diagnostic
+                .message
+                .contains("linear value `ws` was not consumed/freed")
+            || diagnostic
+                .message
+                .contains("linear value `conn` was not consumed/freed")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_branch_relayed_owned_return_does_not_report_memory_lifecycle_imbalance() {
     let file_name = format!(
         "fozzylang-memory-branch-relay-owned-return-{}.fzy",
