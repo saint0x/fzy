@@ -301,6 +301,48 @@ fn strict_compile_rejects_rpc_calls_without_deadlines() {
 }
 
 #[test]
+fn strict_rpc_deadline_diagnostic_is_snapshot_stable() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-rpc-strict-snapshot-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"rpc_strict_snapshot\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"rpc_strict_snapshot\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "rpc Ping(req: i32) -> i32;\nfn main() -> i32 {\n    Ping(1)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+            .message
+            == "RPC method `Ping` is called without an explicit timeout/deadline on every call path"
+        })
+        .expect("strict rpc deadline diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "Add `timeout(...)` or `deadline(...)` before the RPC call or immediately after it so strict mode can prove the request is bounded."
+        )
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-DRV-DAD1DDDC"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn strict_compile_surfaces_task_group_missing_terminal_diagnostic() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-async-task-group-strict-{}",
@@ -331,6 +373,46 @@ fn strict_compile_surfaces_task_group_missing_terminal_diagnostic() {
 }
 
 #[test]
+fn strict_task_group_terminal_diagnostic_is_snapshot_stable() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-task-group-snapshot-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_task_group_snapshot\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_task_group_snapshot\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let group = task.group_begin()\n    discard task.group_spawn(group, worker)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| diagnostic
+            .message
+            == "task group `group` is created by `task.group_begin()` and exits `main` without `task.group_join`, `task.group_join_all`, or `task.group_cancel`")
+        .expect("strict task group diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "Terminate every task group explicitly with `task.group_join`, `task.group_join_all`, or `task.group_cancel` before the function exits."
+        )
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-DRV-181DE01A"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn strict_compile_surfaces_task_handle_misuse_diagnostic() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-async-task-handle-strict-{}",
@@ -356,6 +438,46 @@ fn strict_compile_surfaces_task_handle_misuse_diagnostic() {
     assert!(artifact.diagnostic_details.iter().any(|diagnostic| diagnostic
         .message
         .contains("task handle `handle` is already terminated by `detach(handle)` and later observed by `task_result(handle)`")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_task_handle_result_after_terminal_diagnostic_is_snapshot_stable() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-task-handle-snapshot-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_task_handle_snapshot\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_task_handle_snapshot\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let handle = spawn(worker)\n    detach(handle)\n    discard task_result(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| diagnostic
+            .message
+            == "task handle `handle` is already terminated by `detach(handle)` and later observed by `task_result(handle)`")
+        .expect("strict task handle diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "Read `task_result(...)` before the terminal operation, or remove the later result observation."
+        )
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-DRV-3B80C0B0"));
 
     let _ = std::fs::remove_dir_all(root);
 }
