@@ -6,7 +6,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 
 - `14. Compiler-phase lock-in suite`
 - `15. Memory-safety adversarial coverage`
-- `16. Native import contract tables`
 - `22. Canary-app gates`
 - `25. v1 syntax and profile freeze`
 - `26. Stdlib and capability policy`

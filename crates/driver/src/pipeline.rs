@@ -741,6 +741,16 @@ fn write_safety_artifacts(
             out_dir.join("native-runtime-contracts.json").display()
         )
     })?;
+    std::fs::write(
+        out_dir.join("native-runtime-contracts.md"),
+        render_native_runtime_contracts_markdown(&runtime_contracts_json),
+    )
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("native-runtime-contracts.md").display()
+        )
+    })?;
 
     let handle_contracts_json = build_handle_contracts_json();
     std::fs::write(
@@ -1999,6 +2009,39 @@ fn build_native_runtime_contracts_json() -> serde_json::Value {
             })
         }).collect::<Vec<_>>(),
     })
+}
+
+fn render_native_runtime_contracts_markdown(value: &serde_json::Value) -> String {
+    let mut out = String::from("# Native Runtime Contracts\n\n");
+    let import_count = value["imports"]
+        .as_array()
+        .map(|items| items.len())
+        .unwrap_or(0);
+    out.push_str(&format!(
+        "- Imports: {import_count}\n- Schema: `{}`\n\n",
+        value["schemaVersion"].as_str().unwrap_or("unknown")
+    ));
+    out.push_str(
+        "| Callee | Symbol | Arity | Arg Ownership | Return Ownership | Capability | Linearity | Error | Trace | Blocking |\n|---|---|---:|---|---|---|---|---|---|---|\n",
+    );
+    if let Some(imports) = value["imports"].as_array() {
+        for import in imports {
+            out.push_str(&format!(
+                "| `{}` | `{}` | {} | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` |\n",
+                import["callee"].as_str().unwrap_or("?"),
+                import["symbol"].as_str().unwrap_or("?"),
+                import["arity"].as_u64().unwrap_or(0),
+                import["argOwnership"].as_str().unwrap_or("?"),
+                import["returnOwnership"].as_str().unwrap_or("?"),
+                import["requiredCapability"].as_str().unwrap_or("?"),
+                import["linearity"].as_str().unwrap_or("?"),
+                import["errorBehavior"].as_str().unwrap_or("?"),
+                import["traceBehavior"].as_str().unwrap_or("?"),
+                import["blockingBehavior"].as_str().unwrap_or("?"),
+            ));
+        }
+    }
+    out
 }
 
 fn build_handle_contracts_json() -> serde_json::Value {

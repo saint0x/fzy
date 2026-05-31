@@ -107,6 +107,7 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         "ffi-report.json",
         "ffi-report.md",
         "native-runtime-contracts.json",
+        "native-runtime-contracts.md",
         "handle-contracts.json",
     ] {
         assert!(
@@ -129,6 +130,12 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     assert!(runtime_contracts.contains("\"callee\": \"task_result\""));
     assert!(runtime_contracts.contains("\"linearity\": \"consumes_linear_handle\""));
     assert!(runtime_contracts.contains("\"linearity\": \"observes_linear_handle\""));
+    let runtime_contracts_md =
+        std::fs::read_to_string(root.join(".fz/native-runtime-contracts.md"))
+            .expect("native runtime contracts markdown should exist");
+    assert!(runtime_contracts_md.contains("| Callee | Symbol | Arity |"));
+    assert!(runtime_contracts_md.contains("`join`"));
+    assert!(runtime_contracts_md.contains("`task_result`"));
 
     let handle_contracts = std::fs::read_to_string(root.join(".fz/handle-contracts.json"))
         .expect("handle contracts should exist");
@@ -6470,13 +6477,16 @@ fn native_runtime_documented_contract_surface_matches_shim_symbols() {
 
 #[test]
 fn documented_native_runtime_contract_surface_has_expected_metadata() {
-    for (callee, arity, arg_ownership, blocking, linearity) in [
+    for (callee, arity, arg_ownership, blocking, linearity, capability, error, trace) in [
         (
             "http.stream_close",
             1,
             "consume_arg0",
             "nonblocking",
             "consumes_linear_handle",
+            "http",
+            "runtime_status_with_last_error",
+            "emit_runtime_event",
         ),
         (
             "http.websocket_close",
@@ -6484,6 +6494,9 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
             "consume_arg0_borrow_close_payload",
             "nonblocking",
             "consumes_linear_handle",
+            "http",
+            "runtime_status_with_last_error",
+            "emit_runtime_event",
         ),
         (
             "proc.close",
@@ -6491,6 +6504,9 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
             "consume_arg0",
             "nonblocking",
             "consumes_linear_handle",
+            "proc",
+            "runtime_status_with_last_error",
+            "emit_runtime_event",
         ),
         (
             "proc.wait",
@@ -6498,6 +6514,9 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
             "borrow_handle_timeout",
             "may_block",
             "observes_linear_handle",
+            "proc",
+            "runtime_status_with_last_error",
+            "emit_runtime_event",
         ),
         (
             "proc.poll",
@@ -6505,6 +6524,9 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
             "borrow_handle",
             "nonblocking",
             "observes_linear_handle",
+            "proc",
+            "runtime_status_with_last_error",
+            "emit_runtime_event",
         ),
         (
             "task.group_join_all",
@@ -6512,6 +6534,9 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
             "consume_arg0",
             "may_block",
             "consumes_linear_handle",
+            "thread",
+            "none",
+            "emit_runtime_event",
         ),
         (
             "task.group_cancel",
@@ -6519,6 +6544,9 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
             "consume_arg0",
             "may_block",
             "consumes_linear_handle",
+            "thread",
+            "none",
+            "emit_runtime_event",
         ),
         (
             "fs.atomic_write",
@@ -6526,6 +6554,9 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
             "borrow_path_bytes",
             "may_block",
             "nonlinear",
+            "fs",
+            "runtime_status_with_last_error",
+            "emit_runtime_event",
         ),
         (
             "storage.atomic_append",
@@ -6533,6 +6564,9 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
             "borrow_target_bytes",
             "may_block",
             "nonlinear",
+            "storage",
+            "runtime_status_with_last_error",
+            "emit_runtime_event",
         ),
     ] {
         let contract = native_runtime_contract_for_callee(callee)
@@ -6549,6 +6583,36 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
         assert_eq!(
             contract.linearity, linearity,
             "linearity drift for {callee}"
+        );
+        assert_eq!(
+            contract.required_capability, capability,
+            "required capability drift for {callee}"
+        );
+        assert_eq!(
+            contract.error_behavior, error,
+            "error behavior drift for {callee}"
+        );
+        assert_eq!(
+            contract.trace_behavior, trace,
+            "trace behavior drift for {callee}"
+        );
+    }
+}
+
+#[test]
+fn native_runtime_contract_markdown_surface_matches_expected_metadata() {
+    let value = super::build_native_runtime_contracts_json();
+    let markdown = super::render_native_runtime_contracts_markdown(&value);
+    assert!(markdown.contains("# Native Runtime Contracts"));
+    for snippet in [
+        "| `http.stream_close` | `fz_native_http_stream_close` | 1 | `consume_arg0` | `status` | `http` | `consumes_linear_handle` | `runtime_status_with_last_error` | `emit_runtime_event` | `nonblocking` |",
+        "| `proc.wait` | `fz_native_proc_wait` | 2 | `borrow_handle_timeout` | `status` | `proc` | `observes_linear_handle` | `runtime_status_with_last_error` | `emit_runtime_event` | `may_block` |",
+        "| `fs.atomic_write` | `fz_native_fs_atomic_write` | 2 | `borrow_path_bytes` | `status` | `fs` | `nonlinear` | `runtime_status_with_last_error` | `emit_runtime_event` | `may_block` |",
+        "| `storage.atomic_append` | `fz_native_storage_atomic_append` | 2 | `borrow_target_bytes` | `status` | `storage` | `nonlinear` | `runtime_status_with_last_error` | `emit_runtime_event` | `may_block` |",
+    ] {
+        assert!(
+            markdown.contains(snippet),
+            "native runtime contract markdown missing `{snippet}`"
         );
     }
 }
@@ -6738,7 +6802,7 @@ fn native_runtime_shim_exposes_request_response_and_process_result_apis() {
     assert!(shim.contains("FD_CLOEXEC"));
     assert!(shim.contains("int32_t fz_native_proc_exit_class(void)"));
     assert!(shim.contains("int32_t fz_native_time_now(void)"));
-    assert!(shim.contains("int32_t fz_native_fs_open(void)"));
+    assert!(shim.contains("int32_t fz_native_fs_open(int32_t path_id)"));
     assert!(shim.contains("int32_t fz_native_pulse(void)"));
     assert!(shim.contains("static const int fz_task_entry_count = 1;"));
     assert!(shim.contains("fz_spawn_thread_main"));
