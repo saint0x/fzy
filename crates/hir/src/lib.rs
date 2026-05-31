@@ -773,6 +773,9 @@ pub fn lower(module: &Module) -> TypedModule {
         &mut type_errors,
         &mut type_error_details,
     );
+    for detail in analyze_device_safe_types(&typed_functions, &struct_defs, &enum_defs) {
+        record_type_error(&mut type_errors, &mut type_error_details, detail);
+    }
 
     let entry_return_type = typed_functions
         .iter()
@@ -4627,6 +4630,86 @@ const RUNTIME_HANDLE_CONTRACTS: &[RuntimeHandleContract] = &[
         consumer_intrinsics: &[],
         observer_intrinsics: &[],
     },
+    RuntimeHandleContract {
+        name: "GpuDevice",
+        copy: true,
+        owned: false,
+        linear: false,
+        closable: false,
+        send_safe: true,
+        async_stable: true,
+        producer_intrinsics: &["gpu.default_device"],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &["gpu.device_name", "gpu.device_memory_bytes"],
+    },
+    RuntimeHandleContract {
+        name: "GpuBuffer",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &[
+            "gpu.alloc_f32",
+            "gpu.alloc_i32",
+            "gpu.alloc_u32",
+            "gpu.upload_f32",
+            "gpu.upload_i32",
+            "gpu.upload_u32",
+        ],
+        consumer_intrinsics: &["gpu.free"],
+        observer_intrinsics: &[
+            "gpu.slice",
+            "gpu.download_f32",
+            "gpu.download_i32",
+            "gpu.download_u32",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "GpuSlice",
+        copy: true,
+        owned: false,
+        linear: false,
+        closable: false,
+        send_safe: false,
+        async_stable: false,
+        producer_intrinsics: &["gpu.slice"],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[
+            "gpu.slice_len",
+            "gpu.load_f32",
+            "gpu.load_i32",
+            "gpu.load_u32",
+            "gpu.store_f32",
+            "gpu.store_i32",
+            "gpu.store_u32",
+        ],
+    },
+    RuntimeHandleContract {
+        name: "GpuEvent",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: true,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &[],
+        consumer_intrinsics: &["gpu.wait"],
+        observer_intrinsics: &[],
+    },
+    RuntimeHandleContract {
+        name: "GpuStream",
+        copy: false,
+        owned: true,
+        linear: true,
+        closable: false,
+        send_safe: false,
+        async_stable: true,
+        producer_intrinsics: &[],
+        consumer_intrinsics: &[],
+        observer_intrinsics: &[],
+    },
 ];
 
 pub fn runtime_handle_contracts() -> &'static [RuntimeHandleContract] {
@@ -5063,6 +5146,13 @@ fn validate_execution_space_call(
 ) {
     let caller_space = function.execution_space;
     if caller_space == ast::ExecutionSpace::Host {
+        if is_gpu_device_intrinsic(callee) {
+            violations.push(format!(
+                "host function `{}` cannot call device-only GPU intrinsic `{}`",
+                function.name, callee
+            ));
+            return;
+        }
         if let Some(target) = function_map.get(callee) {
             if target.execution_space == ast::ExecutionSpace::Kernel {
                 violations.push(format!(
@@ -5126,12 +5216,41 @@ fn execution_space_allows_intrinsic_call(
     callee: &str,
 ) -> bool {
     match execution_space {
-        ast::ExecutionSpace::Host => true,
+        ast::ExecutionSpace::Host => !is_gpu_device_intrinsic(callee),
         ast::ExecutionSpace::Pure => callee.starts_with("simd."),
         ast::ExecutionSpace::Device | ast::ExecutionSpace::Kernel => {
-            callee.starts_with("gpu.") || callee.starts_with("simd.")
+            is_gpu_device_intrinsic(callee) || callee.starts_with("simd.")
         }
     }
+}
+
+fn is_gpu_device_intrinsic(callee: &str) -> bool {
+    matches!(
+        callee,
+        "gpu.global_id_x"
+            | "gpu.global_id_y"
+            | "gpu.global_id_z"
+            | "gpu.thread_id_x"
+            | "gpu.thread_id_y"
+            | "gpu.thread_id_z"
+            | "gpu.block_id_x"
+            | "gpu.block_id_y"
+            | "gpu.block_id_z"
+            | "gpu.block_dim_x"
+            | "gpu.block_dim_y"
+            | "gpu.block_dim_z"
+            | "gpu.grid_dim_x"
+            | "gpu.grid_dim_y"
+            | "gpu.grid_dim_z"
+            | "gpu.barrier"
+            | "gpu.load_f32"
+            | "gpu.load_i32"
+            | "gpu.load_u32"
+            | "gpu.store_f32"
+            | "gpu.store_i32"
+            | "gpu.store_u32"
+            | "gpu.slice_len"
+    )
 }
 
 fn callee_looks_host_only(callee: &str) -> bool {
@@ -5148,6 +5267,158 @@ fn callee_looks_host_only(callee: &str) -> bool {
         || callee.starts_with("error.")
         || callee.starts_with("alloc.")
         || callee.starts_with("env.")
+        || (callee.starts_with("gpu.") && !is_gpu_device_intrinsic(callee))
+}
+
+fn analyze_device_safe_types(
+    functions: &[TypedFunction],
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> Vec<String> {
+    let mut violations = Vec::new();
+    for function in functions {
+        match function.execution_space {
+            ast::ExecutionSpace::Host => {}
+            ast::ExecutionSpace::Pure => {
+                for param in &function.params {
+                    if !is_pure_safe_type(&param.ty, struct_defs, enum_defs) {
+                        violations.push(format!(
+                            "pure function `{}` parameter `{}` uses unsupported pure/device type `{}`",
+                            function.name, param.name, param.ty
+                        ));
+                    }
+                }
+                if !is_pure_safe_type(&function.return_type, struct_defs, enum_defs) {
+                    violations.push(format!(
+                        "pure function `{}` returns unsupported pure/device type `{}`",
+                        function.name, function.return_type
+                    ));
+                }
+                for (name, ty) in &function.local_types {
+                    if !is_pure_safe_type(ty, struct_defs, enum_defs) {
+                        violations.push(format!(
+                            "pure function `{}` local `{}` uses unsupported pure/device type `{}`",
+                            function.name, name, ty
+                        ));
+                    }
+                }
+            }
+            ast::ExecutionSpace::Device | ast::ExecutionSpace::Kernel => {
+                for param in &function.params {
+                    if !is_device_safe_type(&param.ty, struct_defs, enum_defs) {
+                        violations.push(format!(
+                            "{} function `{}` parameter `{}` uses unsupported device type `{}`",
+                            function.execution_space.as_str(),
+                            function.name,
+                            param.name,
+                            param.ty
+                        ));
+                    }
+                }
+                if !is_device_safe_type(&function.return_type, struct_defs, enum_defs) {
+                    violations.push(format!(
+                        "{} function `{}` returns unsupported device type `{}`",
+                        function.execution_space.as_str(),
+                        function.name,
+                        function.return_type
+                    ));
+                }
+                for (name, ty) in &function.local_types {
+                    if !is_device_safe_type(ty, struct_defs, enum_defs) {
+                        violations.push(format!(
+                            "{} function `{}` local `{}` uses unsupported device type `{}`",
+                            function.execution_space.as_str(),
+                            function.name,
+                            name,
+                            ty
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    violations
+}
+
+fn is_pure_safe_type(
+    ty: &Type,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> bool {
+    is_device_scalar_type(ty)
+        || matches!(ty, Type::Array { elem, .. } if is_pure_safe_type(elem, struct_defs, enum_defs))
+        || matches!(ty, Type::Named { name, .. } if is_named_device_aggregate(name, struct_defs, enum_defs, true))
+}
+
+fn is_device_safe_type(
+    ty: &Type,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+) -> bool {
+    if is_device_scalar_type(ty) {
+        return true;
+    }
+    match ty {
+        Type::Array { elem, .. } => is_device_safe_type(elem, struct_defs, enum_defs),
+        Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+            is_pure_safe_type(&args[0], struct_defs, enum_defs)
+        }
+        Type::Named { name, .. } => is_named_device_aggregate(name, struct_defs, enum_defs, false),
+        _ => false,
+    }
+}
+
+fn is_named_device_aggregate(
+    name: &str,
+    struct_defs: &HashMap<String, ast::Struct>,
+    enum_defs: &HashMap<String, ast::Enum>,
+    pure_mode: bool,
+) -> bool {
+    if let Some(struct_def) = struct_defs.get(name) {
+        return struct_def.fields.iter().all(|field| {
+            if pure_mode {
+                is_pure_safe_type(&field.ty, struct_defs, enum_defs)
+            } else {
+                is_device_safe_type(&field.ty, struct_defs, enum_defs)
+            }
+        });
+    }
+    if let Some(enum_def) = enum_defs.get(name) {
+        return enum_def.variants.iter().all(|variant| {
+            variant.payload.iter().all(|payload| {
+                if pure_mode {
+                    is_pure_safe_type(payload, struct_defs, enum_defs)
+                } else {
+                    is_device_safe_type(payload, struct_defs, enum_defs)
+                }
+            }) && variant.named_payload.iter().all(|field| {
+                if pure_mode {
+                    is_pure_safe_type(&field.ty, struct_defs, enum_defs)
+                } else {
+                    is_device_safe_type(&field.ty, struct_defs, enum_defs)
+                }
+            })
+        });
+    }
+    false
+}
+
+fn is_device_scalar_type(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Void
+            | Type::Bool
+            | Type::TypeVar(_)
+            | Type::Int {
+                signed: true,
+                bits: 32
+            }
+            | Type::Int {
+                signed: false,
+                bits: 32
+            }
+            | Type::Float { bits: 32 }
+    )
 }
 
 fn analyze_ownership(
@@ -12807,6 +13078,9 @@ fn infer_expr_type(
                 Some(Type::Array { elem, .. }) => Some(*elem),
                 Some(Type::Slice(elem)) => Some(*elem),
                 Some(Type::Vec(elem)) => Some(*elem),
+                Some(Type::Named { name, args }) if name == "GpuSlice" && args.len() == 1 => {
+                    Some(args[0].clone())
+                }
                 Some(Type::Str) => Some(Type::Char),
                 Some(other) => {
                     record_type_error(
@@ -14187,6 +14461,45 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "task.group_join_all",
         "task.group_cancel",
         "task.parallel_map",
+        "gpu.device_count",
+        "gpu.default_device",
+        "gpu.device_name",
+        "gpu.device_memory_bytes",
+        "gpu.alloc_f32",
+        "gpu.alloc_i32",
+        "gpu.alloc_u32",
+        "gpu.free",
+        "gpu.upload_f32",
+        "gpu.upload_i32",
+        "gpu.upload_u32",
+        "gpu.download_f32",
+        "gpu.download_i32",
+        "gpu.download_u32",
+        "gpu.slice",
+        "gpu.slice_len",
+        "gpu.load_f32",
+        "gpu.load_i32",
+        "gpu.load_u32",
+        "gpu.store_f32",
+        "gpu.store_i32",
+        "gpu.store_u32",
+        "gpu.wait",
+        "gpu.global_id_x",
+        "gpu.global_id_y",
+        "gpu.global_id_z",
+        "gpu.thread_id_x",
+        "gpu.thread_id_y",
+        "gpu.thread_id_z",
+        "gpu.block_id_x",
+        "gpu.block_id_y",
+        "gpu.block_id_z",
+        "gpu.block_dim_x",
+        "gpu.block_dim_y",
+        "gpu.block_dim_z",
+        "gpu.grid_dim_x",
+        "gpu.grid_dim_y",
+        "gpu.grid_dim_z",
+        "gpu.barrier",
         "alloc",
         "free",
         "close",
@@ -14527,7 +14840,7 @@ fn nearest_intrinsic_name(name: &str) -> Option<String> {
 fn builtin_namespace_hint(name: &str) -> Option<String> {
     let namespace = name.split('.').next()?;
     match namespace {
-        "env" | "str" | "json" | "list" | "map" | "route" => Some(format!(
+        "env" | "str" | "json" | "list" | "map" | "route" | "gpu" => Some(format!(
             "`{namespace}.*` is a builtin namespace; call it directly and do not treat `core.{namespace}` as an ordinary imported module"
         )),
         "process" => Some(
@@ -14566,6 +14879,10 @@ fn i32_type() -> Type {
 
 fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let i32 = i32_type();
+    let i64 = Type::Int {
+        signed: true,
+        bits: 64,
+    };
     let task_handle = Type::Named {
         name: "TaskHandle".to_string(),
         args: Vec::new(),
@@ -14621,6 +14938,53 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let channel_handle = Type::Named {
         name: "ChannelHandle".to_string(),
         args: Vec::new(),
+    };
+    let gpu_device = Type::Named {
+        name: "GpuDevice".to_string(),
+        args: Vec::new(),
+    };
+    let gpu_event = Type::Named {
+        name: "GpuEvent".to_string(),
+        args: Vec::new(),
+    };
+    let gpu_type_var = Type::TypeVar("T".to_string());
+    let gpu_buffer = Type::Named {
+        name: "GpuBuffer".to_string(),
+        args: vec![gpu_type_var.clone()],
+    };
+    let gpu_slice = Type::Named {
+        name: "GpuSlice".to_string(),
+        args: vec![gpu_type_var.clone()],
+    };
+    let gpu_buffer_f32 = Type::Named {
+        name: "GpuBuffer".to_string(),
+        args: vec![Type::Float { bits: 32 }],
+    };
+    let gpu_buffer_i32 = Type::Named {
+        name: "GpuBuffer".to_string(),
+        args: vec![i32.clone()],
+    };
+    let gpu_buffer_u32 = Type::Named {
+        name: "GpuBuffer".to_string(),
+        args: vec![Type::Int {
+            signed: false,
+            bits: 32,
+        }],
+    };
+    let gpu_slice_f32 = Type::Named {
+        name: "GpuSlice".to_string(),
+        args: vec![Type::Float { bits: 32 }],
+    };
+    let gpu_slice_i32 = Type::Named {
+        name: "GpuSlice".to_string(),
+        args: vec![i32.clone()],
+    };
+    let gpu_slice_u32 = Type::Named {
+        name: "GpuSlice".to_string(),
+        args: vec![Type::Int {
+            signed: false,
+            bits: 32,
+        }],
     };
     let task_fn = Type::Function {
         params: Vec::new(),
@@ -14682,6 +15046,74 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             (vec![task_group_handle.clone()], i32.clone())
         }
         "task.parallel_map" => (vec![task_group_handle.clone(), task_fn], i32.clone()),
+        "gpu.device_count" => (vec![], i32.clone()),
+        "gpu.default_device" => (vec![], gpu_device.clone()),
+        "gpu.device_name" => (vec![gpu_device.clone()], str_ty.clone()),
+        "gpu.device_memory_bytes" => (vec![gpu_device.clone()], i64.clone()),
+        "gpu.alloc_f32" => (
+            vec![gpu_device.clone(), i32.clone()],
+            gpu_buffer_f32.clone(),
+        ),
+        "gpu.alloc_i32" => (
+            vec![gpu_device.clone(), i32.clone()],
+            gpu_buffer_i32.clone(),
+        ),
+        "gpu.alloc_u32" => (
+            vec![gpu_device.clone(), i32.clone()],
+            gpu_buffer_u32.clone(),
+        ),
+        "gpu.free" => (vec![gpu_buffer.clone()], Type::Void),
+        "gpu.upload_f32" => (
+            vec![gpu_device.clone(), Type::Slice(Box::new(f32_ty.clone()))],
+            gpu_buffer_f32.clone(),
+        ),
+        "gpu.upload_i32" => (
+            vec![gpu_device.clone(), Type::Slice(Box::new(i32.clone()))],
+            gpu_buffer_i32.clone(),
+        ),
+        "gpu.upload_u32" => (
+            vec![gpu_device.clone(), Type::Slice(Box::new(u32_ty.clone()))],
+            gpu_buffer_u32.clone(),
+        ),
+        "gpu.download_f32" => (
+            vec![gpu_buffer_f32.clone()],
+            Type::Vec(Box::new(f32_ty.clone())),
+        ),
+        "gpu.download_i32" => (
+            vec![gpu_buffer_i32.clone()],
+            Type::Vec(Box::new(i32.clone())),
+        ),
+        "gpu.download_u32" => (
+            vec![gpu_buffer_u32.clone()],
+            Type::Vec(Box::new(u32_ty.clone())),
+        ),
+        "gpu.slice" => (
+            vec![gpu_buffer.clone(), i32.clone(), i32.clone()],
+            gpu_slice.clone(),
+        ),
+        "gpu.slice_len" => (vec![gpu_slice.clone()], i32.clone()),
+        "gpu.load_f32" => (vec![gpu_slice_f32.clone(), i32.clone()], f32_ty.clone()),
+        "gpu.load_i32" => (vec![gpu_slice_i32.clone(), i32.clone()], i32.clone()),
+        "gpu.load_u32" => (vec![gpu_slice_u32.clone(), i32.clone()], u32_ty.clone()),
+        "gpu.store_f32" => (
+            vec![gpu_slice_f32.clone(), i32.clone(), f32_ty.clone()],
+            Type::Void,
+        ),
+        "gpu.store_i32" => (
+            vec![gpu_slice_i32.clone(), i32.clone(), i32.clone()],
+            Type::Void,
+        ),
+        "gpu.store_u32" => (
+            vec![gpu_slice_u32.clone(), i32.clone(), u32_ty.clone()],
+            Type::Void,
+        ),
+        "gpu.wait" => (vec![gpu_event.clone()], Type::Void),
+        "gpu.global_id_x" | "gpu.global_id_y" | "gpu.global_id_z" => (vec![], i32.clone()),
+        "gpu.thread_id_x" | "gpu.thread_id_y" | "gpu.thread_id_z" => (vec![], i32.clone()),
+        "gpu.block_id_x" | "gpu.block_id_y" | "gpu.block_id_z" => (vec![], i32.clone()),
+        "gpu.block_dim_x" | "gpu.block_dim_y" | "gpu.block_dim_z" => (vec![], i32.clone()),
+        "gpu.grid_dim_x" | "gpu.grid_dim_y" | "gpu.grid_dim_z" => (vec![], i32.clone()),
+        "gpu.barrier" => (vec![], Type::Void),
         "alloc" => (vec![usize_ty], ptr_u8.clone()),
         "free" => (vec![ptr_u8], Type::Void),
         "close" => (vec![http_handle.clone()], Type::Void),
@@ -15181,9 +15613,7 @@ fn runtime_default_value(ty: &Type) -> Option<Value> {
             }
             Some(Value::Tuple(values))
         }
-        Type::Named { name, args } if args.is_empty() && is_runtime_handle(name) => {
-            Some(Value::I32(0))
-        }
+        Type::Named { name, .. } if is_runtime_handle(name) => Some(Value::I32(0)),
         Type::Future(inner) => runtime_default_value(inner),
         Type::DynTrait(_) => Some(Value::I32(0)),
         Type::Void => Some(Value::I32(0)),
@@ -20704,6 +21134,67 @@ mod tests {
             .find(|entry| entry.function == "main")
             .expect("main capability requirement");
         assert!(requirement.required.iter().any(|cap| cap == "gpu"));
+    }
+
+    #[test]
+    fn gpu_buffers_are_linear_resources() {
+        let source = r#"
+            use core.gpu;
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buf = gpu.alloc_f32(dev, 16);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_linear").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("linear value `buf` was not consumed/freed"))
+                || typed
+                    .ownership_violations
+                    .iter()
+                    .any(|detail| detail.contains("linear value `buf` was not consumed/freed"))
+                || typed
+                    .linear_type_violations
+                    .iter()
+                    .any(|detail| detail.contains("linear value `buf` was not consumed/freed"))
+        );
+    }
+
+    #[test]
+    fn host_cannot_call_device_gpu_intrinsics() {
+        let source = r#"
+            host fn main() -> i32 {
+                return gpu.global_id_x();
+            }
+        "#;
+        let module = parser::parse(source, "gpu_host_intrinsic").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains(
+                "host function `main` cannot call device-only GPU intrinsic `gpu.global_id_x`"
+            )));
+    }
+
+    #[test]
+    fn device_functions_reject_host_only_gpu_buffer_types() {
+        let source = r#"
+            device fn bad(buffer: GpuBuffer<f32>) -> i32 {
+                discard buffer;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_device_types").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("device function `bad` parameter `buffer` uses unsupported device type `GpuBuffer<f32>`")));
     }
 
     #[test]
