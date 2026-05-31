@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "compiler-release-policy-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); fz = repo / 'target/debug/fz'\nroot = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-release-policy-'))\n(root / 'src').mkdir(parents=True, exist_ok=True)\n(root / 'fozzy.toml').write_text(textwrap.dedent('''\\\n[package]\nname=\"release_policy\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"release_policy\"\npath=\"src/main.fzy\"\n'''))\n(root / 'src/main.fzy').write_text('fn main() -> i32 {\\n    return 0\\n}\\n')\nbench = root / 'bench.json'\nbench.write_text(json.dumps({'benches': [\n    {'bench': 'cli_startup', 'ratio_fzy_over_rust': 1.1},\n    {'bench': 'http_throughput', 'ratio_fzy_over_rust': 0.9},\n    {'bench': 'compiler_parse_lower_build', 'ratio_fzy_over_rust': 1.6}\n]}))\nbuild_proc = subprocess.run([str(fz), 'build', str(root), '--json'], cwd=str(repo), capture_output=True, text=True)\nbuild_payload = json.loads(build_proc.stdout.strip())\nassert build_proc.returncode == 0, (build_proc.returncode, build_payload, build_proc.stderr)\nassert build_payload['status'] == 'ok', build_payload\npolicy = json.loads((root / '.fz' / 'release-policy.json').read_text())\nassert policy['schemaVersion'] == 'fozzylang.release_policy.v1', policy\nassert policy['versions']['traceSchemaVersion'] == 'fozzy-trace.v4', policy\nassert policy['versions']['manifestSchemaVersion'] == 'fozzy.run_manifest.v1', policy\nassert policy['versions']['runtimeAbiVersion'] == 'fozzylang.runtime.v0', policy\nassert policy['versions']['nativeImportTableVersion'] == 'fozzylang.native_runtime_contracts.v1', policy\nassert policy['errorModel']['serviceFunctionsReturn'] == 'Result<T, Error>', policy\nassert any(item['name'] == 'timeout' for item in policy['errorModel']['errorClasses']), policy\nassert any(item['name'] == 'compiler_parse_lower_build' for item in policy['performance']['workloads']), policy\nassert any(item['name'] == 'diagnostic-catalog' for item in policy['documentation']['surfaces']), policy\npolicy_md = (root / '.fz' / 'release-policy.md').read_text()\nassert '## Compatibility' in policy_md, policy_md\nassert '## Benchmark Lanes' in policy_md, policy_md\nperf_proc = subprocess.run([str(fz), 'perf', '--artifact', str(bench), '--json'], cwd=str(repo), capture_output=True, text=True)\nperf_payload = json.loads(perf_proc.stdout.strip())\nassert perf_proc.returncode == 0, (perf_proc.returncode, perf_payload, perf_proc.stderr)\nassert perf_payload['benchCount'] == 3, perf_payload\nassert perf_payload['worstKernel'] == 'compiler_parse_lower_build', perf_payload\ndash_proc = subprocess.run([str(fz), 'stability-dashboard', '--json'], cwd=str(repo), capture_output=True, text=True)\ndash_payload = json.loads(dash_proc.stdout.strip())\nassert dash_proc.returncode == 0, (dash_proc.returncode, dash_payload, dash_proc.stderr)\nassert dash_payload['dashboard']['compatibility']['traceSchemaVersion'] == 'fozzy-trace.v4', dash_payload\nassert any(item['name'] == 'cli_startup' for item in dash_payload['dashboard']['performance']['workloads']), dash_payload\nprint('compiler-release-policy-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-release-policy-ok\n",
+      "stderr": "",
+      "times": 1
+    }
+  ]
+}

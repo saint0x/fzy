@@ -8,7 +8,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `15. Memory-safety adversarial coverage`
 - `22. Canary-app gates`
 - `26. Stdlib and capability policy`
-- `27. Error/perf/docs/compat policy`
 
 ## Priority 6
 
@@ -76,15 +75,6 @@ Checklist:
 - Strengthen capability propagation so calls require the capabilities they actually exercise, and capability-token delegation is enforced as compiler-visible authority rather than documentation.
 - Lock in the JSON rule: JSON at boundaries, typed structs and enums inside.
 - Add strict-mode warnings or failures for unsafe `json.raw` misuse, path traversal hazards, shell and process construction hazards, temp-file and atomic-write hazards, header normalization gaps, raw-injection hazards, and constant-time-compare misuse.
-
-### 27. Error/perf/docs/compat policy
-
-Checklist:
-
-- Define and document the v1 error idiom around `Result<T, Error>`, `Status`, `ErrorClass`, `ExitStatus`, and `RuntimeError`.
-- Benchmark real FZY workloads rather than generic micro-optimizations: CLI startup, HTTP throughput, JSON build and parse, process spawn and wait, stream reading, task-group execution, compiler parse, lower, and build time, and native binary size.
-- Generate docs from implementation-backed sources where possible: AST nodes, native runtime table, capability table, verifier rules, diagnostic catalog, and stdlib contract metadata.
-- Treat the compatibility set as part of release gating: language version, trace schema version, manifest schema version, runtime ABI version, native import-table version, and diagnostic catalog version.
 
 ## Working Rule
 

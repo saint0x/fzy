@@ -62,6 +62,13 @@ impl fmt::Display for CommandFailure {
 
 impl StdError for CommandFailure {}
 
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
 #[derive(Debug, Clone)]
 struct BuildInteropArtifacts {
     library: LibraryArtifact,
@@ -3408,21 +3415,42 @@ fn perf_command(artifact: Option<&Path>, format: Format) -> Result<String> {
 }
 
 fn stability_dashboard_command(format: Format) -> Result<String> {
+    let repo_root = repo_root();
+    let exit_criteria_script = repo_root.join("scripts/exit_criteria.py");
     let exit_status = ProcessCommand::new("python3")
-        .arg("scripts/exit_criteria.py")
+        .arg(&exit_criteria_script)
         .arg("status")
+        .current_dir(&repo_root)
         .output()
         .context("failed to run exit criteria status command")?;
     if !exit_status.status.success() {
-        bail!("exit criteria status failed");
+        bail!(
+            "exit criteria status failed for {}",
+            exit_criteria_script.display()
+        );
     }
     let exit_payload: serde_json::Value =
         serde_json::from_slice(&exit_status.stdout).context("invalid exit criteria payload")?;
     let dashboard = serde_json::json!({
         "schemaVersion": "fozzylang.stability_dashboard.v1",
         "generatedAt": chrono_like_now_utc(),
+        "compatibility": fzscenario::compatibility_info(),
         "maturity": exit_payload.get("seriousSystemsLanguageMaturity").cloned().unwrap_or(serde_json::Value::Bool(false)),
         "criteria": exit_payload.get("criteria").cloned().unwrap_or(serde_json::json!({})),
+        "performance": {
+            "summaryCommand": "fz perf [--artifact artifacts/bench_corelibs_rust_vs_fzy.json]",
+            "artifact": "artifacts/bench_corelibs_rust_vs_fzy.json",
+            "workloads": [
+                {"name": "cli_startup", "description": "CLI startup latency"},
+                {"name": "http_throughput", "description": "HTTP request throughput"},
+                {"name": "json_build_parse", "description": "JSON construction and parsing"},
+                {"name": "proc_spawn_wait", "description": "process spawn and wait"},
+                {"name": "stream_reading", "description": "stream reading throughput"},
+                {"name": "task_group_execution", "description": "task-group execution"},
+                {"name": "compiler_parse_lower_build", "description": "compiler parse, lower, and build time"},
+                {"name": "native_binary_size", "description": "native binary size"},
+            ],
+        },
         "sources": {
             "exitCriteria": "release/exit_criteria_state.json",
             "plan": "PLAN.md",
@@ -17990,6 +18018,71 @@ fn main() -> i32 {
         .expect("lint should succeed");
         assert!(output.contains("\"mode\":\"lint\""));
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn perf_command_reports_real_workload_summary() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let artifact = std::env::temp_dir().join(format!("fozzylang-perf-{suffix}.json"));
+        std::fs::write(
+            &artifact,
+            serde_json::json!({
+                "benches": [
+                    {"bench": "cli_startup", "ratio_fzy_over_rust": 1.25},
+                    {"bench": "http_throughput", "ratio_fzy_over_rust": 0.95},
+                    {"bench": "compiler_parse_lower_build", "ratio_fzy_over_rust": 1.75}
+                ]
+            })
+            .to_string(),
+        )
+        .expect("benchmark artifact should be written");
+
+        let output = run(
+            Command::Perf {
+                artifact: Some(artifact.clone()),
+            },
+            Format::Json,
+        )
+        .expect("perf command should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("perf output should be valid json");
+        assert_eq!(payload["mode"], "perf");
+        assert_eq!(payload["benchCount"], 3);
+        assert_eq!(payload["worstKernel"], "compiler_parse_lower_build");
+        assert_eq!(payload["worstRatioFzyOverRust"], 1.75);
+        let avg = payload["averageRatioFzyOverRust"]
+            .as_f64()
+            .expect("average ratio should be numeric");
+        assert!((avg - 1.3166666666666667).abs() < 1e-12, "{avg}");
+
+        let _ = std::fs::remove_file(artifact);
+    }
+
+    #[test]
+    fn stability_dashboard_reports_compatibility_and_perf_sources() {
+        let output = run(Command::StabilityDashboard, Format::Json)
+            .expect("stability dashboard should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("stability dashboard should emit json");
+        assert_eq!(payload["mode"], "stability-dashboard");
+        assert_eq!(
+            payload["dashboard"]["schemaVersion"],
+            "fozzylang.stability_dashboard.v1"
+        );
+        assert_eq!(
+            payload["dashboard"]["compatibility"]["traceSchemaVersion"],
+            "fozzy-trace.v4"
+        );
+        assert_eq!(
+            payload["dashboard"]["performance"]["artifact"],
+            "artifacts/bench_corelibs_rust_vs_fzy.json"
+        );
+        assert!(payload["dashboard"]["performance"]["workloads"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["name"] == "cli_startup")));
     }
 
     #[test]

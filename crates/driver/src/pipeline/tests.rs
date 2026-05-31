@@ -111,6 +111,8 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         "handle-contracts.json",
         "language-policy.json",
         "language-policy.md",
+        "release-policy.json",
+        "release-policy.md",
     ] {
         assert!(
             root.join(".fz").join(name).exists(),
@@ -159,6 +161,22 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         .expect("language policy markdown should exist");
     assert!(language_policy_md.contains("## Syntax Freeze"));
     assert!(language_policy_md.contains("| Profile | Checks | Unsafe | Backend |"));
+    let release_policy: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join(".fz/release-policy.json")).expect("release policy should exist"),
+    )
+    .expect("release policy should be valid json");
+    assert_eq!(
+        release_policy["schemaVersion"].as_str(),
+        Some("fozzylang.release_policy.v1")
+    );
+    assert_eq!(
+        release_policy["versions"]["traceSchemaVersion"].as_str(),
+        Some("fozzy-trace.v4")
+    );
+    let release_policy_md = std::fs::read_to_string(root.join(".fz/release-policy.md"))
+        .expect("release policy markdown should exist");
+    assert!(release_policy_md.contains("## Compatibility"));
+    assert!(release_policy_md.contains("## Benchmark Lanes"));
     assert!(handle_contracts.contains("\"name\": \"JsonHandle\""));
     assert!(handle_contracts.contains("\"linear\": true"));
     assert!(handle_contracts.contains("\"linear\": false"));
@@ -304,6 +322,95 @@ fn language_policy_artifact_respects_manifest_profile_overrides() {
     assert_eq!(strict["diagnosticStrictness"].as_str(), Some("standard"));
     assert_eq!(strict["emitSafetyArtifacts"].as_bool(), Some(false));
     assert_eq!(strict["experimentalFeaturesAllowed"].as_bool(), Some(true));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn release_policy_artifact_reports_error_perf_and_compat_contracts() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-release-policy-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"release_policy\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"release_policy\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("build should succeed");
+    assert_eq!(artifact.status, "ok");
+
+    let payload: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join(".fz/release-policy.json"))
+            .expect("release policy artifact should be readable"),
+    )
+    .expect("release policy should be valid json");
+    assert_eq!(
+        payload["schemaVersion"].as_str(),
+        Some("fozzylang.release_policy.v1")
+    );
+    assert_eq!(
+        payload["versions"]["languageVersion"].as_str(),
+        Some("fozzylang.language.v1")
+    );
+    assert_eq!(
+        payload["versions"]["traceSchemaVersion"].as_str(),
+        Some("fozzy-trace.v4")
+    );
+    assert_eq!(
+        payload["versions"]["manifestSchemaVersion"].as_str(),
+        Some("fozzy.run_manifest.v1")
+    );
+    assert_eq!(
+        payload["versions"]["runtimeAbiVersion"].as_str(),
+        Some("fozzylang.runtime.v0")
+    );
+    assert_eq!(
+        payload["versions"]["nativeImportTableVersion"].as_str(),
+        Some("fozzylang.native_runtime_contracts.v1")
+    );
+    assert_eq!(
+        payload["errorModel"]["serviceFunctionsReturn"].as_str(),
+        Some("Result<T, Error>")
+    );
+    assert_eq!(payload["errorModel"]["cliMainReturn"].as_str(), Some("i32"));
+    assert!(payload["errorModel"]["errorClasses"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["name"] == "timeout")));
+    assert_eq!(
+        payload["performance"]["benchmarkArtifact"].as_str(),
+        Some("artifacts/bench_corelibs_rust_vs_fzy.json")
+    );
+    assert!(payload["performance"]["workloads"]
+        .as_array()
+        .is_some_and(|items| items
+            .iter()
+            .any(|item| item["name"] == "compiler_parse_lower_build")));
+    assert!(payload["documentation"]["surfaces"]
+        .as_array()
+        .is_some_and(|items| items
+            .iter()
+            .any(|item| item["name"] == "diagnostic-catalog")));
+    assert_eq!(
+        payload["releaseGating"]["compatibilitySetRequired"].as_bool(),
+        Some(true)
+    );
+
+    let markdown = std::fs::read_to_string(root.join(".fz/release-policy.md"))
+        .expect("release policy markdown should be readable");
+    assert!(markdown.contains("## Error Model"));
+    assert!(markdown.contains("`transport`: boundary and IO failures at runtime or service edges"));
+    assert!(markdown.contains("## Implementation-Backed Docs"));
 
     let _ = std::fs::remove_dir_all(root);
 }

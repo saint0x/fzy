@@ -40,6 +40,8 @@ Artifact:
 
 Dashboard includes:
 
+- compatibility set for release gating
 - maturity flag from exit criteria
 - criteria details
+- benchmark workload lanes
 - source pointers for auditability
