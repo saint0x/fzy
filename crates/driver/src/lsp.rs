@@ -78,6 +78,15 @@ struct FunctionSignature {
     return_type: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeclKeywordKind {
+    Function,
+    Struct,
+    Enum,
+    Trait,
+    Let,
+}
+
 #[derive(Debug, Clone)]
 struct SemanticDecl {
     name: String,
@@ -97,6 +106,75 @@ struct DeclInfo {
     detail: String,
     ty: Option<ast::Type>,
     signature: Option<FunctionSignature>,
+}
+
+fn function_detail(function: &ast::Function) -> String {
+    let mut detail = String::new();
+    if function.is_pub {
+        detail.push_str("pub ");
+    }
+    if function.is_pubext {
+        detail.push_str("pubext ");
+    }
+    if function.is_extern {
+        if let Some(abi) = &function.abi {
+            detail.push_str(abi);
+            detail.push(' ');
+        } else {
+            detail.push_str("extern ");
+        }
+    }
+    if function.is_async {
+        detail.push_str("async ");
+    }
+    if function.is_unsafe {
+        detail.push_str("unsafe ");
+    }
+    detail.push_str(function.execution_space.as_str());
+    detail.push_str(" fn ");
+    detail.push_str(&function.name);
+    detail.push('(');
+    detail.push_str(
+        &function
+            .params
+            .iter()
+            .map(|param| format!("{}: {}", param.name, param.ty))
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    detail.push_str(") -> ");
+    detail.push_str(&function.return_type.to_string());
+    detail
+}
+
+fn signature_label_for_decl(decl: &SemanticDecl) -> String {
+    let Some(signature) = &decl.signature else {
+        return decl.detail.clone();
+    };
+    let prefix = decl
+        .detail
+        .split_once(" fn ")
+        .map(|(head, _)| head)
+        .unwrap_or("host");
+    format!(
+        "{} fn {}({}){}",
+        prefix,
+        decl.name,
+        signature
+            .params
+            .iter()
+            .map(|param| match &param.ty {
+                Some(ty) => format!("{}: {}", param.name, ty),
+                None => param.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        signature
+            .return_type
+            .as_ref()
+            .map(|ty| format!(" -> {ty}"))
+            .unwrap_or_default()
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -185,17 +263,7 @@ fn build_semantic_file(path: &Path, text: &str) -> SemanticFile {
                         DeclInfo {
                             name: function.name.clone(),
                             kind: "function".to_string(),
-                            detail: format!(
-                                "fn {}({}) -> {}",
-                                function.name,
-                                function
-                                    .params
-                                    .iter()
-                                    .map(|param| format!("{}: {}", param.name, param.ty))
-                                    .collect::<Vec<_>>()
-                                    .join(", "),
-                                function.return_type
-                            ),
+                            detail: function_detail(function),
                             ty: Some(ast::Type::Function {
                                 params: function
                                     .params
@@ -1194,17 +1262,7 @@ pub fn hover_for_symbol(path: &Path, symbol: &str) -> Result<Value> {
         ast::Item::Function(function) if function.name == symbol => Some(json!({
             "symbol": symbol,
             "kind": "function",
-            "signature": format!(
-                "fn {}({}) -> {}",
-                function.name,
-                function
-                    .params
-                    .iter()
-                    .map(|param| format!("{}: {}", param.name, param.ty))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                function.return_type
-            ),
+            "signature": function_detail(function),
         })),
         ast::Item::Struct(s) if s.name == symbol => Some(json!({
             "symbol": symbol,
@@ -1687,8 +1745,9 @@ fn lsp_completion(ws: &WorkspaceState, params: &Value) -> Result<Value> {
         .collect::<Vec<_>>();
 
     let keywords = [
-        "fn", "struct", "enum", "trait", "impl", "test", "async", "return", "if", "else", "while",
-        "match", "let", "requires", "ensures", "defer", "mod", "use", "rpc",
+        "fn", "host", "pure", "device", "kernel", "struct", "enum", "trait", "impl", "test",
+        "async", "unsafe", "return", "if", "else", "while", "match", "let", "requires", "ensures",
+        "defer", "mod", "use", "rpc",
     ];
     for kw in keywords {
         if seen.insert(kw.to_string()) {
@@ -1713,24 +1772,7 @@ fn lsp_signature_help(ws: &WorkspaceState, params: &Value) -> Result<Value> {
             let Some(signature) = &decl.signature else {
                 continue;
             };
-            let label = format!(
-                "fn {}({}){}",
-                decl.name,
-                signature
-                    .params
-                    .iter()
-                    .map(|param| match &param.ty {
-                        Some(ty) => format!("{}: {}", param.name, ty),
-                        None => param.name.clone(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                signature
-                    .return_type
-                    .as_ref()
-                    .map(|ty| format!(" -> {ty}"))
-                    .unwrap_or_default()
-            );
+            let label = signature_label_for_decl(decl);
             return Ok(json!({
                 "activeSignature": 0,
                 "activeParameter": arg_index,
@@ -2263,17 +2305,7 @@ fn semantic_decl_symbols(module: &ast::Module) -> Vec<(String, String, String)> 
             ast::Item::Function(function) => out.push((
                 "function".to_string(),
                 function.name.clone(),
-                format!(
-                    "fn {}({}) -> {}",
-                    function.name,
-                    function
-                        .params
-                        .iter()
-                        .map(|param| format!("{}: {}", param.name, param.ty))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    function.return_type
-                ),
+                function_detail(function),
             )),
             ast::Item::Const(item) => out.push((
                 "const".to_string(),
@@ -2414,34 +2446,23 @@ fn collect_symbol_occurrences(source: &str, path: &Path) -> Vec<SymbolOccurrence
 }
 
 fn parse_decl_symbol(raw_line: &str) -> Option<(String, String, usize)> {
-    let prefixes = [
-        ("pubext c fn ", "function"),
-        ("ext c fn ", "function"),
-        ("pub const ", "const"),
-        ("const ", "const"),
-        ("pub static mut ", "static"),
-        ("static mut ", "static"),
-        ("pub static ", "static"),
-        ("static ", "static"),
-        ("pub fn ", "function"),
-        ("fn ", "function"),
-        ("struct ", "struct"),
-        ("enum ", "enum"),
-        ("trait ", "trait"),
-        ("rpc ", "rpc"),
-    ];
-
-    for (prefix, kind) in prefixes {
-        if let Some(start) = raw_line.find(prefix) {
-            let name_start = start + prefix.len();
-            let suffix = &raw_line[name_start..];
-            let name = suffix
-                .split(|ch: char| ch == '(' || ch == '{' || ch == '<' || ch.is_whitespace())
-                .next()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())?;
-            return Some((kind.to_string(), name.to_string(), name_start));
-        }
+    if let Some((kind, col, len)) = first_decl_keyword(raw_line) {
+        let suffix = &raw_line[(col + len)..];
+        let name_offset = suffix.find(|ch: char| !ch.is_whitespace())?;
+        let name_start = col + len + name_offset;
+        let name = raw_line[name_start..]
+            .split(|ch: char| ch == '(' || ch == '{' || ch == '<' || ch.is_whitespace())
+            .next()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        let kind_name = match kind {
+            DeclKeywordKind::Function => "function",
+            DeclKeywordKind::Struct => "struct",
+            DeclKeywordKind::Enum => "enum",
+            DeclKeywordKind::Trait => "trait",
+            DeclKeywordKind::Let => return None,
+        };
+        return Some((kind_name.to_string(), name.to_string(), name_start));
     }
 
     if raw_line.contains("test \"") {
@@ -2464,6 +2485,33 @@ fn parse_let_symbol(raw_line: &str) -> Option<(String, usize)> {
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
     Some((name.to_string(), start))
+}
+
+fn first_decl_keyword(raw_line: &str) -> Option<(DeclKeywordKind, usize, usize)> {
+    let patterns = [
+        ("struct ", DeclKeywordKind::Struct),
+        ("enum ", DeclKeywordKind::Enum),
+        ("trait ", DeclKeywordKind::Trait),
+        ("let ", DeclKeywordKind::Let),
+        ("fn ", DeclKeywordKind::Function),
+    ];
+    let mut best = None::<(DeclKeywordKind, usize, usize)>;
+    for (needle, kind) in patterns {
+        let Some(col) = raw_line.find(needle) else {
+            continue;
+        };
+        if col > 0 {
+            let prev = raw_line.as_bytes()[col - 1];
+            if is_ident_byte(prev) {
+                continue;
+            }
+        }
+        match best {
+            Some((_, best_col, _)) if best_col <= col => {}
+            _ => best = Some((kind, col, needle.len())),
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -2609,6 +2657,11 @@ fn completion_kind(kind: &str) -> usize {
 
 fn collect_semantic_tokens(source: &str) -> Vec<(usize, usize, usize, usize)> {
     let mut out = Vec::new();
+    let keyword_tokens = [
+        "host", "pure", "device", "kernel", "async", "unsafe", "pub", "pubext", "ext", "fn",
+        "struct", "enum", "trait", "let", "return", "if", "else", "while", "match", "test", "rpc",
+        "mod", "use", "const", "static", "defer", "requires", "ensures",
+    ];
     for (line, raw) in source.lines().enumerate() {
         let trimmed = raw.trim_start();
         let leading = raw.len() - trimmed.len();
@@ -2618,28 +2671,39 @@ fn collect_semantic_tokens(source: &str) -> Vec<(usize, usize, usize, usize)> {
             continue;
         }
 
-        if let Some(pos) = raw.find("fn ") {
-            out.push((line, pos, 2, 0));
-            if let Some((_, name, col)) = parse_decl_symbol(raw) {
-                out.push((line, col, name.len(), 1));
+        for word in keyword_tokens {
+            for (col, len) in symbol_spans_in_line(raw, word) {
+                out.push((line, col, len, 0));
             }
         }
-        if let Some(pos) = raw.find("struct ") {
-            out.push((line, pos, 6, 0));
-            if let Some((_, name, col)) = parse_decl_symbol(raw) {
-                out.push((line, col, name.len(), 2));
-            }
-        }
-        if let Some(pos) = raw.find("enum ") {
-            out.push((line, pos, 4, 0));
-            if let Some((_, name, col)) = parse_decl_symbol(raw) {
-                out.push((line, col, name.len(), 3));
-            }
-        }
-        if let Some(pos) = raw.find("let ") {
-            out.push((line, pos, 3, 0));
-            if let Some((name, col)) = parse_let_symbol(raw) {
-                out.push((line, col, name.len(), 5));
+        if let Some((kind, col, len)) = first_decl_keyword(raw) {
+            match kind {
+                DeclKeywordKind::Function => {
+                    if let Some((_, name, name_col)) = parse_decl_symbol(raw) {
+                        out.push((line, name_col, name.len(), 1));
+                    }
+                }
+                DeclKeywordKind::Struct => {
+                    if let Some((_, name, name_col)) = parse_decl_symbol(raw) {
+                        out.push((line, name_col, name.len(), 2));
+                    }
+                }
+                DeclKeywordKind::Enum => {
+                    if let Some((_, name, name_col)) = parse_decl_symbol(raw) {
+                        out.push((line, name_col, name.len(), 3));
+                    }
+                }
+                DeclKeywordKind::Trait => {
+                    if let Some((_, name, name_col)) = parse_decl_symbol(raw) {
+                        out.push((line, name_col, name.len(), 4));
+                    }
+                }
+                DeclKeywordKind::Let => {
+                    let _ = (col, len);
+                    if let Some((name, name_col)) = parse_let_symbol(raw) {
+                        out.push((line, name_col, name.len(), 5));
+                    }
+                }
             }
         }
 
@@ -2666,6 +2730,52 @@ fn collect_semantic_tokens(source: &str) -> Vec<(usize, usize, usize, usize)> {
         }
     }
     out
+}
+
+fn symbol_spans_in_line(line: &str, symbol: &str) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
+    if symbol.is_empty() {
+        return spans;
+    }
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    let mut in_string = false;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if in_string {
+            if byte == b'\\' && i + 1 < bytes.len() {
+                i += 2;
+                continue;
+            }
+            if byte == b'"' {
+                in_string = false;
+            }
+            i += 1;
+            continue;
+        }
+        if byte == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            break;
+        }
+        if byte == b'"' {
+            in_string = true;
+            i += 1;
+            continue;
+        }
+        if is_ident_byte(byte) {
+            let start = i;
+            let mut end = i + 1;
+            while end < bytes.len() && is_ident_byte(bytes[end]) {
+                end += 1;
+            }
+            if &line[start..end] == symbol {
+                spans.push((start, symbol.len()));
+            }
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    spans
 }
 
 fn to_lsp_diagnostic(diag: &diagnostics::Diagnostic) -> Value {
@@ -3028,6 +3138,22 @@ mod tests {
         assert!(tokens.iter().any(|entry| entry.3 == 8));
         assert!(tokens.iter().any(|entry| entry.3 == 1));
         assert!(tokens.iter().any(|entry| entry.3 == 7));
+    }
+
+    #[test]
+    fn semantic_tokens_cover_gpu_execution_space_keywords() {
+        let source = "host fn boot() -> i32 { return 0 }\ndevice fn helper(x: i32) -> i32 { return x }\nkernel fn launch() -> void {}\n";
+        let tokens = collect_semantic_tokens(source);
+        assert!(tokens
+            .iter()
+            .any(|entry| entry.0 == 0 && entry.1 == 0 && entry.3 == 0));
+        assert!(tokens
+            .iter()
+            .any(|entry| entry.0 == 1 && entry.1 == 0 && entry.3 == 0));
+        assert!(tokens
+            .iter()
+            .any(|entry| entry.0 == 2 && entry.1 == 0 && entry.3 == 0));
+        assert!(tokens.iter().any(|entry| entry.3 == 1));
     }
 
     #[test]
@@ -3543,6 +3669,132 @@ mod tests {
         )
         .expect("code actions should succeed");
         assert!(actions.as_array().is_some_and(|items| !items.is_empty()));
+    }
+
+    #[test]
+    fn document_symbols_and_hover_preserve_execution_space_details() {
+        let uri = "file:///tmp/gpu-execution-space.fzy";
+        let text = "host fn boot() -> i32 {\n    return helper(1)\n}\ndevice fn helper(x: i32) -> i32 {\n    return x\n}\nkernel fn launch() -> void {}\n";
+        let mut ws = WorkspaceState::default();
+        ws.docs.insert(
+            uri.to_string(),
+            Document {
+                path: PathBuf::from("/tmp/gpu-execution-space.fzy"),
+                version: 1,
+                text: text.to_string(),
+            },
+        );
+
+        let doc_symbols = lsp_document_symbol(&ws, &json!({"textDocument": {"uri": uri}}))
+            .expect("document symbols should succeed");
+        let details = doc_symbols
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| {
+                item.get("detail")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert!(details
+            .iter()
+            .any(|detail| detail.starts_with("host fn boot")));
+        assert!(details
+            .iter()
+            .any(|detail| detail.starts_with("device fn helper")));
+        assert!(details
+            .iter()
+            .any(|detail| detail.starts_with("kernel fn launch")));
+
+        let hover = lsp_hover_at_position(
+            &ws,
+            &json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 3, "character": 11}
+            }),
+        )
+        .expect("hover should succeed");
+        let hover_value = hover
+            .get("contents")
+            .and_then(|v| v.get("value"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(hover_value.contains("device fn helper(x: i32) -> i32"));
+    }
+
+    #[test]
+    fn completion_includes_gpu_execution_space_keywords() {
+        let uri = "file:///tmp/gpu-completion.fzy";
+        let text = "host fn main() -> i32 {\n    return 0\n}\n";
+        let mut ws = WorkspaceState::default();
+        ws.docs.insert(
+            uri.to_string(),
+            Document {
+                path: PathBuf::from("/tmp/gpu-completion.fzy"),
+                version: 1,
+                text: text.to_string(),
+            },
+        );
+        let completions = lsp_completion(
+            &ws,
+            &json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 0}
+            }),
+        )
+        .expect("completion should succeed");
+        let labels = completions
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| {
+                item.get("label")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert!(labels.iter().any(|label| label == "host"));
+        assert!(labels.iter().any(|label| label == "pure"));
+        assert!(labels.iter().any(|label| label == "device"));
+        assert!(labels.iter().any(|label| label == "kernel"));
+    }
+
+    #[test]
+    fn cli_hover_and_definition_preserve_execution_space_details() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-lsp-gpu-cli-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should exist");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"gpu_cli\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_cli\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "use core.gpu;\ndevice fn helper(x: i32) -> i32 { return x }\nkernel fn ripple_ascii(output: GpuSlice<i32>) -> void { output[0] = helper(1) }\nhost fn main() -> i32 { return 0 }\n",
+        )
+        .expect("source should be written");
+
+        let source = root.join("src/main.fzy");
+        let def =
+            definition_for_symbol(&source, "ripple_ascii").expect("definition should succeed");
+        assert!(def.detail.starts_with("kernel fn ripple_ascii"));
+
+        let hover = hover_for_symbol(&source, "helper").expect("hover should succeed");
+        let signature = hover
+            .get("signature")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(signature.starts_with("device fn helper"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn decode_lsp_frame(bytes: &[u8]) -> Result<Value> {
