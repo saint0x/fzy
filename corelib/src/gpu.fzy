@@ -90,6 +90,10 @@ host fn wait(event: GpuEvent) -> void {
     discard gpu.wait(event)
 }
 
+async host fn wait_async(event: GpuEvent) -> void {
+    await gpu.wait_async(event)
+}
+
 host fn launch0(
     kernel: fn() -> void,
     grid: i32,

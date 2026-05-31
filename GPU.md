@@ -82,11 +82,9 @@ GPU lifecycle events are now emitted in native/non-scenario trace artifacts. Rem
 
 ### 3.3 Async Integration
 
-The blocking `gpu.wait` path exists. Remaining async/runtime work:
+The blocking `gpu.wait` path and async `gpu.wait_async` path now exist. Remaining async/runtime work:
 
-- `gpu.wait_async`
 - cancellation policy for pending launches/events
-- event ownership semantics across async boundaries
 - deadline/trace integration for GPU-backed async workflows
 
 ## 4. Backend Plan

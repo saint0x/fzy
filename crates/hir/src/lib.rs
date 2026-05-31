@@ -4701,7 +4701,7 @@ const RUNTIME_HANDLE_CONTRACTS: &[RuntimeHandleContract] = &[
             "gpu.launch3",
             "gpu.launch4",
         ],
-        consumer_intrinsics: &["gpu.wait"],
+        consumer_intrinsics: &["gpu.wait", "gpu.wait_async"],
         observer_intrinsics: &[],
     },
     RuntimeHandleContract {
@@ -14672,6 +14672,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "gpu.launch3",
         "gpu.launch4",
         "gpu.wait",
+        "gpu.wait_async",
         "gpu.global_id_x",
         "gpu.global_id_y",
         "gpu.global_id_z",
@@ -15370,6 +15371,7 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
             gpu_event.clone(),
         ),
         "gpu.wait" => (vec![gpu_event.clone()], Type::Void),
+        "gpu.wait_async" => (vec![gpu_event.clone()], Type::Future(Box::new(Type::Void))),
         "gpu.global_id_x" | "gpu.global_id_y" | "gpu.global_id_z" => (vec![], i32.clone()),
         "gpu.thread_id_x" | "gpu.thread_id_y" | "gpu.thread_id_z" => (vec![], i32.clone()),
         "gpu.block_id_x" | "gpu.block_id_y" | "gpu.block_id_z" => (vec![], i32.clone()),
@@ -21478,6 +21480,7 @@ mod tests {
     fn gpu_launch_event_must_be_consumed() {
         let source = r#"
             use core.gpu;
+            use core.thread;
             kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
                 let i = gpu.global_id_x();
                 if i < n {
@@ -21514,6 +21517,7 @@ mod tests {
     fn gpu_launch_event_wait_passes() {
         let source = r#"
             use core.gpu;
+            use core.thread;
             kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
                 let i = gpu.global_id_x();
                 if i < n {
@@ -21544,6 +21548,77 @@ mod tests {
             .linear_type_violations
             .iter()
             .all(|detail| !detail.contains("linear value `event`")));
+    }
+
+    #[test]
+    fn gpu_launch_event_wait_async_passes() {
+        let source = r#"
+            use core.gpu;
+            kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+            async host fn flush(event: GpuEvent) -> void {
+                await gpu.wait_async(event);
+            }
+            async host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                defer gpu.free(input);
+                let output = gpu.alloc_f32(dev, 8);
+                defer gpu.free(output);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch3(noop, 1, 64, input_view, output_view, 8);
+                await flush(event);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_wait_async").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(
+            typed.type_errors, 0,
+            "type errors: {:?}; ownership: {:?}; linear: {:?}",
+            typed.type_error_details, typed.ownership_violations, typed.linear_type_violations
+        );
+        assert!(typed
+            .linear_type_violations
+            .iter()
+            .all(|detail| !detail.contains("linear value `event`")));
+    }
+
+    #[test]
+    fn gpu_wait_async_requires_async_context() {
+        let source = r#"
+            use core.gpu;
+            kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                defer gpu.free(input);
+                let output = gpu.alloc_f32(dev, 8);
+                defer gpu.free(output);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch3(noop, 1, 64, input_view, output_view, 8);
+                await gpu.wait_async(event);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_wait_async_async_ctx").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("uses `await` but is not declared async")));
     }
 
     #[test]

@@ -8396,7 +8396,9 @@ fn gpu_trace_events_for_callee(callee: &str) -> Option<&'static [(&'static str, 
         "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4" => {
             &[("host", "gpu.kernel_launch")]
         }
-        "gpu.wait" => &[("host", "gpu.event_wait"), ("host", "gpu.kernel_complete")],
+        "gpu.wait" | "gpu.wait_async" => {
+            &[("host", "gpu.event_wait"), ("host", "gpu.kernel_complete")]
+        }
         _ => return None,
     })
 }
@@ -10991,6 +10993,7 @@ fn surface_core_modules() -> Vec<(&'static str, &'static str, &'static str)> {
             "stdlib facade over `term.*`",
             "no explicit capability",
         ),
+        ("gpu", "stdlib facade", "implies `gpu`"),
         ("thread", "stdlib facade", "implies `thread`"),
         ("log", "stdlib facade", "implies `log`"),
         ("http", "stdlib facade", "implies `http`"),
@@ -11010,7 +11013,7 @@ fn surface_core_modules() -> Vec<(&'static str, &'static str, &'static str)> {
 
 fn surface_capabilities() -> Vec<&'static str> {
     vec![
-        "time", "rng", "fs", "http", "proc", "mem", "thread", "log", "error",
+        "time", "rng", "fs", "http", "proc", "mem", "thread", "log", "error", "gpu",
     ]
 }
 
@@ -17144,6 +17147,71 @@ fn main() -> i32 {
         assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.alloc\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.free\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_launch\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.event_wait\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_complete\""));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(trace);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
+        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
+    }
+
+    #[test]
+    fn non_scenario_test_record_writes_gpu_async_runtime_events() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-test-gpu-async-record-{suffix}.fzy"));
+        let trace = std::env::temp_dir().join(format!(
+            "fozzylang-test-gpu-async-record-{suffix}.trace.json"
+        ));
+        std::fs::write(
+            &source,
+            "use core.gpu;\nuse core.thread;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\ntest \"gpu async trace\" {}\nasync host fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 4)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 4)\n    defer gpu.free(output)\n    let event = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 4), gpu.slice(output, 0, 4), 4)\n    await gpu.wait_async(event)\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(19),
+                record: Some(trace.clone()),
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: true,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+        assert!(output.contains("\"runtimeEventCount\":"));
+
+        let stem = trace
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("trace should have a stem")
+            .to_string();
+        let base = trace
+            .parent()
+            .expect("trace should have parent")
+            .to_path_buf();
+        let native_trace_text =
+            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
+                .expect("native trace should be written");
+        assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_launch\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.event_wait\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_complete\""));
