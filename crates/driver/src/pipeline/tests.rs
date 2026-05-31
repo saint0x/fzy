@@ -7836,7 +7836,7 @@ fn verify_gpu_surface_stays_backend_neutral_before_live_adapter_lands() {
 }
 
 #[test]
-fn native_build_reports_unsupported_gpu_execution_ops_until_launch_path_lands() {
+fn native_build_routes_gpu_launch_through_truthful_backend_path() {
     let project_name = format!(
         "fozzylang-gpu-build-declared-{}",
         SystemTime::now()
@@ -7859,23 +7859,32 @@ fn native_build_reports_unsupported_gpu_execution_ops_until_launch_path_lands() 
 
     let artifact = compile_file_with_backend(&root, BuildProfile::Dev, None)
         .expect("gpu build should return artifact diagnostics");
-    assert_eq!(artifact.status, "error");
-    assert!(
-        artifact.diagnostic_details.iter().any(|diag| diag
-            .message
-            .contains("gpu backend `metal` does not yet execute these GPU operations")),
-        "expected unsupported GPU operation diagnostic, got {:?}",
-        artifact
-            .diagnostic_details
-            .iter()
-            .map(|diag| diag.message.clone())
-            .collect::<Vec<_>>()
-    );
+    if cfg!(target_vendor = "apple") {
+        assert_eq!(artifact.status, "ok");
+        let output = artifact
+            .output
+            .as_deref()
+            .expect("gpu build output should exist on Apple");
+        assert_eq!(run_native_exit(output), 0);
+    } else {
+        assert_eq!(artifact.status, "error");
+        assert!(
+            artifact.diagnostic_details.iter().any(|diag| diag
+                .message
+                .contains("gpu backend `metal` is declared in the architecture but not yet executable")),
+            "expected declared-but-not-executable diagnostic, got {:?}",
+            artifact
+                .diagnostic_details
+                .iter()
+                .map(|diag| diag.message.clone())
+                .collect::<Vec<_>>()
+        );
+    }
     assert!(
         !artifact.diagnostic_details.iter().any(|diag| diag
             .message
             .contains("native backend cannot execute unresolved call `gpu.")),
-        "GPU build should no longer fail as an unresolved native call, got {:?}",
+        "GPU build should not regress to unresolved GPU call diagnostics, got {:?}",
         artifact
             .diagnostic_details
             .iter()

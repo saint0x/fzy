@@ -181,6 +181,41 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 3,
     },
     NativeRuntimeImport {
+        callee: "gpu.launch0",
+        symbol: "fz_native_gpu_launch0",
+        arity: 5,
+    },
+    NativeRuntimeImport {
+        callee: "gpu.launch1",
+        symbol: "fz_native_gpu_launch1",
+        arity: 6,
+    },
+    NativeRuntimeImport {
+        callee: "gpu.launch2",
+        symbol: "fz_native_gpu_launch2",
+        arity: 7,
+    },
+    NativeRuntimeImport {
+        callee: "gpu.launch3",
+        symbol: "fz_native_gpu_launch3",
+        arity: 8,
+    },
+    NativeRuntimeImport {
+        callee: "gpu.launch4",
+        symbol: "fz_native_gpu_launch4",
+        arity: 9,
+    },
+    NativeRuntimeImport {
+        callee: "gpu.wait",
+        symbol: "fz_native_gpu_wait",
+        arity: 1,
+    },
+    NativeRuntimeImport {
+        callee: "gpu.wait_async",
+        symbol: "fz_native_gpu_wait_async",
+        arity: 1,
+    },
+    NativeRuntimeImport {
         callee: "http.post_json",
         symbol: "fz_native_http_post_json",
         arity: 2,
@@ -1335,6 +1370,13 @@ fn default_blocking_behavior(callee: &str) -> &'static str {
             | "gpu.download_i32"
             | "gpu.download_u32"
             | "gpu.slice"
+            | "gpu.launch0"
+            | "gpu.launch1"
+            | "gpu.launch2"
+            | "gpu.launch3"
+            | "gpu.launch4"
+            | "gpu.wait"
+            | "gpu.wait_async"
     ) {
         "may_block"
     } else {
@@ -1374,6 +1416,11 @@ fn default_linearity(callee: &str) -> &'static str {
             | "gpu.upload_f32"
             | "gpu.upload_i32"
             | "gpu.upload_u32"
+            | "gpu.launch0"
+            | "gpu.launch1"
+            | "gpu.launch2"
+            | "gpu.launch3"
+            | "gpu.launch4"
     ) {
         "produces_linear_handle"
     } else if matches!(
@@ -1551,6 +1598,14 @@ pub(super) fn native_runtime_contract_for_callee(
         "gpu.slice" => {
             contract.arg_ownership = "borrow_handle_range";
             contract.return_ownership = "gpu_buffer_view";
+        }
+        "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4" => {
+            contract.arg_ownership = "borrow_kernel_launch_packet";
+            contract.return_ownership = "owned_gpu_event";
+        }
+        "gpu.wait" | "gpu.wait_async" => {
+            contract.arg_ownership = "consume_arg0";
+            contract.return_ownership = "status";
         }
         "gpu.free" => {
             contract.arg_ownership = "consume_arg0";

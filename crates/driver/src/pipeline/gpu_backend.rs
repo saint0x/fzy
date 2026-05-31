@@ -35,7 +35,7 @@ impl GpuBackendKind {
             Self::Metal => GpuBackendAdapter {
                 kind: self,
                 architecture_status: "declared",
-                execution_status: "host_lifecycle_live_kernel_launch_pending",
+                execution_status: "host_lifecycle_and_kernel_launch_live",
                 host_support: if cfg!(target_vendor = "apple") {
                     "host_supported"
                 } else {
@@ -43,7 +43,7 @@ impl GpuBackendKind {
                 },
                 executable_now: cfg!(target_vendor = "apple"),
                 reason: if cfg!(target_vendor = "apple") {
-                    "Metal host GPU lifecycle is live for device enumeration, buffer allocation, and slice/view construction, but kernel/device execution is not landed yet in this checkout."
+                    "Metal host GPU lifecycle and first live kernel launch/wait execution are available on Apple in this checkout through the shared GPU backend contract."
                 } else {
                     "Metal requires an Apple host/runtime and the current target is not Apple."
                 },
@@ -198,10 +198,14 @@ fn unsupported_gpu_operations(
     for function in &typed.typed_functions {
         match function.execution_space {
             ast::ExecutionSpace::Kernel => {
-                unsupported.insert("kernel_fn".to_string());
+                if backend != GpuBackendKind::Metal {
+                    unsupported.insert("kernel_fn".to_string());
+                }
             }
             ast::ExecutionSpace::Device => {
-                unsupported.insert("device_fn".to_string());
+                if backend != GpuBackendKind::Metal {
+                    unsupported.insert("device_fn".to_string());
+                }
             }
             _ => {}
         }
@@ -230,6 +234,36 @@ fn supported_gpu_calls(backend: GpuBackendKind) -> BTreeSet<&'static str> {
             "gpu.download_u32",
             "gpu.free",
             "gpu.slice",
+            "gpu.launch0",
+            "gpu.launch1",
+            "gpu.launch2",
+            "gpu.launch3",
+            "gpu.launch4",
+            "gpu.wait",
+            "gpu.wait_async",
+            "gpu.global_id_x",
+            "gpu.global_id_y",
+            "gpu.global_id_z",
+            "gpu.thread_id_x",
+            "gpu.thread_id_y",
+            "gpu.thread_id_z",
+            "gpu.block_id_x",
+            "gpu.block_id_y",
+            "gpu.block_id_z",
+            "gpu.block_dim_x",
+            "gpu.block_dim_y",
+            "gpu.block_dim_z",
+            "gpu.grid_dim_x",
+            "gpu.grid_dim_y",
+            "gpu.grid_dim_z",
+            "gpu.barrier",
+            "gpu.slice_len",
+            "gpu.load_f32",
+            "gpu.load_i32",
+            "gpu.load_u32",
+            "gpu.store_f32",
+            "gpu.store_i32",
+            "gpu.store_u32",
         ]),
         GpuBackendKind::Spirv | GpuBackendKind::Nvptx => BTreeSet::new(),
     }

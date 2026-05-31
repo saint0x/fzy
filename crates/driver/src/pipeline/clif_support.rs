@@ -1,4 +1,5 @@
 use super::*;
+use super::gpu_kernel_metal::MetalKernelLaunchDescriptor;
 use anyhow::{anyhow, bail, Result};
 use std::collections::{BTreeMap, HashMap};
 
@@ -33,6 +34,7 @@ pub(super) struct ClifLoweringCtx<'a> {
     pub(super) struct_defs: &'a HashMap<String, ast::Struct>,
     pub(super) enum_defs: &'a HashMap<String, ast::Enum>,
     pub(super) mutable_globals: &'a HashMap<String, cranelift_module::DataId>,
+    pub(super) gpu_kernel_launch_descriptors: &'a HashMap<String, MetalKernelLaunchDescriptor>,
     pub(super) current_return_ty: Option<ClifType>,
     pub(super) current_return_array: Option<ClifArrayAbi>,
     pub(super) current_return_ptr: Option<LocalBinding>,
@@ -170,6 +172,7 @@ pub(super) fn clif_emit_function_cfg(
     globals: &HashMap<String, i32>,
     variant_tags: &HashMap<String, i32>,
     mutable_globals: &HashMap<String, cranelift_module::DataId>,
+    gpu_kernel_launch_descriptors: &HashMap<String, MetalKernelLaunchDescriptor>,
     local_types: BTreeMap<String, ast::Type>,
     struct_defs: &HashMap<String, ast::Struct>,
     enum_defs: &HashMap<String, ast::Enum>,
@@ -184,18 +187,19 @@ pub(super) fn clif_emit_function_cfg(
     forced_return_i32: Option<i32>,
 ) -> Result<()> {
     let mut ctx = ClifLoweringCtx {
-        module,
-        function_ids,
-        function_signatures,
-        string_literal_ids,
-        task_ref_ids,
-        globals,
-        variant_tags,
-        local_types,
-        struct_defs,
-        enum_defs,
-        mutable_globals,
-        current_return_ty,
+            module,
+            function_ids,
+            function_signatures,
+            string_literal_ids,
+            task_ref_ids,
+            globals,
+            variant_tags,
+            local_types,
+            struct_defs,
+            enum_defs,
+            mutable_globals,
+            gpu_kernel_launch_descriptors: &gpu_kernel_launch_descriptors,
+            current_return_ty,
         current_return_array,
         current_return_ptr,
         closures: HashMap::new(),
@@ -4061,6 +4065,60 @@ pub(super) fn clif_emit_expr(
                         builder
                             .ins()
                             .call(func_ref, &[device.value, host_ptr.value, host_len.value]);
+                    let value = builder.inst_results(call)[0];
+                    return Ok(ClifValue {
+                        value,
+                        ty: types::I32,
+                    });
+                }
+                if matches!(
+                    callee.as_str(),
+                    "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4"
+                ) {
+                    if args.len() < 3 {
+                        bail!("native backend lowering expected kernel/grid/block args for `{callee}`");
+                    }
+                    let ast::Expr::Ident(kernel_name) = &args[0] else {
+                        bail!("native backend lowering for `{callee}` requires a direct kernel function name");
+                    };
+                    let descriptor = ctx
+                        .gpu_kernel_launch_descriptors
+                        .get(kernel_name)
+                        .ok_or_else(|| anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`"))?;
+                    let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
+                    let kernel_id = ctx
+                        .string_literal_ids
+                        .get(&descriptor.kernel_name)
+                        .copied()
+                        .ok_or_else(|| anyhow!("missing native string literal id for kernel `{kernel_name}`"))?;
+                    let source_id = ctx
+                        .string_literal_ids
+                        .get(&descriptor.source)
+                        .copied()
+                        .ok_or_else(|| anyhow!("missing native string literal id for Metal source `{kernel_name}`"))?;
+                    let layout_id = ctx
+                        .string_literal_ids
+                        .get(&descriptor.param_layout)
+                        .copied()
+                        .ok_or_else(|| anyhow!("missing native string literal id for Metal launch layout `{kernel_name}`"))?;
+                    let mut grid = clif_emit_expr(builder, ctx, &args[1], locals, next_var)?;
+                    grid = cast_clif_value(builder, grid, types::I32)?;
+                    let mut block = clif_emit_expr(builder, ctx, &args[2], locals, next_var)?;
+                    block = cast_clif_value(builder, block, types::I32)?;
+                    let mut values = vec![
+                        builder.ins().iconst(types::I32, i64::from(kernel_id)),
+                        builder.ins().iconst(types::I32, i64::from(source_id)),
+                        builder.ins().iconst(types::I32, i64::from(layout_id)),
+                        grid.value,
+                        block.value,
+                    ];
+                    for arg in args.iter().skip(3) {
+                        let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+                        let lowered =
+                            cast_clif_value(builder, lowered, pointer_sized_clif_type())?;
+                        values.push(lowered.value);
+                    }
+                    let call = builder.ins().call(func_ref, &values);
                     let value = builder.inst_results(call)[0];
                     return Ok(ClifValue {
                         value,

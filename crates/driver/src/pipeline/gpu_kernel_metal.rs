@@ -1,0 +1,567 @@
+use std::collections::{BTreeMap, HashMap};
+
+use anyhow::{anyhow, bail, Result};
+
+#[derive(Debug, Clone)]
+pub(crate) struct MetalKernelLaunchDescriptor {
+    pub(crate) kernel_name: String,
+    pub(crate) source: String,
+    pub(crate) param_layout: String,
+}
+
+pub(crate) fn metal_kernel_launch_descriptors(
+    fir: &fir::FirModule,
+) -> Result<HashMap<String, MetalKernelLaunchDescriptor>> {
+    let typed = synthesize_typed_module(fir);
+    let module = kernel_ir::lower(&typed)
+        .map_err(|diagnostics| anyhow!(render_kernel_ir_diagnostics(&diagnostics)))?;
+    if module.kernels.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let function_map = module
+        .functions
+        .iter()
+        .map(|function| (function.name.clone(), function))
+        .collect::<BTreeMap<_, _>>();
+    let mut descriptors = HashMap::new();
+    for kernel_name in &module.kernels {
+        let kernel = function_map
+            .get(kernel_name)
+            .ok_or_else(|| anyhow!("kernel package missing entry `{kernel_name}`"))?;
+        let source = render_metal_module(&module, &function_map, kernel)?;
+        descriptors.insert(
+            kernel_name.clone(),
+            MetalKernelLaunchDescriptor {
+                kernel_name: kernel_name.clone(),
+                source,
+                param_layout: render_param_layout(&kernel.params)?,
+            },
+        );
+    }
+    Ok(descriptors)
+}
+
+pub(crate) fn metal_kernel_descriptor_strings(fir: &fir::FirModule) -> Result<Vec<String>> {
+    let mut values = Vec::new();
+    for descriptor in metal_kernel_launch_descriptors(fir)?.into_values() {
+        values.push(descriptor.kernel_name);
+        values.push(descriptor.source);
+        values.push(descriptor.param_layout);
+    }
+    values.sort();
+    values.dedup();
+    Ok(values)
+}
+
+fn synthesize_typed_module(fir: &fir::FirModule) -> hir::TypedModule {
+    hir::TypedModule {
+        name: fir.name.clone(),
+        symbol_count: 0,
+        capabilities: Vec::new(),
+        inferred_capabilities: Vec::new(),
+        entry_return_type: fir.entry_return_type.clone(),
+        entry_return_const_i32: fir.entry_return_const_i32,
+        entry_has_return_expr: fir.entry_has_return_expr,
+        linear_resources: fir.linear_resources.clone(),
+        deferred_resources: fir.deferred_resources.clone(),
+        matches_without_wildcard: fir.matches_without_wildcard,
+        match_unreachable_arms: fir.match_unreachable_arms,
+        match_duplicate_catchall_arms: fir.match_duplicate_catchall_arms,
+        entry_requires: fir.entry_requires.clone(),
+        entry_ensures: fir.entry_ensures.clone(),
+        host_syscall_sites: fir.host_syscall_sites,
+        unsafe_sites: fir.unsafe_sites,
+        unsafe_reasoned_sites: fir.unsafe_reasoned_sites,
+        unsafe_contract_sites: fir.unsafe_contract_sites.clone(),
+        reference_sites: fir.reference_sites,
+        alloc_sites: fir.alloc_sites,
+        free_sites: fir.free_sites,
+        extern_c_abi_functions: fir.extern_c_abi_functions,
+        repr_c_layout_items: fir.repr_c_layout_items,
+        generic_instantiations: fir.generic_instantiations.clone(),
+        generic_specializations: fir.generic_specializations.clone(),
+        call_graph: fir.call_graph.clone(),
+        typed_functions: fir.typed_functions.clone(),
+        typed_globals: fir.typed_globals.clone(),
+        struct_defs: fir.struct_defs.clone(),
+        enum_defs: fir.enum_defs.clone(),
+        type_errors: fir.type_errors,
+        type_error_details: fir.type_error_details.clone(),
+        function_capability_requirements: fir.function_capability_requirements.clone(),
+        ownership_violations: fir.ownership_violations.clone(),
+        unsafe_context_violations: fir.unsafe_context_violations.clone(),
+        capability_token_violations: fir.capability_token_violations.clone(),
+        thread_boundary_violations: fir.thread_boundary_violations.clone(),
+        trait_violations: fir.trait_violations.clone(),
+        reference_lifetime_violations: fir.reference_lifetime_violations.clone(),
+        linear_type_violations: fir.linear_type_violations.clone(),
+    }
+}
+
+fn render_kernel_ir_diagnostics(diagnostics: &[diagnostics::Diagnostic]) -> String {
+    diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.message.clone())
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn render_param_layout(params: &[ast::Param]) -> Result<String> {
+    let mut parts = Vec::with_capacity(params.len());
+    for param in params {
+        parts.push(match &param.ty {
+            ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+                match &args[0] {
+                    ast::Type::Float { bits: 32 } => "slice_f32",
+                    ast::Type::Int {
+                        signed: true,
+                        bits: 32,
+                    } => "slice_i32",
+                    ast::Type::Int {
+                        signed: false,
+                        bits: 32,
+                    } => "slice_u32",
+                    other => bail!(
+                        "Metal GPU kernel lowering does not yet support slice element type `{other}`"
+                    ),
+                }
+            }
+            ast::Type::Int {
+                signed: true,
+                bits: 32,
+            } => "i32",
+            ast::Type::Int {
+                signed: false,
+                bits: 32,
+            } => "u32",
+            ast::Type::Float { bits: 32 } => "f32",
+            other => bail!("Metal GPU kernel lowering does not yet support kernel param `{other}`"),
+        });
+    }
+    Ok(parts.join(","))
+}
+
+fn render_metal_module(
+    module: &kernel_ir::KernelModule,
+    function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
+    kernel: &kernel_ir::KernelFunction,
+) -> Result<String> {
+    let mut out = String::new();
+    out.push_str("#include <metal_stdlib>\nusing namespace metal;\n\n");
+    for function in &module.functions {
+        out.push_str(&render_function_signature(function, false, function_map)?);
+        out.push_str(";\n");
+    }
+    out.push('\n');
+    for function in &module.functions {
+        let is_kernel = function.name == kernel.name;
+        out.push_str(&render_function_signature(function, is_kernel, function_map)?);
+        out.push_str(" {\n");
+        let mut scope = function
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), param.ty.clone()))
+            .collect::<HashMap<_, _>>();
+        render_stmts(
+            &function.body,
+            1,
+            &mut scope,
+            function_map,
+            &mut out,
+        )?;
+        out.push_str("}\n\n");
+    }
+    Ok(out)
+}
+
+fn render_function_signature(
+    function: &kernel_ir::KernelFunction,
+    is_kernel: bool,
+    function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
+) -> Result<String> {
+    let mut out = String::new();
+    if is_kernel {
+        out.push_str("kernel void ");
+    } else {
+        out.push_str(render_scalar_type(&function.return_type)?);
+        out.push(' ');
+    }
+    out.push_str(&function.name);
+    out.push('(');
+    let mut parts = Vec::new();
+    let mut buffer_index = 0usize;
+    for param in &function.params {
+        render_param_parts(
+            param,
+            is_kernel,
+            &mut buffer_index,
+            &mut parts,
+            function_map,
+        )?;
+    }
+    parts.extend(render_context_params(is_kernel));
+    out.push_str(&parts.join(", "));
+    out.push(')');
+    Ok(out)
+}
+
+fn render_param_parts(
+    param: &ast::Param,
+    is_kernel: bool,
+    buffer_index: &mut usize,
+    out: &mut Vec<String>,
+    _function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
+) -> Result<()> {
+    match &param.ty {
+        ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+            let element_ty = render_scalar_type(&args[0])?;
+            if is_kernel {
+                out.push(format!(
+                    "device {element_ty}* {}_data [[buffer({})]]",
+                    param.name, *buffer_index
+                ));
+                *buffer_index += 1;
+                out.push(format!(
+                    "constant uint& {}_offset [[buffer({})]]",
+                    param.name, *buffer_index
+                ));
+                *buffer_index += 1;
+                out.push(format!(
+                    "constant uint& {}_len [[buffer({})]]",
+                    param.name, *buffer_index
+                ));
+                *buffer_index += 1;
+            } else {
+                out.push(format!("device {element_ty}* {}_data", param.name));
+                out.push(format!("uint {}_offset", param.name));
+                out.push(format!("uint {}_len", param.name));
+            }
+        }
+        _ => {
+            let rendered = render_scalar_type(&param.ty)?;
+            if is_kernel {
+                out.push(format!(
+                    "constant {rendered}& {} [[buffer({})]]",
+                    param.name, *buffer_index
+                ));
+                *buffer_index += 1;
+            } else {
+                out.push(format!("{rendered} {}", param.name));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn render_context_params(is_kernel: bool) -> Vec<String> {
+    let attrs = [
+        ("uint3 fz_gid", "[[thread_position_in_grid]]"),
+        ("uint3 fz_tid", "[[thread_position_in_threadgroup]]"),
+        ("uint3 fz_tg_id", "[[threadgroup_position_in_grid]]"),
+        ("uint3 fz_tg_size", "[[threads_per_threadgroup]]"),
+        ("uint3 fz_grid_size", "[[threads_per_grid]]"),
+    ];
+    attrs.into_iter()
+        .map(|(decl, attr)| {
+            if is_kernel {
+                format!("{decl} {attr}")
+            } else {
+                decl.to_string()
+            }
+        })
+        .collect()
+}
+
+fn render_stmts(
+    stmts: &[kernel_ir::KernelStmt],
+    indent: usize,
+    scope: &mut HashMap<String, ast::Type>,
+    function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
+    out: &mut String,
+) -> Result<()> {
+    let pad = "    ".repeat(indent);
+    for stmt in stmts {
+        match stmt {
+            kernel_ir::KernelStmt::Let { name, ty, value } => {
+                out.push_str(&pad);
+                if let Some(ty) = ty {
+                    scope.insert(name.clone(), ty.clone());
+                    out.push_str(render_scalar_type(ty)?);
+                } else {
+                    out.push_str("auto");
+                }
+                out.push(' ');
+                out.push_str(name);
+                out.push_str(" = ");
+                out.push_str(&render_expr(value, scope, function_map)?);
+                out.push_str(";\n");
+            }
+            kernel_ir::KernelStmt::Assign { target, value } => {
+                out.push_str(&pad);
+                out.push_str(target);
+                out.push_str(" = ");
+                out.push_str(&render_expr(value, scope, function_map)?);
+                out.push_str(";\n");
+            }
+            kernel_ir::KernelStmt::Store { base, index, value } => {
+                out.push_str(&pad);
+                out.push_str(&render_slice_access(base, index, scope, function_map)?);
+                out.push_str(" = ");
+                out.push_str(&render_expr(value, scope, function_map)?);
+                out.push_str(";\n");
+            }
+            kernel_ir::KernelStmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                out.push_str(&pad);
+                out.push_str("if (");
+                out.push_str(&render_expr(condition, scope, function_map)?);
+                out.push_str(") {\n");
+                render_stmts(then_body, indent + 1, &mut scope.clone(), function_map, out)?;
+                out.push_str(&pad);
+                out.push('}');
+                if !else_body.is_empty() {
+                    out.push_str(" else {\n");
+                    render_stmts(else_body, indent + 1, &mut scope.clone(), function_map, out)?;
+                    out.push_str(&pad);
+                    out.push('}');
+                }
+                out.push('\n');
+            }
+            kernel_ir::KernelStmt::While { condition, body } => {
+                out.push_str(&pad);
+                out.push_str("while (");
+                out.push_str(&render_expr(condition, scope, function_map)?);
+                out.push_str(") {\n");
+                render_stmts(body, indent + 1, &mut scope.clone(), function_map, out)?;
+                out.push_str(&pad);
+                out.push_str("}\n");
+            }
+            kernel_ir::KernelStmt::Loop { body } => {
+                out.push_str(&pad);
+                out.push_str("while (true) {\n");
+                render_stmts(body, indent + 1, &mut scope.clone(), function_map, out)?;
+                out.push_str(&pad);
+                out.push_str("}\n");
+            }
+            kernel_ir::KernelStmt::Break(value) => {
+                if value.is_some() {
+                    bail!("Metal GPU kernel lowering does not yet support valued `break`");
+                }
+                out.push_str(&pad);
+                out.push_str("break;\n");
+            }
+            kernel_ir::KernelStmt::Continue => {
+                out.push_str(&pad);
+                out.push_str("continue;\n");
+            }
+            kernel_ir::KernelStmt::Return(value) => {
+                out.push_str(&pad);
+                match value {
+                    Some(value) => {
+                        out.push_str("return ");
+                        out.push_str(&render_expr(value, scope, function_map)?);
+                        out.push_str(";\n");
+                    }
+                    None => out.push_str("return;\n"),
+                }
+            }
+            kernel_ir::KernelStmt::Expr(expr) => {
+                out.push_str(&pad);
+                out.push_str(&render_expr(expr, scope, function_map)?);
+                out.push_str(";\n");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn render_expr(
+    expr: &kernel_ir::KernelExpr,
+    scope: &HashMap<String, ast::Type>,
+    function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
+) -> Result<String> {
+    Ok(match expr {
+        kernel_ir::KernelExpr::Int(value) => value.to_string(),
+        kernel_ir::KernelExpr::Float { value, .. } => {
+            if value.fract() == 0.0 {
+                format!("{value:.1}")
+            } else {
+                value.to_string()
+            }
+        }
+        kernel_ir::KernelExpr::Bool(value) => value.to_string(),
+        kernel_ir::KernelExpr::Char(value) => format!("'{}'", value),
+        kernel_ir::KernelExpr::Ident(name) => name.clone(),
+        kernel_ir::KernelExpr::Unary { op, expr } => {
+            format!("({}{})", render_unary_op(*op), render_expr(expr, scope, function_map)?)
+        }
+        kernel_ir::KernelExpr::Binary { op, left, right } => format!(
+            "({} {} {})",
+            render_expr(left, scope, function_map)?,
+            render_binary_op(*op),
+            render_expr(right, scope, function_map)?
+        ),
+        kernel_ir::KernelExpr::Call { callee, args } => {
+            let target = function_map
+                .get(callee)
+                .ok_or_else(|| anyhow!("Metal GPU kernel lowering could not resolve `{callee}`"))?;
+            let mut rendered = Vec::new();
+            for (arg, param) in args.iter().zip(target.params.iter()) {
+                rendered.extend(render_call_arg(arg, &param.ty, scope, function_map)?);
+            }
+            rendered.extend([
+                "fz_gid".to_string(),
+                "fz_tid".to_string(),
+                "fz_tg_id".to_string(),
+                "fz_tg_size".to_string(),
+                "fz_grid_size".to_string(),
+            ]);
+            format!("{callee}({})", rendered.join(", "))
+        }
+        kernel_ir::KernelExpr::Intrinsic { op, args } => render_intrinsic(*op, args, scope, function_map)?,
+        kernel_ir::KernelExpr::Load { base, index } => render_slice_access(base, index, scope, function_map)?,
+        kernel_ir::KernelExpr::Group(inner) => format!("({})", render_expr(inner, scope, function_map)?),
+    })
+}
+
+fn render_call_arg(
+    expr: &kernel_ir::KernelExpr,
+    param_ty: &ast::Type,
+    scope: &HashMap<String, ast::Type>,
+    function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
+) -> Result<Vec<String>> {
+    if is_gpu_slice_type(param_ty) {
+        let name = slice_ident(expr)?;
+        Ok(vec![
+            format!("{name}_data"),
+            format!("{name}_offset"),
+            format!("{name}_len"),
+        ])
+    } else {
+        Ok(vec![render_expr(expr, scope, function_map)?])
+    }
+}
+
+fn render_intrinsic(
+    op: kernel_ir::KernelIntrinsic,
+    args: &[kernel_ir::KernelExpr],
+    scope: &HashMap<String, ast::Type>,
+    function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
+) -> Result<String> {
+    Ok(match op {
+        kernel_ir::KernelIntrinsic::GlobalIdX => "((int)fz_gid.x)".to_string(),
+        kernel_ir::KernelIntrinsic::GlobalIdY => "((int)fz_gid.y)".to_string(),
+        kernel_ir::KernelIntrinsic::GlobalIdZ => "((int)fz_gid.z)".to_string(),
+        kernel_ir::KernelIntrinsic::ThreadIdX => "((int)fz_tid.x)".to_string(),
+        kernel_ir::KernelIntrinsic::ThreadIdY => "((int)fz_tid.y)".to_string(),
+        kernel_ir::KernelIntrinsic::ThreadIdZ => "((int)fz_tid.z)".to_string(),
+        kernel_ir::KernelIntrinsic::BlockIdX => "((int)fz_tg_id.x)".to_string(),
+        kernel_ir::KernelIntrinsic::BlockIdY => "((int)fz_tg_id.y)".to_string(),
+        kernel_ir::KernelIntrinsic::BlockIdZ => "((int)fz_tg_id.z)".to_string(),
+        kernel_ir::KernelIntrinsic::BlockDimX => "((int)fz_tg_size.x)".to_string(),
+        kernel_ir::KernelIntrinsic::BlockDimY => "((int)fz_tg_size.y)".to_string(),
+        kernel_ir::KernelIntrinsic::BlockDimZ => "((int)fz_tg_size.z)".to_string(),
+        kernel_ir::KernelIntrinsic::GridDimX => {
+            "((int)((fz_grid_size.x + fz_tg_size.x - 1u) / fz_tg_size.x))".to_string()
+        }
+        kernel_ir::KernelIntrinsic::GridDimY => {
+            "((int)((fz_grid_size.y + fz_tg_size.y - 1u) / fz_tg_size.y))".to_string()
+        }
+        kernel_ir::KernelIntrinsic::GridDimZ => {
+            "((int)((fz_grid_size.z + fz_tg_size.z - 1u) / fz_tg_size.z))".to_string()
+        }
+        kernel_ir::KernelIntrinsic::Barrier => "threadgroup_barrier(mem_flags::mem_device)".to_string(),
+        kernel_ir::KernelIntrinsic::SliceLen => format!("((int){}_len)", slice_ident(&args[0])?),
+        kernel_ir::KernelIntrinsic::LoadF32
+        | kernel_ir::KernelIntrinsic::LoadI32
+        | kernel_ir::KernelIntrinsic::LoadU32 => {
+            render_slice_access(&args[0], &args[1], scope, function_map)?
+        }
+        kernel_ir::KernelIntrinsic::StoreF32
+        | kernel_ir::KernelIntrinsic::StoreI32
+        | kernel_ir::KernelIntrinsic::StoreU32 => format!(
+            "({} = {})",
+            render_slice_access(&args[0], &args[1], scope, function_map)?,
+            render_expr(&args[2], scope, function_map)?
+        ),
+    })
+}
+
+fn render_slice_access(
+    base: &kernel_ir::KernelExpr,
+    index: &kernel_ir::KernelExpr,
+    scope: &HashMap<String, ast::Type>,
+    function_map: &BTreeMap<String, &kernel_ir::KernelFunction>,
+) -> Result<String> {
+    let name = slice_ident(base)?;
+    if !scope.get(&name).is_some_and(is_gpu_slice_type) {
+        bail!("Metal GPU kernel lowering expected `{name}` to be a GpuSlice value");
+    }
+    Ok(format!(
+        "{name}_data[{name}_offset + (uint)({})]",
+        render_expr(index, scope, function_map)?
+    ))
+}
+
+fn slice_ident(expr: &kernel_ir::KernelExpr) -> Result<String> {
+    match expr {
+        kernel_ir::KernelExpr::Ident(name) => Ok(name.clone()),
+        _ => bail!("Metal GPU kernel lowering currently requires direct GpuSlice identifiers"),
+    }
+}
+
+fn is_gpu_slice_type(ty: &ast::Type) -> bool {
+    matches!(ty, ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1)
+}
+
+fn render_scalar_type(ty: &ast::Type) -> Result<&'static str> {
+    match ty {
+        ast::Type::Void => Ok("void"),
+        ast::Type::Bool => Ok("bool"),
+        ast::Type::Float { bits: 32 } => Ok("float"),
+        ast::Type::Int {
+            signed: true,
+            bits: 32,
+        } => Ok("int"),
+        ast::Type::Int {
+            signed: false,
+            bits: 32,
+        } => Ok("uint"),
+        other => bail!("Metal GPU kernel lowering does not yet support type `{other}`"),
+    }
+}
+
+fn render_unary_op(op: ast::UnaryOp) -> &'static str {
+    match op {
+        ast::UnaryOp::Not => "!",
+        ast::UnaryOp::Plus => "+",
+        ast::UnaryOp::Neg => "-",
+        ast::UnaryOp::BitNot => "~",
+    }
+}
+
+fn render_binary_op(op: ast::BinaryOp) -> &'static str {
+    match op {
+        ast::BinaryOp::Add => "+",
+        ast::BinaryOp::Sub => "-",
+        ast::BinaryOp::Mul => "*",
+        ast::BinaryOp::Div => "/",
+        ast::BinaryOp::Mod => "%",
+        ast::BinaryOp::BitAnd => "&",
+        ast::BinaryOp::BitOr => "|",
+        ast::BinaryOp::BitXor => "^",
+        ast::BinaryOp::Shl => "<<",
+        ast::BinaryOp::Shr => ">>",
+        ast::BinaryOp::And => "&&",
+        ast::BinaryOp::Or => "||",
+        ast::BinaryOp::Lt => "<",
+        ast::BinaryOp::Lte => "<=",
+        ast::BinaryOp::Gt => ">",
+        ast::BinaryOp::Gte => ">=",
+        ast::BinaryOp::Eq => "==",
+        ast::BinaryOp::Neq => "!=",
+    }
+}

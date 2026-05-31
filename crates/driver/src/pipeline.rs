@@ -19,6 +19,7 @@ use ast::AstVisitor;
 
 mod clif_support;
 mod gpu_backend;
+mod gpu_kernel_metal;
 mod linker_support;
 mod llvm_support;
 mod native_backend_support;
@@ -36,6 +37,7 @@ use self::gpu_backend::{
     fir_module_uses_gpu, gpu_backend_execution_diagnostics, module_uses_gpu,
     resolve_gpu_backend,
 };
+use self::gpu_kernel_metal::{metal_kernel_descriptor_strings, metal_kernel_launch_descriptors};
 use self::linker_support::{
     apply_extra_linker_args, apply_manifest_link_args, apply_pgo_flags,
     apply_profile_optimization_flags, apply_target_link_flags, archiver_candidates,
@@ -11213,9 +11215,20 @@ fn build_native_canonical_plan_with_task_symbols(
     for (index, symbol) in spawn_task_symbols.iter().enumerate() {
         task_ref_ids.insert(symbol.clone(), (index + 1) as i32);
     }
+    let mut string_literals = collect_native_string_literals(fir);
+    if let Ok(extra_gpu_strings) = metal_kernel_descriptor_strings(fir) {
+        let mut merged = string_literals
+            .into_iter()
+            .collect::<HashSet<_>>();
+        for value in extra_gpu_strings {
+            merged.insert(value);
+        }
+        string_literals = merged.into_iter().collect();
+        string_literals.sort();
+    }
     NativeCanonicalPlan {
         forced_main_return: compute_forced_main_return(fir, enforce_contract_checks),
-        string_literal_ids: build_string_literal_ids(&collect_native_string_literals(fir)),
+        string_literal_ids: build_string_literal_ids(&string_literals),
         global_const_i32: build_global_const_i32_map(fir),
         mutable_static_i32: build_mutable_static_i32_map(fir),
         variant_tags,
@@ -12481,6 +12494,7 @@ fn emit_native_libraries_cranelift(
         .filter(|symbol| symbol != "main")
         .collect::<Vec<_>>();
     let plan = build_native_canonical_plan_with_task_symbols(fir, true, &spawn_task_symbols);
+    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir).unwrap_or_default();
     let task_symbol_set = spawn_task_symbols.iter().cloned().collect::<HashSet<_>>();
     let mut flags_builder = settings::builder();
     let optimize_override = manifest
@@ -12532,6 +12546,12 @@ fn emit_native_libraries_cranelift(
         mutable_global_data_ids.insert(name, data_id);
     }
     for function in &fir.typed_functions {
+        if matches!(
+            function.execution_space,
+            ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
+        ) {
+            continue;
+        }
         let mut sig = module.make_signature();
         let mut param_tys = Vec::new();
         let sret = clif_array_abi_from_type(&function.return_type);
@@ -12590,6 +12610,12 @@ fn emit_native_libraries_cranelift(
     declare_native_runtime_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     declare_native_data_plane_imports(&mut module, &mut function_ids, &mut function_signatures)?;
     for function in &fir.typed_functions {
+        if matches!(
+            function.execution_space,
+            ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
+        ) {
+            continue;
+        }
         if is_extern_c_import_decl(function) {
             continue;
         }
@@ -12669,6 +12695,7 @@ fn emit_native_libraries_cranelift(
             &plan.global_const_i32,
             &plan.variant_tags,
             &mutable_global_data_ids,
+            &gpu_kernel_launch_descriptors,
             function.local_types.clone(),
             &fir.struct_defs,
             &fir.enum_defs,
@@ -12965,6 +12992,7 @@ fn emit_native_artifact_cranelift(
     let mut module = ObjectModule::new(object_builder);
     let enforce_contract_checks = !matches!(profile, BuildProfile::Release);
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
+    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir).unwrap_or_default();
 
     let mut function_ids = HashMap::new();
     let mut function_signatures = HashMap::new();
@@ -12988,6 +13016,12 @@ fn emit_native_artifact_cranelift(
         mutable_global_data_ids.insert(name, data_id);
     }
     for function in &fir.typed_functions {
+        if matches!(
+            function.execution_space,
+            ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
+        ) {
+            continue;
+        }
         let mut sig = module.make_signature();
         let mut param_tys = Vec::new();
         let sret = clif_array_abi_from_type(&function.return_type);
@@ -13051,6 +13085,12 @@ fn emit_native_artifact_cranelift(
     )?;
 
     for function in &fir.typed_functions {
+        if matches!(
+            function.execution_space,
+            ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
+        ) {
+            continue;
+        }
         if is_extern_c_import_decl(function) {
             continue;
         }
@@ -13130,6 +13170,7 @@ fn emit_native_artifact_cranelift(
             &plan.global_const_i32,
             &plan.variant_tags,
             &mutable_global_data_ids,
+            &gpu_kernel_launch_descriptors,
             function.local_types.clone(),
             &fir.struct_defs,
             &fir.enum_defs,

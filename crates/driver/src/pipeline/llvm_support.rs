@@ -1,4 +1,5 @@
 use super::*;
+use super::gpu_kernel_metal::{metal_kernel_launch_descriptors, MetalKernelLaunchDescriptor};
 use std::collections::BTreeMap;
 
 #[derive(Clone)]
@@ -69,6 +70,7 @@ pub(super) struct LlvmFuncCtx {
     pub(super) local_types: BTreeMap<String, ast::Type>,
     pub(super) struct_defs: HashMap<String, ast::Struct>,
     pub(super) enum_defs: HashMap<String, ast::Enum>,
+    pub(super) gpu_kernel_launch_descriptors: HashMap<String, MetalKernelLaunchDescriptor>,
     pub(super) current_namespace: String,
     pub(super) function_return_ty: String,
     pub(super) alloca_prologue: String,
@@ -85,6 +87,7 @@ impl LlvmFuncCtx {
         local_types: BTreeMap<String, ast::Type>,
         struct_defs: HashMap<String, ast::Struct>,
         enum_defs: HashMap<String, ast::Enum>,
+        gpu_kernel_launch_descriptors: HashMap<String, MetalKernelLaunchDescriptor>,
         function_return_ty: String,
         wrapped_indices: HashMap<String, HashSet<usize>>,
         extern_link_symbols: HashMap<String, String>,
@@ -109,6 +112,7 @@ impl LlvmFuncCtx {
             local_types,
             struct_defs,
             enum_defs,
+            gpu_kernel_launch_descriptors,
             current_namespace: native_current_namespace(current_function_name).to_string(),
             function_return_ty,
             alloca_prologue: String::new(),
@@ -3143,6 +3147,74 @@ pub(super) fn llvm_emit_complex_expr(
                     ty: "i32".to_string(),
                 });
             }
+            if matches!(
+                callee.as_str(),
+                "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4"
+            ) {
+                if args.len() < 3 {
+                    bail!("llvm backend lowering expected kernel/grid/block args for `{callee}`");
+                }
+                let ast::Expr::Ident(kernel_name) = &args[0] else {
+                    bail!("llvm backend lowering for `{callee}` requires a direct kernel function name");
+                };
+                let descriptor = ctx
+                    .gpu_kernel_launch_descriptors
+                    .get(kernel_name)
+                    .ok_or_else(|| anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`"))?;
+                let symbol = native_mangle_symbol(
+                    native_runtime_import_for_callee(callee)
+                        .expect("gpu launch runtime import should exist")
+                        .symbol,
+                );
+                let kernel_id = string_literal_ids
+                    .get(&descriptor.kernel_name)
+                    .copied()
+                    .ok_or_else(|| anyhow!("missing native string literal id for kernel `{kernel_name}`"))?;
+                let source_id = string_literal_ids
+                    .get(&descriptor.source)
+                    .copied()
+                    .ok_or_else(|| anyhow!("missing native string literal id for Metal source `{kernel_name}`"))?;
+                let layout_id = string_literal_ids
+                    .get(&descriptor.param_layout)
+                    .copied()
+                    .ok_or_else(|| anyhow!("missing native string literal id for Metal launch layout `{kernel_name}`"))?;
+                let grid =
+                    llvm_emit_expr_as(&args[1], ctx, string_literal_ids, task_ref_ids, "i32")?;
+                let block =
+                    llvm_emit_expr_as(&args[2], ctx, string_literal_ids, task_ref_ids, "i32")?;
+                let mut lowered_args = Vec::new();
+                for arg in args.iter().skip(3) {
+                    let lowered = llvm_emit_expr(
+                        arg,
+                        ctx,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
+                    let lowered = llvm_cast_value(
+                        ctx,
+                        lowered,
+                        llvm_pointer_int_type(),
+                    )?;
+                    lowered_args.push(format!("{} {}", lowered.ty, lowered.value));
+                }
+                let val = ctx.value();
+                let mut rendered = vec![
+                    format!("i32 {kernel_id}"),
+                    format!("i32 {source_id}"),
+                    format!("i32 {layout_id}"),
+                    format!("i32 {}", grid.value),
+                    format!("i32 {}", block.value),
+                ];
+                rendered.extend(lowered_args);
+                ctx.code.push_str(&format!(
+                    "  {val} = call i32 @{symbol}({})\n",
+                    rendered.join(", ")
+                ));
+                return Ok(LlvmValue {
+                    value: val,
+                    ty: "i32".to_string(),
+                });
+            }
             let signature = ctx.function_sigs.get(callee).cloned();
             let mut rendered_args = Vec::with_capacity(args.len());
             for (index, arg) in args.iter().enumerate() {
@@ -3644,6 +3716,7 @@ pub(super) fn llvm_assert_finite(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Res
 
 pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool) -> Result<String> {
     let plan = build_native_canonical_plan(fir, enforce_contract_checks);
+    let gpu_kernel_launch_descriptors = metal_kernel_launch_descriptors(fir).unwrap_or_default();
     if fir.typed_functions.is_empty() {
         let ret = plan
             .forced_main_return
@@ -3702,6 +3775,47 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                     "declare {} @{}(i32, i32, i32)",
                     llvm_pointer_int_type(),
                     import.symbol
+                );
+            }
+            "gpu.launch0" => {
+                let _ = writeln!(&mut out, "declare i32 @{}(i32, i32, i32, i32, i32)", import.symbol);
+            }
+            "gpu.launch1" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32, {})",
+                    import.symbol,
+                    llvm_pointer_int_type()
+                );
+            }
+            "gpu.launch2" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32, {}, {})",
+                    import.symbol,
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type()
+                );
+            }
+            "gpu.launch3" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32, {}, {}, {})",
+                    import.symbol,
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type()
+                );
+            }
+            "gpu.launch4" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32, {}, {}, {}, {})",
+                    import.symbol,
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type(),
+                    llvm_pointer_int_type()
                 );
             }
             _ => {
@@ -3969,6 +4083,12 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         out.push('\n');
     }
     for function in &fir.typed_functions {
+        if matches!(
+            function.execution_space,
+            ast::ExecutionSpace::Kernel | ast::ExecutionSpace::Device
+        ) {
+            continue;
+        }
         if is_extern_c_import_decl(function) {
             continue;
         }
@@ -3990,6 +4110,7 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                 &plan.task_ref_ids,
                 &extern_link_symbols,
                 &function_sigs,
+                &gpu_kernel_launch_descriptors,
                 cfg,
             )
             .map_err(|error| {
@@ -4031,6 +4152,7 @@ pub(super) fn llvm_emit_function(
     task_ref_ids: &HashMap<String, i32>,
     extern_link_symbols: &HashMap<String, String>,
     function_sigs: &HashMap<String, LlvmFunctionSig>,
+    gpu_kernel_launch_descriptors: &HashMap<String, MetalKernelLaunchDescriptor>,
     cfg: &ControlFlowCfg,
 ) -> Result<String> {
     let params = function
@@ -4050,6 +4172,7 @@ pub(super) fn llvm_emit_function(
         function.local_types.clone(),
         struct_defs.clone(),
         enum_defs.clone(),
+        gpu_kernel_launch_descriptors.clone(),
         return_ty.clone(),
         wrapped_indices,
         extern_link_symbols.clone(),
