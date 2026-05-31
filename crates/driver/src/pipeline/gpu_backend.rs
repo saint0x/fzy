@@ -177,16 +177,21 @@ pub(crate) fn gpu_backend_execution_diagnostics(
 pub(crate) fn module_uses_gpu(typed: &hir::TypedModule) -> bool {
     typed.capabilities.iter().any(|cap| cap == "gpu")
         || typed.inferred_capabilities.iter().any(|cap| cap == "gpu")
-        || typed
-            .typed_functions
-            .iter()
-            .any(|function| function.required_capabilities.iter().any(|cap| cap == "gpu"))
+        || typed.typed_functions.iter().any(|function| {
+            function
+                .required_capabilities
+                .iter()
+                .any(|cap| cap == "gpu")
+        })
 }
 
 pub(crate) fn fir_module_uses_gpu(fir: &fir::FirModule) -> bool {
-    fir.typed_functions
-        .iter()
-        .any(|function| function.required_capabilities.iter().any(|cap| cap == "gpu"))
+    fir.typed_functions.iter().any(|function| {
+        function
+            .required_capabilities
+            .iter()
+            .any(|cap| cap == "gpu")
+    })
 }
 
 fn unsupported_gpu_operations(

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 
-use super::gpu_kernel_layout::render_shared_param_layout;
+use super::gpu_kernel_layout::{shared_gpu_kernel_contract, SharedGpuKernelContract};
 
 #[derive(Debug, Clone)]
 pub(crate) struct NvptxKernelContractDescriptor {
@@ -12,6 +12,7 @@ pub(crate) struct NvptxKernelContractDescriptor {
     pub(crate) module_format: &'static str,
     pub(crate) entry_directive: &'static str,
     pub(crate) parameter_state_space: &'static str,
+    pub(crate) shared_contract: SharedGpuKernelContract,
 }
 
 pub(crate) fn nvptx_kernel_contract_descriptors_from_kernel_module(
@@ -27,17 +28,18 @@ pub(crate) fn nvptx_kernel_contract_descriptors_from_kernel_module(
         let Some(kernel) = function_map.get(kernel_name) else {
             continue;
         };
-        descriptors.insert(
-            kernel_name.clone(),
+        descriptors.insert(kernel_name.clone(), {
+            let shared_contract = shared_gpu_kernel_contract(kernel)?;
             NvptxKernelContractDescriptor {
                 kernel_name: kernel_name.clone(),
                 entry_symbol: kernel.name.clone(),
-                param_layout: render_shared_param_layout(kernel)?,
+                param_layout: shared_contract.param_layout.clone(),
                 module_format: "ptx.assembly_text",
                 entry_directive: ".entry",
                 parameter_state_space: ".param",
-            },
-        );
+                shared_contract,
+            }
+        });
     }
     Ok(descriptors)
 }

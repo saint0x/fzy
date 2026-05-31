@@ -2445,7 +2445,10 @@ fn validate_gpu_kernel_launch_abi(functions: &[TypedFunction]) -> Vec<String> {
 
 fn is_supported_gpu_launch_abi_type(ty: &Type) -> bool {
     match ty {
-        Type::Int { signed: true, bits: 32 }
+        Type::Int {
+            signed: true,
+            bits: 32,
+        }
         | Type::Int {
             signed: false,
             bits: 32,
@@ -2905,7 +2908,11 @@ fn analyze_gpu_launch_aliases(
         let Some(arg) = args.get(index + 3) else {
             continue;
         };
-        let Type::Named { name, args: named_args } = &param.ty else {
+        let Type::Named {
+            name,
+            args: named_args,
+        } = &param.ty
+        else {
             continue;
         };
         if name != "GpuSlice" || named_args.len() != 1 {
@@ -3013,7 +3020,9 @@ fn collect_gpu_stmt_slice_access(
             Stmt::Let {
                 name, value, ty, ..
             } => {
-                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
                 let explicit_ty = ty
                     .as_ref()
                     .or_else(|| function.local_types.get(name))
@@ -3033,7 +3042,9 @@ fn collect_gpu_stmt_slice_access(
                 }
             }
             Stmt::Assign { target, value } => {
-                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
                 let explicit_ty = function.local_types.get(target).or_else(|| {
                     function
                         .params
@@ -3055,14 +3066,18 @@ fn collect_gpu_stmt_slice_access(
             | Stmt::Defer(value)
             | Stmt::Requires(value)
             | Stmt::Ensures(value) => {
-                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
             }
             Stmt::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, condition, bindings, signatures, summaries, out,
+                );
                 collect_gpu_stmt_slice_access(
                     function,
                     then_body,
@@ -3081,7 +3096,9 @@ fn collect_gpu_stmt_slice_access(
                 );
             }
             Stmt::While { condition, body } => {
-                collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, condition, bindings, signatures, summaries, out,
+                );
                 collect_gpu_stmt_slice_access(
                     function,
                     body,
@@ -3118,7 +3135,9 @@ fn collect_gpu_stmt_slice_access(
                     );
                 }
                 if let Some(condition) = condition {
-                    collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+                    collect_gpu_expr_slice_access(
+                        function, condition, bindings, signatures, summaries, out,
+                    );
                 }
                 collect_gpu_stmt_slice_access(
                     function,
@@ -3140,7 +3159,9 @@ fn collect_gpu_stmt_slice_access(
                 }
             }
             Stmt::ForIn { iterable, body, .. } => {
-                collect_gpu_expr_slice_access(function, iterable, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, iterable, bindings, signatures, summaries, out,
+                );
                 collect_gpu_stmt_slice_access(
                     function,
                     body,
@@ -3151,12 +3172,18 @@ fn collect_gpu_stmt_slice_access(
                 );
             }
             Stmt::Match { scrutinee, arms } => {
-                collect_gpu_expr_slice_access(function, scrutinee, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, scrutinee, bindings, signatures, summaries, out,
+                );
                 for arm in arms {
                     if let Some(guard) = &arm.guard {
-                        collect_gpu_expr_slice_access(function, guard, bindings, signatures, summaries, out);
+                        collect_gpu_expr_slice_access(
+                            function, guard, bindings, signatures, summaries, out,
+                        );
                     }
-                    collect_gpu_expr_slice_access(function, &arm.value, bindings, signatures, summaries, out);
+                    collect_gpu_expr_slice_access(
+                        function, &arm.value, bindings, signatures, summaries, out,
+                    );
                 }
             }
             Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue | Stmt::LetPattern { .. } => {}
@@ -3200,7 +3227,9 @@ fn collect_gpu_expr_slice_access(
                 }
                 _ => {}
             }
-            if let (Some(callee_fn), Some(summary)) = (signatures.get(callee), summaries.get(callee)) {
+            if let (Some(callee_fn), Some(summary)) =
+                (signatures.get(callee), summaries.get(callee))
+            {
                 for (index, arg) in args.iter().enumerate() {
                     if let Some(param) = callee_fn.params.get(index) {
                         if let Some(mode) = summary.get(&param.name).copied() {
@@ -3219,11 +3248,15 @@ fn collect_gpu_expr_slice_access(
                             }
                         }
                     }
-                    collect_gpu_expr_slice_access(function, arg, bindings, signatures, summaries, out);
+                    collect_gpu_expr_slice_access(
+                        function, arg, bindings, signatures, summaries, out,
+                    );
                 }
             } else {
                 for arg in args {
-                    collect_gpu_expr_slice_access(function, arg, bindings, signatures, summaries, out);
+                    collect_gpu_expr_slice_access(
+                        function, arg, bindings, signatures, summaries, out,
+                    );
                 }
             }
         }
@@ -3242,21 +3275,35 @@ fn collect_gpu_expr_slice_access(
             then_expr,
             else_expr,
         } => {
-            collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
-            collect_gpu_expr_slice_access(function, then_expr, bindings, signatures, summaries, out);
-            collect_gpu_expr_slice_access(function, else_expr, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(
+                function, condition, bindings, signatures, summaries, out,
+            );
+            collect_gpu_expr_slice_access(
+                function, then_expr, bindings, signatures, summaries, out,
+            );
+            collect_gpu_expr_slice_access(
+                function, else_expr, bindings, signatures, summaries, out,
+            );
         }
         Expr::Match { scrutinee, arms } => {
-            collect_gpu_expr_slice_access(function, scrutinee, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(
+                function, scrutinee, bindings, signatures, summaries, out,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_gpu_expr_slice_access(function, guard, bindings, signatures, summaries, out);
+                    collect_gpu_expr_slice_access(
+                        function, guard, bindings, signatures, summaries, out,
+                    );
                 }
-                collect_gpu_expr_slice_access(function, &arm.value, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, &arm.value, bindings, signatures, summaries, out,
+                );
             }
         }
         Expr::While { condition, body } => {
-            collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(
+                function, condition, bindings, signatures, summaries, out,
+            );
             collect_gpu_stmt_slice_access(
                 function,
                 body,
@@ -3283,7 +3330,9 @@ fn collect_gpu_expr_slice_access(
                 );
             }
             if let Some(condition) = condition {
-                collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, condition, bindings, signatures, summaries, out,
+                );
             }
             collect_gpu_stmt_slice_access(
                 function,
@@ -3342,7 +3391,9 @@ fn collect_gpu_expr_slice_access(
             catch_expr,
         } => {
             collect_gpu_expr_slice_access(function, try_expr, bindings, signatures, summaries, out);
-            collect_gpu_expr_slice_access(function, catch_expr, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(
+                function, catch_expr, bindings, signatures, summaries, out,
+            );
         }
         Expr::Range { start, end, .. } => {
             collect_gpu_expr_slice_access(function, start, bindings, signatures, summaries, out);
@@ -3350,7 +3401,9 @@ fn collect_gpu_expr_slice_access(
         }
         Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
             for (_, value) in fields {
-                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
             }
         }
         Expr::EnumInit {
@@ -3359,15 +3412,21 @@ fn collect_gpu_expr_slice_access(
             ..
         } => {
             for value in payload {
-                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
             }
             for (_, value) in named_payload {
-                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
             }
         }
         Expr::ArrayLiteral(values) | Expr::Tuple(values) => {
             for value in values {
-                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+                collect_gpu_expr_slice_access(
+                    function, value, bindings, signatures, summaries, out,
+                );
             }
         }
         Expr::Closure { .. }
@@ -3415,7 +3474,8 @@ fn build_gpu_barrier_summary(functions: &[TypedFunction]) -> BTreeMap<String, bo
     let mut cache = BTreeMap::new();
     for function in functions {
         let mut visiting = BTreeSet::new();
-        let contains = function_contains_gpu_barrier(function, &function_map, &mut cache, &mut visiting);
+        let contains =
+            function_contains_gpu_barrier(function, &function_map, &mut cache, &mut visiting);
         cache.insert(function.name.clone(), contains);
     }
     cache
@@ -3478,9 +3538,7 @@ fn stmt_contains_gpu_barrier(
             expr_contains_gpu_barrier(condition, functions, cache, visiting)
                 || block_contains_gpu_barrier(body, functions, cache, visiting)
         }
-        Stmt::Loop { body } => {
-            block_contains_gpu_barrier(body, functions, cache, visiting)
-        }
+        Stmt::Loop { body } => block_contains_gpu_barrier(body, functions, cache, visiting),
         Stmt::ForIn { iterable, body, .. } => {
             expr_contains_gpu_barrier(iterable, functions, cache, visiting)
                 || block_contains_gpu_barrier(body, functions, cache, visiting)
@@ -3493,12 +3551,12 @@ fn stmt_contains_gpu_barrier(
         } => {
             init.as_deref()
                 .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
-                || condition.as_ref().is_some_and(|expr| {
-                    expr_contains_gpu_barrier(expr, functions, cache, visiting)
-                })
-                || step.as_deref().is_some_and(|stmt| {
-                    stmt_contains_gpu_barrier(stmt, functions, cache, visiting)
-                })
+                || condition
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_gpu_barrier(expr, functions, cache, visiting))
+                || step
+                    .as_deref()
+                    .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
                 || block_contains_gpu_barrier(body, functions, cache, visiting)
         }
         Stmt::Match { scrutinee, arms } => {
@@ -3554,7 +3612,9 @@ fn expr_contains_gpu_barrier(
                     }) || expr_contains_gpu_barrier(&arm.value, functions, cache, visiting)
                 })
         }
-        Expr::UnsafeBlock { body, .. } => block_contains_gpu_barrier(body, functions, cache, visiting),
+        Expr::UnsafeBlock { body, .. } => {
+            block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
         Expr::While { condition, body } => {
             expr_contains_gpu_barrier(condition, functions, cache, visiting)
                 || block_contains_gpu_barrier(body, functions, cache, visiting)
@@ -3567,12 +3627,12 @@ fn expr_contains_gpu_barrier(
         } => {
             init.as_deref()
                 .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
-                || condition.as_ref().is_some_and(|expr| {
-                    expr_contains_gpu_barrier(expr, functions, cache, visiting)
-                })
-                || step.as_deref().is_some_and(|stmt| {
-                    stmt_contains_gpu_barrier(stmt, functions, cache, visiting)
-                })
+                || condition
+                    .as_ref()
+                    .is_some_and(|expr| expr_contains_gpu_barrier(expr, functions, cache, visiting))
+                || step
+                    .as_deref()
+                    .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
                 || block_contains_gpu_barrier(body, functions, cache, visiting)
         }
         Expr::ForIn { iterable, body, .. } => {
@@ -4068,16 +4128,13 @@ fn infer_borrow_binding_from_expr(
                 mutable: *mutable,
             })
         }
-        Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => infer_gpu_slice_owner_name(
-            value,
-            bindings,
-            signatures,
-        )
-        .map(|owner| BorrowBinding {
-            owner,
-            // Until readonly/writeonly qualifiers land, treat live GPU slices as mutable views.
-            mutable: true,
-        }),
+        Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+            infer_gpu_slice_owner_name(value, bindings, signatures).map(|owner| BorrowBinding {
+                owner,
+                // Until readonly/writeonly qualifiers land, treat live GPU slices as mutable views.
+                mutable: true,
+            })
+        }
         _ => None,
     }
 }
@@ -4200,18 +4257,20 @@ fn infer_gpu_slice_owner_name(
                 None
             }
         }
-        Expr::Call { callee, args } => signatures
-            .get(callee)
-            .and_then(|function| match &function.return_type {
-                Type::Named { name, args: named_args } if name == "GpuSlice" && named_args.len() == 1 => {
-                    args.iter()
-                        .filter_map(|arg| infer_gpu_slice_owner_name(arg, bindings, signatures))
-                        .collect::<Vec<_>>()
-                        .first()
-                        .cloned()
-                }
-                _ => None,
-            }),
+        Expr::Call { callee, args } => signatures.get(callee).and_then(|function| match &function
+            .return_type
+        {
+            Type::Named {
+                name,
+                args: named_args,
+            } if name == "GpuSlice" && named_args.len() == 1 => args
+                .iter()
+                .filter_map(|arg| infer_gpu_slice_owner_name(arg, bindings, signatures))
+                .collect::<Vec<_>>()
+                .first()
+                .cloned(),
+            _ => None,
+        }),
         _ => None,
     }
 }

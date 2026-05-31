@@ -347,6 +347,9 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
     match kernel_ir::lower(typed) {
         Ok(kernel_module) => {
             let rendered = kernel_ir::render(&kernel_module);
+            let backend_limit_profiles =
+                super::gpu_kernel_layout::shared_gpu_backend_limit_profiles_json();
+            let layout_catalog = super::gpu_kernel_layout::shared_gpu_layout_catalog_json();
             let metal_descriptors =
                 super::gpu_kernel_metal::metal_kernel_launch_descriptors_from_kernel_module(
                     &kernel_module,
@@ -379,29 +382,35 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
                                 "name": param.name,
                                 "type": param.ty.to_string(),
                                 "accessMode": access_mode,
-                                "layoutClass": access_mode.and_then(|mode| {
-                                    match &param.ty {
-                                        ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
-                                            let elem = match &args[0] {
-                                                ast::Type::Float { bits: 32 } => Some("slice_f32"),
-                                                ast::Type::Int { signed: true, bits: 32 } => Some("slice_i32"),
-                                                ast::Type::Int { signed: false, bits: 32 } => Some("slice_u32"),
-                                                _ => None,
-                                            }?;
-                                            let suffix = match mode {
+                                "layoutClass": match &param.ty {
+                                    ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+                                        let elem = match &args[0] {
+                                            ast::Type::Float { bits: 32 } => Some("slice_f32"),
+                                            ast::Type::Int { signed: true, bits: 32 } => Some("slice_i32"),
+                                            ast::Type::Int { signed: false, bits: 32 } => Some("slice_u32"),
+                                            _ => None,
+                                        };
+                                        elem.and_then(|elem| {
+                                            let suffix = match access_mode.unwrap_or("observe") {
                                                 "observe" | "readonly" => "ro",
                                                 "writeonly" => "wo",
                                                 "readwrite" => "rw",
                                                 _ => return None,
                                             };
                                             Some(format!("{elem}_{suffix}"))
-                                        }
-                                        _ => None,
+                                        })
                                     }
-                                }),
+                                    ast::Type::Int { signed: true, bits: 32 } => Some("i32".to_string()),
+                                    ast::Type::Int { signed: false, bits: 32 } => Some("u32".to_string()),
+                                    ast::Type::Float { bits: 32 } => Some("f32".to_string()),
+                                    _ => None,
+                                },
                             })
                         }).collect::<Vec<_>>(),
                         "returnType": function.return_type.to_string(),
+                        "kernelCapabilityFlags": super::gpu_kernel_layout::shared_gpu_kernel_contract(function)
+                            .map(|contract| contract.capability_flags)
+                            .unwrap_or_default(),
                     })
                 })
                 .collect::<Vec<_>>();
@@ -414,8 +423,11 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
                 "functionCount": functions.len(),
                 "functions": functions,
                 "backendNeutralAbi": {
+                    "abiVersion": super::gpu_kernel_layout::SHARED_GPU_LAUNCH_ABI_VERSION,
                     "packageFormat": "kernel_ir",
                     "kernelIdentity": "function_name",
+                    "argumentLayoutClasses": layout_catalog,
+                    "backendLimitProfiles": backend_limit_profiles,
                     "launchPacket": {
                         "gridDimensions": ["x"],
                         "blockDimensions": ["x"],
@@ -434,6 +446,8 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
                                 "kernelName": descriptor.kernel_name,
                                 "entryPoint": descriptor.kernel_name,
                                 "paramLayout": descriptor.param_layout,
+                                "sharedContract": descriptor.shared_contract.to_json(),
+                                "backendLimits": backend_limit_profiles["metal"].clone(),
                             }))
                         }).collect::<Vec<_>>(),
                     },
@@ -450,6 +464,8 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
                                 "paramLayout": descriptor.param_layout,
                                 "moduleFormat": descriptor.module_format,
                                 "executionModel": descriptor.execution_model,
+                                "sharedContract": descriptor.shared_contract.to_json(),
+                                "backendLimits": backend_limit_profiles["spirv"].clone(),
                             }))
                         }).collect::<Vec<_>>(),
                     },
@@ -467,6 +483,8 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
                                 "moduleFormat": descriptor.module_format,
                                 "entryDirective": descriptor.entry_directive,
                                 "parameterStateSpace": descriptor.parameter_state_space,
+                                "sharedContract": descriptor.shared_contract.to_json(),
+                                "backendLimits": backend_limit_profiles["nvptx"].clone(),
                             }))
                         }).collect::<Vec<_>>(),
                     }
@@ -483,8 +501,11 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
             "functionCount": 0,
             "functions": [],
             "backendNeutralAbi": {
+                "abiVersion": super::gpu_kernel_layout::SHARED_GPU_LAUNCH_ABI_VERSION,
                 "packageFormat": "kernel_ir",
                 "kernelIdentity": "function_name",
+                "argumentLayoutClasses": super::gpu_kernel_layout::shared_gpu_layout_catalog_json(),
+                "backendLimitProfiles": super::gpu_kernel_layout::shared_gpu_backend_limit_profiles_json(),
                 "launchPacket": {
                     "gridDimensions": ["x"],
                     "blockDimensions": ["x"],
@@ -515,12 +536,16 @@ fn render_gpu_kernel_package_markdown(value: &serde_json::Value) -> String {
         value["schemaVersion"].as_str().unwrap_or("unknown"),
         value["status"].as_str().unwrap_or("unknown"),
         value["module"].as_str().unwrap_or("?"),
-        value["kernels"].as_array().map(|items| items.len()).unwrap_or(0),
+        value["kernels"]
+            .as_array()
+            .map(|items| items.len())
+            .unwrap_or(0),
         value["functionCount"].as_u64().unwrap_or(0),
     ));
     out.push_str("## Launch ABI\n\n");
     out.push_str(&format!(
-        "- Package format: `{}`\n- Kernel identity: `{}`\n- Grid dimensions: `{}`\n- Block dimensions: `{}`\n- Argument encoding: `{}`\n\n",
+        "- ABI version: `{}`\n- Package format: `{}`\n- Kernel identity: `{}`\n- Grid dimensions: `{}`\n- Block dimensions: `{}`\n- Argument encoding: `{}`\n\n",
+        value["backendNeutralAbi"]["abiVersion"].as_str().unwrap_or("?"),
         value["backendNeutralAbi"]["packageFormat"].as_str().unwrap_or("?"),
         value["backendNeutralAbi"]["kernelIdentity"].as_str().unwrap_or("?"),
         value["backendNeutralAbi"]["launchPacket"]["gridDimensions"]
@@ -535,14 +560,39 @@ fn render_gpu_kernel_package_markdown(value: &serde_json::Value) -> String {
             .as_str()
             .unwrap_or("?"),
     ));
+    out.push_str("## Layout Classes\n\n");
+    out.push_str("| Class | Value Type | Access | Wire Slots |\n|---|---|---|---|\n");
+    if let Some(classes) = value["backendNeutralAbi"]["argumentLayoutClasses"].as_array() {
+        for class in classes {
+            let wire_slots = class["wireSlots"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "| `{}` | `{}` | `{}` | `{}` |\n",
+                class["name"].as_str().unwrap_or("?"),
+                class["valueType"].as_str().unwrap_or("?"),
+                class["accessMode"].as_str().unwrap_or("-"),
+                wire_slots,
+            ));
+        }
+    }
+    out.push('\n');
     out.push_str("## Functions\n\n");
-    out.push_str("| Function | Space | Params | Return |\n|---|---|---|---|\n");
+    out.push_str("| Function | Space | Params | Capabilities | Return |\n|---|---|---|---|---|\n");
     if let Some(functions) = value["functions"].as_array() {
         for function in functions {
             let params = function["params"]
                 .as_array()
                 .map(|items| {
-                    items.iter()
+                    items
+                        .iter()
                         .map(|item| {
                             format!(
                                 "{}: {}",
@@ -554,11 +604,22 @@ fn render_gpu_kernel_package_markdown(value: &serde_json::Value) -> String {
                         .join(", ")
                 })
                 .unwrap_or_default();
+            let capabilities = function["kernelCapabilityFlags"]
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
             out.push_str(&format!(
-                "| `{}` | `{}` | `{}` | `{}` |\n",
+                "| `{}` | `{}` | `{}` | `{}` | `{}` |\n",
                 function["name"].as_str().unwrap_or("?"),
                 function["executionSpace"].as_str().unwrap_or("?"),
                 params,
+                capabilities,
                 function["returnType"].as_str().unwrap_or("?"),
             ));
         }

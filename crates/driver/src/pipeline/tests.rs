@@ -179,16 +179,24 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     assert!(gpu_kernel_package.contains("\"backendAdapters\""));
     assert!(gpu_kernel_package.contains("\"spirv\""));
     assert!(gpu_kernel_package.contains("\"nvptx\""));
-    assert!(gpu_kernel_package.contains("\"descriptorStatus\": \"shared_contract_bound_not_executable\""));
+    assert!(gpu_kernel_package
+        .contains("\"descriptorStatus\": \"shared_contract_bound_not_executable\""));
+    assert!(gpu_kernel_package.contains("\"abiVersion\": \"fozzylang.gpu_launch_abi.v1\""));
+    assert!(gpu_kernel_package.contains("\"argumentLayoutClasses\""));
+    assert!(gpu_kernel_package.contains("\"backendLimitProfiles\""));
+    assert!(gpu_kernel_package.contains("\"sharedContract\""));
+    assert!(gpu_kernel_package.contains("\"kernelCapabilityFlags\""));
+    assert!(gpu_kernel_package.contains("\"wireSlots\""));
     assert!(gpu_kernel_package.contains("\"moduleFormat\": \"spirv.binary_module\""));
     assert!(gpu_kernel_package.contains("\"executionModel\": \"GLCompute\""));
     assert!(gpu_kernel_package.contains("\"moduleFormat\": \"ptx.assembly_text\""));
     assert!(gpu_kernel_package.contains("\"entryDirective\": \".entry\""));
     assert!(gpu_kernel_package.contains("\"parameterStateSpace\": \".param\""));
-    let gpu_kernel_package_md =
-        std::fs::read_to_string(root.join(".fz/gpu-kernel-package.md"))
-            .expect("gpu kernel package markdown should exist");
+    let gpu_kernel_package_md = std::fs::read_to_string(root.join(".fz/gpu-kernel-package.md"))
+        .expect("gpu kernel package markdown should exist");
     assert!(gpu_kernel_package_md.contains("# GPU Kernel Package"));
+    assert!(gpu_kernel_package_md.contains("## Layout Classes"));
+    assert!(gpu_kernel_package_md.contains("| Function | Space | Params | Capabilities | Return |"));
 
     let language_policy: serde_json::Value = serde_json::from_slice(
         &std::fs::read(root.join(".fz/language-policy.json"))
@@ -7920,9 +7928,12 @@ fn verify_gpu_surface_stays_backend_neutral_before_live_adapter_lands() {
 
     let output = verify_file(&path).expect("verify should run");
     assert!(
-        !output.diagnostic_details.iter().any(|diag| diag
-            .message
-            .contains("gpu backend `metal` is declared in the architecture but not yet executable")),
+        !output
+            .diagnostic_details
+            .iter()
+            .any(|diag| diag.message.contains(
+                "gpu backend `metal` is declared in the architecture but not yet executable"
+            )),
         "verify should stay backend-neutral, got {:?}",
         output
             .diagnostic_details
@@ -7979,9 +7990,12 @@ fn native_build_routes_gpu_launch_through_truthful_backend_path() {
     } else {
         assert_eq!(artifact.status, "error");
         assert!(
-            artifact.diagnostic_details.iter().any(|diag| diag
-                .message
-                .contains("gpu backend `metal` is declared in the architecture but not yet executable")),
+            artifact
+                .diagnostic_details
+                .iter()
+                .any(|diag| diag.message.contains(
+                    "gpu backend `metal` is declared in the architecture but not yet executable"
+                )),
             "expected declared-but-not-executable diagnostic, got {:?}",
             artifact
                 .diagnostic_details

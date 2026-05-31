@@ -1,5 +1,5 @@
-use super::*;
 use super::gpu_kernel_metal::{metal_kernel_launch_descriptors, MetalKernelLaunchDescriptor};
+use super::*;
 use std::collections::BTreeMap;
 
 #[derive(Clone)]
@@ -3026,8 +3026,13 @@ pub(super) fn llvm_emit_complex_expr(
                 llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?.value
             };
             if let Some(kind) = llvm_vec_element_type(base, ctx) {
-                let base_handle =
-                    llvm_emit_expr_as(base, ctx, string_literal_ids, task_ref_ids, llvm_pointer_int_type())?;
+                let base_handle = llvm_emit_expr_as(
+                    base,
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                    llvm_pointer_int_type(),
+                )?;
                 let (helper, ret_ty) = match kind {
                     "f32" => (NATIVE_VEC_GET_F32_SYMBOL, "float"),
                     "i32" => (NATIVE_VEC_GET_I32_SYMBOL, "i32"),
@@ -3125,8 +3130,12 @@ pub(super) fn llvm_emit_complex_expr(
                 }
                 let device =
                     llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, "i32")?;
-                let Some((host_ptr, host_len)) =
-                    llvm_emit_array_argument_parts(&args[1], ctx, string_literal_ids, task_ref_ids)?
+                let Some((host_ptr, host_len)) = llvm_emit_array_argument_parts(
+                    &args[1],
+                    ctx,
+                    string_literal_ids,
+                    task_ref_ids,
+                )?
                 else {
                     bail!(
                         "llvm backend lowering for `{callee}` currently requires a host array literal or local array binding until general slice ABI lowering lands"
@@ -3160,7 +3169,9 @@ pub(super) fn llvm_emit_complex_expr(
                 let descriptor = ctx
                     .gpu_kernel_launch_descriptors
                     .get(kernel_name)
-                    .ok_or_else(|| anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`"))?;
+                    .ok_or_else(|| {
+                        anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`")
+                    })?;
                 let symbol = native_mangle_symbol(
                     native_runtime_import_for_callee(callee)
                         .expect("gpu launch runtime import should exist")
@@ -3169,11 +3180,15 @@ pub(super) fn llvm_emit_complex_expr(
                 let kernel_id = string_literal_ids
                     .get(&descriptor.kernel_name)
                     .copied()
-                    .ok_or_else(|| anyhow!("missing native string literal id for kernel `{kernel_name}`"))?;
+                    .ok_or_else(|| {
+                        anyhow!("missing native string literal id for kernel `{kernel_name}`")
+                    })?;
                 let source_id = string_literal_ids
                     .get(&descriptor.source)
                     .copied()
-                    .ok_or_else(|| anyhow!("missing native string literal id for Metal source `{kernel_name}`"))?;
+                    .ok_or_else(|| {
+                        anyhow!("missing native string literal id for Metal source `{kernel_name}`")
+                    })?;
                 let layout_id = string_literal_ids
                     .get(&descriptor.param_layout)
                     .copied()
@@ -3184,17 +3199,8 @@ pub(super) fn llvm_emit_complex_expr(
                     llvm_emit_expr_as(&args[2], ctx, string_literal_ids, task_ref_ids, "i32")?;
                 let mut lowered_args = Vec::new();
                 for arg in args.iter().skip(3) {
-                    let lowered = llvm_emit_expr(
-                        arg,
-                        ctx,
-                        string_literal_ids,
-                        task_ref_ids,
-                    )?;
-                    let lowered = llvm_cast_value(
-                        ctx,
-                        lowered,
-                        llvm_pointer_int_type(),
-                    )?;
+                    let lowered = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
+                    let lowered = llvm_cast_value(ctx, lowered, llvm_pointer_int_type())?;
                     lowered_args.push(format!("{} {}", lowered.ty, lowered.value));
                 }
                 let val = ctx.value();
@@ -3778,7 +3784,11 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                 );
             }
             "gpu.launch0" => {
-                let _ = writeln!(&mut out, "declare i32 @{}(i32, i32, i32, i32, i32)", import.symbol);
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, i32, i32, i32, i32)",
+                    import.symbol
+                );
             }
             "gpu.launch1" => {
                 let _ = writeln!(
@@ -3918,7 +3928,10 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         NATIVE_STR_PTR.to_string(),
         NATIVE_STR_PTR_SYMBOL.to_string(),
     );
-    extern_link_symbols.insert(NATIVE_VEC_LEN.to_string(), NATIVE_VEC_LEN_SYMBOL.to_string());
+    extern_link_symbols.insert(
+        NATIVE_VEC_LEN.to_string(),
+        NATIVE_VEC_LEN_SYMBOL.to_string(),
+    );
     extern_link_symbols.insert(
         NATIVE_VEC_GET_I32.to_string(),
         NATIVE_VEC_GET_I32_SYMBOL.to_string(),

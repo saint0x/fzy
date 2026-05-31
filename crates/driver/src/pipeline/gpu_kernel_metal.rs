@@ -2,13 +2,14 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{anyhow, bail, Result};
 
-use super::gpu_kernel_layout::render_shared_param_layout;
+use super::gpu_kernel_layout::{shared_gpu_kernel_contract, SharedGpuKernelContract};
 
 #[derive(Debug, Clone)]
 pub(crate) struct MetalKernelLaunchDescriptor {
     pub(crate) kernel_name: String,
     pub(crate) source: String,
     pub(crate) param_layout: String,
+    pub(crate) shared_contract: SharedGpuKernelContract,
 }
 
 pub(crate) fn metal_kernel_launch_descriptors(
@@ -37,14 +38,15 @@ pub(crate) fn metal_kernel_launch_descriptors_from_kernel_module(
             .get(kernel_name)
             .ok_or_else(|| anyhow!("kernel package missing entry `{kernel_name}`"))?;
         let source = render_metal_module(&module, &function_map, kernel)?;
-        descriptors.insert(
-            kernel_name.clone(),
+        descriptors.insert(kernel_name.clone(), {
+            let shared_contract = shared_gpu_kernel_contract(kernel)?;
             MetalKernelLaunchDescriptor {
                 kernel_name: kernel_name.clone(),
                 source,
-                param_layout: render_shared_param_layout(kernel)?,
-            },
-        );
+                param_layout: shared_contract.param_layout.clone(),
+                shared_contract,
+            }
+        });
     }
     Ok(descriptors)
 }
@@ -128,20 +130,18 @@ fn render_metal_module(
     out.push('\n');
     for function in &module.functions {
         let is_kernel = function.name == kernel.name;
-        out.push_str(&render_function_signature(function, is_kernel, function_map)?);
+        out.push_str(&render_function_signature(
+            function,
+            is_kernel,
+            function_map,
+        )?);
         out.push_str(" {\n");
         let mut scope = function
             .params
             .iter()
             .map(|param| (param.name.clone(), param.ty.clone()))
             .collect::<HashMap<_, _>>();
-        render_stmts(
-            &function.body,
-            1,
-            &mut scope,
-            function_map,
-            &mut out,
-        )?;
+        render_stmts(&function.body, 1, &mut scope, function_map, &mut out)?;
         out.push_str("}\n\n");
     }
     Ok(out)
@@ -241,7 +241,8 @@ fn render_context_params(is_kernel: bool) -> Vec<String> {
         ("uint3 fz_tg_size", "[[threads_per_threadgroup]]"),
         ("uint3 fz_grid_size", "[[threads_per_grid]]"),
     ];
-    attrs.into_iter()
+    attrs
+        .into_iter()
         .map(|(decl, attr)| {
             if is_kernel {
                 format!("{decl} {attr}")
@@ -376,7 +377,11 @@ fn render_expr(
         kernel_ir::KernelExpr::Char(value) => format!("'{}'", value),
         kernel_ir::KernelExpr::Ident(name) => name.clone(),
         kernel_ir::KernelExpr::Unary { op, expr } => {
-            format!("({}{})", render_unary_op(*op), render_expr(expr, scope, function_map)?)
+            format!(
+                "({}{})",
+                render_unary_op(*op),
+                render_expr(expr, scope, function_map)?
+            )
         }
         kernel_ir::KernelExpr::Binary { op, left, right } => format!(
             "({} {} {})",
@@ -401,9 +406,15 @@ fn render_expr(
             ]);
             format!("{callee}({})", rendered.join(", "))
         }
-        kernel_ir::KernelExpr::Intrinsic { op, args } => render_intrinsic(*op, args, scope, function_map)?,
-        kernel_ir::KernelExpr::Load { base, index } => render_slice_access(base, index, scope, function_map)?,
-        kernel_ir::KernelExpr::Group(inner) => format!("({})", render_expr(inner, scope, function_map)?),
+        kernel_ir::KernelExpr::Intrinsic { op, args } => {
+            render_intrinsic(*op, args, scope, function_map)?
+        }
+        kernel_ir::KernelExpr::Load { base, index } => {
+            render_slice_access(base, index, scope, function_map)?
+        }
+        kernel_ir::KernelExpr::Group(inner) => {
+            format!("({})", render_expr(inner, scope, function_map)?)
+        }
     })
 }
 
@@ -449,7 +460,9 @@ fn render_intrinsic(
         kernel_ir::KernelIntrinsic::GridDimZ => {
             "((int)((fz_grid_size.z + fz_tg_size.z - 1u) / fz_tg_size.z))".to_string()
         }
-        kernel_ir::KernelIntrinsic::Barrier => "threadgroup_barrier(mem_flags::mem_device)".to_string(),
+        kernel_ir::KernelIntrinsic::Barrier => {
+            "threadgroup_barrier(mem_flags::mem_device)".to_string()
+        }
         kernel_ir::KernelIntrinsic::SliceLen => format!("((int){}_len)", slice_ident(&args[0])?),
         kernel_ir::KernelIntrinsic::LoadF32
         | kernel_ir::KernelIntrinsic::LoadI32

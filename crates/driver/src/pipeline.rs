@@ -36,9 +36,9 @@ use self::clif_support::{
     ast_signature_type_to_clif_type, clif_array_abi_from_type, clif_emit_function_cfg,
     lower_cranelift_ir, pointer_sized_clif_type, variant_tag_for_key,
 };
+pub(crate) use self::gpu_backend::gpu_backend_report_json;
 use self::gpu_backend::{
-    fir_module_uses_gpu, gpu_backend_execution_diagnostics, module_uses_gpu,
-    resolve_gpu_backend,
+    fir_module_uses_gpu, gpu_backend_execution_diagnostics, module_uses_gpu, resolve_gpu_backend,
 };
 use self::gpu_kernel_metal::{metal_kernel_descriptor_strings, metal_kernel_launch_descriptors};
 use self::linker_support::{
@@ -73,7 +73,6 @@ use self::native_runtime_tables::{
     native_runtime_import_for_callee, NativeRuntimeImport, NATIVE_DATA_PLANE_IMPORTS,
     NATIVE_RUNTIME_IMPORTS,
 };
-pub(crate) use self::gpu_backend::gpu_backend_report_json;
 
 #[derive(Clone, Copy)]
 struct LocalBinding {
@@ -1102,7 +1101,9 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
     let gpu_event_findings = fir
         .typed_functions
         .iter()
-        .flat_map(|function| collect_gpu_event_findings(function, &gpu_event_terminal_param_summaries))
+        .flat_map(|function| {
+            collect_gpu_event_findings(function, &gpu_event_terminal_param_summaries)
+        })
         .map(|finding| {
             serde_json::json!({
                 "function": finding.function,
@@ -5829,10 +5830,10 @@ fn collect_gpu_event_effects_from_expr(
                         .entry(name.clone())
                         .or_default()
                         .push(callee.clone());
-                    wait_bounds
-                        .entry(name.clone())
-                        .or_default()
-                        .push(runtime_wait_policy(callee, *timeout_active).is_some_and(|(_, bounded)| bounded));
+                    wait_bounds.entry(name.clone()).or_default().push(
+                        runtime_wait_policy(callee, *timeout_active)
+                            .is_some_and(|(_, bounded)| bounded),
+                    );
                 }
             }
             if let Some(summary) = terminal_param_summaries.get(callee) {
@@ -5842,7 +5843,10 @@ fn collect_gpu_event_effects_from_expr(
                             .entry(name.clone())
                             .or_default()
                             .push(format!("{terminal_name} via {callee}"));
-                        wait_bounds.entry(name.clone()).or_default().push(*timeout_active);
+                        wait_bounds
+                            .entry(name.clone())
+                            .or_default()
+                            .push(*timeout_active);
                     }
                 }
             }
@@ -6544,11 +6548,14 @@ fn collect_gpu_event_finding_expr(
                                 .to_string(),
                         });
                     }
-                    terminal.entry(name.clone()).or_default().push(callee.clone());
-                    wait_bounds
+                    terminal
                         .entry(name.clone())
                         .or_default()
-                        .push(runtime_wait_policy(callee, *timeout_active).is_some_and(|(_, bounded)| bounded));
+                        .push(callee.clone());
+                    wait_bounds.entry(name.clone()).or_default().push(
+                        runtime_wait_policy(callee, *timeout_active)
+                            .is_some_and(|(_, bounded)| bounded),
+                    );
                 }
             }
             if let Some(summary) = terminal_param_summaries.get(callee) {
@@ -6573,7 +6580,10 @@ fn collect_gpu_event_finding_expr(
                             .entry(name.clone())
                             .or_default()
                             .push(format!("{terminal_name} via {callee}"));
-                        wait_bounds.entry(name.clone()).or_default().push(*timeout_active);
+                        wait_bounds
+                            .entry(name.clone())
+                            .or_default()
+                            .push(*timeout_active);
                     }
                 }
             }
@@ -12590,7 +12600,9 @@ fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::D
     diagnostics.extend(
         fir.typed_functions
             .iter()
-            .flat_map(|function| collect_gpu_event_findings(function, &gpu_event_terminal_param_summaries))
+            .flat_map(|function| {
+                collect_gpu_event_findings(function, &gpu_event_terminal_param_summaries)
+            })
             .map(|finding| {
                 diagnostics::Diagnostic::new(
                     diagnostics::Severity::Error,

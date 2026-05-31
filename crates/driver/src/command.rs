@@ -8937,11 +8937,7 @@ impl GpuTraceAnalyzer {
             .collect()
     }
 
-    fn describe_launch_arg(
-        &self,
-        expr: &ast::Expr,
-        layout: &str,
-    ) -> (serde_json::Value, Vec<u64>) {
+    fn describe_launch_arg(&self, expr: &ast::Expr, layout: &str) -> (serde_json::Value, Vec<u64>) {
         match self.resolve_binding(expr) {
             Some(GpuTraceBinding::Slice {
                 resource_id,
@@ -17929,12 +17925,12 @@ fn main() -> i32 {
         let causal_links = native_trace["causalLinks"]
             .as_array()
             .expect("causalLinks should be array");
-        assert!(causal_links.iter().any(|link| {
-            link["relation"].as_str() == Some("gpu.buffer.lifetime_end")
-        }));
-        assert!(causal_links.iter().any(|link| {
-            link["relation"].as_str() == Some("gpu.event.complete")
-        }));
+        assert!(causal_links
+            .iter()
+            .any(|link| { link["relation"].as_str() == Some("gpu.buffer.lifetime_end") }));
+        assert!(causal_links
+            .iter()
+            .any(|link| { link["relation"].as_str() == Some("gpu.event.complete") }));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);
@@ -17956,8 +17952,9 @@ fn main() -> i32 {
             .as_nanos();
         let source =
             std::env::temp_dir().join(format!("fozzylang-test-gpu-upload-record-{suffix}.fzy"));
-        let trace = std::env::temp_dir()
-            .join(format!("fozzylang-test-gpu-upload-record-{suffix}.trace.json"));
+        let trace = std::env::temp_dir().join(format!(
+            "fozzylang-test-gpu-upload-record-{suffix}.trace.json"
+        ));
         std::fs::write(
             &source,
             "use core.gpu;\nuse core.simd;\ntest \"gpu upload trace\" {}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let values: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let buf: GpuBuffer<f32> = gpu.upload_f32(dev, values)\n    let window: GpuSlice<f32> = gpu.slice(buf, 1, 2)\n    discard window\n    gpu.free(buf)\n    return 0\n}\n",
@@ -18020,8 +18017,9 @@ fn main() -> i32 {
             .as_nanos();
         let source =
             std::env::temp_dir().join(format!("fozzylang-test-gpu-download-record-{suffix}.fzy"));
-        let trace = std::env::temp_dir()
-            .join(format!("fozzylang-test-gpu-download-record-{suffix}.trace.json"));
+        let trace = std::env::temp_dir().join(format!(
+            "fozzylang-test-gpu-download-record-{suffix}.trace.json"
+        ));
         std::fs::write(
             &source,
             "use core.gpu;\nuse core.simd;\ntest \"gpu download trace\" {}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let values: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let buf: GpuBuffer<f32> = gpu.upload_f32(dev, values)\n    let downloaded: Vec<f32> = gpu.download_f32(buf)\n    gpu.free(buf)\n    if downloaded[0] != values[0] {\n        return 11\n    }\n    if downloaded[3] != values[3] {\n        return 12\n    }\n    return 0\n}\n",

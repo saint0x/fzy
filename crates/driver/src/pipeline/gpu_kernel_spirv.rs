@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::Result;
 
-use super::gpu_kernel_layout::render_shared_param_layout;
+use super::gpu_kernel_layout::{shared_gpu_kernel_contract, SharedGpuKernelContract};
 
 #[derive(Debug, Clone)]
 pub(crate) struct SpirvKernelContractDescriptor {
@@ -11,6 +11,7 @@ pub(crate) struct SpirvKernelContractDescriptor {
     pub(crate) param_layout: String,
     pub(crate) module_format: &'static str,
     pub(crate) execution_model: &'static str,
+    pub(crate) shared_contract: SharedGpuKernelContract,
 }
 
 pub(crate) fn spirv_kernel_contract_descriptors_from_kernel_module(
@@ -26,16 +27,17 @@ pub(crate) fn spirv_kernel_contract_descriptors_from_kernel_module(
         let Some(kernel) = function_map.get(kernel_name) else {
             continue;
         };
-        descriptors.insert(
-            kernel_name.clone(),
+        descriptors.insert(kernel_name.clone(), {
+            let shared_contract = shared_gpu_kernel_contract(kernel)?;
             SpirvKernelContractDescriptor {
                 kernel_name: kernel_name.clone(),
                 entry_point: kernel.name.clone(),
-                param_layout: render_shared_param_layout(kernel)?,
+                param_layout: shared_contract.param_layout.clone(),
                 module_format: "spirv.binary_module",
                 execution_model: "GLCompute",
-            },
-        );
+                shared_contract,
+            }
+        });
     }
     Ok(descriptors)
 }

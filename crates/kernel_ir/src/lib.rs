@@ -194,7 +194,7 @@ impl KernelIntrinsic {
         })
     }
 
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::GlobalIdX => "global_id_x",
             Self::GlobalIdY => "global_id_y",
@@ -663,9 +663,18 @@ fn collect_stmt_slice_access(
     for stmt in stmts {
         match stmt {
             KernelStmt::Let { name, ty, value } => {
-                collect_expr_slice_access(value, aliases, summaries, param_orders, function_map, out);
+                collect_expr_slice_access(
+                    value,
+                    aliases,
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
                 if ty.as_ref().is_some_and(is_gpu_slice_type) {
-                    if let Some(owner) = infer_slice_alias_source(value, aliases, summaries, param_orders) {
+                    if let Some(owner) =
+                        infer_slice_alias_source(value, aliases, summaries, param_orders)
+                    {
                         aliases.insert(name.clone(), owner);
                     } else {
                         aliases.remove(name);
@@ -675,19 +684,47 @@ fn collect_stmt_slice_access(
                 }
             }
             KernelStmt::Assign { value, .. } => {
-                collect_expr_slice_access(value, aliases, summaries, param_orders, function_map, out);
+                collect_expr_slice_access(
+                    value,
+                    aliases,
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
             }
             KernelStmt::Store { base, index, value } => {
                 mark_expr_slice_write(base, aliases, out);
-                collect_expr_slice_access(index, aliases, summaries, param_orders, function_map, out);
-                collect_expr_slice_access(value, aliases, summaries, param_orders, function_map, out);
+                collect_expr_slice_access(
+                    index,
+                    aliases,
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
+                collect_expr_slice_access(
+                    value,
+                    aliases,
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
             }
             KernelStmt::If {
                 condition,
                 then_body,
                 else_body,
             } => {
-                collect_expr_slice_access(condition, aliases, summaries, param_orders, function_map, out);
+                collect_expr_slice_access(
+                    condition,
+                    aliases,
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
                 collect_stmt_slice_access(
                     then_body,
                     &mut aliases.clone(),
@@ -706,19 +743,54 @@ fn collect_stmt_slice_access(
                 );
             }
             KernelStmt::While { condition, body } => {
-                collect_expr_slice_access(condition, aliases, summaries, param_orders, function_map, out);
-                collect_stmt_slice_access(body, &mut aliases.clone(), summaries, param_orders, function_map, out);
+                collect_expr_slice_access(
+                    condition,
+                    aliases,
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
+                collect_stmt_slice_access(
+                    body,
+                    &mut aliases.clone(),
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
             }
             KernelStmt::Loop { body } => {
-                collect_stmt_slice_access(body, &mut aliases.clone(), summaries, param_orders, function_map, out);
+                collect_stmt_slice_access(
+                    body,
+                    &mut aliases.clone(),
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
             }
             KernelStmt::Break(value) | KernelStmt::Return(value) => {
                 if let Some(value) = value {
-                    collect_expr_slice_access(value, aliases, summaries, param_orders, function_map, out);
+                    collect_expr_slice_access(
+                        value,
+                        aliases,
+                        summaries,
+                        param_orders,
+                        function_map,
+                        out,
+                    );
                 }
             }
             KernelStmt::Expr(expr) => {
-                collect_expr_slice_access(expr, aliases, summaries, param_orders, function_map, out);
+                collect_expr_slice_access(
+                    expr,
+                    aliases,
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
             }
             KernelStmt::Continue => {}
         }
@@ -748,7 +820,9 @@ fn collect_expr_slice_access(
                     match mode {
                         KernelSliceAccessMode::Observe => {}
                         KernelSliceAccessMode::ReadOnly => mark_expr_slice_read(arg, aliases, out),
-                        KernelSliceAccessMode::WriteOnly => mark_expr_slice_write(arg, aliases, out),
+                        KernelSliceAccessMode::WriteOnly => {
+                            mark_expr_slice_write(arg, aliases, out)
+                        }
                         KernelSliceAccessMode::ReadWrite => {
                             mark_expr_slice_read(arg, aliases, out);
                             mark_expr_slice_write(arg, aliases, out);
@@ -757,7 +831,14 @@ fn collect_expr_slice_access(
                 }
             } else {
                 for arg in args {
-                    collect_expr_slice_access(arg, aliases, summaries, param_orders, function_map, out);
+                    collect_expr_slice_access(
+                        arg,
+                        aliases,
+                        summaries,
+                        param_orders,
+                        function_map,
+                        out,
+                    );
                 }
             }
             let _ = function_map;
@@ -813,7 +894,9 @@ fn infer_slice_alias_source(
             if let (Some(params), Some(order)) = (summaries.get(callee), param_orders.get(callee)) {
                 for (arg, param_name) in args.iter().zip(order.iter()) {
                     if params.contains_key(param_name) {
-                        if let Some(owner) = infer_slice_alias_source(arg, aliases, summaries, param_orders) {
+                        if let Some(owner) =
+                            infer_slice_alias_source(arg, aliases, summaries, param_orders)
+                        {
                             return Some(owner);
                         }
                     }
@@ -847,10 +930,7 @@ fn mark_expr_slice_write(
     }
 }
 
-fn kernel_slice_root_name(
-    expr: &KernelExpr,
-    aliases: &BTreeMap<String, String>,
-) -> Option<String> {
+fn kernel_slice_root_name(expr: &KernelExpr, aliases: &BTreeMap<String, String>) -> Option<String> {
     match expr {
         KernelExpr::Ident(name) => aliases.get(name).cloned(),
         KernelExpr::Group(inner) => kernel_slice_root_name(inner, aliases),

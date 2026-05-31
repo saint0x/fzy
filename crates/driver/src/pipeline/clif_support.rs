@@ -1,5 +1,5 @@
-use super::*;
 use super::gpu_kernel_metal::MetalKernelLaunchDescriptor;
+use super::*;
 use anyhow::{anyhow, bail, Result};
 use std::collections::{BTreeMap, HashMap};
 
@@ -187,19 +187,19 @@ pub(super) fn clif_emit_function_cfg(
     forced_return_i32: Option<i32>,
 ) -> Result<()> {
     let mut ctx = ClifLoweringCtx {
-            module,
-            function_ids,
-            function_signatures,
-            string_literal_ids,
-            task_ref_ids,
-            globals,
-            variant_tags,
-            local_types,
-            struct_defs,
-            enum_defs,
-            mutable_globals,
-            gpu_kernel_launch_descriptors: &gpu_kernel_launch_descriptors,
-            current_return_ty,
+        module,
+        function_ids,
+        function_signatures,
+        string_literal_ids,
+        task_ref_ids,
+        globals,
+        variant_tags,
+        local_types,
+        struct_defs,
+        enum_defs,
+        mutable_globals,
+        gpu_kernel_launch_descriptors: &gpu_kernel_launch_descriptors,
+        current_return_ty,
         current_return_array,
         current_return_ptr,
         closures: HashMap::new(),
@@ -1692,9 +1692,10 @@ fn clif_emit_array_argument_parts(
     match arg {
         ast::Expr::Ident(name) => {
             if let Some(binding) = ctx.array_bindings.get(name) {
-                let ptr = builder
-                    .ins()
-                    .stack_addr(pointer_sized_clif_type(), binding.stack_slot, 0);
+                let ptr =
+                    builder
+                        .ins()
+                        .stack_addr(pointer_sized_clif_type(), binding.stack_slot, 0);
                 let len = builder.ins().iconst(types::I32, binding.len as i64);
                 return Ok(Some((
                     ClifValue {
@@ -3518,18 +3519,14 @@ pub(super) fn clif_emit_expr(
                     "u32" => NATIVE_VEC_GET_U32,
                     _ => unreachable!("unsupported native vec element kind"),
                 };
-                let helper_id = ctx
-                    .function_ids
-                    .get(helper_name)
-                    .copied()
-                    .ok_or_else(|| anyhow!("missing native helper signature metadata for `{helper_name}`"))?;
-                let helper_sig = ctx
-                    .function_signatures
-                    .get(helper_name)
-                    .ok_or_else(|| anyhow!("missing native helper signature metadata for `{helper_name}`"))?;
+                let helper_id = ctx.function_ids.get(helper_name).copied().ok_or_else(|| {
+                    anyhow!("missing native helper signature metadata for `{helper_name}`")
+                })?;
+                let helper_sig = ctx.function_signatures.get(helper_name).ok_or_else(|| {
+                    anyhow!("missing native helper signature metadata for `{helper_name}`")
+                })?;
                 let base_handle = clif_emit_expr(builder, ctx, base, locals, next_var)?;
-                let base_handle =
-                    cast_clif_value(builder, base_handle, pointer_sized_clif_type())?;
+                let base_handle = cast_clif_value(builder, base_handle, pointer_sized_clif_type())?;
                 let func_ref = ctx.module.declare_func_in_func(helper_id, builder.func);
                 let call = builder
                     .ins()
@@ -4061,10 +4058,9 @@ pub(super) fn clif_emit_expr(
                             "native backend lowering for `{callee}` currently requires a host array literal or local array binding until general slice ABI lowering lands"
                         );
                     };
-                    let call =
-                        builder
-                            .ins()
-                            .call(func_ref, &[device.value, host_ptr.value, host_len.value]);
+                    let call = builder
+                        .ins()
+                        .call(func_ref, &[device.value, host_ptr.value, host_len.value]);
                     let value = builder.inst_results(call)[0];
                     return Ok(ClifValue {
                         value,
@@ -4084,18 +4080,26 @@ pub(super) fn clif_emit_expr(
                     let descriptor = ctx
                         .gpu_kernel_launch_descriptors
                         .get(kernel_name)
-                        .ok_or_else(|| anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`"))?;
+                        .ok_or_else(|| {
+                            anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`")
+                        })?;
                     let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
                     let kernel_id = ctx
                         .string_literal_ids
                         .get(&descriptor.kernel_name)
                         .copied()
-                        .ok_or_else(|| anyhow!("missing native string literal id for kernel `{kernel_name}`"))?;
+                        .ok_or_else(|| {
+                            anyhow!("missing native string literal id for kernel `{kernel_name}`")
+                        })?;
                     let source_id = ctx
                         .string_literal_ids
                         .get(&descriptor.source)
                         .copied()
-                        .ok_or_else(|| anyhow!("missing native string literal id for Metal source `{kernel_name}`"))?;
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "missing native string literal id for Metal source `{kernel_name}`"
+                            )
+                        })?;
                     let layout_id = ctx
                         .string_literal_ids
                         .get(&descriptor.param_layout)
@@ -4114,8 +4118,7 @@ pub(super) fn clif_emit_expr(
                     ];
                     for arg in args.iter().skip(3) {
                         let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
-                        let lowered =
-                            cast_clif_value(builder, lowered, pointer_sized_clif_type())?;
+                        let lowered = cast_clif_value(builder, lowered, pointer_sized_clif_type())?;
                         values.push(lowered.value);
                     }
                     let call = builder.ins().call(func_ref, &values);
