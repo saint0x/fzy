@@ -5525,6 +5525,7 @@ fn find_line_in_function(
         is_pub: false,
         is_pubext: false,
         is_extern: false,
+        execution_space: ast::ExecutionSpace::Host,
         abi: None,
         ffi_panic: None,
     };

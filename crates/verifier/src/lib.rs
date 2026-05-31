@@ -98,7 +98,8 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             Severity::Error,
             format!("unknown capability: {effect}"),
             Some(
-                "allowed: time, rng, fs, storage, http, proc, mem, thread, log, error".to_string(),
+                "allowed: time, rng, fs, storage, http, proc, mem, thread, log, error, gpu"
+                    .to_string(),
             ),
         ));
     }
@@ -115,6 +116,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             core::Capability::Thread,
             core::Capability::Log,
             core::Capability::Error,
+            core::Capability::Gpu,
         ] {
             if module.effects.contains(disallowed) || module.required_effects.contains(disallowed) {
                 report.diagnostics.push(
@@ -1203,6 +1205,7 @@ mod tests {
             is_unsafe,
             is_async: false,
             is_extern: true,
+            execution_space: ast::ExecutionSpace::Host,
             abi: Some("c".to_string()),
             ffi_panic: None,
             required_capabilities: Vec::new(),
@@ -1221,6 +1224,7 @@ mod tests {
             is_unsafe: false,
             is_async: false,
             is_extern: true,
+            execution_space: ast::ExecutionSpace::Host,
             abi: Some("rpc".to_string()),
             ffi_panic: None,
             required_capabilities: Vec::new(),

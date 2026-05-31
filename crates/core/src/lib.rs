@@ -12,6 +12,7 @@ pub enum Capability {
     Thread,
     Log,
     Error,
+    Gpu,
 }
 
 impl Capability {
@@ -27,6 +28,7 @@ impl Capability {
             "thread" | "threads" => Some(Self::Thread),
             "log" | "logging" => Some(Self::Log),
             "error" | "err" | "errors" => Some(Self::Error),
+            "gpu" => Some(Self::Gpu),
             _ => None,
         }
     }
@@ -43,6 +45,7 @@ impl Capability {
             Self::Thread => "thread",
             Self::Log => "log",
             Self::Error => "error",
+            Self::Gpu => "gpu",
         }
     }
 }
@@ -144,6 +147,7 @@ mod tests {
         assert_eq!(Capability::parse("threads"), Some(Capability::Thread));
         assert_eq!(Capability::parse("log"), Some(Capability::Log));
         assert_eq!(Capability::parse("errors"), Some(Capability::Error));
+        assert_eq!(Capability::parse("gpu"), Some(Capability::Gpu));
         assert_eq!(Capability::parse("unknown"), None);
     }
 

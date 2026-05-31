@@ -1,0 +1,40 @@
+type GpuDevice = i32;
+type GpuBufferF32 = i32;
+type GpuBufferI32 = i32;
+type GpuBufferU32 = i32;
+type GpuSliceF32 = i32;
+type GpuSliceI32 = i32;
+type GpuSliceU32 = i32;
+type GpuEvent = i32;
+type GpuStream = i32;
+
+host fn device_count() -> i32 {
+    return 0
+}
+
+host fn default_device() -> GpuDevice {
+    return 0
+}
+
+host fn alloc_f32(device: GpuDevice, len: i32) -> GpuBufferF32 {
+    discard device
+    return len - len
+}
+
+host fn free(buffer: GpuBufferF32) -> void {
+    discard buffer
+}
+
+device fn global_id_x() -> i32 {
+    return 0
+}
+
+device fn block_dim_x() -> i32 {
+    return 1
+}
+
+device fn barrier() -> void {}
+
+fn sample() -> i32 {
+    return device_count()
+}

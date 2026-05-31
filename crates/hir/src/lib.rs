@@ -15,6 +15,7 @@ pub struct TypedFunction {
     pub is_unsafe: bool,
     pub is_async: bool,
     pub is_extern: bool,
+    pub execution_space: ast::ExecutionSpace,
     pub abi: Option<String>,
     pub ffi_panic: Option<String>,
     pub required_capabilities: Vec<String>,
@@ -588,6 +589,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     is_unsafe: function.is_unsafe,
                     is_async: function.is_async,
                     is_extern: function.is_extern,
+                    execution_space: function.execution_space,
                     abi: function.abi.clone(),
                     ffi_panic: function.ffi_panic.clone(),
                     required_capabilities: Vec::new(),
@@ -609,6 +611,7 @@ pub fn lower(module: &Module) -> TypedModule {
                     is_unsafe: false,
                     is_async: false,
                     is_extern: false,
+                    execution_space: ast::ExecutionSpace::Host,
                     abi: None,
                     ffi_panic: None,
                     required_capabilities: Vec::new(),
@@ -684,6 +687,7 @@ pub fn lower(module: &Module) -> TypedModule {
                         is_unsafe: method.is_unsafe,
                         is_async: method.is_async,
                         is_extern: method.is_extern,
+                        execution_space: method.execution_space,
                         abi: method.abi.clone(),
                         ffi_panic: method.ffi_panic.clone(),
                         required_capabilities: Vec::new(),
@@ -710,6 +714,10 @@ pub fn lower(module: &Module) -> TypedModule {
         {
             function.required_capabilities = entry.required.clone();
         }
+    }
+
+    for detail in analyze_execution_spaces(&typed_functions) {
+        record_type_error(&mut type_errors, &mut type_error_details, detail);
     }
 
     for function in &mut typed_functions {
@@ -4767,6 +4775,9 @@ fn collect_function_caps_and_calls(
                         "error" | "err" | "std.error" => {
                             self.caps.insert("error".to_string());
                         }
+                        "gpu" => {
+                            self.caps.insert("gpu".to_string());
+                        }
                         _ => {}
                     }
                 }
@@ -4784,6 +4795,359 @@ fn collect_function_caps_and_calls(
     for stmt in &function.body {
         collector.visit_stmt(stmt);
     }
+
+    if function.execution_space != ast::ExecutionSpace::Host {
+        caps.remove("gpu");
+    }
+}
+
+fn analyze_execution_spaces(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let function_map = functions
+        .iter()
+        .map(|function| (function.name.as_str(), function))
+        .collect::<BTreeMap<_, _>>();
+
+    for function in functions {
+        validate_execution_space_function_shape(function, &mut violations);
+        for stmt in &function.body {
+            analyze_execution_space_stmt(function, stmt, &function_map, &mut violations);
+        }
+    }
+
+    violations
+}
+
+fn validate_execution_space_function_shape(function: &TypedFunction, violations: &mut Vec<String>) {
+    let execution = function.execution_space;
+    if execution != ast::ExecutionSpace::Host && function.is_async {
+        violations.push(format!(
+            "{} function `{}` cannot be async",
+            execution.as_str(),
+            function.name
+        ));
+    }
+    if execution != ast::ExecutionSpace::Host && function.is_extern {
+        violations.push(format!(
+            "{} function `{}` cannot use an extern ABI boundary",
+            execution.as_str(),
+            function.name
+        ));
+    }
+    if execution == ast::ExecutionSpace::Kernel && function.return_type != Type::Void {
+        violations.push(format!(
+            "kernel function `{}` must return `void`, found `{}`",
+            function.name, function.return_type
+        ));
+    }
+}
+
+fn analyze_execution_space_stmt(
+    function: &TypedFunction,
+    stmt: &Stmt,
+    function_map: &BTreeMap<&str, &TypedFunction>,
+    violations: &mut Vec<String>,
+) {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Return(Some(value))
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Expr(value) => {
+            analyze_execution_space_expr(function, value, function_map, violations);
+        }
+        Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue => {}
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            analyze_execution_space_expr(function, condition, function_map, violations);
+            for stmt in then_body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+            for stmt in else_body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::While { condition, body } => {
+            analyze_execution_space_expr(function, condition, function_map, violations);
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                analyze_execution_space_stmt(function, init, function_map, violations);
+            }
+            if let Some(condition) = condition {
+                analyze_execution_space_expr(function, condition, function_map, violations);
+            }
+            if let Some(step) = step {
+                analyze_execution_space_stmt(function, step, function_map, violations);
+            }
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            analyze_execution_space_expr(function, iterable, function_map, violations);
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::Loop { body } => {
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Stmt::Match { scrutinee, arms } => {
+            analyze_execution_space_expr(function, scrutinee, function_map, violations);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    analyze_execution_space_expr(function, guard, function_map, violations);
+                }
+                analyze_execution_space_expr(function, &arm.value, function_map, violations);
+            }
+        }
+    }
+}
+
+fn analyze_execution_space_expr(
+    function: &TypedFunction,
+    expr: &Expr,
+    function_map: &BTreeMap<&str, &TypedFunction>,
+    violations: &mut Vec<String>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            validate_execution_space_call(function, callee, function_map, violations);
+            for arg in args {
+                analyze_execution_space_expr(function, arg, function_map, violations);
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::FieldAccess { base, .. } => {
+            analyze_execution_space_expr(function, base, function_map, violations);
+        }
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                analyze_execution_space_expr(function, value, function_map, violations);
+            }
+        }
+        Expr::EnumInit { payload, .. } | Expr::Tuple(payload) | Expr::ArrayLiteral(payload) => {
+            for value in payload {
+                analyze_execution_space_expr(function, value, function_map, violations);
+            }
+        }
+        Expr::Closure { body, .. } | Expr::Group(body) | Expr::Discard(body) => {
+            analyze_execution_space_expr(function, body, function_map, violations);
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            analyze_execution_space_expr(function, try_expr, function_map, violations);
+            analyze_execution_space_expr(function, catch_expr, function_map, violations);
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            analyze_execution_space_expr(function, condition, function_map, violations);
+            analyze_execution_space_expr(function, then_expr, function_map, violations);
+            analyze_execution_space_expr(function, else_expr, function_map, violations);
+        }
+        Expr::Match { scrutinee, arms } => {
+            analyze_execution_space_expr(function, scrutinee, function_map, violations);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    analyze_execution_space_expr(function, guard, function_map, violations);
+                }
+                analyze_execution_space_expr(function, &arm.value, function_map, violations);
+            }
+        }
+        Expr::While { condition, body } => {
+            analyze_execution_space_expr(function, condition, function_map, violations);
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                analyze_execution_space_stmt(function, init, function_map, violations);
+            }
+            if let Some(condition) = condition {
+                analyze_execution_space_expr(function, condition, function_map, violations);
+            }
+            if let Some(step) = step {
+                analyze_execution_space_stmt(function, step, function_map, violations);
+            }
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            analyze_execution_space_expr(function, iterable, function_map, violations);
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::Loop { body } => {
+            for stmt in body {
+                analyze_execution_space_stmt(function, stmt, function_map, violations);
+            }
+        }
+        Expr::Return(Some(value)) | Expr::Break(Some(value)) => {
+            analyze_execution_space_expr(function, value, function_map, violations);
+        }
+        Expr::Return(None) | Expr::Break(None) | Expr::Continue => {}
+        Expr::Range { start, end, .. } => {
+            analyze_execution_space_expr(function, start, function_map, violations);
+            analyze_execution_space_expr(function, end, function_map, violations);
+        }
+        Expr::Index { base, index } => {
+            analyze_execution_space_expr(function, base, function_map, violations);
+            analyze_execution_space_expr(function, index, function_map, violations);
+        }
+        Expr::Await(inner) => {
+            if function.execution_space != ast::ExecutionSpace::Host {
+                violations.push(format!(
+                    "{} function `{}` cannot use `await`",
+                    function.execution_space.as_str(),
+                    function.name
+                ));
+            }
+            analyze_execution_space_expr(function, inner, function_map, violations);
+        }
+        Expr::Unary { expr, .. } => {
+            analyze_execution_space_expr(function, expr, function_map, violations);
+        }
+        Expr::Binary { left, right, .. } => {
+            analyze_execution_space_expr(function, left, function_map, violations);
+            analyze_execution_space_expr(function, right, function_map, violations);
+        }
+        Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Char(_)
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Ident(_) => {}
+    }
+}
+
+fn validate_execution_space_call(
+    function: &TypedFunction,
+    callee: &str,
+    function_map: &BTreeMap<&str, &TypedFunction>,
+    violations: &mut Vec<String>,
+) {
+    let caller_space = function.execution_space;
+    if caller_space == ast::ExecutionSpace::Host {
+        if let Some(target) = function_map.get(callee) {
+            if target.execution_space == ast::ExecutionSpace::Kernel {
+                violations.push(format!(
+                    "host function `{}` cannot call kernel function `{}` directly; launch it from a GPU runtime API instead",
+                    function.name, callee
+                ));
+            }
+        }
+        return;
+    }
+
+    if let Some(target) = function_map.get(callee) {
+        let allowed = match caller_space {
+            ast::ExecutionSpace::Pure => target.execution_space == ast::ExecutionSpace::Pure,
+            ast::ExecutionSpace::Device => matches!(
+                target.execution_space,
+                ast::ExecutionSpace::Pure | ast::ExecutionSpace::Device
+            ),
+            ast::ExecutionSpace::Kernel => matches!(
+                target.execution_space,
+                ast::ExecutionSpace::Pure | ast::ExecutionSpace::Device
+            ),
+            ast::ExecutionSpace::Host => true,
+        };
+        if !allowed {
+            violations.push(format!(
+                "{} function `{}` cannot call {} function `{}`",
+                caller_space.as_str(),
+                function.name,
+                target.execution_space.as_str(),
+                callee
+            ));
+        }
+        return;
+    }
+
+    if execution_space_allows_intrinsic_call(caller_space, callee) {
+        return;
+    }
+
+    if caller_space == ast::ExecutionSpace::Pure && callee.starts_with("gpu.") {
+        violations.push(format!(
+            "pure function `{}` cannot call GPU API `{}`",
+            function.name, callee
+        ));
+        return;
+    }
+
+    if callee_looks_host_only(callee) {
+        violations.push(format!(
+            "{} function `{}` calls host-only API `{}`",
+            caller_space.as_str(),
+            function.name,
+            callee
+        ));
+    }
+}
+
+fn execution_space_allows_intrinsic_call(
+    execution_space: ast::ExecutionSpace,
+    callee: &str,
+) -> bool {
+    match execution_space {
+        ast::ExecutionSpace::Host => true,
+        ast::ExecutionSpace::Pure => callee.starts_with("simd."),
+        ast::ExecutionSpace::Device | ast::ExecutionSpace::Kernel => {
+            callee.starts_with("gpu.") || callee.starts_with("simd.")
+        }
+    }
+}
+
+fn callee_looks_host_only(callee: &str) -> bool {
+    callee.starts_with("fs.")
+        || callee.starts_with("http.")
+        || callee.starts_with("proc.")
+        || callee.starts_with("task.")
+        || callee.starts_with("thread.")
+        || callee.starts_with("log.")
+        || callee.starts_with("storage.")
+        || callee.starts_with("json.")
+        || callee.starts_with("list.")
+        || callee.starts_with("map.")
+        || callee.starts_with("error.")
+        || callee.starts_with("alloc.")
+        || callee.starts_with("env.")
 }
 
 fn analyze_ownership(
@@ -20299,6 +20663,47 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
         assert_eq!(typed.entry_return_const_i32, Some(7));
+    }
+
+    #[test]
+    fn execution_space_call_rules_are_enforced() {
+        let source = r#"
+            host fn load() -> i32 { return 1; }
+            pure fn square(x: i32) -> i32 { return x * x; }
+            device fn helper(x: i32) -> i32 { return square(x); }
+            kernel fn launch() -> i32 { return helper(load()); }
+        "#;
+        let module = parser::parse(source, "gpu_rules").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.type_errors > 0);
+        assert!(typed
+            .type_error_details
+            .iter()
+            .any(|detail| detail.contains("kernel function `launch` must return `void`")));
+        assert!(
+            typed.type_error_details.iter().any(|detail| detail
+                .contains("device function `helper` cannot call host function `load`"))
+                || typed.type_error_details.iter().any(|detail| detail
+                    .contains("kernel function `launch` cannot call host function `load`"))
+        );
+    }
+
+    #[test]
+    fn host_gpu_capability_is_inferred() {
+        let source = r#"
+            host fn main() -> i32 {
+                discard gpu.device_count();
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_caps").expect("parse");
+        let typed = lower(&module);
+        let requirement = typed
+            .function_capability_requirements
+            .iter()
+            .find(|entry| entry.function == "main")
+            .expect("main capability requirement");
+        assert!(requirement.required.iter().any(|cap| cap == "gpu"));
     }
 
     #[test]
