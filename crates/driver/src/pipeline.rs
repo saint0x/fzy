@@ -18,6 +18,7 @@ use std::time::UNIX_EPOCH;
 use ast::AstVisitor;
 
 mod clif_support;
+mod gpu_backend;
 mod linker_support;
 mod llvm_support;
 mod native_backend_support;
@@ -30,6 +31,10 @@ mod policy_artifacts;
 use self::clif_support::{
     ast_signature_type_to_clif_type, clif_array_abi_from_type, clif_emit_function_cfg,
     lower_cranelift_ir, pointer_sized_clif_type, variant_tag_for_key,
+};
+use self::gpu_backend::{
+    fir_module_uses_gpu, gpu_backend_execution_diagnostics, module_uses_gpu,
+    resolve_gpu_backend,
 };
 use self::linker_support::{
     apply_extra_linker_args, apply_manifest_link_args, apply_pgo_flags,
@@ -56,13 +61,14 @@ use self::native_runtime_support::{
     collect_async_c_exports, collect_extern_c_imports, collect_used_native_data_plane_imports,
     collect_used_native_runtime_imports, compile_runtime_shim_object, ensure_native_runtime_shim,
     is_extern_c_abi_function, is_extern_c_import_decl, native_link_symbol_for_function,
-    native_runtime_import_contract_errors,
+    native_runtime_import_contract_errors, native_runtime_shim_uses_objc,
 };
 use self::native_runtime_tables::{
     native_data_plane_import_for_callee, native_runtime_contracts,
     native_runtime_import_for_callee, NativeRuntimeImport, NATIVE_DATA_PLANE_IMPORTS,
     NATIVE_RUNTIME_IMPORTS,
 };
+pub(crate) use self::gpu_backend::gpu_backend_report_json;
 
 #[derive(Clone, Copy)]
 struct LocalBinding {
@@ -267,9 +273,11 @@ pub fn compile_file_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
     let (typed, fir) = lower_fir_cached(&parsed);
+    let gpu_backend = resolve_gpu_backend(module_uses_gpu(&typed), None)?;
     policy_artifacts::write_safety_artifacts(
         &resolved.project_root,
         &parsed,
+        &typed,
         &fir,
         resolved.manifest.as_ref(),
     )?;
@@ -294,6 +302,7 @@ pub fn compile_file_with_backend(
     let contract_diagnostics =
         compile_time_contract_diagnostics(&parsed.module, &fir, checks_enabled, profile);
     let kernel_ir_diagnostics = kernel_ir_diagnostics(&typed);
+    let gpu_backend_diagnostics = gpu_backend_execution_diagnostics(&typed, gpu_backend);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -309,11 +318,15 @@ pub fn compile_file_with_backend(
     let has_kernel_ir_errors = kernel_ir_diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_gpu_backend_errors = gpu_backend_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let status = if has_experimental_errors
         || has_native_lowerability_errors
         || has_backend_risks
         || has_contract_errors
         || has_kernel_ir_errors
+        || has_gpu_backend_errors
         || has_verifier_errors
     {
         "error"
@@ -326,6 +339,7 @@ pub fn compile_file_with_backend(
     diagnostic_details.extend(report.diagnostics);
     diagnostic_details.extend(contract_diagnostics);
     diagnostic_details.extend(kernel_ir_diagnostics);
+    diagnostic_details.extend(gpu_backend_diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let output = if status == "ok" {
         Some(emit_native_artifact(
@@ -371,9 +385,11 @@ pub fn compile_library_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
     let (typed, fir) = lower_fir_cached(&parsed);
+    let gpu_backend = resolve_gpu_backend(module_uses_gpu(&typed), None)?;
     policy_artifacts::write_safety_artifacts(
         &resolved.project_root,
         &parsed,
+        &typed,
         &fir,
         resolved.manifest.as_ref(),
     )?;
@@ -398,6 +414,7 @@ pub fn compile_library_with_backend(
     let contract_diagnostics =
         compile_time_contract_diagnostics(&parsed.module, &fir, checks_enabled, profile);
     let kernel_ir_diagnostics = kernel_ir_diagnostics(&typed);
+    let gpu_backend_diagnostics = gpu_backend_execution_diagnostics(&typed, gpu_backend);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -413,11 +430,15 @@ pub fn compile_library_with_backend(
     let has_kernel_ir_errors = kernel_ir_diagnostics
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
+    let has_gpu_backend_errors = gpu_backend_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let status = if has_experimental_errors
         || has_native_lowerability_errors
         || has_backend_risks
         || has_contract_errors
         || has_kernel_ir_errors
+        || has_gpu_backend_errors
         || has_verifier_errors
     {
         "error"
@@ -430,6 +451,7 @@ pub fn compile_library_with_backend(
     diagnostic_details.extend(report.diagnostics);
     diagnostic_details.extend(contract_diagnostics);
     diagnostic_details.extend(kernel_ir_diagnostics);
+    diagnostic_details.extend(gpu_backend_diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let (static_lib, shared_lib) = if status == "ok" {
         emit_native_libraries(
@@ -12259,6 +12281,21 @@ fn hex_encode(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
+fn runtime_shim_language_arg(fir: &fir::FirModule) -> &'static str {
+    if native_runtime_shim_uses_objc(fir) {
+        "objective-c"
+    } else {
+        "c"
+    }
+}
+
+fn apply_gpu_backend_link_args(cmd: &mut Command, fir: &fir::FirModule) {
+    if cfg!(target_vendor = "apple") && fir_module_uses_gpu(fir) {
+        cmd.arg("-framework").arg("Metal");
+        cmd.arg("-framework").arg("Foundation");
+    }
+}
+
 fn emit_native_artifact(
     fir: &fir::FirModule,
     project_root: &Path,
@@ -12370,7 +12407,7 @@ fn emit_native_libraries_llvm(
         let mut shim_cmd = Command::new(tool);
         shim_cmd
             .arg("-x")
-            .arg("c")
+            .arg(runtime_shim_language_arg(fir))
             .arg(&runtime_shim_path)
             .arg("-c")
             .arg("-fPIC")
@@ -12408,6 +12445,7 @@ fn emit_native_libraries_llvm(
     link_shared_library(
         &shared_path,
         &[obj_path.as_path(), shim_obj_path.as_path()],
+        fir,
         manifest,
         allow_undefined,
     )?;
@@ -12665,7 +12703,13 @@ fn emit_native_libraries_cranelift(
         &spawn_task_symbols,
         &async_exports,
     )?;
-    compile_runtime_shim_object(&runtime_shim_path, &shim_obj_path, profile, manifest)?;
+    compile_runtime_shim_object(
+        &runtime_shim_path,
+        &shim_obj_path,
+        profile,
+        manifest,
+        native_runtime_shim_uses_objc(fir),
+    )?;
     create_static_archive(
         &static_path,
         &[object_path.as_path(), shim_obj_path.as_path()],
@@ -12674,6 +12718,7 @@ fn emit_native_libraries_cranelift(
     link_shared_library(
         &shared_path,
         &[object_path.as_path(), shim_obj_path.as_path()],
+        fir,
         manifest,
         allow_undefined,
     )?;
@@ -12713,6 +12758,7 @@ fn create_static_archive(output: &Path, objects: &[&Path]) -> Result<()> {
 fn link_shared_library(
     output: &Path,
     objects: &[&Path],
+    fir: &fir::FirModule,
     manifest: Option<&manifest::Manifest>,
     allow_undefined: bool,
 ) -> Result<()> {
@@ -12736,6 +12782,7 @@ fn link_shared_library(
         }
         cmd.arg("-o").arg(output);
         apply_target_link_flags(&mut cmd);
+        apply_gpu_backend_link_args(&mut cmd, fir);
         apply_manifest_link_args(&mut cmd, manifest);
         apply_extra_linker_args(&mut cmd);
         apply_pgo_flags(&mut cmd)?;
@@ -12834,11 +12881,12 @@ fn emit_native_artifact_llvm(
             .arg("ir")
             .arg(&ll_path)
             .arg("-x")
-            .arg("c")
+            .arg(runtime_shim_language_arg(fir))
             .arg(&runtime_shim_path)
             .arg("-o")
             .arg(&bin_path);
         apply_target_link_flags(&mut cmd);
+        apply_gpu_backend_link_args(&mut cmd, fir);
         apply_manifest_link_args(&mut cmd, manifest);
         apply_profile_optimization_flags(&mut cmd, profile, manifest);
         apply_extra_linker_args(&mut cmd);
@@ -13119,11 +13167,14 @@ fn emit_native_artifact_cranelift(
     for tool in candidates {
         let mut cmd = Command::new(&tool);
         cmd.arg(&object_path)
+            .arg("-x")
+            .arg(runtime_shim_language_arg(fir))
             .arg(&runtime_shim_path)
             .arg("-o")
             .arg(&bin_path)
             .arg("-lpthread");
         apply_target_link_flags(&mut cmd);
+        apply_gpu_backend_link_args(&mut cmd, fir);
         apply_manifest_link_args(&mut cmd, manifest);
         // Object code is already generated at selected Cranelift optimization level.
         apply_extra_linker_args(&mut cmd);

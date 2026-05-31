@@ -1,6 +1,7 @@
 use super::super::super::*;
 use super::super::ffi_exports::NativeAsyncExport;
 use super::core::runtime_shim_section_core;
+use super::gpu::runtime_shim_section_gpu;
 use super::http::runtime_shim_section_http;
 use super::proc::runtime_shim_section_proc;
 use super::services::runtime_shim_section_services;
@@ -213,6 +214,7 @@ extern char** environ;
         count
     ));
     c.push_str(runtime_shim_section_core());
+    c.push_str(runtime_shim_section_gpu());
     c.push_str(runtime_shim_section_http());
     c.push_str(runtime_shim_section_services());
     c.push_str(runtime_shim_section_proc());

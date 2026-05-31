@@ -17,9 +17,9 @@ use sha2::{Digest, Sha256};
 use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
-    compile_file_with_backend, compile_library_with_backend, emit_ir, lower_fir_cached,
-    parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact,
-    Output,
+    compile_file_with_backend, compile_library_with_backend, emit_ir, gpu_backend_report_json,
+    lower_fir_cached, parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile,
+    LibraryArtifact, Output,
 };
 
 mod interop;
@@ -4452,7 +4452,8 @@ fn backend_capability_report() -> serde_json::Value {
                     "catalogKey": "native.async_unsafe_function_unsupported"
                 }
             ]
-        }
+        },
+        "gpuAdapters": gpu_backend_report_json()
     })
 }
 
@@ -8391,6 +8392,7 @@ fn gpu_trace_events_for_callee(callee: &str) -> Option<&'static [(&'static str, 
         "gpu.default_device" => &[("host", "gpu.device_select")],
         "gpu.alloc_f32" | "gpu.alloc_i32" | "gpu.alloc_u32" => &[("host", "gpu.alloc")],
         "gpu.free" => &[("host", "gpu.free")],
+        "gpu.slice" => &[("host", "gpu.slice")],
         "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32" => &[("host", "gpu.upload")],
         "gpu.download_f32" | "gpu.download_i32" | "gpu.download_u32" => &[("host", "gpu.download")],
         "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4" => {
@@ -17147,6 +17149,7 @@ fn main() -> i32 {
         assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.alloc\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.free\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.slice\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_launch\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.event_wait\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_complete\""));
@@ -17212,6 +17215,7 @@ fn main() -> i32 {
             std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
                 .expect("native trace should be written");
         assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.slice\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_launch\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.event_wait\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_complete\""));

@@ -3530,6 +3530,17 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                     llvm_pointer_int_type()
                 );
             }
+            "gpu.device_memory_bytes" => {
+                let _ = writeln!(&mut out, "declare i64 @{}(i32)", import.symbol);
+            }
+            "gpu.slice" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare {} @{}(i32, i32, i32)",
+                    llvm_pointer_int_type(),
+                    import.symbol
+                );
+            }
             _ => {
                 let mut params = String::new();
                 for index in 0..import.arity {

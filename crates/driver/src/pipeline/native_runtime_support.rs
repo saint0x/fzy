@@ -14,4 +14,6 @@ pub(super) use self::import_usage::{
 };
 #[cfg(test)]
 pub(super) use self::runtime_shim::render_native_runtime_shim;
-pub(super) use self::runtime_shim::{compile_runtime_shim_object, ensure_native_runtime_shim};
+pub(super) use self::runtime_shim::{
+    compile_runtime_shim_object, ensure_native_runtime_shim, native_runtime_shim_uses_objc,
+};

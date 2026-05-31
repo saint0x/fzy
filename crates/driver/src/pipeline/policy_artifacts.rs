@@ -7,6 +7,7 @@ use super::*;
 pub(super) fn write_safety_artifacts(
     project_root: &Path,
     parsed: &ParsedProgram,
+    typed: &hir::TypedModule,
     fir: &fir::FirModule,
     manifest: Option<&manifest::Manifest>,
 ) -> Result<()> {
@@ -120,6 +121,28 @@ pub(super) fn write_safety_artifacts(
         format!(
             "failed writing {}",
             out_dir.join("handle-contracts.json").display()
+        )
+    })?;
+
+    let gpu_kernel_package_json = build_gpu_kernel_package_json(typed);
+    std::fs::write(
+        out_dir.join("gpu-kernel-package.json"),
+        serde_json::to_vec_pretty(&gpu_kernel_package_json)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("gpu-kernel-package.json").display()
+        )
+    })?;
+    std::fs::write(
+        out_dir.join("gpu-kernel-package.md"),
+        render_gpu_kernel_package_markdown(&gpu_kernel_package_json),
+    )
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("gpu-kernel-package.md").display()
         )
     })?;
 
@@ -309,6 +332,8 @@ fn safety_artifact_names() -> &'static [&'static str] {
         "native-runtime-contracts.json",
         "native-runtime-contracts.md",
         "handle-contracts.json",
+        "gpu-kernel-package.json",
+        "gpu-kernel-package.md",
         "language-policy.json",
         "language-policy.md",
         "release-policy.json",
@@ -316,6 +341,163 @@ fn safety_artifact_names() -> &'static [&'static str] {
         "stdlib-capability-policy.json",
         "stdlib-capability-policy.md",
     ]
+}
+
+fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value {
+    match kernel_ir::lower(typed) {
+        Ok(kernel_module) => {
+            let rendered = kernel_ir::render(&kernel_module);
+            let functions = kernel_module
+                .functions
+                .iter()
+                .map(|function| {
+                    serde_json::json!({
+                        "name": function.name,
+                        "executionSpace": function.execution_space.as_str(),
+                        "params": function.params.iter().map(|param| {
+                            serde_json::json!({
+                                "name": param.name,
+                                "type": param.ty.to_string(),
+                            })
+                        }).collect::<Vec<_>>(),
+                        "returnType": function.return_type.to_string(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "schemaVersion": "fozzylang.gpu_kernel_package.v1",
+                "versions": compatibility_versions_json(),
+                "status": if kernel_module.functions.is_empty() { "empty" } else { "ok" },
+                "module": kernel_module.name,
+                "kernels": kernel_module.kernels,
+                "functionCount": functions.len(),
+                "functions": functions,
+                "backendNeutralAbi": {
+                    "packageFormat": "kernel_ir",
+                    "kernelIdentity": "function_name",
+                    "launchPacket": {
+                        "gridDimensions": ["x"],
+                        "blockDimensions": ["x"],
+                        "argumentEncoding": "fzy_native_scalar_and_handle_abi",
+                        "sharedArgumentHandles": ["GpuDevice", "GpuBuffer", "GpuSlice", "GpuEvent"],
+                    },
+                },
+                "renderedKernelIr": rendered,
+            })
+        }
+        Err(diagnostics) => serde_json::json!({
+            "schemaVersion": "fozzylang.gpu_kernel_package.v1",
+            "versions": compatibility_versions_json(),
+            "status": "error",
+            "module": typed.name,
+            "kernels": [],
+            "functionCount": 0,
+            "functions": [],
+            "backendNeutralAbi": {
+                "packageFormat": "kernel_ir",
+                "kernelIdentity": "function_name",
+                "launchPacket": {
+                    "gridDimensions": ["x"],
+                    "blockDimensions": ["x"],
+                    "argumentEncoding": "fzy_native_scalar_and_handle_abi",
+                    "sharedArgumentHandles": ["GpuDevice", "GpuBuffer", "GpuSlice", "GpuEvent"],
+                },
+            },
+            "renderedKernelIr": "",
+            "diagnostics": diagnostics
+                .into_iter()
+                .map(|diagnostic| {
+                    serde_json::json!({
+                        "severity": format!("{:?}", diagnostic.severity),
+                        "message": diagnostic.message,
+                        "help": diagnostic.help,
+                        "catalogKey": diagnostic.catalog_key,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }),
+    }
+}
+
+fn render_gpu_kernel_package_markdown(value: &serde_json::Value) -> String {
+    let mut out = String::from("# GPU Kernel Package\n\n");
+    out.push_str(&format!(
+        "- Schema: `{}`\n- Status: `{}`\n- Module: `{}`\n- Kernels: `{}`\n- Functions: `{}`\n\n",
+        value["schemaVersion"].as_str().unwrap_or("unknown"),
+        value["status"].as_str().unwrap_or("unknown"),
+        value["module"].as_str().unwrap_or("?"),
+        value["kernels"].as_array().map(|items| items.len()).unwrap_or(0),
+        value["functionCount"].as_u64().unwrap_or(0),
+    ));
+    out.push_str("## Launch ABI\n\n");
+    out.push_str(&format!(
+        "- Package format: `{}`\n- Kernel identity: `{}`\n- Grid dimensions: `{}`\n- Block dimensions: `{}`\n- Argument encoding: `{}`\n\n",
+        value["backendNeutralAbi"]["packageFormat"].as_str().unwrap_or("?"),
+        value["backendNeutralAbi"]["kernelIdentity"].as_str().unwrap_or("?"),
+        value["backendNeutralAbi"]["launchPacket"]["gridDimensions"]
+            .as_array()
+            .map(|items| items.iter().filter_map(|item| item.as_str()).collect::<Vec<_>>().join(", "))
+            .unwrap_or_default(),
+        value["backendNeutralAbi"]["launchPacket"]["blockDimensions"]
+            .as_array()
+            .map(|items| items.iter().filter_map(|item| item.as_str()).collect::<Vec<_>>().join(", "))
+            .unwrap_or_default(),
+        value["backendNeutralAbi"]["launchPacket"]["argumentEncoding"]
+            .as_str()
+            .unwrap_or("?"),
+    ));
+    out.push_str("## Functions\n\n");
+    out.push_str("| Function | Space | Params | Return |\n|---|---|---|---|\n");
+    if let Some(functions) = value["functions"].as_array() {
+        for function in functions {
+            let params = function["params"]
+                .as_array()
+                .map(|items| {
+                    items.iter()
+                        .map(|item| {
+                            format!(
+                                "{}: {}",
+                                item["name"].as_str().unwrap_or("?"),
+                                item["type"].as_str().unwrap_or("?")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "| `{}` | `{}` | `{}` | `{}` |\n",
+                function["name"].as_str().unwrap_or("?"),
+                function["executionSpace"].as_str().unwrap_or("?"),
+                params,
+                function["returnType"].as_str().unwrap_or("?"),
+            ));
+        }
+    }
+    if let Some(diagnostics) = value["diagnostics"].as_array() {
+        out.push_str("\n## Diagnostics\n\n");
+        if diagnostics.is_empty() {
+            out.push_str("_No diagnostics._\n");
+        } else {
+            for diagnostic in diagnostics {
+                out.push_str(&format!(
+                    "- `{}`: {}\n",
+                    diagnostic["severity"].as_str().unwrap_or("unknown"),
+                    diagnostic["message"].as_str().unwrap_or("missing"),
+                ));
+            }
+        }
+    }
+    let rendered = value["renderedKernelIr"].as_str().unwrap_or_default();
+    if !rendered.is_empty() {
+        out.push_str("\n## Rendered Kernel IR\n\n```text\n");
+        out.push_str(rendered);
+        if !rendered.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("```\n");
+    }
+    out
 }
 
 fn build_language_policy_json(manifest: Option<&manifest::Manifest>) -> serde_json::Value {

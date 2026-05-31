@@ -134,6 +134,8 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         "native-runtime-contracts.json",
         "native-runtime-contracts.md",
         "handle-contracts.json",
+        "gpu-kernel-package.json",
+        "gpu-kernel-package.md",
         "language-policy.json",
         "language-policy.md",
         "release-policy.json",
@@ -171,6 +173,13 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     let handle_contracts = std::fs::read_to_string(root.join(".fz/handle-contracts.json"))
         .expect("handle contracts should exist");
     assert!(handle_contracts.contains("\"name\": \"HttpHandle\""));
+    let gpu_kernel_package = std::fs::read_to_string(root.join(".fz/gpu-kernel-package.json"))
+        .expect("gpu kernel package should exist");
+    assert!(gpu_kernel_package.contains("\"schemaVersion\": \"fozzylang.gpu_kernel_package.v1\""));
+    let gpu_kernel_package_md =
+        std::fs::read_to_string(root.join(".fz/gpu-kernel-package.md"))
+            .expect("gpu kernel package markdown should exist");
+    assert!(gpu_kernel_package_md.contains("# GPU Kernel Package"));
 
     let language_policy: serde_json::Value = serde_json::from_slice(
         &std::fs::read(root.join(".fz/language-policy.json"))
@@ -7781,6 +7790,137 @@ fn verify_accepts_runtime_and_dotted_native_calls() {
         .contains("native backend cannot execute unresolved call")));
 
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_gpu_surface_stays_backend_neutral_before_live_adapter_lands() {
+    let file_name = format!(
+        "fozzylang-gpu-verify-neutral-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.gpu;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 4)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 4)\n    defer gpu.free(output)\n    let event = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 4), gpu.slice(output, 0, 4), 4)\n    gpu.wait(event)\n    return 0\n}\n",
+    )
+    .expect("temp source should be written");
+
+    let output = verify_file(&path).expect("verify should run");
+    assert!(
+        !output.diagnostic_details.iter().any(|diag| diag
+            .message
+            .contains("gpu backend `metal` is declared in the architecture but not yet executable")),
+        "verify should stay backend-neutral, got {:?}",
+        output
+            .diagnostic_details
+            .iter()
+            .map(|diag| diag.message.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !output.diagnostic_details.iter().any(|diag| diag
+            .message
+            .contains("native backend cannot execute unresolved call `gpu.")),
+        "verify should not regress to unresolved GPU call diagnostics, got {:?}",
+        output
+            .diagnostic_details
+            .iter()
+            .map(|diag| diag.message.clone())
+            .collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn native_build_reports_unsupported_gpu_execution_ops_until_launch_path_lands() {
+    let project_name = format!(
+        "fozzylang-gpu-build-declared-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"gpu_build_declared\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_build_declared\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.gpu;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 4)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 4)\n    defer gpu.free(output)\n    let event = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 4), gpu.slice(output, 0, 4), 4)\n    gpu.wait(event)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Dev, None)
+        .expect("gpu build should return artifact diagnostics");
+    assert_eq!(artifact.status, "error");
+    assert!(
+        artifact.diagnostic_details.iter().any(|diag| diag
+            .message
+            .contains("gpu backend `metal` does not yet execute these GPU operations")),
+        "expected unsupported GPU operation diagnostic, got {:?}",
+        artifact
+            .diagnostic_details
+            .iter()
+            .map(|diag| diag.message.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !artifact.diagnostic_details.iter().any(|diag| diag
+            .message
+            .contains("native backend cannot execute unresolved call `gpu.")),
+        "GPU build should no longer fail as an unresolved native call, got {:?}",
+        artifact
+            .diagnostic_details
+            .iter()
+            .map(|diag| diag.message.clone())
+            .collect::<Vec<_>>()
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn native_build_and_run_metal_host_gpu_lifecycle_program() {
+    let project_name = format!(
+        "fozzylang-gpu-metal-host-lifecycle-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"gpu_metal_host_lifecycle\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_metal_host_lifecycle\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.gpu;\nhost fn main() -> i32 {\n    let count = gpu.device_count()\n    if count < 1 {\n        return 11\n    }\n    let dev = gpu.default_device()\n    let name = gpu.device_name(dev)\n    let bytes = gpu.device_memory_bytes(dev)\n    let zero: i64 = 0\n    if str.len(name) <= 0 {\n        return 12\n    }\n    if bytes <= zero {\n        return 13\n    }\n    let buf = gpu.alloc_f32(dev, 16)\n    let window = gpu.slice(buf, 4, 8)\n    discard window\n    gpu.free(buf)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Dev, None)
+        .expect("metal host lifecycle build should succeed");
+    assert_eq!(artifact.status, "ok");
+    let exit = run_native_exit(
+        artifact
+            .output
+            .as_deref()
+            .expect("metal host lifecycle output should exist"),
+    );
+    assert_eq!(exit, 0);
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 
 use super::super::super::*;
 use super::super::ffi_exports::NativeAsyncExport;
+use super::super::super::gpu_backend::fir_module_uses_gpu;
 use super::render::render_native_runtime_shim;
 
 pub(crate) fn ensure_native_runtime_shim(
@@ -55,13 +56,14 @@ pub(crate) fn compile_runtime_shim_object(
     out_object: &Path,
     profile: BuildProfile,
     manifest: Option<&manifest::Manifest>,
+    use_objc: bool,
 ) -> Result<()> {
     let candidates = linker_candidates();
     let mut last_error = None;
     for tool in candidates {
         let mut cmd = Command::new(&tool);
         cmd.arg("-x")
-            .arg("c")
+            .arg(if use_objc { "objective-c" } else { "c" })
             .arg(runtime_shim_path)
             .arg("-c")
             .arg("-fPIC")
@@ -88,4 +90,8 @@ pub(crate) fn compile_runtime_shim_object(
         "failed to compile runtime shim object: {}",
         last_error.unwrap_or_else(|| "unknown compiler error".to_string())
     ))
+}
+
+pub(crate) fn native_runtime_shim_uses_objc(fir: &fir::FirModule) -> bool {
+    cfg!(target_vendor = "apple") && fir_module_uses_gpu(fir)
 }
