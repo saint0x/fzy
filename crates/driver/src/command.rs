@@ -4748,6 +4748,7 @@ struct UnsafeEntry {
     reason: Option<String>,
     invariant: Option<String>,
     owner: Option<String>,
+    owner_id: Option<String>,
     scope: Option<String>,
     risk_class: Option<String>,
     proof_ref: Option<String>,
@@ -4781,9 +4782,23 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
             entry.reason.as_deref().is_none_or(str::is_empty)
                 || entry.invariant.as_deref().is_none_or(str::is_empty)
                 || entry.owner.as_deref().is_none_or(str::is_empty)
+                || entry.owner_id.as_deref().is_none_or(str::is_empty)
                 || entry.scope.as_deref().is_none_or(str::is_empty)
                 || entry.risk_class.as_deref().is_none_or(str::is_empty)
                 || entry.proof_ref.as_deref().is_none_or(str::is_empty)
+        })
+        .count();
+    let invalid_owner_id_count = entries
+        .iter()
+        .filter(|entry| {
+            entry.owner_id.as_deref().is_some_and(|value| {
+                !value.trim().is_empty()
+                    && !unsafe_owner_id_valid(
+                        entry.function.as_str(),
+                        entry.owner.as_deref().unwrap_or_default(),
+                        value,
+                    )
+            })
         })
         .count();
     let invalid_proof_ref_count = entries
@@ -4840,11 +4855,12 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
         });
     let strict_unsafe_audit = strict_unsafe_audit_for_projects(&project_roots);
     let payload = serde_json::json!({
-        "schemaVersion": "fozzylang.unsafe_map.v2",
+        "schemaVersion": "fozzylang.unsafe_map.v3",
         "workspaceMode": workspace,
         "projects": project_roots.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
         "entries": entries,
         "missingContractCount": missing_contract_count,
+        "invalidOwnerIdCount": invalid_owner_id_count,
         "invalidProofRefCount": invalid_proof_ref_count,
         "unsafeContextViolationCount": unsafe_context_violations,
         "strictUnsafeAudit": strict_unsafe_audit,
@@ -4890,14 +4906,15 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
         );
     }
     markdown.push_str(&format!(
-        "- Entries: {}\n- Contract gaps: {}\n- Invalid proof refs: {}\n- Unsafe context violations: {}\n\n",
+        "- Entries: {}\n- Contract gaps: {}\n- Invalid owner IDs: {}\n- Invalid proof refs: {}\n- Unsafe context violations: {}\n\n",
         entry_count,
         missing_contract_count,
+        invalid_owner_id_count,
         invalid_proof_ref_count,
         unsafe_context_violations
     ));
     markdown.push_str(
-        "| Site ID | Kind | Function | Snippet | Reason | Owner | Risk | Proof |\n|---|---|---|---|---|---|---|---|\n",
+        "| Site ID | Kind | Function | Snippet | Reason | Owner | Owner ID | Invariant | Scope | Risk | Proof |\n|---|---|---|---|---|---|---|---|---|---|---|\n",
     );
     if let Some(entries) = payload["entries"].as_array() {
         for entry in entries {
@@ -4908,10 +4925,13 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
             let snippet = entry["snippet"].as_str().unwrap_or("?");
             let reason = entry["reason"].as_str().unwrap_or("contract missing");
             let owner = entry["owner"].as_str().unwrap_or("contract missing");
+            let owner_id = entry["owner_id"].as_str().unwrap_or("contract missing");
+            let invariant = entry["invariant"].as_str().unwrap_or("contract missing");
+            let scope = entry["scope"].as_str().unwrap_or("contract missing");
             let risk = entry["risk_class"].as_str().unwrap_or("contract missing");
             let proof = entry["proof_ref"].as_str().unwrap_or("contract missing");
             markdown.push_str(&format!(
-                "| `{site_id}` | {kind} | {function}:{line} | `{snippet}` | {reason} | {owner} | {risk} | `{proof}` |\n"
+                "| `{site_id}` | {kind} | {function}:{line} | `{snippet}` | {reason} | {owner} | `{owner_id}` | `{invariant}` | `{scope}` | {risk} | `{proof}` |\n"
             ));
         }
     }
@@ -4933,12 +4953,14 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
     })?;
     if strict_unsafe_audit
         && (missing_contract_count > 0
+            || invalid_owner_id_count > 0
             || invalid_proof_ref_count > 0
             || unsafe_context_violations > 0)
     {
         bail!(
-            "strict unsafe audit failed (missing={}, invalid_proof_ref={}, context_violations={}); map={}",
+            "strict unsafe audit failed (missing={}, invalid_owner_id={}, invalid_proof_ref={}, context_violations={}); map={}",
             missing_contract_count,
+            invalid_owner_id_count,
             invalid_proof_ref_count,
             unsafe_context_violations,
             unsafe_map.display()
@@ -4973,6 +4995,7 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
             ("docs_json", unsafe_docs_json.display().to_string()),
             ("docs_md", unsafe_docs_md.display().to_string()),
             ("docs_html", unsafe_docs_html.display().to_string()),
+            ("invalid_owner_id", invalid_owner_id_count.to_string()),
         ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
@@ -4984,6 +5007,7 @@ fn audit_unsafe_command(path: &Path, workspace: bool, format: Format) -> Result<
             "docsMarkdown": unsafe_docs_md.display().to_string(),
             "docsHtml": unsafe_docs_html.display().to_string(),
             "missingContractCount": missing_contract_count,
+            "invalidOwnerIdCount": invalid_owner_id_count,
             "invalidProofRefCount": invalid_proof_ref_count,
             "unsafeContextViolationCount": unsafe_context_violations,
             "strictUnsafeAudit": strict_unsafe_audit,
@@ -5053,6 +5077,16 @@ fn audit_ffi_command(path: &Path, format: Format) -> Result<String> {
         .as_array()
         .map(|items| items.len())
         .unwrap_or(0);
+    let pointer_contract_violation_count = payload["pointerContractViolationCount"]
+        .as_u64()
+        .unwrap_or(0);
+    let callback_context_anchor_violation_count = payload["callbackContextAnchorViolationCount"]
+        .as_u64()
+        .unwrap_or(0);
+    let ffi_stable_type_violation_count =
+        payload["ffiStableTypeViolationCount"].as_u64().unwrap_or(0);
+    let async_import_violation_count = payload["asyncImportViolationCount"].as_u64().unwrap_or(0);
+    let missing_panic_boundary_count = payload["missingPanicBoundaryCount"].as_u64().unwrap_or(0);
     match format {
         Format::Text => Ok(render_text_fields(&[
             ("status", "ok".to_string()),
@@ -5060,6 +5094,26 @@ fn audit_ffi_command(path: &Path, format: Format) -> Result<String> {
             ("profile", "strict".to_string()),
             ("imports", import_count.to_string()),
             ("exports", export_count.to_string()),
+            (
+                "pointer_contract_violations",
+                pointer_contract_violation_count.to_string(),
+            ),
+            (
+                "callback_anchor_violations",
+                callback_context_anchor_violation_count.to_string(),
+            ),
+            (
+                "ffi_stable_type_violations",
+                ffi_stable_type_violation_count.to_string(),
+            ),
+            (
+                "async_import_violations",
+                async_import_violation_count.to_string(),
+            ),
+            (
+                "missing_panic_boundary_declarations",
+                missing_panic_boundary_count.to_string(),
+            ),
             ("json", json_path.display().to_string()),
             ("markdown", md_path.display().to_string()),
         ])),
@@ -5071,6 +5125,11 @@ fn audit_ffi_command(path: &Path, format: Format) -> Result<String> {
             "markdown": md_path.display().to_string(),
             "imports": import_count,
             "exports": export_count,
+            "pointerContractViolationCount": pointer_contract_violation_count,
+            "callbackContextAnchorViolationCount": callback_context_anchor_violation_count,
+            "ffiStableTypeViolationCount": ffi_stable_type_violation_count,
+            "asyncImportViolationCount": async_import_violation_count,
+            "missingPanicBoundaryCount": missing_panic_boundary_count,
             "report": payload,
         })
         .to_string()),
@@ -5107,6 +5166,16 @@ fn proof_ref_machine_linkable(value: &str) -> bool {
         "trace://", "test://", "rfc://", "gate://", "run://", "ci://",
     ];
     schemes.iter().any(|scheme| value.starts_with(scheme))
+}
+
+fn unsafe_owner_id_valid(function_name: &str, owner: &str, owner_id: &str) -> bool {
+    let function_name = function_name.trim();
+    let owner = owner.trim();
+    let owner_id = owner_id.trim();
+    if function_name.is_empty() || owner.is_empty() || owner_id.is_empty() {
+        return false;
+    }
+    owner_id == format!("owner::{function_name}::{owner}")
 }
 
 fn proof_ref_valid(value: &str) -> bool {
@@ -5175,6 +5244,10 @@ fn generated_unsafe_contract(
         "memory".to_string()
     };
     (reason, invariant, owner.to_string(), scope, risk_class)
+}
+
+fn generated_unsafe_owner_id(function_name: &str, owner: &str) -> String {
+    format!("owner::{function_name}::{owner}")
 }
 
 fn unsafe_site_id(
@@ -5261,6 +5334,7 @@ fn collect_semantic_unsafe_entries(
                 &site_id,
                 &format!("gate://compiler-generated/{}/unsafe_fn", function.name),
             );
+            let owner_id = generated_unsafe_owner_id(&function.name, &owner);
             entries.push(UnsafeEntry {
                 site_id,
                 kind: "unsafe_fn".to_string(),
@@ -5272,6 +5346,7 @@ fn collect_semantic_unsafe_entries(
                 reason: Some(reason),
                 invariant: Some(invariant),
                 owner: Some(owner),
+                owner_id: Some(owner_id),
                 scope: Some(scope),
                 risk_class: Some(risk_class),
                 proof_ref: Some(proof_ref),
@@ -5293,6 +5368,7 @@ fn collect_semantic_unsafe_entries(
                 &site_id,
                 &format!("gate://compiler-generated/{}/unsafe_import", function.name),
             );
+            let owner_id = generated_unsafe_owner_id(&function.name, &owner);
             entries.push(UnsafeEntry {
                 site_id,
                 kind: "unsafe_import".to_string(),
@@ -5304,6 +5380,7 @@ fn collect_semantic_unsafe_entries(
                 reason: Some(reason),
                 invariant: Some(invariant),
                 owner: Some(owner),
+                owner_id: Some(owner_id),
                 scope: Some(scope),
                 risk_class: Some(risk_class),
                 proof_ref: Some(proof_ref),
@@ -5716,6 +5793,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 &site_id,
                 &format!("gate://compiler-generated/{function_name}/unsafe_block"),
             );
+            let owner_id = generated_unsafe_owner_id(function_name, &owner);
             entries.push(UnsafeEntry {
                 site_id,
                 kind: "unsafe_block".to_string(),
@@ -5730,6 +5808,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                 reason: Some(reason),
                 invariant: Some(invariant),
                 owner: Some(owner),
+                owner_id: Some(owner_id),
                 scope: Some(scope),
                 risk_class: Some(risk_class),
                 proof_ref: Some(proof_ref),
@@ -5772,6 +5851,7 @@ fn collect_semantic_unsafe_entries_from_expr(
                     reason: None,
                     invariant: None,
                     owner: None,
+                    owner_id: None,
                     scope: None,
                     risk_class: None,
                     proof_ref: None,
@@ -11680,9 +11760,27 @@ mod tests {
             Format::Json,
         )
         .expect("audit should succeed");
-        assert!(output.contains("\"missingContractCount\":0"));
-        assert!(output.contains("compiler-generated"));
-        assert!(output.contains("\"line\":2"));
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("unsafe audit should emit json");
+        assert_eq!(payload["missingContractCount"].as_u64(), Some(0));
+        assert_eq!(payload["invalidOwnerIdCount"].as_u64(), Some(0));
+        assert_eq!(payload["strictUnsafeAudit"].as_bool(), Some(true));
+        let entries = payload["entries"]
+            .as_array()
+            .expect("entries should be an array");
+        assert!(!entries.is_empty());
+        let block = entries
+            .iter()
+            .find(|entry| entry["kind"] == "unsafe_block")
+            .expect("unsafe block entry should exist");
+        assert_eq!(block["line"].as_u64(), Some(2));
+        assert_eq!(block["owner_id"].as_str(), Some("owner::main::scope_root"));
+        let docs_markdown = payload["docsMarkdown"]
+            .as_str()
+            .expect("markdown artifact should be reported");
+        let docs = std::fs::read_to_string(docs_markdown).expect("markdown artifact should exist");
+        assert!(docs.contains("Owner ID"));
+        assert!(docs.contains("owner::main::scope_root"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -11708,12 +11806,61 @@ mod tests {
             Format::Json,
         )
         .expect("audit should succeed");
-        assert!(output.contains("\"missingContractCount\":0"));
-        assert!(output.contains("compiler-generated"));
-        assert!(output.contains("\"strictUnsafeAudit\":true"));
-        assert!(!output.contains("\"line\":0"));
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("unsafe audit should emit json");
+        assert_eq!(payload["missingContractCount"].as_u64(), Some(0));
+        assert_eq!(payload["invalidOwnerIdCount"].as_u64(), Some(0));
+        assert_eq!(payload["strictUnsafeAudit"].as_bool(), Some(true));
+        let entries = payload["entries"]
+            .as_array()
+            .expect("entries should be an array");
+        assert!(entries
+            .iter()
+            .all(|entry| entry["line"].as_u64().unwrap_or(0) > 0));
+        assert!(entries.iter().any(|entry| {
+            entry["kind"] == "unsafe_fn"
+                && entry["owner_id"].as_str() == Some("owner::lang_unsafe_id::v")
+        }));
+        assert!(entries.iter().any(|entry| {
+            entry["kind"] == "unsafe_block"
+                && entry["owner_id"].as_str() == Some("owner::main::scope_root")
+        }));
 
         let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn audit_unsafe_fails_for_callsite_outside_unsafe_under_strict_policy() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-audit-unsafe-violation-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"audit_unsafe_violation\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"audit_unsafe_violation\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "unsafe fn risky(v: i32) -> i32 {\n    return v\n}\n\nfn main() -> i32 {\n    return risky(7)\n}\n",
+        )
+        .expect("source should be written");
+
+        let error = run(
+            Command::AuditUnsafe {
+                path: root.clone(),
+                workspace: false,
+            },
+            Format::Json,
+        )
+        .expect_err("strict unsafe audit should fail");
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("strict unsafe audit failed"));
+        assert!(rendered.contains("context_violations=1"));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -11759,15 +11906,81 @@ mod tests {
         .expect("manifest should be written");
         std::fs::write(
             root.join("src/main.fzy"),
-            "ext unsafe c fn host_touch(buf_borrowed: *u8, len: usize) -> i32;\n#[ffi_panic(abort)]\npubext c fn dispatch(v: i32) -> i32 {\n    discard host_touch\n    return v\n}\n\nfn main() -> i32 {\n    return 0\n}\n",
+            "#[repr(C)]\nstruct Packet {\n    value: i32,\n}\n\next unsafe c fn host_apply(cb_ctx: *mut u8, cb: fn(i32) -> i32, buf_borrowed: *u8, buf_len: usize) -> *u8;\n#[ffi_panic(abort)]\npubext c fn dispatch(packet: Packet, out_owned: *u8, out_len: usize) -> Packet {\n    discard host_apply\n    discard out_owned\n    discard out_len\n    return packet\n}\n\nfn main() -> i32 {\n    return 0\n}\n",
         )
         .expect("source should be written");
 
         let output = run(Command::AuditFfi { path: root.clone() }, Format::Json)
             .expect("ffi audit should succeed");
-        assert!(output.contains("\"mode\":\"ffi-audit\""));
-        assert!(output.contains("\"imports\":1"));
-        assert!(output.contains("\"exports\":1"));
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("ffi audit should emit json");
+        assert_eq!(payload["mode"].as_str(), Some("ffi-audit"));
+        assert_eq!(payload["imports"].as_u64(), Some(1));
+        assert_eq!(payload["exports"].as_u64(), Some(1));
+        assert_eq!(payload["pointerContractViolationCount"].as_u64(), Some(0));
+        assert_eq!(
+            payload["callbackContextAnchorViolationCount"].as_u64(),
+            Some(0)
+        );
+        assert_eq!(payload["asyncImportViolationCount"].as_u64(), Some(0));
+        assert_eq!(payload["missingPanicBoundaryCount"].as_u64(), Some(0));
+        let report = &payload["report"];
+        assert_eq!(
+            report["schemaVersion"].as_str(),
+            Some("fozzylang.ffi_report.v2")
+        );
+        let import = report["imports"]
+            .as_array()
+            .and_then(|items| items.first())
+            .expect("one import should be present");
+        assert_eq!(import["name"].as_str(), Some("host_apply"));
+        assert_eq!(import["pointerContractOk"].as_bool(), Some(true));
+        assert_eq!(import["callbackContextAnchorOk"].as_bool(), Some(true));
+        assert_eq!(import["ffiStableOk"].as_bool(), Some(true));
+        let export = report["exports"]
+            .as_array()
+            .and_then(|items| items.first())
+            .expect("one export should be present");
+        assert_eq!(export["name"].as_str(), Some("dispatch"));
+        assert_eq!(export["panicBoundaryDeclared"].as_bool(), Some(true));
+        assert_eq!(export["ffiStableOk"].as_bool(), Some(true));
+        let markdown_path = payload["markdown"]
+            .as_str()
+            .expect("markdown path should be reported");
+        let markdown =
+            std::fs::read_to_string(markdown_path).expect("ffi markdown artifact should exist");
+        assert!(markdown.contains("pointer_contract_ok=true"));
+        assert!(markdown.contains("panic_boundary_declared=true"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn audit_ffi_fails_for_missing_pointer_contract_metadata() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-audit-ffi-invalid-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"audit_ffi_invalid\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"audit_ffi_invalid\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "ext unsafe c fn host_touch(buf: *u8, len: usize) -> i32;\nfn main() -> i32 {\n    discard host_touch\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let error = run(Command::AuditFfi { path: root.clone() }, Format::Json)
+            .expect_err("ffi audit should fail when pointer contracts are invalid");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("strict safety artifact generation failed")
+                || rendered.contains("pointer parameters require ownership suffix")
+        );
 
         let _ = std::fs::remove_dir_all(root);
     }

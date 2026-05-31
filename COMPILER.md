@@ -8,7 +8,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `15. Memory-safety adversarial coverage`
 - `16. Native import contract tables`
 - `22. Canary-app gates`
-- `23. Unsafe/FFI audit hardening`
 - `25. v1 syntax and profile freeze`
 - `26. Stdlib and capability policy`
 - `27. Error/perf/docs/compat policy`
@@ -67,21 +66,6 @@ Required tests:
 - Canary-app build matrix across supported backends where applicable.
 - Smoke tests via `fz run` and built binaries.
 - Deterministic doctor/test plus trace verify, replay, and CI for representative canary flows.
-
-### 23. Unsafe/FFI audit hardening
-
-Checklist:
-
-- Require unsafe sites to carry reason, owner, owner_id, scope, invariant, risk_class, and proof_ref.
-- Require FFI contracts to enforce ownership annotation for pointers, len pairing for buffers, context anchors for callbacks, no extern-C async imports, `repr(C)` for ABI-crossing structs, and declared panic behavior.
-- Ship first-class `fz audit unsafe`, `fz audit ffi`, and `fz audit memory` commands.
-- Make those commands emit both JSON and markdown from the same underlying contract data.
-
-Required tests:
-
-- Verifier and driver contract regressions.
-- JSON schema tests for audit outputs.
-- Fozzy scenarios that fail on missing or invalid proof, ownership, or FFI metadata.
 
 ## Second-Wave v1 Lock-In
 
