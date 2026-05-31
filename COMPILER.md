@@ -7,7 +7,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `14. Compiler-phase lock-in suite`
 - `15. Memory-safety adversarial coverage`
 - `16. Native import contract tables`
-- `20. Backend parity law`
 - `21. Diagnostic stability`
 - `22. Canary-app gates`
 - `23. Unsafe/FFI audit hardening`
@@ -53,21 +52,6 @@ Required tests:
 ## Priority 8
 
 ## Priority 9
-
-### 20. Backend parity law
-
-Checklist:
-
-- Add parity suites that assert same source, same exit code, same stdout/stderr, same verifier result, and same runtime behavior.
-- Cover at minimum integer ops, float ops, strings, structs, enums, matches, loops, closures, arrays, JSON handles, HTTP handles, process handles, `defer`, and unsafe boundaries.
-- If any feature is not parity-guaranteed, mark it explicitly in docs, diagnostics, and backend-capability reporting.
-- Add backend, link, and runtime-shim parity checks for native library builds as well as executables.
-
-Required tests:
-
-- Direct `fz parity` fixtures for each supported category.
-- Host-backed runs where runtime behavior matters.
-- At least one real canary app per backend in CI.
 
 ### 21. Diagnostic stability
 

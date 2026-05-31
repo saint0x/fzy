@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "compiler-backend-parity-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); fz = repo / 'target/debug/fz'\n\nprimitive = repo / 'tests/fixtures/primitive_parity/main.fzy'\nprimitive_proc = subprocess.run([str(fz), 'parity', str(primitive), '--seed', '4242', '--json'], cwd=str(repo), capture_output=True, text=True)\nprimitive_payload = json.loads(primitive_proc.stdout.strip())\nassert primitive_proc.returncode == 0, (primitive_proc.returncode, primitive_payload, primitive_proc.stderr)\nassert primitive_payload['ok'] is True, primitive_payload\nassert primitive_payload['kind'] == 'executable', primitive_payload\nassert primitive_payload['checks']['sameExitCode'] is True, primitive_payload\nassert primitive_payload['checks']['sameStdout'] is True, primitive_payload\nassert primitive_payload['checks']['sameStderr'] is True, primitive_payload\nassert primitive_payload['checks']['sameVerifierResult'] is True, primitive_payload\nassert primitive_payload['backendCapabilities']['cranelift']['unsupported'][0]['feature'] == 'async_c_export_surface', primitive_payload\n\nnative = repo / 'tests/fixtures/native_completeness/main.fzy'\nnative_proc = subprocess.run([str(fz), 'parity', str(native), '--seed', '99', '--json'], cwd=str(repo), capture_output=True, text=True)\nnative_payload = json.loads(native_proc.stdout.strip())\nassert native_proc.returncode == 0, (native_proc.returncode, native_payload, native_proc.stderr)\nassert native_payload['ok'] is True, native_payload\nassert native_payload['checks']['sameRuntimeBehavior'] is True, native_payload\n\nroot = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-parity-lib-'))\n(root / 'src').mkdir(parents=True, exist_ok=True)\n(root / 'fozzy.toml').write_text('[package]\\nname=\"parity_lib\"\\nversion=\"0.1.0\"\\n\\n[target.lib]\\nname=\"parity_lib\"\\npath=\"src/lib.fzy\"\\n')\n(root / 'src/lib.fzy').write_text(textwrap.dedent('''\\\n    #[ffi_panic(abort)]\n    pubext c fn add(left: i32, right: i32) -> i32 {\n        return left + right\n    }\n\n    #[ffi_panic(abort)]\n    pubext c fn mul(left: i32, right: i32) -> i32 {\n        return left * right\n    }\n'''))\nlib_proc = subprocess.run([str(fz), 'parity', str(root), '--seed', '17', '--json'], cwd=str(repo), capture_output=True, text=True)\nlib_payload = json.loads(lib_proc.stdout.strip())\nassert lib_proc.returncode == 0, (lib_proc.returncode, lib_payload, lib_proc.stderr)\nassert lib_payload['ok'] is True, lib_payload\nassert lib_payload['kind'] == 'library', lib_payload\nassert lib_payload['checks']['sameStaticExports'] is True, lib_payload\nassert lib_payload['checks']['sameSharedExports'] is True, lib_payload\n\ncanary = repo / 'frameworklib/fzweb'\nllvm_proc = subprocess.run([str(fz), 'build', str(canary), '--backend', 'llvm', '--json'], cwd=str(repo), capture_output=True, text=True)\nllvm_payload = json.loads(llvm_proc.stdout.strip())\nassert llvm_proc.returncode == 0, (llvm_proc.returncode, llvm_payload, llvm_proc.stderr)\nassert llvm_payload['status'] == 'ok', llvm_payload\nclif_proc = subprocess.run([str(fz), 'build', str(canary), '--backend', 'cranelift', '--json'], cwd=str(repo), capture_output=True, text=True)\nclif_payload = json.loads(clif_proc.stdout.strip())\nassert clif_proc.returncode == 0, (clif_proc.returncode, clif_payload, clif_proc.stderr)\nassert clif_payload['status'] == 'ok', clif_payload\nprint('compiler-backend-parity-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-backend-parity-ok\n",
+      "stderr": "",
+      "times": 1
+    }
+  ]
+}

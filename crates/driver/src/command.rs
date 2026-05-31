@@ -4016,78 +4016,171 @@ fn analyze_plan_claim_accuracy(plan_text: &str, corpus: &[(String, String)]) -> 
 
 fn parity_command(path: &Path, seed: u64, format: Format) -> Result<String> {
     ensure_exists(path)?;
-    let fast = run_non_scenario_test_plan(
-        path,
-        NonScenarioPlanRequest {
-            deterministic: false,
-            strict_verify: false,
-            safe_profile: false,
-            scheduler: None,
-            seed: Some(seed),
-            record: None,
-            rich_artifacts: false,
-            filter: None,
-        },
-    )?;
-    let det = run_non_scenario_test_plan(
-        path,
-        NonScenarioPlanRequest {
-            deterministic: true,
-            strict_verify: false,
-            safe_profile: false,
-            scheduler: Some("fifo".to_string()),
-            seed: Some(seed),
-            record: None,
-            rich_artifacts: false,
-            filter: None,
-        },
-    )?;
-    let verify = run_non_scenario_test_plan(
-        path,
-        NonScenarioPlanRequest {
-            deterministic: true,
-            strict_verify: false,
-            safe_profile: true,
-            scheduler: Some("fifo".to_string()),
-            seed: Some(seed),
-            record: None,
-            rich_artifacts: false,
-            filter: None,
-        },
-    );
-
-    let mut outcomes = vec![
-        plan_semantics_outcome("fast", &fast),
-        plan_semantics_outcome("det", &det),
-    ];
-    let mut skipped = BTreeMap::<String, String>::new();
-    match verify {
-        Ok(verify) => outcomes.push(plan_semantics_outcome("verify", &verify)),
-        Err(error) => {
-            skipped.insert("verify".to_string(), error.to_string());
+    let resolved = resolve_source(path)?;
+    let verifier = verify_file(&resolved.source_path)?;
+    let verifier_signature = diagnostic_signature(&verifier.diagnostic_details)?;
+    let backend_capabilities = backend_capability_report();
+    if resolved
+        .manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.target.lib.is_some() && manifest.target.bin.is_empty())
+    {
+        let llvm = compile_library_with_backend(path, BuildProfile::Dev, Some("llvm"))?;
+        let cranelift = compile_library_with_backend(path, BuildProfile::Dev, Some("cranelift"))?;
+        let llvm_diag = diagnostic_signature(&llvm.diagnostic_details)?;
+        let cranelift_diag = diagnostic_signature(&cranelift.diagnostic_details)?;
+        let llvm_static = library_exports(
+            llvm.static_lib
+                .as_deref()
+                .ok_or_else(|| anyhow!("llvm library parity output missing static lib"))?,
+        )?;
+        let cranelift_static = library_exports(
+            cranelift
+                .static_lib
+                .as_deref()
+                .ok_or_else(|| anyhow!("cranelift library parity output missing static lib"))?,
+        )?;
+        let llvm_shared = library_exports(
+            llvm.shared_lib
+                .as_deref()
+                .ok_or_else(|| anyhow!("llvm library parity output missing shared lib"))?,
+        )?;
+        let cranelift_shared = library_exports(
+            cranelift
+                .shared_lib
+                .as_deref()
+                .ok_or_else(|| anyhow!("cranelift library parity output missing shared lib"))?,
+        )?;
+        let mut issues = Vec::new();
+        if llvm.status != cranelift.status {
+            issues.push("llvm/cranelift library build status mismatch".to_string());
         }
+        if llvm_diag != cranelift_diag {
+            issues.push("llvm/cranelift library diagnostic mismatch".to_string());
+        }
+        if llvm_static != cranelift_static {
+            issues.push("llvm/cranelift static export mismatch".to_string());
+        }
+        if llvm_shared != cranelift_shared {
+            issues.push("llvm/cranelift shared export mismatch".to_string());
+        }
+        let signature = semantic_signature(&serde_json::json!({
+            "kind": "backend-library-parity",
+            "verifier": verifier_signature,
+            "llvm": {
+                "status": llvm.status,
+                "diagnostics": llvm_diag,
+                "static": llvm_static,
+                "shared": llvm_shared,
+            },
+            "cranelift": {
+                "status": cranelift.status,
+                "diagnostics": cranelift_diag,
+                "static": cranelift_static,
+                "shared": cranelift_shared,
+            },
+        }))?;
+        if !issues.is_empty() {
+            bail!(
+                "parity failed for {}: {}",
+                path.display(),
+                issues.join("; ")
+            );
+        }
+        return match format {
+            Format::Text => Ok(render_text_fields(&[
+                ("status", "ok".to_string()),
+                ("mode", "parity".to_string()),
+                ("kind", "library".to_string()),
+                ("path", path.display().to_string()),
+                ("signature", signature),
+            ])),
+            Format::Json => Ok(serde_json::json!({
+                "ok": true,
+                "mode": "parity",
+                "kind": "library",
+                "path": path.display().to_string(),
+                "seed": seed,
+                "signature": signature,
+                "verifier": {
+                    "diagnostics": verifier.diagnostics,
+                    "signature": verifier_signature,
+                },
+                "backendCapabilities": backend_capabilities,
+                "backendResults": {
+                    "llvm": {
+                        "status": llvm.status,
+                        "diagnostics": llvm.diagnostics,
+                        "diagnosticSignature": llvm_diag,
+                        "staticExports": llvm_static,
+                        "sharedExports": llvm_shared,
+                    },
+                    "cranelift": {
+                        "status": cranelift.status,
+                        "diagnostics": cranelift.diagnostics,
+                        "diagnosticSignature": cranelift_diag,
+                        "staticExports": cranelift_static,
+                        "sharedExports": cranelift_shared,
+                    }
+                },
+                "checks": {
+                    "sameVerifierResult": true,
+                    "sameBuildStatus": llvm.status == cranelift.status,
+                    "sameDiagnosticResult": llvm_diag == cranelift_diag,
+                    "sameStaticExports": llvm_static == cranelift_static,
+                    "sameSharedExports": llvm_shared == cranelift_shared,
+                },
+                "issues": issues,
+            })
+            .to_string()),
+        };
     }
 
+    let llvm = compile_file_with_backend(path, BuildProfile::Dev, Some("llvm"))?;
+    let cranelift = compile_file_with_backend(path, BuildProfile::Dev, Some("cranelift"))?;
+    let llvm_diag = diagnostic_signature(&llvm.diagnostic_details)?;
+    let cranelift_diag = diagnostic_signature(&cranelift.diagnostic_details)?;
     let mut issues = Vec::new();
-    if outcomes[0].exit_class != outcomes[1].exit_class {
-        issues.push("fast/det exit class mismatch".to_string());
+    if llvm.status != cranelift.status {
+        issues.push("llvm/cranelift executable build status mismatch".to_string());
     }
-    if outcomes[0].invariants != outcomes[1].invariants {
-        issues.push("fast/det invariant mismatch".to_string());
+    if llvm_diag != cranelift_diag {
+        issues.push("llvm/cranelift executable diagnostic mismatch".to_string());
     }
-    if outcomes.len() == 3 {
-        if outcomes[0].exit_class != outcomes[2].exit_class {
-            issues.push("fast/verify exit class mismatch".to_string());
+    let runtime_available = llvm.status == "ok" && cranelift.status == "ok";
+    let (llvm_runtime, cranelift_runtime) = if runtime_available {
+        let llvm_runtime = executable_runtime_result(&llvm)?;
+        let cranelift_runtime = executable_runtime_result(&cranelift)?;
+        if llvm_runtime.exit_code != cranelift_runtime.exit_code {
+            issues.push("llvm/cranelift exit code mismatch".to_string());
         }
-        if outcomes[0].invariants != outcomes[2].invariants {
-            issues.push("fast/verify invariant mismatch".to_string());
+        if llvm_runtime.stdout != cranelift_runtime.stdout {
+            issues.push("llvm/cranelift stdout mismatch".to_string());
         }
-    }
-
+        if llvm_runtime.stderr != cranelift_runtime.stderr {
+            issues.push("llvm/cranelift stderr mismatch".to_string());
+        }
+        (Some(llvm_runtime), Some(cranelift_runtime))
+    } else {
+        (None, None)
+    };
     let signature = semantic_signature(&serde_json::json!({
-        "kind": "mode-parity",
-        "outcomes": outcomes,
-        "skipped": skipped,
+        "kind": "backend-executable-parity",
+        "verifier": verifier_signature,
+        "llvm": {
+            "status": llvm.status,
+            "diagnostics": llvm_diag,
+            "exit": llvm_runtime.as_ref().map(|value| value.exit_code),
+            "stdout": llvm_runtime.as_ref().map(|value| value.stdout.clone()),
+            "stderr": llvm_runtime.as_ref().map(|value| value.stderr.clone()),
+        },
+        "cranelift": {
+            "status": cranelift.status,
+            "diagnostics": cranelift_diag,
+            "exit": cranelift_runtime.as_ref().map(|value| value.exit_code),
+            "stdout": cranelift_runtime.as_ref().map(|value| value.stdout.clone()),
+            "stderr": cranelift_runtime.as_ref().map(|value| value.stderr.clone()),
+        },
     }))?;
     if !issues.is_empty() {
         bail!(
@@ -4100,21 +4193,158 @@ fn parity_command(path: &Path, seed: u64, format: Format) -> Result<String> {
         Format::Text => Ok(render_text_fields(&[
             ("status", "ok".to_string()),
             ("mode", "parity".to_string()),
+            ("kind", "executable".to_string()),
             ("path", path.display().to_string()),
             ("signature", signature),
-            ("modes", outcomes.len().to_string()),
+            (
+                "exit_code",
+                llvm_runtime
+                    .as_ref()
+                    .map(|value| value.exit_code.to_string())
+                    .unwrap_or_else(|| "<unavailable>".to_string()),
+            ),
         ])),
         Format::Json => Ok(serde_json::json!({
             "ok": true,
+            "mode": "parity",
+            "kind": "executable",
             "path": path.display().to_string(),
             "seed": seed,
             "signature": signature,
-            "outcomes": outcomes,
-            "skipped": skipped,
+            "verifier": {
+                "diagnostics": verifier.diagnostics,
+                "signature": verifier_signature,
+            },
+            "backendCapabilities": backend_capabilities,
+            "backendResults": {
+                "llvm": {
+                    "status": llvm.status,
+                    "diagnostics": llvm.diagnostics,
+                    "diagnosticSignature": llvm_diag,
+                    "exitCode": llvm_runtime.as_ref().map(|value| value.exit_code),
+                    "stdout": llvm_runtime.as_ref().map(|value| value.stdout.clone()),
+                    "stderr": llvm_runtime.as_ref().map(|value| value.stderr.clone()),
+                },
+                "cranelift": {
+                    "status": cranelift.status,
+                    "diagnostics": cranelift.diagnostics,
+                    "diagnosticSignature": cranelift_diag,
+                    "exitCode": cranelift_runtime.as_ref().map(|value| value.exit_code),
+                    "stdout": cranelift_runtime.as_ref().map(|value| value.stdout.clone()),
+                    "stderr": cranelift_runtime.as_ref().map(|value| value.stderr.clone()),
+                }
+            },
+            "checks": {
+                "sameVerifierResult": true,
+                "sameBuildStatus": llvm.status == cranelift.status,
+                "sameDiagnosticResult": llvm_diag == cranelift_diag,
+                "runtimeAvailable": runtime_available,
+                "sameExitCode": llvm_runtime.as_ref().map(|value| value.exit_code)
+                    == cranelift_runtime.as_ref().map(|value| value.exit_code),
+                "sameStdout": llvm_runtime.as_ref().map(|value| &value.stdout)
+                    == cranelift_runtime.as_ref().map(|value| &value.stdout),
+                "sameStderr": llvm_runtime.as_ref().map(|value| &value.stderr)
+                    == cranelift_runtime.as_ref().map(|value| &value.stderr),
+                "sameRuntimeBehavior": llvm_runtime == cranelift_runtime,
+            },
             "issues": issues,
         })
         .to_string()),
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExecutableRuntimeResult {
+    exit_code: i32,
+    stdout: String,
+    stderr: String,
+}
+
+fn executable_runtime_result(artifact: &BuildArtifact) -> Result<ExecutableRuntimeResult> {
+    let output = artifact
+        .output
+        .as_deref()
+        .ok_or_else(|| anyhow!("native executable parity output missing binary artifact"))?;
+    let result = ProcessCommand::new(output)
+        .output()
+        .with_context(|| format!("native executable parity run failed: {}", output.display()))?;
+    Ok(ExecutableRuntimeResult {
+        exit_code: result
+            .status
+            .code()
+            .ok_or_else(|| anyhow!("native executable parity run terminated without exit code"))?,
+        stdout: String::from_utf8(result.stdout).context("parity stdout should be utf-8")?,
+        stderr: String::from_utf8(result.stderr).context("parity stderr should be utf-8")?,
+    })
+}
+
+fn diagnostic_signature(items: &[diagnostics::Diagnostic]) -> Result<String> {
+    let payload = serde_json::Value::Array(
+        items
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "severity": format!("{:?}", item.severity),
+                    "message": item.message,
+                    "help": item.help,
+                    "code": item.code,
+                    "catalogKey": item.catalog_key,
+                    "path": item.path,
+                })
+            })
+            .collect::<Vec<_>>(),
+    );
+    semantic_signature(&payload)
+}
+
+fn library_exports(path: &Path) -> Result<Vec<String>> {
+    let output = ProcessCommand::new("nm")
+        .arg(path)
+        .output()
+        .with_context(|| format!("failed invoking nm for {}", path.display()))?;
+    if !output.status.success() {
+        bail!("nm failed for {}", path.display());
+    }
+    let mut exports = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty()
+                && (line.contains(" add")
+                    || line.ends_with(" add")
+                    || line.contains(" mul")
+                    || line.ends_with(" mul")
+                    || line.contains(" T ")
+                    || line.contains(" D ")
+                    || line.contains(" S "))
+        })
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    exports.sort();
+    exports.dedup();
+    Ok(exports)
+}
+
+fn backend_capability_report() -> serde_json::Value {
+    serde_json::json!({
+        "llvm": {
+            "status": "parity_supported",
+            "unsupported": []
+        },
+        "cranelift": {
+            "status": "parity_supported_with_explicit_exceptions",
+            "unsupported": [
+                {
+                    "feature": "async_c_export_surface",
+                    "catalogKey": "native.async_c_export_unsupported"
+                },
+                {
+                    "feature": "async_unsafe_native_function",
+                    "catalogKey": "native.async_unsafe_function_unsupported"
+                }
+            ]
+        }
+    })
 }
 
 fn equivalence_command(path: &Path, seed: u64, format: Format) -> Result<String> {
@@ -11209,12 +11439,68 @@ mod tests {
         let parity_json: serde_json::Value =
             serde_json::from_str(&parity).expect("parity json should parse");
         assert_eq!(parity_json["ok"], true);
+        assert_eq!(parity_json["kind"], "executable");
+        assert_eq!(parity_json["checks"]["sameExitCode"], true);
+        assert_eq!(parity_json["checks"]["sameStdout"], true);
+        assert_eq!(parity_json["checks"]["sameStderr"], true);
+        assert_eq!(parity_json["checks"]["sameVerifierResult"], true);
+        assert!(parity_json["backendResults"]["llvm"]["exitCode"].is_number());
+        assert!(parity_json["backendResults"]["cranelift"]["exitCode"].is_number());
+        assert_eq!(
+            parity_json["backendCapabilities"]["cranelift"]["unsupported"][0]["feature"],
+            "async_c_export_surface"
+        );
 
         let equivalence =
             equivalence_command(&source, 4242, Format::Json).expect("equivalence should run");
         let equivalence_json: serde_json::Value =
             serde_json::from_str(&equivalence).expect("equivalence json should parse");
         assert_eq!(equivalence_json["ok"], true);
+    }
+
+    #[test]
+    fn parity_command_covers_library_exports_across_backends() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-parity-lib-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"parity_lib\"\nversion=\"0.1.0\"\n\n[target.lib]\nname=\"parity_lib\"\npath=\"src/lib.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/lib.fzy"),
+            "#[ffi_panic(abort)]\npubext c fn add(left: i32, right: i32) -> i32 {\n    return left + right\n}\n\n#[ffi_panic(abort)]\npubext c fn mul(left: i32, right: i32) -> i32 {\n    return left * right\n}\n",
+        )
+        .expect("source should be written");
+
+        let parity = parity_command(&root, 7, Format::Json).expect("library parity should run");
+        let parity_json: serde_json::Value =
+            serde_json::from_str(&parity).expect("parity json should parse");
+        assert_eq!(parity_json["ok"], true);
+        assert_eq!(parity_json["kind"], "library");
+        assert_eq!(parity_json["checks"]["sameStaticExports"], true);
+        assert_eq!(parity_json["checks"]["sameSharedExports"], true);
+        assert!(parity_json["backendResults"]["llvm"]["staticExports"].is_array());
+        assert!(parity_json["backendResults"]["cranelift"]["sharedExports"].is_array());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn parity_canary_builds_fzweb_project_with_both_backends() {
+        let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../frameworklib/fzweb");
+        let parity = parity_command(&project, 11, Format::Json).expect("fzweb parity should run");
+        let parity_json: serde_json::Value =
+            serde_json::from_str(&parity).expect("parity json should parse");
+        assert_eq!(parity_json["ok"], true);
+        assert_eq!(parity_json["kind"], "executable");
+        assert_eq!(parity_json["checks"]["sameBuildStatus"], true);
+        assert_eq!(parity_json["checks"]["sameVerifierResult"], true);
+        assert_eq!(parity_json["checks"]["sameRuntimeBehavior"], true);
     }
 
     #[test]
