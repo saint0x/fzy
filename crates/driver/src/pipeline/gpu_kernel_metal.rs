@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{anyhow, bail, Result};
 
+use super::gpu_kernel_layout::render_shared_param_layout;
+
 #[derive(Debug, Clone)]
 pub(crate) struct MetalKernelLaunchDescriptor {
     pub(crate) kernel_name: String,
@@ -15,6 +17,12 @@ pub(crate) fn metal_kernel_launch_descriptors(
     let typed = synthesize_typed_module(fir);
     let module = kernel_ir::lower(&typed)
         .map_err(|diagnostics| anyhow!(render_kernel_ir_diagnostics(&diagnostics)))?;
+    metal_kernel_launch_descriptors_from_kernel_module(&module)
+}
+
+pub(crate) fn metal_kernel_launch_descriptors_from_kernel_module(
+    module: &kernel_ir::KernelModule,
+) -> Result<HashMap<String, MetalKernelLaunchDescriptor>> {
     if module.kernels.is_empty() {
         return Ok(HashMap::new());
     }
@@ -34,7 +42,7 @@ pub(crate) fn metal_kernel_launch_descriptors(
             MetalKernelLaunchDescriptor {
                 kernel_name: kernel_name.clone(),
                 source,
-                param_layout: render_param_layout(kernel)?,
+                param_layout: render_shared_param_layout(kernel)?,
             },
         );
     }
@@ -104,54 +112,6 @@ fn render_kernel_ir_diagnostics(diagnostics: &[diagnostics::Diagnostic]) -> Stri
         .map(|diagnostic| diagnostic.message.clone())
         .collect::<Vec<_>>()
         .join("; ")
-}
-
-fn render_param_layout(function: &kernel_ir::KernelFunction) -> Result<String> {
-    let mut parts = Vec::with_capacity(function.params.len());
-    for param in &function.params {
-        parts.push(match &param.ty {
-            ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
-                let mode = kernel_slice_access_suffix(function, param);
-                match &args[0] {
-                    ast::Type::Float { bits: 32 } => format!("slice_f32_{mode}"),
-                    ast::Type::Int {
-                        signed: true,
-                        bits: 32,
-                    } => format!("slice_i32_{mode}"),
-                    ast::Type::Int {
-                        signed: false,
-                        bits: 32,
-                    } => format!("slice_u32_{mode}"),
-                    other => bail!(
-                        "Metal GPU kernel lowering does not yet support slice element type `{other}`"
-                    ),
-                }
-            }
-            ast::Type::Int {
-                signed: true,
-                bits: 32,
-            } => "i32".to_string(),
-            ast::Type::Int {
-                signed: false,
-                bits: 32,
-            } => "u32".to_string(),
-            ast::Type::Float { bits: 32 } => "f32".to_string(),
-            other => bail!("Metal GPU kernel lowering does not yet support kernel param `{other}`"),
-        });
-    }
-    Ok(parts.join(","))
-}
-
-fn kernel_slice_access_suffix(
-    function: &kernel_ir::KernelFunction,
-    param: &ast::Param,
-) -> &'static str {
-    function
-        .slice_access
-        .get(&param.name)
-        .copied()
-        .unwrap_or(kernel_ir::KernelSliceAccessMode::Observe)
-        .layout_suffix()
 }
 
 fn render_metal_module(

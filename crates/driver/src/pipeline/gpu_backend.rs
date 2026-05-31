@@ -51,18 +51,18 @@ impl GpuBackendKind {
             Self::Spirv => GpuBackendAdapter {
                 kind: self,
                 architecture_status: "declared",
-                execution_status: "adapter_scaffold_only",
+                execution_status: "shared_contract_bound_not_executable",
                 host_support: "toolchain_not_integrated",
                 executable_now: false,
-                reason: "SPIR-V/Vulkan adapter architecture is declared, but codegen/runtime/toolchain integration is not landed yet.",
+                reason: "SPIR-V/Vulkan adapter architecture is declared and now consumes the shared kernel package/launch layout contract, but codegen/runtime/toolchain integration is not landed yet.",
             },
             Self::Nvptx => GpuBackendAdapter {
                 kind: self,
                 architecture_status: "declared",
-                execution_status: "adapter_scaffold_only",
+                execution_status: "shared_contract_bound_not_executable",
                 host_support: "toolchain_not_integrated",
                 executable_now: false,
-                reason: "NVPTX/CUDA adapter architecture is declared, but codegen/runtime/toolchain integration is not landed yet.",
+                reason: "NVPTX/CUDA adapter architecture is declared and now consumes the shared kernel package/launch layout contract, but codegen/runtime/toolchain integration is not landed yet.",
             },
         }
     }

@@ -176,6 +176,15 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     let gpu_kernel_package = std::fs::read_to_string(root.join(".fz/gpu-kernel-package.json"))
         .expect("gpu kernel package should exist");
     assert!(gpu_kernel_package.contains("\"schemaVersion\": \"fozzylang.gpu_kernel_package.v1\""));
+    assert!(gpu_kernel_package.contains("\"backendAdapters\""));
+    assert!(gpu_kernel_package.contains("\"spirv\""));
+    assert!(gpu_kernel_package.contains("\"nvptx\""));
+    assert!(gpu_kernel_package.contains("\"descriptorStatus\": \"shared_contract_bound_not_executable\""));
+    assert!(gpu_kernel_package.contains("\"moduleFormat\": \"spirv.binary_module\""));
+    assert!(gpu_kernel_package.contains("\"executionModel\": \"GLCompute\""));
+    assert!(gpu_kernel_package.contains("\"moduleFormat\": \"ptx.assembly_text\""));
+    assert!(gpu_kernel_package.contains("\"entryDirective\": \".entry\""));
+    assert!(gpu_kernel_package.contains("\"parameterStateSpace\": \".param\""));
     let gpu_kernel_package_md =
         std::fs::read_to_string(root.join(".fz/gpu-kernel-package.md"))
             .expect("gpu kernel package markdown should exist");

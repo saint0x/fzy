@@ -347,6 +347,21 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
     match kernel_ir::lower(typed) {
         Ok(kernel_module) => {
             let rendered = kernel_ir::render(&kernel_module);
+            let metal_descriptors =
+                super::gpu_kernel_metal::metal_kernel_launch_descriptors_from_kernel_module(
+                    &kernel_module,
+                )
+                .unwrap_or_default();
+            let spirv_descriptors =
+                super::gpu_kernel_spirv::spirv_kernel_contract_descriptors_from_kernel_module(
+                    &kernel_module,
+                )
+                .unwrap_or_default();
+            let nvptx_descriptors =
+                super::gpu_kernel_nvptx::nvptx_kernel_contract_descriptors_from_kernel_module(
+                    &kernel_module,
+                )
+                .unwrap_or_default();
             let functions = kernel_module
                 .functions
                 .iter()
@@ -407,6 +422,54 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
                         "argumentEncoding": "fzy_native_scalar_and_handle_abi",
                         "sharedArgumentHandles": ["GpuDevice", "GpuBuffer", "GpuSlice", "GpuEvent"],
                     },
+                },
+                "backendAdapters": {
+                    "metal": {
+                        "architectureStatus": "declared",
+                        "descriptorStatus": "shared_contract_bound",
+                        "moduleFormat": "metal.compute_source",
+                        "executableNow": cfg!(target_vendor = "apple"),
+                        "kernels": kernel_module.kernels.iter().filter_map(|name| {
+                            metal_descriptors.get(name).map(|descriptor| serde_json::json!({
+                                "kernelName": descriptor.kernel_name,
+                                "entryPoint": descriptor.kernel_name,
+                                "paramLayout": descriptor.param_layout,
+                            }))
+                        }).collect::<Vec<_>>(),
+                    },
+                    "spirv": {
+                        "architectureStatus": "declared",
+                        "descriptorStatus": "shared_contract_bound_not_executable",
+                        "moduleFormat": "spirv.binary_module",
+                        "executableNow": false,
+                        "reason": "SPIR-V/Vulkan codegen and runtime are not live yet, but this adapter now consumes the shared kernel package and launch layout contract.",
+                        "kernels": kernel_module.kernels.iter().filter_map(|name| {
+                            spirv_descriptors.get(name).map(|descriptor| serde_json::json!({
+                                "kernelName": descriptor.kernel_name,
+                                "entryPoint": descriptor.entry_point,
+                                "paramLayout": descriptor.param_layout,
+                                "moduleFormat": descriptor.module_format,
+                                "executionModel": descriptor.execution_model,
+                            }))
+                        }).collect::<Vec<_>>(),
+                    },
+                    "nvptx": {
+                        "architectureStatus": "declared",
+                        "descriptorStatus": "shared_contract_bound_not_executable",
+                        "moduleFormat": "ptx.assembly_text",
+                        "executableNow": false,
+                        "reason": "NVPTX/CUDA codegen and runtime are not live yet, but this adapter now consumes the shared kernel package and launch layout contract.",
+                        "kernels": kernel_module.kernels.iter().filter_map(|name| {
+                            nvptx_descriptors.get(name).map(|descriptor| serde_json::json!({
+                                "kernelName": descriptor.kernel_name,
+                                "entrySymbol": descriptor.entry_symbol,
+                                "paramLayout": descriptor.param_layout,
+                                "moduleFormat": descriptor.module_format,
+                                "entryDirective": descriptor.entry_directive,
+                                "parameterStateSpace": descriptor.parameter_state_space,
+                            }))
+                        }).collect::<Vec<_>>(),
+                    }
                 },
                 "renderedKernelIr": rendered,
             })

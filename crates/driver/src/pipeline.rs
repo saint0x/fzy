@@ -19,7 +19,10 @@ use ast::AstVisitor;
 
 mod clif_support;
 mod gpu_backend;
+mod gpu_kernel_layout;
 mod gpu_kernel_metal;
+mod gpu_kernel_nvptx;
+mod gpu_kernel_spirv;
 mod linker_support;
 mod llvm_support;
 mod native_backend_support;
