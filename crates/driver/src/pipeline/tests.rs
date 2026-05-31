@@ -8167,6 +8167,87 @@ fn native_build_and_run_metal_gpu_kernel_suite_program() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(target_vendor = "apple")]
+#[test]
+fn native_build_and_run_metal_gpu_image_brightness_program() {
+    let project_name = format!(
+        "fozzylang-gpu-metal-image-brightness-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"gpu_metal_image_brightness\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_metal_image_brightness\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.gpu;\nuse core.simd;\nkernel fn brighten(input: GpuSlice<f32>, delta: f32, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        let value = input[i] + delta\n        if value > 1.0f32 {\n            output[i] = 1.0f32\n        } else {\n            output[i] = value\n        }\n    }\n}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let pixels: [f32; 4] = simd.f32x4_store(simd.f32x4_new(0.0, 0.25, 0.75, 0.5))\n    let input_buf: GpuBuffer<f32> = gpu.upload_f32(dev, pixels)\n    let output_buf: GpuBuffer<f32> = gpu.alloc_f32(dev, 4)\n    let event = gpu.launch4(brighten, 1, 64, gpu.slice(input_buf, 0, 4), 0.25f32, gpu.slice(output_buf, 0, 4), 4)\n    gpu.wait(event)\n    let output: Vec<f32> = gpu.download_f32(output_buf)\n    gpu.free(input_buf)\n    gpu.free(output_buf)\n    if output[0] != 0.25f32 || output[1] != 0.5f32 || output[2] != 1.0f32 || output[3] != 0.75f32 {\n        return 41\n    }\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Dev, None)
+        .expect("metal image brightness build should succeed");
+    assert_eq!(artifact.status, "ok");
+    let exit = run_native_exit(
+        artifact
+            .output
+            .as_deref()
+            .expect("metal image brightness output should exist"),
+    );
+    assert_eq!(exit, 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(target_vendor = "apple")]
+#[test]
+fn native_build_and_run_metal_gpu_runtime_failure_reports_stable_diagnostics() {
+    let project_name = format!(
+        "fozzylang-gpu-runtime-failure-diagnostics-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"gpu_runtime_failure_diagnostics\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_runtime_failure_diagnostics\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.gpu;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 4)\n    let output = gpu.alloc_f32(dev, 4)\n    let event = gpu.launch3(copy, 1, 1000000, gpu.slice(input, 0, 4), gpu.slice(output, 0, 4), 4)\n    gpu.wait(event)\n    gpu.free(input)\n    gpu.free(output)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Dev, None)
+        .expect("metal runtime failure diagnostics build should succeed");
+    assert_eq!(artifact.status, "ok");
+    let output = Command::new(
+        artifact
+            .output
+            .as_deref()
+            .expect("metal runtime failure diagnostics output should exist"),
+    )
+    .env("FZ_NATIVE_DEBUG_ERRORS", "1")
+    .output()
+    .expect("native artifact should execute");
+    assert_eq!(output.status.code(), Some(0));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr
+        .contains("gpu.launch failed: block 1000000 exceeds Metal max threads-per-threadgroup"));
+    assert!(stderr.contains("gpu.wait failed: invalid GPU event handle"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn cross_backend_non_i32_and_aggregate_signatures_execute_consistently() {
     let project_name = format!(

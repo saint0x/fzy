@@ -3171,7 +3171,8 @@ pub(super) fn llvm_emit_complex_expr(
                     .get(kernel_name)
                     .ok_or_else(|| {
                         anyhow!("missing Metal kernel launch descriptor for `{kernel_name}`")
-                    })?;
+                    })?
+                    .clone();
                 let symbol = native_mangle_symbol(
                     native_runtime_import_for_callee(callee)
                         .expect("gpu launch runtime import should exist")
@@ -3198,9 +3199,19 @@ pub(super) fn llvm_emit_complex_expr(
                 let block =
                     llvm_emit_expr_as(&args[2], ctx, string_literal_ids, task_ref_ids, "i32")?;
                 let mut lowered_args = Vec::new();
-                for arg in args.iter().skip(3) {
-                    let lowered = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
-                    let lowered = llvm_cast_value(ctx, lowered, llvm_pointer_int_type())?;
+                let layouts = descriptor
+                    .param_layout
+                    .split(',')
+                    .map(str::trim)
+                    .collect::<Vec<_>>();
+                for (index, arg) in args.iter().skip(3).enumerate() {
+                    let lowered = llvm_encode_gpu_launch_arg(
+                        arg,
+                        layouts.get(index).copied().unwrap_or("unknown"),
+                        ctx,
+                        string_literal_ids,
+                        task_ref_ids,
+                    )?;
                     lowered_args.push(format!("{} {}", lowered.ty, lowered.value));
                 }
                 let val = ctx.value();
@@ -3679,6 +3690,71 @@ pub(super) fn llvm_cast_value(
         value: out,
         ty: target_ty.to_string(),
     })
+}
+
+fn llvm_encode_gpu_launch_arg(
+    arg: &ast::Expr,
+    layout: &str,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<LlvmValue> {
+    match layout {
+        "i32" => {
+            let value = llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, "i32")?;
+            llvm_cast_value(ctx, value, llvm_pointer_int_type())
+        }
+        "u32" => {
+            let value = llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, "i32")?;
+            if llvm_pointer_int_type() == "i32" {
+                return Ok(LlvmValue {
+                    value: value.value,
+                    ty: "i32".to_string(),
+                });
+            }
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = zext i32 {} to {}\n",
+                value.value,
+                llvm_pointer_int_type()
+            ));
+            Ok(LlvmValue {
+                value: out,
+                ty: llvm_pointer_int_type().to_string(),
+            })
+        }
+        "f32" => {
+            let value = llvm_emit_expr_as(arg, ctx, string_literal_ids, task_ref_ids, "float")?;
+            let bits = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {bits} = bitcast float {} to i32\n",
+                value.value
+            ));
+            if llvm_pointer_int_type() == "i32" {
+                return Ok(LlvmValue {
+                    value: bits,
+                    ty: "i32".to_string(),
+                });
+            }
+            let out = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {out} = zext i32 {bits} to {}\n",
+                llvm_pointer_int_type()
+            ));
+            Ok(LlvmValue {
+                value: out,
+                ty: llvm_pointer_int_type().to_string(),
+            })
+        }
+        layout if layout.starts_with("slice_") => {
+            let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
+            llvm_cast_value(ctx, value, llvm_pointer_int_type())
+        }
+        _ => {
+            let value = llvm_emit_expr(arg, ctx, string_literal_ids, task_ref_ids)?;
+            llvm_cast_value(ctx, value, llvm_pointer_int_type())
+        }
+    }
 }
 
 pub(super) fn llvm_assert_finite(ctx: &mut LlvmFuncCtx, value: LlvmValue) -> Result<LlvmValue> {

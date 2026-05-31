@@ -1,3 +1,0 @@
-# GPU Remaining Work
-
-1. Add production gates once the live path exists. Before closing this file, the GPU stack still needs follow-on kernels like image brightness, checks against unsupported fallback behavior or accidental scalarization, and stable diagnostics for host-from-device calls, unsupported device types, alias violations, barrier misuse, backend-shape rejection, and backend lowering/runtime failures. Put that coverage in Fozzy scenarios and validate each finished chunk with `fozzy doctor --deep --scenario <scenario> --runs 5 --seed <seed> --json`, `fozzy test --det --strict <scenarios...> --json`, one recorded trace, `fozzy trace verify`, `fozzy replay`, and `fozzy ci`.

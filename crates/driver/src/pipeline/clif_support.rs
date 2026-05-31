@@ -4116,9 +4116,20 @@ pub(super) fn clif_emit_expr(
                         grid.value,
                         block.value,
                     ];
-                    for arg in args.iter().skip(3) {
-                        let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
-                        let lowered = cast_clif_value(builder, lowered, pointer_sized_clif_type())?;
+                    let layouts = descriptor
+                        .param_layout
+                        .split(',')
+                        .map(str::trim)
+                        .collect::<Vec<_>>();
+                    for (index, arg) in args.iter().skip(3).enumerate() {
+                        let lowered = clif_encode_gpu_launch_arg(
+                            builder,
+                            ctx,
+                            arg,
+                            layouts.get(index).copied().unwrap_or("unknown"),
+                            locals,
+                            next_var,
+                        )?;
                         values.push(lowered.value);
                     }
                     let call = builder.ins().call(func_ref, &values);
@@ -4494,4 +4505,64 @@ pub(super) fn cast_clif_value(
         value.ty,
         target
     );
+}
+
+fn clif_encode_gpu_launch_arg(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    arg: &ast::Expr,
+    layout: &str,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<ClifValue> {
+    let ptr_ty = pointer_sized_clif_type();
+    match layout {
+        "i32" => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            let value = cast_clif_value(builder, lowered, types::I32)?;
+            Ok(ClifValue {
+                value: if ptr_ty == types::I64 {
+                    builder.ins().sextend(ptr_ty, value.value)
+                } else {
+                    value.value
+                },
+                ty: ptr_ty,
+            })
+        }
+        "u32" => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            let value = cast_clif_value(builder, lowered, types::I32)?;
+            Ok(ClifValue {
+                value: if ptr_ty == types::I64 {
+                    builder.ins().uextend(ptr_ty, value.value)
+                } else {
+                    value.value
+                },
+                ty: ptr_ty,
+            })
+        }
+        "f32" => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            let value = cast_clif_value(builder, lowered, types::F32)?;
+            let bits = builder
+                .ins()
+                .bitcast(types::I32, MemFlags::new(), value.value);
+            Ok(ClifValue {
+                value: if ptr_ty == types::I64 {
+                    builder.ins().uextend(ptr_ty, bits)
+                } else {
+                    bits
+                },
+                ty: ptr_ty,
+            })
+        }
+        layout if layout.starts_with("slice_") => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            cast_clif_value(builder, lowered, ptr_ty)
+        }
+        _ => {
+            let lowered = clif_emit_expr(builder, ctx, arg, locals, next_var)?;
+            cast_clif_value(builder, lowered, ptr_ty)
+        }
+    }
 }
