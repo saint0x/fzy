@@ -595,6 +595,14 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             .contains("returns reference expression without a statically traced lifetime source")
         {
             "bind the returned reference to one explicit input lifetime before returning, or switch the API to an owned return".to_string()
+        } else if violation.contains("cannot use borrowed local reference `")
+            && violation.contains("across await suspension points")
+        {
+            "resolve the borrowed local before `await`, or keep only owned data alive across the suspension point".to_string()
+        } else if violation.contains("cannot use borrowed reference `")
+            && violation.contains("across await suspension points")
+        {
+            "move the `await` before the borrowed use, or replace the borrowed path with an owned value across suspension".to_string()
         } else {
             "introduce explicit lifetime/region-safe ownership handoff".to_string()
         };

@@ -3827,6 +3827,158 @@ fn verify_same_lifetime_reference_relay_stays_clean() {
 }
 
 #[test]
+fn verify_inferred_local_reference_across_await_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-inferred-local-await-reference-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn borrow(v: &'a i32) -> &'a i32 {\n    return v\n}\nasync fn worker(v: &'a i32) -> i32 {\n    let alias = borrow(v)\n    await recv()\n    discard alias\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message.contains(
+                "cannot use borrowed local reference `alias` across await suspension points",
+            )
+        })
+        .expect("inferred-local across-await diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("resolve the borrowed local before `await`, or keep only owned data alive across the suspension point")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("inferred-local across-await diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_if_body_borrowed_reference_across_await_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-if-body-await-reference-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "async fn worker(v: &'a i32) -> i32 {\n    if true {\n        await recv()\n        discard v\n    }\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("cannot use borrowed reference `v` across await suspension points")
+        })
+        .expect("if-body across-await diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("move the `await` before the borrowed use, or replace the borrowed path with an owned value across suspension")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("if-body across-await diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_match_arm_borrowed_reference_across_await_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-match-arm-await-reference-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "async fn worker(v: &'a i32) -> i32 {\n    match await recv() {\n        0 => v,\n        _ => 0,\n    }\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("cannot use borrowed reference `v` across await suspension points")
+        })
+        .expect("match-arm across-await diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("move the `await` before the borrowed use, or replace the borrowed path with an owned value across suspension")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("match-arm across-await diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_loop_body_borrowed_reference_across_await_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-loop-body-await-reference-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "async fn worker(v: &'a i32) -> i32 {\n    while false {\n        await recv()\n        discard v\n    }\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("cannot use borrowed reference `v` across await suspension points")
+        })
+        .expect("loop-body across-await diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("move the `await` before the borrowed use, or replace the borrowed path with an owned value across suspension")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("loop-body across-await diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_owner_access_after_mutable_borrow_last_use_stays_clean() {
     let file_name = format!(
         "fozzylang-mut-borrow-last-use-clean-{}.fzy",
