@@ -4694,7 +4694,13 @@ const RUNTIME_HANDLE_CONTRACTS: &[RuntimeHandleContract] = &[
         closable: true,
         send_safe: false,
         async_stable: true,
-        producer_intrinsics: &[],
+        producer_intrinsics: &[
+            "gpu.launch0",
+            "gpu.launch1",
+            "gpu.launch2",
+            "gpu.launch3",
+            "gpu.launch4",
+        ],
         consumer_intrinsics: &["gpu.wait"],
         observer_intrinsics: &[],
     },
@@ -5146,6 +5152,9 @@ fn validate_execution_space_call(
 ) {
     let caller_space = function.execution_space;
     if caller_space == ast::ExecutionSpace::Host {
+        if callee == "__index_assign" {
+            return;
+        }
         if is_gpu_device_intrinsic(callee) {
             violations.push(format!(
                 "host function `{}` cannot call device-only GPU intrinsic `{}`",
@@ -5161,6 +5170,10 @@ fn validate_execution_space_call(
                 ));
             }
         }
+        return;
+    }
+
+    if callee == "__index_assign" {
         return;
     }
 
@@ -5806,6 +5819,12 @@ fn runtime_consumed_param_indices(callee: &str) -> &'static [usize] {
             || callee.ends_with("route.write_405")
             || callee.ends_with("http.stream_close")
             || callee.ends_with("http.websocket_accept") =>
+        {
+            &[0]
+        }
+        _ if runtime_handle_contracts()
+            .iter()
+            .any(|contract| contract.consumer_intrinsics.contains(&callee)) =>
         {
             &[0]
         }
@@ -12067,6 +12086,81 @@ fn infer_expr_type(
                 resolve_method_call_target(fn_sigs, scopes, global_types, raw_callee)
                     .unwrap_or_else(|| raw_callee.to_string());
             let base_callee = resolved_callee.as_str();
+            if base_callee == "__index_assign" {
+                if args.len() != 3 {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        "indexed assignment expects exactly 3 arguments".to_string(),
+                    );
+                    return Some(Type::Void);
+                }
+                let base_ty = infer_expr_type(&args[0], scopes, env, state);
+                let index_ty = infer_expr_type(&args[1], scopes, env, state);
+                let value_ty = infer_expr_type(&args[2], scopes, env, state);
+                if !index_ty.as_ref().is_some_and(is_integer_type) {
+                    let found = index_ty
+                        .as_ref()
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "unknown".to_string());
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!("index expression must be integer, got `{found}`"),
+                    );
+                }
+                match base_ty {
+                    Some(Type::Array { elem, .. })
+                    | Some(Type::Slice(elem))
+                    | Some(Type::Vec(elem)) => {
+                        if let Some(actual) = value_ty.as_ref() {
+                            if !expr_type_compatible(&elem, actual, &args[2]) {
+                                record_type_error(
+                                    state.errors,
+                                    state.type_error_details,
+                                    format!(
+                                        "indexed assignment type mismatch: expected `{}`, got `{}`",
+                                        elem, actual
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Some(Type::Named {
+                        name,
+                        args: named_args,
+                    }) if name == "GpuSlice" && named_args.len() == 1 => {
+                        if let Some(actual) = value_ty.as_ref() {
+                            if !expr_type_compatible(&named_args[0], actual, &args[2]) {
+                                record_type_error(
+                                    state.errors,
+                                    state.type_error_details,
+                                    format!(
+                                        "indexed assignment type mismatch: expected `{}`, got `{}`",
+                                        named_args[0], actual
+                                    ),
+                                );
+                            }
+                        }
+                    }
+                    Some(Type::Str) => {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            "indexed assignment is not supported for type `str`".to_string(),
+                        );
+                    }
+                    Some(other) => {
+                        record_type_error(
+                            state.errors,
+                            state.type_error_details,
+                            format!("indexed assignment is not supported for type `{other}`"),
+                        );
+                    }
+                    None => {}
+                }
+                return Some(Type::Void);
+            }
             if let Some(Type::Function { params, ret }) = scopes.get(base_callee) {
                 if explicit_types.is_some() {
                     record_type_error(
@@ -12210,8 +12304,13 @@ fn infer_expr_type(
                 record_type_error(state.errors, state.type_error_details, detail);
                 return None;
             };
-            let generics = fn_generics.get(base_callee).cloned().unwrap_or_default();
-            if !generics.is_empty() && explicit_types.is_none() {
+            let generics = if fn_sigs.contains_key(base_callee) {
+                fn_generics.get(base_callee).cloned().unwrap_or_default()
+            } else {
+                runtime_signature_generics(&params, &ret)
+            };
+            if fn_sigs.contains_key(base_callee) && !generics.is_empty() && explicit_types.is_none()
+            {
                 record_type_error(
                     state.errors,
                     state.type_error_details,
@@ -12272,6 +12371,29 @@ fn infer_expr_type(
                     signature_arg_types,
                 )
             } else {
+                let Some((resolved_params, resolved_ret, bindings)) = resolve_call_signature(
+                    &params,
+                    &ret,
+                    &generics,
+                    &signature_arg_types,
+                    explicit_types.as_deref(),
+                ) else {
+                    record_type_error(
+                        state.errors,
+                        state.type_error_details,
+                        format!(
+                            "runtime call signature mismatch for `{}`: expected ({}) -> {}",
+                            base_callee,
+                            params
+                                .iter()
+                                .map(ToString::to_string)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            ret
+                        ),
+                    );
+                    return None;
+                };
                 if params.len() != args.len() {
                     let detail = if matches!(base_callee, "http.write" | "http.write_json")
                         && args.len() == 1
@@ -12298,7 +12420,11 @@ fn infer_expr_type(
                     record_type_error(state.errors, state.type_error_details, detail);
                     return None;
                 }
-                for (index, (expected, actual)) in params.iter().zip(arg_types.iter()).enumerate() {
+                for (index, (expected, actual)) in resolved_params
+                    .iter()
+                    .zip(signature_arg_types.iter())
+                    .enumerate()
+                {
                     let Some(actual) = actual else {
                         continue;
                     };
@@ -12323,11 +12449,11 @@ fn infer_expr_type(
                     }
                 }
                 (
-                    params.clone(),
-                    ret.clone(),
-                    Vec::new(),
-                    true,
-                    arg_types.clone(),
+                    resolved_params,
+                    resolved_ret,
+                    bindings,
+                    false,
+                    signature_arg_types,
                 )
             };
             if !bindings.is_empty() {
@@ -14260,6 +14386,63 @@ fn resolve_call_signature(
     ))
 }
 
+fn collect_typevars_from_type(ty: &Type, out: &mut BTreeSet<String>) {
+    match ty {
+        Type::TypeVar(name) => {
+            out.insert(name.clone());
+        }
+        Type::Ptr { to, .. } | Type::Ref { to, .. } => collect_typevars_from_type(to, out),
+        Type::Slice(inner)
+        | Type::Set(inner)
+        | Type::Deque(inner)
+        | Type::Ring(inner)
+        | Type::Option(inner)
+        | Type::Vec(inner)
+        | Type::Future(inner) => collect_typevars_from_type(inner, out),
+        Type::Array { elem, .. } => collect_typevars_from_type(elem, out),
+        Type::Result { ok, err } => {
+            collect_typevars_from_type(ok, out);
+            collect_typevars_from_type(err, out);
+        }
+        Type::Map { key, value } => {
+            collect_typevars_from_type(key, out);
+            collect_typevars_from_type(value, out);
+        }
+        Type::Tuple(items) => {
+            for item in items {
+                collect_typevars_from_type(item, out);
+            }
+        }
+        Type::Named { args, .. } => {
+            for arg in args {
+                collect_typevars_from_type(arg, out);
+            }
+        }
+        Type::Function { params, ret } => {
+            for param in params {
+                collect_typevars_from_type(param, out);
+            }
+            collect_typevars_from_type(ret, out);
+        }
+        _ => {}
+    }
+}
+
+fn runtime_signature_generics(params: &[Type], ret: &Type) -> Vec<ast::GenericParam> {
+    let mut names = BTreeSet::new();
+    for param in params {
+        collect_typevars_from_type(param, &mut names);
+    }
+    collect_typevars_from_type(ret, &mut names);
+    names
+        .into_iter()
+        .map(|name| ast::GenericParam {
+            name,
+            bounds: Vec::new(),
+        })
+        .collect()
+}
+
 fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<String, Type>) -> bool {
     match template {
         Type::TypeVar(name) => {
@@ -14483,6 +14666,11 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "gpu.store_f32",
         "gpu.store_i32",
         "gpu.store_u32",
+        "gpu.launch0",
+        "gpu.launch1",
+        "gpu.launch2",
+        "gpu.launch3",
+        "gpu.launch4",
         "gpu.wait",
         "gpu.global_id_x",
         "gpu.global_id_y",
@@ -14947,6 +15135,10 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         name: "GpuEvent".to_string(),
         args: Vec::new(),
     };
+    let launch_a = Type::TypeVar("LaunchA".to_string());
+    let launch_b = Type::TypeVar("LaunchB".to_string());
+    let launch_c = Type::TypeVar("LaunchC".to_string());
+    let launch_d = Type::TypeVar("LaunchD".to_string());
     let gpu_type_var = Type::TypeVar("T".to_string());
     let gpu_buffer = Type::Named {
         name: "GpuBuffer".to_string(),
@@ -15106,6 +15298,76 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
         "gpu.store_u32" => (
             vec![gpu_slice_u32.clone(), i32.clone(), u32_ty.clone()],
             Type::Void,
+        ),
+        "gpu.launch0" => (
+            vec![
+                Type::Function {
+                    params: Vec::new(),
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+            ],
+            gpu_event.clone(),
+        ),
+        "gpu.launch1" => (
+            vec![
+                Type::Function {
+                    params: vec![launch_a.clone()],
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+                launch_a.clone(),
+            ],
+            gpu_event.clone(),
+        ),
+        "gpu.launch2" => (
+            vec![
+                Type::Function {
+                    params: vec![launch_a.clone(), launch_b.clone()],
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+                launch_a.clone(),
+                launch_b.clone(),
+            ],
+            gpu_event.clone(),
+        ),
+        "gpu.launch3" => (
+            vec![
+                Type::Function {
+                    params: vec![launch_a.clone(), launch_b.clone(), launch_c.clone()],
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+                launch_a.clone(),
+                launch_b.clone(),
+                launch_c.clone(),
+            ],
+            gpu_event.clone(),
+        ),
+        "gpu.launch4" => (
+            vec![
+                Type::Function {
+                    params: vec![
+                        launch_a.clone(),
+                        launch_b.clone(),
+                        launch_c.clone(),
+                        launch_d.clone(),
+                    ],
+                    ret: Box::new(Type::Void),
+                },
+                i32.clone(),
+                i32.clone(),
+                launch_a.clone(),
+                launch_b.clone(),
+                launch_c.clone(),
+                launch_d.clone(),
+            ],
+            gpu_event.clone(),
         ),
         "gpu.wait" => (vec![gpu_event.clone()], Type::Void),
         "gpu.global_id_x" | "gpu.global_id_y" | "gpu.global_id_z" => (vec![], i32.clone()),
@@ -21195,6 +21457,93 @@ mod tests {
             .type_error_details
             .iter()
             .any(|detail| detail.contains("device function `bad` parameter `buffer` uses unsupported device type `GpuBuffer<f32>`")));
+    }
+
+    #[test]
+    fn gpu_slice_index_assignment_typechecks_in_kernel() {
+        let source = r#"
+            kernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+        "#;
+        let module = parser::parse(source, "gpu_index_assign").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
+
+    #[test]
+    fn gpu_launch_event_must_be_consumed() {
+        let source = r#"
+            use core.gpu;
+            kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                defer gpu.free(input);
+                let output = gpu.alloc_f32(dev, 8);
+                defer gpu.free(output);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch3(noop, 1, 64, input_view, output_view, 8);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_event").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            typed
+                .type_error_details
+                .iter()
+                .any(|detail| detail.contains("linear value `event` was not consumed/freed"))
+                || typed
+                    .linear_type_violations
+                    .iter()
+                    .any(|detail| detail.contains("linear value `event` was not consumed/freed"))
+        );
+    }
+
+    #[test]
+    fn gpu_launch_event_wait_passes() {
+        let source = r#"
+            use core.gpu;
+            kernel fn noop(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input[i];
+                }
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                defer gpu.free(input);
+                let output = gpu.alloc_f32(dev, 8);
+                defer gpu.free(output);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch3(noop, 1, 64, input_view, output_view, 8);
+                gpu.wait(event);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_wait").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(
+            typed.type_errors, 0,
+            "type errors: {:?}; ownership: {:?}; linear: {:?}",
+            typed.type_error_details, typed.ownership_violations, typed.linear_type_violations
+        );
+        assert!(typed
+            .linear_type_violations
+            .iter()
+            .all(|detail| !detail.contains("linear value `event`")));
     }
 
     #[test]

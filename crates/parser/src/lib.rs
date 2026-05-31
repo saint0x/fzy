@@ -1373,24 +1373,34 @@ impl Parser {
             return Some(Stmt::Match { scrutinee, arms });
         }
 
-        if matches!(self.peek().map(|t| &t.kind), Some(TokenKind::Ident(_))) {
-            if self.peek_n(1).is_some_and(|t| t.kind == TokenKind::Eq) {
-                let target = self.expect_ident("expected assignment target")?;
-                let _ = self.consume(&TokenKind::Eq);
-                let value = self.parse_expr(0)?;
-                let _ = self.consume(&TokenKind::Semi);
-                return Some(Stmt::Assign { target, value });
-            }
-            if let Some(op) = self.compound_assign_op() {
-                let target = self.expect_ident("expected assignment target")?;
-                let _ = self.advance();
-                let value = self.parse_expr(0)?;
-                let _ = self.consume(&TokenKind::Semi);
-                return Some(Stmt::CompoundAssign { target, op, value });
-            }
-        }
-
         let expr = self.parse_expr(0)?;
+        if self.consume(&TokenKind::Eq) {
+            let value = self.parse_expr(0)?;
+            let _ = self.consume(&TokenKind::Semi);
+            return Some(match expr {
+                Expr::Ident(target) => Stmt::Assign { target, value },
+                Expr::Index { base, index } => Stmt::Expr(Expr::Call {
+                    callee: "__index_assign".to_string(),
+                    args: vec![*base, *index, value],
+                }),
+                _ => {
+                    self.push_diag_here("expected assignment target");
+                    Stmt::Expr(value)
+                }
+            });
+        }
+        if let Some(op) = self.compound_assign_op() {
+            let _ = self.advance();
+            let value = self.parse_expr(0)?;
+            let _ = self.consume(&TokenKind::Semi);
+            return Some(match expr {
+                Expr::Ident(target) => Stmt::CompoundAssign { target, op, value },
+                _ => {
+                    self.push_diag_here("expected assignment target");
+                    Stmt::Expr(value)
+                }
+            });
+        }
         let _ = self.consume(&TokenKind::Semi);
         Some(Stmt::Expr(expr))
     }
@@ -5889,6 +5899,30 @@ mod tests {
         assert_eq!(spaces.get("square"), Some(&ast::ExecutionSpace::Pure));
         assert_eq!(spaces.get("helper"), Some(&ast::ExecutionSpace::Device));
         assert_eq!(spaces.get("launch"), Some(&ast::ExecutionSpace::Kernel));
+    }
+
+    #[test]
+    fn parses_index_assignment_as_internal_builtin() {
+        let source = r#"
+            fn main() -> i32 {
+                let values = [1, 2, 3];
+                values[1] = 9;
+                return values[1];
+            }
+        "#;
+        let module = parse(source, "index_assign").expect("parse should succeed");
+        let main_fn = module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function should exist");
+        assert!(main_fn.body.iter().any(|stmt| matches!(
+            stmt,
+            ast::Stmt::Expr(ast::Expr::Call { callee, .. }) if callee == "__index_assign"
+        )));
     }
 
     #[test]
