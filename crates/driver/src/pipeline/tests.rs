@@ -188,6 +188,32 @@ fn compile_file_handle_contracts_align_with_runtime_contracts() {
 }
 
 #[test]
+fn documented_handle_contract_matrix_matches_compiler_metadata() {
+    let docs = std::fs::read_to_string("/Users/deepsaint/Desktop/fozzylang/docs/stdlib-v1.md")
+        .expect("stdlib contract doc should exist");
+    assert!(docs.contains("### Handle Contract Matrix"));
+    assert!(docs
+        .contains("Compiler-shipped handle contracts are emitted in `.fz/handle-contracts.json`."));
+
+    for contract in hir::runtime_handle_contracts() {
+        let expected_line = format!(
+            "- `{}`: copy={}, owned={}, linear={}, closable={}, send-safe={}, async-stable={}",
+            contract.name,
+            if contract.copy { "yes" } else { "no" },
+            if contract.owned { "yes" } else { "no" },
+            if contract.linear { "yes" } else { "no" },
+            if contract.closable { "yes" } else { "no" },
+            if contract.send_safe { "yes" } else { "no" },
+            if contract.async_stable { "yes" } else { "no" },
+        );
+        assert!(
+            docs.contains(&expected_line),
+            "stdlib doc is missing handle contract row: {expected_line}"
+        );
+    }
+}
+
+#[test]
 fn compile_file_memory_report_tracks_process_builder_handles() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-memory-report-process-builders-{}",
@@ -4189,6 +4215,82 @@ fn verify_loop_body_borrowed_reference_across_await_diagnostic_is_snapshot_stabl
         .code
         .as_deref()
         .expect("loop-body across-await diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_non_async_stable_process_argv_across_await_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-process-argv-await-handle-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.proc;\nasync fn worker() -> i32 {\n    let argv = proc.argv_new()\n    await recv()\n    discard argv\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message.contains(
+                "cannot use non-async-stable handle `argv` (ProcessArgv) across await suspension points",
+            )
+        })
+        .expect("process argv across-await diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("finish, consume, or replace the non-async-stable handle before `await`, or move the suspension point earlier")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("process argv across-await diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_non_async_stable_process_env_across_await_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-process-env-await-handle-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.proc;\nasync fn worker() -> i32 {\n    let env = proc.env_new()\n    await recv()\n    discard env\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message.contains(
+                "cannot use non-async-stable handle `env` (ProcessEnv) across await suspension points",
+            )
+        })
+        .expect("process env across-await diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("finish, consume, or replace the non-async-stable handle before `await`, or move the suspension point earlier")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("process env across-await diagnostic should carry stable code");
 
     let _ = std::fs::remove_file(path);
 }
@@ -8678,6 +8780,77 @@ fn cross_backend_library_exports_remain_identical() {
 }
 
 #[test]
+fn cross_backend_handle_matrix_runtime_executes_consistently() {
+    let project_name = format!(
+        "fozzylang-handle-matrix-parity-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    let out_path = root.join("handle-matrix-output.json");
+    let quoted_out = out_path.to_string_lossy().replace('\"', "\\\"");
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"backend_handle_matrix\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"backend_handle_matrix\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        format!(
+            "use core.fs;\nuse core.term;\n\nfn main() -> i32 {{\n    let array_payload = json.parse(\"[1,2,3]\")\n    let items = json.to_list(array_payload)\n    let object_payload = json.parse(\"{{\\\"left\\\":\\\"1\\\",\\\"right\\\":\\\"2\\\"}}\")\n    let table = json.to_map(object_payload)\n    let total = list.len(items) + map.len(table)\n    let summary = map.new()\n    discard map.set(summary, \"total\", json.str(str.from_i32(total)))\n    let encoded = json.object(summary)\n    fs.write_file(\"{quoted_out}\", encoded)\n    discard term.write(\"handle-matrix-parity\\n\")\n    return total\n}}\n"
+        ),
+    )
+    .expect("source should be written");
+
+    let cranelift = compile_file_with_backend(&root, BuildProfile::Dev, Some("cranelift"))
+        .expect("cranelift build should succeed");
+    let llvm = compile_file_with_backend(&root, BuildProfile::Dev, Some("llvm"))
+        .expect("llvm build should succeed");
+
+    let _ = std::fs::remove_file(&out_path);
+    let cranelift_output = run_native_output(
+        cranelift
+            .output
+            .as_deref()
+            .expect("cranelift output should exist"),
+    );
+    let cranelift_exit = cranelift_output
+        .status
+        .code()
+        .expect("cranelift output should include exit code");
+    let cranelift_stdout =
+        String::from_utf8(cranelift_output.stdout).expect("cranelift stdout should be utf-8");
+    let cranelift_stderr =
+        String::from_utf8(cranelift_output.stderr).expect("cranelift stderr should be utf-8");
+    let cranelift_artifact =
+        std::fs::read_to_string(&out_path).expect("cranelift artifact should exist");
+
+    let _ = std::fs::remove_file(&out_path);
+    let llvm_output = run_native_output(llvm.output.as_deref().expect("llvm output should exist"));
+    let llvm_exit = llvm_output
+        .status
+        .code()
+        .expect("llvm output should include exit code");
+    let llvm_stdout = String::from_utf8(llvm_output.stdout).expect("llvm stdout should be utf-8");
+    let llvm_stderr = String::from_utf8(llvm_output.stderr).expect("llvm stderr should be utf-8");
+    let llvm_artifact = std::fs::read_to_string(&out_path).expect("llvm artifact should exist");
+
+    assert_eq!(cranelift_exit, llvm_exit);
+    assert!(cranelift_exit >= 0);
+    assert_eq!(cranelift_stdout, llvm_stdout);
+    assert_eq!(cranelift_stdout, "handle-matrix-parity\n");
+    assert_eq!(cranelift_stderr, llvm_stderr);
+    assert!(cranelift_stderr.is_empty());
+    assert_eq!(cranelift_artifact, llvm_artifact);
+    assert!(cranelift_artifact.contains("\"total\":"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn cross_backend_defer_executes_on_safe_scope_return_in_lifo_order() {
     let file_name = format!(
         "fozzylang-defer-safe-scope-lifo-{}.fzy",
@@ -9176,6 +9349,80 @@ fn verify_task_group_spawn_n_closure_shared_borrow_reports_thread_boundary_help(
 }
 
 #[test]
+fn verify_spawn_closure_non_send_safe_http_handle_reports_thread_boundary_help() {
+    let file_name = format!(
+        "fozzylang-spawn-closure-http-handle-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.http;\nuse core.thread;\nfn main() -> i32 {\n    let conn = http.accept()\n    let worker = | | http.path(conn)\n    let handle = spawn(worker)\n    return join(handle)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                == "function `main` spawn captures non-Send-safe handle `conn` (HttpHandle) across thread boundary"
+        })
+        .expect("spawn closure non-send-safe http-handle diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("move only Send-safe handles into spawned tasks, or finish/close the non-Send-safe handle before crossing the thread boundary")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("spawn closure non-send-safe http-handle diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_spawn_closure_non_send_safe_file_handle_reports_thread_boundary_help() {
+    let file_name = format!(
+        "fozzylang-spawn-closure-file-handle-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.fs;\nuse core.thread;\nfn main() -> i32 {\n    let file = fs.open(\"/tmp/fzy-spawn-file-handle.txt\")\n    let worker = | | fs.flush(file)\n    let handle = spawn(worker)\n    return join(handle)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diag| {
+            diag.message
+                == "function `main` spawn captures non-Send-safe handle `file` (FileHandle) across thread boundary"
+        })
+        .expect("spawn closure non-send-safe file-handle diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("move only Send-safe handles into spawned tasks, or finish/close the non-Send-safe handle before crossing the thread boundary")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("spawn closure non-send-safe file-handle diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_spawn_closure_owned_capture_stays_clean() {
     let file_name = format!(
         "fozzylang-spawn-closure-owned-capture-{}.fzy",
@@ -9198,6 +9445,36 @@ fn verify_spawn_closure_owned_capture_stays_clean() {
         .any(|diag| matches!(diag.severity, Severity::Error)));
     assert!(!output.diagnostic_details.iter().any(|diag| {
         diag.message.contains("captures shared borrowed reference")
+            || diag.message.contains("captures mutable borrowed reference")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_spawn_closure_send_safe_list_handle_stays_clean() {
+    let file_name = format!(
+        "fozzylang-spawn-closure-send-safe-list-handle-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "use core.thread;\nfn main() -> i32 {\n    let payload = json.parse(\"[1,2,3]\")\n    let items = json.to_list(payload)\n    let worker = | | list.len(items)\n    let handle = spawn(worker)\n    return join(handle)\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diag| matches!(diag.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diag| {
+        diag.message.contains("captures non-Send-safe handle")
+            || diag.message.contains("captures shared borrowed reference")
             || diag.message.contains("captures mutable borrowed reference")
     }));
 

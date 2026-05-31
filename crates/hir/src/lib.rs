@@ -1948,6 +1948,19 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
                     ));
                 }
             }
+            if function.is_async
+                && has_await
+                && function_param_handle_is_not_async_stable(param)
+                && ref_used_after_await(&function.body, &param.name, false)
+            {
+                let Type::Named { name, .. } = &param.ty else {
+                    continue;
+                };
+                violations.push(format!(
+                    "function `{}` cannot use non-async-stable handle `{}` ({}) across await suspension points",
+                    function.name, param.name, name
+                ));
+            }
         }
         for (name, ty) in &function.local_types {
             if let Type::Ref {
@@ -1972,6 +1985,22 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
                         name
                     ));
                 }
+            }
+            if function.is_async
+                && has_await
+                && runtime_handle_contract_is_not_async_stable(ty)
+                && ref_used_after_await(&function.body, name, false)
+            {
+                let Type::Named {
+                    name: handle_name, ..
+                } = ty
+                else {
+                    continue;
+                };
+                violations.push(format!(
+                    "function `{}` cannot use non-async-stable handle `{}` ({}) across await suspension points",
+                    function.name, name, handle_name
+                ));
             }
         }
         let return_lifetime = match &function.return_type {
@@ -1999,6 +2028,14 @@ fn analyze_reference_lifetimes(functions: &[TypedFunction]) -> Vec<String> {
         }
     }
     violations
+}
+
+fn function_param_handle_is_not_async_stable(param: &ast::Param) -> bool {
+    runtime_handle_contract_is_not_async_stable(&param.ty)
+}
+
+fn runtime_handle_contract_is_not_async_stable(ty: &Type) -> bool {
+    matches!(ty, Type::Named { name, .. } if runtime_handle_contract(name).is_some_and(|contract| !contract.async_stable))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3427,6 +3464,15 @@ fn analyze_spawn_borrow_escapes_expr(
                                     "function `{}` {} captures {} borrowed reference `{}` across thread boundary",
                                     function.name, callee, borrow_kind, capture
                                 ));
+                            } else if let Type::Named { name, .. } = ty {
+                                if runtime_handle_contract(name)
+                                    .is_some_and(|contract| !contract.send_safe)
+                                {
+                                    violations.push(format!(
+                                        "function `{}` {} captures non-Send-safe handle `{}` ({}) across thread boundary",
+                                        function.name, callee, capture, name
+                                    ));
+                                }
                             }
                         }
                     }
@@ -19524,6 +19570,52 @@ mod tests {
     }
 
     #[test]
+    fn detects_non_async_stable_process_argv_used_after_await() {
+        let source = r#"
+            use core.proc;
+            async fn worker() -> i32 {
+                let argv = proc.argv_new();
+                let env = proc.env_new();
+                await recv();
+                discard proc.argv_push(argv, "-lc");
+                let handle = proc.spawn_cmd("/bin/sh", argv, env, "");
+                discard proc.close(handle);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.reference_lifetime_violations.iter().any(|detail| {
+            detail.contains(
+                "cannot use non-async-stable handle `argv` (ProcessArgv) across await suspension points",
+            )
+        }));
+    }
+
+    #[test]
+    fn detects_non_async_stable_process_env_used_after_await() {
+        let source = r#"
+            use core.proc;
+            async fn worker() -> i32 {
+                let argv = proc.argv_new();
+                let env = proc.env_new();
+                await recv();
+                discard proc.env_set(env, "K", "V");
+                let handle = proc.spawn_cmd("/bin/sh", argv, env, "");
+                discard proc.close(handle);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.reference_lifetime_violations.iter().any(|detail| {
+            detail.contains(
+                "cannot use non-async-stable handle `env` (ProcessEnv) across await suspension points",
+            )
+        }));
+    }
+
+    #[test]
     fn routes_borrowed_return_thread_boundary_failures_out_of_capability_bucket() {
         let source = r#"
             async fn worker(v: &'a i32) -> &'a i32 {
@@ -19738,6 +19830,71 @@ mod tests {
                 detail.contains("captures shared borrowed reference")
                     || detail.contains("captures mutable borrowed reference")
             }),
+            "{:?}",
+            typed.thread_boundary_violations
+        );
+    }
+
+    #[test]
+    fn spawn_rejects_closure_capturing_non_send_safe_http_handle() {
+        let source = r#"
+            use core.http;
+            use core.thread;
+            fn main() -> i32 {
+                let conn = http.accept();
+                let worker = | | close(conn);
+                let handle = spawn(worker);
+                return join(handle);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains(
+                "spawn captures non-Send-safe handle `conn` (HttpHandle) across thread boundary",
+            )
+        }));
+    }
+
+    #[test]
+    fn spawn_rejects_closure_capturing_non_send_safe_file_handle() {
+        let source = r#"
+            use core.fs;
+            use core.thread;
+            fn main() -> i32 {
+                let file = fs.open("/tmp/fzy-non-send-safe-file.txt");
+                let worker = | | fs.close(file);
+                let handle = spawn(worker);
+                return join(handle);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains(
+                "spawn captures non-Send-safe handle `file` (FileHandle) across thread boundary",
+            )
+        }));
+    }
+
+    #[test]
+    fn spawn_allows_closure_capturing_send_safe_json_handle() {
+        let source = r#"
+            use core.thread;
+            fn main() -> i32 {
+                let payload = json.parse("{}");
+                let worker = | | json.has(payload, "ok");
+                let handle = spawn(worker);
+                return join(handle);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            !typed
+                .thread_boundary_violations
+                .iter()
+                .any(|detail| detail.contains("captures non-Send-safe handle `payload`")),
             "{:?}",
             typed.thread_boundary_violations
         );

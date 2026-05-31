@@ -565,6 +565,8 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             .contains("returns borrowed reference across thread-capable boundary")
         {
             "return owned values or a Send/Sync-safe handle across thread boundaries".to_string()
+        } else if violation.contains("captures non-Send-safe handle `") {
+            "move only Send-safe handles into spawned tasks, or finish/close the non-Send-safe handle before crossing the thread boundary".to_string()
         } else if violation.contains("captures shared borrowed reference `")
             || violation.contains("captures mutable borrowed reference `")
         {
@@ -603,6 +605,10 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             && violation.contains("across await suspension points")
         {
             "move the `await` before the borrowed use, or replace the borrowed path with an owned value across suspension".to_string()
+        } else if violation.contains("cannot use non-async-stable handle `")
+            && violation.contains("across await suspension points")
+        {
+            "finish, consume, or replace the non-async-stable handle before `await`, or move the suspension point earlier".to_string()
         } else {
             "introduce explicit lifetime/region-safe ownership handoff".to_string()
         };

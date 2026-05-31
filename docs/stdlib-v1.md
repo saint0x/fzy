@@ -153,20 +153,22 @@ let err = proc.stderr(handle)
 
 ### Handle Contract Matrix
 
-- Linear and explicitly terminal:
-  - `HttpHandle`
-  - `HttpStreamHandle`
-  - `WebSocketHandle`
-  - `ProcessHandle`
-  - `ProcessArgv`
-  - `ProcessEnv`
-  - `TaskHandle`
-  - `TaskGroupHandle`
-  - `KvStoreHandle`
-- Owned but non-linear:
-  - `JsonHandle`
-  - `ListHandle`
-  - `MapHandle`
+- `HttpHandle`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
+- `HttpStreamHandle`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
+- `WebSocketHandle`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
+- `ProcessHandle`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
+- `ProcessArgv`: copy=no, owned=yes, linear=yes, closable=no, send-safe=no, async-stable=no
+- `ProcessEnv`: copy=no, owned=yes, linear=yes, closable=no, send-safe=no, async-stable=no
+- `TaskHandle`: copy=no, owned=yes, linear=yes, closable=no, send-safe=yes, async-stable=yes
+- `TaskGroupHandle`: copy=no, owned=yes, linear=yes, closable=no, send-safe=yes, async-stable=yes
+- `TaskGroup`: copy=no, owned=yes, linear=yes, closable=no, send-safe=yes, async-stable=yes
+- `FileHandle`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
+- `JsonHandle`: copy=no, owned=yes, linear=no, closable=no, send-safe=yes, async-stable=yes
+- `ListHandle`: copy=no, owned=yes, linear=no, closable=no, send-safe=yes, async-stable=yes
+- `MapHandle`: copy=no, owned=yes, linear=no, closable=no, send-safe=yes, async-stable=yes
+- `KvStoreHandle`: copy=no, owned=yes, linear=yes, closable=yes, send-safe=no, async-stable=yes
+- `ChannelHandle`: copy=no, owned=yes, linear=yes, closable=no, send-safe=yes, async-stable=yes
+- `RpcFrame`: copy=no, owned=yes, linear=yes, closable=no, send-safe=no, async-stable=no
 - Compiler-shipped handle contracts are emitted in `.fz/handle-contracts.json`.
 - Native runtime edge contracts are emitted in `.fz/native-runtime-contracts.json`.
 - Production code should treat the emitted contract artifacts as the source of truth for handle cleanup, borrowing, send-safety, and async-stability semantics.

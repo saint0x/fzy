@@ -7,7 +7,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `14. Compiler-phase lock-in suite`
 - `15. Memory-safety adversarial coverage`
 - `16. Native import contract tables`
-- `17. Typed-handle and linear-resource law`
 - `18. Async/task safety`
 - `19. RPC hardening`
 - `20. Backend parity law`
@@ -44,7 +43,6 @@ Required tests:
 Checklist:
 
 - Finish promoting any remaining aggregate, provenance, and ownership-state shapes that are still only HIR-covered or partially regression-covered at the shipped `fz verify` surface.
-- Finish bringing any still-unlocked shipped runtime handle families under the same ownership-state, cleanup, and post-consume law as `alloc(...)` and `free(...)`.
 
 Required tests:
 
@@ -55,33 +53,16 @@ Required tests:
 
 ## Priority 7
 
-### 17. Typed-handle and linear-resource law
-
-Checklist:
-
-- Finish defining the shipped handle set and contract for any still-unlocked handle families.
-- For each handle, declare whether it is copy, owned, linear, closable, send-safe, and async-stable.
-- Make those handle rules visible to HIR, verifier, stdlib docs, runtime shim contracts, and diagnostics.
-- Reject any runtime or helper path that consumes or aliases a handle in a way the handle matrix does not permit.
-
-Required tests:
-
-- Per-handle type, lifetime, and cleanup regressions.
-- Backend parity tests using representative handle operations.
-- Stdlib contract doc generation or validation from the same metadata source.
-
 ## Priority 8
 
 ### 18. Async/task safety
 
 Checklist:
 
-- Enforce owned and send-safe `spawn` inputs.
 - Require task groups to join, cancel, or detach.
 - Make timeout and deadline semantics deterministic.
 - Ensure cancelled tasks clean resources.
 - Keep task handles linear.
-- Prevent references from crossing task boundaries unless explicitly legal.
 - Reject result reads after cancel or detach unless the language explicitly permits them.
 - Harden the call-edge model for borrow, mutability, and thread crossings beyond same-function checks where feasible.
 - Define one explicit state machine for task handles, task groups, and cancel, join, detach, and result-read legality.
