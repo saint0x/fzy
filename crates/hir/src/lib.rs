@@ -2169,8 +2169,18 @@ fn analyze_live_borrow_block(
             Stmt::Let {
                 name, value, ty, ..
             } => {
+                let explicit_ty = ty
+                    .as_ref()
+                    .or_else(|| function.local_types.get(name))
+                    .or_else(|| {
+                        function
+                            .params
+                            .iter()
+                            .find(|param| param.name == *name)
+                            .map(|param| &param.ty)
+                    });
                 if let Some(binding) =
-                    infer_borrow_binding_from_expr(value, ty.as_ref(), bindings, signatures)
+                    infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
                 {
                     bindings.insert(name.clone(), binding);
                 } else {
@@ -2356,8 +2366,18 @@ fn stmt_borrow_creations(
         Stmt::Let {
             name, value, ty, ..
         } => {
+            let explicit_ty = ty
+                .as_ref()
+                .or_else(|| function.local_types.get(name))
+                .or_else(|| {
+                    function
+                        .params
+                        .iter()
+                        .find(|param| param.name == *name)
+                        .map(|param| &param.ty)
+                });
             if let Some(binding) =
-                infer_borrow_binding_from_expr(value, ty.as_ref(), bindings, signatures)
+                infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
             {
                 out.push(BorrowCreation {
                     owner: binding.owner,
@@ -2502,13 +2522,25 @@ fn infer_borrow_binding_from_expr(
     bindings: &BTreeMap<String, BorrowBinding>,
     signatures: &BTreeMap<String, TypedFunction>,
 ) -> Option<BorrowBinding> {
-    let Type::Ref { mutable, .. } = explicit_ty? else {
-        return None;
-    };
-    infer_borrow_owner_name(value, bindings, signatures).map(|owner| BorrowBinding {
-        owner,
-        mutable: *mutable,
-    })
+    match explicit_ty? {
+        Type::Ref { mutable, .. } => {
+            infer_borrow_owner_name(value, bindings, signatures).map(|owner| BorrowBinding {
+                owner,
+                mutable: *mutable,
+            })
+        }
+        Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => infer_gpu_slice_owner_name(
+            value,
+            bindings,
+            signatures,
+        )
+        .map(|owner| BorrowBinding {
+            owner,
+            // Until readonly/writeonly qualifiers land, treat live GPU slices as mutable views.
+            mutable: true,
+        }),
+        _ => None,
+    }
 }
 
 fn infer_borrow_owner_name(
@@ -2581,6 +2613,66 @@ fn infer_borrow_owner_name(
                 None
             }
         }
+        _ => None,
+    }
+}
+
+fn infer_gpu_slice_owner_name(
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> Option<String> {
+    match expr {
+        Expr::Ident(name) => Some(
+            bindings
+                .get(name)
+                .map(|binding| binding.owner.clone())
+                .unwrap_or_else(|| name.clone()),
+        ),
+        Expr::Group(inner) | Expr::FieldAccess { base: inner, .. } => {
+            infer_gpu_slice_owner_name(inner, bindings, signatures)
+        }
+        Expr::Call { callee, args } if callee == "gpu.slice" => args
+            .first()
+            .and_then(|arg| infer_gpu_slice_owner_name(arg, bindings, signatures)),
+        Expr::If {
+            then_expr,
+            else_expr,
+            ..
+        } => {
+            let then_owner = infer_gpu_slice_owner_name(then_expr, bindings, signatures);
+            let else_owner = infer_gpu_slice_owner_name(else_expr, bindings, signatures);
+            if then_owner == else_owner {
+                then_owner
+            } else {
+                None
+            }
+        }
+        Expr::Match { arms, .. } => {
+            let owners = arms
+                .iter()
+                .filter_map(|arm| infer_gpu_slice_owner_name(&arm.value, bindings, signatures))
+                .collect::<Vec<_>>();
+            if owners.is_empty() {
+                None
+            } else if owners.windows(2).all(|window| window[0] == window[1]) {
+                owners.first().cloned()
+            } else {
+                None
+            }
+        }
+        Expr::Call { callee, args } => signatures
+            .get(callee)
+            .and_then(|function| match &function.return_type {
+                Type::Named { name, args: named_args } if name == "GpuSlice" && named_args.len() == 1 => {
+                    args.iter()
+                        .filter_map(|arg| infer_gpu_slice_owner_name(arg, bindings, signatures))
+                        .collect::<Vec<_>>()
+                        .first()
+                        .cloned()
+                }
+                _ => None,
+            }),
         _ => None,
     }
 }
@@ -21625,6 +21717,79 @@ mod tests {
             .type_error_details
             .iter()
             .any(|detail| detail.contains("uses `await` but is not declared async")));
+    }
+
+    #[test]
+    fn gpu_slice_live_view_blocks_free_of_owner() {
+        let source = r#"
+            use core.gpu;
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buffer = gpu.alloc_f32(dev, 8);
+                let view = gpu.slice(buffer, 0, 4);
+                gpu.free(buffer);
+                discard view;
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_slice_live_view_free").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "consumes owner `buffer` via `gpu.free(buffer)` while borrowed reference `view` is still live"
+            )));
+    }
+
+    #[test]
+    fn gpu_slice_live_view_blocks_owner_access() {
+        let source = r#"
+            use core.gpu;
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buffer = gpu.alloc_f32(dev, 8);
+                let view = gpu.slice(buffer, 0, 4);
+                let downloaded = gpu.download_f32(buffer);
+                discard downloaded;
+                discard view;
+                gpu.free(buffer);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_slice_live_view_owner_access").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "accesses owner `buffer` via `let downloaded = gpu.download_f32(buffer)` while mutable borrowed reference `view` is still live"
+            )));
+    }
+
+    #[test]
+    fn gpu_competing_live_slices_from_same_buffer_are_rejected() {
+        let source = r#"
+            use core.gpu;
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buffer = gpu.alloc_f32(dev, 8);
+                let left = gpu.slice(buffer, 0, 4);
+                let right = gpu.slice(buffer, 4, 4);
+                discard left;
+                discard right;
+                gpu.free(buffer);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_competing_slices").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "creates mutable borrow `right` from owner `buffer` while mutable borrowed reference `left` is still live"
+            )));
     }
 
     #[test]
