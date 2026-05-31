@@ -7,7 +7,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `14. Compiler-phase lock-in suite`
 - `15. Memory-safety adversarial coverage`
 - `22. Canary-app gates`
-- `25. v1 syntax and profile freeze`
 - `26. Stdlib and capability policy`
 - `27. Error/perf/docs/compat policy`
 
@@ -67,14 +66,6 @@ Required tests:
 - Deterministic doctor/test plus trace verify, replay, and CI for representative canary flows.
 
 ## Second-Wave v1 Lock-In
-
-### 25. v1 syntax and profile freeze
-
-Checklist:
-
-- Declare the syntax freeze set for `fn`, `let` and `let mut`, `struct`, `enum`, `match`, `trait` and `impl`, `async` and `await`, `rpc`, unsafe metadata, `defer`, `use core.*`, and `extern` and `pubext` ABI syntax.
-- After freeze, permit additive changes only unless the version policy says otherwise.
-- Extend profile policy so the shipped story is explicit for `dev`, `verify`, `release`, and a production-facing `strict` contract that defines checks enabled, unsafe policy, backend, capabilities, runtime imports allowed, artifact emission, optimization level, and diagnostic strictness.
 
 ### 26. Stdlib and capability policy
 

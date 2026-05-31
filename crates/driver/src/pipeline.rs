@@ -269,7 +269,12 @@ pub fn compile_file_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
     let (_typed, fir) = lower_fir_cached(&parsed);
-    write_safety_artifacts(&resolved.project_root, &parsed, &fir)?;
+    write_safety_artifacts(
+        &resolved.project_root,
+        &parsed,
+        &fir,
+        resolved.manifest.as_ref(),
+    )?;
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
@@ -362,7 +367,12 @@ pub fn compile_library_with_backend(
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
     let (_typed, fir) = lower_fir_cached(&parsed);
-    write_safety_artifacts(&resolved.project_root, &parsed, &fir)?;
+    write_safety_artifacts(
+        &resolved.project_root,
+        &parsed,
+        &fir,
+        resolved.manifest.as_ref(),
+    )?;
     let strict_unsafe_contracts = unsafe_contracts_enforced(resolved.manifest.as_ref(), profile);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
@@ -650,6 +660,7 @@ fn write_safety_artifacts(
     project_root: &Path,
     parsed: &ParsedProgram,
     fir: &fir::FirModule,
+    manifest: Option<&manifest::Manifest>,
 ) -> Result<()> {
     let out_dir = project_root.join(".fz");
     std::fs::create_dir_all(&out_dir)
@@ -764,6 +775,28 @@ fn write_safety_artifacts(
         )
     })?;
 
+    let language_policy_json = build_language_policy_json(manifest);
+    std::fs::write(
+        out_dir.join("language-policy.json"),
+        serde_json::to_vec_pretty(&language_policy_json)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("language-policy.json").display()
+        )
+    })?;
+    std::fs::write(
+        out_dir.join("language-policy.md"),
+        render_language_policy_markdown(&language_policy_json),
+    )
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("language-policy.md").display()
+        )
+    })?;
+
     Ok(())
 }
 
@@ -775,6 +808,209 @@ fn compatibility_versions_json() -> serde_json::Value {
         "nativeImportTableVersion": NATIVE_IMPORT_TABLE_VERSION,
         "diagnosticCatalogVersion": DIAGNOSTIC_CATALOG_VERSION,
     })
+}
+
+fn syntax_freeze_entries() -> &'static [(&'static str, &'static str)] {
+    &[
+        ("fn", "function declarations"),
+        ("let", "immutable bindings"),
+        ("let mut", "mutable bindings"),
+        ("struct", "struct declarations"),
+        ("enum", "enum declarations"),
+        ("match", "pattern matching"),
+        ("trait", "trait declarations"),
+        ("impl", "impl blocks"),
+        ("async", "async declarations"),
+        ("await", "async suspension"),
+        ("rpc", "rpc declarations"),
+        ("unsafe metadata", "compiler-generated unsafe contracts"),
+        ("defer", "scope cleanup"),
+        ("use core.*", "capability and stdlib imports"),
+        ("extern", "external ABI imports"),
+        ("pubext", "public ABI exports"),
+    ]
+}
+
+fn default_profile_backend(profile: BuildProfile) -> &'static str {
+    match profile {
+        BuildProfile::Dev => "cranelift",
+        BuildProfile::Release | BuildProfile::Verify | BuildProfile::Strict => "llvm",
+    }
+}
+
+fn default_profile_optimize(profile: BuildProfile) -> bool {
+    !matches!(profile, BuildProfile::Dev)
+}
+
+fn default_profile_optimization_level(profile: BuildProfile) -> &'static str {
+    match profile {
+        BuildProfile::Dev => "O0",
+        BuildProfile::Verify => "O1+g",
+        BuildProfile::Strict => "O2+g",
+        BuildProfile::Release => "O3",
+    }
+}
+
+fn default_profile_diagnostic_strictness(profile: BuildProfile) -> &'static str {
+    if matches!(profile, BuildProfile::Strict) {
+        "strict"
+    } else {
+        "standard"
+    }
+}
+
+fn resolved_profile_emit_safety_artifacts(
+    manifest: Option<&manifest::Manifest>,
+    profile: BuildProfile,
+) -> bool {
+    manifest
+        .and_then(|manifest| profile_config(manifest, profile))
+        .and_then(|config| config.emit_safety_artifacts)
+        .unwrap_or(true)
+}
+
+fn resolved_profile_checks(manifest: Option<&manifest::Manifest>, profile: BuildProfile) -> bool {
+    manifest
+        .and_then(|manifest| profile_config(manifest, profile))
+        .and_then(|config| config.checks)
+        .unwrap_or(true)
+}
+
+fn resolved_profile_backend(
+    manifest: Option<&manifest::Manifest>,
+    profile: BuildProfile,
+) -> String {
+    manifest
+        .and_then(|manifest| profile_config(manifest, profile))
+        .and_then(|config| config.backend.clone())
+        .unwrap_or_else(|| default_profile_backend(profile).to_string())
+}
+
+fn resolved_profile_optimize(manifest: Option<&manifest::Manifest>, profile: BuildProfile) -> bool {
+    manifest
+        .and_then(|manifest| profile_config(manifest, profile))
+        .and_then(|config| config.optimize)
+        .unwrap_or_else(|| default_profile_optimize(profile))
+}
+
+fn resolved_profile_diagnostic_strictness(
+    manifest: Option<&manifest::Manifest>,
+    profile: BuildProfile,
+) -> String {
+    manifest
+        .and_then(|manifest| profile_config(manifest, profile))
+        .and_then(|config| config.diagnostic_strictness.clone())
+        .unwrap_or_else(|| default_profile_diagnostic_strictness(profile).to_string())
+}
+
+fn safety_artifact_names() -> &'static [&'static str] {
+    &[
+        "memory-report.json",
+        "memory-report.md",
+        "unsafe-report.json",
+        "async-safety.json",
+        "rpc-safety.json",
+        "ffi-report.json",
+        "ffi-report.md",
+        "native-runtime-contracts.json",
+        "native-runtime-contracts.md",
+        "handle-contracts.json",
+        "language-policy.json",
+        "language-policy.md",
+    ]
+}
+
+fn build_language_policy_json(manifest: Option<&manifest::Manifest>) -> serde_json::Value {
+    let profiles = [
+        BuildProfile::Dev,
+        BuildProfile::Verify,
+        BuildProfile::Release,
+        BuildProfile::Strict,
+    ]
+    .into_iter()
+    .map(|profile| {
+        let profile_name = profile.as_str();
+        (
+            profile_name.to_string(),
+            serde_json::json!({
+                "checksEnabled": resolved_profile_checks(manifest, profile),
+                "unsafeContractsEnforced": unsafe_contracts_enforced(manifest, profile),
+                "backend": resolved_profile_backend(manifest, profile),
+                "runtimeImportsAllowed": "declared_native_runtime_contracts_only",
+                "capabilityPolicy": "explicit_compiler_checked",
+                "emitSafetyArtifacts": resolved_profile_emit_safety_artifacts(manifest, profile),
+                "optimize": resolved_profile_optimize(manifest, profile),
+                "optimizationLevel": default_profile_optimization_level(profile),
+                "diagnosticStrictness": resolved_profile_diagnostic_strictness(manifest, profile),
+                "experimentalFeaturesAllowed": manifest.map(|m| m.language.tier == "experimental" && m.language.allow_experimental).unwrap_or(false),
+                "artifactEmission": safety_artifact_names(),
+            }),
+        )
+    })
+    .collect::<serde_json::Map<String, serde_json::Value>>();
+    serde_json::json!({
+        "schemaVersion": "fozzylang.language_policy.v1",
+        "versions": compatibility_versions_json(),
+        "language": {
+            "defaultTier": manifest.map(|m| m.language.tier.as_str()).unwrap_or("core_v1"),
+            "experimentalOptInRequired": true,
+            "allowExperimental": manifest.map(|m| m.language.allow_experimental).unwrap_or(false),
+            "changePolicy": "additive_only",
+        },
+        "syntaxFreeze": {
+            "frozen": true,
+            "surface": syntax_freeze_entries().iter().map(|(name, description)| {
+                serde_json::json!({
+                    "name": name,
+                    "description": description,
+                })
+            }).collect::<Vec<_>>(),
+        },
+        "profiles": profiles,
+    })
+}
+
+fn render_language_policy_markdown(value: &serde_json::Value) -> String {
+    let mut out = String::from("# Language Policy\n\n");
+    out.push_str(&format!(
+        "- Schema: `{}`\n- Language tier: `{}`\n- Experimental opt-in required: `{}`\n- Change policy: `{}`\n\n",
+        value["schemaVersion"].as_str().unwrap_or("unknown"),
+        value["language"]["defaultTier"].as_str().unwrap_or("core_v1"),
+        value["language"]["experimentalOptInRequired"].as_bool().unwrap_or(true),
+        value["language"]["changePolicy"].as_str().unwrap_or("additive_only"),
+    ));
+    out.push_str("## Syntax Freeze\n\n");
+    if let Some(items) = value["syntaxFreeze"]["surface"].as_array() {
+        for item in items {
+            out.push_str(&format!(
+                "- `{}`: {}\n",
+                item["name"].as_str().unwrap_or("?"),
+                item["description"].as_str().unwrap_or("?")
+            ));
+        }
+    }
+    out.push_str("\n## Profiles\n\n");
+    out.push_str("| Profile | Checks | Unsafe | Backend | Runtime Imports | Capabilities | Emit Safety Artifacts | Optimize | Optimization | Diagnostics |\n|---|---|---|---|---|---|---|---|---|---|\n");
+    if let Some(profiles) = value["profiles"].as_object() {
+        for (name, profile) in profiles {
+            out.push_str(&format!(
+                "| `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` |\n",
+                name,
+                profile["checksEnabled"].as_bool().unwrap_or(true),
+                profile["unsafeContractsEnforced"]
+                    .as_bool()
+                    .unwrap_or(false),
+                profile["backend"].as_str().unwrap_or("?"),
+                profile["runtimeImportsAllowed"].as_str().unwrap_or("?"),
+                profile["capabilityPolicy"].as_str().unwrap_or("?"),
+                profile["emitSafetyArtifacts"].as_bool().unwrap_or(true),
+                profile["optimize"].as_bool().unwrap_or(false),
+                profile["optimizationLevel"].as_str().unwrap_or("?"),
+                profile["diagnosticStrictness"].as_str().unwrap_or("?"),
+            ));
+        }
+    }
+    out
 }
 
 #[derive(Clone)]

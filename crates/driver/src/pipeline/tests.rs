@@ -109,6 +109,8 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         "native-runtime-contracts.json",
         "native-runtime-contracts.md",
         "handle-contracts.json",
+        "language-policy.json",
+        "language-policy.md",
     ] {
         assert!(
             root.join(".fz").join(name).exists(),
@@ -140,9 +142,170 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     let handle_contracts = std::fs::read_to_string(root.join(".fz/handle-contracts.json"))
         .expect("handle contracts should exist");
     assert!(handle_contracts.contains("\"name\": \"HttpHandle\""));
+
+    let language_policy: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join(".fz/language-policy.json"))
+            .expect("language policy should exist"),
+    )
+    .expect("language policy should be valid json");
+    assert_eq!(
+        language_policy["language"]["changePolicy"].as_str(),
+        Some("additive_only")
+    );
+    assert!(language_policy["syntaxFreeze"]["surface"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["name"] == "fn")));
+    let language_policy_md = std::fs::read_to_string(root.join(".fz/language-policy.md"))
+        .expect("language policy markdown should exist");
+    assert!(language_policy_md.contains("## Syntax Freeze"));
+    assert!(language_policy_md.contains("| Profile | Checks | Unsafe | Backend |"));
     assert!(handle_contracts.contains("\"name\": \"JsonHandle\""));
     assert!(handle_contracts.contains("\"linear\": true"));
     assert!(handle_contracts.contains("\"linear\": false"));
+}
+
+#[test]
+fn language_policy_artifact_reports_syntax_freeze_and_profile_defaults() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-language-policy-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"language_policy\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"language_policy\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("build should succeed");
+    assert_eq!(artifact.status, "ok");
+    let payload: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join(".fz/language-policy.json"))
+            .expect("language policy artifact should be readable"),
+    )
+    .expect("language policy should be valid json");
+    assert_eq!(
+        payload["schemaVersion"].as_str(),
+        Some("fozzylang.language_policy.v1")
+    );
+    assert_eq!(
+        payload["language"]["changePolicy"].as_str(),
+        Some("additive_only")
+    );
+    let syntax_names = payload["syntaxFreeze"]["surface"]
+        .as_array()
+        .expect("syntax freeze should be an array")
+        .iter()
+        .filter_map(|item| item["name"].as_str())
+        .collect::<Vec<_>>();
+    for expected in [
+        "fn",
+        "let",
+        "let mut",
+        "struct",
+        "enum",
+        "match",
+        "trait",
+        "impl",
+        "async",
+        "await",
+        "rpc",
+        "unsafe metadata",
+        "defer",
+        "use core.*",
+        "extern",
+        "pubext",
+    ] {
+        assert!(
+            syntax_names.contains(&expected),
+            "syntax freeze missing `{expected}`"
+        );
+    }
+    let dev = &payload["profiles"]["dev"];
+    assert_eq!(dev["backend"].as_str(), Some("cranelift"));
+    assert_eq!(dev["checksEnabled"].as_bool(), Some(true));
+    assert_eq!(dev["unsafeContractsEnforced"].as_bool(), Some(false));
+    assert_eq!(dev["optimize"].as_bool(), Some(false));
+    assert_eq!(dev["optimizationLevel"].as_str(), Some("O0"));
+    assert_eq!(dev["diagnosticStrictness"].as_str(), Some("standard"));
+    assert_eq!(dev["emitSafetyArtifacts"].as_bool(), Some(true));
+    let strict = &payload["profiles"]["strict"];
+    assert_eq!(strict["backend"].as_str(), Some("llvm"));
+    assert_eq!(strict["checksEnabled"].as_bool(), Some(true));
+    assert_eq!(strict["unsafeContractsEnforced"].as_bool(), Some(true));
+    assert_eq!(strict["optimize"].as_bool(), Some(true));
+    assert_eq!(strict["optimizationLevel"].as_str(), Some("O2+g"));
+    assert_eq!(strict["diagnosticStrictness"].as_str(), Some("strict"));
+    assert_eq!(
+        strict["runtimeImportsAllowed"].as_str(),
+        Some("declared_native_runtime_contracts_only")
+    );
+    assert_eq!(
+        strict["capabilityPolicy"].as_str(),
+        Some("explicit_compiler_checked")
+    );
+
+    let markdown = std::fs::read_to_string(root.join(".fz/language-policy.md"))
+        .expect("language policy markdown should be readable");
+    assert!(markdown.contains("- `fn`: function declarations"));
+    assert!(markdown.contains("| `strict` | `true` | `true` | `llvm` |"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn language_policy_artifact_respects_manifest_profile_overrides() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-language-policy-overrides-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"language_policy_overrides\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"language_policy_overrides\"\npath=\"src/main.fzy\"\n\n[language]\ntier=\"experimental\"\nallow_experimental=true\n\n[profiles.strict]\nbackend=\"cranelift\"\nchecks=false\noptimize=false\ndiagnostic_strictness=\"standard\"\nemit_safety_artifacts=false\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "fn risky() -> i32 { return 1 }\nfn main() -> i32 {\n    let v = try risky() catch 0\n    return v\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("build should run");
+    let payload: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join(".fz/language-policy.json"))
+            .expect("language policy artifact should be readable"),
+    )
+    .expect("language policy should be valid json");
+    assert_eq!(artifact.status, "ok");
+    assert_eq!(
+        payload["language"]["defaultTier"].as_str(),
+        Some("experimental")
+    );
+    assert_eq!(
+        payload["language"]["allowExperimental"].as_bool(),
+        Some(true)
+    );
+    let strict = &payload["profiles"]["strict"];
+    assert_eq!(strict["backend"].as_str(), Some("cranelift"));
+    assert_eq!(strict["checksEnabled"].as_bool(), Some(false));
+    assert_eq!(strict["optimize"].as_bool(), Some(false));
+    assert_eq!(strict["diagnosticStrictness"].as_str(), Some("standard"));
+    assert_eq!(strict["emitSafetyArtifacts"].as_bool(), Some(false));
+    assert_eq!(strict["experimentalFeaturesAllowed"].as_bool(), Some(true));
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]
