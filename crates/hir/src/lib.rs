@@ -2077,6 +2077,926 @@ fn analyze_live_borrow_consumption(functions: &[TypedFunction]) -> Vec<String> {
     violations
 }
 
+fn analyze_gpu_kernel_contracts(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    let signatures = functions
+        .iter()
+        .map(|function| (function.name.clone(), function.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let barrier_summary = build_gpu_barrier_summary(functions);
+    for function in functions {
+        let mut bindings = BTreeMap::<String, BorrowBinding>::new();
+        for param in &function.params {
+            if matches!(&param.ty, Type::Named { name, args } if name == "GpuSlice" && args.len() == 1)
+            {
+                bindings.insert(
+                    param.name.clone(),
+                    BorrowBinding {
+                        owner: param.name.clone(),
+                        mutable: true,
+                    },
+                );
+            }
+        }
+        analyze_gpu_kernel_contract_block(
+            function,
+            &function.body,
+            &mut bindings,
+            &signatures,
+            &barrier_summary,
+            0,
+            &mut violations,
+        );
+    }
+    violations
+}
+
+fn analyze_gpu_kernel_contract_block(
+    function: &TypedFunction,
+    body: &[Stmt],
+    bindings: &mut BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    barrier_summary: &BTreeMap<String, bool>,
+    divergent_depth: usize,
+    violations: &mut Vec<String>,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::Let {
+                name, value, ty, ..
+            } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    value,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let explicit_ty = ty
+                    .as_ref()
+                    .or_else(|| function.local_types.get(name))
+                    .or_else(|| {
+                        function
+                            .params
+                            .iter()
+                            .find(|param| param.name == *name)
+                            .map(|param| &param.ty)
+                    });
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
+                {
+                    bindings.insert(name.clone(), binding);
+                } else {
+                    bindings.remove(name);
+                }
+            }
+            Stmt::Assign { target, value } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    value,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let explicit_ty = function.local_types.get(target).or_else(|| {
+                    function
+                        .params
+                        .iter()
+                        .find(|param| param.name == *target)
+                        .map(|param| &param.ty)
+                });
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
+                {
+                    bindings.insert(target.clone(), binding);
+                } else {
+                    bindings.remove(target);
+                }
+            }
+            Stmt::CompoundAssign { value, .. }
+            | Stmt::Return(Some(value))
+            | Stmt::Defer(value)
+            | Stmt::Requires(value)
+            | Stmt::Ensures(value)
+            | Stmt::Expr(value) => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    value,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    condition,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let mut then_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    then_body,
+                    &mut then_bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+                let mut else_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    else_body,
+                    &mut else_bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+            Stmt::While { condition, body } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    condition,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let mut loop_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    body,
+                    &mut loop_bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+            Stmt::Loop { body } => {
+                let mut loop_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    body,
+                    &mut loop_bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+            Stmt::ForIn { iterable, body, .. } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    iterable,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                let mut loop_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    body,
+                    &mut loop_bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    analyze_gpu_kernel_contract_block(
+                        function,
+                        std::slice::from_ref(init.as_ref()),
+                        bindings,
+                        signatures,
+                        barrier_summary,
+                        divergent_depth,
+                        violations,
+                    );
+                }
+                if let Some(condition) = condition {
+                    analyze_gpu_kernel_contract_expr(
+                        function,
+                        condition,
+                        bindings,
+                        signatures,
+                        barrier_summary,
+                        divergent_depth,
+                        violations,
+                    );
+                }
+                let mut loop_bindings = bindings.clone();
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    body,
+                    &mut loop_bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+                if let Some(step) = step {
+                    analyze_gpu_kernel_contract_block(
+                        function,
+                        std::slice::from_ref(step.as_ref()),
+                        bindings,
+                        signatures,
+                        barrier_summary,
+                        divergent_depth + 1,
+                        violations,
+                    );
+                }
+            }
+            Stmt::Match { scrutinee, arms } => {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    scrutinee,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+                for arm in arms {
+                    let mut arm_bindings = bindings.clone();
+                    if let Some(guard) = &arm.guard {
+                        analyze_gpu_kernel_contract_expr(
+                            function,
+                            guard,
+                            &mut arm_bindings,
+                            signatures,
+                            barrier_summary,
+                            divergent_depth + 1,
+                            violations,
+                        );
+                    }
+                    analyze_gpu_kernel_contract_expr(
+                        function,
+                        &arm.value,
+                        &mut arm_bindings,
+                        signatures,
+                        barrier_summary,
+                        divergent_depth + 1,
+                        violations,
+                    );
+                }
+            }
+            Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue | Stmt::LetPattern { .. } => {}
+        }
+    }
+}
+
+fn analyze_gpu_kernel_contract_expr(
+    function: &TypedFunction,
+    expr: &Expr,
+    bindings: &mut BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    barrier_summary: &BTreeMap<String, bool>,
+    divergent_depth: usize,
+    violations: &mut Vec<String>,
+) {
+    match expr {
+        Expr::Call { callee, args } => {
+            if divergent_depth > 0
+                && matches!(
+                    function.execution_space,
+                    ast::ExecutionSpace::Device | ast::ExecutionSpace::Kernel
+                )
+            {
+                if callee == "gpu.barrier" {
+                    violations.push(format!(
+                        "{} function `{}` cannot use `gpu.barrier` inside divergent control flow",
+                        execution_space_label(function.execution_space),
+                        function.name
+                    ));
+                } else if barrier_summary.get(callee).copied().unwrap_or(false) {
+                    violations.push(format!(
+                        "{} function `{}` cannot call barrier-carrying function `{}` inside divergent control flow",
+                        execution_space_label(function.execution_space),
+                        function.name,
+                        callee
+                    ));
+                }
+            }
+            if is_gpu_launch_callee(callee) {
+                analyze_gpu_launch_aliases(function, callee, args, bindings, signatures, violations);
+            }
+            for arg in args {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    arg,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+            }
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                condition,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                then_expr,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                else_expr,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::Discard(inner) => analyze_gpu_kernel_contract_expr(
+            function,
+            inner,
+            bindings,
+            signatures,
+            barrier_summary,
+            divergent_depth,
+            violations,
+        ),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                try_expr,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                catch_expr,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::Match { scrutinee, arms } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                scrutinee,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    analyze_gpu_kernel_contract_expr(
+                        function,
+                        guard,
+                        bindings,
+                        signatures,
+                        barrier_summary,
+                        divergent_depth + 1,
+                        violations,
+                    );
+                }
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    &arm.value,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+        }
+        Expr::While { condition, body } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                condition,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            let mut loop_bindings = bindings.clone();
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                &mut loop_bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    std::slice::from_ref(init.as_ref()),
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+            }
+            if let Some(condition) = condition {
+                analyze_gpu_kernel_contract_expr(
+                    function,
+                    condition,
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth,
+                    violations,
+                );
+            }
+            let mut loop_bindings = bindings.clone();
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                &mut loop_bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+            if let Some(step) = step {
+                analyze_gpu_kernel_contract_block(
+                    function,
+                    std::slice::from_ref(step.as_ref()),
+                    bindings,
+                    signatures,
+                    barrier_summary,
+                    divergent_depth + 1,
+                    violations,
+                );
+            }
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                iterable,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            let mut loop_bindings = bindings.clone();
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                &mut loop_bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::Loop { body } => {
+            let mut loop_bindings = bindings.clone();
+            analyze_gpu_kernel_contract_block(
+                function,
+                body,
+                &mut loop_bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth + 1,
+                violations,
+            );
+        }
+        Expr::FieldAccess { base, .. } | Expr::Group(base) => analyze_gpu_kernel_contract_expr(
+            function,
+            base,
+            bindings,
+            signatures,
+            barrier_summary,
+            divergent_depth,
+            violations,
+        ),
+        Expr::Index { base, index } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                base,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                index,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+        }
+        Expr::Unary { expr, .. } => analyze_gpu_kernel_contract_expr(
+            function,
+            expr,
+            bindings,
+            signatures,
+            barrier_summary,
+            divergent_depth,
+            violations,
+        ),
+        Expr::Binary { left, right, .. } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                left,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                right,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+        }
+        Expr::Await(inner) | Expr::Return(Some(inner)) => analyze_gpu_kernel_contract_expr(
+            function,
+            inner,
+            bindings,
+            signatures,
+            barrier_summary,
+            divergent_depth,
+            violations,
+        ),
+        Expr::Range { start, end, .. } => {
+            analyze_gpu_kernel_contract_expr(
+                function,
+                start,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+            analyze_gpu_kernel_contract_expr(
+                function,
+                end,
+                bindings,
+                signatures,
+                barrier_summary,
+                divergent_depth,
+                violations,
+            );
+        }
+        Expr::Return(None)
+        | Expr::Ident(_)
+        | Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Char(_)
+        | Expr::Break(_)
+        | Expr::Continue
+        | Expr::Closure { .. }
+        | Expr::ArrayLiteral(_)
+        | Expr::Tuple(_)
+        | Expr::StructInit { .. }
+        | Expr::EnumInit { .. }
+        | Expr::ObjectLiteral(_) => {}
+    }
+}
+
+fn is_gpu_launch_callee(callee: &str) -> bool {
+    matches!(
+        callee,
+        "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4"
+    )
+}
+
+fn analyze_gpu_launch_aliases(
+    function: &TypedFunction,
+    callee: &str,
+    args: &[Expr],
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    violations: &mut Vec<String>,
+) {
+    let Some(Expr::Ident(kernel_name)) = args.first() else {
+        return;
+    };
+    let Some(kernel) = signatures.get(kernel_name) else {
+        return;
+    };
+    if kernel.execution_space != ast::ExecutionSpace::Kernel {
+        return;
+    }
+    let mut seen = BTreeMap::<String, String>::new();
+    for (index, param) in kernel.params.iter().enumerate() {
+        let Some(arg) = args.get(index + 3) else {
+            continue;
+        };
+        let Type::Named { name, args: named_args } = &param.ty else {
+            continue;
+        };
+        if name != "GpuSlice" || named_args.len() != 1 {
+            continue;
+        }
+        let Some(owner) = infer_gpu_slice_owner_name(arg, bindings, signatures) else {
+            continue;
+        };
+        if let Some(previous_param) = seen.insert(owner.clone(), param.name.clone()) {
+            violations.push(format!(
+                "host function `{}` launch `{}` via `{}` aliases GpuSlice parameters `{}` and `{}` through owner `{}`",
+                function.name,
+                kernel.name,
+                callee,
+                previous_param,
+                param.name,
+                owner
+            ));
+        }
+    }
+}
+
+fn build_gpu_barrier_summary(functions: &[TypedFunction]) -> BTreeMap<String, bool> {
+    let function_map = functions
+        .iter()
+        .map(|function| (function.name.clone(), function))
+        .collect::<BTreeMap<_, _>>();
+    let mut cache = BTreeMap::new();
+    for function in functions {
+        let mut visiting = BTreeSet::new();
+        let contains = function_contains_gpu_barrier(function, &function_map, &mut cache, &mut visiting);
+        cache.insert(function.name.clone(), contains);
+    }
+    cache
+}
+
+fn function_contains_gpu_barrier(
+    function: &TypedFunction,
+    functions: &BTreeMap<String, &TypedFunction>,
+    cache: &mut BTreeMap<String, bool>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    if let Some(cached) = cache.get(&function.name) {
+        return *cached;
+    }
+    if !visiting.insert(function.name.clone()) {
+        return false;
+    }
+    let contains = block_contains_gpu_barrier(&function.body, functions, cache, visiting);
+    visiting.remove(&function.name);
+    cache.insert(function.name.clone(), contains);
+    contains
+}
+
+fn block_contains_gpu_barrier(
+    body: &[Stmt],
+    functions: &BTreeMap<String, &TypedFunction>,
+    cache: &mut BTreeMap<String, bool>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    body.iter()
+        .any(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
+}
+
+fn stmt_contains_gpu_barrier(
+    stmt: &Stmt,
+    functions: &BTreeMap<String, &TypedFunction>,
+    cache: &mut BTreeMap<String, bool>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    match stmt {
+        Stmt::Let { value, .. }
+        | Stmt::LetPattern { value, .. }
+        | Stmt::Assign { value, .. }
+        | Stmt::CompoundAssign { value, .. }
+        | Stmt::Expr(value)
+        | Stmt::Defer(value)
+        | Stmt::Requires(value)
+        | Stmt::Ensures(value)
+        | Stmt::Return(Some(value)) => expr_contains_gpu_barrier(value, functions, cache, visiting),
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            expr_contains_gpu_barrier(condition, functions, cache, visiting)
+                || block_contains_gpu_barrier(then_body, functions, cache, visiting)
+                || block_contains_gpu_barrier(else_body, functions, cache, visiting)
+        }
+        Stmt::While { condition, body } => {
+            expr_contains_gpu_barrier(condition, functions, cache, visiting)
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Stmt::Loop { body } => {
+            block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Stmt::ForIn { iterable, body, .. } => {
+            expr_contains_gpu_barrier(iterable, functions, cache, visiting)
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
+                || condition.as_ref().is_some_and(|expr| {
+                    expr_contains_gpu_barrier(expr, functions, cache, visiting)
+                })
+                || step.as_deref().is_some_and(|stmt| {
+                    stmt_contains_gpu_barrier(stmt, functions, cache, visiting)
+                })
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Stmt::Match { scrutinee, arms } => {
+            expr_contains_gpu_barrier(scrutinee, functions, cache, visiting)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(|guard| {
+                        expr_contains_gpu_barrier(guard, functions, cache, visiting)
+                    }) || expr_contains_gpu_barrier(&arm.value, functions, cache, visiting)
+                })
+        }
+        Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue => false,
+    }
+}
+
+fn expr_contains_gpu_barrier(
+    expr: &Expr,
+    functions: &BTreeMap<String, &TypedFunction>,
+    cache: &mut BTreeMap<String, bool>,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    match expr {
+        Expr::Call { callee, args } => {
+            callee == "gpu.barrier"
+                || functions.get(callee).is_some_and(|function| {
+                    function_contains_gpu_barrier(function, functions, cache, visiting)
+                })
+                || args
+                    .iter()
+                    .any(|arg| expr_contains_gpu_barrier(arg, functions, cache, visiting))
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_contains_gpu_barrier(condition, functions, cache, visiting)
+                || expr_contains_gpu_barrier(then_expr, functions, cache, visiting)
+                || expr_contains_gpu_barrier(else_expr, functions, cache, visiting)
+        }
+        Expr::Discard(inner) => expr_contains_gpu_barrier(inner, functions, cache, visiting),
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            expr_contains_gpu_barrier(try_expr, functions, cache, visiting)
+                || expr_contains_gpu_barrier(catch_expr, functions, cache, visiting)
+        }
+        Expr::Match { scrutinee, arms } => {
+            expr_contains_gpu_barrier(scrutinee, functions, cache, visiting)
+                || arms.iter().any(|arm| {
+                    arm.guard.as_ref().is_some_and(|guard| {
+                        expr_contains_gpu_barrier(guard, functions, cache, visiting)
+                    }) || expr_contains_gpu_barrier(&arm.value, functions, cache, visiting)
+                })
+        }
+        Expr::UnsafeBlock { body, .. } => block_contains_gpu_barrier(body, functions, cache, visiting),
+        Expr::While { condition, body } => {
+            expr_contains_gpu_barrier(condition, functions, cache, visiting)
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            init.as_deref()
+                .is_some_and(|stmt| stmt_contains_gpu_barrier(stmt, functions, cache, visiting))
+                || condition.as_ref().is_some_and(|expr| {
+                    expr_contains_gpu_barrier(expr, functions, cache, visiting)
+                })
+                || step.as_deref().is_some_and(|stmt| {
+                    stmt_contains_gpu_barrier(stmt, functions, cache, visiting)
+                })
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            expr_contains_gpu_barrier(iterable, functions, cache, visiting)
+                || block_contains_gpu_barrier(body, functions, cache, visiting)
+        }
+        Expr::Loop { body } => block_contains_gpu_barrier(body, functions, cache, visiting),
+        Expr::FieldAccess { base, .. } | Expr::Group(base) | Expr::Await(base) => {
+            expr_contains_gpu_barrier(base, functions, cache, visiting)
+        }
+        Expr::Index { base, index } => {
+            expr_contains_gpu_barrier(base, functions, cache, visiting)
+                || expr_contains_gpu_barrier(index, functions, cache, visiting)
+        }
+        Expr::Unary { expr, .. } | Expr::Return(Some(expr)) => {
+            expr_contains_gpu_barrier(expr, functions, cache, visiting)
+        }
+        Expr::Range { start, end, .. } => {
+            expr_contains_gpu_barrier(start, functions, cache, visiting)
+                || expr_contains_gpu_barrier(end, functions, cache, visiting)
+        }
+        Expr::Binary { left, right, .. } => {
+            expr_contains_gpu_barrier(left, functions, cache, visiting)
+                || expr_contains_gpu_barrier(right, functions, cache, visiting)
+        }
+        Expr::Return(None)
+        | Expr::Ident(_)
+        | Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Bool(_)
+        | Expr::Str(_)
+        | Expr::Char(_)
+        | Expr::Break(_)
+        | Expr::Continue
+        | Expr::Closure { .. }
+        | Expr::ArrayLiteral(_)
+        | Expr::Tuple(_)
+        | Expr::StructInit { .. }
+        | Expr::EnumInit { .. }
+        | Expr::ObjectLiteral(_) => false,
+    }
+}
+
 fn analyze_live_borrow_block(
     function: &TypedFunction,
     body: &[Stmt],
@@ -2674,6 +3594,15 @@ fn infer_gpu_slice_owner_name(
                 _ => None,
             }),
         _ => None,
+    }
+}
+
+fn execution_space_label(execution: ast::ExecutionSpace) -> &'static str {
+    match execution {
+        ast::ExecutionSpace::Host => "host",
+        ast::ExecutionSpace::Pure => "pure",
+        ast::ExecutionSpace::Device => "device",
+        ast::ExecutionSpace::Kernel => "kernel",
     }
 }
 
@@ -5536,6 +6465,7 @@ fn analyze_ownership(
     let summaries = build_function_memory_summaries(functions);
     let ownership_summaries = build_function_ownership_summaries(functions);
     violations.extend(analyze_alias_and_provenance(functions));
+    violations.extend(analyze_gpu_kernel_contracts(functions));
     violations.extend(analyze_atomic_ordering_claims(functions));
     violations.extend(analyze_live_borrow_consumption(functions));
     for function in functions {
@@ -21790,6 +22720,106 @@ mod tests {
             .any(|detail| detail.contains(
                 "creates mutable borrow `right` from owner `buffer` while mutable borrowed reference `left` is still live"
             )));
+    }
+
+    #[test]
+    fn gpu_launch_rejects_aliased_slice_parameters() {
+        let source = r#"
+            use core.gpu;
+            kernel fn saxpy(input: GpuSlice<f32>, output: GpuSlice<f32>) -> void {
+                let i = gpu.global_id_x();
+                output[i] = input[i];
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let buffer = gpu.alloc_f32(dev, 8);
+                let view = gpu.slice(buffer, 0, 8);
+                let event = gpu.launch2(saxpy, 1, 8, view, view);
+                gpu.wait(event);
+                discard view;
+                gpu.free(buffer);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_alias").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "host function `main` launch `saxpy` via `gpu.launch2` aliases GpuSlice parameters `input` and `output` through owner `buffer`"
+            )));
+    }
+
+    #[test]
+    fn kernel_barrier_in_divergent_branch_is_rejected() {
+        let source = r#"
+            use core.gpu;
+            kernel fn sync_then_store(output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    gpu.barrier();
+                    output[i] = 1.0;
+                }
+            }
+        "#;
+        let module = parser::parse(source, "gpu_barrier_branch").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "kernel function `sync_then_store` cannot use `gpu.barrier` inside divergent control flow"
+            )));
+    }
+
+    #[test]
+    fn kernel_barrier_helper_in_divergent_branch_is_rejected() {
+        let source = r#"
+            use core.gpu;
+            device fn sync_point() -> void {
+                gpu.barrier();
+            }
+            kernel fn sync_then_store(output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    sync_point();
+                    output[i] = 1.0;
+                }
+            }
+        "#;
+        let module = parser::parse(source, "gpu_barrier_helper_branch").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "kernel function `sync_then_store` cannot call barrier-carrying function `sync_point` inside divergent control flow"
+            )));
+    }
+
+    #[test]
+    fn kernel_barrier_in_straight_line_code_passes() {
+        let source = r#"
+            use core.gpu;
+            kernel fn sync_then_store(output: GpuSlice<f32>, n: i32) -> void {
+                gpu.barrier();
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = 1.0;
+                }
+            }
+        "#;
+        let module = parser::parse(source, "gpu_barrier_straight_line").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("gpu.barrier")),
+            "ownership violations: {:?}",
+            typed.ownership_violations
+        );
     }
 
     #[test]

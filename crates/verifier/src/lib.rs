@@ -553,6 +553,14 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             && violation.contains("while mutable borrowed reference `")
         {
             "use the mutable-borrowed alias directly, or move the owner access after the borrow's last use".to_string()
+        } else if violation.contains("aliases GpuSlice parameters `") {
+            "pass distinct buffer views to each mutable kernel slice parameter, or add explicit readonly/writeonly parameter modes before reusing the same owner".to_string()
+        } else if violation.contains("cannot use `gpu.barrier` inside divergent control flow") {
+            "move the barrier to straight-line kernel/device code that every lane executes uniformly, or split the kernel so the synchronization point is unconditional".to_string()
+        } else if violation.contains("cannot call barrier-carrying function `")
+            && violation.contains("inside divergent control flow")
+        {
+            "call the synchronization helper only from uniform control flow, or refactor it so the barrier executes unconditionally before branching".to_string()
         } else if violation.contains("after provenance root") {
             "stop using aliases after freeing the owning value; move the free later, or return/assign a fresh owned value before reuse".to_string()
         } else if violation.contains("performs partial move") {
