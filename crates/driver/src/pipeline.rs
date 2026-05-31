@@ -1034,6 +1034,11 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
         .iter()
         .filter_map(summarize_task_handle_terminal_params)
         .collect::<BTreeMap<_, _>>();
+    let gpu_event_terminal_param_summaries = fir
+        .typed_functions
+        .iter()
+        .filter_map(summarize_gpu_event_terminal_params)
+        .collect::<BTreeMap<_, _>>();
     let task_group_policies = fir
         .typed_functions
         .iter()
@@ -1087,6 +1092,28 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
         .iter()
         .flat_map(collect_async_runtime_wait_policies)
         .collect::<Vec<_>>();
+    let gpu_event_policies = fir
+        .typed_functions
+        .iter()
+        .flat_map(|function| {
+            collect_gpu_event_policy_events(function, &gpu_event_terminal_param_summaries)
+        })
+        .collect::<Vec<_>>();
+    let gpu_event_findings = fir
+        .typed_functions
+        .iter()
+        .flat_map(|function| collect_gpu_event_findings(function, &gpu_event_terminal_param_summaries))
+        .map(|finding| {
+            serde_json::json!({
+                "function": finding.function,
+                "event": finding.event,
+                "kind": finding.kind,
+                "severity": "error",
+                "message": finding.message,
+                "help": finding.help,
+            })
+        })
+        .collect::<Vec<_>>();
 
     serde_json::json!({
         "schemaVersion": "fozzylang.async_safety.v1",
@@ -1095,6 +1122,7 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
             "spawnOwnedSendSafe": true,
             "taskHandleTerminalPolicy": true,
             "taskGroupTerminalPolicy": true,
+            "gpuEventTerminalPolicy": true,
             "taskResultAfterTerminal": false,
             "cancelledTasksCleanResources": true,
             "boundedRuntimeWaits": true,
@@ -1105,12 +1133,15 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
             "timeoutDeadlineScope": "task_local",
             "cancelTaskCleanup": "join_and_cleanup",
             "taskGroupCancelCleanup": "join_and_cleanup",
+            "gpuEventCancellation": "deadline_bound_wait_then_cleanup",
         },
         "stateMachine": {
             "taskHandleStates": ["active", "joined", "detached", "cancelled", "invalid_multiple_terminal", "invalid_result_after_terminal", "missing_terminal"],
             "taskGroupStates": ["active", "joined", "joined_all", "cancelled", "invalid_multiple_terminal", "missing_terminal"],
+            "gpuEventStates": ["pending", "waited", "invalid_multiple_terminal", "missing_terminal"],
             "taskHandleTerminalOperations": ["join", "detach", "cancel_task"],
             "taskGroupTerminalOperations": ["task.group_join", "task.group_join_all", "task.group_cancel"],
+            "gpuEventTerminalOperations": ["gpu.wait", "gpu.wait_async"],
             "taskResultPolicy": {
                 "beforeTerminal": "allowed",
                 "afterTerminal": "forbidden",
@@ -1121,6 +1152,8 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
         "task_transfers": task_transfers,
         "borrow_crossings": borrow_crossings,
         "runtime_wait_policies": runtime_wait_policies,
+        "gpu_event_policies": gpu_event_policies,
+        "gpu_event_findings": gpu_event_findings,
         "task_handle_policies": task_handle_policies,
         "task_handle_findings": task_handle_findings,
         "task_group_policies": task_group_policies,
@@ -2754,6 +2787,239 @@ fn summarize_task_group_terminal_params(
         collect_task_group_terminal_param_stmt(stmt, function, &mut terminal_params);
     }
     (!terminal_params.is_empty()).then_some((function.name.clone(), terminal_params))
+}
+
+fn summarize_gpu_event_terminal_params(
+    function: &hir::TypedFunction,
+) -> Option<(String, BTreeMap<usize, String>)> {
+    let mut terminal_params = BTreeMap::<usize, String>::new();
+    for stmt in &function.body {
+        collect_gpu_event_terminal_param_stmt(stmt, function, &mut terminal_params);
+    }
+    (!terminal_params.is_empty()).then_some((function.name.clone(), terminal_params))
+}
+
+fn collect_gpu_event_terminal_param_stmt(
+    stmt: &ast::Stmt,
+    function: &hir::TypedFunction,
+    terminal_params: &mut BTreeMap<usize, String>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Return(Some(value)) => {
+            collect_gpu_event_terminal_param_expr(value, function, terminal_params);
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_gpu_event_terminal_param_expr(condition, function, terminal_params);
+            for nested in then_body {
+                collect_gpu_event_terminal_param_stmt(nested, function, terminal_params);
+            }
+            for nested in else_body {
+                collect_gpu_event_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_gpu_event_terminal_param_expr(condition, function, terminal_params);
+            for nested in body {
+                collect_gpu_event_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_gpu_event_terminal_param_stmt(init, function, terminal_params);
+            }
+            if let Some(condition) = condition {
+                collect_gpu_event_terminal_param_expr(condition, function, terminal_params);
+            }
+            if let Some(step) = step {
+                collect_gpu_event_terminal_param_stmt(step, function, terminal_params);
+            }
+            for nested in body {
+                collect_gpu_event_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_gpu_event_terminal_param_expr(iterable, function, terminal_params);
+            for nested in body {
+                collect_gpu_event_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_gpu_event_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_gpu_event_terminal_param_expr(scrutinee, function, terminal_params);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_gpu_event_terminal_param_expr(guard, function, terminal_params);
+                }
+                collect_gpu_event_terminal_param_expr(&arm.value, function, terminal_params);
+            }
+        }
+        ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_gpu_event_terminal_param_expr(
+    expr: &ast::Expr,
+    function: &hir::TypedFunction,
+    terminal_params: &mut BTreeMap<usize, String>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if matches!(callee.as_str(), "gpu.wait" | "gpu.wait_async") {
+                if let Some(ast::Expr::Ident(name)) = args.first() {
+                    if let Some((index, _)) =
+                        function.params.iter().enumerate().find(|(_, param)| {
+                            param.name == *name && param.ty.to_string() == "GpuEvent"
+                        })
+                    {
+                        terminal_params
+                            .entry(index)
+                            .or_insert_with(|| callee.clone());
+                    }
+                }
+            }
+            for arg in args {
+                collect_gpu_event_terminal_param_expr(arg, function, terminal_params);
+            }
+        }
+        ast::Expr::Await(inner)
+        | ast::Expr::Group(inner)
+        | ast::Expr::Discard(inner)
+        | ast::Expr::FieldAccess { base: inner, .. }
+        | ast::Expr::Unary { expr: inner, .. } => {
+            collect_gpu_event_terminal_param_expr(inner, function, terminal_params);
+        }
+        ast::Expr::Index { base, index } => {
+            collect_gpu_event_terminal_param_expr(base, function, terminal_params);
+            collect_gpu_event_terminal_param_expr(index, function, terminal_params);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_gpu_event_terminal_param_expr(left, function, terminal_params);
+            collect_gpu_event_terminal_param_expr(right, function, terminal_params);
+        }
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_gpu_event_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for value in payload {
+                collect_gpu_event_terminal_param_expr(value, function, terminal_params);
+            }
+            for (_, value) in named_payload {
+                collect_gpu_event_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::Tuple(values) | ast::Expr::ArrayLiteral(values) => {
+            for value in values {
+                collect_gpu_event_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::Closure { body, .. } => {
+            collect_gpu_event_terminal_param_expr(body, function, terminal_params);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_gpu_event_terminal_param_expr(try_expr, function, terminal_params);
+            collect_gpu_event_terminal_param_expr(catch_expr, function, terminal_params);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_gpu_event_terminal_param_expr(condition, function, terminal_params);
+            collect_gpu_event_terminal_param_expr(then_expr, function, terminal_params);
+            collect_gpu_event_terminal_param_expr(else_expr, function, terminal_params);
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            collect_gpu_event_terminal_param_expr(scrutinee, function, terminal_params);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_gpu_event_terminal_param_expr(guard, function, terminal_params);
+                }
+                collect_gpu_event_terminal_param_expr(&arm.value, function, terminal_params);
+            }
+        }
+        ast::Expr::While { condition, body } => {
+            collect_gpu_event_terminal_param_expr(condition, function, terminal_params);
+            for stmt in body {
+                collect_gpu_event_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_gpu_event_terminal_param_stmt(init, function, terminal_params);
+            }
+            if let Some(condition) = condition {
+                collect_gpu_event_terminal_param_expr(condition, function, terminal_params);
+            }
+            if let Some(step) = step {
+                collect_gpu_event_terminal_param_stmt(step, function, terminal_params);
+            }
+            for stmt in body {
+                collect_gpu_event_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            collect_gpu_event_terminal_param_expr(iterable, function, terminal_params);
+            for stmt in body {
+                collect_gpu_event_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::Loop { body } | ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                collect_gpu_event_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::Return(value) | ast::Expr::Break(value) => {
+            if let Some(value) = value {
+                collect_gpu_event_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_gpu_event_terminal_param_expr(start, function, terminal_params);
+            collect_gpu_event_terminal_param_expr(end, function, terminal_params);
+        }
+        ast::Expr::Continue
+        | ast::Expr::Ident(_)
+        | ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_) => {}
+    }
 }
 
 fn collect_task_group_terminal_param_stmt(
@@ -4807,6 +5073,15 @@ struct AsyncRuntimeWaitFinding {
     help: String,
 }
 
+#[derive(Debug, Clone)]
+struct GpuEventFinding {
+    function: String,
+    event: String,
+    kind: &'static str,
+    message: String,
+    help: String,
+}
+
 fn function_requires_bounded_runtime_waits(function: &hir::TypedFunction) -> bool {
     function.is_async
         || function
@@ -4818,6 +5093,7 @@ fn function_requires_bounded_runtime_waits(function: &hir::TypedFunction) -> boo
 fn runtime_wait_surface(callee: &str) -> Option<&'static str> {
     match callee {
         "proc.wait" => Some("process"),
+        "gpu.wait" | "gpu.wait_async" => Some("gpu_event"),
         "http.poll_next" | "http.read" | "http.read_headers" | "http.request_stream" => {
             Some("http")
         }
@@ -4831,6 +5107,13 @@ fn runtime_wait_policy(callee: &str, timeout_active: bool) -> Option<(&'static s
     match callee {
         "proc.wait" => Some(("explicit_timeout_arg", true)),
         "http.poll_next" => Some(("intrinsic_poll_timeout", true)),
+        "gpu.wait" | "gpu.wait_async" => {
+            if timeout_active {
+                Some(("task_local_timeout_or_deadline", true))
+            } else {
+                Some(("missing_timeout_or_deadline", false))
+            }
+        }
         "http.read"
         | "http.read_headers"
         | "http.request_stream"
@@ -5016,6 +5299,11 @@ fn collect_async_runtime_wait_policies_expr(
                     "requiresBoundedWaits": function_requires_bounded_runtime_waits(function),
                     "bounded": bounded,
                     "bounding": bounding,
+                    "cancellation": if surface == "gpu_event" {
+                        serde_json::json!("deadline_bound_wait_then_cleanup")
+                    } else {
+                        serde_json::json!(null)
+                    },
                 }));
             }
             for arg in args {
@@ -5218,11 +5506,1485 @@ fn collect_async_runtime_wait_findings(
                     "function `{}` performs blocking {surface} wait `{callee}` without a timeout/deadline bound",
                     function.name
                 ),
-                help: "Add `timeout(...)` or `deadline(...)` before the blocking call, or switch to an intrinsically bounded wait such as `proc.wait(..., timeout_ms)` or `http.poll_next()`."
+                help: "Add `timeout(...)` or `deadline(...)` before the blocking call, or switch to an intrinsically bounded wait such as `proc.wait(..., timeout_ms)` or `http.poll_next()`. GPU event waits should be deadline-bound so cancelled async work cannot strand pending launches."
                     .to_string(),
             })
         })
         .collect()
+}
+
+fn collect_gpu_event_policy_events(
+    function: &hir::TypedFunction,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) -> Vec<serde_json::Value> {
+    let mut started = BTreeMap::<String, String>::new();
+    let mut terminal = BTreeMap::<String, Vec<String>>::new();
+    let mut wait_bounds = BTreeMap::<String, Vec<bool>>::new();
+    let mut timeout_active = false;
+    for stmt in &function.body {
+        collect_gpu_event_policy_stmt(
+            stmt,
+            function,
+            &mut started,
+            &mut terminal,
+            &mut wait_bounds,
+            &mut timeout_active,
+            terminal_param_summaries,
+        );
+    }
+    started
+        .into_iter()
+        .map(|(name, origin)| {
+            let terminals = terminal.get(&name).cloned().unwrap_or_default();
+            let mut unique_terminals = Vec::<String>::new();
+            for op in terminals {
+                if !unique_terminals.contains(&op) {
+                    unique_terminals.push(op);
+                }
+            }
+            let waits = wait_bounds.get(&name).cloned().unwrap_or_default();
+            let all_waits_bounded = waits.iter().all(|value| *value);
+            let current_state = match unique_terminals.as_slice() {
+                [] => "missing_terminal".to_string(),
+                [_] if all_waits_bounded => "waited".to_string(),
+                [_] => "pending".to_string(),
+                _ => "invalid_multiple_terminal".to_string(),
+            };
+            let wait_policy = if waits.is_empty() {
+                "missing".to_string()
+            } else if all_waits_bounded {
+                "task_local_timeout_or_deadline".to_string()
+            } else {
+                "missing_timeout_or_deadline".to_string()
+            };
+            serde_json::json!({
+                "function": function.name,
+                "event": name,
+                "origin": origin,
+                "policy": unique_terminals.first().cloned().unwrap_or_else(|| "missing".to_string()),
+                "terminalOperations": unique_terminals,
+                "currentState": current_state,
+                "waitPolicy": wait_policy,
+                "waitBounded": !waits.is_empty() && all_waits_bounded,
+                "deadlineScope": "task_local",
+                "cancellationPolicy": "deadline_bound_wait_then_cleanup",
+                "strictReady": current_state == "waited",
+            })
+        })
+        .collect()
+}
+
+fn collect_gpu_event_creation(
+    binding: &str,
+    value: &ast::Expr,
+    started: &mut BTreeMap<String, String>,
+) {
+    let ast::Expr::Call { callee, .. } = value else {
+        return;
+    };
+    if matches!(
+        callee.as_str(),
+        "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4"
+    ) {
+        started.insert(binding.to_string(), callee.clone());
+    }
+}
+
+fn collect_gpu_event_policy_stmt(
+    stmt: &ast::Stmt,
+    function: &hir::TypedFunction,
+    started: &mut BTreeMap<String, String>,
+    terminal: &mut BTreeMap<String, Vec<String>>,
+    wait_bounds: &mut BTreeMap<String, Vec<bool>>,
+    timeout_active: &mut bool,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) {
+    match stmt {
+        ast::Stmt::Let { name, value, .. } => {
+            collect_gpu_event_creation(name, value, started);
+            collect_gpu_event_effects_from_expr(
+                value,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Return(Some(value)) => {
+            collect_gpu_event_effects_from_expr(
+                value,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_gpu_event_effects_from_expr(
+                condition,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut then_timeout_active = *timeout_active;
+            for nested in then_body {
+                collect_gpu_event_policy_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    &mut then_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            let mut else_timeout_active = *timeout_active;
+            for nested in else_body {
+                collect_gpu_event_policy_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    &mut else_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_gpu_event_effects_from_expr(
+                condition,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut loop_timeout_active = *timeout_active;
+            for nested in body {
+                collect_gpu_event_policy_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_gpu_event_policy_stmt(
+                    init,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            if let Some(condition) = condition {
+                collect_gpu_event_effects_from_expr(
+                    condition,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            if let Some(step) = step {
+                collect_gpu_event_policy_stmt(
+                    step,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            let mut loop_timeout_active = *timeout_active;
+            for nested in body {
+                collect_gpu_event_policy_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_gpu_event_effects_from_expr(
+                iterable,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut loop_timeout_active = *timeout_active;
+            for nested in body {
+                collect_gpu_event_policy_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            let mut loop_timeout_active = *timeout_active;
+            for nested in body {
+                collect_gpu_event_policy_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_gpu_event_effects_from_expr(
+                scrutinee,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            for arm in arms {
+                let mut arm_timeout_active = *timeout_active;
+                if let Some(guard) = &arm.guard {
+                    collect_gpu_event_effects_from_expr(
+                        guard,
+                        function,
+                        terminal,
+                        wait_bounds,
+                        &mut arm_timeout_active,
+                        terminal_param_summaries,
+                    );
+                }
+                collect_gpu_event_effects_from_expr(
+                    &arm.value,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    &mut arm_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_gpu_event_effects_from_expr(
+    expr: &ast::Expr,
+    function: &hir::TypedFunction,
+    terminal: &mut BTreeMap<String, Vec<String>>,
+    wait_bounds: &mut BTreeMap<String, Vec<bool>>,
+    timeout_active: &mut bool,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if matches!(callee.as_str(), "timeout" | "deadline") {
+                *timeout_active = true;
+            }
+            if let Some(ast::Expr::Ident(name)) = args.first() {
+                if matches!(callee.as_str(), "gpu.wait" | "gpu.wait_async") {
+                    terminal
+                        .entry(name.clone())
+                        .or_default()
+                        .push(callee.clone());
+                    wait_bounds
+                        .entry(name.clone())
+                        .or_default()
+                        .push(runtime_wait_policy(callee, *timeout_active).is_some_and(|(_, bounded)| bounded));
+                }
+            }
+            if let Some(summary) = terminal_param_summaries.get(callee) {
+                for (index, terminal_name) in summary {
+                    if let Some(ast::Expr::Ident(name)) = args.get(*index) {
+                        terminal
+                            .entry(name.clone())
+                            .or_default()
+                            .push(format!("{terminal_name} via {callee}"));
+                        wait_bounds.entry(name.clone()).or_default().push(*timeout_active);
+                    }
+                }
+            }
+            for arg in args {
+                collect_gpu_event_effects_from_expr(
+                    arg,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Await(inner)
+        | ast::Expr::Group(inner)
+        | ast::Expr::Discard(inner)
+        | ast::Expr::FieldAccess { base: inner, .. }
+        | ast::Expr::Unary { expr: inner, .. } => {
+            collect_gpu_event_effects_from_expr(
+                inner,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::Index { base, index } => {
+            collect_gpu_event_effects_from_expr(
+                base,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            collect_gpu_event_effects_from_expr(
+                index,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_gpu_event_effects_from_expr(
+                left,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            collect_gpu_event_effects_from_expr(
+                right,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_gpu_event_effects_from_expr(
+                    value,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for value in payload {
+                collect_gpu_event_effects_from_expr(
+                    value,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            for (_, value) in named_payload {
+                collect_gpu_event_effects_from_expr(
+                    value,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Tuple(values) | ast::Expr::ArrayLiteral(values) => {
+            for value in values {
+                collect_gpu_event_effects_from_expr(
+                    value,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Closure { body, .. } => {
+            collect_gpu_event_effects_from_expr(
+                body,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_gpu_event_effects_from_expr(
+                try_expr,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            collect_gpu_event_effects_from_expr(
+                catch_expr,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_gpu_event_effects_from_expr(
+                condition,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut then_timeout_active = *timeout_active;
+            collect_gpu_event_effects_from_expr(
+                then_expr,
+                function,
+                terminal,
+                wait_bounds,
+                &mut then_timeout_active,
+                terminal_param_summaries,
+            );
+            let mut else_timeout_active = *timeout_active;
+            collect_gpu_event_effects_from_expr(
+                else_expr,
+                function,
+                terminal,
+                wait_bounds,
+                &mut else_timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            collect_gpu_event_effects_from_expr(
+                scrutinee,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            for arm in arms {
+                let mut arm_timeout_active = *timeout_active;
+                if let Some(guard) = &arm.guard {
+                    collect_gpu_event_effects_from_expr(
+                        guard,
+                        function,
+                        terminal,
+                        wait_bounds,
+                        &mut arm_timeout_active,
+                        terminal_param_summaries,
+                    );
+                }
+                collect_gpu_event_effects_from_expr(
+                    &arm.value,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    &mut arm_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::While { condition, body } => {
+            collect_gpu_event_effects_from_expr(
+                condition,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut loop_timeout_active = *timeout_active;
+            for stmt in body {
+                collect_gpu_event_policy_stmt(
+                    stmt,
+                    function,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    wait_bounds,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_gpu_event_policy_stmt(
+                    init,
+                    function,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            if let Some(condition) = condition {
+                collect_gpu_event_effects_from_expr(
+                    condition,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            if let Some(step) = step {
+                collect_gpu_event_policy_stmt(
+                    step,
+                    function,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            let mut loop_timeout_active = *timeout_active;
+            for stmt in body {
+                collect_gpu_event_policy_stmt(
+                    stmt,
+                    function,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    wait_bounds,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            collect_gpu_event_effects_from_expr(
+                iterable,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut loop_timeout_active = *timeout_active;
+            for stmt in body {
+                collect_gpu_event_policy_stmt(
+                    stmt,
+                    function,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    wait_bounds,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Loop { body } | ast::Expr::UnsafeBlock { body, .. } => {
+            let mut loop_timeout_active = *timeout_active;
+            for stmt in body {
+                collect_gpu_event_policy_stmt(
+                    stmt,
+                    function,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    wait_bounds,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Return(value) | ast::Expr::Break(value) => {
+            if let Some(value) = value {
+                collect_gpu_event_effects_from_expr(
+                    value,
+                    function,
+                    terminal,
+                    wait_bounds,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_gpu_event_effects_from_expr(
+                start,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            collect_gpu_event_effects_from_expr(
+                end,
+                function,
+                terminal,
+                wait_bounds,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::Continue
+        | ast::Expr::Ident(_)
+        | ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_) => {}
+    }
+}
+
+fn collect_gpu_event_findings(
+    function: &hir::TypedFunction,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) -> Vec<GpuEventFinding> {
+    let mut started = BTreeMap::<String, String>::new();
+    let mut terminal = BTreeMap::<String, Vec<String>>::new();
+    let mut wait_bounds = BTreeMap::<String, Vec<bool>>::new();
+    let mut findings = Vec::new();
+    let mut timeout_active = false;
+    for stmt in &function.body {
+        collect_gpu_event_finding_stmt(
+            stmt,
+            function,
+            &mut started,
+            &mut terminal,
+            &mut wait_bounds,
+            &mut findings,
+            &mut timeout_active,
+            terminal_param_summaries,
+        );
+    }
+    for (event, origin) in started {
+        match terminal.get(&event) {
+            None => findings.push(GpuEventFinding {
+                function: function.name.clone(),
+                event: event.clone(),
+                kind: "gpu_event_missing_terminal",
+                message: format!(
+                    "gpu event `{event}` is created by `{origin}` and exits `{}` without `gpu.wait` or `gpu.wait_async`",
+                    function.name
+                ),
+                help: "Terminate every GPU launch event exactly once with `gpu.wait(...)` or `await gpu.wait_async(...)` before the function exits."
+                    .to_string(),
+            }),
+            Some(ops) if ops.len() > 1 => findings.push(GpuEventFinding {
+                function: function.name.clone(),
+                event: event.clone(),
+                kind: "gpu_event_double_terminal",
+                message: format!(
+                    "gpu event `{event}` is already terminated by `{}` and later consumed again by `{}`",
+                    ops[0], ops[1]
+                ),
+                help: "Consume each GPU event exactly once and remove the later wait."
+                    .to_string(),
+            }),
+            Some(_) if function_requires_bounded_runtime_waits(function)
+                && wait_bounds
+                    .get(&event)
+                    .is_some_and(|bounds| bounds.iter().any(|bounded| !bounded)) =>
+            {
+                findings.push(GpuEventFinding {
+                    function: function.name.clone(),
+                    event: event.clone(),
+                    kind: "gpu_event_unbounded_wait",
+                    message: format!(
+                        "gpu event `{event}` in `{}` reaches `gpu.wait`/`gpu.wait_async` without a task-local timeout/deadline bound",
+                        function.name
+                    ),
+                    help: "Add `timeout(...)` or `deadline(...)` before waiting on the GPU event so async cancellation and pending launch cleanup stay bounded."
+                        .to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+    findings
+}
+
+fn collect_gpu_event_finding_stmt(
+    stmt: &ast::Stmt,
+    function: &hir::TypedFunction,
+    started: &mut BTreeMap<String, String>,
+    terminal: &mut BTreeMap<String, Vec<String>>,
+    wait_bounds: &mut BTreeMap<String, Vec<bool>>,
+    findings: &mut Vec<GpuEventFinding>,
+    timeout_active: &mut bool,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) {
+    match stmt {
+        ast::Stmt::Let { name, value, .. } => {
+            collect_gpu_event_creation(name, value, started);
+            collect_gpu_event_finding_expr(
+                value,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Return(Some(value)) => {
+            collect_gpu_event_finding_expr(
+                value,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_gpu_event_finding_expr(
+                condition,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut then_timeout_active = *timeout_active;
+            for nested in then_body {
+                collect_gpu_event_finding_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut then_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            let mut else_timeout_active = *timeout_active;
+            for nested in else_body {
+                collect_gpu_event_finding_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut else_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_gpu_event_finding_expr(
+                condition,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut loop_timeout_active = *timeout_active;
+            for nested in body {
+                collect_gpu_event_finding_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_gpu_event_finding_stmt(
+                    init,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            if let Some(condition) = condition {
+                collect_gpu_event_finding_expr(
+                    condition,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            if let Some(step) = step {
+                collect_gpu_event_finding_stmt(
+                    step,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            let mut loop_timeout_active = *timeout_active;
+            for nested in body {
+                collect_gpu_event_finding_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_gpu_event_finding_expr(
+                iterable,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut loop_timeout_active = *timeout_active;
+            for nested in body {
+                collect_gpu_event_finding_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            let mut loop_timeout_active = *timeout_active;
+            for nested in body {
+                collect_gpu_event_finding_stmt(
+                    nested,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_gpu_event_finding_expr(
+                scrutinee,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            for arm in arms {
+                let mut arm_timeout_active = *timeout_active;
+                if let Some(guard) = &arm.guard {
+                    collect_gpu_event_finding_expr(
+                        guard,
+                        function,
+                        started,
+                        terminal,
+                        wait_bounds,
+                        findings,
+                        &mut arm_timeout_active,
+                        terminal_param_summaries,
+                    );
+                }
+                collect_gpu_event_finding_expr(
+                    &arm.value,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut arm_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_gpu_event_finding_expr(
+    expr: &ast::Expr,
+    function: &hir::TypedFunction,
+    started: &mut BTreeMap<String, String>,
+    terminal: &mut BTreeMap<String, Vec<String>>,
+    wait_bounds: &mut BTreeMap<String, Vec<bool>>,
+    findings: &mut Vec<GpuEventFinding>,
+    timeout_active: &mut bool,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if matches!(callee.as_str(), "timeout" | "deadline") {
+                *timeout_active = true;
+            }
+            if let Some(ast::Expr::Ident(name)) = args.first() {
+                if matches!(callee.as_str(), "gpu.wait" | "gpu.wait_async") {
+                    if let Some(previous) = terminal.get(name).and_then(|ops| ops.last()) {
+                        findings.push(GpuEventFinding {
+                            function: function.name.clone(),
+                            event: name.clone(),
+                            kind: "gpu_event_double_terminal",
+                            message: format!(
+                                "gpu event `{name}` is already terminated by `{previous}` and later consumed again by `{callee}`"
+                            ),
+                            help: "Consume each GPU event exactly once and remove the later wait."
+                                .to_string(),
+                        });
+                    }
+                    terminal.entry(name.clone()).or_default().push(callee.clone());
+                    wait_bounds
+                        .entry(name.clone())
+                        .or_default()
+                        .push(runtime_wait_policy(callee, *timeout_active).is_some_and(|(_, bounded)| bounded));
+                }
+            }
+            if let Some(summary) = terminal_param_summaries.get(callee) {
+                for (index, terminal_name) in summary {
+                    if let Some(ast::Expr::Ident(name)) = args.get(*index) {
+                        started
+                            .entry(name.clone())
+                            .or_insert_with(|| "unknown".to_string());
+                        if let Some(previous) = terminal.get(name).and_then(|ops| ops.last()) {
+                            findings.push(GpuEventFinding {
+                                function: function.name.clone(),
+                                event: name.clone(),
+                                kind: "gpu_event_double_terminal",
+                                message: format!(
+                                    "gpu event `{name}` is already terminated by `{previous}` and later consumed again by `{terminal_name} via {callee}`"
+                                ),
+                                help: "Consume each GPU event exactly once and remove the later wait."
+                                    .to_string(),
+                            });
+                        }
+                        terminal
+                            .entry(name.clone())
+                            .or_default()
+                            .push(format!("{terminal_name} via {callee}"));
+                        wait_bounds.entry(name.clone()).or_default().push(*timeout_active);
+                    }
+                }
+            }
+            for arg in args {
+                collect_gpu_event_finding_expr(
+                    arg,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Await(inner)
+        | ast::Expr::Group(inner)
+        | ast::Expr::Discard(inner)
+        | ast::Expr::FieldAccess { base: inner, .. }
+        | ast::Expr::Unary { expr: inner, .. } => {
+            collect_gpu_event_finding_expr(
+                inner,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::Index { base, index } => {
+            collect_gpu_event_finding_expr(
+                base,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            collect_gpu_event_finding_expr(
+                index,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_gpu_event_finding_expr(
+                left,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            collect_gpu_event_finding_expr(
+                right,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_gpu_event_finding_expr(
+                    value,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for value in payload {
+                collect_gpu_event_finding_expr(
+                    value,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            for (_, value) in named_payload {
+                collect_gpu_event_finding_expr(
+                    value,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Tuple(values) | ast::Expr::ArrayLiteral(values) => {
+            for value in values {
+                collect_gpu_event_finding_expr(
+                    value,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Closure { body, .. } => {
+            collect_gpu_event_finding_expr(
+                body,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_gpu_event_finding_expr(
+                try_expr,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            collect_gpu_event_finding_expr(
+                catch_expr,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_gpu_event_finding_expr(
+                condition,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut then_timeout_active = *timeout_active;
+            collect_gpu_event_finding_expr(
+                then_expr,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                &mut then_timeout_active,
+                terminal_param_summaries,
+            );
+            let mut else_timeout_active = *timeout_active;
+            collect_gpu_event_finding_expr(
+                else_expr,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                &mut else_timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            collect_gpu_event_finding_expr(
+                scrutinee,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            for arm in arms {
+                let mut arm_timeout_active = *timeout_active;
+                if let Some(guard) = &arm.guard {
+                    collect_gpu_event_finding_expr(
+                        guard,
+                        function,
+                        started,
+                        terminal,
+                        wait_bounds,
+                        findings,
+                        &mut arm_timeout_active,
+                        terminal_param_summaries,
+                    );
+                }
+                collect_gpu_event_finding_expr(
+                    &arm.value,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut arm_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::While { condition, body } => {
+            collect_gpu_event_finding_expr(
+                condition,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut loop_timeout_active = *timeout_active;
+            for stmt in body {
+                collect_gpu_event_finding_stmt(
+                    stmt,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_gpu_event_finding_stmt(
+                    init,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            if let Some(condition) = condition {
+                collect_gpu_event_finding_expr(
+                    condition,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            if let Some(step) = step {
+                collect_gpu_event_finding_stmt(
+                    step,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+            let mut loop_timeout_active = *timeout_active;
+            for stmt in body {
+                collect_gpu_event_finding_stmt(
+                    stmt,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            collect_gpu_event_finding_expr(
+                iterable,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            let mut loop_timeout_active = *timeout_active;
+            for stmt in body {
+                collect_gpu_event_finding_stmt(
+                    stmt,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Loop { body } | ast::Expr::UnsafeBlock { body, .. } => {
+            let mut loop_timeout_active = *timeout_active;
+            for stmt in body {
+                collect_gpu_event_finding_stmt(
+                    stmt,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    &mut loop_timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Return(value) | ast::Expr::Break(value) => {
+            if let Some(value) = value {
+                collect_gpu_event_finding_expr(
+                    value,
+                    function,
+                    started,
+                    terminal,
+                    wait_bounds,
+                    findings,
+                    timeout_active,
+                    terminal_param_summaries,
+                );
+            }
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_gpu_event_finding_expr(
+                start,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+            collect_gpu_event_finding_expr(
+                end,
+                function,
+                started,
+                terminal,
+                wait_bounds,
+                findings,
+                timeout_active,
+                terminal_param_summaries,
+            );
+        }
+        ast::Expr::Continue
+        | ast::Expr::Ident(_)
+        | ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_) => {}
+    }
 }
 
 fn collect_task_group_policy_stmt(
@@ -10780,6 +12542,11 @@ fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::D
         .iter()
         .filter_map(summarize_task_handle_terminal_params)
         .collect::<BTreeMap<_, _>>();
+    let gpu_event_terminal_param_summaries = fir
+        .typed_functions
+        .iter()
+        .filter_map(summarize_gpu_event_terminal_params)
+        .collect::<BTreeMap<_, _>>();
     let mut diagnostics = fir
         .typed_functions
         .iter()
@@ -10812,6 +12579,18 @@ fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::D
         fir.typed_functions
             .iter()
             .flat_map(collect_async_runtime_wait_findings)
+            .map(|finding| {
+                diagnostics::Diagnostic::new(
+                    diagnostics::Severity::Error,
+                    finding.message,
+                    Some(finding.help),
+                )
+            }),
+    );
+    diagnostics.extend(
+        fir.typed_functions
+            .iter()
+            .flat_map(|function| collect_gpu_event_findings(function, &gpu_event_terminal_param_summaries))
             .map(|finding| {
                 diagnostics::Diagnostic::new(
                     diagnostics::Severity::Error,

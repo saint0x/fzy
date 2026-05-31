@@ -1392,6 +1392,43 @@ fn compile_file_emits_async_runtime_wait_policy_evidence() {
 }
 
 #[test]
+fn compile_file_emits_gpu_event_async_policy_evidence() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-gpu-event-async-policy-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"gpu_event_async_policy\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_event_async_policy\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.gpu;\nuse core.thread;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\nasync host fn flush(event: GpuEvent) -> void {\n    await gpu.wait_async(event)\n}\nasync host fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 8)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 8)\n    defer gpu.free(output)\n    let event = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 8), gpu.slice(output, 0, 8), 8)\n    timeout(25)\n    await flush(event)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("compile should run");
+    assert_eq!(artifact.status, "ok");
+
+    let async_report = std::fs::read_to_string(root.join(".fz/async-safety.json"))
+        .expect("async safety report should exist");
+    assert!(async_report.contains("\"gpuEventTerminalPolicy\": true"));
+    assert!(async_report.contains("\"gpuEventCancellation\": \"deadline_bound_wait_then_cleanup\""));
+    assert!(async_report.contains("\"callee\": \"gpu.wait_async\""));
+    assert!(async_report.contains("\"surface\": \"gpu_event\""));
+    assert!(async_report.contains("\"waitPolicy\": \"task_local_timeout_or_deadline\""));
+    assert!(async_report.contains("\"currentState\": \"waited\""));
+    assert!(async_report.contains("\"cancellationPolicy\": \"deadline_bound_wait_then_cleanup\""));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn strict_compile_surfaces_async_unbounded_runtime_wait_diagnostic() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-async-runtime-wait-strict-{}",
@@ -1453,13 +1490,46 @@ fn strict_async_unbounded_runtime_wait_diagnostic_is_snapshot_stable() {
     assert_eq!(
         diagnostic.help.as_deref(),
         Some(
-            "Add `timeout(...)` or `deadline(...)` before the blocking call, or switch to an intrinsically bounded wait such as `proc.wait(..., timeout_ms)` or `http.poll_next()`."
+            "Add `timeout(...)` or `deadline(...)` before the blocking call, or switch to an intrinsically bounded wait such as `proc.wait(..., timeout_ms)` or `http.poll_next()`. GPU event waits should be deadline-bound so cancelled async work cannot strand pending launches."
         )
     );
     let _ = diagnostic
         .code
         .as_deref()
         .expect("strict runtime-wait diagnostic should carry stable code");
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_compile_rejects_unbounded_gpu_event_waits() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-gpu-event-unbounded-strict-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"gpu_event_unbounded_strict\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_event_unbounded_strict\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.gpu;\nuse core.thread;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\nasync host fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 8)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 8)\n    defer gpu.free(output)\n    let event = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 8), gpu.slice(output, 0, 8), 8)\n    await gpu.wait_async(event)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "error");
+    assert!(artifact.diagnostic_details.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("function `main` performs blocking gpu_event wait `gpu.wait_async` without a timeout/deadline bound")));
+    assert!(artifact.diagnostic_details.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("gpu event `event` in `main` reaches `gpu.wait`/`gpu.wait_async` without a task-local timeout/deadline bound")));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1493,6 +1563,37 @@ fn strict_compile_allows_bounded_async_runtime_waits() {
         .any(|diagnostic| diagnostic
             .message
             .contains("without a timeout/deadline bound")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_compile_allows_bounded_gpu_event_waits() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-gpu-event-bounded-strict-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"gpu_event_bounded_strict\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_event_bounded_strict\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.gpu;\nuse core.thread;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\nasync host fn flush(event: GpuEvent) -> void {\n    deadline(25)\n    await gpu.wait_async(event)\n}\nasync host fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 8)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 8)\n    defer gpu.free(output)\n    let event = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 8), gpu.slice(output, 0, 8), 8)\n    deadline(25)\n    await flush(event)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "ok");
+    assert!(!artifact
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| diagnostic.message.contains("gpu.wait_async")));
 
     let _ = std::fs::remove_dir_all(root);
 }
