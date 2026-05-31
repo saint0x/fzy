@@ -59,18 +59,13 @@ Required tests:
 
 Checklist:
 
-- Require task groups to join, cancel, or detach.
 - Make timeout and deadline semantics deterministic.
 - Ensure cancelled tasks clean resources.
-- Keep task handles linear.
-- Reject result reads after cancel or detach unless the language explicitly permits them.
 - Harden the call-edge model for borrow, mutability, and thread crossings beyond same-function checks where feasible.
-- Define one explicit state machine for task handles, task groups, and cancel, join, detach, and result-read legality.
-- Make async-safety artifacts report enforced policy rather than inferred observations.
 
 Required tests:
 
-- Test programs for spawn leak, double join, join after cancel, detach then result read, group without join, group cancel with open resources, and timeout around stream, process, and HTTP surfaces.
+- Test programs for group cancel with open resources, and timeout around stream, process, and HTTP surfaces.
 - Deterministic scheduler coverage across `fifo`, `random`, and `coverage_guided`.
 - Trace verification that async schedule and task-group terminal policy are deterministic and replayable.
 

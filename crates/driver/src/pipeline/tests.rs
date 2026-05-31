@@ -719,7 +719,43 @@ fn compile_file_emits_async_task_handle_policy_evidence() {
     assert!(async_report.contains("\"handle\": \"handle\""));
     assert!(async_report.contains("\"origin\": \"spawn\""));
     assert!(async_report.contains("\"policy\": \"join\""));
+    assert!(async_report.contains("\"currentState\": \"joined\""));
+    assert!(async_report.contains("\"resultReadsBeforeTerminal\": 1"));
+    assert!(async_report.contains("\"resultReadsAfterTerminal\": 0"));
     assert!(async_report.contains("\"resultReads\": 1"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_file_emits_async_task_handle_missing_terminal_finding() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-task-handle-missing-terminal-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_task_handle_missing_terminal\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_task_handle_missing_terminal\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let handle = spawn(worker)\n    discard 0\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("compile should run");
+    assert_eq!(artifact.status, "error");
+
+    let async_report = std::fs::read_to_string(root.join(".fz/async-safety.json"))
+        .expect("async safety report should exist");
+    assert!(async_report.contains("\"kind\": \"task_handle_missing_terminal\""));
+    assert!(async_report.contains("\"currentState\": \"missing_terminal\""));
+    assert!(async_report.contains("without `join`, `detach`, or `cancel_task`"));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -752,6 +788,8 @@ fn compile_file_emits_async_task_handle_misuse_findings() {
         .expect("async safety report should exist");
     assert!(async_report.contains("\"kind\": \"task_result_after_terminal\""));
     assert!(async_report.contains("\"kind\": \"task_handle_double_terminal\""));
+    assert!(async_report.contains("\"currentState\": \"invalid_result_after_terminal\""));
+    assert!(async_report.contains("\"resultReadsAfterTerminal\": 1"));
     assert!(async_report.contains("already terminated by `detach(handle)`"));
 
     let _ = std::fs::remove_dir_all(root);
@@ -785,8 +823,42 @@ fn compile_file_emits_async_task_group_misuse_findings() {
         .expect("async safety report should exist");
     assert!(async_report.contains("\"kind\": \"task_group_missing_terminal\""));
     assert!(async_report.contains("\"group\": \"group\""));
+    assert!(async_report.contains("\"currentState\": \"missing_terminal\""));
     assert!(async_report
         .contains("without `task.group_join`, `task.group_join_all`, or `task.group_cancel`"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compile_file_emits_async_task_wrapper_terminal_state() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-task-wrapper-terminal-state-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_task_wrapper_terminal_state\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_task_wrapper_terminal_state\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn finish(handle: TaskHandle) -> i32 {\n    return join(handle)\n}\nfn main() -> i32 {\n    let handle = spawn(worker)\n    return finish(handle)\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("compile should run");
+    assert_eq!(artifact.status, "ok");
+
+    let async_report = std::fs::read_to_string(root.join(".fz/async-safety.json"))
+        .expect("async safety report should exist");
+    assert!(async_report.contains("\"policy\": \"join via finish\""));
+    assert!(async_report.contains("\"currentState\": \"joined\""));
+    assert!(!async_report.contains("\"kind\": \"task_handle_missing_terminal\""));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -962,6 +1034,79 @@ fn strict_compile_surfaces_task_handle_misuse_diagnostic() {
     assert!(artifact.diagnostic_details.iter().any(|diagnostic| diagnostic
         .message
         .contains("task handle `handle` is already terminated by `detach(handle)` and later observed by `task_result(handle)`")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_compile_surfaces_task_handle_missing_terminal_diagnostic() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-task-handle-missing-terminal-strict-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_task_handle_missing_terminal_strict\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_task_handle_missing_terminal_strict\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let handle = spawn(worker)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "error");
+    assert!(artifact.diagnostic_details.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("task handle `handle` is created by `spawn` and exits `main` without `join`, `detach`, or `cancel_task`")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_task_handle_missing_terminal_diagnostic_is_snapshot_stable() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-task-handle-missing-terminal-snapshot-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_task_handle_missing_terminal_snapshot\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_task_handle_missing_terminal_snapshot\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.thread;\nfn worker() -> i32 {\n    return 7\n}\nfn main() -> i32 {\n    let handle = spawn(worker)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| diagnostic
+            .message
+            == "task handle `handle` is created by `spawn` and exits `main` without `join`, `detach`, or `cancel_task`")
+        .expect("strict task handle missing-terminal diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "Terminate every task handle exactly once with `join`, `detach`, or `cancel_task` before the function exits."
+        )
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("strict task handle missing-terminal diagnostic should carry stable code");
 
     let _ = std::fs::remove_dir_all(root);
 }

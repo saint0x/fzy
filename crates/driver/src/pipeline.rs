@@ -1069,6 +1069,11 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
         .iter()
         .filter_map(summarize_task_group_terminal_params)
         .collect::<BTreeMap<_, _>>();
+    let task_handle_terminal_param_summaries = fir
+        .typed_functions
+        .iter()
+        .filter_map(summarize_task_handle_terminal_params)
+        .collect::<BTreeMap<_, _>>();
     let task_group_policies = fir
         .typed_functions
         .iter()
@@ -1096,12 +1101,16 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
     let task_handle_policies = fir
         .typed_functions
         .iter()
-        .flat_map(|function| collect_task_handle_policy_events(function))
+        .flat_map(|function| {
+            collect_task_handle_policy_events(function, &task_handle_terminal_param_summaries)
+        })
         .collect::<Vec<_>>();
     let task_handle_findings = fir
         .typed_functions
         .iter()
-        .flat_map(collect_task_handle_findings)
+        .flat_map(|function| {
+            collect_task_handle_findings(function, &task_handle_terminal_param_summaries)
+        })
         .map(|finding| {
             serde_json::json!({
                 "function": finding.function,
@@ -1121,7 +1130,18 @@ fn build_async_safety_json(fir: &fir::FirModule) -> serde_json::Value {
             "spawnOwnedSendSafe": true,
             "taskHandleTerminalPolicy": true,
             "taskGroupTerminalPolicy": true,
+            "taskResultAfterTerminal": false,
             "referencesAcrossTaskBoundary": "forbidden",
+        },
+        "stateMachine": {
+            "taskHandleStates": ["active", "joined", "detached", "cancelled", "invalid_multiple_terminal", "invalid_result_after_terminal", "missing_terminal"],
+            "taskGroupStates": ["active", "joined", "joined_all", "cancelled", "invalid_multiple_terminal", "missing_terminal"],
+            "taskHandleTerminalOperations": ["join", "detach", "cancel_task"],
+            "taskGroupTerminalOperations": ["task.group_join", "task.group_join_all", "task.group_cancel"],
+            "taskResultPolicy": {
+                "beforeTerminal": "allowed",
+                "afterTerminal": "forbidden",
+            },
         },
         "async_functions": async_functions,
         "await_boundaries": await_boundaries,
@@ -2194,6 +2214,239 @@ fn collect_task_transfer_events_from_expr(
     }
 }
 
+fn summarize_task_handle_terminal_params(
+    function: &hir::TypedFunction,
+) -> Option<(String, BTreeMap<usize, String>)> {
+    let mut terminal_params = BTreeMap::<usize, String>::new();
+    for stmt in &function.body {
+        collect_task_handle_terminal_param_stmt(stmt, function, &mut terminal_params);
+    }
+    (!terminal_params.is_empty()).then_some((function.name.clone(), terminal_params))
+}
+
+fn collect_task_handle_terminal_param_stmt(
+    stmt: &ast::Stmt,
+    function: &hir::TypedFunction,
+    terminal_params: &mut BTreeMap<usize, String>,
+) {
+    match stmt {
+        ast::Stmt::Let { value, .. }
+        | ast::Stmt::LetPattern { value, .. }
+        | ast::Stmt::Assign { value, .. }
+        | ast::Stmt::CompoundAssign { value, .. }
+        | ast::Stmt::Defer(value)
+        | ast::Stmt::Requires(value)
+        | ast::Stmt::Ensures(value)
+        | ast::Stmt::Expr(value)
+        | ast::Stmt::Return(Some(value)) => {
+            collect_task_handle_terminal_param_expr(value, function, terminal_params);
+        }
+        ast::Stmt::If {
+            condition,
+            then_body,
+            else_body,
+        } => {
+            collect_task_handle_terminal_param_expr(condition, function, terminal_params);
+            for nested in then_body {
+                collect_task_handle_terminal_param_stmt(nested, function, terminal_params);
+            }
+            for nested in else_body {
+                collect_task_handle_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::While { condition, body } => {
+            collect_task_handle_terminal_param_expr(condition, function, terminal_params);
+            for nested in body {
+                collect_task_handle_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_task_handle_terminal_param_stmt(init, function, terminal_params);
+            }
+            if let Some(condition) = condition {
+                collect_task_handle_terminal_param_expr(condition, function, terminal_params);
+            }
+            if let Some(step) = step {
+                collect_task_handle_terminal_param_stmt(step, function, terminal_params);
+            }
+            for nested in body {
+                collect_task_handle_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::ForIn { iterable, body, .. } => {
+            collect_task_handle_terminal_param_expr(iterable, function, terminal_params);
+            for nested in body {
+                collect_task_handle_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::Loop { body } => {
+            for nested in body {
+                collect_task_handle_terminal_param_stmt(nested, function, terminal_params);
+            }
+        }
+        ast::Stmt::Match { scrutinee, arms } => {
+            collect_task_handle_terminal_param_expr(scrutinee, function, terminal_params);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_task_handle_terminal_param_expr(guard, function, terminal_params);
+                }
+                collect_task_handle_terminal_param_expr(&arm.value, function, terminal_params);
+            }
+        }
+        ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+    }
+}
+
+fn collect_task_handle_terminal_param_expr(
+    expr: &ast::Expr,
+    function: &hir::TypedFunction,
+    terminal_params: &mut BTreeMap<usize, String>,
+) {
+    match expr {
+        ast::Expr::Call { callee, args } => {
+            if matches!(callee.as_str(), "join" | "detach" | "cancel_task") {
+                if let Some(ast::Expr::Ident(name)) = args.first() {
+                    if let Some((index, _)) =
+                        function.params.iter().enumerate().find(|(_, param)| {
+                            param.name == *name && param.ty.to_string() == "TaskHandle"
+                        })
+                    {
+                        terminal_params
+                            .entry(index)
+                            .or_insert_with(|| callee.clone());
+                    }
+                }
+            }
+            for arg in args {
+                collect_task_handle_terminal_param_expr(arg, function, terminal_params);
+            }
+        }
+        ast::Expr::Await(inner)
+        | ast::Expr::Group(inner)
+        | ast::Expr::Discard(inner)
+        | ast::Expr::FieldAccess { base: inner, .. }
+        | ast::Expr::Unary { expr: inner, .. } => {
+            collect_task_handle_terminal_param_expr(inner, function, terminal_params);
+        }
+        ast::Expr::Index { base, index } => {
+            collect_task_handle_terminal_param_expr(base, function, terminal_params);
+            collect_task_handle_terminal_param_expr(index, function, terminal_params);
+        }
+        ast::Expr::Binary { left, right, .. } => {
+            collect_task_handle_terminal_param_expr(left, function, terminal_params);
+            collect_task_handle_terminal_param_expr(right, function, terminal_params);
+        }
+        ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_task_handle_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for value in payload {
+                collect_task_handle_terminal_param_expr(value, function, terminal_params);
+            }
+            for (_, value) in named_payload {
+                collect_task_handle_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::Tuple(values) | ast::Expr::ArrayLiteral(values) => {
+            for value in values {
+                collect_task_handle_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::Closure { body, .. } => {
+            collect_task_handle_terminal_param_expr(body, function, terminal_params);
+        }
+        ast::Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_task_handle_terminal_param_expr(try_expr, function, terminal_params);
+            collect_task_handle_terminal_param_expr(catch_expr, function, terminal_params);
+        }
+        ast::Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_task_handle_terminal_param_expr(condition, function, terminal_params);
+            collect_task_handle_terminal_param_expr(then_expr, function, terminal_params);
+            collect_task_handle_terminal_param_expr(else_expr, function, terminal_params);
+        }
+        ast::Expr::Match { scrutinee, arms } => {
+            collect_task_handle_terminal_param_expr(scrutinee, function, terminal_params);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_task_handle_terminal_param_expr(guard, function, terminal_params);
+                }
+                collect_task_handle_terminal_param_expr(&arm.value, function, terminal_params);
+            }
+        }
+        ast::Expr::While { condition, body } => {
+            collect_task_handle_terminal_param_expr(condition, function, terminal_params);
+            for stmt in body {
+                collect_task_handle_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_task_handle_terminal_param_stmt(init, function, terminal_params);
+            }
+            if let Some(condition) = condition {
+                collect_task_handle_terminal_param_expr(condition, function, terminal_params);
+            }
+            if let Some(step) = step {
+                collect_task_handle_terminal_param_stmt(step, function, terminal_params);
+            }
+            for stmt in body {
+                collect_task_handle_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::ForIn { iterable, body, .. } => {
+            collect_task_handle_terminal_param_expr(iterable, function, terminal_params);
+            for stmt in body {
+                collect_task_handle_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::Loop { body } | ast::Expr::UnsafeBlock { body, .. } => {
+            for stmt in body {
+                collect_task_handle_terminal_param_stmt(stmt, function, terminal_params);
+            }
+        }
+        ast::Expr::Return(value) | ast::Expr::Break(value) => {
+            if let Some(value) = value {
+                collect_task_handle_terminal_param_expr(value, function, terminal_params);
+            }
+        }
+        ast::Expr::Range { start, end, .. } => {
+            collect_task_handle_terminal_param_expr(start, function, terminal_params);
+            collect_task_handle_terminal_param_expr(end, function, terminal_params);
+        }
+        ast::Expr::Continue
+        | ast::Expr::Ident(_)
+        | ast::Expr::Int(_)
+        | ast::Expr::Float { .. }
+        | ast::Expr::Char(_)
+        | ast::Expr::Bool(_)
+        | ast::Expr::Str(_) => {}
+    }
+}
+
 fn summarize_task_group_terminal_params(
     function: &hir::TypedFunction,
 ) -> Option<(String, BTreeMap<usize, String>)> {
@@ -2435,17 +2688,36 @@ fn collect_task_group_policy_events(
     terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) -> Vec<serde_json::Value> {
     let mut started = BTreeSet::<String>::new();
-    let mut terminal = BTreeMap::<String, String>::new();
+    let mut terminal = BTreeMap::<String, Vec<String>>::new();
     for stmt in &function.body {
         collect_task_group_policy_stmt(stmt, &mut started, &mut terminal, terminal_param_summaries);
     }
     started
         .into_iter()
         .map(|name| {
+            let terminals = terminal.get(&name).cloned().unwrap_or_default();
+            let mut unique_terminals = Vec::<String>::new();
+            for op in terminals {
+                if !unique_terminals.contains(&op) {
+                    unique_terminals.push(op);
+                }
+            }
+            let current_state = match unique_terminals.as_slice() {
+                [] => "missing_terminal".to_string(),
+                [single] if single.starts_with("task.group_join_all") => "joined_all".to_string(),
+                [single] if single.starts_with("task.group_join") => "joined".to_string(),
+                [single] if single.starts_with("task.group_cancel") => "cancelled".to_string(),
+                [_] => "active".to_string(),
+                _ => "invalid_multiple_terminal".to_string(),
+            };
             serde_json::json!({
                 "function": function.name,
                 "group": name,
-                "policy": terminal.get(&name).cloned().unwrap_or_else(|| "missing".to_string()),
+                "policy": unique_terminals.first().cloned().unwrap_or_else(|| "missing".to_string()),
+                "terminalOperations": unique_terminals,
+                "currentState": current_state,
+                "strictReady": current_state != "missing_terminal" && current_state != "invalid_multiple_terminal",
+                "resultReadAfterTerminalAllowed": false,
             })
         })
         .collect()
@@ -2928,28 +3200,63 @@ fn collect_task_group_findings_expr(
     }
 }
 
-fn collect_task_handle_policy_events(function: &hir::TypedFunction) -> Vec<serde_json::Value> {
+fn collect_task_handle_policy_events(
+    function: &hir::TypedFunction,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) -> Vec<serde_json::Value> {
     let mut started = BTreeMap::<String, String>::new();
-    let mut terminal = BTreeMap::<String, String>::new();
-    let mut result_reads = BTreeMap::<String, usize>::new();
+    let mut terminal = BTreeMap::<String, Vec<String>>::new();
+    let mut result_reads_before_terminal = BTreeMap::<String, usize>::new();
+    let mut result_reads_after_terminal = BTreeMap::<String, usize>::new();
     for stmt in &function.body {
-        collect_task_handle_policy_stmt(stmt, &mut started, &mut terminal, &mut result_reads);
+        collect_task_handle_policy_stmt(
+            stmt,
+            &mut started,
+            &mut terminal,
+            &mut result_reads_before_terminal,
+            &mut result_reads_after_terminal,
+            terminal_param_summaries,
+        );
     }
     started
         .into_iter()
         .map(|(name, origin)| {
-            let policy = terminal
-                .get(&name)
+            let terminals = terminal.get(&name).cloned().unwrap_or_default();
+            let mut unique_terminals = Vec::<String>::new();
+            for op in terminals {
+                if !unique_terminals.contains(&op) {
+                    unique_terminals.push(op);
+                }
+            }
+            let policy = unique_terminals
+                .first()
                 .cloned()
                 .unwrap_or_else(|| "missing".to_string());
-            let reads = result_reads.get(&name).copied().unwrap_or(0);
+            let reads_before = result_reads_before_terminal.get(&name).copied().unwrap_or(0);
+            let reads_after = result_reads_after_terminal.get(&name).copied().unwrap_or(0);
+            let current_state = if reads_after > 0 {
+                "invalid_result_after_terminal"
+            } else {
+                match unique_terminals.as_slice() {
+                    [] => "missing_terminal",
+                    [single] if single.starts_with("join") => "joined",
+                    [single] if single.starts_with("detach") => "detached",
+                    [single] if single.starts_with("cancel_task") => "cancelled",
+                    [_] => "active",
+                    _ => "invalid_multiple_terminal",
+                }
+            };
             serde_json::json!({
                 "function": function.name,
                 "handle": name,
                 "origin": origin,
                 "policy": policy,
-                "resultReads": reads,
-                "strictReady": policy != "missing",
+                "terminalOperations": unique_terminals,
+                "currentState": current_state,
+                "resultReadsBeforeTerminal": reads_before,
+                "resultReadsAfterTerminal": reads_after,
+                "resultReads": reads_before + reads_after,
+                "strictReady": current_state != "missing_terminal" && current_state != "invalid_multiple_terminal" && current_state != "invalid_result_after_terminal",
             })
         })
         .collect()
@@ -2964,11 +3271,37 @@ struct TaskHandleFinding {
     help: String,
 }
 
-fn collect_task_handle_findings(function: &hir::TypedFunction) -> Vec<TaskHandleFinding> {
-    let mut terminal = BTreeMap::<String, String>::new();
+fn collect_task_handle_findings(
+    function: &hir::TypedFunction,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
+) -> Vec<TaskHandleFinding> {
+    let mut started = BTreeMap::<String, String>::new();
+    let mut terminal = BTreeMap::<String, Vec<String>>::new();
     let mut findings = Vec::new();
     for stmt in &function.body {
-        collect_task_handle_finding_stmt(stmt, &function.name, &mut terminal, &mut findings);
+        collect_task_handle_finding_stmt(
+            stmt,
+            &function.name,
+            &mut started,
+            &mut terminal,
+            &mut findings,
+            terminal_param_summaries,
+        );
+    }
+    for (handle, origin) in started {
+        if !terminal.contains_key(&handle) {
+            findings.push(TaskHandleFinding {
+                function: function.name.clone(),
+                handle: handle.clone(),
+                kind: "task_handle_missing_terminal",
+                message: format!(
+                    "task handle `{handle}` is created by `{origin}` and exits `{}` without `join`, `detach`, or `cancel_task`",
+                    function.name
+                ),
+                help: "Terminate every task handle exactly once with `join`, `detach`, or `cancel_task` before the function exits."
+                    .to_string(),
+            });
+        }
     }
     findings
 }
@@ -2976,12 +3309,24 @@ fn collect_task_handle_findings(function: &hir::TypedFunction) -> Vec<TaskHandle
 fn collect_task_handle_finding_stmt(
     stmt: &ast::Stmt,
     function_name: &str,
-    terminal: &mut BTreeMap<String, String>,
+    started: &mut BTreeMap<String, String>,
+    terminal: &mut BTreeMap<String, Vec<String>>,
     findings: &mut Vec<TaskHandleFinding>,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match stmt {
-        ast::Stmt::Let { value, .. }
-        | ast::Stmt::LetPattern { value, .. }
+        ast::Stmt::Let { name, value, .. } => {
+            collect_task_handle_creation(name, value, started);
+            collect_task_handle_finding_expr(
+                value,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
+        }
+        ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
         | ast::Stmt::CompoundAssign { value, .. }
         | ast::Stmt::Defer(value)
@@ -2989,25 +3334,67 @@ fn collect_task_handle_finding_stmt(
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value)
         | ast::Stmt::Return(Some(value)) => {
-            collect_task_handle_finding_expr(value, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                value,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
         }
         ast::Stmt::If {
             condition,
             then_body,
             else_body,
         } => {
-            collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                condition,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
             for nested in then_body {
-                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    nested,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
             for nested in else_body {
-                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    nested,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::While { condition, body } => {
-            collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                condition,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
             for nested in body {
-                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    nested,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::For {
@@ -3017,36 +3404,106 @@ fn collect_task_handle_finding_stmt(
             body,
         } => {
             if let Some(init) = init {
-                collect_task_handle_finding_stmt(init, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    init,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
             if let Some(condition) = condition {
-                collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    condition,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
             if let Some(step) = step {
-                collect_task_handle_finding_stmt(step, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    step,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
             for nested in body {
-                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    nested,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::ForIn { iterable, body, .. } => {
-            collect_task_handle_finding_expr(iterable, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                iterable,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
             for nested in body {
-                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    nested,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::Loop { body } => {
             for nested in body {
-                collect_task_handle_finding_stmt(nested, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    nested,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::Match { scrutinee, arms } => {
-            collect_task_handle_finding_expr(scrutinee, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                scrutinee,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_task_handle_finding_expr(guard, function_name, terminal, findings);
+                    collect_task_handle_finding_expr(
+                        guard,
+                        function_name,
+                        started,
+                        terminal,
+                        findings,
+                        terminal_param_summaries,
+                    );
                 }
-                collect_task_handle_finding_expr(&arm.value, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    &arm.value,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
@@ -3056,15 +3513,17 @@ fn collect_task_handle_finding_stmt(
 fn collect_task_handle_finding_expr(
     expr: &ast::Expr,
     function_name: &str,
-    terminal: &mut BTreeMap<String, String>,
+    started: &mut BTreeMap<String, String>,
+    terminal: &mut BTreeMap<String, Vec<String>>,
     findings: &mut Vec<TaskHandleFinding>,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match expr {
         ast::Expr::Call { callee, args } => {
             if let Some(ast::Expr::Ident(name)) = args.first() {
                 match callee.as_str() {
                     "join" | "detach" | "cancel_task" => {
-                        if let Some(previous) = terminal.get(name) {
+                        if let Some(previous) = terminal.get(name).and_then(|ops| ops.last()) {
                             findings.push(TaskHandleFinding {
                                 function: function_name.to_string(),
                                 handle: name.clone(),
@@ -3075,12 +3534,19 @@ fn collect_task_handle_finding_expr(
                                 help: "Consume a task handle exactly once with `join`, `detach`, or `cancel_task`, and remove the later terminal operation."
                                     .to_string(),
                             });
+                            terminal
+                                .entry(name.clone())
+                                .or_default()
+                                .push(callee.clone());
                         } else {
-                            terminal.insert(name.clone(), callee.clone());
+                            terminal
+                                .entry(name.clone())
+                                .or_default()
+                                .push(callee.clone());
                         }
                     }
                     "task_result" => {
-                        if let Some(previous) = terminal.get(name) {
+                        if let Some(previous) = terminal.get(name).and_then(|ops| ops.last()) {
                             findings.push(TaskHandleFinding {
                                 function: function_name.to_string(),
                                 handle: name.clone(),
@@ -3096,8 +3562,40 @@ fn collect_task_handle_finding_expr(
                     _ => {}
                 }
             }
+            if let Some(summary) = terminal_param_summaries.get(callee) {
+                for (index, terminal_name) in summary {
+                    if let Some(ast::Expr::Ident(name)) = args.get(*index) {
+                        started
+                            .entry(name.clone())
+                            .or_insert_with(|| "unknown".to_string());
+                        if let Some(previous) = terminal.get(name).and_then(|ops| ops.last()) {
+                            findings.push(TaskHandleFinding {
+                                function: function_name.to_string(),
+                                handle: name.clone(),
+                                kind: "task_handle_double_terminal",
+                                message: format!(
+                                    "task handle `{name}` is already terminated by `{previous}({name})` and later consumed again by `{terminal_name}({name}) via {callee}`"
+                                ),
+                                help: "Consume a task handle exactly once with `join`, `detach`, or `cancel_task`, and remove the later terminal operation."
+                                    .to_string(),
+                            });
+                        }
+                        terminal
+                            .entry(name.clone())
+                            .or_default()
+                            .push(format!("{terminal_name} via {callee}"));
+                    }
+                }
+            }
             for arg in args {
-                collect_task_handle_finding_expr(arg, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    arg,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Await(inner)
@@ -3105,19 +3603,61 @@ fn collect_task_handle_finding_expr(
         | ast::Expr::Discard(inner)
         | ast::Expr::FieldAccess { base: inner, .. }
         | ast::Expr::Unary { expr: inner, .. } => {
-            collect_task_handle_finding_expr(inner, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                inner,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::Index { base, index } => {
-            collect_task_handle_finding_expr(base, function_name, terminal, findings);
-            collect_task_handle_finding_expr(index, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                base,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
+            collect_task_handle_finding_expr(
+                index,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::Binary { left, right, .. } => {
-            collect_task_handle_finding_expr(left, function_name, terminal, findings);
-            collect_task_handle_finding_expr(right, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                left,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
+            collect_task_handle_finding_expr(
+                right,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
             for (_, value) in fields {
-                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    value,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::EnumInit {
@@ -3126,49 +3666,147 @@ fn collect_task_handle_finding_expr(
             ..
         } => {
             for value in payload {
-                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    value,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
             for (_, value) in named_payload {
-                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    value,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Tuple(payload) | ast::Expr::ArrayLiteral(payload) => {
             for value in payload {
-                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    value,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Closure { body, .. } => {
-            collect_task_handle_finding_expr(body, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                body,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
         } => {
-            collect_task_handle_finding_expr(try_expr, function_name, terminal, findings);
-            collect_task_handle_finding_expr(catch_expr, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                try_expr,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
+            collect_task_handle_finding_expr(
+                catch_expr,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            collect_task_handle_finding_expr(condition, function_name, terminal, findings);
-            collect_task_handle_finding_expr(then_expr, function_name, terminal, findings);
-            collect_task_handle_finding_expr(else_expr, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                condition,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
+            collect_task_handle_finding_expr(
+                then_expr,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
+            collect_task_handle_finding_expr(
+                else_expr,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::Match { scrutinee, arms } => {
-            collect_task_handle_finding_expr(scrutinee, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                scrutinee,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_task_handle_finding_expr(guard, function_name, terminal, findings);
+                    collect_task_handle_finding_expr(
+                        guard,
+                        function_name,
+                        started,
+                        terminal,
+                        findings,
+                        terminal_param_summaries,
+                    );
                 }
-                collect_task_handle_finding_expr(&arm.value, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    &arm.value,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::While { condition, body } => {
-            collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                condition,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
             for stmt in body {
-                collect_task_handle_finding_stmt(stmt, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    stmt,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::For {
@@ -3178,37 +3816,107 @@ fn collect_task_handle_finding_expr(
             body,
         } => {
             if let Some(init) = init {
-                collect_task_handle_finding_stmt(init, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    init,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
             if let Some(condition) = condition {
-                collect_task_handle_finding_expr(condition, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    condition,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
             if let Some(step) = step {
-                collect_task_handle_finding_stmt(step, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    step,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
             for stmt in body {
-                collect_task_handle_finding_stmt(stmt, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    stmt,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::ForIn { iterable, body, .. } => {
-            collect_task_handle_finding_expr(iterable, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                iterable,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
             for stmt in body {
-                collect_task_handle_finding_stmt(stmt, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    stmt,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Loop { body } | ast::Expr::UnsafeBlock { body, .. } => {
             for stmt in body {
-                collect_task_handle_finding_stmt(stmt, function_name, terminal, findings);
+                collect_task_handle_finding_stmt(
+                    stmt,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Return(value) | ast::Expr::Break(value) => {
             if let Some(value) = value {
-                collect_task_handle_finding_expr(value, function_name, terminal, findings);
+                collect_task_handle_finding_expr(
+                    value,
+                    function_name,
+                    started,
+                    terminal,
+                    findings,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Range { start, end, .. } => {
-            collect_task_handle_finding_expr(start, function_name, terminal, findings);
-            collect_task_handle_finding_expr(end, function_name, terminal, findings);
+            collect_task_handle_finding_expr(
+                start,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
+            collect_task_handle_finding_expr(
+                end,
+                function_name,
+                started,
+                terminal,
+                findings,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::Continue
         | ast::Expr::Ident(_)
@@ -3223,13 +3931,21 @@ fn collect_task_handle_finding_expr(
 fn collect_task_handle_policy_stmt(
     stmt: &ast::Stmt,
     started: &mut BTreeMap<String, String>,
-    terminal: &mut BTreeMap<String, String>,
-    result_reads: &mut BTreeMap<String, usize>,
+    terminal: &mut BTreeMap<String, Vec<String>>,
+    result_reads_before_terminal: &mut BTreeMap<String, usize>,
+    result_reads_after_terminal: &mut BTreeMap<String, usize>,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match stmt {
         ast::Stmt::Let { name, value, .. } => {
             collect_task_handle_creation(name, value, started);
-            collect_task_handle_effects_from_expr(value, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                value,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Stmt::LetPattern { value, .. }
         | ast::Stmt::Assign { value, .. }
@@ -3238,28 +3954,73 @@ fn collect_task_handle_policy_stmt(
         | ast::Stmt::Requires(value)
         | ast::Stmt::Ensures(value)
         | ast::Stmt::Expr(value) => {
-            collect_task_handle_effects_from_expr(value, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                value,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Stmt::Return(Some(value)) => {
-            collect_task_handle_effects_from_expr(value, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                value,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Stmt::If {
             condition,
             then_body,
             else_body,
         } => {
-            collect_task_handle_effects_from_expr(condition, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                condition,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
             for nested in then_body {
-                collect_task_handle_policy_stmt(nested, started, terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    nested,
+                    started,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
             for nested in else_body {
-                collect_task_handle_policy_stmt(nested, started, terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    nested,
+                    started,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::While { condition, body } => {
-            collect_task_handle_effects_from_expr(condition, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                condition,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
             for nested in body {
-                collect_task_handle_policy_stmt(nested, started, terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    nested,
+                    started,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::For {
@@ -3269,36 +4030,101 @@ fn collect_task_handle_policy_stmt(
             body,
         } => {
             if let Some(init) = init {
-                collect_task_handle_policy_stmt(init, started, terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    init,
+                    started,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
             if let Some(condition) = condition {
-                collect_task_handle_effects_from_expr(condition, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    condition,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
             if let Some(step) = step {
-                collect_task_handle_policy_stmt(step, started, terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    step,
+                    started,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
             for nested in body {
-                collect_task_handle_policy_stmt(nested, started, terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    nested,
+                    started,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::ForIn { iterable, body, .. } => {
-            collect_task_handle_effects_from_expr(iterable, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                iterable,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
             for nested in body {
-                collect_task_handle_policy_stmt(nested, started, terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    nested,
+                    started,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::Loop { body } => {
             for nested in body {
-                collect_task_handle_policy_stmt(nested, started, terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    nested,
+                    started,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::Match { scrutinee, arms } => {
-            collect_task_handle_effects_from_expr(scrutinee, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                scrutinee,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_task_handle_effects_from_expr(guard, terminal, result_reads);
+                    collect_task_handle_effects_from_expr(
+                        guard,
+                        terminal,
+                        result_reads_before_terminal,
+                        result_reads_after_terminal,
+                        terminal_param_summaries,
+                    );
                 }
-                collect_task_handle_effects_from_expr(&arm.value, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    &arm.value,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Stmt::Return(None) | ast::Stmt::Break(_) | ast::Stmt::Continue => {}
@@ -3323,24 +4149,51 @@ fn collect_task_handle_creation(
 
 fn collect_task_handle_effects_from_expr(
     expr: &ast::Expr,
-    terminal: &mut BTreeMap<String, String>,
-    result_reads: &mut BTreeMap<String, usize>,
+    terminal: &mut BTreeMap<String, Vec<String>>,
+    result_reads_before_terminal: &mut BTreeMap<String, usize>,
+    result_reads_after_terminal: &mut BTreeMap<String, usize>,
+    terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match expr {
         ast::Expr::Call { callee, args } => {
             if let Some(ast::Expr::Ident(name)) = args.first() {
                 match callee.as_str() {
                     "join" | "detach" | "cancel_task" => {
-                        terminal.insert(name.clone(), callee.clone());
+                        terminal
+                            .entry(name.clone())
+                            .or_default()
+                            .push(callee.clone());
                     }
                     "task_result" => {
-                        *result_reads.entry(name.clone()).or_insert(0) += 1;
+                        if terminal.contains_key(name) {
+                            *result_reads_after_terminal.entry(name.clone()).or_insert(0) += 1;
+                        } else {
+                            *result_reads_before_terminal
+                                .entry(name.clone())
+                                .or_insert(0) += 1;
+                        }
                     }
                     _ => {}
                 }
             }
+            if let Some(summary) = terminal_param_summaries.get(callee) {
+                for (index, terminal_name) in summary {
+                    if let Some(ast::Expr::Ident(name)) = args.get(*index) {
+                        terminal
+                            .entry(name.clone())
+                            .or_default()
+                            .push(format!("{terminal_name} via {callee}"));
+                    }
+                }
+            }
             for arg in args {
-                collect_task_handle_effects_from_expr(arg, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    arg,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Await(inner)
@@ -3348,19 +4201,55 @@ fn collect_task_handle_effects_from_expr(
         | ast::Expr::Discard(inner)
         | ast::Expr::FieldAccess { base: inner, .. }
         | ast::Expr::Unary { expr: inner, .. } => {
-            collect_task_handle_effects_from_expr(inner, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                inner,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::Index { base, index } => {
-            collect_task_handle_effects_from_expr(base, terminal, result_reads);
-            collect_task_handle_effects_from_expr(index, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                base,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
+            collect_task_handle_effects_from_expr(
+                index,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::Binary { left, right, .. } => {
-            collect_task_handle_effects_from_expr(left, terminal, result_reads);
-            collect_task_handle_effects_from_expr(right, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                left,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
+            collect_task_handle_effects_from_expr(
+                right,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::StructInit { fields, .. } | ast::Expr::ObjectLiteral(fields) => {
             for (_, value) in fields {
-                collect_task_handle_effects_from_expr(value, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    value,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::EnumInit {
@@ -3369,49 +4258,134 @@ fn collect_task_handle_effects_from_expr(
             ..
         } => {
             for value in payload {
-                collect_task_handle_effects_from_expr(value, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    value,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
             for (_, value) in named_payload {
-                collect_task_handle_effects_from_expr(value, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    value,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Tuple(payload) | ast::Expr::ArrayLiteral(payload) => {
             for value in payload {
-                collect_task_handle_effects_from_expr(value, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    value,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Closure { body, .. } => {
-            collect_task_handle_effects_from_expr(body, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                body,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::TryCatch {
             try_expr,
             catch_expr,
         } => {
-            collect_task_handle_effects_from_expr(try_expr, terminal, result_reads);
-            collect_task_handle_effects_from_expr(catch_expr, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                try_expr,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
+            collect_task_handle_effects_from_expr(
+                catch_expr,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::If {
             condition,
             then_expr,
             else_expr,
         } => {
-            collect_task_handle_effects_from_expr(condition, terminal, result_reads);
-            collect_task_handle_effects_from_expr(then_expr, terminal, result_reads);
-            collect_task_handle_effects_from_expr(else_expr, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                condition,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
+            collect_task_handle_effects_from_expr(
+                then_expr,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
+            collect_task_handle_effects_from_expr(
+                else_expr,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::Match { scrutinee, arms } => {
-            collect_task_handle_effects_from_expr(scrutinee, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                scrutinee,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
             for arm in arms {
                 if let Some(guard) = &arm.guard {
-                    collect_task_handle_effects_from_expr(guard, terminal, result_reads);
+                    collect_task_handle_effects_from_expr(
+                        guard,
+                        terminal,
+                        result_reads_before_terminal,
+                        result_reads_after_terminal,
+                        terminal_param_summaries,
+                    );
                 }
-                collect_task_handle_effects_from_expr(&arm.value, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    &arm.value,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::While { condition, body } => {
-            collect_task_handle_effects_from_expr(condition, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                condition,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
             for stmt in body {
-                collect_task_handle_policy_stmt(stmt, &mut BTreeMap::new(), terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    stmt,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::For {
@@ -3421,37 +4395,102 @@ fn collect_task_handle_effects_from_expr(
             body,
         } => {
             if let Some(init) = init {
-                collect_task_handle_policy_stmt(init, &mut BTreeMap::new(), terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    init,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
             if let Some(condition) = condition {
-                collect_task_handle_effects_from_expr(condition, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    condition,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
             if let Some(step) = step {
-                collect_task_handle_policy_stmt(step, &mut BTreeMap::new(), terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    step,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
             for stmt in body {
-                collect_task_handle_policy_stmt(stmt, &mut BTreeMap::new(), terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    stmt,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::ForIn { iterable, body, .. } => {
-            collect_task_handle_effects_from_expr(iterable, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                iterable,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
             for stmt in body {
-                collect_task_handle_policy_stmt(stmt, &mut BTreeMap::new(), terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    stmt,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Loop { body } | ast::Expr::UnsafeBlock { body, .. } => {
             for stmt in body {
-                collect_task_handle_policy_stmt(stmt, &mut BTreeMap::new(), terminal, result_reads);
+                collect_task_handle_policy_stmt(
+                    stmt,
+                    &mut BTreeMap::new(),
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Return(value) | ast::Expr::Break(value) => {
             if let Some(value) = value {
-                collect_task_handle_effects_from_expr(value, terminal, result_reads);
+                collect_task_handle_effects_from_expr(
+                    value,
+                    terminal,
+                    result_reads_before_terminal,
+                    result_reads_after_terminal,
+                    terminal_param_summaries,
+                );
             }
         }
         ast::Expr::Range { start, end, .. } => {
-            collect_task_handle_effects_from_expr(start, terminal, result_reads);
-            collect_task_handle_effects_from_expr(end, terminal, result_reads);
+            collect_task_handle_effects_from_expr(
+                start,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
+            collect_task_handle_effects_from_expr(
+                end,
+                terminal,
+                result_reads_before_terminal,
+                result_reads_after_terminal,
+                terminal_param_summaries,
+            );
         }
         ast::Expr::Continue
         | ast::Expr::Ident(_)
@@ -3466,7 +4505,7 @@ fn collect_task_handle_effects_from_expr(
 fn collect_task_group_policy_stmt(
     stmt: &ast::Stmt,
     started: &mut BTreeSet<String>,
-    terminal: &mut BTreeMap<String, String>,
+    terminal: &mut BTreeMap<String, Vec<String>>,
     terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match stmt {
@@ -3481,13 +4520,19 @@ fn collect_task_group_policy_stmt(
                 "task.group_join" | "task.group_join_all" | "task.group_cancel"
             ) {
                 if let Some(ast::Expr::Ident(name)) = args.first() {
-                    terminal.insert(name.clone(), callee.clone());
+                    terminal
+                        .entry(name.clone())
+                        .or_default()
+                        .push(callee.clone());
                 }
             }
             if let Some(summary) = terminal_param_summaries.get(callee) {
                 for (index, terminal_name) in summary {
                     if let Some(ast::Expr::Ident(name)) = args.get(*index) {
-                        terminal.insert(name.clone(), format!("{terminal_name} via {callee}"));
+                        terminal
+                            .entry(name.clone())
+                            .or_default()
+                            .push(format!("{terminal_name} via {callee}"));
                     }
                 }
             }
@@ -3543,7 +4588,7 @@ fn collect_task_group_policy_stmt(
 fn collect_task_group_policy_expr(
     expr: &ast::Expr,
     started: &mut BTreeSet<String>,
-    terminal: &mut BTreeMap<String, String>,
+    terminal: &mut BTreeMap<String, Vec<String>>,
     terminal_param_summaries: &BTreeMap<String, BTreeMap<usize, String>>,
 ) {
     match expr {
@@ -8903,10 +9948,17 @@ fn strict_async_contract_diagnostics(fir: &fir::FirModule) -> Vec<diagnostics::D
         .iter()
         .filter_map(summarize_task_group_terminal_params)
         .collect::<BTreeMap<_, _>>();
+    let task_handle_terminal_param_summaries = fir
+        .typed_functions
+        .iter()
+        .filter_map(summarize_task_handle_terminal_params)
+        .collect::<BTreeMap<_, _>>();
     let mut diagnostics = fir
         .typed_functions
         .iter()
-        .flat_map(collect_task_handle_findings)
+        .flat_map(|function| {
+            collect_task_handle_findings(function, &task_handle_terminal_param_summaries)
+        })
         .map(|finding| {
             diagnostics::Diagnostic::new(
                 diagnostics::Severity::Error,
