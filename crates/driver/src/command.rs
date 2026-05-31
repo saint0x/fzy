@@ -6968,6 +6968,8 @@ struct CausalLink {
     relation: String,
 }
 
+const GPU_TRACE_TASK_ID: u64 = u64::MAX;
+
 #[derive(Debug, Clone, Copy)]
 enum RpcValidationSeverity {
     Info,
@@ -7153,8 +7155,12 @@ fn run_non_scenario_test_plan(
         execution_order =
             executor.run_until_idle_with_scheduler(scheduler, request.seed.unwrap_or(1));
         events = executor.trace().to_vec();
-        let (derived_runtime_events, derived_causal_links) =
+        let (mut derived_runtime_events, mut derived_causal_links) =
             derive_runtime_semantic_evidence(&events, &execution_order, &task_ops);
+        let (gpu_runtime_events, gpu_causal_links) =
+            derive_gpu_runtime_semantic_evidence(&call_sequence);
+        derived_runtime_events.extend(gpu_runtime_events);
+        derived_causal_links.extend(gpu_causal_links);
         runtime_events = derived_runtime_events;
         causal_links = derived_causal_links;
     }
@@ -8345,6 +8351,54 @@ fn derive_runtime_semantic_evidence(
         });
     }
     (runtime_events, causal_links)
+}
+
+fn derive_gpu_runtime_semantic_evidence(
+    call_sequence: &[String],
+) -> (Vec<RuntimeSemanticEvent>, Vec<CausalLink>) {
+    let mut runtime_events = Vec::new();
+    let mut causal_links = Vec::new();
+    let mut previous_index = None::<u64>;
+    let mut event_id = 0u64;
+    for callee in call_sequence.iter() {
+        let Some(event_shapes) = gpu_trace_events_for_callee(callee) else {
+            continue;
+        };
+        for (phase, kind) in event_shapes {
+            runtime_events.push(RuntimeSemanticEvent {
+                task_id: GPU_TRACE_TASK_ID,
+                phase: phase.to_string(),
+                kind: kind.to_string(),
+                label: callee.clone(),
+            });
+            if let Some(previous) = previous_index {
+                causal_links.push(CausalLink {
+                    from: previous,
+                    to: event_id,
+                    relation: "gpu.next".to_string(),
+                });
+            }
+            previous_index = Some(event_id);
+            event_id = event_id.saturating_add(1);
+        }
+    }
+    (runtime_events, causal_links)
+}
+
+fn gpu_trace_events_for_callee(callee: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    let base = callee.split('<').next().unwrap_or(callee);
+    Some(match base {
+        "gpu.default_device" => &[("host", "gpu.device_select")],
+        "gpu.alloc_f32" | "gpu.alloc_i32" | "gpu.alloc_u32" => &[("host", "gpu.alloc")],
+        "gpu.free" => &[("host", "gpu.free")],
+        "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32" => &[("host", "gpu.upload")],
+        "gpu.download_f32" | "gpu.download_i32" | "gpu.download_u32" => &[("host", "gpu.download")],
+        "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4" => {
+            &[("host", "gpu.kernel_launch")]
+        }
+        "gpu.wait" => &[("host", "gpu.event_wait"), ("host", "gpu.kernel_complete")],
+        _ => return None,
+    })
 }
 
 fn build_rpc_frame_events(
@@ -17028,6 +17082,71 @@ fn main() -> i32 {
             .expect("scenarios index should be readable");
         assert!(scenarios_index.contains("\"schemaVersion\": \"fozzylang.scenarios.v0\""));
         assert!(scenarios_index.contains(".fozzy.json"));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(trace);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
+        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
+    }
+
+    #[test]
+    fn non_scenario_test_record_writes_gpu_runtime_events() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-test-gpu-record-{suffix}.fzy"));
+        let trace =
+            std::env::temp_dir().join(format!("fozzylang-test-gpu-record-{suffix}.trace.json"));
+        std::fs::write(
+            &source,
+            "use core.gpu;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\ntest \"gpu trace\" {}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 4)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 4)\n    defer gpu.free(output)\n    let event = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 4), gpu.slice(output, 0, 4), 4)\n    gpu.wait(event)\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(13),
+                record: Some(trace.clone()),
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: true,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+        assert!(output.contains("\"runtimeEventCount\":"));
+
+        let stem = trace
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("trace should have a stem")
+            .to_string();
+        let base = trace
+            .parent()
+            .expect("trace should have parent")
+            .to_path_buf();
+        let native_trace_text =
+            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
+                .expect("native trace should be written");
+        assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.alloc\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.free\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_launch\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.event_wait\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_complete\""));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);

@@ -17,6 +17,7 @@ The following foundation is already landed on the `gpu` branch and should not be
 - kernel indexed slice reads and writes typecheck
 - linear ownership checks cover `GpuBuffer<T>` and `GpuEvent`
 - dedicated `kernel_ir` lowering exists for the current GPU-safe subset
+- host GPU lifecycle events are emitted into native/non-scenario trace artifacts
 - deterministic Fozzy coverage exists for execution-space safety, typed handles, launch events, and kernel slice assignment
 
 ## 1. Immediate Production Goal
@@ -70,29 +71,14 @@ Replace the current intrinsic-only surface with a backend-facing runtime contrac
 - wait on events
 - surface runtime failures with stable diagnostics
 
-### 3.2 Trace Integration
+### 3.2 Trace Integration Hardening
 
-GPU operations must become first-class trace events.
+GPU lifecycle events are now emitted in native/non-scenario trace artifacts. Remaining trace work is to harden that into full replay-grade coverage:
 
-Required event families:
-
-- `gpu.device_select`
-- `gpu.alloc`
-- `gpu.free`
-- `gpu.upload`
-- `gpu.download`
-- `gpu.kernel_launch`
-- `gpu.kernel_complete`
-- `gpu.event_wait`
-- `gpu.error`
-
-Replay must verify:
-
-- launch order
-- kernel identity
-- launch dimensions
-- resource lifecycle
-- failure class / error stability
+- add `gpu.error` event emission
+- bind trace evidence to real backend execution instead of only the current host-side lifecycle surface
+- verify launch order, kernel identity, dimensions, and resource lifecycle during replay
+- ensure failure classes stay stable across backends
 
 ### 3.3 Async Integration
 
