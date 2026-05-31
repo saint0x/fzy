@@ -7,7 +7,7 @@ fn delay_for_attempt(attempt: i32, initial: i32, max_delay: i32, factor: i32) ->
         if delay > max_delay {
             delay = max_delay
         }
-        i += 1
+        i = i + 1
     }
 
     return delay

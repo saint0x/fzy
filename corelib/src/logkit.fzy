@@ -88,10 +88,10 @@ fn verbose() -> i32 {
 
 fn set_policy(config: LogConfig) -> i32 {
     let mut rc = 0
-    rc += set_logging_enabled(config.enabled)
-    rc += set_json_mode(config.json)
-    rc += set_output_sink(config.sink)
-    rc += set_min_level(config.min_level)
+    rc = rc + set_logging_enabled(config.enabled)
+    rc = rc + set_json_mode(config.json)
+    rc = rc + set_output_sink(config.sink)
+    rc = rc + set_min_level(config.min_level)
     return rc
 }
 
@@ -149,12 +149,12 @@ fn sample() -> i32 {
     let cfg = default_config()
     if should_sample(100, cfg.sample_mod) == 1 {
         let mut acc = request_log(cfg, LogLevel::Info, "corelib.log.sample", "rid-sample", "/health", "GET")
-        acc += use_stdout()
-        acc += set_min_level(LogLevel::Warn)
-        acc += set_level_name("info")
-        acc += set_sink_name("stdout")
-        acc += set_logging_enabled(1)
-        acc += verbose()
+        acc = acc + use_stdout()
+        acc = acc + set_min_level(LogLevel::Warn)
+        acc = acc + set_level_name("info")
+        acc = acc + set_sink_name("stdout")
+        acc = acc + set_logging_enabled(1)
+        acc = acc + verbose()
         return acc % 251
     }
     return 0
