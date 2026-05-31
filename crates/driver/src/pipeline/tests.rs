@@ -76,6 +76,31 @@ fn compile_file_runs_pipeline() {
 }
 
 #[test]
+fn verify_file_reports_kernel_ir_lowering_failures() {
+    let file_name = format!(
+        "fozzylang-kernel-ir-verify-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "device fn classify(flag: bool) -> i32 {\n    match flag {\n        true => return 1,\n        _ => return 0,\n    }\n}\nkernel fn main(output: GpuSlice<i32>) -> void {\n    output[0] = classify(true)\n}\n",
+    )
+    .expect("temp source should be written");
+
+    let output = verify_file(&path).expect("verify should run");
+    assert!(output.diagnostics > 0);
+    assert!(output.diagnostic_details.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("kernel lowering for `classify` failed: Kernel IR does not yet support `match` statements in GPU functions")));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-safety-artifacts-{}",

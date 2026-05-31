@@ -266,7 +266,7 @@ pub fn compile_file_with_backend(
     }
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, false);
-    let (_typed, fir) = lower_fir_cached(&parsed);
+    let (typed, fir) = lower_fir_cached(&parsed);
     policy_artifacts::write_safety_artifacts(
         &resolved.project_root,
         &parsed,
@@ -293,6 +293,7 @@ pub fn compile_file_with_backend(
         .unwrap_or(true);
     let contract_diagnostics =
         compile_time_contract_diagnostics(&parsed.module, &fir, checks_enabled, profile);
+    let kernel_ir_diagnostics = kernel_ir_diagnostics(&typed);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -305,10 +306,14 @@ pub fn compile_file_with_backend(
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let has_contract_errors = !contract_diagnostics.is_empty();
+    let has_kernel_ir_errors = kernel_ir_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let status = if has_experimental_errors
         || has_native_lowerability_errors
         || has_backend_risks
         || has_contract_errors
+        || has_kernel_ir_errors
         || has_verifier_errors
     {
         "error"
@@ -320,6 +325,7 @@ pub fn compile_file_with_backend(
     diagnostic_details.extend(backend_risks);
     diagnostic_details.extend(report.diagnostics);
     diagnostic_details.extend(contract_diagnostics);
+    diagnostic_details.extend(kernel_ir_diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let output = if status == "ok" {
         Some(emit_native_artifact(
@@ -364,7 +370,7 @@ pub fn compile_library_with_backend(
     }
     let native_lowerability_errors = native_lowerability_diagnostics(&parsed.module);
     let backend_risks = backend_capability_diagnostics(&parsed.module, &backend, true);
-    let (_typed, fir) = lower_fir_cached(&parsed);
+    let (typed, fir) = lower_fir_cached(&parsed);
     policy_artifacts::write_safety_artifacts(
         &resolved.project_root,
         &parsed,
@@ -391,6 +397,7 @@ pub fn compile_library_with_backend(
         .unwrap_or(true);
     let contract_diagnostics =
         compile_time_contract_diagnostics(&parsed.module, &fir, checks_enabled, profile);
+    let kernel_ir_diagnostics = kernel_ir_diagnostics(&typed);
     let has_verifier_errors = report
         .diagnostics
         .iter()
@@ -403,10 +410,14 @@ pub fn compile_library_with_backend(
         .iter()
         .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let has_contract_errors = !contract_diagnostics.is_empty();
+    let has_kernel_ir_errors = kernel_ir_diagnostics
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, diagnostics::Severity::Error));
     let status = if has_experimental_errors
         || has_native_lowerability_errors
         || has_backend_risks
         || has_contract_errors
+        || has_kernel_ir_errors
         || has_verifier_errors
     {
         "error"
@@ -418,6 +429,7 @@ pub fn compile_library_with_backend(
     diagnostic_details.extend(backend_risks);
     diagnostic_details.extend(report.diagnostics);
     diagnostic_details.extend(contract_diagnostics);
+    diagnostic_details.extend(kernel_ir_diagnostics);
     normalize_diagnostics_for_path(&resolved.source_path, &mut diagnostic_details);
     let (static_lib, shared_lib) = if status == "ok" {
         emit_native_libraries(
@@ -504,7 +516,7 @@ pub fn verify_file_with_root_source(
         false,
     ));
     diagnostics.extend(native_lowerability_diagnostics(&parsed.module));
-    let (_typed, fir) = lower_fir_cached(&parsed);
+    let (typed, fir) = lower_fir_cached(&parsed);
     let (deny_unsafe_in, allow_unsafe_in) = unsafe_scope_policy(resolved.manifest.as_ref());
     let report = verifier::verify_with_policy(
         &fir,
@@ -523,6 +535,7 @@ pub fn verify_file_with_root_source(
         true,
         BuildProfile::Strict,
     ));
+    diagnostics.extend(kernel_ir_diagnostics(&typed));
     for diagnostic in &mut diagnostics {
         if diagnostic.path.is_none() {
             diagnostic.path = Some(resolved.source_path.display().to_string());
@@ -548,6 +561,13 @@ fn normalize_diagnostics_for_path(path: &Path, diagnostics: &mut [diagnostics::D
     }
     enrich_diagnostics_context(diagnostics);
     diagnostics::assign_stable_codes(diagnostics, diagnostics::DiagnosticDomain::Driver);
+}
+
+fn kernel_ir_diagnostics(typed: &hir::TypedModule) -> Vec<diagnostics::Diagnostic> {
+    match kernel_ir::lower(typed) {
+        Ok(_) => Vec::new(),
+        Err(diagnostics) => diagnostics,
+    }
 }
 
 pub fn emit_ir(path: &Path) -> Result<Output> {
@@ -586,9 +606,17 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
         }
     };
     let mut diagnostics = native_lowerability_diagnostics(&parsed.module);
-    let (_typed, fir) = lower_fir_cached(&parsed);
+    let (typed, fir) = lower_fir_cached(&parsed);
     let report = verifier::verify(&fir);
     diagnostics.extend(report.diagnostics);
+    let rendered_kernel_ir = match kernel_ir::lower(&typed) {
+        Ok(module) if !module.functions.is_empty() => Some(kernel_ir::render(&module)),
+        Ok(_) => None,
+        Err(mut kernel_ir_errors) => {
+            diagnostics.append(&mut kernel_ir_errors);
+            None
+        }
+    };
     for diagnostic in &mut diagnostics {
         if diagnostic.path.is_none() {
             diagnostic.path = Some(source_path.display().to_string());
@@ -604,9 +632,12 @@ pub fn emit_ir(path: &Path) -> Result<Output> {
         nodes: fir.nodes,
         diagnostics: diagnostics.len(),
         diagnostic_details: diagnostics,
-        backend_ir: Some(format!(
-            "; backend=llvm\n{llvm}\n; backend=cranelift\n{cranelift}\n"
-        )),
+        backend_ir: Some(match rendered_kernel_ir {
+            Some(kernel_ir) if !kernel_ir.is_empty() => format!(
+                "; backend=kernel_ir\n{kernel_ir}\n; backend=llvm\n{llvm}\n; backend=cranelift\n{cranelift}\n"
+            ),
+            _ => format!("; backend=llvm\n{llvm}\n; backend=cranelift\n{cranelift}\n"),
+        }),
     })
 }
 

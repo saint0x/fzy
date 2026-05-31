@@ -16,13 +16,13 @@ The following foundation is already landed on the `gpu` branch and should not be
 - host launch wrappers `launch0` through `launch4` exist
 - kernel indexed slice reads and writes typecheck
 - linear ownership checks cover `GpuBuffer<T>` and `GpuEvent`
+- dedicated `kernel_ir` lowering exists for the current GPU-safe subset
 - deterministic Fozzy coverage exists for execution-space safety, typed handles, launch events, and kernel slice assignment
 
 ## 1. Immediate Production Goal
 
 Ship a real end-to-end GPU path:
 
-- lower kernel-safe FZY into a dedicated GPU IR
 - compile that IR through a first real backend
 - execute launches against a real runtime contract
 - emit trace-visible GPU lifecycle events
@@ -30,25 +30,7 @@ Ship a real end-to-end GPU path:
 
 ## 2. Remaining Compiler Work
 
-### 2.1 Kernel IR
-
-Introduce a dedicated GPU lowering layer instead of treating GPU support as only HIR/runtime intrinsics.
-
-Required:
-
-- add a `crates/kernel_ir` layer or equivalent FIR-adjacent representation
-- lower `kernel fn`, `device fn`, and kernel-used `pure fn` into a device-safe subset
-- represent:
-  - kernel entrypoints
-  - device helper calls
-  - typed parameters
-  - thread/block/grid intrinsics
-  - device load/store/index operations
-  - structured control flow
-  - explicit barriers
-- reject host/runtime constructs before backend lowering
-
-### 2.2 Verifier Hardening
+### 2.1 Verifier Hardening
 
 The current verifier covers execution spaces, linear handles, and basic device-safe restrictions. The remaining production checks are:
 
@@ -61,7 +43,7 @@ The current verifier covers execution spaces, linear handles, and basic device-s
 - broaden device-safe aggregate support for structs, arrays, tuples, and enums
 - validate kernel parameter ABI shapes for backend lowering
 
-### 2.3 Launch Surface Completion
+### 2.2 Launch Surface Completion
 
 The current launch path is intentionally minimal. Production still needs:
 
