@@ -4,7 +4,7 @@ This example is a more visual GPU/CPU hybrid project:
 
 - a custom Fzy-authored Metal GPU kernel generates ripple-band intensity frames
 - the CPU downloads each frame, aggregates it with SIMD reductions, and renders ASCII output
-- interactive direct runs get a live in-place animation; non-interactive runs fall back to deterministic frame dumps
+- interactive direct runs get a live in-place animation that loops until the process is interrupted; non-interactive runs fall back to deterministic frame dumps
 
 What it proves:
 
@@ -34,3 +34,4 @@ Notes:
 - override render mode with `FZ_GPU_ASCII_RENDER=animate` or `FZ_GPU_ASCII_RENDER=frames`
 - `fz run` intentionally exposes a non-interactive stream, so the best animated demo command is `FZ_GPU_ASCII_RENDER=animate fz run examples/gpu_ascii_ripple --host-backends`
 - the built binary at `.fz/build/gpu_ascii_ripple` also animates directly when launched from a normal terminal
+- animated mode is intentionally open-ended; use `Ctrl-C` to stop it

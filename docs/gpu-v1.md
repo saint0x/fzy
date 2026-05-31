@@ -144,7 +144,7 @@ The canonical production-shaped example is:
 - it runs a custom Fzy-authored `metal` kernel
 - downloads each frame back to the host
 - aggregates with CPU SIMD reductions
-- animates in place on interactive terminals
+- animates in place on interactive terminals until interrupted
 - falls back to deterministic frame dumps for non-interactive runs, traces, and CI logs
 - `FZ_GPU_ASCII_RENDER=animate` forces animation for `fz run` when the outer runner exposes a non-interactive stream
 

@@ -198,8 +198,9 @@ host fn render_animation(dev_name: str) -> i32 {
     defer gpu.free(frame_buf)
     let animated = renderer_mode()
     discard begin_renderer(animated)
-    let mut frame = 0
-    while frame < model.frame_count() {
+    let mut tick = 0
+    while 1 == 1 {
+        let frame = tick - ((tick / model.frame_count()) * model.frame_count())
         let event = gpu.launch4(
             ripple_ascii,
             model.grid_size(),
@@ -220,15 +221,16 @@ host fn render_animation(dev_name: str) -> i32 {
         }
         if animated != 0 {
             discard term.write(str.concat(ansi_home(), render_live_scene(dev_name, frame, stats, output)))
-            if frame + 1 < model.frame_count() {
-                discard time.sleep_ms(90)
-            }
+            discard time.sleep_ms(90)
         } else {
             discard term.write(str.concat(render_stats_line(frame, stats), "\n"))
             discard term.write(render_frame(output))
             discard term.write("\n")
+            if frame + 1 >= model.frame_count() {
+                break
+            }
         }
-        frame = frame + 1
+        tick = tick + 1
     }
     discard end_renderer(animated)
     if animated != 0 {
