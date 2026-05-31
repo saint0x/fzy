@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::fmt;
 use std::io::{Read, Write};
@@ -6960,6 +6960,8 @@ struct RuntimeSemanticEvent {
     phase: String,
     kind: String,
     label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -6968,8 +6970,6 @@ struct CausalLink {
     to: u64,
     relation: String,
 }
-
-const GPU_TRACE_TASK_ID: u64 = u64::MAX;
 
 #[derive(Debug, Clone, Copy)]
 enum RpcValidationSeverity {
@@ -7045,7 +7045,7 @@ fn run_non_scenario_test_plan(
         bail!("--record requires --det");
     }
 
-    let (_typed, fir) = lower_fir_cached(&parsed);
+    let (typed, fir) = lower_fir_cached(&parsed);
     let strict_unsafe_contracts = request.strict_verify
         || resolved.manifest.as_ref().is_some_and(|manifest| {
             if request.safe_profile {
@@ -7159,7 +7159,7 @@ fn run_non_scenario_test_plan(
         let (mut derived_runtime_events, mut derived_causal_links) =
             derive_runtime_semantic_evidence(&events, &execution_order, &task_ops);
         let (gpu_runtime_events, gpu_causal_links) =
-            derive_gpu_runtime_semantic_evidence(&call_sequence);
+            derive_gpu_runtime_semantic_evidence(&parsed.module, &typed);
         derived_runtime_events.extend(gpu_runtime_events);
         derived_causal_links.extend(gpu_causal_links);
         runtime_events = derived_runtime_events;
@@ -8253,6 +8253,7 @@ fn derive_runtime_semantic_evidence(
                     label: op
                         .map(|op| op.label.clone())
                         .unwrap_or_else(|| "unknown".to_string()),
+                    details: None,
                 });
             }
             TaskEvent::Completed { task_id }
@@ -8269,6 +8270,7 @@ fn derive_runtime_semantic_evidence(
                     label: op
                         .map(|op| op.label.clone())
                         .unwrap_or_else(|| "unknown".to_string()),
+                    details: None,
                 });
             }
             TaskEvent::Spawned { task_id, .. }
@@ -8290,6 +8292,7 @@ fn derive_runtime_semantic_evidence(
                     label: op
                         .map(|op| op.label.clone())
                         .unwrap_or_else(|| "unknown".to_string()),
+                    details: None,
                 });
             }
             TaskEvent::JoinWait { waiter, .. } => {
@@ -8303,6 +8306,7 @@ fn derive_runtime_semantic_evidence(
                     label: op
                         .map(|op| op.label.clone())
                         .unwrap_or_else(|| "unknown".to_string()),
+                    details: None,
                 });
             }
             TaskEvent::JoinCycle { .. }
@@ -8331,6 +8335,7 @@ fn derive_runtime_semantic_evidence(
                 label: op
                     .map(|op| op.label.clone())
                     .unwrap_or_else(|| "unknown".to_string()),
+                details: None,
             });
             runtime_events.push(RuntimeSemanticEvent {
                 task_id: *task_id,
@@ -8341,6 +8346,7 @@ fn derive_runtime_semantic_evidence(
                 label: op
                     .map(|op| op.label.clone())
                     .unwrap_or_else(|| "unknown".to_string()),
+                details: None,
             });
         }
     }
@@ -8354,55 +8360,807 @@ fn derive_runtime_semantic_evidence(
     (runtime_events, causal_links)
 }
 
-fn derive_gpu_runtime_semantic_evidence(
-    call_sequence: &[String],
-) -> (Vec<RuntimeSemanticEvent>, Vec<CausalLink>) {
-    let mut runtime_events = Vec::new();
-    let mut causal_links = Vec::new();
-    let mut previous_index = None::<u64>;
-    let mut event_id = 0u64;
-    for callee in call_sequence.iter() {
-        let Some(event_shapes) = gpu_trace_events_for_callee(callee) else {
-            continue;
-        };
-        for (phase, kind) in event_shapes {
-            runtime_events.push(RuntimeSemanticEvent {
-                task_id: GPU_TRACE_TASK_ID,
-                phase: phase.to_string(),
-                kind: kind.to_string(),
-                label: callee.clone(),
-            });
-            if let Some(previous) = previous_index {
-                causal_links.push(CausalLink {
-                    from: previous,
-                    to: event_id,
-                    relation: "gpu.next".to_string(),
-                });
-            }
-            previous_index = Some(event_id);
-            event_id = event_id.saturating_add(1);
-        }
-    }
-    (runtime_events, causal_links)
+const GPU_TRACE_EVENT_ID_BASE: u64 = 1_000_000_000_000;
+
+#[derive(Debug, Clone)]
+enum GpuTraceBinding {
+    Device {
+        resource_id: String,
+        event_id: u64,
+    },
+    Buffer {
+        resource_id: String,
+        event_id: u64,
+        element_type: &'static str,
+        device_resource: Option<String>,
+    },
+    Slice {
+        resource_id: String,
+        event_id: u64,
+        buffer_resource: String,
+        offset: Option<i64>,
+        len: Option<i64>,
+    },
+    Event {
+        resource_id: String,
+        event_id: u64,
+        kernel_name: String,
+        launch_event_id: u64,
+    },
 }
 
-fn gpu_trace_events_for_callee(callee: &str) -> Option<&'static [(&'static str, &'static str)]> {
-    let base = callee.split('<').next().unwrap_or(callee);
-    Some(match base {
-        "gpu.default_device" => &[("host", "gpu.device_select")],
-        "gpu.alloc_f32" | "gpu.alloc_i32" | "gpu.alloc_u32" => &[("host", "gpu.alloc")],
-        "gpu.free" => &[("host", "gpu.free")],
-        "gpu.slice" => &[("host", "gpu.slice")],
-        "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32" => &[("host", "gpu.upload")],
-        "gpu.download_f32" | "gpu.download_i32" | "gpu.download_u32" => &[("host", "gpu.download")],
-        "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4" => {
-            &[("host", "gpu.kernel_launch")]
+#[derive(Debug, Clone)]
+struct GpuLaunchArgTrace {
+    slot: usize,
+    layout: String,
+    detail: serde_json::Value,
+    source_event_ids: Vec<u64>,
+}
+
+#[derive(Debug, Default)]
+struct GpuTraceAnalyzer {
+    next_trace_id: u64,
+    previous_trace_id: Option<u64>,
+    next_device_id: usize,
+    next_buffer_id: usize,
+    next_slice_id: usize,
+    next_event_id: usize,
+    runtime_events: Vec<RuntimeSemanticEvent>,
+    causal_links: Vec<CausalLink>,
+    bindings: HashMap<String, GpuTraceBinding>,
+    kernel_layouts: HashMap<String, String>,
+}
+
+impl GpuTraceAnalyzer {
+    fn new(kernel_layouts: HashMap<String, String>) -> Self {
+        Self {
+            next_trace_id: GPU_TRACE_EVENT_ID_BASE,
+            previous_trace_id: None,
+            next_device_id: 1,
+            next_buffer_id: 1,
+            next_slice_id: 1,
+            next_event_id: 1,
+            runtime_events: Vec::new(),
+            causal_links: Vec::new(),
+            bindings: HashMap::new(),
+            kernel_layouts,
         }
-        "gpu.wait" | "gpu.wait_async" => {
-            &[("host", "gpu.event_wait"), ("host", "gpu.kernel_complete")]
+    }
+
+    fn emit_event(
+        &mut self,
+        phase: &str,
+        kind: &str,
+        label: String,
+        details: Option<serde_json::Value>,
+    ) -> u64 {
+        let trace_id = self.next_trace_id;
+        self.next_trace_id = self.next_trace_id.saturating_add(1);
+        self.runtime_events.push(RuntimeSemanticEvent {
+            task_id: trace_id,
+            phase: phase.to_string(),
+            kind: kind.to_string(),
+            label,
+            details,
+        });
+        if let Some(previous) = self.previous_trace_id {
+            self.causal_links.push(CausalLink {
+                from: previous,
+                to: trace_id,
+                relation: "gpu.next".to_string(),
+            });
         }
-        _ => return None,
-    })
+        self.previous_trace_id = Some(trace_id);
+        trace_id
+    }
+
+    fn emit_link(&mut self, from: u64, to: u64, relation: &str) {
+        self.causal_links.push(CausalLink {
+            from,
+            to,
+            relation: relation.to_string(),
+        });
+    }
+
+    fn bind(&mut self, name: &str, binding: GpuTraceBinding) {
+        self.bindings.insert(name.to_string(), binding);
+    }
+
+    fn resolve_binding(&self, expr: &ast::Expr) -> Option<GpuTraceBinding> {
+        match expr {
+            ast::Expr::Ident(name) => self.bindings.get(name).cloned(),
+            _ => None,
+        }
+    }
+
+    fn trace_stmt(&mut self, stmt: &ast::Stmt) {
+        match stmt {
+            ast::Stmt::Let { name, value, .. } => {
+                if let Some(binding) = self.trace_expr(value) {
+                    self.bind(name, binding);
+                }
+            }
+            ast::Stmt::LetPattern { value, .. }
+            | ast::Stmt::Expr(value)
+            | ast::Stmt::Defer(value)
+            | ast::Stmt::Requires(value)
+            | ast::Stmt::Ensures(value) => {
+                self.trace_expr(value);
+            }
+            ast::Stmt::Assign { target, value } => {
+                if let Some(binding) = self.trace_expr(value) {
+                    self.bind(target, binding);
+                }
+            }
+            ast::Stmt::CompoundAssign { value, .. } => {
+                self.trace_expr(value);
+            }
+            ast::Stmt::Return(value) => {
+                if let Some(value) = value {
+                    self.trace_expr(value);
+                }
+            }
+            ast::Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                self.trace_expr(condition);
+                for stmt in then_body {
+                    self.trace_stmt(stmt);
+                }
+                for stmt in else_body {
+                    self.trace_stmt(stmt);
+                }
+            }
+            ast::Stmt::While { condition, body } => {
+                self.trace_expr(condition);
+                for stmt in body {
+                    self.trace_stmt(stmt);
+                }
+            }
+            ast::Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.trace_stmt(init);
+                }
+                if let Some(condition) = condition {
+                    self.trace_expr(condition);
+                }
+                if let Some(step) = step {
+                    self.trace_stmt(step);
+                }
+                for stmt in body {
+                    self.trace_stmt(stmt);
+                }
+            }
+            ast::Stmt::ForIn { iterable, body, .. } => {
+                self.trace_expr(iterable);
+                for stmt in body {
+                    self.trace_stmt(stmt);
+                }
+            }
+            ast::Stmt::Loop { body } => {
+                for stmt in body {
+                    self.trace_stmt(stmt);
+                }
+            }
+            ast::Stmt::Match { scrutinee, arms } => {
+                self.trace_expr(scrutinee);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        self.trace_expr(guard);
+                    }
+                    self.trace_expr(&arm.value);
+                }
+            }
+            ast::Stmt::Break(_) | ast::Stmt::Continue => {}
+        }
+    }
+
+    fn trace_expr(&mut self, expr: &ast::Expr) -> Option<GpuTraceBinding> {
+        match expr {
+            ast::Expr::Call { callee, args } => self.trace_call(callee, args),
+            ast::Expr::Await(inner) | ast::Expr::Group(inner) | ast::Expr::Discard(inner) => {
+                self.trace_expr(inner)
+            }
+            ast::Expr::Unary { expr, .. } => {
+                self.trace_expr(expr);
+                None
+            }
+            ast::Expr::FieldAccess { base, .. } => {
+                self.trace_expr(base);
+                None
+            }
+            ast::Expr::StructInit { fields, .. } => {
+                for (_, value) in fields {
+                    self.trace_expr(value);
+                }
+                None
+            }
+            ast::Expr::EnumInit { payload, .. } | ast::Expr::Tuple(payload) => {
+                for value in payload {
+                    self.trace_expr(value);
+                }
+                None
+            }
+            ast::Expr::Closure { body, .. } => {
+                self.trace_expr(body);
+                None
+            }
+            ast::Expr::TryCatch {
+                try_expr,
+                catch_expr,
+            } => {
+                self.trace_expr(try_expr);
+                self.trace_expr(catch_expr);
+                None
+            }
+            ast::Expr::If {
+                condition,
+                then_expr,
+                else_expr,
+            } => {
+                self.trace_expr(condition);
+                self.trace_expr(then_expr);
+                self.trace_expr(else_expr);
+                None
+            }
+            ast::Expr::Binary { left, right, .. } => {
+                self.trace_expr(left);
+                self.trace_expr(right);
+                None
+            }
+            ast::Expr::Range { start, end, .. } => {
+                self.trace_expr(start);
+                self.trace_expr(end);
+                None
+            }
+            ast::Expr::ArrayLiteral(items) => {
+                for item in items {
+                    self.trace_expr(item);
+                }
+                None
+            }
+            ast::Expr::ObjectLiteral(items) => {
+                for (_, value) in items {
+                    self.trace_expr(value);
+                }
+                None
+            }
+            ast::Expr::Index { base, index } => {
+                self.trace_expr(base);
+                self.trace_expr(index);
+                None
+            }
+            ast::Expr::UnsafeBlock { body, .. }
+            | ast::Expr::While { body, .. }
+            | ast::Expr::For { body, .. }
+            | ast::Expr::ForIn { body, .. }
+            | ast::Expr::Loop { body } => {
+                for stmt in body {
+                    self.trace_stmt(stmt);
+                }
+                None
+            }
+            ast::Expr::Ident(name) => self.bindings.get(name).cloned(),
+            ast::Expr::Int(_)
+            | ast::Expr::Float { .. }
+            | ast::Expr::Char(_)
+            | ast::Expr::Bool(_)
+            | ast::Expr::Str(_)
+            | ast::Expr::Break(_)
+            | ast::Expr::Continue
+            | ast::Expr::Return(_)
+            | ast::Expr::Match { .. } => None,
+        }
+    }
+
+    fn trace_call(&mut self, callee: &str, args: &[ast::Expr]) -> Option<GpuTraceBinding> {
+        for arg in args {
+            self.trace_expr(arg);
+        }
+        let base = callee.split('<').next().unwrap_or(callee);
+        match base {
+            "gpu.default_device" => Some(self.trace_default_device(callee)),
+            "gpu.alloc_f32" => self.trace_alloc_like(callee, args, "f32", "gpu.alloc"),
+            "gpu.alloc_i32" => self.trace_alloc_like(callee, args, "i32", "gpu.alloc"),
+            "gpu.alloc_u32" => self.trace_alloc_like(callee, args, "u32", "gpu.alloc"),
+            "gpu.upload_f32" => self.trace_alloc_like(callee, args, "f32", "gpu.upload"),
+            "gpu.upload_i32" => self.trace_alloc_like(callee, args, "i32", "gpu.upload"),
+            "gpu.upload_u32" => self.trace_alloc_like(callee, args, "u32", "gpu.upload"),
+            "gpu.slice" => self.trace_slice(callee, args),
+            "gpu.download_f32" => {
+                self.trace_buffer_op(callee, args, "gpu.download", Some("f32"));
+                None
+            }
+            "gpu.download_i32" => {
+                self.trace_buffer_op(callee, args, "gpu.download", Some("i32"));
+                None
+            }
+            "gpu.download_u32" => {
+                self.trace_buffer_op(callee, args, "gpu.download", Some("u32"));
+                None
+            }
+            "gpu.free" => {
+                self.trace_buffer_free(callee, args);
+                None
+            }
+            "gpu.launch0" | "gpu.launch1" | "gpu.launch2" | "gpu.launch3" | "gpu.launch4" => {
+                self.trace_launch(callee, args)
+            }
+            "gpu.wait" | "gpu.wait_async" => {
+                self.trace_wait(callee, args);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    fn trace_default_device(&mut self, callee: &str) -> GpuTraceBinding {
+        let resource_id = format!("gpu_device#{}", self.next_device_id);
+        self.next_device_id += 1;
+        let event_id = self.emit_event(
+            "host",
+            "gpu.device_select",
+            callee.to_string(),
+            Some(serde_json::json!({
+                "deviceResource": resource_id,
+            })),
+        );
+        GpuTraceBinding::Device {
+            resource_id,
+            event_id,
+        }
+    }
+
+    fn trace_alloc_like(
+        &mut self,
+        callee: &str,
+        args: &[ast::Expr],
+        element_type: &'static str,
+        kind: &str,
+    ) -> Option<GpuTraceBinding> {
+        let resource_id = format!("gpu_buffer#{}", self.next_buffer_id);
+        self.next_buffer_id += 1;
+        let device_resource = args
+            .first()
+            .and_then(|expr| self.resolve_binding(expr))
+            .and_then(|binding| match binding {
+                GpuTraceBinding::Device { resource_id, .. } => Some(resource_id),
+                _ => None,
+            });
+        let len = args.get(1).and_then(expr_const_i64);
+        let event_id = self.emit_event(
+            "host",
+            kind,
+            callee.to_string(),
+            Some(serde_json::json!({
+                "bufferResource": resource_id,
+                "elementType": element_type,
+                "deviceResource": device_resource,
+                "len": len,
+            })),
+        );
+        Some(GpuTraceBinding::Buffer {
+            resource_id,
+            event_id,
+            element_type,
+            device_resource,
+        })
+    }
+
+    fn trace_slice(&mut self, callee: &str, args: &[ast::Expr]) -> Option<GpuTraceBinding> {
+        let Some(GpuTraceBinding::Buffer {
+            resource_id: buffer_resource,
+            event_id: buffer_event_id,
+            ..
+        }) = args.first().and_then(|expr| self.resolve_binding(expr))
+        else {
+            self.emit_gpu_error(
+                callee,
+                "gpu.slice expected a known GPU buffer binding",
+                serde_json::json!({"reason": "unknown_buffer_binding"}),
+            );
+            return None;
+        };
+        let resource_id = format!("gpu_slice#{}", self.next_slice_id);
+        self.next_slice_id += 1;
+        let offset = args.get(1).and_then(expr_const_i64);
+        let len = args.get(2).and_then(expr_const_i64);
+        let event_id = self.emit_event(
+            "host",
+            "gpu.slice",
+            callee.to_string(),
+            Some(serde_json::json!({
+                "sliceResource": resource_id,
+                "bufferResource": buffer_resource,
+                "offset": offset,
+                "len": len,
+            })),
+        );
+        self.emit_link(buffer_event_id, event_id, "gpu.buffer.slice_of");
+        Some(GpuTraceBinding::Slice {
+            resource_id,
+            event_id,
+            buffer_resource,
+            offset,
+            len,
+        })
+    }
+
+    fn trace_buffer_op(
+        &mut self,
+        callee: &str,
+        args: &[ast::Expr],
+        kind: &str,
+        element_type: Option<&'static str>,
+    ) {
+        let Some(GpuTraceBinding::Buffer {
+            resource_id,
+            event_id,
+            ..
+        }) = args.first().and_then(|expr| self.resolve_binding(expr))
+        else {
+            self.emit_gpu_error(
+                callee,
+                "GPU buffer operation expected a known buffer binding",
+                serde_json::json!({"reason": "unknown_buffer_binding"}),
+            );
+            return;
+        };
+        let op_event_id = self.emit_event(
+            "host",
+            kind,
+            callee.to_string(),
+            Some(serde_json::json!({
+                "bufferResource": resource_id,
+                "elementType": element_type,
+            })),
+        );
+        self.emit_link(event_id, op_event_id, "gpu.buffer.use");
+    }
+
+    fn trace_buffer_free(&mut self, callee: &str, args: &[ast::Expr]) {
+        let Some(GpuTraceBinding::Buffer {
+            resource_id,
+            event_id,
+            element_type,
+            device_resource,
+        }) = args.first().and_then(|expr| self.resolve_binding(expr))
+        else {
+            self.emit_gpu_error(
+                callee,
+                "gpu.free expected a known GPU buffer binding",
+                serde_json::json!({"reason": "unknown_buffer_binding"}),
+            );
+            return;
+        };
+        let free_event_id = self.emit_event(
+            "host",
+            "gpu.free",
+            callee.to_string(),
+            Some(serde_json::json!({
+                "bufferResource": resource_id,
+                "elementType": element_type,
+                "deviceResource": device_resource,
+            })),
+        );
+        self.emit_link(event_id, free_event_id, "gpu.buffer.lifetime_end");
+    }
+
+    fn trace_launch(&mut self, callee: &str, args: &[ast::Expr]) -> Option<GpuTraceBinding> {
+        let kernel_name = args
+            .first()
+            .map(render_expr_brief)
+            .unwrap_or_else(|| "unknown_kernel".to_string());
+        let grid = args.get(1).and_then(expr_const_i64);
+        let block = args.get(2).and_then(expr_const_i64);
+        if grid.is_some_and(|value| value <= 0) || block.is_some_and(|value| value <= 0) {
+            self.emit_gpu_error(
+                callee,
+                "gpu.launch uses a non-positive grid or block size",
+                serde_json::json!({
+                    "kernelName": kernel_name,
+                    "grid": grid,
+                    "block": block,
+                    "reason": "non_positive_launch_dimension",
+                }),
+            );
+        }
+        let param_layout = self.kernel_layouts.get(&kernel_name).cloned();
+        let launch_args = self.build_launch_arg_trace(param_layout.as_deref(), &args[3..]);
+        let event_resource = format!("gpu_event#{}", self.next_event_id);
+        self.next_event_id += 1;
+        let launch_event_id = self.emit_event(
+            "host",
+            "gpu.kernel_launch",
+            callee.to_string(),
+            Some(serde_json::json!({
+                "kernelName": kernel_name,
+                "grid": grid,
+                "block": block,
+                "paramLayout": param_layout,
+                "eventResource": event_resource,
+                "arguments": launch_args.iter().map(|arg| serde_json::json!({
+                    "slot": arg.slot,
+                    "layout": arg.layout,
+                    "binding": arg.detail,
+                })).collect::<Vec<_>>(),
+            })),
+        );
+        for arg in &launch_args {
+            for source_event_id in &arg.source_event_ids {
+                self.emit_link(*source_event_id, launch_event_id, "gpu.kernel.argument");
+            }
+        }
+        Some(GpuTraceBinding::Event {
+            resource_id: event_resource,
+            event_id: launch_event_id,
+            kernel_name,
+            launch_event_id,
+        })
+    }
+
+    fn build_launch_arg_trace(
+        &mut self,
+        param_layout: Option<&str>,
+        args: &[ast::Expr],
+    ) -> Vec<GpuLaunchArgTrace> {
+        let layouts = param_layout
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|item| item.trim().to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_else(|| vec!["unknown".to_string(); args.len()]);
+        args.iter()
+            .enumerate()
+            .map(|(slot, expr)| {
+                let layout = layouts
+                    .get(slot)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+                let (detail, source_event_ids) = self.describe_launch_arg(expr, &layout);
+                GpuLaunchArgTrace {
+                    slot,
+                    layout,
+                    detail,
+                    source_event_ids,
+                }
+            })
+            .collect()
+    }
+
+    fn describe_launch_arg(
+        &self,
+        expr: &ast::Expr,
+        layout: &str,
+    ) -> (serde_json::Value, Vec<u64>) {
+        match self.resolve_binding(expr) {
+            Some(GpuTraceBinding::Slice {
+                resource_id,
+                event_id,
+                buffer_resource,
+                offset,
+                len,
+            }) => (
+                serde_json::json!({
+                    "kind": "GpuSlice",
+                    "sliceResource": resource_id,
+                    "bufferResource": buffer_resource,
+                    "offset": offset,
+                    "len": len,
+                }),
+                vec![event_id],
+            ),
+            Some(GpuTraceBinding::Buffer {
+                resource_id,
+                event_id,
+                element_type,
+                device_resource,
+            }) => (
+                serde_json::json!({
+                    "kind": "GpuBuffer",
+                    "bufferResource": resource_id,
+                    "elementType": element_type,
+                    "deviceResource": device_resource,
+                }),
+                vec![event_id],
+            ),
+            Some(GpuTraceBinding::Device {
+                resource_id,
+                event_id,
+            }) => (
+                serde_json::json!({
+                    "kind": "GpuDevice",
+                    "deviceResource": resource_id,
+                }),
+                vec![event_id],
+            ),
+            Some(GpuTraceBinding::Event {
+                resource_id,
+                event_id,
+                kernel_name,
+                ..
+            }) => (
+                serde_json::json!({
+                    "kind": "GpuEvent",
+                    "eventResource": resource_id,
+                    "kernelName": kernel_name,
+                }),
+                vec![event_id],
+            ),
+            None => (
+                serde_json::json!({
+                    "kind": "scalar",
+                    "layout": layout,
+                    "source": render_expr_brief(expr),
+                }),
+                Vec::new(),
+            ),
+        }
+    }
+
+    fn trace_wait(&mut self, callee: &str, args: &[ast::Expr]) {
+        let Some(binding) = args.first().and_then(|expr| self.resolve_binding(expr)) else {
+            self.emit_gpu_error(
+                callee,
+                "gpu.wait expected a known GPU event binding",
+                serde_json::json!({"reason": "unknown_event_binding"}),
+            );
+            return;
+        };
+        let GpuTraceBinding::Event {
+            resource_id,
+            event_id,
+            kernel_name,
+            launch_event_id,
+        } = binding
+        else {
+            self.emit_gpu_error(
+                callee,
+                "gpu.wait expected a GPU event binding",
+                serde_json::json!({"reason": "non_event_wait_target"}),
+            );
+            return;
+        };
+        let wait_event_id = self.emit_event(
+            "host",
+            "gpu.event_wait",
+            callee.to_string(),
+            Some(serde_json::json!({
+                "eventResource": resource_id,
+                "kernelName": kernel_name,
+            })),
+        );
+        self.emit_link(event_id, wait_event_id, "gpu.event.waits_for");
+        self.emit_link(launch_event_id, wait_event_id, "gpu.kernel.wait");
+        let complete_event_id = self.emit_event(
+            "host",
+            "gpu.kernel_complete",
+            callee.to_string(),
+            Some(serde_json::json!({
+                "eventResource": resource_id,
+                "kernelName": kernel_name,
+                "status": "ok",
+            })),
+        );
+        self.emit_link(wait_event_id, complete_event_id, "gpu.event.complete");
+    }
+
+    fn emit_gpu_error(&mut self, label: &str, message: &str, details: serde_json::Value) {
+        self.emit_event(
+            "host",
+            "gpu.error",
+            label.to_string(),
+            Some(serde_json::json!({
+                "message": message,
+                "detail": details,
+            })),
+        );
+    }
+}
+
+fn derive_gpu_runtime_semantic_evidence(
+    module: &ast::Module,
+    typed: &hir::TypedModule,
+) -> (Vec<RuntimeSemanticEvent>, Vec<CausalLink>) {
+    let mut analyzer = GpuTraceAnalyzer::new(gpu_kernel_param_layouts(typed));
+    for item in &module.items {
+        if let ast::Item::Function(function) = item {
+            for statement in &function.body {
+                analyzer.trace_stmt(statement);
+            }
+        }
+    }
+    (analyzer.runtime_events, analyzer.causal_links)
+}
+
+fn gpu_kernel_param_layouts(typed: &hir::TypedModule) -> HashMap<String, String> {
+    let Ok(module) = kernel_ir::lower(typed) else {
+        return HashMap::new();
+    };
+    let function_map = module
+        .functions
+        .iter()
+        .map(|function| (function.name.clone(), function))
+        .collect::<BTreeMap<_, _>>();
+    module
+        .kernels
+        .iter()
+        .filter_map(|kernel_name| {
+            function_map
+                .get(kernel_name)
+                .and_then(|function| render_gpu_shared_param_layout(function).ok())
+                .map(|layout| (kernel_name.clone(), layout))
+        })
+        .collect()
+}
+
+fn render_gpu_shared_param_layout(function: &kernel_ir::KernelFunction) -> Result<String> {
+    let mut parts = Vec::with_capacity(function.params.len());
+    for param in &function.params {
+        let part = match &param.ty {
+            ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+                let element = match &args[0] {
+                    ast::Type::Int {
+                        signed: true,
+                        bits: 32,
+                    } => "i32",
+                    ast::Type::Int {
+                        signed: false,
+                        bits: 32,
+                    } => "u32",
+                    ast::Type::Float { bits: 32 } => "f32",
+                    other => bail!("unsupported gpu slice element type in trace layout: {other:?}"),
+                };
+                let mode = function
+                    .slice_access
+                    .get(&param.name)
+                    .copied()
+                    .unwrap_or(kernel_ir::KernelSliceAccessMode::Observe);
+                let access = mode.layout_suffix();
+                format!("slice_{element}_{access}")
+            }
+            ast::Type::Int {
+                signed: true,
+                bits: 32,
+            } => "i32".to_string(),
+            ast::Type::Int {
+                signed: false,
+                bits: 32,
+            } => "u32".to_string(),
+            ast::Type::Float { bits: 32 } => "f32".to_string(),
+            other => bail!("unsupported gpu param type in trace layout: {other:?}"),
+        };
+        parts.push(part);
+    }
+    Ok(parts.join(","))
+}
+
+fn expr_const_i64(expr: &ast::Expr) -> Option<i64> {
+    match expr {
+        ast::Expr::Int(value) => i64::try_from(*value).ok(),
+        _ => None,
+    }
+}
+
+fn render_expr_brief(expr: &ast::Expr) -> String {
+    match expr {
+        ast::Expr::Ident(name) => name.clone(),
+        ast::Expr::Int(value) => value.to_string(),
+        ast::Expr::Float { value, .. } => value.to_string(),
+        ast::Expr::Bool(value) => value.to_string(),
+        ast::Expr::Str(value) => value.clone(),
+        ast::Expr::Call { callee, .. } => callee.clone(),
+        _ => format!("{expr:?}"),
+    }
 }
 
 fn build_rpc_frame_events(
@@ -17111,7 +17869,7 @@ fn main() -> i32 {
             std::env::temp_dir().join(format!("fozzylang-test-gpu-record-{suffix}.trace.json"));
         std::fs::write(
             &source,
-            "use core.gpu;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\ntest \"gpu trace\" {}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 4)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 4)\n    defer gpu.free(output)\n    let event = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 4), gpu.slice(output, 0, 4), 4)\n    gpu.wait(event)\n    return 0\n}\n",
+            "use core.gpu;\nkernel fn copy(input: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {\n    let i = gpu.global_id_x()\n    if i < n {\n        output[i] = input[i]\n    }\n}\ntest \"gpu trace\" {}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let input = gpu.alloc_f32(dev, 4)\n    defer gpu.free(input)\n    let output = gpu.alloc_f32(dev, 4)\n    defer gpu.free(output)\n    let first = gpu.launch3(copy, 1, 64, gpu.slice(input, 0, 4), gpu.slice(output, 0, 4), 4)\n    gpu.wait(first)\n    let second = gpu.launch3(copy, 2, 32, gpu.slice(output, 0, 4), gpu.slice(input, 0, 4), 4)\n    gpu.wait(second)\n    return 0\n}\n",
         )
         .expect("source should be written");
 
@@ -17146,13 +17904,37 @@ fn main() -> i32 {
         let native_trace_text =
             std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
                 .expect("native trace should be written");
-        assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.alloc\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.free\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.slice\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_launch\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.event_wait\""));
-        assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_complete\""));
+        let native_trace: serde_json::Value =
+            serde_json::from_str(&native_trace_text).expect("native trace should parse");
+        let runtime_events = native_trace["runtimeEvents"]
+            .as_array()
+            .expect("runtimeEvents should be an array");
+        let launch_events = runtime_events
+            .iter()
+            .filter(|event| event["kind"].as_str() == Some("gpu.kernel_launch"))
+            .collect::<Vec<_>>();
+        assert_eq!(launch_events.len(), 2);
+        assert_eq!(
+            launch_events[0]["details"]["kernelName"].as_str(),
+            Some("copy")
+        );
+        assert_eq!(launch_events[0]["details"]["grid"].as_i64(), Some(1));
+        assert_eq!(launch_events[0]["details"]["block"].as_i64(), Some(64));
+        assert_eq!(
+            launch_events[0]["details"]["paramLayout"].as_str(),
+            Some("slice_f32_ro,slice_f32_wo,i32")
+        );
+        assert_eq!(launch_events[1]["details"]["grid"].as_i64(), Some(2));
+        assert_eq!(launch_events[1]["details"]["block"].as_i64(), Some(32));
+        let causal_links = native_trace["causalLinks"]
+            .as_array()
+            .expect("causalLinks should be array");
+        assert!(causal_links.iter().any(|link| {
+            link["relation"].as_str() == Some("gpu.buffer.lifetime_end")
+        }));
+        assert!(causal_links.iter().any(|link| {
+            link["relation"].as_str() == Some("gpu.event.complete")
+        }));
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);
@@ -17347,6 +18129,78 @@ fn main() -> i32 {
         assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_launch\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.event_wait\""));
         assert!(native_trace_text.contains("\"kind\": \"gpu.kernel_complete\""));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(trace);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
+        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
+    }
+
+    #[test]
+    fn non_scenario_trace_records_gpu_error_events() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-test-gpu-error-record-{suffix}.fzy"));
+        let trace = std::env::temp_dir().join(format!(
+            "fozzylang-test-gpu-error-record-{suffix}.trace.json"
+        ));
+        std::fs::write(
+            &source,
+            "use core.gpu;\ntest \"gpu error trace\" {}\nhost fn flush(event: GpuEvent) -> void {\n    gpu.wait(event)\n}\nhost fn main() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(29),
+                record: Some(trace.clone()),
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: true,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+
+        let stem = trace
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("trace should have a stem")
+            .to_string();
+        let base = trace
+            .parent()
+            .expect("trace should have parent")
+            .to_path_buf();
+        let native_trace_text =
+            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
+                .expect("native trace should be written");
+        let native_trace: serde_json::Value =
+            serde_json::from_str(&native_trace_text).expect("native trace should parse");
+        let error_event = native_trace["runtimeEvents"]
+            .as_array()
+            .expect("runtimeEvents should be an array")
+            .iter()
+            .find(|event| event["kind"].as_str() == Some("gpu.error"))
+            .expect("gpu.error event should be present");
+        assert_eq!(
+            error_event["details"]["detail"]["reason"].as_str(),
+            Some("unknown_event_binding")
+        );
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);
