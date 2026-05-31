@@ -50,7 +50,7 @@ Required tests:
 
 - HIR unit regressions for every new adversarial shape.
 - `fz verify` fixtures that assert both failure class and stable diagnostic/help wording.
-- Deterministic Fozzy memory scenarios that reproduce branch, loop, defer, and remaining ownership/thread lifetime hazards.
+- Deterministic Fozzy memory scenarios that reproduce branch, loop, defer, and remaining ownership hazards.
 - Recorded traces plus trace verify, replay, and CI for at least one adversarial memory suite per active goal.
 
 ## Priority 7

@@ -706,6 +706,11 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
+        callee: "thread.spawn_ctx",
+        symbol: "fz_native_spawn_ctx",
+        arity: 2,
+    },
+    NativeRuntimeImport {
         callee: "join",
         symbol: "fz_native_join",
         arity: 1,
@@ -1157,7 +1162,13 @@ fn required_capability_for_callee(callee: &str) -> &'static str {
         || callee.starts_with("task.")
         || matches!(
             callee,
-            "spawn" | "spawn_ctx" | "detach" | "cancel_task" | "yield" | "recv"
+            "spawn"
+                | "spawn_ctx"
+                | "thread.spawn_ctx"
+                | "detach"
+                | "cancel_task"
+                | "yield"
+                | "recv"
         )
     {
         "thread"
@@ -1230,7 +1241,9 @@ fn default_linearity(callee: &str) -> &'static str {
             | "http.post_json_stream"
             | "http.websocket_accept"
             | "spawn"
+            | "thread.spawn"
             | "spawn_ctx"
+            | "thread.spawn_ctx"
             | "proc.spawn"
             | "proc.spawnl"
             | "proc.spawn_cmd"
@@ -1384,7 +1397,7 @@ pub(super) fn native_runtime_contract_for_callee(
             contract.arg_ownership = "consume_arg0";
             contract.return_ownership = "status";
         }
-        "spawn" | "spawn_ctx" => {
+        "spawn" | "thread.spawn" | "spawn_ctx" | "thread.spawn_ctx" => {
             contract.arg_ownership = "borrow_spawn_fn";
             contract.return_ownership = "owned_task_handle";
         }

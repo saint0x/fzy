@@ -2161,6 +2161,7 @@ fn collect_task_transfer_events_from_expr(
                 "spawn"
                     | "thread.spawn"
                     | "spawn_ctx"
+                    | "thread.spawn_ctx"
                     | "task.group_spawn"
                     | "task.group_spawn_n"
                     | "task.parallel_map"
@@ -3314,7 +3315,7 @@ fn collect_task_handle_creation(
     };
     if matches!(
         callee.as_str(),
-        "spawn" | "thread.spawn" | "spawn_ctx" | "task.group_spawn"
+        "spawn" | "thread.spawn" | "spawn_ctx" | "thread.spawn_ctx" | "task.group_spawn"
     ) {
         started.insert(binding.to_string(), callee.clone());
     }
@@ -5314,7 +5315,7 @@ fn canonicalize_expr_calls(
             *callee = canonicalize_callee(callee, namespace, known_functions, reexported_functions);
             if matches!(
                 callee.as_str(),
-                "spawn" | "spawn_ctx" | "task.group_spawn" | "thread.spawn"
+                "spawn" | "thread.spawn" | "spawn_ctx" | "thread.spawn_ctx" | "task.group_spawn"
             ) {
                 if let Some(task_ref) = args.first_mut() {
                     canonicalize_task_ref_expr(

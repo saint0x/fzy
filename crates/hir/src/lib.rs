@@ -3698,7 +3698,7 @@ fn analyze_spawn_borrow_escapes_expr(
 
 fn spawn_callable_arg_index(callee: &str) -> Option<usize> {
     match callee {
-        "spawn" | "thread.spawn" | "spawn_ctx" => Some(0),
+        "spawn" | "thread.spawn" | "spawn_ctx" | "thread.spawn_ctx" => Some(0),
         "task.group_spawn" | "task.group_spawn_n" | "task.parallel_map" => Some(1),
         _ => None,
     }
@@ -4420,7 +4420,13 @@ const RUNTIME_HANDLE_CONTRACTS: &[RuntimeHandleContract] = &[
         closable: false,
         send_safe: true,
         async_stable: true,
-        producer_intrinsics: &["spawn", "spawn_ctx", "task.group_spawn"],
+        producer_intrinsics: &[
+            "spawn",
+            "thread.spawn",
+            "spawn_ctx",
+            "thread.spawn_ctx",
+            "task.group_spawn",
+        ],
         consumer_intrinsics: &["join", "detach", "cancel_task"],
         observer_intrinsics: &["task_result", "ctx.deadline"],
     },
@@ -4718,10 +4724,7 @@ fn collect_function_caps_and_calls(
                         _ => {}
                     }
                 }
-                if callee == "spawn" {
-                    self.caps.insert("thread".to_string());
-                }
-                if matches!(callee.as_str(), "timeout" | "deadline" | "cancel") {
+                if is_thread_capability_callee(callee) {
                     self.caps.insert("thread".to_string());
                 }
             } else if matches!(expr, Expr::Await(_)) {
@@ -9060,10 +9063,7 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
                             _ => {}
                         }
                     }
-                    if callee == "spawn" {
-                        self.caps.insert("thread".to_string());
-                    }
-                    if matches!(callee.as_str(), "timeout" | "deadline" | "cancel") {
+                    if is_thread_capability_callee(callee) {
                         self.caps.insert("thread".to_string());
                     }
                 } else if matches!(expr, Expr::Await(_)) {
@@ -9078,6 +9078,26 @@ fn infer_capabilities(functions: &[TypedFunction]) -> Vec<String> {
         }
     }
     caps.into_iter().collect()
+}
+
+fn is_thread_capability_callee(callee: &str) -> bool {
+    matches!(
+        callee,
+        "spawn"
+            | "spawn_ctx"
+            | "join"
+            | "detach"
+            | "cancel_task"
+            | "task_result"
+            | "yield"
+            | "checkpoint"
+            | "timeout"
+            | "deadline"
+            | "cancel"
+            | "recv"
+            | "pulse"
+    ) || callee.starts_with("thread.")
+        || callee.starts_with("task.")
 }
 
 fn collect_generic_instantiations(module: &Module) -> Vec<String> {
@@ -13736,6 +13756,7 @@ pub fn runtime_intrinsic_names() -> &'static [&'static str] {
         "spawn",
         "thread.spawn",
         "spawn_ctx",
+        "thread.spawn_ctx",
         "join",
         "detach",
         "cancel_task",
@@ -14224,7 +14245,9 @@ fn runtime_call_signature(name: &str) -> Option<(Vec<Type>, Type)> {
     let f32_ty = Type::Float { bits: 32 };
     Some(match name {
         "spawn" | "thread.spawn" => (vec![task_fn.clone()], task_handle.clone()),
-        "spawn_ctx" => (vec![task_fn.clone(), i32.clone()], task_handle.clone()),
+        "spawn_ctx" | "thread.spawn_ctx" => {
+            (vec![task_fn.clone(), i32.clone()], task_handle.clone())
+        }
         "join" | "task_result" => (vec![task_handle.clone()], i32.clone()),
         "detach" | "cancel_task" => (vec![task_handle.clone()], i32.clone()),
         "yield" | "checkpoint" | "cancel" | "recv" | "pulse" => (vec![], i32.clone()),
@@ -19518,6 +19541,80 @@ mod tests {
         assert!(typed.thread_boundary_violations.iter().any(|detail| {
             detail.contains(
                 "task.group_spawn captures shared borrowed reference `shared` across thread boundary",
+            )
+        }));
+    }
+
+    #[test]
+    fn spawn_ctx_rejects_closure_capturing_shared_borrow() {
+        let source = r#"
+            use core.thread;
+            fn observe(v: &'a i32) -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let shared: &'a i32 = x;
+                let worker = | | observe(shared);
+                let handle = spawn_ctx(worker, 7);
+                return join(handle);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains(
+                "spawn_ctx captures shared borrowed reference `shared` across thread boundary",
+            )
+        }));
+    }
+
+    #[test]
+    fn thread_spawn_ctx_rejects_closure_capturing_shared_borrow() {
+        let source = r#"
+            use core.thread;
+            fn observe(v: &'a i32) -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let x: i32 = 1;
+                let shared: &'a i32 = x;
+                let worker = | | observe(shared);
+                let handle = thread.spawn_ctx(worker, 7);
+                return join(handle);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains(
+                "thread.spawn_ctx captures shared borrowed reference `shared` across thread boundary",
+            )
+        }));
+    }
+
+    #[test]
+    fn task_parallel_map_rejects_closure_capturing_shared_borrow() {
+        let source = r#"
+            use core.thread;
+            fn observe(v: &'a i32) -> i32 {
+                return 0;
+            }
+            fn main() -> i32 {
+                let group = task.group_begin();
+                let x: i32 = 1;
+                let shared: &'a i32 = x;
+                let worker = | | observe(shared);
+                discard task.parallel_map(group, worker);
+                discard task.group_join_all(group);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.thread_boundary_violations.iter().any(|detail| {
+            detail.contains(
+                "task.parallel_map captures shared borrowed reference `shared` across thread boundary",
             )
         }));
     }
