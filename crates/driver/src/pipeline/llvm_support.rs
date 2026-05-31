@@ -3079,7 +3079,11 @@ pub(super) fn llvm_emit_simple_expr(
             direct.clone()
         } else if let Some(value) = ctx.const_strings.get(name).cloned() {
             LlvmValue {
-                value: string_literal_ids.get(&value).copied().unwrap_or(0).to_string(),
+                value: string_literal_ids
+                    .get(&value)
+                    .copied()
+                    .unwrap_or(0)
+                    .to_string(),
                 ty: "i32".to_string(),
             }
         } else if let Some(value) =

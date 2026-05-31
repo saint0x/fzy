@@ -513,9 +513,7 @@ mod tests {
             enforce_strict = true
         "#;
         let manifest = load(input).expect("manifest should parse");
-        manifest
-            .validate()
-            .expect("strict profile should validate");
+        manifest.validate().expect("strict profile should validate");
         let strict = manifest
             .profiles
             .strict

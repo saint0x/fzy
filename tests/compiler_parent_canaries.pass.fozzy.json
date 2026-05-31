@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "compiler-parent-canaries-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess; repo = pathlib.Path.cwd(); fz = repo / 'target/debug/fz'; desktop = repo.parent; projects = [\n    ('fzyagent', desktop / 'fzyagent', ['help']),\n    ('superctx', desktop / 'superctx', ['help']),\n    ('megaserver', desktop / 'megaserver', ['schema-version']),\n    ('strand', desktop / 'strand', ['help']),\n]\nfor name, root, smoke_args in projects:\n    verify_proc = subprocess.run([str(fz), 'verify', str(root), '--json'], cwd=str(repo), capture_output=True, text=True)\n    verify_payload = json.loads(verify_proc.stdout.strip())\n    assert verify_proc.returncode == 0, (name, 'verify', verify_proc.returncode, verify_payload, verify_proc.stderr)\n    assert verify_payload['errors'] == 0, (name, verify_payload)\n    build_proc = subprocess.run([str(fz), 'build', str(root), '--backend', 'llvm', '--json'], cwd=str(repo), capture_output=True, text=True)\n    build_payload = json.loads(build_proc.stdout.strip())\n    assert build_proc.returncode == 0, (name, 'build', build_proc.returncode, build_payload, build_proc.stderr)\n    assert build_payload['status'] == 'ok', (name, build_payload)\n    binary = root / '.fz' / 'build' / name\n    smoke_proc = subprocess.run([str(binary), *smoke_args], cwd=str(root), capture_output=True, text=True)\n    assert smoke_proc.returncode == 0, (name, 'smoke', smoke_proc.returncode, smoke_proc.stdout, smoke_proc.stderr)\n\nhost_suite = desktop / 'megaserver' / 'tests' / 'host.pass.fozzy.json'\nhost_proc = subprocess.run(['fozzy', 'test', '--det', '--strict', str(host_suite), '--json'], cwd=str(desktop / 'megaserver'), capture_output=True, text=True)\nhost_payload = json.loads(host_proc.stdout.strip())\nassert host_proc.returncode == 0, ('megaserver-host', host_proc.returncode, host_payload, host_proc.stderr)\nassert host_payload['status'] == 'pass', host_payload\n\nstrand_host = desktop / 'strand' / 'tests' / 'host.pass.fozzy.json'\nstrand_host_proc = subprocess.run(['fozzy', 'test', '--det', '--strict', str(strand_host), '--json'], cwd=str(desktop / 'strand'), capture_output=True, text=True)\nstrand_host_payload = json.loads(strand_host_proc.stdout.strip())\nassert strand_host_proc.returncode == 0, ('strand-host', strand_host_proc.returncode, strand_host_payload, strand_host_proc.stderr)\nassert strand_host_payload['status'] == 'pass', strand_host_payload\n\nprint('compiler-parent-canaries-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-parent-canaries-ok\n",
+      "stderr": "",
+      "times": 1
+    }
+  ]
+}
