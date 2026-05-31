@@ -17231,6 +17231,70 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn non_scenario_test_record_writes_gpu_download_runtime_events() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-test-gpu-download-record-{suffix}.fzy"));
+        let trace = std::env::temp_dir()
+            .join(format!("fozzylang-test-gpu-download-record-{suffix}.trace.json"));
+        std::fs::write(
+            &source,
+            "use core.gpu;\nuse core.simd;\ntest \"gpu download trace\" {}\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let values: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let buf: GpuBuffer<f32> = gpu.upload_f32(dev, values)\n    let downloaded: Vec<f32> = gpu.download_f32(buf)\n    gpu.free(buf)\n    if downloaded[0] != values[0] {\n        return 11\n    }\n    if downloaded[3] != values[3] {\n        return 12\n    }\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(23),
+                record: Some(trace.clone()),
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: true,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+        assert!(output.contains("\"runtimeEventCount\":"));
+
+        let stem = trace
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("trace should have a stem")
+            .to_string();
+        let base = trace
+            .parent()
+            .expect("trace should have parent")
+            .to_path_buf();
+        let native_trace_text =
+            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
+                .expect("native trace should be written");
+        assert!(native_trace_text.contains("\"kind\": \"gpu.device_select\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.upload\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.download\""));
+        assert!(native_trace_text.contains("\"kind\": \"gpu.free\""));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(trace);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
+        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
+    }
+
+    #[test]
     fn non_scenario_test_record_writes_gpu_async_runtime_events() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -141,11 +141,19 @@ const NATIVE_AGG_SET_I64: &str = "__fz_native_agg_set_i64";
 const NATIVE_AGG_GET_I64: &str = "__fz_native_agg_get_i64";
 const NATIVE_AGG_TAG: &str = "__fz_native_agg_tag";
 const NATIVE_STR_PTR: &str = "__fz_native_str_ptr";
+const NATIVE_VEC_LEN: &str = "__fz_native_vec_len";
+const NATIVE_VEC_GET_I32: &str = "__fz_native_vec_get_i32";
+const NATIVE_VEC_GET_U32: &str = "__fz_native_vec_get_u32";
+const NATIVE_VEC_GET_F32: &str = "__fz_native_vec_get_f32";
 const NATIVE_AGG_NEW_SYMBOL: &str = "fz_native_agg_new";
 const NATIVE_AGG_SET_I64_SYMBOL: &str = "fz_native_agg_set_i64";
 const NATIVE_AGG_GET_I64_SYMBOL: &str = "fz_native_agg_get_i64";
 const NATIVE_AGG_TAG_SYMBOL: &str = "fz_native_agg_tag";
 const NATIVE_STR_PTR_SYMBOL: &str = "fz_native_str_ptr";
+const NATIVE_VEC_LEN_SYMBOL: &str = "fz_native_vec_len";
+const NATIVE_VEC_GET_I32_SYMBOL: &str = "fz_native_vec_get_i32";
+const NATIVE_VEC_GET_U32_SYMBOL: &str = "fz_native_vec_get_u32";
+const NATIVE_VEC_GET_F32_SYMBOL: &str = "fz_native_vec_get_f32";
 
 #[derive(Debug, Clone)]
 pub struct BuildArtifact {

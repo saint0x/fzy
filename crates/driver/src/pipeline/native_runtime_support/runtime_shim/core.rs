@@ -109,6 +109,13 @@ typedef struct {
 
 typedef struct {
   int in_use;
+  int32_t element_kind;
+  int32_t count;
+  uint32_t items[FZ_MAX_LIST_ITEMS];
+} fz_numeric_vec_state;
+
+typedef struct {
+  int in_use;
   int count;
   char* keys[FZ_MAX_MAP_ENTRIES];
   char* values[FZ_MAX_MAP_ENTRIES];
@@ -145,6 +152,7 @@ static int32_t fz_proc_last_error_id = 0;
 static int32_t fz_last_exit_class = 0;
 static fz_list_state fz_lists[FZ_MAX_LISTS];
 static fz_array_state fz_arrays[FZ_MAX_LISTS];
+static fz_numeric_vec_state fz_numeric_vecs[FZ_MAX_LISTS];
 static fz_map_state fz_maps[FZ_MAX_MAPS];
 static fz_aggregate_state fz_aggregates[FZ_MAX_AGGREGATES];
 static fz_interval_state fz_intervals[FZ_MAX_INTERVALS];
@@ -451,6 +459,81 @@ static int fz_array_push_i32(fz_array_state* array, int32_t value) {
   }
   array->items[array->count++] = value;
   return 0;
+}
+
+static int32_t fz_numeric_vec_alloc(void) {
+  for (int i = 0; i < FZ_MAX_LISTS; i++) {
+    if (!fz_numeric_vecs[i].in_use) {
+      memset(&fz_numeric_vecs[i], 0, sizeof(fz_numeric_vecs[i]));
+      fz_numeric_vecs[i].in_use = 1;
+      return i + 1;
+    }
+  }
+  return -1;
+}
+
+static fz_numeric_vec_state* fz_numeric_vec_get(uintptr_t handle) {
+  if (handle == 0 || handle > FZ_MAX_LISTS) {
+    return NULL;
+  }
+  fz_numeric_vec_state* vec = &fz_numeric_vecs[(size_t)handle - 1];
+  return vec->in_use ? vec : NULL;
+}
+
+static int fz_numeric_vec_push_bits32(fz_numeric_vec_state* vec, uint32_t bits) {
+  if (vec == NULL || vec->count >= FZ_MAX_LIST_ITEMS) {
+    return -1;
+  }
+  vec->items[vec->count++] = bits;
+  return 0;
+}
+
+int32_t fz_native_vec_len(uintptr_t handle) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_numeric_vec_state* vec = fz_numeric_vec_get(handle);
+  int32_t len = vec == NULL ? 0 : vec->count;
+  pthread_mutex_unlock(&fz_collections_lock);
+  return len;
+}
+
+int32_t fz_native_vec_get_i32(uintptr_t handle, int32_t index) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_numeric_vec_state* vec = fz_numeric_vec_get(handle);
+  if (vec == NULL || vec->element_kind != 2 || index < 0 || index >= vec->count) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  int32_t value = 0;
+  uint32_t bits = vec->items[index];
+  memcpy(&value, &bits, sizeof(value));
+  pthread_mutex_unlock(&fz_collections_lock);
+  return value;
+}
+
+int32_t fz_native_vec_get_u32(uintptr_t handle, int32_t index) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_numeric_vec_state* vec = fz_numeric_vec_get(handle);
+  if (vec == NULL || vec->element_kind != 3 || index < 0 || index >= vec->count) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0;
+  }
+  int32_t value = (int32_t)vec->items[index];
+  pthread_mutex_unlock(&fz_collections_lock);
+  return value;
+}
+
+float fz_native_vec_get_f32(uintptr_t handle, int32_t index) {
+  pthread_mutex_lock(&fz_collections_lock);
+  fz_numeric_vec_state* vec = fz_numeric_vec_get(handle);
+  if (vec == NULL || vec->element_kind != 1 || index < 0 || index >= vec->count) {
+    pthread_mutex_unlock(&fz_collections_lock);
+    return 0.0f;
+  }
+  float value = 0.0f;
+  uint32_t bits = vec->items[index];
+  memcpy(&value, &bits, sizeof(value));
+  pthread_mutex_unlock(&fz_collections_lock);
+  return value;
 }
 
 uint64_t fz_native_agg_new(int32_t tag, int32_t count) {

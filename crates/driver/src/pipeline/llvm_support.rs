@@ -301,6 +301,34 @@ fn llvm_emit_array_argument_parts(
     }
 }
 
+fn llvm_vec_element_type(expr: &ast::Expr, ctx: &LlvmFuncCtx) -> Option<&'static str> {
+    match expr {
+        ast::Expr::Ident(name) => match ctx.local_types.get(name) {
+            Some(ast::Type::Vec(inner)) => match inner.as_ref() {
+                ast::Type::Float { bits: 32 } => Some("f32"),
+                ast::Type::Int {
+                    signed: true,
+                    bits: 32,
+                } => Some("i32"),
+                ast::Type::Int {
+                    signed: false,
+                    bits: 32,
+                } => Some("u32"),
+                _ => None,
+            },
+            _ => None,
+        },
+        ast::Expr::Group(inner) | ast::Expr::Discard(inner) => llvm_vec_element_type(inner, ctx),
+        ast::Expr::Call { callee, .. } => match callee.as_str() {
+            "gpu.download_f32" => Some("f32"),
+            "gpu.download_i32" => Some("i32"),
+            "gpu.download_u32" => Some("u32"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn llvm_emit_simd_ptr_alignment_check(
     kind: &str,
     op: &str,
@@ -2993,6 +3021,26 @@ pub(super) fn llvm_emit_complex_expr(
             } else {
                 llvm_emit_expr_as(index, ctx, string_literal_ids, task_ref_ids, "i32")?.value
             };
+            if let Some(kind) = llvm_vec_element_type(base, ctx) {
+                let base_handle =
+                    llvm_emit_expr_as(base, ctx, string_literal_ids, task_ref_ids, llvm_pointer_int_type())?;
+                let (helper, ret_ty) = match kind {
+                    "f32" => (NATIVE_VEC_GET_F32_SYMBOL, "float"),
+                    "i32" => (NATIVE_VEC_GET_I32_SYMBOL, "i32"),
+                    "u32" => (NATIVE_VEC_GET_U32_SYMBOL, "i32"),
+                    _ => unreachable!("unsupported native vec element kind"),
+                };
+                let val = ctx.value();
+                let helper = native_mangle_symbol(helper);
+                ctx.code.push_str(&format!(
+                    "  {val} = call {ret_ty} @{helper}({} {}, i32 {index_value})\n",
+                    base_handle.ty, base_handle.value
+                ));
+                return Ok(LlvmValue {
+                    value: val,
+                    ty: ret_ty.to_string(),
+                });
+            }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_slots.get(name).cloned() {
                     return llvm_emit_array_index_from_binding(binding, index, &index_value, ctx);
@@ -3640,6 +3688,14 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
                     llvm_pointer_int_type()
                 );
             }
+            "gpu.download_f32" | "gpu.download_i32" | "gpu.download_u32" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare {} @{}(i32)",
+                    llvm_pointer_int_type(),
+                    import.symbol
+                );
+            }
             "gpu.slice" => {
                 let _ = writeln!(
                     &mut out,
@@ -3689,6 +3745,30 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         llvm_pointer_int_type(),
         NATIVE_STR_PTR_SYMBOL
     );
+    let _ = writeln!(
+        &mut out,
+        "declare i32 @{}({})",
+        NATIVE_VEC_LEN_SYMBOL,
+        llvm_pointer_int_type()
+    );
+    let _ = writeln!(
+        &mut out,
+        "declare i32 @{}({}, i32)",
+        NATIVE_VEC_GET_I32_SYMBOL,
+        llvm_pointer_int_type()
+    );
+    let _ = writeln!(
+        &mut out,
+        "declare i32 @{}({}, i32)",
+        NATIVE_VEC_GET_U32_SYMBOL,
+        llvm_pointer_int_type()
+    );
+    let _ = writeln!(
+        &mut out,
+        "declare float @{}({}, i32)",
+        NATIVE_VEC_GET_F32_SYMBOL,
+        llvm_pointer_int_type()
+    );
     let extern_imports = collect_extern_c_imports(fir);
     let mut extern_link_symbols = fir
         .typed_functions
@@ -3723,6 +3803,19 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
     extern_link_symbols.insert(
         NATIVE_STR_PTR.to_string(),
         NATIVE_STR_PTR_SYMBOL.to_string(),
+    );
+    extern_link_symbols.insert(NATIVE_VEC_LEN.to_string(), NATIVE_VEC_LEN_SYMBOL.to_string());
+    extern_link_symbols.insert(
+        NATIVE_VEC_GET_I32.to_string(),
+        NATIVE_VEC_GET_I32_SYMBOL.to_string(),
+    );
+    extern_link_symbols.insert(
+        NATIVE_VEC_GET_U32.to_string(),
+        NATIVE_VEC_GET_U32_SYMBOL.to_string(),
+    );
+    extern_link_symbols.insert(
+        NATIVE_VEC_GET_F32.to_string(),
+        NATIVE_VEC_GET_F32_SYMBOL.to_string(),
     );
     let mut function_sigs = HashMap::<String, LlvmFunctionSig>::new();
     for function in &fir.typed_functions {
@@ -3804,6 +3897,42 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
         LlvmFunctionSig {
             params: vec!["i32".to_string()],
             ret: Some(llvm_pointer_int_type().to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
+        },
+    );
+    function_sigs.insert(
+        NATIVE_VEC_LEN.to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string()],
+            ret: Some("i32".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
+        },
+    );
+    function_sigs.insert(
+        NATIVE_VEC_GET_I32.to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string(), "i32".to_string()],
+            ret: Some("i32".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
+        },
+    );
+    function_sigs.insert(
+        NATIVE_VEC_GET_U32.to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string(), "i32".to_string()],
+            ret: Some("i32".to_string()),
+            param_names: Vec::new(),
+            is_extern_c_import: false,
+        },
+    );
+    function_sigs.insert(
+        NATIVE_VEC_GET_F32.to_string(),
+        LlvmFunctionSig {
+            params: vec![llvm_pointer_int_type().to_string(), "i32".to_string()],
+            ret: Some("float".to_string()),
             param_names: Vec::new(),
             is_extern_c_import: false,
         },

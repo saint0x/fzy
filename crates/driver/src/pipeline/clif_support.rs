@@ -1739,6 +1739,34 @@ fn clif_emit_array_argument_parts(
     }
 }
 
+fn clif_vec_element_type(expr: &ast::Expr, ctx: &ClifLoweringCtx<'_>) -> Option<&'static str> {
+    match expr {
+        ast::Expr::Ident(name) => match ctx.local_types.get(name) {
+            Some(ast::Type::Vec(inner)) => match inner.as_ref() {
+                ast::Type::Float { bits: 32 } => Some("f32"),
+                ast::Type::Int {
+                    signed: true,
+                    bits: 32,
+                } => Some("i32"),
+                ast::Type::Int {
+                    signed: false,
+                    bits: 32,
+                } => Some("u32"),
+                _ => None,
+            },
+            _ => None,
+        },
+        ast::Expr::Group(inner) | ast::Expr::Discard(inner) => clif_vec_element_type(inner, ctx),
+        ast::Expr::Call { callee, .. } => match callee.as_str() {
+            "gpu.download_f32" => Some("f32"),
+            "gpu.download_i32" => Some("i32"),
+            "gpu.download_u32" => Some("u32"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn clif_create_stack_slot_for_array_abi(
     builder: &mut FunctionBuilder,
     abi: ClifArrayAbi,
@@ -3479,6 +3507,35 @@ pub(super) fn clif_emit_expr(
                     let value = clif_emit_expr(builder, ctx, index, locals, next_var)?;
                     cast_clif_value(builder, value, default_int_clif_type())?
                 };
+            if let Some(kind) = clif_vec_element_type(base, ctx) {
+                let helper_name = match kind {
+                    "f32" => NATIVE_VEC_GET_F32,
+                    "i32" => NATIVE_VEC_GET_I32,
+                    "u32" => NATIVE_VEC_GET_U32,
+                    _ => unreachable!("unsupported native vec element kind"),
+                };
+                let helper_id = ctx
+                    .function_ids
+                    .get(helper_name)
+                    .copied()
+                    .ok_or_else(|| anyhow!("missing native helper signature metadata for `{helper_name}`"))?;
+                let helper_sig = ctx
+                    .function_signatures
+                    .get(helper_name)
+                    .ok_or_else(|| anyhow!("missing native helper signature metadata for `{helper_name}`"))?;
+                let base_handle = clif_emit_expr(builder, ctx, base, locals, next_var)?;
+                let base_handle =
+                    cast_clif_value(builder, base_handle, pointer_sized_clif_type())?;
+                let func_ref = ctx.module.declare_func_in_func(helper_id, builder.func);
+                let call = builder
+                    .ins()
+                    .call(func_ref, &[base_handle.value, index_value.value]);
+                let value = builder.inst_results(call)[0];
+                return Ok(ClifValue {
+                    value,
+                    ty: helper_sig.ret.unwrap_or(default_int_clif_type()),
+                });
+            }
             if let ast::Expr::Ident(name) = base.as_ref() {
                 if let Some(binding) = ctx.array_bindings.get(name) {
                     if binding.len == 0 {

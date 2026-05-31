@@ -305,6 +305,102 @@ int32_t fz_native_gpu_upload_u32(int32_t device_handle, uintptr_t host_data, int
       "gpu.upload_u32 failed: len must be >= 0");
 }
 
+static uintptr_t fz_native_gpu_download_bytes(
+    int32_t buffer_handle,
+    int32_t expected_element_size,
+    int32_t element_kind,
+    const char* invalid_buffer_context,
+    const char* element_mismatch_context
+) {
+  pthread_once(&fz_gpu_init_once, fz_gpu_runtime_init);
+  pthread_mutex_lock(&fz_gpu_lock);
+  if (buffer_handle <= 0 || buffer_handle > FZ_MAX_GPU_BUFFERS) {
+    pthread_mutex_unlock(&fz_gpu_lock);
+    fz_set_last_error(EINVAL, 3, invalid_buffer_context);
+    return 0;
+  }
+  fz_gpu_buffer_state* state = &fz_gpu_buffers[buffer_handle - 1];
+  if (!state->in_use || state->buffer == NULL) {
+    pthread_mutex_unlock(&fz_gpu_lock);
+    fz_set_last_error(EINVAL, 3, invalid_buffer_context);
+    return 0;
+  }
+  if (state->element_size != expected_element_size) {
+    pthread_mutex_unlock(&fz_gpu_lock);
+    fz_set_last_error(EINVAL, 3, element_mismatch_context);
+    return 0;
+  }
+  int32_t len = state->len;
+#if defined(__APPLE__) && defined(__OBJC__)
+  id<MTLBuffer> buffer = (id<MTLBuffer>)state->buffer;
+  [buffer retain];
+  pthread_mutex_unlock(&fz_gpu_lock);
+  void* contents = [buffer contents];
+  if (len > 0 && contents == NULL) {
+    [buffer release];
+    fz_set_last_error(EIO, 3, "gpu.download failed: Metal buffer has no CPU-visible contents");
+    return 0;
+  }
+  pthread_mutex_lock(&fz_collections_lock);
+  int32_t handle = fz_numeric_vec_alloc();
+  if (handle > 0) {
+    fz_numeric_vec_state* vec = fz_numeric_vec_get((uintptr_t)handle);
+    if (vec != NULL) {
+      vec->element_kind = element_kind;
+      uint32_t* words = (uint32_t*)contents;
+      for (int32_t index = 0; index < len; index++) {
+        if (fz_numeric_vec_push_bits32(vec, words[index]) != 0) {
+          handle = -1;
+          vec->in_use = 0;
+          break;
+        }
+      }
+    } else {
+      handle = -1;
+    }
+  }
+  pthread_mutex_unlock(&fz_collections_lock);
+  [buffer release];
+  if (handle <= 0) {
+    fz_set_last_error(ENOSPC, 3, "gpu.download failed: numeric vector registry full");
+    return 0;
+  }
+  fz_set_last_error(0, 0, "");
+  return (uintptr_t)handle;
+#else
+  pthread_mutex_unlock(&fz_gpu_lock);
+  fz_set_last_error(ENOTSUP, 3, "gpu.download failed: Metal runtime unavailable on this host");
+  return 0;
+#endif
+}
+
+uintptr_t fz_native_gpu_download_f32(int32_t buffer_handle) {
+  return fz_native_gpu_download_bytes(
+      buffer_handle,
+      4,
+      1,
+      "gpu.download_f32 failed: invalid GPU buffer handle",
+      "gpu.download_f32 failed: buffer element type did not match f32");
+}
+
+uintptr_t fz_native_gpu_download_i32(int32_t buffer_handle) {
+  return fz_native_gpu_download_bytes(
+      buffer_handle,
+      4,
+      2,
+      "gpu.download_i32 failed: invalid GPU buffer handle",
+      "gpu.download_i32 failed: buffer element type did not match i32");
+}
+
+uintptr_t fz_native_gpu_download_u32(int32_t buffer_handle) {
+  return fz_native_gpu_download_bytes(
+      buffer_handle,
+      4,
+      3,
+      "gpu.download_u32 failed: invalid GPU buffer handle",
+      "gpu.download_u32 failed: buffer element type did not match u32");
+}
+
 int32_t fz_native_gpu_buffer_free(int32_t buffer_handle) {
   pthread_once(&fz_gpu_init_once, fz_gpu_runtime_init);
   if (buffer_handle <= 0 || buffer_handle > FZ_MAX_GPU_BUFFERS) {
