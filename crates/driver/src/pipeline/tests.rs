@@ -4125,6 +4125,160 @@ fn verify_helper_owned_param_transfer_stays_clean() {
 }
 
 #[test]
+fn verify_non_consuming_helper_preserves_caller_ownership() {
+    let file_name = format!(
+        "fozzylang-memory-non-consuming-helper-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn inspect(p: *mut u8) -> i32 {\n    discard p\n    return 0\n}\nfn main() -> i32 {\n    let p = alloc(32)\n    discard inspect(p)\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("function `main` leaks allocation")
+            || diagnostic
+                .message
+                .contains("consumes non-owned or already-consumed value `p`")
+            || diagnostic.message.contains("double-frees provenance root")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_match_arm_cleanup_updates_ownership_state() {
+    let file_name = format!(
+        "fozzylang-memory-match-arm-cleanup-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn main() -> i32 {\n    let p = alloc(32)\n    match true {\n        true => free(p),\n        _ => 0,\n    }\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("divergent ownership state for `p`")
+                || diagnostic.message.contains(
+                    "uses conditionally consumed value `p` after path-sensitive ownership merge",
+                )
+                || diagnostic
+                    .message
+                    .contains("consumes non-owned or already-consumed value `p`")
+        })
+        .expect("match-arm cleanup ownership diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("make ownership outcomes consistent on every branch and loop path before reusing or freeing the value")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("match-arm cleanup diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_grouped_owned_ffi_argument_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-grouped-owned-ffi-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "ext unsafe c fn take_owned(p_owned: *u8) -> i32;\nunsafe fn main() -> i32 {\n    let p = alloc(32)\n    discard take_owned((p))\n    free(p)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("double-frees provenance root"))
+        .expect("grouped owned ffi reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("grouped owned ffi reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_projected_owned_ffi_argument_reuse_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-memory-projected-owned-ffi-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "struct Holder { ptr: *mut u8 }\next unsafe c fn take_owned(p_owned: *u8) -> i32;\nunsafe fn main() -> i32 {\n    let holder: Holder = Holder { ptr: alloc(32) }\n    discard take_owned(holder.ptr)\n    free(holder.ptr)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("consumes non-owned or already-consumed value `holder`")
+                || diagnostic
+                    .message
+                    .contains("divergent ownership state for `holder`")
+                || diagnostic.message.contains("double-frees provenance root")
+        })
+        .expect("projected owned ffi reuse diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("enforce ownership transfer semantics and ensure every allocation is released")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("projected owned ffi reuse diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_thread_boundary_shared_param_diagnostic_is_snapshot_stable() {
     let file_name = format!(
         "fozzylang-thread-boundary-shared-param-snapshot-{}.fzy",

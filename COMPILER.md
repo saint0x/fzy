@@ -5,7 +5,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 ## Active Queue
 
 - `14. Compiler-phase lock-in suite`
-- `15. Memory-safety adversarial coverage`
 - `22. Canary-app gates`
 
 ## Priority 6
@@ -27,19 +26,6 @@ Required tests:
 - Strict deterministic Fozzy doctor/test coverage for representative compiler scenarios.
 - At least one recorded trace for the active compiler-regression suite, followed by strict trace verify, replay, and CI.
 - Host-backed runs for compiler/runtime integration scenarios where native linking and runtime shim behavior matter.
-
-### 15. Memory-safety adversarial coverage
-
-Checklist:
-
-- Finish promoting any remaining aggregate, provenance, and ownership-state shapes that are still only HIR-covered or partially regression-covered at the shipped `fz verify` surface.
-
-Required tests:
-
-- HIR unit regressions for every new adversarial shape.
-- `fz verify` fixtures that assert both failure class and stable diagnostic/help wording.
-- Deterministic Fozzy memory scenarios that reproduce branch, loop, defer, and remaining ownership hazards.
-- Recorded traces plus trace verify, replay, and CI for at least one adversarial memory suite per active goal.
 
 ## Priority 7
 

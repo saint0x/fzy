@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "compiler-memory-transfer-cleanup-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd()\n\ndef write_project(name, source):\n    root = pathlib.Path(tempfile.mkdtemp(prefix=f'fozzylang-{name}-'))\n    (root / 'src').mkdir(parents=True, exist_ok=True)\n    (root / 'fozzy.toml').write_text(textwrap.dedent(f'''\\\n[package]\nname=\"{name}\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"{name}\"\npath=\"src/main.fzy\"\n'''))\n    (root / 'src/main.fzy').write_text(textwrap.dedent(source))\n    return root\n\ndef verify(name, source, expect_rc):\n    root = write_project(name, source)\n    proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', 'verify', str(root), '--json'], cwd=str(repo), capture_output=True, text=True)\n    payload = json.loads(proc.stdout.strip())\n    assert proc.returncode == expect_rc, (name, proc.returncode, payload, proc.stderr)\n    return payload\n\nmatch_cleanup = verify('match_cleanup', '''\n    fn main() -> i32 {\n        let p = alloc(32)\n        match true {\n            true => free(p),\n            _ => 0,\n        }\n        free(p)\n        return 0\n    }\n''', 1)\nmatch_messages = [item['message'] for item in match_cleanup['items']]\nassert any('divergent ownership state for `p`' in message or 'uses conditionally consumed value `p`' in message or 'consumes non-owned or already-consumed value `p`' in message for message in match_messages), match_cleanup\n\nffi_grouped = verify('ffi_grouped', '''\n    ext unsafe c fn take_owned(p_owned: *u8) -> i32;\n    unsafe fn main() -> i32 {\n        let p = alloc(32)\n        discard take_owned((p))\n        free(p)\n        return 0\n    }\n''', 1)\nassert any('double-frees provenance root' in item['message'] for item in ffi_grouped['items']), ffi_grouped\n\nffi_projected = verify('ffi_projected', '''\n    struct Holder { ptr: *mut u8 }\n    ext unsafe c fn take_owned(p_owned: *u8) -> i32;\n    unsafe fn main() -> i32 {\n        let holder: Holder = Holder { ptr: alloc(32) }\n        discard take_owned(holder.ptr)\n        free(holder.ptr)\n        return 0\n    }\n''', 1)\nassert any('consumes non-owned or already-consumed value `holder`' in item['message'] or 'divergent ownership state for `holder`' in item['message'] or 'double-frees provenance root' in item['message'] for item in ffi_projected['items']), ffi_projected\n\nhelper_clean = verify('helper_clean', '''\n    fn inspect(p: *mut u8) -> i32 {\n        discard p\n        return 0\n    }\n    fn main() -> i32 {\n        let p = alloc(32)\n        discard inspect(p)\n        free(p)\n        return 0\n    }\n''', 0)\nassert helper_clean['errors'] == 0, helper_clean\n\nextern_clean = verify('extern_clean', '''\n    ext unsafe c fn take_owned(p_owned: *mut u8) -> i32;\n    unsafe fn main() -> i32 {\n        let p = alloc(32)\n        discard take_owned(p)\n        return 0\n    }\n''', 0)\nassert extern_clean['errors'] == 0, extern_clean\n\ngrouped_return_clean = verify('grouped_return_clean', '''\n    fn produce() -> *mut u8 {\n        let p = alloc(32)\n        return (p)\n    }\n    fn main() -> i32 {\n        let p = produce()\n        free(p)\n        return 0\n    }\n''', 0)\nassert grouped_return_clean['errors'] == 0, grouped_return_clean\nprint('compiler-memory-transfer-cleanup-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-memory-transfer-cleanup-ok\n",
+      "stderr": "",
+      "times": 1
+    }
+  ]
+}
