@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "compiler-diagnostic-stability-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile; repo = pathlib.Path.cwd(); fz = repo / 'target/debug/fz'\nroot = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-diagnostic-stability-'))\nparser_src = root / 'parser_case.fzy'\ngrouped_src = root / 'grouped_case.fzy'\ncap_src = root / 'cap_case.fzy'\nparser_src.write_text('fn main( -> i32 {\\n    return 0\\n}\\n')\ngrouped_src.write_text('fn main() -> i32 {\\n    let value: i32 = \"oops\"\\n    return value\\n}\\n')\ncap_src.write_text('fn main() -> i32 {\\n    discard proc.spawn(\"echo\", list.new())\\n    return 0\\n}\\n')\nfor key, family in [\n    ('verifier.grouped_type_error', 'verifier'),\n    ('native.cranelift_async_unsafe_unsupported', 'native-lowering'),\n    ('verifier.extern_c_pointer_requires_contract', 'verifier')\n]:\n    proc = subprocess.run([str(fz), 'explain', key, '--json'], cwd=str(repo), capture_output=True, text=True)\n    payload = json.loads(proc.stdout.strip())\n    assert proc.returncode == 0, (proc.returncode, proc.stdout, proc.stderr)\n    assert payload['schemaVersion'] == 'fozzylang.diagnostic_explain.v1', payload\n    assert payload['catalogKey'] == key, payload\n    assert payload['family'] == family, payload\n    assert payload['explainCommand'] == f'fz explain {key}', payload\nparser_proc = subprocess.run([str(fz), 'lsp', 'diagnostics', str(parser_src), '--json'], cwd=str(repo), capture_output=True, text=True)\nparser_payload = json.loads(parser_proc.stdout.strip())\nassert parser_proc.returncode == 0, (parser_proc.returncode, parser_proc.stdout, parser_proc.stderr)\nparser_diag = next(item for item in parser_payload['diagnostics'] if item.get('catalog_key', '').startswith('parser.'))\nassert parser_diag['catalog_key'].startswith('parser.'), parser_diag\ngrouped_proc = subprocess.run([str(fz), 'lsp', 'diagnostics', str(grouped_src), '--json'], cwd=str(repo), capture_output=True, text=True)\ngrouped_payload = json.loads(grouped_proc.stdout.strip())\nassert grouped_proc.returncode == 0, (grouped_proc.returncode, grouped_proc.stdout, grouped_proc.stderr)\ngrouped_diag = next(item for item in grouped_payload['diagnostics'] if item.get('catalog_key') == 'verifier.grouped_type_error')\nassert grouped_diag['catalog_key'] == 'verifier.grouped_type_error', grouped_diag\nassert grouped_diag['help'], grouped_diag\ncap_proc = subprocess.run([str(fz), 'lsp', 'diagnostics', str(cap_src), '--json'], cwd=str(repo), capture_output=True, text=True)\ncap_payload = json.loads(cap_proc.stdout.strip())\nassert cap_proc.returncode == 0, (cap_proc.returncode, cap_proc.stdout, cap_proc.stderr)\ncap_diag = next(item for item in cap_payload['diagnostics'] if item.get('catalog_key') in ('verifier.missing_required_capability', 'verifier.function_missing_required_capability'))\nassert cap_diag['catalog_key'] in ('verifier.missing_required_capability', 'verifier.function_missing_required_capability'), cap_diag\nprint('compiler-diagnostic-stability-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-diagnostic-stability-ok\n",
+      "stderr": "",
+      "times": 1
+    }
+  ]
+}

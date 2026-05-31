@@ -6,6 +6,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::command::{resolve_diagnostic_explain, LSP_DIAGNOSTIC_DATA_SCHEMA_VERSION};
 use crate::pipeline::{parse_program, verify_file, verify_file_with_root_source};
 
 #[derive(Debug, Clone, Serialize)]
@@ -2707,6 +2708,11 @@ fn to_lsp_diagnostic(diag: &diagnostics::Diagnostic) -> Value {
         message.push_str("\nhelp: ");
         message.push_str(help);
     }
+    let explain = diag
+        .catalog_key
+        .as_deref()
+        .or(diag.code.as_deref())
+        .map(resolve_diagnostic_explain);
     json!({
         "range": {
             "start": {"line": start_line, "character": start_col},
@@ -2719,7 +2725,14 @@ fn to_lsp_diagnostic(diag: &diagnostics::Diagnostic) -> Value {
         "relatedInformation": related_information,
         "codeDescription": diag.code.as_ref().map(|code| json!({"href": format!("https://fozzylang.dev/diagnostics/{code}")})),
         "data": {
+            "schemaVersion": LSP_DIAGNOSTIC_DATA_SCHEMA_VERSION,
+            "code": diag.code.clone(),
             "catalogKey": diag.catalog_key.clone(),
+            "family": explain.as_ref().map(|value| value.family.clone()),
+            "rootCause": explain.as_ref().map(|value| value.root_cause.clone()),
+            "likelyFix": explain.as_ref().map(|value| value.likely_fix.clone()),
+            "nextCommand": explain.as_ref().map(|value| value.next_command.clone()),
+            "explainCommand": explain.as_ref().map(|value| value.explain_command.clone()),
             "path": diag.path.clone(),
             "help": diag.help.clone(),
             "fix": diag.fix.clone(),
@@ -3287,9 +3300,137 @@ mod tests {
         assert_eq!(
             lsp_payload
                 .get("data")
+                .and_then(|data| data.get("schemaVersion"))
+                .and_then(Value::as_str),
+            Some(LSP_DIAGNOSTIC_DATA_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            lsp_payload
+                .get("data")
                 .and_then(|data| data.get("catalogKey"))
                 .and_then(Value::as_str),
             Some("verifier.grouped_type_error")
+        );
+        assert_eq!(
+            lsp_payload
+                .get("data")
+                .and_then(|data| data.get("explainCommand"))
+                .and_then(Value::as_str),
+            Some("fz explain verifier.grouped_type_error")
+        );
+        assert_eq!(
+            lsp_payload
+                .get("data")
+                .and_then(|data| data.get("family"))
+                .and_then(Value::as_str),
+            Some("verifier")
+        );
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn lsp_parser_diagnostic_data_includes_explain_contract() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-lsp-parser-schema-{suffix}.fzy"));
+        std::fs::write(&source, "fn main( -> i32 {\n    return 0\n}\n")
+            .expect("source should be written");
+        let diagnostics = diagnostics_for_path(&source).expect("diagnostics should succeed");
+        let items = diagnostics
+            .get("diagnostics")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let parser = items
+            .iter()
+            .find(|item| {
+                item.get("catalog_key")
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| key.starts_with("parser."))
+            })
+            .cloned()
+            .expect("parser diagnostic should be present");
+        let lsp_payload = serde_json::from_value::<diagnostics::Diagnostic>(parser)
+            .map(|diag| to_lsp_diagnostic(&diag))
+            .expect("parser diagnostic should convert to lsp");
+        assert_eq!(
+            lsp_payload
+                .get("data")
+                .and_then(|data| data.get("schemaVersion"))
+                .and_then(Value::as_str),
+            Some(LSP_DIAGNOSTIC_DATA_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            lsp_payload
+                .get("data")
+                .and_then(|data| data.get("family"))
+                .and_then(Value::as_str),
+            Some("parser")
+        );
+        assert!(lsp_payload
+            .get("data")
+            .and_then(|data| data.get("explainCommand"))
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.starts_with("fz explain parser.")));
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
+    fn lsp_capability_diagnostic_data_includes_explain_contract() {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-lsp-capability-schema-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            "fn main() -> i32 {\n    discard proc.spawn(\"echo\", list.new())\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+        let diagnostics = diagnostics_for_path(&source).expect("diagnostics should succeed");
+        let items = diagnostics
+            .get("diagnostics")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let capability = items
+            .iter()
+            .find(|item| {
+                item.get("catalog_key")
+                    .and_then(Value::as_str)
+                    .is_some_and(|key| {
+                        key == "verifier.missing_required_capability"
+                            || key == "verifier.function_missing_required_capability"
+                    })
+            })
+            .cloned()
+            .expect("capability diagnostic should be present");
+        let lsp_payload = serde_json::from_value::<diagnostics::Diagnostic>(capability)
+            .map(|diag| to_lsp_diagnostic(&diag))
+            .expect("capability diagnostic should convert to lsp");
+        assert_eq!(
+            lsp_payload
+                .get("data")
+                .and_then(|data| data.get("schemaVersion"))
+                .and_then(Value::as_str),
+            Some(LSP_DIAGNOSTIC_DATA_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            lsp_payload
+                .get("data")
+                .and_then(|data| data.get("family"))
+                .and_then(Value::as_str),
+            Some("verifier")
+        );
+        assert_eq!(
+            lsp_payload
+                .get("data")
+                .and_then(|data| data.get("nextCommand"))
+                .and_then(Value::as_str),
+            Some("fz verify <path> --json")
         );
         let _ = std::fs::remove_file(source);
     }

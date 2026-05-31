@@ -7,7 +7,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `14. Compiler-phase lock-in suite`
 - `15. Memory-safety adversarial coverage`
 - `16. Native import contract tables`
-- `21. Diagnostic stability`
 - `22. Canary-app gates`
 - `23. Unsafe/FFI audit hardening`
 - `25. v1 syntax and profile freeze`
@@ -52,21 +51,6 @@ Required tests:
 ## Priority 8
 
 ## Priority 9
-
-### 21. Diagnostic stability
-
-Checklist:
-
-- Require every important diagnostic class to answer what happened, where, why it is unsafe or invalid, what state was expected, and how to fix it.
-- Add snapshot tests for compiler, verifier, and native-lowerability diagnostics so wording, codes, help text, and catalog keys remain stable unless intentionally changed.
-- Prioritize ownership, borrow, async/task, RPC, capability, module-resolution, backend-parity, and FFI diagnostics for first-wave snapshot coverage.
-- Add wording guidance for common ownership and resource failures so errors name both the consuming site and the invalid later use.
-
-Required tests:
-
-- Text and JSON snapshot tests.
-- `fz explain` catalog regressions.
-- LSP diagnostics schema regressions for the same catalog classes.
 
 ## Priority 10
 

@@ -2574,6 +2574,9 @@ fn maybe_generate_unsafe_docs(path: &Path) -> Option<PathBuf> {
     }
 }
 
+pub(crate) const DIAGNOSTIC_EXPLAIN_SCHEMA_VERSION: &str = "fozzylang.diagnostic_explain.v1";
+pub(crate) const LSP_DIAGNOSTIC_DATA_SCHEMA_VERSION: &str = "fozzylang.lsp_diagnostic_data.v1";
+
 fn explain_command(diag_code: &str, format: Format) -> Result<String> {
     let raw = diag_code.trim();
     let normalized = raw.to_ascii_uppercase();
@@ -2604,6 +2607,85 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
             .to_string()),
         };
     }
+    let resolution = resolve_diagnostic_explain(raw);
+    match format {
+        Format::Text => {
+            let mut fields = vec![
+                ("code", resolution.normalized.clone()),
+                ("family", resolution.family.clone()),
+                ("root_cause", resolution.root_cause.clone()),
+                ("likely_fix", resolution.likely_fix.clone()),
+                ("verify_with", "fz check <path> --json".to_string()),
+                (
+                    "diagnostic_identity",
+                    "codes are stable within a domain for unchanged message and source anchor"
+                        .to_string(),
+                ),
+                ("explain_command", resolution.explain_command.clone()),
+            ];
+            if let Some(entry) = resolution.catalog_entry {
+                fields.push(("catalog_key", entry.key));
+                fields.push(("catalog_summary", entry.summary));
+                fields.push(("catalog_example", entry.example));
+                fields.push(("common_triggers", entry.common_triggers.join(" | ")));
+                fields.push(("production_action", entry.production_action));
+                fields.push(("production_risk", entry.production_risk));
+                fields.push(("next_command", entry.next_command));
+            }
+            Ok(render_text_fields(&fields))
+        }
+        Format::Json => Ok(serde_json::json!({
+            "schemaVersion": DIAGNOSTIC_EXPLAIN_SCHEMA_VERSION,
+            "code": resolution.normalized,
+            "family": resolution.family,
+            "rootCause": resolution.root_cause,
+            "likelyFix": resolution.likely_fix,
+            "verifyWith": "fz check <path> --json",
+            "diagnosticIdentity": "codes are stable within a domain for unchanged message and source anchor",
+            "catalog": resolution.catalog_entry,
+            "catalogKey": resolution.catalog_key,
+            "commonTriggers": resolution.common_triggers,
+            "productionAction": resolution.production_action,
+            "productionRisk": resolution.production_risk,
+            "nextCommand": resolution.next_command,
+            "explainCommand": resolution.explain_command,
+        })
+        .to_string()),
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct DiagnosticCatalogEntry {
+    key: String,
+    code_prefix: String,
+    family: String,
+    summary: String,
+    example: String,
+    likely_fix: String,
+    common_triggers: Vec<String>,
+    production_action: String,
+    production_risk: String,
+    next_command: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DiagnosticExplainResolution {
+    pub normalized: String,
+    pub family: String,
+    pub root_cause: String,
+    pub likely_fix: String,
+    pub catalog_entry: Option<DiagnosticCatalogEntry>,
+    pub catalog_key: Option<String>,
+    pub common_triggers: Vec<String>,
+    pub production_action: Option<String>,
+    pub production_risk: Option<String>,
+    pub next_command: String,
+    pub explain_command: String,
+}
+
+pub(crate) fn resolve_diagnostic_explain(raw: &str) -> DiagnosticExplainResolution {
+    let normalized = raw.trim().to_ascii_uppercase();
+    let catalog = diagnostic_catalog();
     let catalog_entry = catalog
         .iter()
         .find(|entry| entry.key.eq_ignore_ascii_case(raw))
@@ -2616,26 +2698,26 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
         });
     let family = catalog_entry
         .as_ref()
-        .map(|entry| entry.family.as_str())
+        .map(|entry| entry.family.clone())
         .unwrap_or_else(|| {
             if normalized.starts_with("E-PAR-") || normalized.starts_with("W-PAR-") {
-                "parser"
+                "parser".to_string()
             } else if normalized.starts_with("E-HIR-") || normalized.starts_with("W-HIR-") {
-                "hir"
+                "hir".to_string()
             } else if normalized.starts_with("E-VER-") || normalized.starts_with("W-VER-") {
-                "verifier"
+                "verifier".to_string()
             } else if normalized.starts_with("E-NAT-") || normalized.starts_with("W-NAT-") {
-                "native-lowering"
+                "native-lowering".to_string()
             } else if normalized.starts_with("E-DRV-") || normalized.starts_with("W-DRV-") {
-                "driver"
+                "driver".to_string()
             } else {
-                "unknown"
+                "unknown".to_string()
             }
         });
     let likely_fix = catalog_entry
         .as_ref()
         .map(|entry| entry.likely_fix.clone())
-        .unwrap_or_else(|| match family {
+        .unwrap_or_else(|| match family.as_str() {
             "parser" => "Fix syntax at the primary span, then rerun `fz check <path>`.".to_string(),
             "hir" => "Fix name/type mismatch and rerun `fz check <path>`.".to_string(),
             "verifier" => {
@@ -2660,61 +2742,30 @@ fn explain_command(diag_code: &str, format: Format) -> Result<String> {
         .as_ref()
         .map(|entry| entry.next_command.clone())
         .unwrap_or_else(|| "fz check <path> --json".to_string());
-    match format {
-        Format::Text => {
-            let mut fields = vec![
-                ("code", normalized.clone()),
-                ("family", family.to_string()),
-                ("root_cause", root_cause.clone()),
-                ("likely_fix", likely_fix.clone()),
-                ("verify_with", "fz check <path> --json".to_string()),
-                (
-                    "diagnostic_identity",
-                    "codes are stable within a domain for unchanged message and source anchor"
-                        .to_string(),
-                ),
-            ];
-            if let Some(entry) = catalog_entry {
-                fields.push(("catalog_key", entry.key));
-                fields.push(("catalog_summary", entry.summary));
-                fields.push(("catalog_example", entry.example));
-                fields.push(("common_triggers", entry.common_triggers.join(" | ")));
-                fields.push(("production_action", entry.production_action));
-                fields.push(("production_risk", entry.production_risk));
-                fields.push(("next_command", entry.next_command));
-            }
-            Ok(render_text_fields(&fields))
-        }
-        Format::Json => Ok(serde_json::json!({
-            "code": normalized,
-            "family": family,
-            "rootCause": root_cause,
-            "likelyFix": likely_fix,
-            "verifyWith": "fz check <path> --json",
-            "diagnosticIdentity": "codes are stable within a domain for unchanged message and source anchor",
-            "catalog": catalog_entry,
-            "catalogKey": catalog_entry.as_ref().map(|entry| entry.key.clone()),
-            "commonTriggers": catalog_entry.as_ref().map(|entry| entry.common_triggers.clone()).unwrap_or_default(),
-            "productionAction": catalog_entry.as_ref().map(|entry| entry.production_action.clone()),
-            "productionRisk": catalog_entry.as_ref().map(|entry| entry.production_risk.clone()),
-            "nextCommand": next_command,
-        })
-        .to_string()),
+    let explain_target = catalog_entry
+        .as_ref()
+        .map(|entry| entry.key.clone())
+        .unwrap_or_else(|| normalized.clone());
+    DiagnosticExplainResolution {
+        normalized,
+        family,
+        root_cause,
+        likely_fix,
+        catalog_key: catalog_entry.as_ref().map(|entry| entry.key.clone()),
+        common_triggers: catalog_entry
+            .as_ref()
+            .map(|entry| entry.common_triggers.clone())
+            .unwrap_or_default(),
+        production_action: catalog_entry
+            .as_ref()
+            .map(|entry| entry.production_action.clone()),
+        production_risk: catalog_entry
+            .as_ref()
+            .map(|entry| entry.production_risk.clone()),
+        next_command,
+        explain_command: format!("fz explain {explain_target}"),
+        catalog_entry,
     }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct DiagnosticCatalogEntry {
-    key: String,
-    code_prefix: String,
-    family: String,
-    summary: String,
-    example: String,
-    likely_fix: String,
-    common_triggers: Vec<String>,
-    production_action: String,
-    production_risk: String,
-    next_command: String,
 }
 
 fn diagnostic_catalog() -> Vec<DiagnosticCatalogEntry> {
@@ -2987,6 +3038,36 @@ fn diagnostic_catalog() -> Vec<DiagnosticCatalogEntry> {
             ],
             production_action: "Audit the boundary explicitly and force callers to acknowledge the unsafe contract rather than treating it as a normal import.".to_string(),
             production_risk: "High: this is an FFI soundness boundary and should be treated as a release blocker.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.extern_c_pointer_requires_contract".to_string(),
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "An extern C pointer-like boundary is missing the audited ownership contract metadata required for production FFI review.".to_string(),
+            example: "E-VER-xxxx: extern C import `host_touch` exposes pointer-like contract and must declare explicit ownership metadata".to_string(),
+            likely_fix: "Add the required unsafe/FFI ownership metadata for the pointer boundary, including who owns the memory and how the len/aliasing contract is enforced.".to_string(),
+            common_triggers: vec![
+                "pointer-like import or export lacks explicit ownership annotation".to_string(),
+                "buffer argument crosses the ABI without a matching contract or lifetime explanation".to_string(),
+            ],
+            production_action: "Fill in the narrowest audited ownership contract before release; do not allow pointer FFI to ship as implicit tribal knowledge.".to_string(),
+            production_risk: "High: missing pointer ownership metadata turns an FFI edge into an unverifiable memory-safety boundary.".to_string(),
+            next_command: "fz verify <path> --json".to_string(),
+        },
+        DiagnosticCatalogEntry {
+            key: "verifier.extern_c_callback_requires_context_anchor".to_string(),
+            code_prefix: "E-VER-".to_string(),
+            family: "verifier".to_string(),
+            summary: "An extern C callback surface is missing the required context anchor that ties callback lifetime and ownership to a stable host object.".to_string(),
+            example: "E-VER-xxxx: extern C callback `host_register` must declare a context anchor for callback state".to_string(),
+            likely_fix: "Add the context anchor contract so callback state and teardown responsibility are explicit at the ABI boundary.".to_string(),
+            common_triggers: vec![
+                "callback pointer is registered without a stable owner/context handle".to_string(),
+                "host callback teardown and lifetime are implied instead of declared".to_string(),
+            ],
+            production_action: "Make callback ownership and teardown explicit before release so cancellation, shutdown, and replay semantics stay reviewable.".to_string(),
+            production_risk: "High: callback edges without context anchors are prone to lifetime, teardown, and reentrancy bugs.".to_string(),
             next_command: "fz verify <path> --json".to_string(),
         },
         DiagnosticCatalogEntry {
@@ -17552,6 +17633,84 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn explain_json_schema_for_grouped_type_error_is_snapshot_stable() {
+        let output = run(
+            Command::Explain {
+                diag_code: "verifier.grouped_type_error".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("explain should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("explain json should parse");
+        assert_eq!(payload["schemaVersion"], DIAGNOSTIC_EXPLAIN_SCHEMA_VERSION);
+        assert_eq!(payload["catalogKey"], "verifier.grouped_type_error");
+        assert_eq!(payload["family"], "verifier");
+        assert_eq!(payload["nextCommand"], "fz verify <path> --json");
+        assert_eq!(
+            payload["explainCommand"],
+            "fz explain verifier.grouped_type_error"
+        );
+        assert_eq!(
+            payload["catalog"]["production_risk"],
+            "High: grouped type errors indicate the program is not semantically stable enough for trusted lowering."
+        );
+    }
+
+    #[test]
+    fn explain_json_schema_for_native_backend_capability_is_snapshot_stable() {
+        let output = run(
+            Command::Explain {
+                diag_code: "native.cranelift_async_unsafe_unsupported".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("explain should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("explain json should parse");
+        assert_eq!(payload["schemaVersion"], DIAGNOSTIC_EXPLAIN_SCHEMA_VERSION);
+        assert_eq!(
+            payload["catalogKey"],
+            "native.cranelift_async_unsafe_unsupported"
+        );
+        assert_eq!(payload["family"], "native-lowering");
+        assert_eq!(
+            payload["likelyFix"],
+            "Switch to LLVM or refactor unsafe operations outside the async function boundary."
+        );
+        assert_eq!(
+            payload["nextCommand"],
+            "fz build <path> --backend llvm --json"
+        );
+    }
+
+    #[test]
+    fn explain_json_schema_for_ffi_contract_diagnostic_is_snapshot_stable() {
+        let output = run(
+            Command::Explain {
+                diag_code: "verifier.extern_c_pointer_requires_contract".to_string(),
+            },
+            Format::Json,
+        )
+        .expect("explain should succeed");
+        let payload: serde_json::Value =
+            serde_json::from_str(&output).expect("explain json should parse");
+        assert_eq!(payload["schemaVersion"], DIAGNOSTIC_EXPLAIN_SCHEMA_VERSION);
+        assert_eq!(
+            payload["catalogKey"],
+            "verifier.extern_c_pointer_requires_contract"
+        );
+        assert_eq!(payload["family"], "verifier");
+        assert_eq!(
+            payload["explainCommand"],
+            "fz explain verifier.extern_c_pointer_requires_contract"
+        );
+        assert!(payload["rootCause"]
+            .as_str()
+            .is_some_and(|value| value.contains("ownership contract")));
+    }
+
+    #[test]
     fn explain_text_includes_production_action_fields() {
         let output = run(
             Command::Explain {
@@ -17563,6 +17722,7 @@ fn main() -> i32 {
         assert!(output.contains("common_triggers"));
         assert!(output.contains("production_action"));
         assert!(output.contains("production_risk"));
+        assert!(output.contains("explain_command"));
     }
 
     #[test]
