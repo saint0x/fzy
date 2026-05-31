@@ -1,0 +1,8 @@
+mod auth;
+mod store;
+use auth::login;
+pub use store::boot_store;
+
+pub fn boot() -> i32 {
+    return login() + boot_store()
+}

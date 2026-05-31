@@ -13,19 +13,12 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 
 Checklist:
 
-- Build a golden corpus covering lexer, parser, AST shaping, HIR typing/effects, FIR lowering, verifier outcomes, native lowerability, LLVM output, Cranelift output, and runtime shim linking.
-- Add positive and negative coverage for every phase.
-- Lock diagnostics, verify/build behavior, parity-supported backend agreement, module import resolution, and cache invalidation behavior.
-- Add regression classes for multi-file projects, nested modules, public and wildcard imports, manifest-root discovery, dependency-graph hashing, and module-cache invalidation.
-- Add panic-resistance gates so invalid programs emit diagnostics instead of Rust panics across parser, HIR, verifier, and driver/native-lowerability paths.
+- Finish user-module wildcard import lock-in on the same golden corpus instead of relying only on explicit import/re-export coverage.
+- Add direct panic-resistance gates inside parser/HIR/verifier/native-lowerability crate tests so malformed programs are proven not to panic below the command layer.
 
 Required tests:
 
-- Direct crate tests for parser, AST, HIR, FIR, and verifier behavior.
-- `fz check`, `fz verify`, `fz build`, and `fz parity` fixture coverage for the same corpus.
-- Strict deterministic Fozzy doctor/test coverage for representative compiler scenarios.
-- At least one recorded trace for the active compiler-regression suite, followed by strict trace verify, replay, and CI.
-- Host-backed runs for compiler/runtime integration scenarios where native linking and runtime shim behavior matter.
+- Direct crate tests that specifically cover the remaining wildcard-import and panic-resistance gaps.
 
 ## Priority 7
 

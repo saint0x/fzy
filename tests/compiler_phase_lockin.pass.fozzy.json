@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "compiler-phase-lockin-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess, tempfile, textwrap; repo = pathlib.Path.cwd(); fixture = repo / 'tests/fixtures/compiler_phase_lockin'\n\ndef run_json(args, expect_rc):\n    proc = subprocess.run(['cargo', 'run', '-q', '-p', 'fz', '--', *args, '--json'], cwd=str(repo), capture_output=True, text=True)\n    payload = json.loads(proc.stdout.strip())\n    assert proc.returncode == expect_rc, (args, proc.returncode, payload, proc.stderr)\n    return payload\n\ncheck_payload = run_json(['check', str(fixture)], 0)\nassert check_payload['errors'] == 0, check_payload\nverify_payload = run_json(['verify', str(fixture)], 0)\nassert verify_payload['errors'] == 0, verify_payload\nbuild_payload = run_json(['build', str(fixture), '--backend', 'llvm'], 0)\nassert build_payload['status'] == 'ok', build_payload\nassert build_payload['dependencyGraphHash'], build_payload\nparity_payload = run_json(['parity', str(fixture), '--seed', '4242'], 0)\nassert parity_payload['ok'] is True, parity_payload\nassert parity_payload['checks']['sameVerifierResult'] is True, parity_payload\nassert parity_payload['checks']['sameRuntimeBehavior'] is True, parity_payload\n\nroot = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-phase-cache-'))\n(root / 'src/services').mkdir(parents=True, exist_ok=True)\n(root / 'fozzy.toml').write_text('[package]\\nname=\"compiler_phase_cache\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"compiler_phase_cache\"\\npath=\"src/main.fzy\"\\n')\n(root / 'src/main.fzy').write_text('use core.term;\\nmod services;\\nfn main() -> i32 {\\n    discard term.write(\"cache-check\\\\n\")\\n    return services.boot()\\n}\\n')\n(root / 'src/services/mod.fzy').write_text('pub fn boot() -> i32 {\\n    return 0\\n}\\n')\nassert run_json(['check', str(root)], 0)['errors'] == 0\n(root / 'src/services/mod.fzy').write_text('pub fn renamed() -> i32 {\\n    return 0\\n}\\n')\nbroken_check = run_json(['check', str(root)], 0)\nassert broken_check['errors'] > 0, broken_check\nassert any('unresolved call target `services.boot`' in item['message'] for item in broken_check['items']), broken_check\nbroken_verify = run_json(['verify', str(root)], 0)\nassert broken_verify['errors'] > 0, broken_verify\nbroken_build = run_json(['build', str(root), '--backend', 'llvm'], 0)\nassert broken_build['status'] == 'error', broken_build\n(root / 'src/services/mod.fzy').write_text('pub fn boot() -> i32 {\\n    return 0\\n}\\n')\nrepaired_build = run_json(['build', str(root), '--backend', 'llvm'], 0)\nassert repaired_build['status'] == 'ok', repaired_build\n\ninvalid = pathlib.Path(tempfile.mkdtemp(prefix='fozzylang-phase-invalid-'))\n(invalid / 'src').mkdir(parents=True, exist_ok=True)\n(invalid / 'fozzy.toml').write_text('[package]\\nname=\"compiler_phase_invalid\"\\nversion=\"0.1.0\"\\n\\n[[target.bin]]\\nname=\"compiler_phase_invalid\"\\npath=\"src/main.fzy\"\\n')\n(invalid / 'src/main.fzy').write_text('fn main( -> i32 {\\n    return 0\\n}\\n')\nfor command in (['check', str(invalid)], ['verify', str(invalid)], ['build', str(invalid), '--backend', 'llvm']):\n    payload = run_json(command, 0)\n    assert payload['errors'] > 0 or payload.get('status') == 'error', (command, payload)\n\nprint('compiler-phase-lockin-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "compiler-phase-lockin-ok\n",
+      "stderr": "",
+      "times": 1
+    }
+  ]
+}

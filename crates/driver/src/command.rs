@@ -15228,6 +15228,254 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn compiler_phase_fixture_check_verify_build_and_parity_stay_aligned() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/compiler_phase_lockin");
+
+        let check = run(Command::Check { path: root.clone() }, Format::Json)
+            .expect("check should succeed for compiler phase fixture");
+        let check_payload: serde_json::Value =
+            serde_json::from_str(&check).expect("check output should be valid json");
+        assert_eq!(check_payload["errors"].as_u64(), Some(0));
+        assert_eq!(check_payload["module"].as_str(), Some("main"));
+
+        let verify = run(Command::Verify { path: root.clone() }, Format::Json)
+            .expect("verify should succeed for compiler phase fixture");
+        let verify_payload: serde_json::Value =
+            serde_json::from_str(&verify).expect("verify output should be valid json");
+        assert_eq!(verify_payload["errors"].as_u64(), Some(0));
+        assert_eq!(verify_payload["warnings"].as_u64(), Some(0));
+
+        let build = run(
+            Command::Build {
+                path: root.clone(),
+                release: false,
+                strict: false,
+                lib: false,
+                threads: None,
+                backend: Some("llvm".to_string()),
+                pgo_generate: false,
+                pgo_use: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
+            },
+            Format::Json,
+        )
+        .expect("build should succeed for compiler phase fixture");
+        let build_payload: serde_json::Value =
+            serde_json::from_str(&build).expect("build output should be valid json");
+        assert_eq!(build_payload["status"].as_str(), Some("ok"));
+        assert!(build_payload["dependencyGraphHash"].is_string());
+        assert_eq!(
+            build_payload["policy"]["lockfileState"].as_str(),
+            Some("present")
+        );
+
+        let parity = run(
+            Command::Parity {
+                path: root.clone(),
+                seed: Some(4242),
+            },
+            Format::Json,
+        )
+        .expect("parity should succeed for compiler phase fixture");
+        let parity_payload: serde_json::Value =
+            serde_json::from_str(&parity).expect("parity output should be valid json");
+        assert_eq!(parity_payload["ok"].as_bool(), Some(true));
+        assert_eq!(
+            parity_payload["checks"]["sameVerifierResult"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            parity_payload["checks"]["sameExitCode"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(parity_payload["checks"]["sameStdout"].as_bool(), Some(true));
+        assert_eq!(
+            parity_payload["checks"]["sameRuntimeBehavior"].as_bool(),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn compiler_phase_commands_invalidate_import_cache_and_recover_after_fix() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-command-cache-{suffix}"));
+        std::fs::create_dir_all(root.join("src/services")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"compiler_cache\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"compiler_cache\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "use core.term;\nmod services;\nfn main() -> i32 {\n    discard term.write(\"cache-check\\n\")\n    return services.boot()\n}\n",
+        )
+        .expect("main source should be written");
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "pub fn boot() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("service source should be written");
+
+        let first = run(Command::Check { path: root.clone() }, Format::Json)
+            .expect("first check should succeed");
+        let first_payload: serde_json::Value =
+            serde_json::from_str(&first).expect("first check should be valid json");
+        assert_eq!(first_payload["errors"].as_u64(), Some(0));
+
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "pub fn renamed() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("service source should mutate");
+
+        let broken_check = run(Command::Check { path: root.clone() }, Format::Json)
+            .expect("broken check should return diagnostics");
+        let broken_check_payload: serde_json::Value =
+            serde_json::from_str(&broken_check).expect("broken check should be valid json");
+        assert!(broken_check_payload["errors"].as_u64().unwrap_or(0) > 0);
+        let broken_messages = broken_check_payload["items"]
+            .as_array()
+            .expect("diagnostic items should be an array")
+            .iter()
+            .filter_map(|item| item["message"].as_str())
+            .collect::<Vec<_>>();
+        assert!(broken_messages
+            .iter()
+            .any(|message| message.contains("unresolved call target `services.boot`")));
+
+        let broken_verify = run(Command::Verify { path: root.clone() }, Format::Json)
+            .expect("broken verify should return diagnostics");
+        let broken_verify_payload: serde_json::Value =
+            serde_json::from_str(&broken_verify).expect("broken verify should be valid json");
+        assert!(broken_verify_payload["errors"].as_u64().unwrap_or(0) > 0);
+
+        let broken_build = run(
+            Command::Build {
+                path: root.clone(),
+                release: false,
+                strict: false,
+                lib: false,
+                threads: None,
+                backend: Some("llvm".to_string()),
+                pgo_generate: false,
+                pgo_use: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
+            },
+            Format::Json,
+        )
+        .expect("broken build should return diagnostics");
+        let broken_build_payload: serde_json::Value =
+            serde_json::from_str(&broken_build).expect("broken build should be valid json");
+        assert_eq!(broken_build_payload["status"].as_str(), Some("error"));
+
+        std::fs::write(
+            root.join("src/services/mod.fzy"),
+            "pub fn boot() -> i32 {\n    return 0\n}\n",
+        )
+        .expect("service source should be restored");
+
+        let repaired_build = run(
+            Command::Build {
+                path: root.clone(),
+                release: false,
+                strict: false,
+                lib: false,
+                threads: None,
+                backend: Some("llvm".to_string()),
+                pgo_generate: false,
+                pgo_use: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
+            },
+            Format::Json,
+        )
+        .expect("repaired build should succeed");
+        let repaired_build_payload: serde_json::Value =
+            serde_json::from_str(&repaired_build).expect("repaired build should be valid json");
+        assert_eq!(repaired_build_payload["status"].as_str(), Some("ok"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compiler_phase_invalid_programs_emit_diagnostics_not_panics() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("fozzylang-command-invalid-{suffix}"));
+        std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+        std::fs::write(
+            root.join("fozzy.toml"),
+            "[package]\nname=\"compiler_invalid\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"compiler_invalid\"\npath=\"src/main.fzy\"\n",
+        )
+        .expect("manifest should be written");
+        std::fs::write(
+            root.join("src/main.fzy"),
+            "fn main( -> i32 {\n    return 0\n}\n",
+        )
+        .expect("invalid source should be written");
+
+        for output in [
+            run(Command::Check { path: root.clone() }, Format::Json)
+                .expect("check should return diagnostics"),
+            run(Command::Verify { path: root.clone() }, Format::Json)
+                .expect("verify should return diagnostics"),
+        ] {
+            assert!(
+                !output.contains("panicked at"),
+                "compiler command should emit diagnostics instead of panicking: {output}"
+            );
+            let payload: serde_json::Value =
+                serde_json::from_str(&output).expect("command output should be valid json");
+            let errors = payload["errors"]
+                .as_u64()
+                .unwrap_or_else(|| payload["diagnostics"].as_u64().unwrap_or(0));
+            assert!(
+                errors > 0,
+                "invalid source should produce errors: {payload}"
+            );
+        }
+
+        let build_error = run(
+            Command::Build {
+                path: root.clone(),
+                release: false,
+                strict: false,
+                lib: false,
+                threads: None,
+                backend: Some("llvm".to_string()),
+                pgo_generate: false,
+                pgo_use: None,
+                link_libs: Vec::new(),
+                link_search: Vec::new(),
+                frameworks: Vec::new(),
+            },
+            Format::Json,
+        )
+        .expect_err("build should fail cleanly for invalid source");
+        assert!(
+            !build_error.to_string().contains("panicked at"),
+            "build should fail with diagnostics, not panic: {build_error}"
+        );
+        assert!(
+            build_error.to_string().contains("parse failed"),
+            "build failure should preserve parser diagnostics: {build_error}"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn native_run_host_backends_preserves_live_run_semantics() {
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

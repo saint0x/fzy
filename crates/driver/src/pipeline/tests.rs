@@ -6967,6 +6967,82 @@ fn parse_program_cache_invalidates_on_source_change() {
 }
 
 #[test]
+fn parse_program_cache_invalidates_on_imported_module_change() {
+    let project_name = format!(
+        "fozzylang-import-cache-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src/services")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"demo\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"demo\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "mod services;\nfn main() -> i32 {\n    return services.boot()\n}\n",
+    )
+    .expect("main source should be written");
+    std::fs::write(
+        root.join("src/services/mod.fzy"),
+        "pub fn boot() -> i32 {\n    return 5\n}\n",
+    )
+    .expect("imported module should be written");
+
+    let first = parse_program(&root.join("src/main.fzy")).expect("first parse should succeed");
+    std::fs::write(
+        root.join("src/services/mod.fzy"),
+        "pub fn boot() -> i32 {\n    return 8\n}\n\npub fn extra() -> i32 {\n    return 1\n}\n",
+    )
+    .expect("imported module should mutate");
+    let second = parse_program(&root.join("src/main.fzy")).expect("second parse should succeed");
+    assert_ne!(first.combined_source, second.combined_source);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn compiler_phase_lockin_fixture_parses_lowers_and_links_across_backends() {
+    let root =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/compiler_phase_lockin");
+    let parsed = parse_program(&root.join("src/main.fzy")).expect("fixture project should parse");
+    assert!(
+        parsed.module.items.iter().any(
+            |item| matches!(item, ast::Item::Function(function) if function.name == "services.boot")
+        ),
+        "flattened module should include services.boot"
+    );
+    assert!(
+        parsed
+            .module
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Function(function) if function.name == "model.types.flavor_score")),
+        "flattened module should include model.types.flavor_score"
+    );
+
+    let (_typed, fir) = super::lower_fir_cached(&parsed);
+    let llvm = lower_llvm_ir(&fir, true).expect("llvm lowering should succeed");
+    let cranelift =
+        lower_backend_ir(&fir, BackendKind::Cranelift).expect("cranelift lowering should succeed");
+    assert!(llvm.contains("@services_boot()"));
+    assert!(llvm.contains("@model_types_flavor_score()"));
+    assert!(cranelift.contains("services_boot"));
+    assert!(cranelift.contains("model_types_flavor_score"));
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("fixture build should succeed");
+    assert_eq!(artifact.status, "ok");
+    assert_eq!(
+        artifact.dependency_graph_hash.as_deref(),
+        refresh_lockfile(&root).ok().as_deref()
+    );
+}
+
+#[test]
 fn native_runtime_import_table_is_boundary_only_and_unique() {
     let errors = native_runtime_import_contract_errors();
     assert!(

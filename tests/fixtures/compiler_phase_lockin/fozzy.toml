@@ -1,0 +1,7 @@
+[package]
+name = "compiler_phase_lockin"
+version = "0.1.0"
+
+[[target.bin]]
+name = "compiler_phase_lockin"
+path = "src/main.fzy"

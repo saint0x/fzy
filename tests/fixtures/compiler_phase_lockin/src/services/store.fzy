@@ -1,0 +1,3 @@
+pub fn boot_store() -> i32 {
+    return 3
+}

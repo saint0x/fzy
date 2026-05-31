@@ -1,0 +1,12 @@
+{
+  "dependencyGraphHash": "b594497ee061bd978d80be1f5d71f030ed13b18b24fc7152817e643dd9faaec5",
+  "graph": {
+    "deps": [],
+    "package": {
+      "manifestHash": "c0d72a6b7d168fbdddb4ed82a9a248cb286e111e833b23f2c1d31d5fa22bd07a",
+      "name": "compiler_phase_lockin",
+      "version": "0.1.0"
+    }
+  },
+  "schemaVersion": "fozzylang.lock.v0"
+}
