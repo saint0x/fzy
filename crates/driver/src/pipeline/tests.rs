@@ -113,6 +113,8 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         "language-policy.md",
         "release-policy.json",
         "release-policy.md",
+        "stdlib-capability-policy.json",
+        "stdlib-capability-policy.md",
     ] {
         assert!(
             root.join(".fz").join(name).exists(),
@@ -177,6 +179,22 @@ fn compile_file_emits_memory_async_rpc_and_unsafe_reports() {
         .expect("release policy markdown should exist");
     assert!(release_policy_md.contains("## Compatibility"));
     assert!(release_policy_md.contains("## Benchmark Lanes"));
+    let stdlib_policy: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join(".fz/stdlib-capability-policy.json"))
+            .expect("stdlib capability policy should exist"),
+    )
+    .expect("stdlib capability policy should be valid json");
+    assert_eq!(
+        stdlib_policy["schemaVersion"].as_str(),
+        Some("fozzylang.stdlib_capability_policy.v1")
+    );
+    assert!(stdlib_policy["modules"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["module"] == "core.http")));
+    let stdlib_policy_md = std::fs::read_to_string(root.join(".fz/stdlib-capability-policy.md"))
+        .expect("stdlib capability policy markdown should exist");
+    assert!(stdlib_policy_md.contains("## Module Contracts"));
+    assert!(stdlib_policy_md.contains("## Strict Hazards"));
     assert!(handle_contracts.contains("\"name\": \"JsonHandle\""));
     assert!(handle_contracts.contains("\"linear\": true"));
     assert!(handle_contracts.contains("\"linear\": false"));
@@ -413,6 +431,154 @@ fn release_policy_artifact_reports_error_perf_and_compat_contracts() {
     assert!(markdown.contains("## Implementation-Backed Docs"));
 
     let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn stdlib_capability_policy_artifact_reports_module_contracts_and_hazards() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-stdlib-policy-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"stdlib_policy\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"stdlib_policy\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.thread;\nfn worker() -> i32 { return 1 }\nfn main() -> i32 {\n    let handle = spawn(worker)\n    discard join(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("build should succeed");
+    assert_eq!(artifact.status, "ok");
+
+    let payload: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(root.join(".fz/stdlib-capability-policy.json"))
+            .expect("stdlib capability policy artifact should be readable"),
+    )
+    .expect("stdlib capability policy should be valid json");
+    assert_eq!(
+        payload["schemaVersion"].as_str(),
+        Some("fozzylang.stdlib_capability_policy.v1")
+    );
+    assert_eq!(
+        payload["capabilityPolicy"]["propagation"].as_str(),
+        Some("explicit_compiler_checked")
+    );
+    assert_eq!(
+        payload["jsonBoundaryRule"]["inside"].as_str(),
+        Some("typed_structs_and_enums")
+    );
+    for expected in [
+        "core.mem",
+        "core.http",
+        "core.proc",
+        "core.fs",
+        "core.thread",
+        "core.time",
+        "core.crypto",
+        "core.json",
+        "core.log",
+    ] {
+        assert!(payload["modules"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["module"] == expected)));
+    }
+    for expected in [
+        "json_raw_composite_or_dynamic_injection",
+        "path_traversal_literal",
+        "shell_process_builder",
+        "tempfile_non_atomic_write",
+        "http_header_non_normalized",
+        "crypto_secret_eq",
+    ] {
+        assert!(payload["strictHazards"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["kind"] == expected)));
+    }
+
+    let markdown = std::fs::read_to_string(root.join(".fz/stdlib-capability-policy.md"))
+        .expect("stdlib capability policy markdown should be readable");
+    assert!(markdown.contains("| `core.http` | `http` |"));
+    assert!(markdown.contains("`crypto_secret_eq` (`warning`)"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn verify_strict_stdlib_policy_surfaces_json_raw_and_shell_hazards() {
+    let path = std::env::temp_dir().join(format!(
+        "fozzylang-stdlib-hazards-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::write(
+        &path,
+        "use core.proc;\nuse core.http;\nfn main() -> i32 {\n    let payload = map.new()\n    discard map.set(payload, \"body\", json.raw(\"{\\\"unsafe\\\":true}\"))\n    discard proc.argv_push(proc.argv_new(), \"-c\")\n    discard proc.spawn_cmd(\"/bin/sh\", proc.argv_new(), proc.env_new(), \"\")\n    discard http.header_set(\"X-Demo\", \"ok\")\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    let messages = output
+        .diagnostic_details
+        .iter()
+        .map(|item| item.message.clone())
+        .collect::<Vec<_>>();
+    assert!(messages
+        .iter()
+        .any(|item| item.contains("`json.raw(...)` embeds a composite or quoted JSON literal")));
+    assert!(messages
+        .iter()
+        .any(|item| item.contains("process argv uses shell command-string flag")));
+    assert!(messages
+        .iter()
+        .any(|item| item.contains("shells out through `/bin/sh`")));
+    assert!(messages
+        .iter()
+        .any(|item| item.contains("HTTP header `X-Demo` is not normalized")));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_strict_stdlib_policy_surfaces_path_temp_and_crypto_hazards() {
+    let path = std::env::temp_dir().join(format!(
+        "fozzylang-stdlib-path-hazards-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::write(
+        &path,
+        "use core.fs;\nuse core.security;\nfn main() -> i32 {\n    discard fs.write_file(\"../secrets.txt\", \"oops\")\n    discard fs.write_file(\"/tmp/out.txt\", \"temp\")\n    if security.sign_value(\"k\", \"v\") == security.sign_value(\"k\", \"v\") {\n        return 0\n    }\n    return 1\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    let messages = output
+        .diagnostic_details
+        .iter()
+        .map(|item| item.message.clone())
+        .collect::<Vec<_>>();
+    assert!(messages
+        .iter()
+        .any(|item| item.contains("traversal-prone literal path `../secrets.txt`")));
+    assert!(messages
+        .iter()
+        .any(|item| item.contains("writes directly to temp path `/tmp/out.txt`")));
+    assert!(messages
+        .iter()
+        .any(|item| item.contains("secret-bearing values are compared with `==`/`!=`")));
+
+    let _ = std::fs::remove_file(path);
 }
 
 #[test]

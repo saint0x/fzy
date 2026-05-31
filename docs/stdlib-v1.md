@@ -172,6 +172,7 @@ let err = proc.stderr(handle)
 - Compiler-shipped handle contracts are emitted in `.fz/handle-contracts.json`.
 - Native runtime edge contracts are emitted in `.fz/native-runtime-contracts.json`.
 - Human-readable native runtime contract tables are emitted in `.fz/native-runtime-contracts.md`.
+- Compiler-shipped stdlib and capability policy is emitted in `.fz/stdlib-capability-policy.json` and `.fz/stdlib-capability-policy.md`.
 - Production code should treat the emitted contract artifacts as the source of truth for handle cleanup, borrowing, send-safety, and async-stability semantics.
 
 ### `term`

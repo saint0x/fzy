@@ -7,7 +7,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `14. Compiler-phase lock-in suite`
 - `15. Memory-safety adversarial coverage`
 - `22. Canary-app gates`
-- `26. Stdlib and capability policy`
 
 ## Priority 6
 
@@ -65,16 +64,6 @@ Required tests:
 - Deterministic doctor/test plus trace verify, replay, and CI for representative canary flows.
 
 ## Second-Wave v1 Lock-In
-
-### 26. Stdlib and capability policy
-
-Checklist:
-
-- Define per-module contracts for at least `core.mem`, `core.http`, `core.proc`, `core.fs`, `core.thread`, `core.time`, `core.crypto`, `core.json`, and `core.log`.
-- For each contract, specify capability, ownership behavior, error behavior, linear handles, cleanup requirement, thread-safety, and async-safety.
-- Strengthen capability propagation so calls require the capabilities they actually exercise, and capability-token delegation is enforced as compiler-visible authority rather than documentation.
-- Lock in the JSON rule: JSON at boundaries, typed structs and enums inside.
-- Add strict-mode warnings or failures for unsafe `json.raw` misuse, path traversal hazards, shell and process construction hazards, temp-file and atomic-write hazards, header normalization gaps, raw-injection hazards, and constant-time-compare misuse.
 
 ## Working Rule
 

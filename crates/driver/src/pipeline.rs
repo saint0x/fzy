@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::{Mutex, Once, OnceLock};
 use std::time::UNIX_EPOCH;
 
+use ast::AstVisitor;
+
 mod clif_support;
 mod linker_support;
 mod llvm_support;
@@ -813,6 +815,28 @@ fn write_safety_artifacts(
         )
     })?;
 
+    let stdlib_policy_json = build_stdlib_capability_policy_json();
+    std::fs::write(
+        out_dir.join("stdlib-capability-policy.json"),
+        serde_json::to_vec_pretty(&stdlib_policy_json)?,
+    )
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("stdlib-capability-policy.json").display()
+        )
+    })?;
+    std::fs::write(
+        out_dir.join("stdlib-capability-policy.md"),
+        render_stdlib_capability_policy_markdown(&stdlib_policy_json),
+    )
+    .with_context(|| {
+        format!(
+            "failed writing {}",
+            out_dir.join("stdlib-capability-policy.md").display()
+        )
+    })?;
+
     Ok(())
 }
 
@@ -937,6 +961,8 @@ fn safety_artifact_names() -> &'static [&'static str] {
         "language-policy.md",
         "release-policy.json",
         "release-policy.md",
+        "stdlib-capability-policy.json",
+        "stdlib-capability-policy.md",
     ]
 }
 
@@ -1233,6 +1259,212 @@ fn render_release_policy_markdown(value: &serde_json::Value) -> String {
                 surface["name"].as_str().unwrap_or("unknown"),
                 surface["output"].as_str().unwrap_or("unknown"),
                 surface["source"].as_str().unwrap_or("unknown"),
+            ));
+        }
+    }
+    out
+}
+
+fn stdlib_contract_rows() -> &'static [(
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+)] {
+    &[
+        (
+            "core.mem",
+            "mem",
+            "owned values + explicit alloc/free lifecycle",
+            "runtime status + verifier ownership diagnostics",
+            "heap pointers and owned allocations are linear",
+            "cleanup with `free(...)` or `defer free(...)`",
+            "thread-safe only through owned handoff; not raw-borrow safe across async/task boundaries",
+        ),
+        (
+            "core.http",
+            "http",
+            "request/response bodies and network handles are owned",
+            "parse vs timeout vs transport errors remain distinct",
+            "HttpHandle/HttpStreamHandle/WebSocketHandle are linear",
+            "cleanup with `close(...)`, `http.stream_close(...)`, or `http.websocket_close(...)`",
+            "not send-safe; async-stable for owned handles only",
+        ),
+        (
+            "core.proc",
+            "proc",
+            "argv/env builders and process handles are owned",
+            "runtime status + last-error boundary",
+            "ProcessArgv/ProcessEnv/ProcessHandle are linear",
+            "cleanup with `proc.close(...)`; builders must be consumed by spawn/run",
+            "process handles are async-stable but not send-safe; builders are neither",
+        ),
+        (
+            "core.fs",
+            "fs",
+            "file handles are owned; path arguments are borrowed",
+            "runtime status + host error mapping",
+            "FileHandle is linear",
+            "cleanup with `fs.close(...)`; durable writes prefer `fs.atomic_write(...)`",
+            "file handles are async-stable but not send-safe",
+        ),
+        (
+            "core.thread",
+            "thread",
+            "task handles and task groups are owned linear resources",
+            "task result / cancellation / timeout policy is explicit",
+            "TaskHandle and TaskGroupHandle are linear",
+            "terminate with `join`, `detach`, `cancel_task`, `task.group_join_all`, or `task.group_cancel`",
+            "send-safe task handles/groups only; borrowed values may not cross task boundaries",
+        ),
+        (
+            "core.time",
+            "time",
+            "time values are plain owned data",
+            "status-free deterministic time/runtime APIs",
+            "no linear handles",
+            "no explicit cleanup required",
+            "thread-safe and async-safe",
+        ),
+        (
+            "core.crypto",
+            "rng",
+            "crypto outputs are owned plain values",
+            "decode and runtime-status failures are explicit",
+            "no linear handles",
+            "no explicit cleanup required",
+            "thread-safe and async-safe; secret comparisons should use constant-time helpers",
+        ),
+        (
+            "core.json",
+            "http|fs|proc boundary payloads",
+            "JSON stays at boundaries; typed structs/enums stay inside",
+            "parse failures stay explicit; raw injection is policy-checked",
+            "JsonHandle/ListHandle/MapHandle are owned non-linear handles",
+            "no explicit cleanup; avoid `json.raw(...)` except for primitive/raw boundary escapes",
+            "send-safe and async-stable owned collection handles",
+        ),
+        (
+            "core.log",
+            "log",
+            "log payload maps/strings are owned values",
+            "runtime status for sink/config failures",
+            "no linear handles",
+            "no explicit cleanup required",
+            "thread-safe and async-safe logging facade",
+        ),
+    ]
+}
+
+fn stdlib_hazard_policies() -> &'static [(&'static str, &'static str, &'static str)] {
+    &[
+        (
+            "json_raw_composite_or_dynamic_injection",
+            "warning",
+            "prefer `json.object`, `json.array`, or `json.str` over `json.raw(...)` for composite or user-shaped payloads",
+        ),
+        (
+            "path_traversal_literal",
+            "warning",
+            "literal filesystem paths containing `..` are rejected as traversal-prone in strict mode",
+        ),
+        (
+            "shell_process_builder",
+            "warning",
+            "shell command construction through `sh`/`bash` and `-c` is flagged in strict mode; prefer direct argv builders",
+        ),
+        (
+            "tempfile_non_atomic_write",
+            "warning",
+            "writing directly into `/tmp` or `/var/tmp` is flagged when a durable atomic write is expected",
+        ),
+        (
+            "http_header_non_normalized",
+            "warning",
+            "HTTP headers should be lowercase normalized tokens in strict mode",
+        ),
+        (
+            "crypto_secret_eq",
+            "warning",
+            "secret-bearing comparisons should use `crypto.constant_time_eq` or `security.secure_eq`",
+        ),
+    ]
+}
+
+fn build_stdlib_capability_policy_json() -> serde_json::Value {
+    serde_json::json!({
+        "schemaVersion": "fozzylang.stdlib_capability_policy.v1",
+        "versions": compatibility_versions_json(),
+        "capabilityPolicy": {
+            "propagation": "explicit_compiler_checked",
+            "tokenDelegation": "compiler_enforced_subset_only",
+            "missingCapabilityPolicy": "error",
+            "missingTokenPolicy": "error",
+        },
+        "jsonBoundaryRule": {
+            "boundary": "json_at_boundaries",
+            "inside": "typed_structs_and_enums",
+            "strictRawPolicy": "warn_on_composite_or_dynamic_json_raw",
+        },
+        "modules": stdlib_contract_rows().iter().map(|(module, capability, ownership, error, handles, cleanup, safety)| {
+            serde_json::json!({
+                "module": module,
+                "capability": capability,
+                "ownershipBehavior": ownership,
+                "errorBehavior": error,
+                "linearHandles": handles,
+                "cleanupRequirement": cleanup,
+                "threadAsyncSafety": safety,
+            })
+        }).collect::<Vec<_>>(),
+        "strictHazards": stdlib_hazard_policies().iter().map(|(kind, severity, policy)| {
+            serde_json::json!({
+                "kind": kind,
+                "severity": severity,
+                "policy": policy,
+            })
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn render_stdlib_capability_policy_markdown(value: &serde_json::Value) -> String {
+    let mut out = String::from("# Stdlib Capability Policy\n\n");
+    out.push_str(&format!(
+        "- Schema: `{}`\n- Capability propagation: `{}`\n- Token delegation: `{}`\n- JSON boundary rule: `{}` / `{}`\n\n",
+        value["schemaVersion"].as_str().unwrap_or("unknown"),
+        value["capabilityPolicy"]["propagation"].as_str().unwrap_or("unknown"),
+        value["capabilityPolicy"]["tokenDelegation"].as_str().unwrap_or("unknown"),
+        value["jsonBoundaryRule"]["boundary"].as_str().unwrap_or("json_at_boundaries"),
+        value["jsonBoundaryRule"]["inside"].as_str().unwrap_or("typed_structs_and_enums"),
+    ));
+    out.push_str("## Module Contracts\n\n");
+    out.push_str("| Module | Capability | Ownership | Errors | Linear Handles | Cleanup | Thread/Async Safety |\n");
+    out.push_str("| --- | --- | --- | --- | --- | --- | --- |\n");
+    if let Some(modules) = value["modules"].as_array() {
+        for module in modules {
+            out.push_str(&format!(
+                "| `{}` | `{}` | {} | {} | {} | {} | {} |\n",
+                module["module"].as_str().unwrap_or("unknown"),
+                module["capability"].as_str().unwrap_or("unknown"),
+                module["ownershipBehavior"].as_str().unwrap_or("unknown"),
+                module["errorBehavior"].as_str().unwrap_or("unknown"),
+                module["linearHandles"].as_str().unwrap_or("unknown"),
+                module["cleanupRequirement"].as_str().unwrap_or("unknown"),
+                module["threadAsyncSafety"].as_str().unwrap_or("unknown"),
+            ));
+        }
+    }
+    out.push_str("\n## Strict Hazards\n\n");
+    if let Some(hazards) = value["strictHazards"].as_array() {
+        for hazard in hazards {
+            out.push_str(&format!(
+                "- `{}` (`{}`): {}\n",
+                hazard["kind"].as_str().unwrap_or("unknown"),
+                hazard["severity"].as_str().unwrap_or("warning"),
+                hazard["policy"].as_str().unwrap_or("unknown"),
             ));
         }
     }
@@ -11172,6 +11404,7 @@ fn compile_time_contract_diagnostics(
     if matches!(profile, BuildProfile::Strict) {
         diagnostics.extend(strict_async_contract_diagnostics(fir));
         diagnostics.extend(strict_rpc_contract_diagnostics(module, fir));
+        diagnostics.extend(strict_stdlib_capability_policy_diagnostics(module));
     }
 
     diagnostics
@@ -11321,6 +11554,183 @@ fn strict_rpc_contract_diagnostics(
         }
     }
     diagnostics
+}
+
+fn strict_stdlib_capability_policy_diagnostics(
+    module: &ast::Module,
+) -> Vec<diagnostics::Diagnostic> {
+    struct HazardVisitor {
+        diagnostics: Vec<diagnostics::Diagnostic>,
+    }
+
+    impl HazardVisitor {
+        fn warn(&mut self, message: impl Into<String>, help: impl Into<String>) {
+            self.diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Warning,
+                message.into(),
+                Some(help.into()),
+            ));
+        }
+    }
+
+    impl ast::AstVisitor for HazardVisitor {
+        fn visit_expr(&mut self, expr: &ast::Expr) {
+            match expr {
+                ast::Expr::Call { callee, args } => {
+                    match callee.as_str() {
+                        "json.raw" => {
+                            if let Some(arg) = args.first() {
+                                match arg {
+                                    ast::Expr::Str(value) => {
+                                        let trimmed = value.trim_start();
+                                        if trimmed.starts_with('{')
+                                            || trimmed.starts_with('[')
+                                            || trimmed.starts_with('"')
+                                        {
+                                            self.warn(
+                                                "strict stdlib policy: `json.raw(...)` embeds a composite or quoted JSON literal",
+                                                "Use `json.object(...)`, `json.array(...)`, or `json.str(...)` so the compiler can preserve typed JSON boundaries and avoid raw injection drift.",
+                                            );
+                                        }
+                                    }
+                                    ast::Expr::Int(_)
+                                    | ast::Expr::Float { .. }
+                                    | ast::Expr::Bool(_) => {}
+                                    _ => self.warn(
+                                        "strict stdlib policy: `json.raw(...)` is fed by a dynamic expression",
+                                        "Keep JSON typed inside the program and reserve `json.raw(...)` for audited primitive boundary escapes; prefer `json.str(...)`, `json.object(...)`, or `json.array(...)`.",
+                                    ),
+                                }
+                            }
+                        }
+                        "fs.read_file" | "fs.write_file" | "fs.open" | "fs.atomic_write"
+                        | "io.remove" | "storage.kv_open" => {
+                            if let Some(ast::Expr::Str(path)) = args.first() {
+                                if path.contains("../") || path.contains("..\\") {
+                                    self.warn(
+                                        format!(
+                                            "strict stdlib policy: `{callee}` uses traversal-prone literal path `{path}`"
+                                        ),
+                                        "Reject `..` path traversal in production code; normalize the path first or route it through a safe-join helper before calling filesystem APIs.",
+                                    );
+                                }
+                                if callee == "fs.write_file"
+                                    && (path.starts_with("/tmp/") || path.starts_with("/var/tmp/"))
+                                {
+                                    self.warn(
+                                        format!(
+                                            "strict stdlib policy: `{callee}` writes directly to temp path `{path}`"
+                                        ),
+                                        "Prefer `fs.atomic_write(...)` for temp-backed or replace-in-place output so crash recovery and durability stay explicit.",
+                                    );
+                                }
+                            }
+                        }
+                        "proc.spawn_cmd" | "proc.run_cmd" => {
+                            if let Some(ast::Expr::Str(program)) = args.first() {
+                                if matches!(
+                                    program.as_str(),
+                                    "sh" | "/bin/sh" | "bash" | "/bin/bash" | "zsh" | "/bin/zsh"
+                                ) {
+                                    self.warn(
+                                        format!(
+                                            "strict stdlib policy: `{callee}` shells out through `{program}`"
+                                        ),
+                                        "Prefer direct argv builders for the real program instead of shell dispatch; shell-based process construction is flagged in production strict mode.",
+                                    );
+                                }
+                            }
+                        }
+                        "proc.argv_push" => {
+                            if let Some(ast::Expr::Str(flag)) = args.get(1) {
+                                if flag == "-c" || flag == "/c" {
+                                    self.warn(
+                                        "strict stdlib policy: process argv uses shell command-string flag",
+                                        "Avoid `-c`/`/c` shell command strings in production strict mode; build a direct argv vector for the target process instead.",
+                                    );
+                                }
+                            }
+                        }
+                        "http.header_set" => {
+                            if let Some(ast::Expr::Str(name)) = args.first() {
+                                let normalized = name.chars().all(|ch| {
+                                    ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'
+                                });
+                                if !normalized {
+                                    self.warn(
+                                        format!(
+                                            "strict stdlib policy: HTTP header `{name}` is not normalized"
+                                        ),
+                                        "Use lowercase header tokens with `-` separators before calling `http.header_set(...)` so production header behavior stays normalized.",
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                    ast::walk_expr(self, expr);
+                }
+                ast::Expr::Binary {
+                    op: ast::BinaryOp::Eq | ast::BinaryOp::Neq,
+                    left,
+                    right,
+                } => {
+                    if is_secret_bearing_crypto_expr(left) || is_secret_bearing_crypto_expr(right) {
+                        self.warn(
+                            "strict stdlib policy: secret-bearing values are compared with `==`/`!=`",
+                            "Use `crypto.constant_time_eq(...)` or `security.secure_eq(...)` for MAC, digest, or signature comparisons so timing behavior stays production-safe.",
+                        );
+                    }
+                    ast::walk_expr(self, expr);
+                }
+                _ => ast::walk_expr(self, expr),
+            }
+        }
+    }
+
+    let mut visitor = HazardVisitor {
+        diagnostics: Vec::new(),
+    };
+    for item in &module.items {
+        match item {
+            ast::Item::Function(function) => {
+                for stmt in &function.body {
+                    visitor.visit_stmt(stmt);
+                }
+            }
+            ast::Item::Impl(imp) => {
+                for function in &imp.methods {
+                    for stmt in &function.body {
+                        visitor.visit_stmt(stmt);
+                    }
+                }
+            }
+            ast::Item::Const(item) => visitor.visit_expr(&item.value),
+            ast::Item::Static(item) => visitor.visit_expr(&item.value),
+            ast::Item::Test(test) => {
+                for stmt in &test.body {
+                    visitor.visit_stmt(stmt);
+                }
+            }
+            ast::Item::TypeAlias(_)
+            | ast::Item::NewType(_)
+            | ast::Item::Struct(_)
+            | ast::Item::Enum(_)
+            | ast::Item::Trait(_) => {}
+        }
+    }
+    visitor.diagnostics
+}
+
+fn is_secret_bearing_crypto_expr(expr: &ast::Expr) -> bool {
+    match expr {
+        ast::Expr::Call { callee, .. } => matches!(
+            callee.as_str(),
+            "crypto.hmac_sha256" | "security.sign_value"
+        ),
+        ast::Expr::Group(inner) => is_secret_bearing_crypto_expr(inner),
+        _ => false,
+    }
 }
 
 fn collect_main_contract_conditions(
