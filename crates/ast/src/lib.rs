@@ -537,6 +537,73 @@ impl Type {
         matches!(self, Type::Ptr { .. } | Type::Ref { .. } | Type::Slice(_))
     }
 
+    pub fn rpc_boundary_ownership(&self) -> &'static str {
+        match self {
+            Type::Void => "status",
+            Type::Bool
+            | Type::Char
+            | Type::ISize
+            | Type::USize
+            | Type::Int { .. }
+            | Type::Float { .. } => "value",
+            Type::Ptr { .. } | Type::Ref { .. } | Type::Slice(_) => "borrowed_forbidden",
+            Type::Function { .. } | Type::Future(_) | Type::DynTrait(_) => "opaque_forbidden",
+            Type::Never | Type::SimdVector(_) | Type::SimdMask(_) => "unsupported",
+            _ => "owned",
+        }
+    }
+
+    pub fn is_rpc_payload_supported(&self) -> bool {
+        match self {
+            Type::Never
+            | Type::Ptr { .. }
+            | Type::Ref { .. }
+            | Type::Slice(_)
+            | Type::Function { .. }
+            | Type::Future(_)
+            | Type::DynTrait(_)
+            | Type::SimdVector(_)
+            | Type::SimdMask(_) => false,
+            Type::Array { elem, .. }
+            | Type::Option(elem)
+            | Type::Vec(elem)
+            | Type::Set(elem)
+            | Type::Deque(elem)
+            | Type::Ring(elem) => elem.is_rpc_payload_supported(),
+            Type::Result { ok, err } => {
+                ok.is_rpc_payload_supported() && err.is_rpc_payload_supported()
+            }
+            Type::Map { key, value } => {
+                key.is_rpc_payload_supported() && value.is_rpc_payload_supported()
+            }
+            Type::Tuple(items) => items.iter().all(Type::is_rpc_payload_supported),
+            Type::Named { args, .. } => args.iter().all(Type::is_rpc_payload_supported),
+            Type::Void
+            | Type::Bool
+            | Type::ISize
+            | Type::USize
+            | Type::Int { .. }
+            | Type::BigInt
+            | Type::BigUint
+            | Type::Float { .. }
+            | Type::Decimal128
+            | Type::Char
+            | Type::Str
+            | Type::Bytes
+            | Type::Uuid
+            | Type::Path
+            | Type::PathBuf
+            | Type::Url
+            | Type::SocketAddr
+            | Type::Duration
+            | Type::Instant
+            | Type::Decimal
+            | Type::DateTimeTz
+            | Type::ExitStatus
+            | Type::TypeVar(_) => true,
+        }
+    }
+
     pub fn parse_builtin_simd_alias(name: &str) -> Option<Self> {
         match name {
             "i32x4" => Some(Type::SimdVector(SimdVectorType {

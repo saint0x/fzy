@@ -1180,16 +1180,37 @@ fn build_rpc_safety_json(module: &ast::Module, fir: &fir::FirModule) -> serde_js
                     .is_some_and(|abi| abi.eq_ignore_ascii_case("rpc"))
         })
         .map(|function| {
-            serde_json::json!({
-                "name": function.name,
-                "params": function.params.iter().map(|param| {
+            let params = function
+                .params
+                .iter()
+                .map(|param| {
                     serde_json::json!({
                         "name": param.name,
                         "type": param.ty.to_string(),
+                        "ownership": param.ty.rpc_boundary_ownership(),
+                        "payloadSupported": param.ty.is_rpc_payload_supported(),
                     })
-                }).collect::<Vec<_>>(),
+                })
+                .collect::<Vec<_>>();
+            let request_explicit = params.iter().all(|param| {
+                param["ownership"]
+                    .as_str()
+                    .is_some_and(|ownership| ownership == "value" || ownership == "owned")
+                    && param["payloadSupported"].as_bool() == Some(true)
+            });
+            let response_ownership = function.return_type.rpc_boundary_ownership();
+            let response_payload_supported = function.return_type.is_rpc_payload_supported();
+            serde_json::json!({
+                "name": function.name,
+                "canonicalName": function.link_name.clone().unwrap_or_else(|| function.name.clone()),
+                "methodNameStable": function.link_name.as_deref().is_none_or(|link_name| link_name == function.name),
+                "params": params,
                 "returnType": function.return_type.to_string(),
-                "requestOwnership": "owned_by_handler",
+                "requestOwnershipExplicit": request_explicit,
+                "responseOwnership": response_ownership,
+                "responseOwnershipExplicit": matches!(response_ownership, "value" | "owned" | "status") && response_payload_supported,
+                "payloadTypesSupported": request_explicit && response_payload_supported,
+                "errorNormalization": rpc_error_normalization_kind(&function.return_type),
             })
         })
         .collect::<Vec<_>>();
@@ -1225,7 +1246,28 @@ fn build_rpc_safety_json(module: &ast::Module, fir: &fir::FirModule) -> serde_js
                 "calls": evidence.calls,
                 "cancelObservedCalls": evidence.cancel_observed_calls,
                 "recvObservedCalls": evidence.recv_observed_calls,
-                "handlerCleanupStatus": "requires_explicit_cleanup_contract",
+                "cleanupObservedCalls": evidence.cleanup_observed_calls(),
+                "cleanupPolicy": evidence.cleanup_policy(),
+                "handlerCleanupStatus": evidence.cleanup_policy(),
+                "strictReady": evidence.calls > 0 && evidence.cleanup_observed_calls() == evidence.calls,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    let payload_contracts = rpc_methods
+        .iter()
+        .map(|method| {
+            serde_json::json!({
+                "method": method["name"].as_str().unwrap_or_default(),
+                "requestOwnershipExplicit": method["requestOwnershipExplicit"],
+                "responseOwnershipExplicit": method["responseOwnershipExplicit"],
+                "payloadTypesSupported": method["payloadTypesSupported"],
+                "methodNameStable": method["methodNameStable"],
+                "errorNormalization": method["errorNormalization"],
+                "strictReady": method["requestOwnershipExplicit"].as_bool() == Some(true)
+                    && method["responseOwnershipExplicit"].as_bool() == Some(true)
+                    && method["payloadTypesSupported"].as_bool() == Some(true)
+                    && method["methodNameStable"].as_bool() == Some(true),
             })
         })
         .collect::<Vec<_>>();
@@ -1238,9 +1280,14 @@ fn build_rpc_safety_json(module: &ast::Module, fir: &fir::FirModule) -> serde_js
             "deadlinePerCall": true,
             "handlerCancelCleanup": "required",
             "frameTraceability": true,
+            "requestOwnershipExplicit": true,
+            "responseOwnershipExplicit": true,
+            "payloadTypesSupported": true,
+            "methodNameStable": true,
         },
         "deadline_policies": deadline_policies,
         "cancel_policies": cancel_policies,
+        "payload_contracts": payload_contracts,
         "resource_cleanup": [],
         "rpc_frames": [
             "rpc_send",
@@ -1279,16 +1326,47 @@ impl RpcPolicyEvidence {
         if self.calls == 0 {
             "not_observed"
         } else if self.cancel_observed_calls == self.calls {
-            "explicit"
-        } else if self.cancel_observed_calls > 0 {
-            "partial"
+            "cancel"
         } else if self.recv_observed_calls == self.calls {
-            "recv_only"
+            "recv"
+        } else if self.cleanup_observed_calls() == self.calls {
+            "mixed"
+        } else if self.cancel_observed_calls > 0 {
+            "cancel_partial"
         } else if self.recv_observed_calls > 0 {
             "recv_partial"
         } else {
             "missing"
         }
+    }
+
+    fn cleanup_observed_calls(&self) -> usize {
+        self.cancel_observed_calls.max(self.recv_observed_calls)
+    }
+
+    fn cleanup_policy(&self) -> &'static str {
+        if self.calls == 0 {
+            "not_observed"
+        } else if self.cleanup_observed_calls() == self.calls {
+            "explicit"
+        } else if self.cleanup_observed_calls() > 0 {
+            "partial"
+        } else {
+            "missing"
+        }
+    }
+}
+
+fn rpc_error_normalization_kind(return_type: &ast::Type) -> &'static str {
+    match return_type {
+        ast::Type::Void => "status_only",
+        ast::Type::Result { .. } => "result",
+        ast::Type::Int {
+            signed: true,
+            bits: 32,
+        }
+        | ast::Type::ExitStatus => "status_code",
+        _ => "typed_payload",
     }
 }
 
@@ -10438,7 +10516,7 @@ fn strict_rpc_contract_diagnostics(
     module: &ast::Module,
     fir: &fir::FirModule,
 ) -> Vec<diagnostics::Diagnostic> {
-    let rpc_methods = fir
+    let rpc_functions = fir
         .typed_functions
         .iter()
         .filter(|function| {
@@ -10448,27 +10526,53 @@ fn strict_rpc_contract_diagnostics(
                     .as_deref()
                     .is_some_and(|abi| abi.eq_ignore_ascii_case("rpc"))
         })
-        .map(|function| {
-            serde_json::json!({
-                "name": function.name,
-            })
-        })
         .collect::<Vec<_>>();
-    if rpc_methods.is_empty() {
+    if rpc_functions.is_empty() {
         return Vec::new();
     }
 
+    let rpc_methods = rpc_functions
+        .iter()
+        .map(|function| serde_json::json!({ "name": function.name }))
+        .collect::<Vec<_>>();
     let policy_evidence = collect_rpc_policy_evidence(module, &rpc_methods);
     let mut diagnostics = Vec::new();
-    for method in rpc_methods
-        .iter()
-        .filter_map(|method| method["name"].as_str())
-        .collect::<Vec<_>>()
-    {
+    for function in rpc_functions {
+        let method = function.name.as_str();
         let evidence = policy_evidence
             .get(method)
             .cloned()
             .unwrap_or_else(RpcPolicyEvidence::default);
+        if let Some(param) = function
+            .params
+            .iter()
+            .find(|param| !param.ty.is_rpc_payload_supported())
+        {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "RPC method `{method}` parameter `{}` must use an owned/value payload type at the boundary",
+                    param.name
+                ),
+                Some(
+                    "Replace borrowed, pointer-like, async, or function payloads with `str`, bytes, JSON, or a typed owned request struct/enum."
+                        .to_string(),
+                ),
+            ));
+        }
+        if !function.return_type.is_rpc_payload_supported() {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "RPC method `{method}` return type `{}` must be an owned/value payload at the boundary",
+                    function.return_type
+                ),
+                Some(
+                    "Return an owned response payload, `Result<T, E>`, or an explicit status type instead of borrowed, pointer-like, async, or function values."
+                        .to_string(),
+                ),
+            ));
+        }
         if evidence.calls == 0 {
             continue;
         }
@@ -10480,6 +10584,18 @@ fn strict_rpc_contract_diagnostics(
                 ),
                 Some(
                     "Add `timeout(...)` or `deadline(...)` before the RPC call or immediately after it so strict mode can prove the request is bounded."
+                        .to_string(),
+                ),
+            ));
+        }
+        if evidence.cleanup_observed_calls() < evidence.calls {
+            diagnostics.push(diagnostics::Diagnostic::new(
+                diagnostics::Severity::Error,
+                format!(
+                    "RPC method `{method}` is called without an explicit recv()/cancel() cleanup policy on every call path"
+                ),
+                Some(
+                    "Handle every RPC call with `recv()` or `cancel()` so strict mode can prove the request is cleaned up on success, deadline, and cancellation paths."
                         .to_string(),
                 ),
             ));

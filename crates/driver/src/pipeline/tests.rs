@@ -645,11 +645,16 @@ fn compile_file_emits_rpc_policy_evidence() {
     let rpc_report =
         std::fs::read_to_string(root.join(".fz/rpc-safety.json")).expect("rpc report should exist");
     assert!(rpc_report.contains("\"deadlinePerCall\": true"));
+    assert!(rpc_report.contains("\"requestOwnershipExplicit\": true"));
+    assert!(rpc_report.contains("\"responseOwnershipExplicit\": true"));
+    assert!(rpc_report.contains("\"payloadTypesSupported\": true"));
     assert!(rpc_report.contains("\"method\": \"Ping\""));
     assert!(rpc_report.contains("\"policy\": \"explicit\""));
+    assert!(rpc_report.contains("\"cleanupPolicy\": \"missing\""));
     assert!(rpc_report.contains("\"method\": \"Pong\""));
     assert!(rpc_report.contains("\"policy\": \"missing\""));
-    assert!(rpc_report.contains("\"handlerCleanupStatus\": \"requires_explicit_cleanup_contract\""));
+    assert!(rpc_report.contains("\"handlerCleanupStatus\": \"explicit\""));
+    assert!(rpc_report.contains("\"errorNormalization\": \"status_code\""));
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1040,6 +1045,39 @@ fn strict_compile_rejects_rpc_calls_without_deadlines() {
 }
 
 #[test]
+fn strict_compile_rejects_rpc_calls_without_cleanup_policy() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-rpc-strict-cleanup-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"rpc_strict_cleanup\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"rpc_strict_cleanup\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "rpc Ping(req: i32) -> i32;\nfn main() -> i32 {\n    timeout(25)\n    Ping(1)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "error");
+    assert!(artifact
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| diagnostic.message.contains(
+            "RPC method `Ping` is called without an explicit recv()/cancel() cleanup policy"
+        )));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn strict_rpc_deadline_diagnostic_is_snapshot_stable() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-rpc-strict-snapshot-{}",
@@ -1326,6 +1364,88 @@ fn verify_conditional_move_memory_diagnostic_is_snapshot_stable() {
     assert_eq!(diagnostic.code.as_deref(), Some("E-VER-05B8968C"));
 
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn strict_rpc_cleanup_diagnostic_is_snapshot_stable() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-rpc-strict-cleanup-snapshot-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"rpc_strict_cleanup_snapshot\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"rpc_strict_cleanup_snapshot\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "rpc Ping(req: i32) -> i32;\nfn main() -> i32 {\n    timeout(25)\n    Ping(1)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                == "RPC method `Ping` is called without an explicit recv()/cancel() cleanup policy on every call path"
+        })
+        .expect("strict rpc cleanup diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "Handle every RPC call with `recv()` or `cancel()` so strict mode can prove the request is cleaned up on success, deadline, and cancellation paths."
+        )
+    );
+    assert_eq!(diagnostic.code.as_deref(), Some("E-DRV-56917592"));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn verify_rpc_borrowed_payload_diagnostic_is_snapshot_stable() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-rpc-borrowed-payload-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"rpc_borrowed_payload\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"rpc_borrowed_payload\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "rpc Ping(req: &str) -> i32;\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Verify).expect("verify should run");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message
+                == "RPC method `Ping` parameter `req` uses unsupported payload type `&str`"
+        })
+        .expect("borrowed rpc payload diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "RPC payloads must cross the boundary as owned/value data; replace borrowed, pointer-like, async, or function payloads with `str`, bytes, JSON, or a typed owned struct/enum"
+        )
+    );
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

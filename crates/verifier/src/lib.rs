@@ -228,6 +228,36 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 .with_catalog_key("verifier.extern_c_import_async_unsupported"),
             );
         }
+        if let Some((param_name, ty)) = rpc_param_payload_violation(function) {
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "RPC method `{}` parameter `{}` uses unsupported payload type `{}`",
+                        function.name, param_name, ty
+                    ),
+                    Some(
+                        "RPC payloads must cross the boundary as owned/value data; replace borrowed, pointer-like, async, or function payloads with `str`, bytes, JSON, or a typed owned struct/enum".to_string(),
+                    ),
+                )
+                .with_catalog_key("verifier.rpc_param_payload_unsupported"),
+            );
+        }
+        if let Some(ty) = rpc_return_payload_violation(function) {
+            report.diagnostics.push(
+                Diagnostic::new(
+                    Severity::Error,
+                    format!(
+                        "RPC method `{}` returns unsupported payload type `{}`",
+                        function.name, ty
+                    ),
+                    Some(
+                        "RPC responses must return owned/value payloads; replace borrowed, pointer-like, async, or function returns with an owned response type".to_string(),
+                    ),
+                )
+                .with_catalog_key("verifier.rpc_return_payload_unsupported"),
+            );
+        }
     }
 
     if !module.unsafe_contract_sites.is_empty() {
@@ -894,6 +924,28 @@ fn is_extern_c_import(function: &TypedFunction) -> bool {
     function.is_extern && function.abi.as_deref() == Some("c") && function.body.is_empty()
 }
 
+fn is_rpc_import(function: &TypedFunction) -> bool {
+    function.is_extern && function.abi.as_deref() == Some("rpc") && function.body.is_empty()
+}
+
+fn rpc_param_payload_violation(function: &TypedFunction) -> Option<(&str, &ast::Type)> {
+    if !is_rpc_import(function) {
+        return None;
+    }
+    function
+        .params
+        .iter()
+        .find(|param| !param.ty.is_rpc_payload_supported())
+        .map(|param| (param.name.as_str(), &param.ty))
+}
+
+fn rpc_return_payload_violation(function: &TypedFunction) -> Option<&ast::Type> {
+    if !is_rpc_import(function) {
+        return None;
+    }
+    (!function.return_type.is_rpc_payload_supported()).then_some(&function.return_type)
+}
+
 fn ffi_stable_type(ty: &ast::Type, repr_c_names: &BTreeSet<String>) -> bool {
     match ty {
         ast::Type::Never
@@ -1158,6 +1210,24 @@ mod tests {
         }
     }
 
+    fn rpc_function(name: &str, params: Vec<ast::Param>, return_type: ast::Type) -> TypedFunction {
+        TypedFunction {
+            name: name.to_string(),
+            link_name: Some(name.to_string()),
+            generics: Vec::new(),
+            params,
+            local_types: std::collections::BTreeMap::new(),
+            return_type,
+            body: Vec::new(),
+            is_unsafe: false,
+            is_async: false,
+            is_extern: true,
+            abi: Some("rpc".to_string()),
+            ffi_panic: None,
+            required_capabilities: Vec::new(),
+        }
+    }
+
     #[test]
     fn warns_when_capabilities_missing() {
         let module = fir::FirModule {
@@ -1208,6 +1278,93 @@ mod tests {
         assert!(report.diagnostics.iter().any(|d| d
             .message
             .contains("module has declarations but no explicit capabilities")));
+    }
+
+    #[test]
+    fn rpc_boundary_rejects_borrowed_param_payloads() {
+        let mut module = base_module();
+        module.typed_functions = vec![rpc_function(
+            "Ping",
+            vec![ast::Param {
+                name: "req".to_string(),
+                ty: ast::Type::Ref {
+                    mutable: false,
+                    lifetime: None,
+                    to: Box::new(ast::Type::Str),
+                },
+            }],
+            ast::Type::Int {
+                signed: true,
+                bits: 32,
+            },
+        )];
+
+        let report = verify(&module);
+        assert!(report.diagnostics.iter().any(|d| {
+            d.message
+                .contains("RPC method `Ping` parameter `req` uses unsupported payload type `&str`")
+        }));
+    }
+
+    #[test]
+    fn rpc_boundary_rejects_borrowed_return_payloads() {
+        let mut module = base_module();
+        module.typed_functions = vec![rpc_function(
+            "Ping",
+            vec![ast::Param {
+                name: "req".to_string(),
+                ty: ast::Type::Int {
+                    signed: true,
+                    bits: 32,
+                },
+            }],
+            ast::Type::Ref {
+                mutable: false,
+                lifetime: None,
+                to: Box::new(ast::Type::Str),
+            },
+        )];
+
+        let report = verify(&module);
+        assert!(report.diagnostics.iter().any(|d| {
+            d.message
+                .contains("RPC method `Ping` returns unsupported payload type `&str`")
+        }));
+    }
+
+    #[test]
+    fn rpc_boundary_allows_owned_value_payloads() {
+        let mut module = base_module();
+        module.typed_functions = vec![rpc_function(
+            "Ping",
+            vec![
+                ast::Param {
+                    name: "req".to_string(),
+                    ty: ast::Type::Named {
+                        name: "PingRequest".to_string(),
+                        args: Vec::new(),
+                    },
+                },
+                ast::Param {
+                    name: "retry".to_string(),
+                    ty: ast::Type::Option(Box::new(ast::Type::Int {
+                        signed: true,
+                        bits: 32,
+                    })),
+                },
+            ],
+            ast::Type::Named {
+                name: "PingReply".to_string(),
+                args: Vec::new(),
+            },
+        )];
+
+        let report = verify(&module);
+        assert!(!report.diagnostics.iter().any(|d| {
+            d.message.contains("RPC method `Ping` parameter")
+                || d.message
+                    .contains("RPC method `Ping` returns unsupported payload type")
+        }));
     }
 
     #[test]

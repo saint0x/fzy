@@ -20546,4 +20546,44 @@ mod tests {
         let typed = lower(&module);
         assert_eq!(typed.type_errors, 0);
     }
+
+    #[test]
+    fn rpc_declarations_lower_as_extern_rpc_functions() {
+        let source = r#"
+            rpc Ping(req: str, count: i32) -> str;
+            rpc Pong(str) -> i32;
+        "#;
+        let module = parser::parse(source, "rpc").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        let mut rpc_functions = typed
+            .typed_functions
+            .iter()
+            .filter(|function| {
+                function.is_extern && function.abi.as_deref().is_some_and(|abi| abi == "rpc")
+            })
+            .collect::<Vec<_>>();
+        rpc_functions.sort_by(|left, right| left.name.cmp(&right.name));
+        assert_eq!(rpc_functions.len(), 2);
+        assert_eq!(rpc_functions[0].name, "Ping");
+        assert_eq!(rpc_functions[0].params[0].name, "req");
+        assert_eq!(rpc_functions[0].params[1].name, "count");
+        assert_eq!(rpc_functions[0].return_type.to_string(), "str");
+        assert_eq!(rpc_functions[1].name, "Pong");
+        assert_eq!(rpc_functions[1].params[0].name, "arg0");
+        assert_eq!(rpc_functions[1].return_type.to_string(), "i32");
+    }
+
+    #[test]
+    fn rpc_calls_typecheck_against_declared_payload_shapes() {
+        let source = r#"
+            rpc Ping(req: str, count: i32) -> i32;
+            fn main() -> i32 {
+                return Ping("ok", 2);
+            }
+        "#;
+        let module = parser::parse(source, "rpc").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+    }
 }

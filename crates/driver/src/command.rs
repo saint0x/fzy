@@ -8,18 +8,18 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use formatter::{format_source, is_fzy_source_path};
-use runtime::{DeterministicExecutor, Scheduler, TaskEvent, plan_async_checkpoints};
+use runtime::{plan_async_checkpoints, DeterministicExecutor, Scheduler, TaskEvent};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::cli_output;
 use crate::lsp;
 use crate::pipeline::{
-    BuildArtifact, BuildProfile, LibraryArtifact, Output, compile_file_with_backend,
-    compile_library_with_backend, emit_ir, lower_fir_cached, parse_program, refresh_lockfile,
-    verify_file,
+    compile_file_with_backend, compile_library_with_backend, emit_ir, lower_fir_cached,
+    parse_program, refresh_lockfile, verify_file, BuildArtifact, BuildProfile, LibraryArtifact,
+    Output,
 };
 
 mod interop;
@@ -27,12 +27,12 @@ mod source;
 mod trace_native;
 
 use self::interop::{
-    HeaderArtifact, generate_c_headers, generate_rpc_artifacts, render_headers,
-    render_rpc_artifacts,
+    generate_c_headers, generate_rpc_artifacts, render_headers, render_rpc_artifacts,
+    HeaderArtifact,
 };
 use self::source::{
-    ResolvedModuleSource, discover_nested_project_roots, discover_project_roots,
-    load_resolved_module_set, resolve_source,
+    discover_nested_project_roots, discover_project_roots, load_resolved_module_set,
+    resolve_source, ResolvedModuleSource,
 };
 use self::trace_native::{
     convert_fozzy_trace_to_native, ensure_goal_trace_from_scenario, native_explore,
@@ -40,7 +40,7 @@ use self::trace_native::{
 };
 
 #[cfg(test)]
-use self::trace_native::{FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION, build_live_http_probe_steps};
+use self::trace_native::{build_live_http_probe_steps, FOZZY_TRACE_FORMAT, FOZZY_TRACE_VERSION};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -11505,20 +11505,12 @@ mod tests {
         .expect("headers command should succeed");
         let header_text = std::fs::read_to_string(&header).expect("header should be created");
         assert!(header_text.contains("typedef uint64_t fz_async_handle_t;"));
-        assert!(
-            header_text.contains(
-                "int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out);"
-            )
-        );
-        assert!(
-            header_text
-                .contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out);")
-        );
-        assert!(
-            header_text.contains(
-                "int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out);"
-            )
-        );
+        assert!(header_text
+            .contains("int32_t flush_async_start(int32_t code, fz_async_handle_t* handle_out);"));
+        assert!(header_text
+            .contains("int32_t flush_async_poll(fz_async_handle_t handle, int32_t* done_out);"));
+        assert!(header_text
+            .contains("int32_t flush_async_await(fz_async_handle_t handle, int32_t* result_out);"));
         assert!(header_text.contains("int32_t flush_async_drop(fz_async_handle_t handle);"));
         assert!(!header_text.contains("int32_t flush(int32_t code);"));
 
@@ -11678,9 +11670,7 @@ mod tests {
             Format::Text,
         )
         .expect("check command should return diagnostics");
-        assert!(
-            output.contains("must declare ownership suffix and paired length/context contract")
-        );
+        assert!(output.contains("must declare ownership suffix and paired length/context contract"));
 
         let _ = std::fs::remove_file(source);
     }
@@ -12027,11 +12017,9 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for signature changes");
-        assert!(
-            error
-                .to_string()
-                .contains("signature changed for export `add`")
-        );
+        assert!(error
+            .to_string()
+            .contains("signature changed for export `add`"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -12085,11 +12073,9 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for weakened contracts");
-        assert!(
-            error
-                .to_string()
-                .contains("contract weakened/changed for export `consume`")
-        );
+        assert!(error
+            .to_string()
+            .contains("contract weakened/changed for export `consume`"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -12150,11 +12136,9 @@ mod tests {
             Format::Text,
         )
         .expect_err("abi-check should fail for async mode changes");
-        assert!(
-            error
-                .to_string()
-                .contains("signature changed for export `flush`")
-        );
+        assert!(error
+            .to_string()
+            .contains("signature changed for export `flush`"));
 
         let _ = std::fs::remove_file(baseline);
         let _ = std::fs::remove_file(current);
@@ -12408,30 +12392,22 @@ mod tests {
         let payload: serde_json::Value =
             serde_json::from_str(&output).expect("build output should be valid json");
         assert_eq!(payload["buildMode"].as_str(), Some("lib"));
-        assert!(
-            payload
-                .get("staticLib")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
-        assert!(
-            payload
-                .get("sharedLib")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
-        assert!(
-            payload
-                .get("header")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
-        assert!(
-            payload
-                .get("abiManifest")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
+        assert!(payload
+            .get("staticLib")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(payload
+            .get("sharedLib")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(payload
+            .get("header")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(payload
+            .get("abiManifest")
+            .and_then(|value| value.as_str())
+            .is_some());
         let artifact_manifest = std::path::PathBuf::from(
             payload["artifactManifest"]
                 .as_str()
@@ -12501,30 +12477,22 @@ mod tests {
             interop.get("buildMode").and_then(|value| value.as_str()),
             Some("lib")
         );
-        assert!(
-            interop
-                .get("staticLib")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
-        assert!(
-            interop
-                .get("sharedLib")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
-        assert!(
-            interop
-                .get("header")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
-        assert!(
-            interop
-                .get("abiManifest")
-                .and_then(|value| value.as_str())
-                .is_some()
-        );
+        assert!(interop
+            .get("staticLib")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(interop
+            .get("sharedLib")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(interop
+            .get("header")
+            .and_then(|value| value.as_str())
+            .is_some());
+        assert!(interop
+            .get("abiManifest")
+            .and_then(|value| value.as_str())
+            .is_some());
         assert_eq!(
             interop
                 .get("hostLifecycle")
@@ -14244,11 +14212,9 @@ fn main() -> i32 {
             .output()
             .expect("direct binary should run");
         assert_eq!(direct.status.code(), Some(0));
-        assert!(
-            std::fs::read_to_string(&report_path)
-                .expect("report should exist after direct run")
-                .contains("\"status\":\"0\"")
-        );
+        assert!(std::fs::read_to_string(&report_path)
+            .expect("report should exist after direct run")
+            .contains("\"status\":\"0\""));
 
         let _ = std::fs::remove_file(&report_path);
         let wrapped = run(
@@ -14279,11 +14245,9 @@ fn main() -> i32 {
             wrapped.contains("\"exitCode\":0"),
             "unexpected wrapped output: {wrapped}"
         );
-        assert!(
-            std::fs::read_to_string(&report_path)
-                .expect("report should exist after wrapped run")
-                .contains("\"status\":\"0\"")
-        );
+        assert!(std::fs::read_to_string(&report_path)
+            .expect("report should exist after wrapped run")
+            .contains("\"status\":\"0\""));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -16177,6 +16141,76 @@ fn main() -> i32 {
             .expect("scenarios index should be readable");
         assert!(scenarios_index.contains("\"schemaVersion\": \"fozzylang.scenarios.v0\""));
         assert!(scenarios_index.contains(".fozzy.json"));
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(trace);
+        let _ = std::fs::remove_file(base.join(format!("{stem}.native.trace.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.timeline.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.report.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.manifest.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.explore.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.shrink.json")));
+        let _ = std::fs::remove_file(base.join(format!("{stem}.scenarios.json")));
+        let _ = std::fs::remove_dir_all(base.join(format!("{stem}.scenarios")));
+    }
+
+    #[test]
+    fn non_scenario_test_record_preserves_rpc_frame_order() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source = std::env::temp_dir().join(format!("fozzylang-test-rpc-order-{suffix}.fzy"));
+        let trace =
+            std::env::temp_dir().join(format!("fozzylang-test-rpc-order-{suffix}.trace.json"));
+        std::fs::write(
+            &source,
+            "use core.thread;\nrpc Ping(req: i32) -> i32;\nrpc Pong(req: i32) -> i32;\nfn main() -> i32 {\n    Ping(0)\n    Pong(0)\n    timeout(10)\n    cancel()\n    return 0\n}\n",
+        )
+        .expect("source should be written");
+
+        run(
+            Command::Test {
+                path: source.clone(),
+                deterministic: true,
+                strict_verify: false,
+                safe_profile: false,
+                seed: Some(12),
+                record: Some(trace.clone()),
+                host_backends: false,
+                backend: None,
+                scheduler: Some("fifo".to_string()),
+                rich_artifacts: true,
+                filter: None,
+            },
+            Format::Json,
+        )
+        .expect("test command should succeed");
+
+        let stem = trace
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .expect("trace should have a stem")
+            .to_string();
+        let base = trace
+            .parent()
+            .expect("trace should have parent")
+            .to_path_buf();
+        let native_trace_text =
+            std::fs::read_to_string(base.join(format!("{stem}.native.trace.json")))
+                .expect("native trace should be readable");
+        let native_trace: serde_json::Value =
+            serde_json::from_str(&native_trace_text).expect("native trace should parse");
+        let events = native_trace["rpcFrames"]
+            .as_array()
+            .expect("rpcFrames should be array")
+            .iter()
+            .filter_map(|frame| frame["event"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            events,
+            vec!["rpc_send", "rpc_send", "rpc_deadline", "rpc_cancel"]
+        );
 
         let _ = std::fs::remove_file(source);
         let _ = std::fs::remove_file(trace);

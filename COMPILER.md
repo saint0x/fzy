@@ -7,7 +7,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `14. Compiler-phase lock-in suite`
 - `15. Memory-safety adversarial coverage`
 - `16. Native import contract tables`
-- `19. RPC hardening`
 - `20. Backend parity law`
 - `21. Diagnostic stability`
 - `22. Canary-app gates`
@@ -52,22 +51,6 @@ Required tests:
 ## Priority 7
 
 ## Priority 8
-
-### 19. RPC hardening
-
-Checklist:
-
-- Harden RPC declaration parsing, RPC ABI lowering, request and response ownership, deadline policy, cancel policy, frame trace emission, error normalization, method-name stability, and payload type checking.
-- In strict and production mode, require every RPC method to have a deadline policy, every handler to have a cancel-cleanup policy, every frame to be traceable, and request-body ownership to be explicit.
-- Generate machine-readable RPC safety artifacts from enforced compiler facts rather than placeholders.
-- Add parity and replay coverage for RPC behavior across deterministic and host-backed flows.
-
-Required tests:
-
-- Parser, HIR, and verifier regressions for valid and invalid RPC declarations.
-- Strict `fz verify` fixtures for deadline, cancel, and ownership failures.
-- Deterministic RPC trace scenarios with ordered frame assertions.
-- Replay and CI validation for representative RPC request, cancel, and deadline paths.
 
 ## Priority 9
 

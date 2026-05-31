@@ -4260,6 +4260,52 @@ mod tests {
     }
 
     #[test]
+    fn parses_rpc_declarations_with_named_and_positional_params() {
+        let source = r#"
+            rpc Ping(req: str, count: i32) -> str;
+            rpc Pong(str, i32) -> i32;
+        "#;
+        let module = parse(source, "rpc").expect("parse should succeed");
+        let mut rpc_functions = module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                ast::Item::Function(function)
+                    if function.is_extern && function.abi.as_deref() == Some("rpc") =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        rpc_functions.sort_by(|left, right| left.name.cmp(&right.name));
+        assert_eq!(rpc_functions.len(), 2);
+        assert_eq!(rpc_functions[0].name, "Ping");
+        assert_eq!(rpc_functions[0].params[0].name, "req");
+        assert_eq!(rpc_functions[0].params[1].name, "count");
+        assert_eq!(rpc_functions[0].return_type.to_string(), "str");
+        assert_eq!(rpc_functions[1].name, "Pong");
+        assert_eq!(rpc_functions[1].params[0].name, "arg0");
+        assert_eq!(rpc_functions[1].params[1].name, "arg1");
+        assert_eq!(rpc_functions[1].return_type.to_string(), "i32");
+    }
+
+    #[test]
+    fn rpc_declaration_requires_method_name_and_open_paren() {
+        let missing_name =
+            parse("rpc (req: i32) -> i32;", "rpc").expect_err("missing rpc name should fail");
+        assert!(missing_name.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("expected rpc method name")));
+
+        let missing_paren =
+            parse("rpc Ping req: i32) -> i32;", "rpc").expect_err("missing rpc lparen should fail");
+        assert!(missing_paren.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("expected `(` after rpc method name")));
+    }
+
+    #[test]
     fn escaped_json_string_round_trips_and_remains_lexically_inert() {
         let source = r#"
             fn main() -> i32 {
