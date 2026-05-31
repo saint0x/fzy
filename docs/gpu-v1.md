@@ -139,6 +139,15 @@ The canonical production-shaped example is:
 - [examples/gpu_cpu_aggregate](/Users/deepsaint/Desktop/fozzylang/examples/gpu_cpu_aggregate/README.md)
 - [examples/gpu_ascii_ripple](/Users/deepsaint/Desktop/fozzylang/examples/gpu_ascii_ripple/README.md)
 
+`gpu_ascii_ripple` is the terminal-first showcase example:
+
+- it runs a custom Fzy-authored `metal` kernel
+- downloads each frame back to the host
+- aggregates with CPU SIMD reductions
+- animates in place on interactive terminals
+- falls back to deterministic frame dumps for non-interactive runs, traces, and CI logs
+- `FZ_GPU_ASCII_RENDER=animate` forces animation for `fz run` when the outer runner exposes a non-interactive stream
+
 Recommended Apple/Metal workflow:
 
 ```bash

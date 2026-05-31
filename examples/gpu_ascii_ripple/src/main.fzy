@@ -1,5 +1,7 @@
+use core.env;
 use core.gpu;
 use core.simd;
+use core.time;
 use core.thread;
 
 mod api;
@@ -43,6 +45,46 @@ fn glyph(value: i32) -> str {
     return "@"
 }
 
+fn renderer_mode() -> i32 {
+    let forced = env.get("FZ_GPU_ASCII_RENDER")
+    if forced == "frames" {
+        return 0
+    }
+    if forced == "animate" {
+        return 1
+    }
+    if term.stdout_is_tty() != 0 {
+        return 1
+    }
+    let term_name = env.get("TERM")
+    if term_name == "" {
+        return 0
+    }
+    if term_name == "dumb" {
+        return 0
+    }
+    if env.get("CI") != "" {
+        return 0
+    }
+    return 1
+}
+
+fn ansi_home() -> str {
+    return "\x1b[H"
+}
+
+fn ansi_clear_screen() -> str {
+    return "\x1b[2J"
+}
+
+fn ansi_hide_cursor() -> str {
+    return "\x1b[?25l"
+}
+
+fn ansi_show_cursor() -> str {
+    return "\x1b[?25h"
+}
+
 fn render_frame(output: Vec<i32>) -> str {
     let mut text = ""
     let mut idx = 0
@@ -55,6 +97,32 @@ fn render_frame(output: Vec<i32>) -> str {
         }
     }
     return text
+}
+
+fn render_stats_line(frame: i32, stats: FrameStats) -> str {
+    let mut line = str.concat("frame ", str.from_i32(frame))
+    line = str.concat(line, " ")
+    line = str.concat(line, str.concat("sum=", str.from_i32(stats.sum)))
+    line = str.concat(line, " ")
+    line = str.concat(line, str.concat("min=", str.from_i32(stats.min)))
+    line = str.concat(line, " ")
+    line = str.concat(line, str.concat("max=", str.from_i32(stats.max)))
+    line = str.concat(line, " ")
+    line = str.concat(line, str.concat("hot=", str.from_i32(stats.hot)))
+    return line
+}
+
+fn render_live_scene(dev_name: str, frame: i32, stats: FrameStats, output: Vec<i32>) -> str {
+    let mut scene = ""
+    scene = str.concat(scene, str.concat("gpu_ascii_ripple device=", dev_name))
+    scene = str.concat(scene, "\n")
+    scene = str.concat(scene, "mode=live_terminal_animation kernel=ripple_ascii renderer=cpu_ascii_simd_aggregate\n")
+    scene = str.concat(scene, render_stats_line(frame, stats))
+    scene = str.concat(scene, "\n\n")
+    scene = str.concat(scene, render_frame(output))
+    scene = str.concat(scene, "\n")
+    scene = str.concat(scene, "override=FZ_GPU_ASCII_RENDER animate|frames\n")
+    return scene
 }
 
 fn aggregate_frame(output: Vec<i32>) -> FrameStats {
@@ -108,10 +176,28 @@ fn validate_frame(stats: FrameStats) -> i32 {
     return 0
 }
 
-host fn render_animation() -> i32 {
+host fn begin_renderer(animated: i32) -> i32 {
+    if animated == 0 {
+        return 0
+    }
+    discard term.write(str.concat(ansi_clear_screen(), ansi_hide_cursor()))
+    return 0
+}
+
+host fn end_renderer(animated: i32) -> i32 {
+    if animated == 0 {
+        return 0
+    }
+    discard term.write(ansi_show_cursor())
+    return 0
+}
+
+host fn render_animation(dev_name: str) -> i32 {
     let dev = gpu.default_device()
     let frame_buf: GpuBuffer<i32> = gpu.alloc_i32(dev, model.cell_count())
     defer gpu.free(frame_buf)
+    let animated = renderer_mode()
+    discard begin_renderer(animated)
     let mut frame = 0
     while frame < model.frame_count() {
         let event = gpu.launch4(
@@ -128,19 +214,28 @@ host fn render_animation() -> i32 {
         let stats = aggregate_frame(output)
         let stats_rc = validate_frame(stats)
         if stats_rc != 0 {
+            discard end_renderer(animated)
             discard term.write(str.concat(str.concat("gpu_ascii_ripple status=fail code=", str.from_i32(stats_rc)), "\n"))
             return stats_rc
         }
-        discard term.write(str.concat(str.concat("frame ", str.from_i32(frame)), " "))
-        discard term.write(str.concat(str.concat("sum=", str.from_i32(stats.sum)), " "))
-        discard term.write(str.concat(str.concat("min=", str.from_i32(stats.min)), " "))
-        discard term.write(str.concat(str.concat("max=", str.from_i32(stats.max)), " "))
-        discard term.write(str.concat(str.concat("hot=", str.from_i32(stats.hot)), "\n"))
-        discard term.write(render_frame(output))
-        discard term.write("\n")
+        if animated != 0 {
+            discard term.write(str.concat(ansi_home(), render_live_scene(dev_name, frame, stats, output)))
+            if frame + 1 < model.frame_count() {
+                discard time.sleep_ms(90)
+            }
+        } else {
+            discard term.write(str.concat(render_stats_line(frame, stats), "\n"))
+            discard term.write(render_frame(output))
+            discard term.write("\n")
+        }
         frame = frame + 1
     }
-    discard term.write("gpu_ascii_ripple status=ok kernel=ripple_ascii renderer=cpu_ascii_simd_aggregate\n")
+    discard end_renderer(animated)
+    if animated != 0 {
+        discard term.write("gpu_ascii_ripple status=ok kernel=ripple_ascii renderer=cpu_ascii_simd_aggregate mode=animate\n")
+        return 0
+    }
+    discard term.write("gpu_ascii_ripple status=ok kernel=ripple_ascii renderer=cpu_ascii_simd_aggregate mode=frames\n")
     return 0
 }
 
@@ -152,6 +247,5 @@ host fn main() -> i32 {
     }
     discard cli.touch()
     let dev_name = services.describe_default_device()
-    discard term.write(str.concat(str.concat("gpu_ascii_ripple device=", dev_name), "\n"))
-    return render_animation()
+    return render_animation(dev_name)
 }

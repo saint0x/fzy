@@ -19,7 +19,7 @@ House style across the suite:
 - `simd_kernels`: fixed-array SIMD block processing for signed mixes, tail-safe merges, channel swizzles, and RGBA-style unsigned clamps.
 - `gpu_metal_image`: production-shaped GPU compute app with a live Metal brightness kernel, deterministic trace capture, and shared kernel-package artifacts.
 - `gpu_cpu_aggregate`: live Metal integer kernel plus CPU SIMD aggregation/reporting over the downloaded result, returning a real aggregate struct summary.
-- `gpu_ascii_ripple`: custom Fzy-authored Metal ripple kernel with CPU SIMD aggregation and ASCII frame rendering.
+- `gpu_ascii_ripple`: custom Fzy-authored Metal ripple kernel with CPU SIMD aggregation and a TTY-aware ASCII renderer that animates live in terminal and falls back to deterministic frame dumps for logs/CI.
 - `agent_runtime`: distilled from `/Users/deepsaint/Desktop/fzyagent` and focused on signed sessions, tool catalogs, audit trails, and parallel task planning.
 - `context_runtime`: distilled from `/Users/deepsaint/Desktop/superctx` and focused on scoped memory scoring, protocol assembly, context framing, and deterministic compaction.
 
