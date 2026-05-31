@@ -2055,6 +2055,38 @@ struct BorrowBinding {
     mutable: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum GpuSliceAccessMode {
+    Observe,
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+}
+
+impl GpuSliceAccessMode {
+    fn with_read(self) -> Self {
+        match self {
+            Self::Observe => Self::ReadOnly,
+            Self::ReadOnly => Self::ReadOnly,
+            Self::WriteOnly => Self::ReadWrite,
+            Self::ReadWrite => Self::ReadWrite,
+        }
+    }
+
+    fn with_write(self) -> Self {
+        match self {
+            Self::Observe => Self::WriteOnly,
+            Self::ReadOnly => Self::ReadWrite,
+            Self::WriteOnly => Self::WriteOnly,
+            Self::ReadWrite => Self::ReadWrite,
+        }
+    }
+
+    fn is_read_only_like(self) -> bool {
+        matches!(self, Self::Observe | Self::ReadOnly)
+    }
+}
+
 fn analyze_live_borrow_consumption(functions: &[TypedFunction]) -> Vec<String> {
     let mut violations = Vec::new();
     let signatures = functions
@@ -2083,7 +2115,9 @@ fn analyze_gpu_kernel_contracts(functions: &[TypedFunction]) -> Vec<String> {
         .iter()
         .map(|function| (function.name.clone(), function.clone()))
         .collect::<BTreeMap<_, _>>();
+    let slice_access = build_gpu_slice_access_summaries(functions, &signatures);
     let barrier_summary = build_gpu_barrier_summary(functions);
+    violations.extend(validate_gpu_kernel_launch_abi(functions));
     for function in functions {
         let mut bindings = BTreeMap::<String, BorrowBinding>::new();
         for param in &function.params {
@@ -2103,6 +2137,7 @@ fn analyze_gpu_kernel_contracts(functions: &[TypedFunction]) -> Vec<String> {
             &function.body,
             &mut bindings,
             &signatures,
+            &slice_access,
             &barrier_summary,
             0,
             &mut violations,
@@ -2116,6 +2151,7 @@ fn analyze_gpu_kernel_contract_block(
     body: &[Stmt],
     bindings: &mut BTreeMap<String, BorrowBinding>,
     signatures: &BTreeMap<String, TypedFunction>,
+    slice_access: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
     barrier_summary: &BTreeMap<String, bool>,
     divergent_depth: usize,
     violations: &mut Vec<String>,
@@ -2130,6 +2166,7 @@ fn analyze_gpu_kernel_contract_block(
                     value,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2158,6 +2195,7 @@ fn analyze_gpu_kernel_contract_block(
                     value,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2188,6 +2226,7 @@ fn analyze_gpu_kernel_contract_block(
                     value,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2203,6 +2242,7 @@ fn analyze_gpu_kernel_contract_block(
                     condition,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2213,6 +2253,7 @@ fn analyze_gpu_kernel_contract_block(
                     then_body,
                     &mut then_bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth + 1,
                     violations,
@@ -2223,6 +2264,7 @@ fn analyze_gpu_kernel_contract_block(
                     else_body,
                     &mut else_bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth + 1,
                     violations,
@@ -2234,6 +2276,7 @@ fn analyze_gpu_kernel_contract_block(
                     condition,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2244,6 +2287,7 @@ fn analyze_gpu_kernel_contract_block(
                     body,
                     &mut loop_bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth + 1,
                     violations,
@@ -2256,6 +2300,7 @@ fn analyze_gpu_kernel_contract_block(
                     body,
                     &mut loop_bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth + 1,
                     violations,
@@ -2267,6 +2312,7 @@ fn analyze_gpu_kernel_contract_block(
                     iterable,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2277,6 +2323,7 @@ fn analyze_gpu_kernel_contract_block(
                     body,
                     &mut loop_bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth + 1,
                     violations,
@@ -2294,6 +2341,7 @@ fn analyze_gpu_kernel_contract_block(
                         std::slice::from_ref(init.as_ref()),
                         bindings,
                         signatures,
+                        slice_access,
                         barrier_summary,
                         divergent_depth,
                         violations,
@@ -2305,6 +2353,7 @@ fn analyze_gpu_kernel_contract_block(
                         condition,
                         bindings,
                         signatures,
+                        slice_access,
                         barrier_summary,
                         divergent_depth,
                         violations,
@@ -2316,6 +2365,7 @@ fn analyze_gpu_kernel_contract_block(
                     body,
                     &mut loop_bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth + 1,
                     violations,
@@ -2326,6 +2376,7 @@ fn analyze_gpu_kernel_contract_block(
                         std::slice::from_ref(step.as_ref()),
                         bindings,
                         signatures,
+                        slice_access,
                         barrier_summary,
                         divergent_depth + 1,
                         violations,
@@ -2338,6 +2389,7 @@ fn analyze_gpu_kernel_contract_block(
                     scrutinee,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2350,6 +2402,7 @@ fn analyze_gpu_kernel_contract_block(
                             guard,
                             &mut arm_bindings,
                             signatures,
+                            slice_access,
                             barrier_summary,
                             divergent_depth + 1,
                             violations,
@@ -2360,6 +2413,7 @@ fn analyze_gpu_kernel_contract_block(
                         &arm.value,
                         &mut arm_bindings,
                         signatures,
+                        slice_access,
                         barrier_summary,
                         divergent_depth + 1,
                         violations,
@@ -2371,11 +2425,54 @@ fn analyze_gpu_kernel_contract_block(
     }
 }
 
+fn validate_gpu_kernel_launch_abi(functions: &[TypedFunction]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for function in functions {
+        if function.execution_space != ast::ExecutionSpace::Kernel {
+            continue;
+        }
+        for param in &function.params {
+            if !is_supported_gpu_launch_abi_type(&param.ty) {
+                violations.push(format!(
+                    "kernel function `{}` parameter `{}` uses type `{}` that is not yet supported by the stable GPU launch ABI",
+                    function.name, param.name, param.ty
+                ));
+            }
+        }
+    }
+    violations
+}
+
+fn is_supported_gpu_launch_abi_type(ty: &Type) -> bool {
+    match ty {
+        Type::Int { signed: true, bits: 32 }
+        | Type::Int {
+            signed: false,
+            bits: 32,
+        }
+        | Type::Float { bits: 32 } => true,
+        Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => matches!(
+            &args[0],
+            Type::Float { bits: 32 }
+                | Type::Int {
+                    signed: true,
+                    bits: 32
+                }
+                | Type::Int {
+                    signed: false,
+                    bits: 32
+                }
+        ),
+        _ => false,
+    }
+}
+
 fn analyze_gpu_kernel_contract_expr(
     function: &TypedFunction,
     expr: &Expr,
     bindings: &mut BTreeMap<String, BorrowBinding>,
     signatures: &BTreeMap<String, TypedFunction>,
+    slice_access: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
     barrier_summary: &BTreeMap<String, bool>,
     divergent_depth: usize,
     violations: &mut Vec<String>,
@@ -2404,7 +2501,15 @@ fn analyze_gpu_kernel_contract_expr(
                 }
             }
             if is_gpu_launch_callee(callee) {
-                analyze_gpu_launch_aliases(function, callee, args, bindings, signatures, violations);
+                analyze_gpu_launch_aliases(
+                    function,
+                    callee,
+                    args,
+                    bindings,
+                    signatures,
+                    slice_access,
+                    violations,
+                );
             }
             for arg in args {
                 analyze_gpu_kernel_contract_expr(
@@ -2412,6 +2517,7 @@ fn analyze_gpu_kernel_contract_expr(
                     arg,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2428,6 +2534,7 @@ fn analyze_gpu_kernel_contract_expr(
                 condition,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2437,6 +2544,7 @@ fn analyze_gpu_kernel_contract_expr(
                 then_expr,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth + 1,
                 violations,
@@ -2446,6 +2554,7 @@ fn analyze_gpu_kernel_contract_expr(
                 else_expr,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth + 1,
                 violations,
@@ -2456,6 +2565,7 @@ fn analyze_gpu_kernel_contract_expr(
             inner,
             bindings,
             signatures,
+            slice_access,
             barrier_summary,
             divergent_depth,
             violations,
@@ -2469,6 +2579,7 @@ fn analyze_gpu_kernel_contract_expr(
                 try_expr,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2478,6 +2589,7 @@ fn analyze_gpu_kernel_contract_expr(
                 catch_expr,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth + 1,
                 violations,
@@ -2489,6 +2601,7 @@ fn analyze_gpu_kernel_contract_expr(
                 scrutinee,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2500,6 +2613,7 @@ fn analyze_gpu_kernel_contract_expr(
                         guard,
                         bindings,
                         signatures,
+                        slice_access,
                         barrier_summary,
                         divergent_depth + 1,
                         violations,
@@ -2510,6 +2624,7 @@ fn analyze_gpu_kernel_contract_expr(
                     &arm.value,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth + 1,
                     violations,
@@ -2522,6 +2637,7 @@ fn analyze_gpu_kernel_contract_expr(
                 body,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2533,6 +2649,7 @@ fn analyze_gpu_kernel_contract_expr(
                 condition,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2543,6 +2660,7 @@ fn analyze_gpu_kernel_contract_expr(
                 body,
                 &mut loop_bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth + 1,
                 violations,
@@ -2560,6 +2678,7 @@ fn analyze_gpu_kernel_contract_expr(
                     std::slice::from_ref(init.as_ref()),
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2571,6 +2690,7 @@ fn analyze_gpu_kernel_contract_expr(
                     condition,
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth,
                     violations,
@@ -2582,6 +2702,7 @@ fn analyze_gpu_kernel_contract_expr(
                 body,
                 &mut loop_bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth + 1,
                 violations,
@@ -2592,6 +2713,7 @@ fn analyze_gpu_kernel_contract_expr(
                     std::slice::from_ref(step.as_ref()),
                     bindings,
                     signatures,
+                    slice_access,
                     barrier_summary,
                     divergent_depth + 1,
                     violations,
@@ -2604,6 +2726,7 @@ fn analyze_gpu_kernel_contract_expr(
                 iterable,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2614,6 +2737,7 @@ fn analyze_gpu_kernel_contract_expr(
                 body,
                 &mut loop_bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth + 1,
                 violations,
@@ -2626,6 +2750,7 @@ fn analyze_gpu_kernel_contract_expr(
                 body,
                 &mut loop_bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth + 1,
                 violations,
@@ -2636,6 +2761,7 @@ fn analyze_gpu_kernel_contract_expr(
             base,
             bindings,
             signatures,
+            slice_access,
             barrier_summary,
             divergent_depth,
             violations,
@@ -2646,6 +2772,7 @@ fn analyze_gpu_kernel_contract_expr(
                 base,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2655,6 +2782,7 @@ fn analyze_gpu_kernel_contract_expr(
                 index,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2665,6 +2793,7 @@ fn analyze_gpu_kernel_contract_expr(
             expr,
             bindings,
             signatures,
+            slice_access,
             barrier_summary,
             divergent_depth,
             violations,
@@ -2675,6 +2804,7 @@ fn analyze_gpu_kernel_contract_expr(
                 left,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2684,6 +2814,7 @@ fn analyze_gpu_kernel_contract_expr(
                 right,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2694,6 +2825,7 @@ fn analyze_gpu_kernel_contract_expr(
             inner,
             bindings,
             signatures,
+            slice_access,
             barrier_summary,
             divergent_depth,
             violations,
@@ -2704,6 +2836,7 @@ fn analyze_gpu_kernel_contract_expr(
                 start,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2713,6 +2846,7 @@ fn analyze_gpu_kernel_contract_expr(
                 end,
                 bindings,
                 signatures,
+                slice_access,
                 barrier_summary,
                 divergent_depth,
                 violations,
@@ -2743,12 +2877,17 @@ fn is_gpu_launch_callee(callee: &str) -> bool {
     )
 }
 
+fn gpu_base_callee(callee: &str) -> &str {
+    callee.split('<').next().unwrap_or(callee)
+}
+
 fn analyze_gpu_launch_aliases(
     function: &TypedFunction,
     callee: &str,
     args: &[Expr],
     bindings: &BTreeMap<String, BorrowBinding>,
     signatures: &BTreeMap<String, TypedFunction>,
+    slice_access: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
     violations: &mut Vec<String>,
 ) {
     let Some(Expr::Ident(kernel_name)) = args.first() else {
@@ -2761,6 +2900,7 @@ fn analyze_gpu_launch_aliases(
         return;
     }
     let mut seen = BTreeMap::<String, String>::new();
+    let access_summary = slice_access.get(&kernel.name);
     for (index, param) in kernel.params.iter().enumerate() {
         let Some(arg) = args.get(index + 3) else {
             continue;
@@ -2775,6 +2915,17 @@ fn analyze_gpu_launch_aliases(
             continue;
         };
         if let Some(previous_param) = seen.insert(owner.clone(), param.name.clone()) {
+            let current_mode = access_summary
+                .and_then(|summary| summary.get(&param.name))
+                .copied()
+                .unwrap_or(GpuSliceAccessMode::ReadWrite);
+            let previous_mode = access_summary
+                .and_then(|summary| summary.get(&previous_param))
+                .copied()
+                .unwrap_or(GpuSliceAccessMode::ReadWrite);
+            if current_mode.is_read_only_like() && previous_mode.is_read_only_like() {
+                continue;
+            }
             violations.push(format!(
                 "host function `{}` launch `{}` via `{}` aliases GpuSlice parameters `{}` and `{}` through owner `{}`",
                 function.name,
@@ -2785,6 +2936,474 @@ fn analyze_gpu_launch_aliases(
                 owner
             ));
         }
+    }
+}
+
+fn build_gpu_slice_access_summaries(
+    functions: &[TypedFunction],
+    signatures: &BTreeMap<String, TypedFunction>,
+) -> BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>> {
+    let mut summaries = functions
+        .iter()
+        .map(|function| {
+            (
+                function.name.clone(),
+                function
+                    .params
+                    .iter()
+                    .filter(|param| matches!(&param.ty, Type::Named { name, args } if name == "GpuSlice" && args.len() == 1))
+                    .map(|param| (param.name.clone(), GpuSliceAccessMode::Observe))
+                    .collect::<BTreeMap<_, _>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    loop {
+        let snapshot = summaries.clone();
+        let mut changed = false;
+        for function in functions {
+            let mut bindings = function
+                .params
+                .iter()
+                .filter(|param| matches!(&param.ty, Type::Named { name, args } if name == "GpuSlice" && args.len() == 1))
+                .map(|param| {
+                    (
+                        param.name.clone(),
+                        BorrowBinding {
+                            owner: param.name.clone(),
+                            mutable: true,
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+            let mut updates = BTreeMap::<String, GpuSliceAccessMode>::new();
+            collect_gpu_stmt_slice_access(
+                function,
+                &function.body,
+                &mut bindings,
+                signatures,
+                &snapshot,
+                &mut updates,
+            );
+            let summary = summaries.entry(function.name.clone()).or_default();
+            for (param, mode) in updates {
+                let entry = summary.entry(param).or_insert(GpuSliceAccessMode::Observe);
+                if *entry != mode {
+                    *entry = mode;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    summaries
+}
+
+fn collect_gpu_stmt_slice_access(
+    function: &TypedFunction,
+    body: &[Stmt],
+    bindings: &mut BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    summaries: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
+    out: &mut BTreeMap<String, GpuSliceAccessMode>,
+) {
+    for stmt in body {
+        match stmt {
+            Stmt::Let {
+                name, value, ty, ..
+            } => {
+                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+                let explicit_ty = ty
+                    .as_ref()
+                    .or_else(|| function.local_types.get(name))
+                    .or_else(|| {
+                        function
+                            .params
+                            .iter()
+                            .find(|param| param.name == *name)
+                            .map(|param| &param.ty)
+                    });
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
+                {
+                    bindings.insert(name.clone(), binding);
+                } else {
+                    bindings.remove(name);
+                }
+            }
+            Stmt::Assign { target, value } => {
+                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+                let explicit_ty = function.local_types.get(target).or_else(|| {
+                    function
+                        .params
+                        .iter()
+                        .find(|param| param.name == *target)
+                        .map(|param| &param.ty)
+                });
+                if let Some(binding) =
+                    infer_borrow_binding_from_expr(value, explicit_ty, bindings, signatures)
+                {
+                    bindings.insert(target.clone(), binding);
+                } else {
+                    bindings.remove(target);
+                }
+            }
+            Stmt::CompoundAssign { value, .. }
+            | Stmt::Expr(value)
+            | Stmt::Return(Some(value))
+            | Stmt::Defer(value)
+            | Stmt::Requires(value)
+            | Stmt::Ensures(value) => {
+                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+            }
+            Stmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+                collect_gpu_stmt_slice_access(
+                    function,
+                    then_body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+                collect_gpu_stmt_slice_access(
+                    function,
+                    else_body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            Stmt::While { condition, body } => {
+                collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+                collect_gpu_stmt_slice_access(
+                    function,
+                    body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            Stmt::Loop { body } => {
+                collect_gpu_stmt_slice_access(
+                    function,
+                    body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            Stmt::For {
+                init,
+                condition,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    collect_gpu_stmt_slice_access(
+                        function,
+                        std::slice::from_ref(init.as_ref()),
+                        bindings,
+                        signatures,
+                        summaries,
+                        out,
+                    );
+                }
+                if let Some(condition) = condition {
+                    collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+                }
+                collect_gpu_stmt_slice_access(
+                    function,
+                    body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+                if let Some(step) = step {
+                    collect_gpu_stmt_slice_access(
+                        function,
+                        std::slice::from_ref(step.as_ref()),
+                        bindings,
+                        signatures,
+                        summaries,
+                        out,
+                    );
+                }
+            }
+            Stmt::ForIn { iterable, body, .. } => {
+                collect_gpu_expr_slice_access(function, iterable, bindings, signatures, summaries, out);
+                collect_gpu_stmt_slice_access(
+                    function,
+                    body,
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            Stmt::Match { scrutinee, arms } => {
+                collect_gpu_expr_slice_access(function, scrutinee, bindings, signatures, summaries, out);
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        collect_gpu_expr_slice_access(function, guard, bindings, signatures, summaries, out);
+                    }
+                    collect_gpu_expr_slice_access(function, &arm.value, bindings, signatures, summaries, out);
+                }
+            }
+            Stmt::Return(None) | Stmt::Break(_) | Stmt::Continue | Stmt::LetPattern { .. } => {}
+        }
+    }
+}
+
+fn collect_gpu_expr_slice_access(
+    function: &TypedFunction,
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    summaries: &BTreeMap<String, BTreeMap<String, GpuSliceAccessMode>>,
+    out: &mut BTreeMap<String, GpuSliceAccessMode>,
+) {
+    match expr {
+        Expr::Index { base, index } => {
+            mark_gpu_slice_read(base, bindings, signatures, out);
+            collect_gpu_expr_slice_access(function, index, bindings, signatures, summaries, out);
+        }
+        Expr::Call { callee, args } if gpu_base_callee(callee) == "__index_assign" => {
+            if let Some(base) = args.first() {
+                mark_gpu_slice_write(base, bindings, signatures, out);
+            }
+            for arg in args.iter().skip(1) {
+                collect_gpu_expr_slice_access(function, arg, bindings, signatures, summaries, out);
+            }
+        }
+        Expr::Call { callee, args } => {
+            let callee = gpu_base_callee(callee);
+            match callee {
+                "gpu.load_f32" | "gpu.load_i32" | "gpu.load_u32" => {
+                    if let Some(base) = args.first() {
+                        mark_gpu_slice_read(base, bindings, signatures, out);
+                    }
+                }
+                "gpu.store_f32" | "gpu.store_i32" | "gpu.store_u32" => {
+                    if let Some(base) = args.first() {
+                        mark_gpu_slice_write(base, bindings, signatures, out);
+                    }
+                }
+                _ => {}
+            }
+            if let (Some(callee_fn), Some(summary)) = (signatures.get(callee), summaries.get(callee)) {
+                for (index, arg) in args.iter().enumerate() {
+                    if let Some(param) = callee_fn.params.get(index) {
+                        if let Some(mode) = summary.get(&param.name).copied() {
+                            match mode {
+                                GpuSliceAccessMode::Observe => {}
+                                GpuSliceAccessMode::ReadOnly => {
+                                    mark_gpu_slice_read(arg, bindings, signatures, out)
+                                }
+                                GpuSliceAccessMode::WriteOnly => {
+                                    mark_gpu_slice_write(arg, bindings, signatures, out)
+                                }
+                                GpuSliceAccessMode::ReadWrite => {
+                                    mark_gpu_slice_read(arg, bindings, signatures, out);
+                                    mark_gpu_slice_write(arg, bindings, signatures, out);
+                                }
+                            }
+                        }
+                    }
+                    collect_gpu_expr_slice_access(function, arg, bindings, signatures, summaries, out);
+                }
+            } else {
+                for arg in args {
+                    collect_gpu_expr_slice_access(function, arg, bindings, signatures, summaries, out);
+                }
+            }
+        }
+        Expr::UnsafeBlock { body, .. } => {
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+        }
+        Expr::If {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(function, then_expr, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(function, else_expr, bindings, signatures, summaries, out);
+        }
+        Expr::Match { scrutinee, arms } => {
+            collect_gpu_expr_slice_access(function, scrutinee, bindings, signatures, summaries, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_gpu_expr_slice_access(function, guard, bindings, signatures, summaries, out);
+                }
+                collect_gpu_expr_slice_access(function, &arm.value, bindings, signatures, summaries, out);
+            }
+        }
+        Expr::While { condition, body } => {
+            collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+        }
+        Expr::For {
+            init,
+            condition,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_gpu_stmt_slice_access(
+                    function,
+                    std::slice::from_ref(init.as_ref()),
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+            if let Some(condition) = condition {
+                collect_gpu_expr_slice_access(function, condition, bindings, signatures, summaries, out);
+            }
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+            if let Some(step) = step {
+                collect_gpu_stmt_slice_access(
+                    function,
+                    std::slice::from_ref(step.as_ref()),
+                    &mut bindings.clone(),
+                    signatures,
+                    summaries,
+                    out,
+                );
+            }
+        }
+        Expr::ForIn { iterable, body, .. } => {
+            collect_gpu_expr_slice_access(function, iterable, bindings, signatures, summaries, out);
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+        }
+        Expr::Loop { body } => {
+            collect_gpu_stmt_slice_access(
+                function,
+                body,
+                &mut bindings.clone(),
+                signatures,
+                summaries,
+                out,
+            );
+        }
+        Expr::Group(inner)
+        | Expr::FieldAccess { base: inner, .. }
+        | Expr::Unary { expr: inner, .. }
+        | Expr::Await(inner)
+        | Expr::Discard(inner)
+        | Expr::Return(Some(inner)) => {
+            collect_gpu_expr_slice_access(function, inner, bindings, signatures, summaries, out)
+        }
+        Expr::Binary { left, right, .. } => {
+            collect_gpu_expr_slice_access(function, left, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(function, right, bindings, signatures, summaries, out);
+        }
+        Expr::TryCatch {
+            try_expr,
+            catch_expr,
+        } => {
+            collect_gpu_expr_slice_access(function, try_expr, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(function, catch_expr, bindings, signatures, summaries, out);
+        }
+        Expr::Range { start, end, .. } => {
+            collect_gpu_expr_slice_access(function, start, bindings, signatures, summaries, out);
+            collect_gpu_expr_slice_access(function, end, bindings, signatures, summaries, out);
+        }
+        Expr::StructInit { fields, .. } | Expr::ObjectLiteral(fields) => {
+            for (_, value) in fields {
+                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+            }
+        }
+        Expr::EnumInit {
+            payload,
+            named_payload,
+            ..
+        } => {
+            for value in payload {
+                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+            }
+            for (_, value) in named_payload {
+                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+            }
+        }
+        Expr::ArrayLiteral(values) | Expr::Tuple(values) => {
+            for value in values {
+                collect_gpu_expr_slice_access(function, value, bindings, signatures, summaries, out);
+            }
+        }
+        Expr::Closure { .. }
+        | Expr::Int(_)
+        | Expr::Float { .. }
+        | Expr::Bool(_)
+        | Expr::Char(_)
+        | Expr::Str(_)
+        | Expr::Ident(_)
+        | Expr::Break(_)
+        | Expr::Continue
+        | Expr::Return(None) => {}
+    }
+}
+
+fn mark_gpu_slice_read(
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    out: &mut BTreeMap<String, GpuSliceAccessMode>,
+) {
+    if let Some(owner) = infer_gpu_slice_owner_name(expr, bindings, signatures) {
+        let entry = out.entry(owner).or_insert(GpuSliceAccessMode::Observe);
+        *entry = entry.with_read();
+    }
+}
+
+fn mark_gpu_slice_write(
+    expr: &Expr,
+    bindings: &BTreeMap<String, BorrowBinding>,
+    signatures: &BTreeMap<String, TypedFunction>,
+    out: &mut BTreeMap<String, GpuSliceAccessMode>,
+) {
+    if let Some(owner) = infer_gpu_slice_owner_name(expr, bindings, signatures) {
+        let entry = out.entry(owner).or_insert(GpuSliceAccessMode::Observe);
+        *entry = entry.with_write();
     }
 }
 
@@ -22748,6 +23367,62 @@ mod tests {
             .iter()
             .any(|detail| detail.contains(
                 "host function `main` launch `saxpy` via `gpu.launch2` aliases GpuSlice parameters `input` and `output` through owner `buffer`"
+            )));
+    }
+
+    #[test]
+    fn gpu_launch_allows_aliased_readonly_slice_parameters() {
+        let source = r#"
+            use core.gpu;
+            kernel fn saxpy(input_a: GpuSlice<f32>, input_b: GpuSlice<f32>, output: GpuSlice<f32>, n: i32) -> void {
+                let i = gpu.global_id_x();
+                if i < n {
+                    output[i] = input_a[i] + input_b[i];
+                }
+            }
+            host fn main() -> i32 {
+                let dev = gpu.default_device();
+                let input = gpu.alloc_f32(dev, 8);
+                let output = gpu.alloc_f32(dev, 8);
+                let input_view = gpu.slice(input, 0, 8);
+                let output_view = gpu.slice(output, 0, 8);
+                let event = gpu.launch4(saxpy, 1, 8, input_view, input_view, output_view, 8);
+                gpu.wait(event);
+                discard input_view;
+                discard output_view;
+                gpu.free(input);
+                gpu.free(output);
+                return 0;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_readonly_alias").expect("parse");
+        let typed = lower(&module);
+        assert!(
+            !typed
+                .ownership_violations
+                .iter()
+                .any(|detail| detail.contains("aliases GpuSlice parameters")),
+            "ownership violations: {:?}",
+            typed.ownership_violations
+        );
+    }
+
+    #[test]
+    fn kernel_param_outside_launch_abi_is_rejected() {
+        let source = r#"
+            struct Pair { x: f32, y: f32 }
+            kernel fn blend(input: GpuSlice<f32>, coeff: Pair, output: GpuSlice<f32>) -> void {
+                let i = gpu.global_id_x();
+                output[i] = input[i] + coeff.x + coeff.y;
+            }
+        "#;
+        let module = parser::parse(source, "gpu_launch_abi_shape").expect("parse");
+        let typed = lower(&module);
+        assert!(typed
+            .ownership_violations
+            .iter()
+            .any(|detail| detail.contains(
+                "kernel function `blend` parameter `coeff` uses type `Pair` that is not yet supported by the stable GPU launch ABI"
             )));
     }
 

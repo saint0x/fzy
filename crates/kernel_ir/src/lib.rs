@@ -15,8 +15,58 @@ pub struct KernelFunction {
     pub name: String,
     pub execution_space: ExecutionSpace,
     pub params: Vec<Param>,
+    pub slice_access: BTreeMap<String, KernelSliceAccessMode>,
     pub return_type: Type,
     pub body: Vec<KernelStmt>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum KernelSliceAccessMode {
+    Observe,
+    ReadOnly,
+    WriteOnly,
+    ReadWrite,
+}
+
+impl KernelSliceAccessMode {
+    fn with_read(self) -> Self {
+        match self {
+            Self::Observe => Self::ReadOnly,
+            Self::ReadOnly => Self::ReadOnly,
+            Self::WriteOnly => Self::ReadWrite,
+            Self::ReadWrite => Self::ReadWrite,
+        }
+    }
+
+    fn with_write(self) -> Self {
+        match self {
+            Self::Observe => Self::WriteOnly,
+            Self::ReadOnly => Self::ReadWrite,
+            Self::WriteOnly => Self::WriteOnly,
+            Self::ReadWrite => Self::ReadWrite,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Observe => "observe",
+            Self::ReadOnly => "readonly",
+            Self::WriteOnly => "writeonly",
+            Self::ReadWrite => "readwrite",
+        }
+    }
+
+    pub fn layout_suffix(self) -> &'static str {
+        match self {
+            Self::Observe | Self::ReadOnly => "ro",
+            Self::WriteOnly => "wo",
+            Self::ReadWrite => "rw",
+        }
+    }
+
+    pub fn is_read_only_like(self) -> bool {
+        matches!(self, Self::Observe | Self::ReadOnly)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +256,7 @@ pub fn lower(module: &hir::TypedModule) -> Result<KernelModule, Vec<Diagnostic>>
         }
     }
     if diagnostics.is_empty() {
+        infer_slice_access_modes(&mut functions);
         Ok(KernelModule {
             name: module.name.clone(),
             kernels,
@@ -527,11 +578,283 @@ fn lower_function(
             name: function.name.clone(),
             execution_space: function.execution_space,
             params: function.params.clone(),
+            slice_access: function
+                .params
+                .iter()
+                .filter(|param| is_gpu_slice_type(&param.ty))
+                .map(|param| (param.name.clone(), KernelSliceAccessMode::Observe))
+                .collect(),
             return_type: function.return_type.clone(),
             body,
         })
     } else {
         Err(diagnostics)
+    }
+}
+
+fn infer_slice_access_modes(functions: &mut [KernelFunction]) {
+    let function_map = functions
+        .iter()
+        .enumerate()
+        .map(|(index, function)| (function.name.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    loop {
+        let snapshot = functions
+            .iter()
+            .map(|function| (function.name.clone(), function.slice_access.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let param_orders = functions
+            .iter()
+            .map(|function| {
+                (
+                    function.name.clone(),
+                    function
+                        .params
+                        .iter()
+                        .filter(|param| is_gpu_slice_type(&param.ty))
+                        .map(|param| param.name.clone())
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut changed = false;
+        for index in 0..functions.len() {
+            let body = functions[index].body.clone();
+            let params = functions[index].params.clone();
+            let mut aliases = params
+                .iter()
+                .filter(|param| is_gpu_slice_type(&param.ty))
+                .map(|param| (param.name.clone(), param.name.clone()))
+                .collect::<BTreeMap<_, _>>();
+            let mut updates = BTreeMap::<String, KernelSliceAccessMode>::new();
+            collect_stmt_slice_access(
+                &body,
+                &mut aliases,
+                &snapshot,
+                &param_orders,
+                &function_map,
+                &mut updates,
+            );
+            for (param, mode) in updates {
+                let entry = functions[index]
+                    .slice_access
+                    .entry(param)
+                    .or_insert(KernelSliceAccessMode::Observe);
+                if *entry != mode {
+                    *entry = mode;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn collect_stmt_slice_access(
+    stmts: &[KernelStmt],
+    aliases: &mut BTreeMap<String, String>,
+    summaries: &BTreeMap<String, BTreeMap<String, KernelSliceAccessMode>>,
+    param_orders: &BTreeMap<String, Vec<String>>,
+    function_map: &BTreeMap<String, usize>,
+    out: &mut BTreeMap<String, KernelSliceAccessMode>,
+) {
+    for stmt in stmts {
+        match stmt {
+            KernelStmt::Let { name, ty, value } => {
+                collect_expr_slice_access(value, aliases, summaries, param_orders, function_map, out);
+                if ty.as_ref().is_some_and(is_gpu_slice_type) {
+                    if let Some(owner) = infer_slice_alias_source(value, aliases, summaries, param_orders) {
+                        aliases.insert(name.clone(), owner);
+                    } else {
+                        aliases.remove(name);
+                    }
+                } else {
+                    aliases.remove(name);
+                }
+            }
+            KernelStmt::Assign { value, .. } => {
+                collect_expr_slice_access(value, aliases, summaries, param_orders, function_map, out);
+            }
+            KernelStmt::Store { base, index, value } => {
+                mark_expr_slice_write(base, aliases, out);
+                collect_expr_slice_access(index, aliases, summaries, param_orders, function_map, out);
+                collect_expr_slice_access(value, aliases, summaries, param_orders, function_map, out);
+            }
+            KernelStmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                collect_expr_slice_access(condition, aliases, summaries, param_orders, function_map, out);
+                collect_stmt_slice_access(
+                    then_body,
+                    &mut aliases.clone(),
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
+                collect_stmt_slice_access(
+                    else_body,
+                    &mut aliases.clone(),
+                    summaries,
+                    param_orders,
+                    function_map,
+                    out,
+                );
+            }
+            KernelStmt::While { condition, body } => {
+                collect_expr_slice_access(condition, aliases, summaries, param_orders, function_map, out);
+                collect_stmt_slice_access(body, &mut aliases.clone(), summaries, param_orders, function_map, out);
+            }
+            KernelStmt::Loop { body } => {
+                collect_stmt_slice_access(body, &mut aliases.clone(), summaries, param_orders, function_map, out);
+            }
+            KernelStmt::Break(value) | KernelStmt::Return(value) => {
+                if let Some(value) = value {
+                    collect_expr_slice_access(value, aliases, summaries, param_orders, function_map, out);
+                }
+            }
+            KernelStmt::Expr(expr) => {
+                collect_expr_slice_access(expr, aliases, summaries, param_orders, function_map, out);
+            }
+            KernelStmt::Continue => {}
+        }
+    }
+}
+
+fn collect_expr_slice_access(
+    expr: &KernelExpr,
+    aliases: &BTreeMap<String, String>,
+    summaries: &BTreeMap<String, BTreeMap<String, KernelSliceAccessMode>>,
+    param_orders: &BTreeMap<String, Vec<String>>,
+    function_map: &BTreeMap<String, usize>,
+    out: &mut BTreeMap<String, KernelSliceAccessMode>,
+) {
+    match expr {
+        KernelExpr::Load { base, index } => {
+            mark_expr_slice_read(base, aliases, out);
+            collect_expr_slice_access(index, aliases, summaries, param_orders, function_map, out);
+        }
+        KernelExpr::Call { callee, args } => {
+            if let (Some(params), Some(order)) = (summaries.get(callee), param_orders.get(callee)) {
+                for (arg, param_name) in args.iter().zip(order.iter()) {
+                    let mode = params
+                        .get(param_name)
+                        .copied()
+                        .unwrap_or(KernelSliceAccessMode::Observe);
+                    match mode {
+                        KernelSliceAccessMode::Observe => {}
+                        KernelSliceAccessMode::ReadOnly => mark_expr_slice_read(arg, aliases, out),
+                        KernelSliceAccessMode::WriteOnly => mark_expr_slice_write(arg, aliases, out),
+                        KernelSliceAccessMode::ReadWrite => {
+                            mark_expr_slice_read(arg, aliases, out);
+                            mark_expr_slice_write(arg, aliases, out);
+                        }
+                    }
+                }
+            } else {
+                for arg in args {
+                    collect_expr_slice_access(arg, aliases, summaries, param_orders, function_map, out);
+                }
+            }
+            let _ = function_map;
+        }
+        KernelExpr::Intrinsic { op, args } => {
+            match op {
+                KernelIntrinsic::LoadF32 | KernelIntrinsic::LoadI32 | KernelIntrinsic::LoadU32 => {
+                    if let Some(base) = args.first() {
+                        mark_expr_slice_read(base, aliases, out);
+                    }
+                }
+                KernelIntrinsic::StoreF32
+                | KernelIntrinsic::StoreI32
+                | KernelIntrinsic::StoreU32 => {
+                    if let Some(base) = args.first() {
+                        mark_expr_slice_write(base, aliases, out);
+                    }
+                }
+                KernelIntrinsic::SliceLen | KernelIntrinsic::Barrier => {}
+                _ => {}
+            }
+            for arg in args.iter().skip(1) {
+                collect_expr_slice_access(arg, aliases, summaries, param_orders, function_map, out);
+            }
+        }
+        KernelExpr::Unary { expr, .. } | KernelExpr::Group(expr) => {
+            collect_expr_slice_access(expr, aliases, summaries, param_orders, function_map, out);
+        }
+        KernelExpr::Binary { left, right, .. } => {
+            collect_expr_slice_access(left, aliases, summaries, param_orders, function_map, out);
+            collect_expr_slice_access(right, aliases, summaries, param_orders, function_map, out);
+        }
+        KernelExpr::Int(_)
+        | KernelExpr::Float { .. }
+        | KernelExpr::Bool(_)
+        | KernelExpr::Char(_)
+        | KernelExpr::Ident(_) => {}
+    }
+}
+
+fn infer_slice_alias_source(
+    expr: &KernelExpr,
+    aliases: &BTreeMap<String, String>,
+    summaries: &BTreeMap<String, BTreeMap<String, KernelSliceAccessMode>>,
+    param_orders: &BTreeMap<String, Vec<String>>,
+) -> Option<String> {
+    match expr {
+        KernelExpr::Ident(name) => aliases.get(name).cloned(),
+        KernelExpr::Group(inner) => {
+            infer_slice_alias_source(inner, aliases, summaries, param_orders)
+        }
+        KernelExpr::Call { callee, args } => {
+            if let (Some(params), Some(order)) = (summaries.get(callee), param_orders.get(callee)) {
+                for (arg, param_name) in args.iter().zip(order.iter()) {
+                    if params.contains_key(param_name) {
+                        if let Some(owner) = infer_slice_alias_source(arg, aliases, summaries, param_orders) {
+                            return Some(owner);
+                        }
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn mark_expr_slice_read(
+    expr: &KernelExpr,
+    aliases: &BTreeMap<String, String>,
+    out: &mut BTreeMap<String, KernelSliceAccessMode>,
+) {
+    if let Some(param) = kernel_slice_root_name(expr, aliases) {
+        let entry = out.entry(param).or_insert(KernelSliceAccessMode::Observe);
+        *entry = entry.with_read();
+    }
+}
+
+fn mark_expr_slice_write(
+    expr: &KernelExpr,
+    aliases: &BTreeMap<String, String>,
+    out: &mut BTreeMap<String, KernelSliceAccessMode>,
+) {
+    if let Some(param) = kernel_slice_root_name(expr, aliases) {
+        let entry = out.entry(param).or_insert(KernelSliceAccessMode::Observe);
+        *entry = entry.with_write();
+    }
+}
+
+fn kernel_slice_root_name(
+    expr: &KernelExpr,
+    aliases: &BTreeMap<String, String>,
+) -> Option<String> {
+    match expr {
+        KernelExpr::Ident(name) => aliases.get(name).cloned(),
+        KernelExpr::Group(inner) => kernel_slice_root_name(inner, aliases),
+        _ => None,
     }
 }
 
@@ -872,6 +1195,10 @@ fn is_kernel_indexable_type(ty: &Type) -> bool {
         Type::Named { name, args } => name == "GpuSlice" && args.len() == 1,
         _ => false,
     }
+}
+
+fn is_gpu_slice_type(ty: &Type) -> bool {
+    matches!(ty, Type::Named { name, args } if name == "GpuSlice" && args.len() == 1)
 }
 
 fn base_callee(callee: &str) -> &str {

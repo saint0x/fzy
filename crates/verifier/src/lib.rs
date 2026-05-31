@@ -561,6 +561,8 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
             && violation.contains("inside divergent control flow")
         {
             "call the synchronization helper only from uniform control flow, or refactor it so the barrier executes unconditionally before branching".to_string()
+        } else if violation.contains("stable GPU launch ABI") {
+            "use only stable GPU launch ABI parameter shapes for kernels today: `i32`, `u32`, `f32`, and `GpuSlice<f32|i32|u32>`".to_string()
         } else if violation.contains("after provenance root") {
             "stop using aliases after freeing the owning value; move the free later, or return/assign a fresh owned value before reuse".to_string()
         } else if violation.contains("performs partial move") {

@@ -355,9 +355,35 @@ fn build_gpu_kernel_package_json(typed: &hir::TypedModule) -> serde_json::Value 
                         "name": function.name,
                         "executionSpace": function.execution_space.as_str(),
                         "params": function.params.iter().map(|param| {
+                            let access_mode = function
+                                .slice_access
+                                .get(&param.name)
+                                .copied()
+                                .map(kernel_ir::KernelSliceAccessMode::as_str);
                             serde_json::json!({
                                 "name": param.name,
                                 "type": param.ty.to_string(),
+                                "accessMode": access_mode,
+                                "layoutClass": access_mode.and_then(|mode| {
+                                    match &param.ty {
+                                        ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+                                            let elem = match &args[0] {
+                                                ast::Type::Float { bits: 32 } => Some("slice_f32"),
+                                                ast::Type::Int { signed: true, bits: 32 } => Some("slice_i32"),
+                                                ast::Type::Int { signed: false, bits: 32 } => Some("slice_u32"),
+                                                _ => None,
+                                            }?;
+                                            let suffix = match mode {
+                                                "observe" | "readonly" => "ro",
+                                                "writeonly" => "wo",
+                                                "readwrite" => "rw",
+                                                _ => return None,
+                                            };
+                                            Some(format!("{elem}_{suffix}"))
+                                        }
+                                        _ => None,
+                                    }
+                                }),
                             })
                         }).collect::<Vec<_>>(),
                         "returnType": function.return_type.to_string(),

@@ -34,7 +34,7 @@ pub(crate) fn metal_kernel_launch_descriptors(
             MetalKernelLaunchDescriptor {
                 kernel_name: kernel_name.clone(),
                 source,
-                param_layout: render_param_layout(&kernel.params)?,
+                param_layout: render_param_layout(kernel)?,
             },
         );
     }
@@ -106,21 +106,22 @@ fn render_kernel_ir_diagnostics(diagnostics: &[diagnostics::Diagnostic]) -> Stri
         .join("; ")
 }
 
-fn render_param_layout(params: &[ast::Param]) -> Result<String> {
-    let mut parts = Vec::with_capacity(params.len());
-    for param in params {
+fn render_param_layout(function: &kernel_ir::KernelFunction) -> Result<String> {
+    let mut parts = Vec::with_capacity(function.params.len());
+    for param in &function.params {
         parts.push(match &param.ty {
             ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
+                let mode = kernel_slice_access_suffix(function, param);
                 match &args[0] {
-                    ast::Type::Float { bits: 32 } => "slice_f32",
+                    ast::Type::Float { bits: 32 } => format!("slice_f32_{mode}"),
                     ast::Type::Int {
                         signed: true,
                         bits: 32,
-                    } => "slice_i32",
+                    } => format!("slice_i32_{mode}"),
                     ast::Type::Int {
                         signed: false,
                         bits: 32,
-                    } => "slice_u32",
+                    } => format!("slice_u32_{mode}"),
                     other => bail!(
                         "Metal GPU kernel lowering does not yet support slice element type `{other}`"
                     ),
@@ -129,16 +130,28 @@ fn render_param_layout(params: &[ast::Param]) -> Result<String> {
             ast::Type::Int {
                 signed: true,
                 bits: 32,
-            } => "i32",
+            } => "i32".to_string(),
             ast::Type::Int {
                 signed: false,
                 bits: 32,
-            } => "u32",
-            ast::Type::Float { bits: 32 } => "f32",
+            } => "u32".to_string(),
+            ast::Type::Float { bits: 32 } => "f32".to_string(),
             other => bail!("Metal GPU kernel lowering does not yet support kernel param `{other}`"),
         });
     }
     Ok(parts.join(","))
+}
+
+fn kernel_slice_access_suffix(
+    function: &kernel_ir::KernelFunction,
+    param: &ast::Param,
+) -> &'static str {
+    function
+        .slice_access
+        .get(&param.name)
+        .copied()
+        .unwrap_or(kernel_ir::KernelSliceAccessMode::Observe)
+        .layout_suffix()
 }
 
 fn render_metal_module(
@@ -193,6 +206,7 @@ fn render_function_signature(
     for param in &function.params {
         render_param_parts(
             param,
+            function,
             is_kernel,
             &mut buffer_index,
             &mut parts,
@@ -207,6 +221,7 @@ fn render_function_signature(
 
 fn render_param_parts(
     param: &ast::Param,
+    function: &kernel_ir::KernelFunction,
     is_kernel: bool,
     buffer_index: &mut usize,
     out: &mut Vec<String>,
@@ -215,9 +230,20 @@ fn render_param_parts(
     match &param.ty {
         ast::Type::Named { name, args } if name == "GpuSlice" && args.len() == 1 => {
             let element_ty = render_scalar_type(&args[0])?;
+            let qualifier = if function
+                .slice_access
+                .get(&param.name)
+                .copied()
+                .unwrap_or(kernel_ir::KernelSliceAccessMode::Observe)
+                .is_read_only_like()
+            {
+                "const device"
+            } else {
+                "device"
+            };
             if is_kernel {
                 out.push(format!(
-                    "device {element_ty}* {}_data [[buffer({})]]",
+                    "{qualifier} {element_ty}* {}_data [[buffer({})]]",
                     param.name, *buffer_index
                 ));
                 *buffer_index += 1;
@@ -232,7 +258,7 @@ fn render_param_parts(
                 ));
                 *buffer_index += 1;
             } else {
-                out.push(format!("device {element_ty}* {}_data", param.name));
+                out.push(format!("{qualifier} {element_ty}* {}_data", param.name));
                 out.push(format!("uint {}_offset", param.name));
                 out.push(format!("uint {}_len", param.name));
             }
