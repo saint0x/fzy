@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "name": "gpu-host-backed-runtime-matrix-pass",
+  "steps": [
+    {
+      "type": "proc_when",
+      "cmd": "python3",
+      "args": [
+        "-c",
+        "import json, pathlib, subprocess; repo = pathlib.Path.cwd(); fz = repo / 'target/debug/fz'; scenarios = [\n    'tests/gpu_metal_host_lifecycle.pass.fozzy.json',\n    'tests/gpu_metal_upload_runtime.pass.fozzy.json',\n    'tests/gpu_metal_download_runtime.pass.fozzy.json',\n    'tests/gpu_trace_runtime.pass.fozzy.json',\n    'tests/compiler_gpu_async_runtime_policy.pass.fozzy.json',\n]; proc = subprocess.run([str(fz), 'test', *scenarios, '--host-backends', '--json'], cwd=str(repo), capture_output=True, text=True); payload = json.loads(proc.stdout.strip()); assert proc.returncode == 0, (proc.returncode, payload, proc.stderr); assert payload['status'] == 'pass', payload; print('gpu-host-backed-runtime-matrix-ok')"
+      ],
+      "exit_code": 0,
+      "stdout": "gpu-host-backed-runtime-matrix-ok\n",
+      "stderr": "",
+      "times": 1
+    }
+  ]
+}
