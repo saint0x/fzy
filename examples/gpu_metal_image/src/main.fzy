@@ -48,6 +48,13 @@ host fn main() -> i32 {
         return rc
     }
     discard cli.touch()
-    discard services.describe_default_device()
-    return run_brightness_pass()
+    let dev_name = services.describe_default_device()
+    discard term.write(str.concat(str.concat("gpu_metal_image device=", dev_name), "\n"))
+    let run_rc = run_brightness_pass()
+    if run_rc == 0 {
+        discard term.write("gpu_metal_image kernel=brighten status=ok output=validated\n")
+        return 0
+    }
+    discard term.write(str.concat(str.concat("gpu_metal_image kernel=brighten status=fail code=", str.from_i32(run_rc)), "\n"))
+    return run_rc
 }

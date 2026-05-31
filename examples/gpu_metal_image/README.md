@@ -12,6 +12,8 @@ What it shows:
 
 The project runs a simple brightness pass over a tiny normalized image row and returns a nonzero exit code if the downloaded output drifts from the expected result.
 
+On success it prints the live Metal device name and a kernel validation line so the run is visibly doing work rather than exiting silently.
+
 Recommended commands:
 
 ```bash
