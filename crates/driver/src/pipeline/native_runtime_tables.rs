@@ -1220,7 +1220,12 @@ fn default_trace_behavior(callee: &str) -> &'static str {
 fn default_blocking_behavior(callee: &str) -> &'static str {
     if matches!(
         callee,
-        "proc.wait"
+        "join"
+            | "cancel_task"
+            | "task.group_join"
+            | "task.group_join_all"
+            | "task.group_cancel"
+            | "proc.wait"
             | "fs.open"
             | "fs.read"
             | "fs.write"
@@ -1232,6 +1237,7 @@ fn default_blocking_behavior(callee: &str) -> &'static str {
             | "http.stream_read"
             | "http.stream_read_line"
             | "http.request_stream"
+            | "http.poll_next"
             | "http.websocket_read"
             | "term.read_line"
             | "fs.read_file"

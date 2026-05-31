@@ -13460,6 +13460,195 @@ mod tests {
     }
 
     #[test]
+    fn cancel_task_runs_worker_cleanup_and_closes_proc_handle() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-cancel-task-cleanup-{suffix}.fzy"));
+        let started_path =
+            std::env::temp_dir().join(format!("fozzylang-cancel-task-started-{suffix}.txt"));
+        let cleanup_path =
+            std::env::temp_dir().join(format!("fozzylang-cancel-task-cleanup-{suffix}.txt"));
+        let quoted_started = started_path.to_string_lossy().replace('\"', "\\\"");
+        let quoted_cleanup = cleanup_path.to_string_lossy().replace('\"', "\\\"");
+        let _ = std::fs::remove_file(&started_path);
+        let _ = std::fs::remove_file(&cleanup_path);
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn worker() -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"sleep 5\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    defer proc.close(handle)\n    fs.write_file(\"{quoted_started}\", \"started\")\n    loop {{\n        if recv() != 0 {{\n            fs.write_file(\"{quoted_cleanup}\", \"cancelled\")\n            return 0\n        }}\n        checkpoint()\n    }}\n}}\n\nfn main() -> i32 {{\n    let task = spawn(worker)\n    while fs.exists(\"{quoted_started}\") == 0 {{\n        checkpoint()\n    }}\n    discard cancel_task(task)\n    if fs.read_file(\"{quoted_cleanup}\") == \"cancelled\" {{\n        return 0\n    }}\n    return 13\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("cancel_task runtime program should succeed");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&cleanup_path).expect("cleanup file should exist"),
+            "cancelled"
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(started_path);
+        let _ = std::fs::remove_file(cleanup_path);
+    }
+
+    #[test]
+    fn task_group_cancel_runs_worker_cleanup_and_closes_proc_handles() {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-group-cancel-cleanup-{suffix}.fzy"));
+        let left_started =
+            std::env::temp_dir().join(format!("fozzylang-group-cancel-left-started-{suffix}.txt"));
+        let right_started =
+            std::env::temp_dir().join(format!("fozzylang-group-cancel-right-started-{suffix}.txt"));
+        let left_cleanup =
+            std::env::temp_dir().join(format!("fozzylang-group-cancel-left-cleanup-{suffix}.txt"));
+        let right_cleanup =
+            std::env::temp_dir().join(format!("fozzylang-group-cancel-right-cleanup-{suffix}.txt"));
+        let quoted_left_started = left_started.to_string_lossy().replace('\"', "\\\"");
+        let quoted_right_started = right_started.to_string_lossy().replace('\"', "\\\"");
+        let quoted_left_cleanup = left_cleanup.to_string_lossy().replace('\"', "\\\"");
+        let quoted_right_cleanup = right_cleanup.to_string_lossy().replace('\"', "\\\"");
+        let _ = std::fs::remove_file(&left_started);
+        let _ = std::fs::remove_file(&right_started);
+        let _ = std::fs::remove_file(&left_cleanup);
+        let _ = std::fs::remove_file(&right_cleanup);
+        std::fs::write(
+            &source,
+            format!(
+                "use core.fs;\nuse core.proc;\nuse core.thread;\n\nfn left_worker() -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"sleep 5\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    defer proc.close(handle)\n    fs.write_file(\"{quoted_left_started}\", \"started\")\n    loop {{\n        if recv() != 0 {{\n            fs.write_file(\"{quoted_left_cleanup}\", \"cancelled\")\n            return 0\n        }}\n        checkpoint()\n    }}\n}}\n\nfn right_worker() -> i32 {{\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    discard proc.argv_push(argv, \"-lc\")\n    discard proc.argv_push(argv, \"sleep 5\")\n    let handle = proc.spawn_cmd(\"/bin/sh\", argv, env_map, \"\")\n    defer proc.close(handle)\n    fs.write_file(\"{quoted_right_started}\", \"started\")\n    loop {{\n        if recv() != 0 {{\n            fs.write_file(\"{quoted_right_cleanup}\", \"cancelled\")\n            return 0\n        }}\n        checkpoint()\n    }}\n}}\n\nfn main() -> i32 {{\n    let group = task.group_begin()\n    discard task.group_spawn(group, left_worker)\n    discard task.group_spawn(group, right_worker)\n    while fs.exists(\"{quoted_left_started}\") == 0 || fs.exists(\"{quoted_right_started}\") == 0 {{\n        checkpoint()\n    }}\n    discard task.group_cancel(group)\n    if fs.read_file(\"{quoted_left_cleanup}\") == \"cancelled\" && fs.read_file(\"{quoted_right_cleanup}\") == \"cancelled\" {{\n        return 0\n    }}\n    return 13\n}}\n"
+            ),
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("task.group_cancel runtime program should succeed");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&left_cleanup).expect("left cleanup file should exist"),
+            "cancelled"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&right_cleanup).expect("right cleanup file should exist"),
+            "cancelled"
+        );
+
+        let _ = std::fs::remove_file(source);
+        let _ = std::fs::remove_file(left_started);
+        let _ = std::fs::remove_file(right_started);
+        let _ = std::fs::remove_file(left_cleanup);
+        let _ = std::fs::remove_file(right_cleanup);
+    }
+
+    #[test]
+    fn http_stream_read_line_respects_task_local_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener addr should resolve");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("server should accept connection");
+            let mut buf = [0u8; 1024];
+            let _ = stream.read(&mut buf).expect("server read should succeed");
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+                )
+                .expect("server headers should write");
+            stream.flush().expect("headers flush should succeed");
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            stream
+                .write_all(b"event: message_start\n\n")
+                .expect("event write should succeed");
+            stream.flush().expect("event flush should succeed");
+        });
+
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let source =
+            std::env::temp_dir().join(format!("fozzylang-http-stream-timeout-{suffix}.fzy"));
+        std::fs::write(
+            &source,
+            format!(
+                "use core.http;\nuse core.thread;\n\nfn main() -> i32 {{\n    discard http.header_set(\"accept\", \"text/event-stream\")\n    timeout(25)\n    let stream = http.post_json_stream(\"http://127.0.0.1:{}/sse\", \"{{\\\"stream\\\":true}}\")\n    defer http.stream_close(stream)\n    if http.stream_status(stream) != 200 {{\n        return http.stream_status(stream)\n    }}\n    let line = http.stream_read_line(stream)\n    let err = http.stream_error(stream)\n    if line == \"\" && (http.stream_eof(stream) == 1 || str.len(err) > 0) {{\n        return 0\n    }}\n    return 17\n}}\n",
+                addr.port()
+            ),
+        )
+        .expect("source should be written");
+
+        let output = run(
+            Command::Run {
+                path: source.clone(),
+                args: Vec::new(),
+                deterministic: false,
+                strict_verify: false,
+                safe_profile: false,
+                seed: None,
+                record: None,
+                host_backends: true,
+                backend: None,
+                max_seconds: None,
+                exit_on_healthcheck: None,
+                smoke_http: None,
+            },
+            Format::Json,
+        )
+        .expect("http stream timeout program should succeed");
+        assert!(
+            output.contains("\"exitCode\":0"),
+            "unexpected output: {output}"
+        );
+
+        server.join().expect("server thread should finish");
+        let _ = std::fs::remove_file(source);
+    }
+
+    #[test]
     fn request_handler_spawns_preserve_join_results_and_json_response() {
         let probe = TcpListener::bind("127.0.0.1:0").expect("probe listener should bind");
         let port = probe

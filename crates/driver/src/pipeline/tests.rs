@@ -864,6 +864,149 @@ fn compile_file_emits_async_task_wrapper_terminal_state() {
 }
 
 #[test]
+fn compile_file_emits_async_runtime_wait_policy_evidence() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-runtime-wait-artifacts-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_runtime_wait_artifacts\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_runtime_wait_artifacts\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.proc;\nuse core.thread;\n\nasync fn bounded_http() -> i32 {\n    timeout(25)\n    let conn = http.accept()\n    defer close(conn)\n    discard http.read(conn)\n    return 0\n}\n\nasync fn unbounded_http() -> i32 {\n    let conn = http.accept()\n    defer close(conn)\n    discard http.read(conn)\n    return 0\n}\n\nfn main() -> i32 {\n    let env_map = proc.env_new()\n    let argv = proc.argv_new()\n    let handle = proc.spawn_cmd(\"echo\", argv, env_map, \"\")\n    discard proc.wait(handle, 100)\n    discard proc.close(handle)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Dev).expect("compile should run");
+    assert_eq!(artifact.status, "ok");
+
+    let async_report = std::fs::read_to_string(root.join(".fz/async-safety.json"))
+        .expect("async safety report should exist");
+    assert!(async_report.contains("\"boundedRuntimeWaits\": true"));
+    assert!(async_report.contains("\"cancelTaskCleanup\": \"join_and_cleanup\""));
+    assert!(async_report.contains("\"callee\": \"http.read\""));
+    assert!(async_report.contains("\"bounding\": \"task_local_timeout_or_deadline\""));
+    assert!(async_report.contains("\"bounding\": \"missing_timeout_or_deadline\""));
+    assert!(async_report.contains("\"callee\": \"proc.wait\""));
+    assert!(async_report.contains("\"bounding\": \"explicit_timeout_arg\""));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_compile_surfaces_async_unbounded_runtime_wait_diagnostic() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-runtime-wait-strict-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_runtime_wait_strict\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_runtime_wait_strict\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.thread;\nasync fn worker() -> i32 {\n    let conn = http.accept()\n    defer close(conn)\n    discard http.read(conn)\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "error");
+    assert!(artifact.diagnostic_details.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("function `worker` performs blocking http wait `http.read` without a timeout/deadline bound")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_async_unbounded_runtime_wait_diagnostic_is_snapshot_stable() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-runtime-wait-snapshot-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_runtime_wait_snapshot\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_runtime_wait_snapshot\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.thread;\nasync fn worker() -> i32 {\n    let conn = http.accept()\n    defer close(conn)\n    discard http.read(conn)\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    let diagnostic = artifact
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| diagnostic
+            .message
+            == "function `worker` performs blocking http wait `http.read` without a timeout/deadline bound")
+        .expect("strict runtime-wait diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some(
+            "Add `timeout(...)` or `deadline(...)` before the blocking call, or switch to an intrinsically bounded wait such as `proc.wait(..., timeout_ms)` or `http.poll_next()`."
+        )
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("strict runtime-wait diagnostic should carry stable code");
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn strict_compile_allows_bounded_async_runtime_waits() {
+    let root = std::env::temp_dir().join(format!(
+        "fozzylang-async-runtime-wait-bounded-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"async_runtime_wait_bounded\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"async_runtime_wait_bounded\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.http;\nuse core.thread;\nasync fn worker() -> i32 {\n    timeout(25)\n    let conn = http.accept()\n    defer close(conn)\n    discard http.read(conn)\n    return 0\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file(&root, BuildProfile::Strict).expect("strict compile should run");
+    assert_eq!(artifact.status, "ok");
+    assert!(!artifact
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| diagnostic
+            .message
+            .contains("without a timeout/deadline bound")));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
 fn strict_compile_rejects_rpc_calls_without_deadlines() {
     let root = std::env::temp_dir().join(format!(
         "fozzylang-rpc-strict-{}",
@@ -6247,14 +6390,14 @@ fn documented_native_runtime_contract_surface_has_expected_metadata() {
             "task.group_join_all",
             1,
             "consume_arg0",
-            "nonblocking",
+            "may_block",
             "consumes_linear_handle",
         ),
         (
             "task.group_cancel",
             1,
             "consume_arg0",
-            "nonblocking",
+            "may_block",
             "consumes_linear_handle",
         ),
         (

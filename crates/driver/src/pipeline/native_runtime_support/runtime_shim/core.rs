@@ -234,8 +234,9 @@ static int32_t fz_spawn_max_active = 1024;
 static pthread_mutex_t fz_spawn_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t fz_spawn_atexit_once = PTHREAD_ONCE_INIT;
 static __thread int32_t fz_tls_task_context = 0;
-static int64_t fz_async_deadline_ms = 0;
-static int32_t fz_async_cancelled = 0;
+static __thread int32_t fz_tls_task_handle = 0;
+static __thread int64_t fz_tls_async_deadline_ms = 0;
+static __thread int32_t fz_tls_async_cancelled = 0;
 static fz_callback_i32_v0 fz_host_callbacks[64];
 static int fz_host_initialized = 0;
 static pthread_mutex_t fz_host_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -286,6 +287,7 @@ static int fz_parse_json_string_array(const char* raw, char*** out_items, int* o
 static int fz_parse_json_env_object(const char* raw, char*** out_items, int* out_count);
 static void fz_free_string_list(char** items, int count);
 static int fz_json_parse_value_slice(const char* raw, const char** out_start, const char** out_end);
+static fz_spawn_state* fz_spawn_state_by_handle_locked(int32_t handle);
 int32_t fz_native_net_request_id(int32_t conn_fd);
 int32_t fz_native_net_write(int32_t conn_fd, int32_t status_code, int32_t body_id);
 
@@ -734,6 +736,47 @@ static int64_t fz_now_ms(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (int64_t)ts.tv_sec * 1000 + (ts.tv_nsec / 1000000);
+}
+
+static int fz_async_current_task_cancelled(void) {
+  if (fz_tls_async_cancelled) {
+    return 1;
+  }
+  if (fz_tls_task_handle <= 0) {
+    return 0;
+  }
+  int cancelled = 0;
+  pthread_mutex_lock(&fz_spawn_lock);
+  fz_spawn_state* state = fz_spawn_state_by_handle_locked(fz_tls_task_handle);
+  if (state != NULL && state->cancelled) {
+    cancelled = 1;
+  }
+  pthread_mutex_unlock(&fz_spawn_lock);
+  if (cancelled) {
+    fz_tls_async_cancelled = 1;
+  }
+  return cancelled;
+}
+
+static int fz_async_deadline_expired(void) {
+  return fz_tls_async_deadline_ms > 0 && fz_now_ms() >= fz_tls_async_deadline_ms;
+}
+
+static int fz_async_effective_timeout_ms(int timeout_ms) {
+  if (fz_async_current_task_cancelled()) {
+    return 0;
+  }
+  if (fz_tls_async_deadline_ms <= 0) {
+    return timeout_ms;
+  }
+  int64_t remaining = fz_tls_async_deadline_ms - fz_now_ms();
+  if (remaining <= 0) {
+    return 0;
+  }
+  if (timeout_ms < 0 || remaining < (int64_t)timeout_ms) {
+    return remaining > INT32_MAX ? INT32_MAX : (int)remaining;
+  }
+  return timeout_ms;
 }
 
 typedef struct {
@@ -2535,11 +2578,18 @@ static void* fz_spawn_thread_main(void* arg) {
 
   int32_t result = -1;
   fz_tls_task_context = context_id;
+  fz_tls_task_handle = handle;
+  fz_tls_async_deadline_ms = 0;
+  fz_tls_async_cancelled = cancelled ? 1 : 0;
   if (!cancelled && entry != NULL) {
     result = entry();
   } else if (cancelled) {
     result = -2;
   }
+  fz_tls_task_handle = 0;
+  fz_tls_async_deadline_ms = 0;
+  fz_tls_async_cancelled = 0;
+  fz_tls_task_context = 0;
 
   pthread_mutex_lock(&fz_spawn_lock);
   state = fz_spawn_state_by_handle_locked(handle);

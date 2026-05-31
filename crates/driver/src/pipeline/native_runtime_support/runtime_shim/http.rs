@@ -948,6 +948,24 @@ static int fz_http_stream_drain_locked(fz_http_stream_state* state) {
   if (state == NULL || state->closed) {
     return -1;
   }
+  if (fz_async_current_task_cancelled()) {
+    if (!state->done && state->pid > 0) {
+      kill(state->pid, SIGTERM);
+      fz_http_stream_finish_locked(state, 1);
+    }
+    state->eof = 1;
+    fz_http_stream_refresh_error_locked(state, "http stream cancelled");
+    return -1;
+  }
+  if (fz_async_deadline_expired()) {
+    if (!state->done && state->pid > 0) {
+      kill(state->pid, SIGTERM);
+      fz_http_stream_finish_locked(state, 1);
+    }
+    state->eof = 1;
+    fz_http_stream_refresh_error_locked(state, "http stream deadline expired");
+    return -1;
+  }
   size_t before_stdout = state->stdout_buf.len;
   size_t before_stderr = state->stderr_buf.len;
   int before_eof = state->eof;
@@ -1017,7 +1035,7 @@ static int32_t fz_http_stream_consume_line_locked(fz_http_stream_state* state) {
       ? (state->stdout_buf.len - state->stdout_read_pos)
       : 0;
   if (unread == 0) {
-    return fz_intern_slice("", 0);
+    return state->eof ? fz_intern_slice("", 0) : 0;
   }
   char* start = state->stdout_buf.data + state->stdout_read_pos;
   char* newline = memchr(start, '\n', unread);
@@ -1522,7 +1540,17 @@ int32_t fz_native_http_stream_read(int32_t handle, int32_t max_bytes) {
       return fz_intern_slice("", 0);
     }
     if (progress == 0) {
-      usleep(1000);
+      int sleep_ms = fz_async_effective_timeout_ms(1);
+      if (sleep_ms <= 0) {
+        pthread_mutex_lock(&fz_http_lock);
+        state = fz_http_stream_state_get(handle);
+        if (state != NULL && !state->closed) {
+          (void)fz_http_stream_drain_locked(state);
+        }
+        pthread_mutex_unlock(&fz_http_lock);
+        return fz_intern_slice("", 0);
+      }
+      usleep((useconds_t)sleep_ms * 1000);
     }
   }
 }
@@ -1550,7 +1578,17 @@ int32_t fz_native_http_stream_read_line(int32_t handle) {
       return fz_intern_slice("", 0);
     }
     if (progress == 0) {
-      usleep(1000);
+      int sleep_ms = fz_async_effective_timeout_ms(1);
+      if (sleep_ms <= 0) {
+        pthread_mutex_lock(&fz_http_lock);
+        state = fz_http_stream_state_get(handle);
+        if (state != NULL && !state->closed) {
+          (void)fz_http_stream_drain_locked(state);
+        }
+        pthread_mutex_unlock(&fz_http_lock);
+        return fz_intern_slice("", 0);
+      }
+      usleep((useconds_t)sleep_ms * 1000);
     }
   }
 }

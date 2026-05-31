@@ -7,7 +7,6 @@ Only unfinished work lives here. When a work item is done, remove it entirely.
 - `14. Compiler-phase lock-in suite`
 - `15. Memory-safety adversarial coverage`
 - `16. Native import contract tables`
-- `18. Async/task safety`
 - `19. RPC hardening`
 - `20. Backend parity law`
 - `21. Diagnostic stability`
@@ -54,20 +53,6 @@ Required tests:
 ## Priority 7
 
 ## Priority 8
-
-### 18. Async/task safety
-
-Checklist:
-
-- Make timeout and deadline semantics deterministic.
-- Ensure cancelled tasks clean resources.
-- Harden the call-edge model for borrow, mutability, and thread crossings beyond same-function checks where feasible.
-
-Required tests:
-
-- Test programs for group cancel with open resources, and timeout around stream, process, and HTTP surfaces.
-- Deterministic scheduler coverage across `fifo`, `random`, and `coverage_guided`.
-- Trace verification that async schedule and task-group terminal policy are deterministic and replayable.
 
 ### 19. RPC hardening
 

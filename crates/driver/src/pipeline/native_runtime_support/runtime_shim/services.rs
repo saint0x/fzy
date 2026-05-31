@@ -1316,7 +1316,16 @@ static int fz_wait_for_fd_event(int fd, short events, int timeout_ms) {
   pfd.events = events;
   pfd.revents = 0;
   for (;;) {
-    int ready = poll(&pfd, 1, timeout_ms);
+    if (fz_async_current_task_cancelled()) {
+      errno = ECANCELED;
+      return -1;
+    }
+    if (fz_async_deadline_expired()) {
+      errno = ETIMEDOUT;
+      return -1;
+    }
+    int effective_timeout_ms = fz_async_effective_timeout_ms(timeout_ms);
+    int ready = poll(&pfd, 1, effective_timeout_ms);
     if (ready > 0) {
       return 0;
     }
