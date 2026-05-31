@@ -19,11 +19,13 @@ Current production summary:
 - the native runtime surface now covers serious modern systems work: async/tasks, RPC, ADTs, traits/generics, process/terminal/logging, filesystem/path, JSON control-plane workflows, and outbound HTTP streaming
 - the production standard library now includes first-class crypto/security helpers for random, hashing, HMAC, constant-time compare, and URL-safe encodings
 - the in-tree `fzweb` framework now covers app routing, cookies, sessions, multipart uploads, persistence, SSE, websockets, and OpenAPI export
+- the production GPU surface now includes live Metal execution on Apple through `core.gpu`, with shared launch/package contracts for declared `spirv` and `nvptx` backends
 
 Canonical production workflow: `docs/production-workflow-v1.md`  
 Failure triage playbook: `docs/production-failure-triage-v1.md`
 Exit criteria tracking policy: `docs/exit-criteria-v1.md`
 System safety/trust model: `docs/system-safety-trust-model-v1.md`
+GPU programming guide: `docs/gpu-v1.md`
 
 ## 1. What You Use In Practice
 
@@ -102,6 +104,23 @@ fz replay artifacts/trace.fozzy --json
 fz ci artifacts/trace.fozzy --json
 ```
 
+### 3.4 Run the live GPU example on Apple/Metal
+
+```bash
+fz check examples/gpu_metal_image --json
+fz build examples/gpu_metal_image --json
+fz run examples/gpu_metal_image --det --record artifacts/gpu_metal_image_example.trace.fozzy --json
+fz trace verify artifacts/gpu_metal_image_example.trace.fozzy --strict --json
+fz replay artifacts/gpu_metal_image_example.trace.fozzy --json
+fz ci artifacts/gpu_metal_image_example.trace.fozzy --json
+```
+
+Notes:
+
+- today, live native GPU execution is `metal` on Apple
+- `spirv` and `nvptx` are day-one architecture modules but not yet executable backends
+- `examples/gpu_metal_image` is the reference production-shaped project for the current GPU surface
+
 ## 4. Core Mental Model
 
 Treat your workflow as three layers:
@@ -154,6 +173,10 @@ Use cases:
 - `test`: execute discovered tests with optional deterministic scheduler policy
   - `--host-backends` on native `.fzy` sources now auto-bridges through generated temporary scenario artifacts (single command flow)
 - production memory safety verification is always enabled for `run` and `test`
+- GPU-native projects follow the same command surface:
+  - `fz build` emits `.fz/gpu-kernel-package.{json,md}` for GPU kernels
+  - `fz run --det --record ...` records both the `.fozzy` trace and the native GPU trace artifact
+  - `fz trace verify`, `fz replay`, and `fz ci` are expected production gates for GPU changes too
 
 Native host-backed runtime defaults:
 - bind host default is `127.0.0.1` (`FZ_HOST` > `AGENT_HOST` > default)

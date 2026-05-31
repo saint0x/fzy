@@ -1,0 +1,12 @@
+{
+  "dependencyGraphHash": "75fe869bb9061ddb3138c75875aea66bdf65bc4bb02d1fda4066693801626f92",
+  "graph": {
+    "deps": [],
+    "package": {
+      "manifestHash": "29ddfc964df70bfff58b21102a6231fd19d2d7d6d81329f45f28242fc106f8ea",
+      "name": "gpu_metal_image",
+      "version": "0.1.0"
+    }
+  },
+  "schemaVersion": "fozzylang.lock.v0"
+}

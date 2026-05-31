@@ -1,0 +1,43 @@
+fn sample_pixels() -> [f32; 8] {
+    return [0.0f32, 0.125f32, 0.25f32, 0.375f32, 0.5f32, 0.625f32, 0.75f32, 0.875f32]
+}
+
+fn expected_pixels() -> [f32; 8] {
+    return [0.25f32, 0.375f32, 0.5f32, 0.625f32, 0.75f32, 0.875f32, 1.0f32, 1.0f32]
+}
+
+fn delta() -> f32 {
+    return 0.25f32
+}
+
+fn pixel_count() -> i32 {
+    return 8
+}
+
+fn grid_size() -> i32 {
+    return 1
+}
+
+fn block_size() -> i32 {
+    return 64
+}
+
+fn validate_pixels(output: Vec<f32>) -> i32 {
+    let expected = expected_pixels()
+    if output[0] != expected[0] { return 41 }
+    if output[1] != expected[1] { return 42 }
+    if output[2] != expected[2] { return 43 }
+    if output[3] != expected[3] { return 44 }
+    if output[4] != expected[4] { return 45 }
+    if output[5] != expected[5] { return 46 }
+    if output[6] != expected[6] { return 47 }
+    if output[7] != expected[7] { return 48 }
+    return 0
+}
+
+fn validate_expected_contract() -> i32 {
+    let expected = expected_pixels()
+    if expected[0] != 0.25f32 { return 51 }
+    if expected[7] != 1.0f32 { return 52 }
+    return 0
+}

@@ -60,9 +60,31 @@ Guidance:
 - Keep transport-specific JSON shaping in `api/` or response helpers, not in business logic.
 - Prefer object-literal JSON construction (`json.object(#{...})`) for static payloads.
 
+## GPU Compute App
+
+```text
+src/
+  main.fzy
+  api/
+  cli/
+  model/
+  runtime/
+  services/
+  tests/
+```
+
+Guidance:
+
+- Keep `kernel fn ...` definitions and launch orchestration in `services/`.
+- Keep grid/block sizing, expected outputs, and verifier-stable data contracts in `model/`.
+- Keep device selection, backend summary, and operator-facing startup checks in `runtime/`.
+- Keep CLI entrypoints in `cli/`; treat trace recording and deterministic validation as part of the normal run story, not a side workflow.
+- Treat `.fz/gpu-kernel-package.{json,md}` as generated build artifacts that describe the shared backend-neutral launch contract.
+
 ## Reference
 
 - `examples/service_app`
 - `examples/fullstack`
 - `examples/live_server`
+- `examples/gpu_metal_image`
 - `frameworklib/fzweb`

@@ -281,6 +281,53 @@ Transcript guidance:
 - Example:
   - [examples/simd_kernels](/Users/deepsaint/Desktop/fozzylang/examples/simd_kernels/README.md) shows the current production-style SIMD workflow for signed mix/limit, partial tail merges, channel swizzles, highlighted-lane scatter, and the same cross-backend vector contracts the fixture suite exercises.
 
+### `gpu`
+
+- `use core.gpu;` is the canonical GPU compute import.
+- Host-side device and buffer surface:
+  - `gpu.device_count()`
+  - `gpu.default_device()`
+  - `gpu.device_name(dev)`
+  - `gpu.device_memory_bytes(dev)`
+  - `gpu.alloc_f32(dev, len)`
+  - `gpu.alloc_i32(dev, len)`
+  - `gpu.alloc_u32(dev, len)`
+  - `gpu.free(buffer)`
+  - `gpu.upload_f32(dev, values)`
+  - `gpu.upload_i32(dev, values)`
+  - `gpu.upload_u32(dev, values)`
+  - `gpu.download_f32(buffer)`
+  - `gpu.download_i32(buffer)`
+  - `gpu.download_u32(buffer)`
+  - `gpu.slice(buffer, offset, len)`
+  - `gpu.wait(event)`
+  - `await gpu.wait_async(event)`
+  - `gpu.launch0..4(kernel, grid, block, ...)`
+- Device/kernel-side helpers:
+  - `gpu.len(slice)`
+  - `gpu.global_id_x/y/z()`
+  - `gpu.thread_id_x/y/z()`
+  - `gpu.block_id_x/y/z()`
+  - `gpu.block_dim_x/y/z()`
+  - `gpu.grid_dim_x/y/z()`
+  - `gpu.barrier()`
+  - typed load/store helpers for `GpuSlice<f32/i32/u32>`
+  - slice indexing syntax over `GpuSlice<f32/i32/u32>`
+- Handle contract:
+  - `GpuDevice`: copy=yes, owned=no, linear=no, closable=no, send-safe=no, async-stable=yes
+  - `GpuBuffer<T>`: copy=no, owned=yes, linear=yes, closable=yes via `gpu.free`, send-safe=no, async-stable=no
+  - `GpuSlice<T>`: copy=no, owned=yes, linear=no, closable=no, send-safe=no, async-stable=no
+  - `GpuEvent`: copy=no, owned=yes, linear=yes, closable=yes via `gpu.wait`/`gpu.wait_async`, send-safe=no, async-stable=yes
+- Contract:
+  - the stable launch ABI currently supports `GpuSlice<f32/i32/u32>` parameters plus scalar numeric parameters
+  - verifier-enforced slice/owner alias rules are part of the public production contract
+  - GPU builds emit `.fz/gpu-kernel-package.{json,md}` as the backend-neutral kernel package
+  - recorded native trace artifacts emit GPU lifecycle and kernel-launch evidence
+  - live executable backend today is `metal` on Apple
+  - `spirv` and `nvptx` are shared-contract adapters, but not yet executable backends
+- Example:
+  - [examples/gpu_metal_image](/Users/deepsaint/Desktop/fozzylang/examples/gpu_metal_image/README.md) shows the current production-shaped Metal workflow for upload, launch, wait, download, trace capture, and package inspection.
+
 - `use core.text;` is the standard-library text helper module for native CLI/service rendering.
 - Common helpers:
   - `text.trim(value)`
