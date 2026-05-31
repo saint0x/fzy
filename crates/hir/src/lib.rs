@@ -19748,6 +19748,39 @@ mod tests {
     }
 
     #[test]
+    fn if_expression_reference_flow_still_validates_return_lifetimes() {
+        let source = r#"
+            fn relay(flag: i32, a: &'a i32, b: &'b i32) -> &'a i32 {
+                return if flag == 0 { a } else { b };
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert!(typed.reference_lifetime_violations.iter().any(|detail| {
+            detail.contains("returns reference expression with mismatched lifetime")
+                || detail.contains(
+                    "returns reference expression without a statically traced lifetime source",
+                )
+        }));
+    }
+
+    #[test]
+    fn same_lifetime_reference_relay_stays_clean() {
+        let source = r#"
+            fn borrow(v: &'a i32) -> &'a i32 {
+                return v;
+            }
+            fn relay(a: &'a i32) -> &'a i32 {
+                return borrow(a);
+            }
+        "#;
+        let module = parser::parse(source, "main").expect("parse");
+        let typed = lower(&module);
+        assert_eq!(typed.type_errors, 0);
+        assert!(typed.reference_lifetime_violations.is_empty());
+    }
+
+    #[test]
     fn borrow_then_free_is_rejected_while_alias_is_still_live() {
         let source = r#"
             fn borrow(v: &'a *mut u8) -> &'a *mut u8 {

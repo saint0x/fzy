@@ -589,6 +589,15 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
         ));
     }
     for violation in &module.reference_lifetime_violations {
+        let help = if violation.contains("returns reference expression with mismatched lifetime") {
+            "return the reference tied to the declared output lifetime on every path, or return an owned value instead".to_string()
+        } else if violation
+            .contains("returns reference expression without a statically traced lifetime source")
+        {
+            "bind the returned reference to one explicit input lifetime before returning, or switch the API to an owned return".to_string()
+        } else {
+            "introduce explicit lifetime/region-safe ownership handoff".to_string()
+        };
         report.diagnostics.push(Diagnostic::new(
             if memory_safety_enforced {
                 Severity::Error
@@ -596,7 +605,7 @@ pub fn verify_with_policy(module: &FirModule, policy: VerifyPolicy) -> VerifyRep
                 Severity::Warning
             },
             violation.clone(),
-            Some("introduce explicit lifetime/region-safe ownership handoff".to_string()),
+            Some(help),
         ));
     }
     for violation in &module.linear_type_violations {

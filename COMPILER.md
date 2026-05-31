@@ -43,7 +43,7 @@ Required tests:
 
 Checklist:
 
-- Finish promoting any remaining aggregate, provenance, and control-flow ownership shapes that are still only HIR-covered or partially regression-covered at the shipped `fz verify` surface.
+- Finish promoting any remaining aggregate, provenance, and ownership-state shapes that are still only HIR-covered or partially regression-covered at the shipped `fz verify` surface.
 - Finish bringing any still-unlocked shipped runtime handle families under the same ownership-state, cleanup, and post-consume law as `alloc(...)` and `free(...)`.
 
 Required tests:

@@ -3662,6 +3662,171 @@ fn verify_mutable_borrow_then_plain_owner_call_access_diagnostic_is_snapshot_sta
 }
 
 #[test]
+fn verify_reference_lifetime_relay_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-reference-lifetime-relay-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn borrow(v: &'b i32) -> &'b i32 {\n    return v\n}\nfn relay(a: &'a i32, b: &'b i32) -> &'a i32 {\n    return borrow(b)\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("returns reference expression with mismatched lifetime")
+        })
+        .expect("returned-reference lifetime relay diagnostic should be present");
+    assert_eq!(
+        diagnostic.help.as_deref(),
+        Some("return the reference tied to the declared output lifetime on every path, or return an owned value instead")
+    );
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("returned-reference lifetime relay diagnostic should carry stable code");
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("call signature mismatch for `borrow`")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_assignment_shaped_reference_lifetime_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-reference-lifetime-assignment-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn borrow_a(v: &'a i32) -> &'a i32 {\n    return v\n}\nfn borrow_b(v: &'b i32) -> &'b i32 {\n    return v\n}\nfn relay(a: &'a i32, b: &'b i32) -> &'a i32 {\n    let mut out = borrow_a(a)\n    if true {\n        out = borrow_b(b)\n    }\n    return out\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic.message.contains(
+                "returns reference expression without a statically traced lifetime source",
+            ) || diagnostic
+                .message
+                .contains("returns reference expression with mismatched lifetime")
+        })
+        .expect("assignment-shaped returned-reference lifetime diagnostic should be present");
+    let expected_help = if diagnostic
+        .message
+        .contains("without a statically traced lifetime source")
+    {
+        "bind the returned reference to one explicit input lifetime before returning, or switch the API to an owned return"
+    } else {
+        "return the reference tied to the declared output lifetime on every path, or return an owned value instead"
+    };
+    assert_eq!(diagnostic.help.as_deref(), Some(expected_help));
+    let _ = diagnostic.code.as_deref().expect(
+        "assignment-shaped returned-reference lifetime diagnostic should carry stable code",
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_if_expression_reference_lifetime_diagnostic_is_snapshot_stable() {
+    let file_name = format!(
+        "fozzylang-reference-lifetime-if-expr-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn relay(flag: i32, a: &'a i32, b: &'b i32) -> &'a i32 {\n    return if flag == 0 { a } else { b }\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed with diagnostics");
+    let diagnostic = output
+        .diagnostic_details
+        .iter()
+        .find(|diagnostic| {
+            diagnostic
+                .message
+                .contains("returns reference expression with mismatched lifetime")
+                || diagnostic.message.contains(
+                    "returns reference expression without a statically traced lifetime source",
+                )
+        })
+        .expect("if-expression returned-reference lifetime diagnostic should be present");
+    let expected_help = if diagnostic
+        .message
+        .contains("without a statically traced lifetime source")
+    {
+        "bind the returned reference to one explicit input lifetime before returning, or switch the API to an owned return"
+    } else {
+        "return the reference tied to the declared output lifetime on every path, or return an owned value instead"
+    };
+    assert_eq!(diagnostic.help.as_deref(), Some(expected_help));
+    let _ = diagnostic
+        .code
+        .as_deref()
+        .expect("if-expression returned-reference lifetime diagnostic should carry stable code");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn verify_same_lifetime_reference_relay_stays_clean() {
+    let file_name = format!(
+        "fozzylang-reference-lifetime-clean-relay-{}.fzy",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let path = std::env::temp_dir().join(file_name);
+    std::fs::write(
+        &path,
+        "fn borrow(v: &'a i32) -> &'a i32 {\n    return v\n}\nfn relay(a: &'a i32) -> &'a i32 {\n    return borrow(a)\n}\nfn main() -> i32 {\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let output = verify_file(&path).expect("verify should succeed");
+    assert!(!output
+        .diagnostic_details
+        .iter()
+        .any(|diagnostic| matches!(diagnostic.severity, Severity::Error)));
+    assert!(!output.diagnostic_details.iter().any(|diagnostic| {
+        diagnostic.message.contains("mismatched lifetime")
+            || diagnostic
+                .message
+                .contains("without a statically traced lifetime source")
+            || diagnostic.message.contains("potential resource escape")
+    }));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn verify_owner_access_after_mutable_borrow_last_use_stays_clean() {
     let file_name = format!(
         "fozzylang-mut-borrow-last-use-clean-{}.fzy",
