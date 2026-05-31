@@ -137,6 +137,7 @@ The canonical production-shaped example is:
 
 - [examples/gpu_metal_image](/Users/deepsaint/Desktop/fozzylang/examples/gpu_metal_image/README.md)
 - [examples/gpu_cpu_aggregate](/Users/deepsaint/Desktop/fozzylang/examples/gpu_cpu_aggregate/README.md)
+- [examples/gpu_ascii_ripple](/Users/deepsaint/Desktop/fozzylang/examples/gpu_ascii_ripple/README.md)
 
 Recommended Apple/Metal workflow:
 

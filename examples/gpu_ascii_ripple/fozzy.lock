@@ -1,0 +1,12 @@
+{
+  "dependencyGraphHash": "cf106f1744993adb9ed4a7150859da3608510e079fa6ade93fcd6106b851f91a",
+  "graph": {
+    "deps": [],
+    "package": {
+      "manifestHash": "2fc2285124832fc939d3b1f8823d1734f213bcfe2f03ba81fce795ca61688ae8",
+      "name": "gpu_ascii_ripple",
+      "version": "0.1.0"
+    }
+  },
+  "schemaVersion": "fozzylang.lock.v0"
+}

@@ -1,0 +1,7 @@
+[package]
+name = "gpu_ascii_ripple"
+version = "0.1.0"
+
+[[target.bin]]
+name = "gpu_ascii_ripple"
+path = "src/main.fzy"

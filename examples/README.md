@@ -19,6 +19,7 @@ House style across the suite:
 - `simd_kernels`: fixed-array SIMD block processing for signed mixes, tail-safe merges, channel swizzles, and RGBA-style unsigned clamps.
 - `gpu_metal_image`: production-shaped GPU compute app with a live Metal brightness kernel, deterministic trace capture, and shared kernel-package artifacts.
 - `gpu_cpu_aggregate`: live Metal integer kernel plus CPU SIMD aggregation/reporting over the downloaded result, returning a real aggregate struct summary.
+- `gpu_ascii_ripple`: custom Fzy-authored Metal ripple kernel with CPU SIMD aggregation and ASCII frame rendering.
 - `agent_runtime`: distilled from `/Users/deepsaint/Desktop/fzyagent` and focused on signed sessions, tool catalogs, audit trails, and parallel task planning.
 - `context_runtime`: distilled from `/Users/deepsaint/Desktop/superctx` and focused on scoped memory scoring, protocol assembly, context framing, and deterministic compaction.
 
@@ -35,6 +36,9 @@ fz trace verify artifacts/gpu_metal_image_example.trace.fozzy --strict --json
 fz check examples/gpu_cpu_aggregate --json
 fz run examples/gpu_cpu_aggregate --host-backends --json
 fz run examples/gpu_cpu_aggregate --det --record artifacts/gpu_cpu_aggregate.trace.fozzy --json
+fz check examples/gpu_ascii_ripple --json
+fz run examples/gpu_ascii_ripple --host-backends --json
+fz run examples/gpu_ascii_ripple --det --record artifacts/gpu_ascii_ripple.trace.fozzy --json
 fz check examples/context_runtime --json
 fz test examples/context_runtime --det --strict-verify --json
 ```
