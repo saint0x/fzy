@@ -233,6 +233,74 @@ fn llvm_emit_borrowed_str_ptr_arg(
     })
 }
 
+fn llvm_emit_array_argument_parts(
+    arg: &ast::Expr,
+    ctx: &mut LlvmFuncCtx,
+    string_literal_ids: &HashMap<String, i32>,
+    task_ref_ids: &HashMap<String, i32>,
+) -> Result<Option<(LlvmValue, LlvmValue)>> {
+    match arg {
+        ast::Expr::Ident(name) => {
+            if let Some(binding) = ctx.array_slots.get(name).cloned() {
+                let ptr = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {ptr} = getelementptr inbounds [{} x {}], ptr {}, i32 0, i64 0\n",
+                    binding.len, binding.element_ty, binding.storage
+                ));
+                return Ok(Some((
+                    LlvmValue {
+                        value: ptr,
+                        ty: llvm_pointer_int_type().to_string(),
+                    },
+                    LlvmValue {
+                        value: binding.len.to_string(),
+                        ty: "i32".to_string(),
+                    },
+                )));
+            }
+            Ok(None)
+        }
+        ast::Expr::ArrayLiteral(items) => {
+            let storage = format!("%slot_upload_arr_{}", ctx.next_value);
+            ctx.next_value += 1;
+            let lowered_items = items
+                .iter()
+                .map(|item| llvm_emit_expr(item, ctx, string_literal_ids, task_ref_ids))
+                .collect::<Result<Vec<_>>>()?;
+            let element_ty = lowered_items
+                .first()
+                .map(|value| value.ty.clone())
+                .unwrap_or_else(|| "i32".to_string());
+            let len = items.len();
+            ctx.declare_alloca(&storage, &format!("[{len} x {element_ty}]"));
+            for (idx, item) in items.iter().enumerate() {
+                let item_value =
+                    llvm_emit_expr_as(item, ctx, string_literal_ids, task_ref_ids, &element_ty)?;
+                let element_ptr = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {element_ptr} = getelementptr inbounds [{len} x {element_ty}], ptr {storage}, i32 0, i64 {idx}\n  store {element_ty} {}, ptr {element_ptr}\n",
+                    item_value.value
+                ));
+            }
+            let ptr = ctx.value();
+            ctx.code.push_str(&format!(
+                "  {ptr} = getelementptr inbounds [{len} x {element_ty}], ptr {storage}, i32 0, i64 0\n"
+            ));
+            Ok(Some((
+                LlvmValue {
+                    value: ptr,
+                    ty: llvm_pointer_int_type().to_string(),
+                },
+                LlvmValue {
+                    value: len.to_string(),
+                    ty: "i32".to_string(),
+                },
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn llvm_emit_simd_ptr_alignment_check(
     kind: &str,
     op: &str,
@@ -2996,6 +3064,37 @@ pub(super) fn llvm_emit_complex_expr(
                     task_ref_ids,
                 );
             }
+            if matches!(
+                callee.as_str(),
+                "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32"
+            ) {
+                if args.len() != 2 {
+                    bail!("llvm backend lowering expected 2 source args for `{callee}`");
+                }
+                let device =
+                    llvm_emit_expr_as(&args[0], ctx, string_literal_ids, task_ref_ids, "i32")?;
+                let Some((host_ptr, host_len)) =
+                    llvm_emit_array_argument_parts(&args[1], ctx, string_literal_ids, task_ref_ids)?
+                else {
+                    bail!(
+                        "llvm backend lowering for `{callee}` currently requires a host array literal or local array binding until general slice ABI lowering lands"
+                    );
+                };
+                let symbol = native_mangle_symbol(
+                    native_runtime_import_for_callee(callee)
+                        .expect("gpu upload runtime import should exist")
+                        .symbol,
+                );
+                let val = ctx.value();
+                ctx.code.push_str(&format!(
+                    "  {val} = call i32 @{symbol}(i32 {}, {} {}, i32 {})\n",
+                    device.value, host_ptr.ty, host_ptr.value, host_len.value
+                ));
+                return Ok(LlvmValue {
+                    value: val,
+                    ty: "i32".to_string(),
+                });
+            }
             let signature = ctx.function_sigs.get(callee).cloned();
             let mut rendered_args = Vec::with_capacity(args.len());
             for (index, arg) in args.iter().enumerate() {
@@ -3532,6 +3631,14 @@ pub(super) fn lower_llvm_ir(fir: &fir::FirModule, enforce_contract_checks: bool)
             }
             "gpu.device_memory_bytes" => {
                 let _ = writeln!(&mut out, "declare i64 @{}(i32)", import.symbol);
+            }
+            "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32" => {
+                let _ = writeln!(
+                    &mut out,
+                    "declare i32 @{}(i32, {}, i32)",
+                    import.symbol,
+                    llvm_pointer_int_type()
+                );
             }
             "gpu.slice" => {
                 let _ = writeln!(

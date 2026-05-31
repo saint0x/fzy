@@ -14487,6 +14487,7 @@ fn bind_typevars(template: &Type, concrete: &Type, bindings: &mut BTreeMap<Strin
         },
         Type::Slice(inner) => {
             matches!(concrete, Type::Slice(other) if bind_typevars(inner, other, bindings))
+                || matches!(concrete, Type::Array { elem, .. } if bind_typevars(inner, elem, bindings))
         }
         Type::Array { elem, len } => {
             matches!(concrete, Type::Array { elem: other_elem, len: other_len } if len == other_len && bind_typevars(elem, other_elem, bindings))
@@ -16493,6 +16494,11 @@ fn coercible_integer_literal_value(expr: &Expr) -> Option<i128> {
 fn expr_type_compatible(expected: &Type, actual: &Type, expr: &Expr) -> bool {
     if type_compatible(expected, actual) {
         return true;
+    }
+    if let (Type::Slice(expected_inner), Type::Array { elem, .. }) = (expected, actual) {
+        if type_compatible(expected_inner, elem) {
+            return true;
+        }
     }
     if let Type::Ref { to, .. } = expected {
         if expr_supports_implicit_borrow(expr) && type_compatible(to, actual) {

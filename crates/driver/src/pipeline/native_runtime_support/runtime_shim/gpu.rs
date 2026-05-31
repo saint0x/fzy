@@ -162,7 +162,14 @@ int64_t fz_native_gpu_device_memory_bytes(int32_t device_handle) {
 #endif
 }
 
-static int32_t fz_native_gpu_alloc_bytes(int32_t device_handle, int32_t len, int32_t element_size, const char* context) {
+static int32_t fz_native_gpu_buffer_new(
+    int32_t device_handle,
+    int32_t len,
+    int32_t element_size,
+    const char* context,
+    const char* alloc_failure_context,
+    const void* host_data
+) {
   pthread_once(&fz_gpu_init_once, fz_gpu_runtime_init);
   if (len < 0) {
     fz_set_last_error(EINVAL, 3, context);
@@ -178,8 +185,17 @@ static int32_t fz_native_gpu_alloc_bytes(int32_t device_handle, int32_t len, int
     NSUInteger bytes = (NSUInteger)((uint64_t)(uint32_t)len * (uint64_t)(uint32_t)element_size);
     id<MTLBuffer> buffer = [device newBufferWithLength:bytes options:MTLResourceStorageModeShared];
     if (buffer == nil) {
-      fz_set_last_error(ENOMEM, 3, "gpu.alloc failed: Metal buffer allocation returned nil");
+      fz_set_last_error(ENOMEM, 3, alloc_failure_context);
       return 0;
+    }
+    if (bytes > 0 && host_data != NULL) {
+      void* contents = [buffer contents];
+      if (contents == NULL) {
+        [buffer release];
+        fz_set_last_error(EIO, 3, "gpu.upload failed: Metal buffer has no CPU-visible contents");
+        return 0;
+      }
+      memcpy(contents, host_data, bytes);
     }
     pthread_mutex_lock(&fz_gpu_lock);
     int32_t handle = fz_gpu_buffer_alloc_slot();
@@ -202,21 +218,91 @@ static int32_t fz_native_gpu_alloc_bytes(int32_t device_handle, int32_t len, int
 #else
   (void)device_handle;
   (void)element_size;
-  fz_set_last_error(ENOTSUP, 3, "gpu.alloc failed: Metal runtime unavailable on this host");
+  (void)host_data;
+  fz_set_last_error(ENOTSUP, 3, alloc_failure_context);
   return 0;
 #endif
 }
 
 int32_t fz_native_gpu_alloc_f32(int32_t device_handle, int32_t len) {
-  return fz_native_gpu_alloc_bytes(device_handle, len, 4, "gpu.alloc_f32 failed: len must be >= 0");
+  return fz_native_gpu_buffer_new(
+      device_handle,
+      len,
+      4,
+      "gpu.alloc_f32 failed: len must be >= 0",
+      "gpu.alloc failed: Metal buffer allocation returned nil",
+      NULL);
 }
 
 int32_t fz_native_gpu_alloc_i32(int32_t device_handle, int32_t len) {
-  return fz_native_gpu_alloc_bytes(device_handle, len, 4, "gpu.alloc_i32 failed: len must be >= 0");
+  return fz_native_gpu_buffer_new(
+      device_handle,
+      len,
+      4,
+      "gpu.alloc_i32 failed: len must be >= 0",
+      "gpu.alloc failed: Metal buffer allocation returned nil",
+      NULL);
 }
 
 int32_t fz_native_gpu_alloc_u32(int32_t device_handle, int32_t len) {
-  return fz_native_gpu_alloc_bytes(device_handle, len, 4, "gpu.alloc_u32 failed: len must be >= 0");
+  return fz_native_gpu_buffer_new(
+      device_handle,
+      len,
+      4,
+      "gpu.alloc_u32 failed: len must be >= 0",
+      "gpu.alloc failed: Metal buffer allocation returned nil",
+      NULL);
+}
+
+static int32_t fz_native_gpu_upload_bytes(
+    int32_t device_handle,
+    const void* host_data,
+    int32_t len,
+    int32_t element_size,
+    const char* len_context
+) {
+  if (len < 0) {
+    fz_set_last_error(EINVAL, 3, len_context);
+    return 0;
+  }
+  if (len > 0 && host_data == NULL) {
+    fz_set_last_error(EINVAL, 3, "gpu.upload failed: host data pointer was null");
+    return 0;
+  }
+  return fz_native_gpu_buffer_new(
+      device_handle,
+      len,
+      element_size,
+      len_context,
+      "gpu.upload failed: Metal buffer allocation returned nil",
+      host_data);
+}
+
+int32_t fz_native_gpu_upload_f32(int32_t device_handle, uintptr_t host_data, int32_t len) {
+  return fz_native_gpu_upload_bytes(
+      device_handle,
+      (const void*)host_data,
+      len,
+      4,
+      "gpu.upload_f32 failed: len must be >= 0");
+}
+
+int32_t fz_native_gpu_upload_i32(int32_t device_handle, uintptr_t host_data, int32_t len) {
+  return fz_native_gpu_upload_bytes(
+      device_handle,
+      (const void*)host_data,
+      len,
+      4,
+      "gpu.upload_i32 failed: len must be >= 0");
+}
+
+int32_t fz_native_gpu_upload_u32(int32_t device_handle, uintptr_t host_data, int32_t len) {
+  return fz_native_gpu_upload_bytes(
+      device_handle,
+      (const void*)host_data,
+      len,
+      4,
+      "gpu.upload_u32 failed: len must be >= 0");
 }
 
 int32_t fz_native_gpu_buffer_free(int32_t buffer_handle) {

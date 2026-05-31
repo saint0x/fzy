@@ -849,6 +849,15 @@ pub(super) fn declare_native_runtime_imports(
                 sig.returns.push(AbiParam::new(types::I64));
                 ret = Some(types::I64);
             }
+            "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32" => {
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                params.push(pointer_sized_clif_type());
+                sig.params.push(AbiParam::new(pointer_sized_clif_type()));
+                params.push(types::I32);
+                sig.params.push(AbiParam::new(types::I32));
+                sig.returns.push(AbiParam::new(types::I32));
+            }
             "gpu.slice" => {
                 for _ in 0..import.arity {
                     params.push(types::I32);

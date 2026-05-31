@@ -7923,6 +7923,43 @@ fn native_build_and_run_metal_host_gpu_lifecycle_program() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+#[cfg(target_vendor = "apple")]
+#[test]
+fn native_build_and_run_metal_host_gpu_upload_program() {
+    let project_name = format!(
+        "fozzylang-gpu-metal-host-upload-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos()
+    );
+    let root = std::env::temp_dir().join(project_name);
+    std::fs::create_dir_all(root.join("src")).expect("project dir should be created");
+    std::fs::write(
+        root.join("fozzy.toml"),
+        "[package]\nname=\"gpu_metal_host_upload\"\nversion=\"0.1.0\"\n\n[[target.bin]]\nname=\"gpu_metal_host_upload\"\npath=\"src/main.fzy\"\n",
+    )
+    .expect("manifest should be written");
+    std::fs::write(
+        root.join("src/main.fzy"),
+        "use core.gpu;\nuse core.simd;\nhost fn main() -> i32 {\n    let dev = gpu.default_device()\n    let values: [f32; 4] = simd.f32x4_store(simd.f32x4_new(1.0, 2.0, 3.0, 4.0))\n    let buf: GpuBuffer<f32> = gpu.upload_f32(dev, values)\n    let window: GpuSlice<f32> = gpu.slice(buf, 1, 2)\n    discard window\n    gpu.free(buf)\n    return 0\n}\n",
+    )
+    .expect("source should be written");
+
+    let artifact = compile_file_with_backend(&root, BuildProfile::Dev, None)
+        .expect("metal host upload build should succeed");
+    assert_eq!(artifact.status, "ok");
+    let exit = run_native_exit(
+        artifact
+            .output
+            .as_deref()
+            .expect("metal host upload output should exist"),
+    );
+    assert_eq!(exit, 0);
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 #[test]
 fn cross_backend_non_i32_and_aggregate_signatures_execute_consistently() {
     let project_name = format!(

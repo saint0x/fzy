@@ -163,7 +163,7 @@ pub(crate) fn gpu_backend_execution_diagnostics(
                 unsupported_list
             ),
             Some(match adapter.kind {
-                GpuBackendKind::Metal => "This chunk makes the Metal host lifecycle live for device enumeration, device info, GPU buffer allocation/free, and host-side slice/view construction. Kernel launch, waits, uploads/downloads, and device-side execution remain blocked until the next backend/runtime slice.".to_string(),
+                GpuBackendKind::Metal => "This chunk makes the Metal host/runtime path live for device enumeration, device info, GPU buffer allocation/free, host uploads, and host-side slice/view construction. Downloads, kernel launch, waits, and device-side execution remain blocked until the next backend/runtime slice.".to_string(),
                 GpuBackendKind::Spirv | GpuBackendKind::Nvptx => adapter.reason.to_string(),
             }),
         )
@@ -222,6 +222,9 @@ fn supported_gpu_calls(backend: GpuBackendKind) -> BTreeSet<&'static str> {
             "gpu.alloc_f32",
             "gpu.alloc_i32",
             "gpu.alloc_u32",
+            "gpu.upload_f32",
+            "gpu.upload_i32",
+            "gpu.upload_u32",
             "gpu.free",
             "gpu.slice",
         ]),

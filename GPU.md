@@ -19,7 +19,7 @@ The following foundation is already landed on the `gpu` branch and should not be
 - dedicated `kernel_ir` lowering exists for the current GPU-safe subset
 - host GPU lifecycle events are emitted into native/non-scenario trace artifacts
 - deterministic Fozzy coverage exists for execution-space safety, typed handles, launch events, and kernel slice assignment
-- the `metal` adapter now has a live native host lifecycle on Apple for device enumeration, device info, GPU buffer allocation/free, and host-side `GpuSlice` construction
+- the `metal` adapter now has a live native host runtime path on Apple for device enumeration, device info, GPU buffer allocation/free, host uploads from arrays, and host-side `GpuSlice` construction
 - backend-neutral GPU kernel package artifacts are now emitted into `.fz/gpu-kernel-package.json` and `.fz/gpu-kernel-package.md`
 
 ## 1. Immediate Production Goal
@@ -114,8 +114,8 @@ The runtime contract should be split into:
 
 Current status of that contract:
 
-- `metal` host lifecycle is live on Apple for device enumeration, device info, GPU buffer allocation/free, and host-side slice/view construction
-- `metal` upload/download, kernel launch, and event completion are still pending
+- `metal` host/runtime data path is live on Apple for device enumeration, device info, GPU buffer allocation/free, host uploads, and host-side slice/view construction
+- `metal` download, kernel launch, and event completion are still pending
 - `spirv` and `nvptx` remain declared adapter families with truthful non-executable diagnostics until their real codegen/runtime paths land
 
 ### 3.2 Trace Integration Hardening
@@ -214,7 +214,7 @@ The next production chunks should explicitly burn down the shared architecture b
 - add truthful “not yet executable” diagnostics for incomplete `spirv` / `nvptx` adapters
 - extend trace artifacts so backend identity and real runtime evidence are recorded
 - add backend-conformance scenario structure so all three adapters grow under one test matrix
-- extend the live `metal` path from host lifecycle into uploads/downloads, kernel package consumption, launch packet execution, launch submission, and event completion
+- extend the live `metal` path from host uploads/slices into downloads, kernel package consumption, launch packet execution, launch submission, and event completion
 
 ## 6. Fozzy Expansion
 

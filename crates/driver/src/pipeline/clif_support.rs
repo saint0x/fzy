@@ -1678,6 +1678,67 @@ fn clif_emit_array_argument_pointer(
     }
 }
 
+fn clif_emit_array_argument_parts(
+    builder: &mut FunctionBuilder,
+    ctx: &mut ClifLoweringCtx<'_>,
+    arg: &ast::Expr,
+    locals: &mut HashMap<String, LocalBinding>,
+    next_var: &mut usize,
+) -> Result<Option<(ClifValue, ClifValue)>> {
+    match arg {
+        ast::Expr::Ident(name) => {
+            if let Some(binding) = ctx.array_bindings.get(name) {
+                let ptr = builder
+                    .ins()
+                    .stack_addr(pointer_sized_clif_type(), binding.stack_slot, 0);
+                let len = builder.ins().iconst(types::I32, binding.len as i64);
+                return Ok(Some((
+                    ClifValue {
+                        value: ptr,
+                        ty: pointer_sized_clif_type(),
+                    },
+                    ClifValue {
+                        value: len,
+                        ty: types::I32,
+                    },
+                )));
+            }
+            if let Some(ast::Type::Array { len, .. }) = ctx.local_types.get(name) {
+                if let Some(binding) = locals.get(name).copied() {
+                    let ptr = builder.use_var(binding.var);
+                    let len = builder.ins().iconst(types::I32, *len as i64);
+                    return Ok(Some((
+                        ClifValue {
+                            value: ptr,
+                            ty: binding.ty,
+                        },
+                        ClifValue {
+                            value: len,
+                            ty: types::I32,
+                        },
+                    )));
+                }
+            }
+            Ok(None)
+        }
+        ast::Expr::ArrayLiteral(items) => {
+            let ptr = clif_emit_array_argument_pointer(builder, ctx, arg, locals, next_var)?;
+            let Some(ptr) = ptr else {
+                return Ok(None);
+            };
+            let len = builder.ins().iconst(types::I32, items.len() as i64);
+            Ok(Some((
+                ptr,
+                ClifValue {
+                    value: len,
+                    ty: types::I32,
+                },
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn clif_create_stack_slot_for_array_abi(
     builder: &mut FunctionBuilder,
     abi: ClifArrayAbi,
@@ -3922,6 +3983,33 @@ pub(super) fn clif_emit_expr(
                 let signature = ctx.function_signatures.get(callee).ok_or_else(|| {
                     anyhow!("missing native function signature metadata for `{callee}`")
                 })?;
+                if matches!(
+                    callee.as_str(),
+                    "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32"
+                ) {
+                    if args.len() != 2 {
+                        bail!("native backend lowering expected 2 source args for `{callee}`");
+                    }
+                    let func_ref = ctx.module.declare_func_in_func(function_id, builder.func);
+                    let mut device = clif_emit_expr(builder, ctx, &args[0], locals, next_var)?;
+                    device = cast_clif_value(builder, device, types::I32)?;
+                    let Some((host_ptr, host_len)) =
+                        clif_emit_array_argument_parts(builder, ctx, &args[1], locals, next_var)?
+                    else {
+                        bail!(
+                            "native backend lowering for `{callee}` currently requires a host array literal or local array binding until general slice ABI lowering lands"
+                        );
+                    };
+                    let call =
+                        builder
+                            .ins()
+                            .call(func_ref, &[device.value, host_ptr.value, host_len.value]);
+                    let value = builder.inst_results(call)[0];
+                    return Ok(ClifValue {
+                        value,
+                        ty: types::I32,
+                    });
+                }
                 if let Some(sret) = signature.sret {
                     let stack_slot = clif_create_stack_slot_for_array_abi(builder, sret);
                     let result_ptr =

@@ -141,6 +141,21 @@ pub(super) const NATIVE_RUNTIME_IMPORTS: &[NativeRuntimeImport] = &[
         arity: 2,
     },
     NativeRuntimeImport {
+        callee: "gpu.upload_f32",
+        symbol: "fz_native_gpu_upload_f32",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "gpu.upload_i32",
+        symbol: "fz_native_gpu_upload_i32",
+        arity: 3,
+    },
+    NativeRuntimeImport {
+        callee: "gpu.upload_u32",
+        symbol: "fz_native_gpu_upload_u32",
+        arity: 3,
+    },
+    NativeRuntimeImport {
         callee: "gpu.free",
         symbol: "fz_native_gpu_buffer_free",
         arity: 1,
@@ -1298,6 +1313,9 @@ fn default_blocking_behavior(callee: &str) -> &'static str {
             | "gpu.alloc_f32"
             | "gpu.alloc_i32"
             | "gpu.alloc_u32"
+            | "gpu.upload_f32"
+            | "gpu.upload_i32"
+            | "gpu.upload_u32"
             | "gpu.slice"
     ) {
         "may_block"
@@ -1335,6 +1353,9 @@ fn default_linearity(callee: &str) -> &'static str {
             | "gpu.alloc_f32"
             | "gpu.alloc_i32"
             | "gpu.alloc_u32"
+            | "gpu.upload_f32"
+            | "gpu.upload_i32"
+            | "gpu.upload_u32"
     ) {
         "produces_linear_handle"
     } else if matches!(
@@ -1496,6 +1517,10 @@ pub(super) fn native_runtime_contract_for_callee(
         }
         "gpu.alloc_f32" | "gpu.alloc_i32" | "gpu.alloc_u32" => {
             contract.arg_ownership = "borrow_handle_len";
+            contract.return_ownership = "owned_gpu_buffer";
+        }
+        "gpu.upload_f32" | "gpu.upload_i32" | "gpu.upload_u32" => {
+            contract.arg_ownership = "borrow_handle_host_array";
             contract.return_ownership = "owned_gpu_buffer";
         }
         "gpu.slice" => {
